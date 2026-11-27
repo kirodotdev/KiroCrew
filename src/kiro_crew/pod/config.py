@@ -70,6 +70,14 @@ POD_STOP_TIMEOUT_SECS = TOTAL_SHUTDOWN_BUDGET_SECS
 #: that, a pod that is still stopping reads as a failed stop.
 SYSTEMCTL_STOP_WAIT_SECS = 2 * POD_STOP_TIMEOUT_SECS + 5
 
+#: Default health-wait budget for `pod up`, in seconds. A first pod boot does
+#: real extra work beyond serving /api/health -- config migration, staging CLI
+#: files, minting a fresh .local_secret -- and on a loaded host a healthy
+#: gateway was measured needing well past the old 45s wall, so the default is
+#: twice that. Also the floor for how long the Windows supervisor waits for an
+#: in-app restart's successor to claim the pod: that successor is a full boot.
+POD_HEALTH_WAIT_SECS_DEFAULT = 90
+
 
 def _canonical_override(raw: str) -> Path:
     """An operator-supplied path override, anchored so every reader agrees.

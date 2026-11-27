@@ -195,7 +195,11 @@ def _venv_is_usable(root: Path) -> bool:
     # here may propagate an exception into spawn or registration.
     cleanup_path = None
     try:
-        argv, cleanup_path = sandbox.wrap_argv([str(venv_py), "-I", "-c", probe], mode="standard")
+        argv, cleanup_path = sandbox.wrap_argv(
+            [str(venv_py), "-I", "-c", probe],
+            mode="standard",
+            extra_hidden_dirs=sandbox.app_backend_secret_mask_targets(),
+        )
         argv = sandbox.cgroup_scope_argv(argv)
         # Bounded capture: the probe executable is app-controlled and
         # capture_output would buffer its whole stdout in the GATEWAY's

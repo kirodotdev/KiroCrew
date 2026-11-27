@@ -163,19 +163,20 @@ export function withCacheBuster(url: string, key: number): string {
   }
 }
 
-/** URL-bar navigation history. `index` points at the current entry in `stack`.
+/** Back/forward history (URL-bar URLs here, folder paths in `FolderPanel`).
+ *  `index` points at the current entry in `stack`.
  *  (An iframe's own cross-origin page history isn't readable, so back/forward
  *  step through URLs committed via the bar / quick-picks / chat feed, not the
  *  site's internal link navigations.) */
-interface NavState {
+export interface NavState {
   stack: string[]
   index: number
 }
 const EMPTY_NAV: NavState = { stack: [], index: -1 }
 
-/** Push `url` as a new current entry, dropping any forward history (browser
- *  semantics). No-op when it already equals the current entry. */
-function pushNav(n: NavState, url: string): NavState {
+/** Push `url` (or a folder path) as a new current entry, dropping any forward
+ *  history (browser semantics). No-op when it already equals the current entry. */
+export function pushNav(n: NavState, url: string): NavState {
   const cur = n.index >= 0 ? n.stack[n.index] : null
   if (cur === url) return n
   const stack = [...n.stack.slice(0, n.index + 1), url]

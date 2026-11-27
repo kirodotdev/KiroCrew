@@ -8,8 +8,10 @@
  * configured URL. A cause the user can fix gets a leading sentence per remedy
  * and host: a host name that did not resolve (connect to the VPN), an SSH host
  * key this machine does not trust (known_hosts), a refused sign-in (renew the
- * credentials; restarting the gateway does nothing), and a host that could not
- * be reached. Every failure keeps the plain line after them.
+ * credentials; restarting the gateway does nothing), a host that could not
+ * be reached, and a private GitHub repository the GitHub CLI on the gateway's
+ * computer could not read (`gh_missing`, `gh_signed_out`, `gh_no_access`, which
+ * come with `repo` as `owner/repo`). Every failure keeps the plain line after them.
  */
 import { i18nT } from '../../i18n/t'
 import { fmtList, joinSentences } from '../../i18n/format'
@@ -22,7 +24,7 @@ export interface RegistryRefreshResult {
    * last-synced apps. `false` means its apps are missing from the store; a row
    * without it is read as last synced.
    */
-  results?: { name: string; ok: boolean; reason?: string; host?: string; cached?: boolean }[]
+  results?: { name: string; ok: boolean; reason?: string; host?: string; repo?: string; cached?: boolean }[]
 }
 
 /** One registry whose latest index fetch failed, and why when the backend knows. */
@@ -30,11 +32,13 @@ export interface RegistryFetchFailure {
   name: string
   cause?: string
   host?: string
+  /** `owner/repo` of a private GitHub registry, sent with a `gh_*` cause. */
+  repo?: string
   /** The listing still serves the registry's apps from its last successful fetch. */
   cached?: boolean
 }
 
-type Remedy = 'auth' | 'host_not_found' | 'unreachable' | 'host_key'
+type Remedy = 'auth' | 'host_not_found' | 'unreachable' | 'host_key' | 'gh_missing' | 'gh_signed_out' | 'gh_no_access' | 'gh_strict_mode'
 
 /** Registry names joined the way the reader language joins a list. */
 function nameList(names: readonly unknown[]): string {
@@ -42,11 +46,16 @@ function nameList(names: readonly unknown[]): string {
 }
 
 /**
- * The remedy a cause gets, and the host its sentence names (`''` for none).
- * `other`, an unknown cause and a host key without a host get none.
+ * The remedy a cause gets, and the host (or, for a `gh_*` cause, the `owner/repo`)
+ * its sentence names (`''` for none). `other`, an unknown cause, a host key without
+ * a host and a `gh_*` cause without a repo get none.
  */
-function remedyOf(cause: string | undefined, host: string): { remedy: Remedy; host: string } | null {
+function remedyOf(cause: string | undefined, host: string, repo: string): { remedy: Remedy; host: string } | null {
   switch (cause) {
+    case 'gh_missing':
+    case 'gh_signed_out':
+    case 'gh_no_access':
+    case 'gh_strict_mode': return repo ? { remedy: cause, host: repo } : null
     case 'auth': return { remedy: 'auth', host }
     case 'dns': return host ? { remedy: 'host_not_found', host } : { remedy: 'unreachable', host: '' }
     case 'network':
@@ -64,6 +73,10 @@ function remedySentence(remedy: Remedy, host: string, names: string): string {
     case 'host_not_found': return i18nT('components.registryManager.registry_host_not_found', { host, names })
     case 'unreachable': return i18nT('components.registryManager.registry_unreachable', { names })
     case 'host_key': return i18nT('components.registryManager.registry_host_key_untrusted', { host, names })
+    case 'gh_missing': return i18nT('components.registryManager.registry_gh_missing', { repo: host, names })
+    case 'gh_signed_out': return i18nT('components.registryManager.registry_gh_signed_out', { repo: host, names })
+    case 'gh_no_access': return i18nT('components.registryManager.registry_gh_no_access', { repo: host, names })
+    case 'gh_strict_mode': return i18nT('components.registryManager.registry_gh_strict_mode', { repo: host, names })
   }
 }
 
@@ -71,7 +84,7 @@ function remedySentence(remedy: Remedy, host: string, names: string): string {
 export function registryFetchRemedies(failures: readonly RegistryFetchFailure[]): string[] {
   const groups = new Map<string, { remedy: Remedy; host: string; names: string[] }>()
   for (const f of failures) {
-    const found = remedyOf(f.cause, f.host ?? '')
+    const found = remedyOf(f.cause, f.host ?? '', f.repo ?? '')
     if (!found) continue
     const id = `${found.remedy}\n${found.host}`
     const group = groups.get(id)
@@ -85,7 +98,7 @@ export function registryFetchRemedies(failures: readonly RegistryFetchFailure[])
 export function registryRefreshFailureMessage(res: RegistryRefreshResult | undefined): string {
   if (!res || res.ok !== false || !res.failed || res.failed.length === 0) return ''
   const remedies = registryFetchRemedies(
-    (res.results ?? []).filter(r => !r.ok).map(r => ({ name: r.name, cause: r.reason, host: r.host })),
+    (res.results ?? []).filter(r => !r.ok).map(r => ({ name: r.name, cause: r.reason, host: r.host, repo: r.repo })),
   )
   const missing = new Set((res.results ?? []).filter(r => !r.ok && r.cached === false).map(r => r.name))
   const stale = res.failed.filter(name => !missing.has(name))

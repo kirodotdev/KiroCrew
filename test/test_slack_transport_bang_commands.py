@@ -119,7 +119,7 @@ def test_a_thread_agent_switch_picks_the_agent_of_the_next_turn(audit, monkeypat
     asyncio.run(_scenario())
 
     assert sessions.removed == [_KEY]
-    assert "Thread agent: *reviewer*" in _posts(slack)
+    assert "🔄 Thread agent: *reviewer*" in _posts(slack)
     assert sessions.agents == ["reviewer"]
 
 
@@ -127,7 +127,7 @@ def test_an_owner_command_from_a_non_owner_is_refused_and_audited(audit):
     slack, sessions = _run("!yolo on", user_id=_MEMBER)
 
     assert sessions.agents == []
-    assert "Blocked: Owner-only command." in _posts(slack)
+    assert "⛔ Owner-only command." in _posts(slack)
     audit.log_api_access.assert_any_call(
         caller=_MEMBER,
         operation="slack.owner_command",
@@ -153,5 +153,5 @@ def test_voice_on_opts_the_thread_in_as_on_the_native_path(audit, monkeypatch):
     assert sessions.agents == []
     assert _KEY in _handler._vc.sessions
     posts = _posts(slack)
-    assert any(p.startswith("Voice ON") for p in posts), posts
+    assert any(p.startswith("\U0001f50a Voice ON") for p in posts), posts
     assert not any("not available here" in p for p in posts), posts

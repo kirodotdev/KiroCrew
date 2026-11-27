@@ -42,6 +42,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
+    STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
 )
 from kiro_crew.agent_discovery import (
@@ -51,7 +52,7 @@ from kiro_crew.agent_discovery import (
     project_agent_name,
     read_agent_spec_strict,
 )
-from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
+from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION, capabilities_of
 from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - read by the owners
     continue_timed_out_calls,
 )
@@ -59,21 +60,30 @@ from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.agent_switch_command import (  # noqa: F401 - read by the owners
     agent_switch_target,
 )
+from kiro_crew.channel_spec_hooks import (  # noqa: F401 - read by the owners
+    pre_tool_refusal as spec_pre_tool_refusal,
+)
+from kiro_crew.channel_spec_hooks import turn_spec as spec_turn  # noqa: F401 - read by the owners
+from kiro_crew.config.live import ConfigChange, ConfigDeferred  # noqa: F401 - read by the owners
 from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
     KIRO_CLI_BUILTIN_AGENTS,
     ConfigReadError,
+    ConfigWriteRefused,
     KiroCrewConfig,
     config_local_path,
     config_path,
+    overlay_pins,
     read_config_text,
     read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
+from kiro_crew.config.resolution import _deep_merge  # noqa: F401 - read by the owners
 from kiro_crew.constants import (  # noqa: F401 - read by the owners
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_POLICY,
+    MARKER_WRAPPERS,
     OPTIONS_RE_LINE,
     STEER_NOTICE_BOUND_SECS,
     is_control_tag_tail,
@@ -129,12 +139,19 @@ from kiro_crew.llm_helpers import (
     SESSION_NOT_FOUND_RETRY_NOTICE,
     acp_error_is_session_not_found,
     acp_error_needs_fresh_credentials,
+    annotate_model_fallback,
     credential_give_up_text,
     record_interaction_event,
     save_conversation_turn_off_loop,
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
+from kiro_crew.messaging.alternation_echo import (  # noqa: F401 - read by the owners
+    could_be_echo,
+    drop_echo,
+    echo_prefix_len,
+    is_echo,
+)
 from kiro_crew.messaging.commands import (  # noqa: F401 - read by the owners
     COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,
@@ -155,11 +172,15 @@ from kiro_crew.messaging.dispatch import (
 )
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.driver import _SteeringMarkerFilter  # noqa: F401 - read by the owners
+from kiro_crew.messaging.driver_quoted_markers import (  # noqa: F401 - read by the owners
+    QuotedDirectiveFilter,
+)
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.messaging.renderer import (  # noqa: F401 - read by the owners
     count_redaction_tags,
+    mcp_identity_line,
     redaction_notice,
     trusted_mcp_identity,
 )
@@ -174,11 +195,13 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.mrkdwn_title import slack_title_text  # noqa: F401 - read by the owners
+from kiro_crew.option_marker_scan import LINE_BREAKS  # noqa: F401 - read by the owners
 from kiro_crew.parent_turns import note_turn_landed, settle_turn
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
+    EVENT_MODEL_FALLBACK,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
@@ -216,6 +239,7 @@ from kiro_crew.session_lifecycle import (  # noqa: F401 - read by the owners
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.slack import channel_handler  # noqa: F401 - read by the owners
 from kiro_crew.slack import script_hooks as slack_script_hooks  # noqa: F401 - read by the owners
 from kiro_crew.slack.agent_sessions.fence import (  # noqa: F401 - read by the owners
     _Reset as _TurnScopeReset,
@@ -229,11 +253,17 @@ from kiro_crew.slack.blocks import (  # noqa: F401 - read by the owners
     deprecation_warning_block,
 )
 from kiro_crew.slack.channel_crew import (  # noqa: F401 - read by the owners
+    bind_bot_memory,
+    bots_text,
     context_template,
+    crew_bots,
+    memory_binding_refusal,
+    resolve_bot_name,
     resolve_channel_crew,
 )
 from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.client import SlackClientOps
+from kiro_crew.slack.conductor_thread import THREAD_SWITCH_COMMANDS
 from kiro_crew.slack.format import (  # noqa: F401 - read by the owners
     SLACK_MSG_LIMIT,
     TRUNCATION_NOTICE,
@@ -272,6 +302,8 @@ from kiro_crew.slack.handler_runtime.access import (  # noqa: F401
     is_allowed_user,
     is_open_channel,
     is_owner,
+    is_shared_listed,
+    is_shared_user,
     is_slack_session_trusted,
     is_tracked_channel,
     is_yolo_mode,
@@ -308,13 +340,16 @@ from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
 from kiro_crew.slack.handler_runtime.commands import (  # noqa: F401
     _bang_agent,
     _bang_allowlist,
+    _bang_bot,
     _bang_channel,
+    _bang_conductor,
     _bang_dashboard,
     _bang_link_to_dashboard,
     _bang_project,
     _bang_stop,
     _bang_thread_agent,
     _bang_title,
+    _bang_trust,
     _bang_voice,
     _bang_yolo,
     _handle_compact_command,
@@ -362,6 +397,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     _persist_channel_config,
     _read_thread_overrides,
     _recorded_selection,
+    _route_linked_thread,
     _set_default_agent,
     adopt_dashboard_thread_agent,
     adopt_default_agent,
@@ -374,6 +410,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     maybe_route_linked_thread,
     read_link_record,
     route_linked_thread,
+    shared_user_refused_for_session,
 )
 from kiro_crew.slack.handler_runtime.permission_ladder import (  # noqa: F401
     _answer_permission_request,
@@ -396,12 +433,14 @@ from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
     _at_tag_line_start,
     _blocks_with_run,
     _comment_hold_is_protocol,
+    _could_open_marker_line,
     _filter_options_brackets,
+    _final_update_landed,
     _resolve_comment_hold,
     _resolve_options_hold,
     _safe_final_update,
     _safe_update,
-    _settle_options_head,
+    _settle_marker_line,
     _ts_before,
 )
 from kiro_crew.slack.handler_runtime.turn import (  # noqa: F401
@@ -413,9 +452,11 @@ from kiro_crew.slack.handler_runtime.turn_context import (  # noqa: F401
     _thread_meta_fallback,
 )
 from kiro_crew.slack.handler_runtime.voice import (  # noqa: F401
+    _adopt_voice_reply,
     _reply_by_voice,
     _safe_voice_reply,
     _str_or_default,
+    apply_voice_reply_change,
     load_voice_reply_config,
 )
 from kiro_crew.slack.linked_thread_images import (  # noqa: F401 - read by the owners
@@ -428,6 +469,17 @@ from kiro_crew.slack.sessions_view import (  # noqa: F401 - read by the owners
     _collect_recent_sessions_off_loop,
     _message_surface_limit,
     sessions_include_ended,
+)
+from kiro_crew.slack.shared_access import (  # noqa: F401 - read by the owners
+    SHARED_OWNER_ONLY_TEXT,
+    shared_command_refused,
+)
+from kiro_crew.slack.stream_window import (  # noqa: F401 - read by the owners
+    CONTINUES_BELOW,
+    message_landed_since,
+    messages_noted,
+    stream_clock,
+    stream_due_for_renewal,
 )
 from kiro_crew.slack.thread_parent import (  # noqa: F401 - read by the owners
     fetch_thread_parent,
@@ -476,11 +528,19 @@ def _display_redactor(text: str) -> str:
     return redact_credentials(text)[0]
 
 
-# Mapping of bang commands to their /kirocrew slash equivalents.
-_BANG_TO_SLASH: dict[str, str] = {
+# Bang commands with no slash equivalent that the native router still answers in a thread
+# linked to a dashboard chat, so they are never delivered to it as a chat message: the
+# words that change what a thread is (``!bot``, ``!conductor``) and ``!trust``, which
+# changes its session's approval mode.
+_NATIVE_BANG_COMMANDS: frozenset[str] = THREAD_SWITCH_COMMANDS | {"!trust"}
+
+# Mapping of bang commands to their /kirocrew slash equivalents. None: not
+# deprecated, so no notice: the bang acts on the thread it is typed in (`!voice on`),
+# which a slash command cannot name.
+_BANG_TO_SLASH: dict[str, str | None] = {
     "!yolo": "/kirocrew yolo",
     "!stop": "/kirocrew stop",
-    "!voice": "/kirocrew voice",
+    "!voice": None,
     "!agent": "/kirocrew agent",
     "!dashboard": "/kirocrew dashboard",
     "!ta": "/kirocrew agent",
@@ -515,14 +575,9 @@ _SLACK_SECTION_TEXT_LIMIT = 2900
 # Truncation marker appended when tool_input exceeds the limit
 _TRUNCATION_MARKER = "\n… [truncated]"
 
-# Bound on each name an approval card's MCP identity line shows, taken before
-# escaping: a kept name runs to 512 characters and escaping can grow it fourfold,
-# so two unbounded names could pass the 3000 characters Slack allows one text.
-_IDENTITY_NAME_MAX = 200
-
 # Slack UX strings
 _THINKING = "_Thinking…_"
-_THINKING_PLACEHOLDER = "*Thinking…*"
+_THINKING_PLACEHOLDER = "💭 _Thinking…_"
 _WORKING = "Working…"
 #: Row meta key naming the Slack message a thread import read the row from.
 _SLACK_TS_META = "slack_ts"
@@ -554,7 +609,7 @@ DELIVERY_DEBT_NOTICE = (
 )
 
 # Max chars of reasoning to surface inline in Slack before truncating. Keeps
-# the Thinking block from becoming a wall of text; the full
+# the 💭 Thinking block from becoming a wall of text; the full
 # reasoning remains available in the dashboard Activity panel.
 _THINKING_PREVIEW_LIMIT = 600
 
@@ -571,7 +626,7 @@ def _condense_thinking(mrkdwn: str, *, limit: int = _THINKING_PREVIEW_LIMIT) -> 
         limit: Soft character cap before truncation.
 
     Returns:
-        A Slack-mrkdwn string headed by ``*Thinking*``.
+        A Slack-mrkdwn string headed by ``💭 *Thinking*``.
     """
     text = mrkdwn.strip()
     truncated = False
@@ -587,7 +642,7 @@ def _condense_thinking(mrkdwn: str, *, limit: int = _THINKING_PREVIEW_LIMIT) -> 
         truncated = True
     quoted = "\n".join(f"> {ln}" if ln.strip() else ">" for ln in text.splitlines())
     suffix = "\n> _…full reasoning in dashboard Activity_" if truncated else ""
-    return f"*Thinking*\n{quoted}{suffix}"
+    return f"💭 *Thinking*\n{quoted}{suffix}"
 
 
 # Pending approvals: keyed by f"{channel}:{approval_msg_ts}"
@@ -771,7 +826,7 @@ _COMPACTION_FAILED_RETRIES = 2
 # directly, never through the turn's own reply path: the abandoned attempt
 # persists nothing and mirrors nothing, so the conversation log records the
 # message once, with the reply the replay produces.
-_COMPACTION_RETRY_NOTICE = "Compaction failed — retrying…"
+_COMPACTION_RETRY_NOTICE = "⟳ Compaction failed — retrying…"
 
 # Terminals the session handle synthesizes for a turn the backend never
 # finished: its own turn ceiling ("timeout") and a stale turn its probe
@@ -779,7 +834,7 @@ _COMPACTION_RETRY_NOTICE = "Compaction failed — retrying…"
 # is failed, the thread is told, and the session is reset so the next message
 # starts a fresh runtime.
 _UNFINISHED_STOP_REASONS = frozenset({"timeout", STOP_REASON_STALE_RECOVER})
-_TIMEOUT_REPLY = "Error: Request timed out. Please try again."
+_TIMEOUT_REPLY = "⏱️ Request timed out. Please try again."
 
 
 @dataclass(frozen=True)
@@ -874,7 +929,8 @@ def _iter_cc_agent_names(cc_plugins_dir: Path | None = None) -> Iterator[str]:
             raw = safe_read_file_bytes(str(md_file))
             if raw is None:
                 continue
-            content = raw.decode("utf-8")
+            # utf-8-sig: an editor that saves "UTF-8 with BOM" puts U+FEFF before the fence.
+            content = raw.decode("utf-8-sig")
             if not content.startswith("---"):
                 continue
             frontmatter = content[3 : content.index("---", 3)]
@@ -976,6 +1032,7 @@ async def handle_message(
     had_voice_input: bool = False,
     spool_text: str | None = None,
     spool_attachments: int = 0,
+    spool_attachment_names: tuple[str, ...] = (),
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     user_meta: dict[str, Any] | None = None,
@@ -1007,6 +1064,8 @@ async def handle_message(
     these, never the ingested *text*, which inlines turn-owned temp paths (dead
     after a restart) and extracted file contents. ``None`` means *text* was not
     ingested (button and interaction re-dispatches), so it is spooled as is.
+    *spool_attachment_names* is Slack's name for each of those files, which the
+    restart notice lists.
 
     *_compaction_replay* is set only by this function's own turn, when it re-runs a
     message whose previous attempt was abandoned after a transient compaction
@@ -1069,6 +1128,7 @@ async def handle_message(
             thread_id=reply_ts,
             message_id=msg_ts,
             attachments_dropped=spool_attachments,
+            attachment_names=spool_attachment_names,
         ),
         restricted=_is_slack_restricted(session_key),
     ):
@@ -1105,6 +1165,7 @@ async def handle_message(
         had_voice_input=had_voice_input,
         spool_text=spool_text,
         spool_attachments=spool_attachments,
+        spool_attachment_names=spool_attachment_names,
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
         user_meta=user_meta,

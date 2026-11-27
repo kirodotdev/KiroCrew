@@ -1,0 +1,7 @@
++56
+The ssh-to-self floor refused the first ssh to a new dotted name while its DNS
+lookup was still running, and allowed the same command a moment later. Off the
+event loop, _resolved_host_verdict now waits for that lookup through a condition
+the resolver worker signals, at most _HOST_VERDICT_WAIT_SECS per check, shared
+through the check's _CALL_VIEWS memo (_host_verdict_wait_left). A loopback answer,
+a failed lookup or a lookup still running when the wait ends stays refused.

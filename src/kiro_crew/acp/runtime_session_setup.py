@@ -17,7 +17,8 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_governance_scope``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
 ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
 ``_member_context``, ``_native_launch_resources``, ``_native_launch_sources``,
-``_native_launch_view_alias``, ``_native_skill_projection``, ``_session_queues``,
+``_native_launch_view_alias``, ``_native_skill_projection``, ``_remote_workspace``,
+``_session_queues``,
 ``_ssh_auth_sock_forwarded``, ``_start_launch_name``, ``_tool_search_wire``,
 ``_wire_mode_id``, ``_work_dir``.
 """
@@ -56,8 +57,13 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     overlay_project_scope,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_OAUTH_BRIDGE
+from kiro_crew.agent_files import LITE_AGENT_FILENAME
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CODEX,
+    ACP_BACKENDS_CREW_OAUTH_BRIDGE,
+)
 from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
+from kiro_crew.agent_sdk.project_mcp_holds import hold_project_servers
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
 from kiro_crew.config import live
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token, send_claim
@@ -171,14 +177,13 @@ def _pooled_session_servers_and_ref_spec(
     check), the one non-mirrored host a crewmate's worker runs on: its stubs are
     the session's crewmate's (``mcp_gateway.mate_overlays``). KAS subtracts the
     names of the entries returned here (:func:`_kas_worker_stub_names`), so the
-    subtraction and the injection come from this one lookup. Every other host
-    passes no key, and its lookup is unchanged.
+    subtraction and the injection come from this one lookup. The mirrored hosts
+    pass theirs in :func:`_mirrored_session_mcp`; every other host passes no key,
+    and its lookup is unchanged.
     """
     scope_dir = None if ref_spec is not None else work_dir
     worker: dict[str, Any] = (
-        {"kas_worker_session_key": session_key}
-        if session_key and backend == ACP_BACKEND_KAS
-        else {}
+        {"worker_session_key": session_key} if session_key and backend == ACP_BACKEND_KAS else {}
     )
     servers = pooled_session_servers(
         overlay, agent, **overlay_project_scope(backend, scope_dir), **worker
@@ -190,16 +195,20 @@ def _pooled_session_servers_and_ref_spec(
 def _kas_worker_stub_names(
     backend: str, agent: str | None, session_key: str, pooled: list[dict[str, Any]]
 ) -> frozenset[str] | None:
-    """The stub names a KAS crewmate worker's projection subtracts, or ``None``.
+    """The stub names a KAS projection subtracts and withdraws against, or ``None``.
 
     The names of the entries :func:`_pooled_session_servers_and_ref_spec` just
     returned for this session, so KAS withholds from its projection exactly the
     servers ``session/new`` injects: one lookup answers both, and a crewmate edit
-    or an overlay refresh landing in between cannot make them differ. ``None``
-    for every other host, agent, or a session with no key: the projection then
-    asks the overlay by agent name, as before.
+    or an overlay refresh landing in between cannot make them differ. Handed in
+    for a crewmate worker session, and for the background helper, whose
+    projection withdraws every stub its spec does not mount. ``None`` for every
+    other host, agent, or a worker session with no key: the projection then asks
+    the overlay by agent name, as before.
     """
-    if backend == ACP_BACKEND_KAS and agent == MATE_WORKER_AGENT and session_key:
+    if backend == ACP_BACKEND_KAS and (
+        (agent == MATE_WORKER_AGENT and session_key) or agent == Path(LITE_AGENT_FILENAME).stem
+    ):
         return frozenset(
             str(entry["name"]) for entry in pooled if isinstance(entry, dict) and entry.get("name")
         )
@@ -209,11 +218,12 @@ def _kas_worker_stub_names(
 def _drop_withdrawn_stubs(
     mcp_servers: list[dict[str, Any]], withdrawn: frozenset[str]
 ) -> list[dict[str, Any]]:
-    """*mcp_servers* without the stubs the payload withdrew (``withdrawn_stub_names``).
+    """*mcp_servers* without the stubs the later spec read withdrew.
 
-    A KAS crewmate worker's stubs are picked before its payload reads the worker
-    spec again, so a server muted in between is dropped here, by the later
-    reading. With nothing withdrawn the list is returned as it is.
+    A crewmate worker's stubs are picked before its KAS payload, or a mirrored
+    host's projection, reads the worker spec again, so a server muted in between
+    is dropped here, by the later reading. With nothing withdrawn the list is
+    returned as it is.
     """
     if not withdrawn:
         return mcp_servers
@@ -259,6 +269,9 @@ class _MirroredSessionMcp(NamedTuple):
     """Whether the spec declares ``"tools": []``, from the same parse as the array.
     The handle refuses every permission request of such a session
     (``AcpSessionHandle._deny_zero_tools``)."""
+    builtin_tools: tuple[str, ...] | None = None
+    """The harness built-ins this session keeps (``SessionProjection.builtin_tools``),
+    from the same parse as the array; ``None`` keeps all of them."""
 
 
 async def _session_work_dir(self: AcpRuntime, cwd: str | Path | None = None) -> str | Path:
@@ -381,6 +394,23 @@ def _refuse_if_loader_unreachable(self: AcpRuntime, active_agent: str, kas_agent
     )
 
 
+async def _hold_project_servers(
+    self: AcpRuntime,
+    mcp_servers: list[dict[str, Any]],
+    agent: str,
+    work_dir: str | Path,
+    registered_agents: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """*mcp_servers* with this session's held project servers added.
+
+    The check reads the chat folder's project MCP file off the event loop: a thread hop
+    before the request goes out, bound as a method like the ceiling check.
+    """
+    return await hold_project_servers(
+        self, mcp_servers, agent, work_dir, registered_agents=registered_agents
+    )
+
+
 async def _refuse_over_ceiling_start(self: AcpRuntime, active_agent: str | None) -> None:
     """Refuse a ``session/new`` or ``session/load`` on a spec the ceiling would narrow.
 
@@ -484,6 +514,12 @@ async def _kas_custom_agents(
     )
     scope = getattr(self, "_governance_scope", None)
     governance_app = scope[1] if scope is not None and scope[0] == session_key else None
+    # A remote workspace replaces every built-in, the engine's sub-agent tool
+    # included. Only a KAS runtime holds one (``set_remote_workspace``), so like
+    # *worker* it goes down only when set and every other host's call is unchanged.
+    remote: dict[str, Any] = (
+        {} if getattr(self, "_remote_workspace", None) is None else {"remote_workspace": True}
+    )
     extras = await self._harness.session_extras(
         agent,
         work_dir=getattr(self, "_work_dir", None),
@@ -496,6 +532,7 @@ async def _kas_custom_agents(
         ssh_auth_sock_forwarded=getattr(self, "_ssh_auth_sock_forwarded", False),
         governance_app=governance_app,
         **worker,
+        **remote,
     )
     # Judged HERE, on the payload, so every path that builds one -- session/new
     # and session/load alike -- is covered, and a host that builds none (kiro:
@@ -569,9 +606,14 @@ async def _mount_member_panel(
     from kiro_crew.members import (
         MEMBER_PANEL_SERVER,
         crew_panel_enabled,
+        is_member_session_key,
         member_panel_session_server,
     )
 
+    # The thread's alone: a Bot's conducting worker shares the session-control
+    # key (``members.mounts_session_control``) and never gets the panel.
+    if not is_member_session_key(member_session_key):
+        return mcp_servers, False
     where = " on resume" if resuming else ""
     if not await asyncio.to_thread(crew_panel_enabled):
         logger.info(
@@ -663,6 +705,8 @@ async def _mirrored_session_mcp(
     session_key: str,
     channel_id: str,
     permission_surface_owned: bool = False,
+    session_control_mounted: bool | None = None,
+    harness_state: Any = None,
 ) -> _MirroredSessionMcp | None:
     """This session's ``mcpServers``, built by the host's agent-config MIRROR.
 
@@ -707,6 +751,10 @@ async def _mirrored_session_mcp(
     whose tools could be pre-approved in a file Crew does not own, where Crew's gate
     never fires -- withholds its array here rather than delivering it.
 
+    ``session_control_mounted`` is the caller's answer for whether this start mounts
+    session control, read before the projection so a crewmate worker's conducting kit
+    follows it.
+
     Blocking work (an agent-spec parse, an overlay read) runs off the loop, the
     same as the pooled resolution it replaces.
     """
@@ -746,10 +794,16 @@ async def _mirrored_session_mcp(
         active_agent,
         channel_id or None,
         **overlay_project_scope(self.acp_backend, work_dir),
+        # A crewmate's worker gets its stubs by its own session, never by name.
+        worker_session_key=session_key or None,
     )
+    if active_agent == MATE_WORKER_AGENT:
+        # Its by-name lookup above answers nothing; the projection withholds
+        # exactly the entries these stubs replace, from this one lookup.
+        stubbed = frozenset(str(s["name"]) for s in stubs if s.get("name"))
     stubs, stub_token = await self._own_stub_session(stubs, session_key)
 
-    def _project_and_snapshot() -> tuple[Any, Any]:
+    def _project_and_snapshot() -> tuple[Any, Any, frozenset[str]]:
         # One hop, two reads of the same file: the projection the array is
         # built from and the snapshot the unresolved-ref guard judges against.
         # Both go through session_mcp's own resolution order, so they resolve
@@ -780,16 +834,24 @@ async def _mirrored_session_mcp(
             # previous owner. The token is per session and its mapping is
             # republished, so it stays right in both cases.
             session_token=stub_token,
+            session_control_mounted=session_control_mounted,
         )
-        return projection, _ref_spec_snapshot(active_agent, work_dir)
+        withdrawn: frozenset[str] = frozenset()
+        if active_agent == MATE_WORKER_AGENT:
+            # The projection read the worker spec after its stubs were picked, so
+            # a server dropped, muted or retyped in between loses its stub, as on KAS.
+            from kiro_crew.acp.harness.kas import withdrawn_worker_stubs
 
-    projection, ref_spec = await asyncio.to_thread(_project_and_snapshot)
+            withdrawn = withdrawn_worker_stubs(projection.agent_spec or {}, stubbed)
+        return projection, _ref_spec_snapshot(active_agent, work_dir), withdrawn
+
+    projection, ref_spec, withdrawn = await asyncio.to_thread(_project_and_snapshot)
     servers = projection.params.get("mcpServers") or []
-    servers = list(servers) if isinstance(servers, list) else []
+    servers = _drop_withdrawn_stubs(list(servers) if isinstance(servers, list) else [], withdrawn)
     crew_bridged: list[str] = []
     if self.acp_backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
-        # The AcpClient twin is in ``client_mcp_array``. Before the pickups below,
-        # so a bridge element gets its agent-socket pickup too.
+        # The AcpClient twin is in ``client_mcp_array``. Before the pickups the
+        # session paths issue, so a bridge element gets its agent-socket pickup too.
         servers, crew_bridged = await asyncio.to_thread(
             kas_env_launch.bridge_array,
             servers,
@@ -797,24 +859,79 @@ async def _mirrored_session_mcp(
             session_key=session_key or "",
             agent_id=active_agent or "",
         )
-    runtime_ref = weakref.ref(self)
-
-    def _own_root_pid() -> int | None:
-        live_runtime = runtime_ref()
-        if live_runtime is None:
-            return None
-        return live_runtime._pid  # pid-owner-ok: the runtime reads its own root
-
-    # An enforced harness's kirocrew-core cannot read the gateway secret through its
-    # credential mask, so its element gets an agent-socket pickup bound to this
-    # session's stub token and this runtime's process tree (acp/ipc_pickup.py).
-    servers = with_ipc_pickups(
-        servers,
-        backend=self.acp_backend,
-        session_token=stub_token,
-        runtime_pid=_own_root_pid,
-        owner=self,
+    from kiro_crew.bot_chat_app_tools import (
+        carries_app_tools,
+        mounted_names,
+        note_transient_drops,
+        preview_on,
+        record_mounted,
     )
+
+    if carries_app_tools(active_agent, session_key, self.acp_backend):
+        # Off the loop: preview_on reads config.json on a cache miss.
+        if not await asyncio.to_thread(preview_on):
+            # Preview is off: this session carries no app servers. The projection
+            # may have added some while the preview was still on, so they leave the
+            # outgoing array first, and the record is settled from what is left:
+            # the record always names exactly the array this session is handed.
+            # Seed-lag enforcement is NOT run here: no app server is delivered.
+            # The drop is the preview's, not the harness's, so the aliases stay out
+            # of the permanent _UNMOUNTED and a preview turned back on reloads them.
+            dropped = [
+                str(e.get("name"))
+                for e in servers
+                if isinstance(e, dict) and ":" in str(e.get("name") or "")
+            ]
+            servers = [
+                e for e in servers if not (isinstance(e, dict) and ":" in str(e.get("name") or ""))
+            ]
+            note_transient_drops(session_key, dropped)
+            await asyncio.to_thread(record_mounted, session_key, mounted_names(servers))
+        else:
+            # App-tools projection only when the preview is on.  Seed-lag check
+            # only here too — no server is delivered when preview is off.
+            if harness_state is not None and hasattr(harness_state, "_worker_settings_lag"):
+                if await asyncio.to_thread(  # recorded_durable takes a cross-process lock
+                    harness_state._worker_settings_lag,  # type: ignore[union-attr]
+                    projection.agent_spec,
+                ):
+                    logger.warning(
+                        "bot chat app tools: withholding array for %s -- seeded deny rules lag "
+                        "the projection (preview enabled between seed and array build); "
+                        "next start picks up the updated seed",
+                        session_key,
+                    )
+                    from kiro_crew.bot_chat_app_tools import mark_seed_lag_reproject
+
+                    mark_seed_lag_reproject(session_key)
+                    servers = []
+            # Settle the app-server record from the array this session is handed, as the
+            # AcpClient path does (``bot_chat_app_tools.record_mounted``).
+            from kiro_crew.bot_chat_app_tools import check_and_filter_projection
+            from kiro_crew.providers.mirrors.codex import codex_name
+
+            # codex registers each server under its whitespace-folded name.
+            spelled = codex_name if self.acp_backend == ACP_BACKEND_CODEX else str
+            # Strip any entry whose revocation generation advanced since the projection
+            # was built, so a stale cold-start cannot mount a revoked app's server.
+            # Uses to_thread because check_and_filter_projection calls _app_reaches
+            # (file reads, audit) and member_identity_for_session (blocking).
+            servers_dict = {e["name"]: e for e in servers if isinstance(e, dict) and e.get("name")}
+            name_xform = codex_name if self.acp_backend == ACP_BACKEND_CODEX else None
+            servers_dict = await asyncio.to_thread(
+                check_and_filter_projection, session_key, servers_dict, name_transform=name_xform
+            )
+            servers = list(servers_dict.values())
+            voided_apps = await asyncio.to_thread(
+                record_mounted, session_key, mounted_names(servers_dict), spelled
+            )
+            if voided_apps:
+                servers_dict = {
+                    a: e
+                    for a, e in servers_dict.items()
+                    if ":" not in a or a.split(":")[0] not in voided_apps
+                }
+                servers = list(servers_dict.values())
     return _MirroredSessionMcp(
         servers=servers,
         denied_tools=projection.denied_tools,
@@ -824,6 +941,34 @@ async def _mirrored_session_mcp(
         agent_spec=projection.agent_spec,
         crew_bridged=crew_bridged,
         zero_tools=projection.zero_tools,
+        builtin_tools=projection.builtin_tools,
+    )
+
+
+def _with_runtime_ipc_pickups(
+    runtime: AcpRuntime, servers: list[dict[str, Any]], stub_token: str
+) -> list[dict[str, Any]]:
+    """*servers* with this runtime's agent-socket pickups (``acp/ipc_pickup.py``).
+
+    An enforced harness's Kiro Crew server cannot read the gateway secret through its
+    credential mask, so its element gets a pickup bound to this session's stub token
+    and this runtime's process tree. Create and resume call it once, on the mirrored
+    array after their member entries are appended, as the client path does.
+    """
+    runtime_ref = weakref.ref(runtime)
+
+    def _own_root_pid() -> int | None:
+        live_runtime = runtime_ref()
+        if live_runtime is None:
+            return None
+        return live_runtime._pid  # pid-owner-ok: the runtime reads its own root
+
+    return with_ipc_pickups(
+        servers,
+        backend=runtime.acp_backend,
+        session_token=stub_token,
+        runtime_pid=_own_root_pid,
+        owner=runtime,
     )
 
 

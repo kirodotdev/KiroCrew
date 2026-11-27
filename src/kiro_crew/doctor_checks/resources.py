@@ -158,6 +158,29 @@ def _windows_inert_limit_lines() -> list[str]:
     ]
 
 
+def _windows_commit_lines() -> list[str]:
+    """The ``commit`` line: the host's commit charge against its commit limit.
+
+    Windows only; an empty list elsewhere. A Windows host can reach its commit
+    limit with physical memory still free, and new threads and processes then
+    fail to start; the swap/OOM-killer check reads Linux procfs and says nothing
+    about it. Inside a Job object with a lower commit limit (an agent's shell) the
+    figures are that job's. Advisory: never added to ``issues``.
+    """
+    if not cli_doctor.platform_compat.IS_WINDOWS:
+        return []
+    commit = cli_doctor.platform_compat.system_commit()
+    if not commit or not commit[0]:
+        return ["  commit:          ⚠️  could not read the commit charge (GlobalMemoryStatusEx)"]
+    limit, available = commit
+    used = max(0, limit - available)
+    mib = 1024 * 1024
+    return [
+        f"  commit:          {used // mib:,} of {limit // mib:,} MiB committed "
+        f"({used * 100 // limit}% of the commit limit)"
+    ]
+
+
 def _doctor_memory_pressure(issues: list[str]) -> None:
     """Report whether the host can degrade gracefully under memory pressure.
 
@@ -175,6 +198,8 @@ def _doctor_memory_pressure(issues: list[str]) -> None:
     for line in _gateway_memory_lines():
         print(line)
     for line in _windows_inert_limit_lines():
+        print(line)
+    for line in _windows_commit_lines():
         print(line)
     if not sys.platform.startswith("linux"):
         print(
@@ -1200,18 +1225,19 @@ _CLI_INSTALLER_RESIDUE_MIN = 2
 
 # The temp dir is shared with every other process on the host and can hold a very
 # large number of entries, so a diagnostic must not walk it unbounded.
-# Non-recursive by design: the installer lands at the top level.
+# Non-recursive by design: the installer lands at the top level of a temp dir.
 _CLI_INSTALLER_SCAN_CAP = 512
 
 
-def _scan_cli_installer_residue(temp_dir: Path) -> tuple[int, int]:
+def _scan_cli_installer_residue(temp_dir: Path, cap: int | None = None) -> tuple[int, int]:
     """Return ``(count, total_bytes)`` for leftover kiro-cli installers in *temp_dir*.
 
-    Bounded and non-raising: the scan stops at :data:`_CLI_INSTALLER_SCAN_CAP`
-    matches, and an entry that vanishes mid-scan — another process cleaning up,
-    or the updater itself — is skipped rather than aborting the whole doctor run.
-    An unreadable temp dir reports "nothing found" for the same reason.
+    Bounded and non-raising: the scan stops at *cap* matches (default
+    :data:`_CLI_INSTALLER_SCAN_CAP`), and an entry that vanishes mid-scan — another
+    process cleaning up, or the updater itself — is skipped rather than aborting the
+    whole doctor run. An unreadable temp dir reports "nothing found" for the same reason.
     """
+    limit = _CLI_INSTALLER_SCAN_CAP if cap is None else cap
     count = 0
     total = 0
     try:
@@ -1225,17 +1251,46 @@ def _scan_cli_installer_residue(temp_dir: Path) -> tuple[int, int]:
                 # abort a diagnostic.
                 continue
             count += 1
-            if count >= _CLI_INSTALLER_SCAN_CAP:
+            if count >= limit:
                 break
     except OSError:
         return (0, 0)
     return (count, total)
 
 
-def _doctor_cli_installer_residue(issues: list[str]) -> None:
-    """Report leftover kiro-cli auto-update installers piling up in the temp dir.
+def _scan_runtime_installer_residue(root: Path, own_temp: Path) -> tuple[int, int]:
+    """Return ``(count, total_bytes)`` for installers in the runtime folders under *root*.
 
-    Silent on a healthy host. Gated on the evidence on disk rather than on
+    Each kiro-cli Crew starts gets one folder directly under the scratch root as its
+    temp dir (``agent_scratch.scratch_env``), so the installers it stages land there.
+    Only the top level of each folder is read, and the scan stops at
+    :data:`_CLI_INSTALLER_SCAN_CAP` matches across all of them. *own_temp* is skipped:
+    a doctor run from an agent shell has that runtime's folder as its temp dir, already
+    counted. An unreadable root reports "nothing found".
+    """
+    try:
+        with os.scandir(root) as entries:
+            folders = [Path(e.path) for e in entries if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return (0, 0)
+    count = 0
+    total = 0
+    for folder in folders:
+        if folder == own_temp:
+            continue
+        found, size = _scan_cli_installer_residue(folder, _CLI_INSTALLER_SCAN_CAP - count)
+        count += found
+        total += size
+        if count >= _CLI_INSTALLER_SCAN_CAP:
+            break
+    return (count, total)
+
+
+def _doctor_cli_installer_residue(issues: list[str]) -> None:
+    """Report leftover kiro-cli auto-update installers piling up in temp dirs.
+
+    Reads the doctor's own temp dir and every runtime's temp dir under the scratch
+    root. Silent on a healthy host. Gated on the evidence on disk rather than on
     Windows, so it still fires if this failure mode appears on another platform.
     """
     # gettempdir() raises when no candidate dir is usable; the rest of doctor
@@ -1244,12 +1299,20 @@ def _doctor_cli_installer_residue(issues: list[str]) -> None:
         temp_dir = Path(tempfile.gettempdir())
     except OSError:
         return
-    count, total = _scan_cli_installer_residue(temp_dir)
+    temp_count, temp_total = _scan_cli_installer_residue(temp_dir)
+    scratch = cli_doctor.agent_scratch.scratch_root()
+    runtime_count, runtime_total = _scan_runtime_installer_residue(scratch, temp_dir)
+    count = temp_count + runtime_count
+    total = temp_total + runtime_total
     if count < _CLI_INSTALLER_RESIDUE_MIN:
         return
+    places = [str(temp_dir)] if temp_count else []
+    if runtime_count:
+        places.append(f"the runtime folders under {scratch}")
+    where = " and ".join(places)
 
     # A capped scan undercounts both the count and the size: print them as floors.
-    capped = count >= _CLI_INSTALLER_SCAN_CAP
+    capped = max(temp_count, runtime_count) >= _CLI_INSTALLER_SCAN_CAP
     count_label = f"{count}+" if capped else str(count)
     if total >= 1073741824:
         size_label = f"{total / 1073741824:.2f} GiB"
@@ -1259,12 +1322,12 @@ def _doctor_cli_installer_residue(issues: list[str]) -> None:
         size_label = f"≥ {size_label}"
 
     print("\nkiro-cli installer residue")
-    print(f"  files:       ⚠️  {count_label} in {temp_dir}")
+    print(f"  files:       ⚠️  {count_label} in {where}")
     print(f"  reclaimable: {size_label}")
     print("               Auto-update downloads that could not be applied while")
     print("               kiro-cli was running, and are not cleaned up. Crew starts")
     print("               a kiro-cli per session, so one accumulates per start.")
-    print(f"               Fix: delete {_CLI_INSTALLER_GLOB} from {temp_dir}, then stop")
+    print(f"               Fix: delete {_CLI_INSTALLER_GLOB} from {where}, then stop")
     print("               the gateway and run `kiro-cli update` deliberately.")
     print("               To stop the downloads: `kiro-cli settings")
     print("               app.disableAutoupdates true` — note this is per-user, so it")

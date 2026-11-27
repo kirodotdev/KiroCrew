@@ -178,6 +178,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Optional
 # probe on a second SQLite library would drop that store's locks when it closes.
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.metrics.schema import validate_name
+from kiro_crew.sqlite_uri import read_only_uri
 
 if TYPE_CHECKING:  # annotation-only; never imported at runtime
     from opentelemetry.metrics import CallbackOptions, Meter, Observation
@@ -586,7 +587,7 @@ def _read_knowledge_documents_uncached() -> Optional[int]:
     # Read-only URI so this cannot create, migrate, or lock the database, and a
     # short timeout so a busy writer degrades to a gap instead of stalling the
     # export cycle.
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+    conn = sqlite3.connect(read_only_uri(db_path), uri=True, timeout=2.0)
     try:
         # Table name from a module constant, not inlined: see KNOWLEDGE_SOURCES_TABLE.
         # It is a constant of ours, never user input, so it cannot carry injection.

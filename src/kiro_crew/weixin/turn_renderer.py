@@ -37,7 +37,7 @@ _CHUNK_DELAY_S = 0.3
 # Refresh the typing indicator on this cadence; iLink expires it on its own.
 _TYPING_REFRESH_S = 8.0
 
-_ERROR_TEXT = "出错了，请重试"
+_ERROR_TEXT = "⚠️ 出错了，请重试"
 
 
 class WeixinRenderer(Renderer):
@@ -113,7 +113,7 @@ class WeixinRenderer(Renderer):
         if not self._pending_chip:
             return
         prefix = "\n\n" if self._buf else ""
-        self._buf.append(f"{prefix}> ↪ {self.redact_for_target(self._pending_chip)}\n\n")
+        self._buf.append(f"{prefix}> ↪️ {self.redact_for_target(self._pending_chip)}\n\n")
         self._pending_chip = ""
 
     async def on_thinking(self, text: str) -> None:

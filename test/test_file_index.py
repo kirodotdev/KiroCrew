@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 
 import pytest
@@ -166,6 +167,26 @@ class TestFileIndexRegistry:
             assert await reg.ensure(str(tmp_path)) is idx
             assert idx.is_ready
             assert idx.entry_count >= 1
+        finally:
+            reg.stop_all()
+
+    @pytest.mark.asyncio
+    async def test_ensure_resolves_the_root_off_the_loop_thread(self, tmp_path, monkeypatch):
+        seen: list[threading.Thread] = []
+        real = os.path.realpath
+        target = str(tmp_path)
+
+        def recording_realpath(path, *args, **kwargs):
+            if os.fspath(path) == target:
+                seen.append(threading.current_thread())
+            return real(path, *args, **kwargs)
+
+        monkeypatch.setattr(os.path, "realpath", recording_realpath)
+        reg = FileIndexRegistry()
+        try:
+            await reg.ensure(target)
+            assert seen, "ensure() never resolved the root"
+            assert all(t is not threading.main_thread() for t in seen)
         finally:
             reg.stop_all()
 

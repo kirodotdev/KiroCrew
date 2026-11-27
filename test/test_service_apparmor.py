@@ -19,6 +19,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _clear_sudo_user,
     _no_host_env_file,
     _no_host_unit_files,
+    _posix_installer_path,
     _restart_settle_without_waiting,
     durable_dir_fixture,
 )
@@ -534,11 +535,12 @@ class TestAppArmorNeverFailsTheInstall:
         from kiro_crew.service.common import Platform
 
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
-        monkeypatch.setattr(controller.linux, "install", lambda: outcome)
-        # The install also reports the service account's real linger state with
-        # its own warning sign; stub that warning out so the assertions here see
+        monkeypatch.setattr(controller.linux, "install", lambda **_kw: outcome)
+        monkeypatch.setattr(controller, "installed_unit_path", lambda: None)
+        # The install also turns linger on for the service account and reports it
+        # with its own warning sign; stub that step out so the assertions here see
         # the AppArmor outcome alone, whatever the host running the suite has set.
-        monkeypatch.setattr(controller.linux, "linger_warning_for_service_account", lambda: None)
+        monkeypatch.setattr(controller.linux, "enable_service_account_linger", lambda: None)
         return controller
 
     def test_install_still_succeeds_when_the_profile_fails(self, monkeypatch, capsys):
@@ -554,7 +556,7 @@ class TestAppArmorNeverFailsTheInstall:
         assert rc == 0, "a failed hardening step must not fail the service install"
         out = capsys.readouterr().out
         assert "kirocrew service installed and started" in out
-        assert "⚠️" in out, "the failure must still be surfaced, not swallowed"
+        assert "Warning:" in out, "the failure must still be surfaced, not swallowed"
         assert "could not be installed" in out
 
     def test_install_reports_the_profile_on_success(self, monkeypatch, capsys):
@@ -569,7 +571,7 @@ class TestAppArmorNeverFailsTheInstall:
         out = capsys.readouterr().out
         assert rc == 0
         assert "AppArmor profile installed at" in out
-        assert "⚠️" not in out
+        assert "Warning:" not in out
 
     def test_a_silent_skip_prints_nothing_extra(self, monkeypatch, capsys):
         """On Debian/Arch/RHEL the step must be invisible, not chatty."""
@@ -582,7 +584,7 @@ class TestAppArmorNeverFailsTheInstall:
         out = capsys.readouterr().out
         assert rc == 0
         assert "AppArmor" not in out
-        assert "⚠️" not in out
+        assert "Warning:" not in out
 
     def test_uninstall_removes_the_profile_and_still_reports_success(self, monkeypatch, capsys):
         from kiro_crew.service import controller
@@ -856,7 +858,7 @@ class TestProfileLoadsBeforeTheServiceStarts:
         order: list[str] = []
         monkeypatch.setenv("USER", "tester")
         monkeypatch.setattr(svc_linux, "_current_user", lambda: "tester")
-        monkeypatch.setattr(svc_linux, "render_unit", lambda *_a: "unit")
+        monkeypatch.setattr(svc_linux, "render_unit", lambda *_a, **_kw: "unit")
         monkeypatch.setattr(aa, "should_install", lambda: (True, "restricted"))
         monkeypatch.setattr(
             svc_linux,
@@ -881,7 +883,14 @@ class TestProfileLoadsBeforeTheServiceStarts:
         outcome = svc_linux.install()
 
         assert outcome.ok is True
-        assert order == ["write-unit", "load-profile", "daemon-reload", "enable", "restart"], order
+        assert order == [
+            "write-unit",
+            "load-profile",
+            "daemon-reload",
+            "enable",
+            "reset-failed",
+            "restart",
+        ], order
         # The profile must be loaded strictly before the unit is started.
         assert order.index("load-profile") < order.index("restart")
 
@@ -1091,6 +1100,60 @@ class TestServiceAttachmentFollowsUpdates:
         launcher = self._launcher(durable_dir / relative)
 
         assert self._attachment(aa, launcher) == str(launcher.resolve())
+
+    def test_a_managed_update_version_script_attaches_to_every_version_of_this_tool(
+        self, monkeypatch, durable_dir
+    ):
+        """The shared launcher execs the current version's script, so every version
+        folder of this tool is covered, and no other tool the launcher dispatches."""
+        aa = self._host(monkeypatch)
+        self._layout(monkeypatch, durable_dir)
+        tools = durable_dir / "tools"
+        script = self._launcher(tools / "kirocrew" / "0.12.2.4" / "bin" / "kirocrew")
+
+        attached = self._attachment(aa, script)
+
+        root = tools.resolve()
+        assert attached == f"{root}/kirocrew/*/bin/kirocrew"
+        assert aa.attachment_covers(attached, f"{root}/kirocrew/0.12.2.5/bin/kirocrew")
+        assert not aa.attachment_covers(attached, f"{root}/other/0.12.2.5/bin/kirocrew")
+        assert not aa.attachment_covers(
+            attached, f"{root}/kirocrew/0.12.2.5/python3.12/bin/python3"
+        )
+
+    def test_a_managed_update_root_another_account_can_write_keeps_the_exact_path(
+        self, monkeypatch, durable_dir
+    ):
+        aa = self._host(monkeypatch)
+        self._layout(monkeypatch, durable_dir)
+        script = self._launcher(
+            durable_dir / "tools" / "kirocrew" / "0.12.2.4" / "bin" / "kirocrew"
+        )
+        tool = (durable_dir / "tools" / "kirocrew").resolve()
+
+        def takeover(path, expected_uid=None, candidate=None):
+            return "writable by another account" if path == tool else None
+
+        monkeypatch.setattr(aa, "_substitutable_by_others", takeover)
+
+        assert self._attachment(aa, script) == str(script.resolve())
+
+    @pytest.mark.parametrize(
+        "relative",
+        [
+            "tools/other/0.12.2.4/bin/kirocrew",
+            "tools/kirocrew/latest/bin/kirocrew",
+            "tooling/kirocrew/0.12.2.4/bin/kirocrew",
+        ],
+    )
+    def test_a_script_outside_this_tools_version_folders_keeps_the_exact_path(
+        self, monkeypatch, durable_dir, relative
+    ):
+        aa = self._host(monkeypatch)
+        self._layout(monkeypatch, durable_dir)
+        script = self._launcher(durable_dir / relative)
+
+        assert self._attachment(aa, script) == str(script.resolve())
 
 
 class TestAttachmentCovers:

@@ -29,7 +29,7 @@ def _path_for(cfg, token: str):
     # lone surrogate, which is what a header value decoded with
     # ``surrogateescape`` hands the module.
     digest = hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
-    return cfg / f"session_token_{digest}.sig"
+    return cfg / "session-tokens" / f"session_token_{digest}.sig"
 
 
 @pytest.fixture
@@ -42,6 +42,7 @@ def cfg(tmp_path):
     """
     key_path = tmp_path / "sel_hmac.key"
     key_path.write_bytes(b"\x01" * 32)
+    (tmp_path / session_token_sig.SESSION_TOKEN_DIR).mkdir()
     with (
         patch.object(session_token_sig, "config_dir", return_value=tmp_path),
         patch.object(session_pid_sig, "sel_hmac_key_path", return_value=key_path),
@@ -66,7 +67,9 @@ class TestRoundTrip:
         caplog.clear()
         session_token_sig.retract_session_token(TOKEN)
         session_token_sig.retract_session_token("")
-        assert list(cfg.glob("session_token_*.sig")) == [_path_for(cfg, OTHER_TOKEN)]
+        assert list((cfg / "session-tokens").glob("session_token_*.sig")) == [
+            _path_for(cfg, OTHER_TOKEN)
+        ]
         assert not caplog.records
 
     def test_publish_then_verify_returns_the_key(self, cfg):
@@ -75,7 +78,7 @@ class TestRoundTrip:
 
     def test_file_is_named_by_the_token_digest_not_the_token(self, cfg):
         session_token_sig.publish_session_token(TOKEN, SESSION_KEY)
-        names = [p.name for p in cfg.glob("session_token_*.sig")]
+        names = [p.name for p in (cfg / "session-tokens").glob("session_token_*.sig")]
         assert names == [_path_for(cfg, TOKEN).name]
         # The bearer name must not be recoverable from a directory listing.
         assert TOKEN not in names[0]
@@ -87,7 +90,7 @@ class TestRoundTrip:
         assert body == SESSION_KEY
         assert len(mac) == 64 and all(c in "0123456789abcdef" for c in mac)
         # ONE file: a torn read across a rekey has to be unrepresentable.
-        assert list(cfg.glob("session_token_*")) == [_path_for(cfg, TOKEN)]
+        assert list((cfg / "session-tokens").glob("session_token_*")) == [_path_for(cfg, TOKEN)]
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_owner_only_mode(self, cfg):
@@ -104,7 +107,7 @@ class TestRoundTrip:
     def test_empty_token_or_key_publishes_nothing(self, cfg):
         session_token_sig.publish_session_token("", SESSION_KEY)
         session_token_sig.publish_session_token(TOKEN, "")
-        assert list(cfg.glob("session_token_*.sig")) == []
+        assert list((cfg / "session-tokens").glob("session_token_*.sig")) == []
         assert session_token_sig.verify_session_token("") == ""
 
 

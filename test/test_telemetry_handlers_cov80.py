@@ -67,7 +67,6 @@ def _cfg_stub(
     otlp_endpoint: str = "",
     beacon_enabled: bool = True,
     beacon_endpoint: str = "https://beacon.invalid/x",
-    privacy_acked: bool = True,
 ) -> Any:
     telemetry = SimpleNamespace(
         enabled=enabled,
@@ -76,9 +75,7 @@ def _cfg_stub(
         beacon_enabled=beacon_enabled,
         beacon_endpoint=beacon_endpoint,
     )
-    return SimpleNamespace(
-        telemetry=telemetry, dashboard=SimpleNamespace(privacy_acked=privacy_acked)
-    )
+    return SimpleNamespace(telemetry=telemetry)
 
 
 def _patch_config(monkeypatch: pytest.MonkeyPatch, cfg: Any) -> None:
@@ -660,7 +657,7 @@ async def test_beacon_status_reports_stored_flag_and_effective_verdict(
     assert payload["overlay_override"] is True
     assert payload["governance_override"] is True
     assert stub.status.call_args.args[0] == "https://beacon.invalid/x"
-    assert stub.status.call_args.kwargs["acked"] is True
+    assert "acked" not in stub.status.call_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -708,7 +705,6 @@ async def test_collection_status_reports_the_effective_switch_state(
         "otlp_configured": True,
         "export_permitted": True,
         "enable_refused": True,
-        "off_offer": False,
         "otlp_destinations": [{"name": "ops", "source": "otlp_endpoints", "locked": False}],
         "metrics_dir": str(tmp_path / "m"),
     }

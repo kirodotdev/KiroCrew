@@ -44,7 +44,7 @@ const HEALS: Partial<Record<SidePanelFault, keyof SidePanelHeal>> = {
  * was not there costs nothing, closing a panel that was fine would.
  */
 export function useSidePanelHealth({ enabled, activeSlot, dock, slot, chatPane, deskSlide, nativeSuspect, heal }: {
-  /** Desktop, not embedded, the store has the panel open, the find pane is closed. */
+  /** Desktop, not embedded, the store has the panel open. */
   enabled: boolean
   activeSlot: string | null
   dock: 'right' | 'bottom'

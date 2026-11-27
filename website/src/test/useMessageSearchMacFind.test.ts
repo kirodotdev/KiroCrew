@@ -25,9 +25,6 @@ vi.mock('../utils/platform', () => ({
 }))
 
 import { useMessageSearch } from '../hooks/useMessageSearch'
-import type { ChatMessage } from '../types'
-
-const messages: ChatMessage[] = [{ role: 'user', content: 'hello world', cls: '' }]
 
 /** Dispatch a cancelable document keydown the way a real keypress arrives. */
 const press = (init: KeyboardEventInit): KeyboardEvent => {
@@ -38,21 +35,21 @@ const press = (init: KeyboardEventInit): KeyboardEvent => {
 
 describe('useMessageSearch find chord on macOS', () => {
   it('leaves bare Ctrl+F unhandled so the Cocoa forward-char binding still fires', () => {
-    const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
+    const { result } = renderHook(() => useMessageSearch('slot-1'))
     const event = press({ ctrlKey: true })
     expect(result.current.isOpen).toBe(false)
     expect(event.defaultPrevented).toBe(false)
   })
 
   it('opens the pane on Cmd+F and claims the keystroke', () => {
-    const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
+    const { result } = renderHook(() => useMessageSearch('slot-1'))
     const event = press({ metaKey: true })
     expect(result.current.isOpen).toBe(true)
     expect(event.defaultPrevented).toBe(true)
   })
 
   it('still leaves Ctrl+Cmd+F to the OS (Toggle Full Screen)', () => {
-    const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
+    const { result } = renderHook(() => useMessageSearch('slot-1'))
     const event = press({ metaKey: true, ctrlKey: true })
     expect(result.current.isOpen).toBe(false)
     expect(event.defaultPrevented).toBe(false)

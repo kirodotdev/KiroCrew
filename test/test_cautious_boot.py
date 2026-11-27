@@ -8,6 +8,7 @@ real data home or the real host's memory state.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import threading
@@ -16,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import resource_status
 from kiro_crew.dashboard import cautious_boot, crash_dump_store
 from kiro_crew.dashboard.cautious_boot import (
@@ -429,17 +431,18 @@ class TestHealthyMarkerIsReadDefensively:
         # No reader and no writer: read_text would block here forever.
         assert dump_owner_reached_healthy(dump, dumps_dir) is False
 
-    @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW is POSIX-only")
+    @requires_symlinks
     def test_a_symlinked_marker_is_refused(self, dumps_dir, tmp_path):
-        pid = os.getpid()
+        dump = _create_owned_dump(dumps_dir)
+        _write_marker(dumps_dir)
+        # The content alone is accepted; the link is what refuses it.
+        assert dump_owner_reached_healthy(dump, dumps_dir) is True
         elsewhere = tmp_path / "planted"
-        line = f"{pid} {_pid_domain()} {_pid_start_id(pid) or '-'}" + chr(10)
-        elsewhere.write_text(line, encoding="utf-8")
+        (dumps_dir / HEALTHY_MARKER_NAME).replace(elsewhere)
         (dumps_dir / HEALTHY_MARKER_NAME).symlink_to(elsewhere)
-        dump = _create_owned_dump(
-            dumps_dir, pid=pid, domain=_pid_domain(), start_id=_pid_start_id(pid) or "-"
-        )
-        # The content would otherwise be accepted; the link is what refuses it.
+        with pytest.raises(OSError) as refused:
+            crash_dump_store._read_healthy_marker(dumps_dir)
+        assert refused.value.errno == errno.ELOOP
         assert dump_owner_reached_healthy(dump, dumps_dir) is False
 
     def test_a_directory_at_the_marker_name_reads_as_not_healthy(self, dumps_dir):

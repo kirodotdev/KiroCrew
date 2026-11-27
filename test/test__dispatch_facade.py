@@ -138,31 +138,16 @@ def test_a_facade_patch_of_redact_text_reaches_every_owner_that_imports_it() -> 
     assert len({id(vars(sys.modules[m])["redact_text"]) for m in holders}) == 1
 
 
-#: The owner modules, one per line, so two changes that each add an owner edit
-#: different lines (testing-conventions.md § Merge-safe ratchets and counts).
-_OWNER_MODULES = (
-    "kiro_crew.acp._dispatch_parts.adapter_signals",
-    "kiro_crew.acp._dispatch_parts.permission_requests",
-    "kiro_crew.acp._dispatch_parts.session_update_parser",
-    "kiro_crew.acp._dispatch_parts.surfaced_text",
-    "kiro_crew.acp._dispatch_parts.tool_call_identity",
-    "kiro_crew.acp._dispatch_parts.tool_call_provenance",
-    "kiro_crew.acp._dispatch_parts.tool_result_events",
-)
-
-
 def test_the_owners_are_the_parts_package_in_layer_order() -> None:
     """``_OWNERS`` names every module of ``_dispatch_parts``, and each owner imports only
     owners listed before it: the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
+    assert owners, "the facade composes no owner"
     on_disk = {
         f"kiro_crew.acp._dispatch_parts.{p.stem}": p
         for p in PARTS_DIR.glob("*.py")
         if p.name != "__init__.py"
     }
-    assert sorted(on_disk) == list(
-        _OWNER_MODULES
-    ), f"the owner modules changed; write one line per module in _OWNER_MODULES: {sorted(on_disk)}"
     assert sorted(owners) == sorted(on_disk)
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):

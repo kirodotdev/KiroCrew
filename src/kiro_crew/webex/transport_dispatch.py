@@ -86,6 +86,7 @@ from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_TEXT,
     arm_cancelled_turn,
+    clean_compact_focus,
     compact_unsupported_backend,
     compact_unsupported_reply,
     context_recycle_warning,
@@ -440,7 +441,7 @@ class WebexDispatcher:
             if is_bare_mid_turn_override(text):
                 await self._reply(
                     inbound,
-                    "Note: `/queue` and `/steer` need a message after them — "
+                    "ℹ️ `/queue` and `/steer` need a message after them — "
                     "e.g. `/queue also check the logs`.",
                 )
                 return
@@ -451,14 +452,16 @@ class WebexDispatcher:
                     self._session_key(route),
                     channel_type="Webex",
                 )
-                message = "Started a fresh conversation."
+                message = "✅ Started a fresh conversation."
                 if not saved:
-                    message += "\nWarning: The new conversation could not be saved for restart."
+                    message += "\n⚠️ The new conversation could not be saved for restart."
                 await self._reply(inbound, message)
                 return
             if cmd == "compact":
                 self._conv.clear_awaiting(route)
-                await self._handle_compact(inbound)
+                await self._handle_compact(
+                    inbound, clean_compact_focus(parse_command_argument(text))
+                )
                 return
             if cmd == "help":
                 await self._reply(inbound, build_help_text())
@@ -502,7 +505,7 @@ class WebexDispatcher:
             if is_unknown_command(text):
                 # Answer with the card rather than spending a whole turn having
                 # the model explain that it does not know what "/nwe" means.
-                await self._reply(inbound, f"Unknown command.\n\n{build_help_text()}")
+                await self._reply(inbound, f"❓ Unknown command.\n\n{build_help_text()}")
                 return
 
         # ``resolve_pre_turn`` owns busy check, rotation and key re-derivation. The
@@ -708,7 +711,7 @@ class WebexDispatcher:
                 and await steer(text)
             )
             if steered:
-                await self._reply(inbound, "Folded into the reply in progress.")
+                await self._reply(inbound, "⏳ Folded into the reply in progress.")
                 return
         # Queue mode, a /queue override, or steer was unavailable. The enqueue and
         # its receipt happen atomically under the queue lock so the end-of-turn
@@ -1129,7 +1132,7 @@ class WebexDispatcher:
             )
         await self._reply(
             inbound,
-            "Stopped." if cancelled_turn else "Nothing was running — queue cleared.",
+            "🛑 Stopped." if cancelled_turn else "🛑 Nothing was running — queue cleared.",
         )
 
     def _origin_mirror_link(self, room_id: str) -> ChannelLink:
@@ -1177,7 +1180,7 @@ class WebexDispatcher:
         await asyncio.to_thread(_rebind)
         await self._reply(
             inbound,
-            "Linked. Replies from the dashboard for this conversation will "
+            "✅ Linked. Replies from the dashboard for this conversation will "
             "also show up here. Send `/unlink` to stop.",
         )
 
@@ -1332,9 +1335,9 @@ class WebexDispatcher:
             await self._reply(
                 inbound,
                 (
-                    "Context was near its limit, so it was compacted automatically."
+                    "🗜️ Context was near its limit, so it was compacted automatically."
                     if ok
-                    else f"Warning: Context is near its limit and automatic compaction {detail}. "
+                    else f"⚠️ Context is near its limit and automatic compaction {detail}. "
                     "Reply `/new` to start fresh."
                 ),
             )
@@ -1342,12 +1345,15 @@ class WebexDispatcher:
             self._conv.set_awaiting(route)
             await self._reply(
                 inbound,
-                "Warning: This conversation's context is getting long — reply `/compact` "
+                "⚠️ This conversation's context is getting long — reply `/compact` "
                 "to compress it, or `/new` to start fresh.",
             )
 
-    async def _compact_provider(self, provider: Any) -> tuple[bool, str]:
+    async def _compact_provider(self, provider: Any, focus: str = "") -> tuple[bool, str]:
         """Compact in place and report what actually happened.
+
+        *focus* is the cleaned text after a typed ``/compact``; empty calls
+        ``provider.compact()`` with no argument, as the automatic path does.
 
         Returns ``(ok, detail)`` where *detail* explains a failure. The result is
         READ rather than assumed: the ACP client synthesizes a completion event
@@ -1361,7 +1367,10 @@ class WebexDispatcher:
         and the caller holds the session semaphore for the whole wait.
         """
         try:
-            await asyncio.wait_for(provider.compact(), timeout=_COMPACT_TIMEOUT_S)
+            await asyncio.wait_for(
+                provider.compact(focus) if focus else provider.compact(),
+                timeout=_COMPACT_TIMEOUT_S,
+            )
             result = await provider.wait_for_compaction(
                 timeout=self.sessions.compact_wait_budget_secs()
             )
@@ -1377,7 +1386,7 @@ class WebexDispatcher:
             return False, "timed out" if kind == "timeout" else "failed"
         return True, ""
 
-    async def _handle_compact(self, inbound: "WebexInbound") -> None:
+    async def _handle_compact(self, inbound: "WebexInbound", focus: str = "") -> None:
         """In-place ACP ``/compact`` on the user's current session."""
         session_key = self._session_key(_route_of(inbound))
         # Serialize compaction against the turn semaphore: compacting while a
@@ -1386,19 +1395,19 @@ class WebexDispatcher:
         # to compact), and always release what we acquired.
         if not await self.sessions.try_acquire(session_key):
             if self.sessions.is_retiring(session_key):
-                await self._reply(inbound, f"Note: {COMPACT_ACCOUNT_CHANGED_TEXT}")
+                await self._reply(inbound, f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}")
             elif self.sessions.has_session(session_key):
                 await self._reply(
                     inbound,
-                    "Still working on the previous message — try `/compact` again shortly.",
+                    "⏳ Still working on the previous message — try `/compact` again shortly.",
                 )
             else:
-                await self._reply(inbound, "Note: There's no conversation to compact yet.")
+                await self._reply(inbound, "ℹ️ There's no conversation to compact yet.")
             return
         try:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
-                await self._reply(inbound, "Note: There's no conversation to compact yet.")
+                await self._reply(inbound, "ℹ️ There's no conversation to compact yet.")
                 return
             # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
@@ -1408,13 +1417,13 @@ class WebexDispatcher:
             if unsupported:
                 await self._reply(inbound, compact_unsupported_reply(unsupported))
                 return
-            ok, detail = await self._compact_provider(provider)
+            ok, detail = await self._compact_provider(provider, focus)
             await self._reply(
                 inbound,
                 (
-                    "Context compacted."
+                    "🗜️ Context compacted."
                     if ok
-                    else f"Warning: Compaction {detail} — reply `/new` to start fresh instead."
+                    else f"⚠️ Compaction {detail} — reply `/new` to start fresh instead."
                 ),
             )
         finally:

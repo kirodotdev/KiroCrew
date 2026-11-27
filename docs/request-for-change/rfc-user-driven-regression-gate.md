@@ -3,9 +3,9 @@ title: User-driven regression gate -- one feature catalog, agentic bug bashes at
 status: draft
 author: unattributed
 created: 2026-10-29
-last-audited: 2026-10-29
-audited-at: d32862446c
-doc-pr: null
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 25998
 implementation-prs: []
 tracking-issues: []
 supersedes: []

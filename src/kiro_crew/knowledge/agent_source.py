@@ -628,6 +628,10 @@ async def _add_agent_document(
     # leaves unmarked residue no later sweep can reclaim. The hold is re-entrant
     # per task, so ``ingest_file``'s own entry inside it neither double-counts
     # nor waits behind a window waiting for this very holder.
+    # Local: llm_pool pulls in the ACP client and the sandbox plane, which this
+    # module does not otherwise need at import time.
+    from .llm_pool import KnowledgeHarnessUnavailable
+
     async with pipeline.ingestion_in_flight():
         # Positive crash-residue evidence: record that an ingest of this content
         # has STARTED before any item commit. A hard kill before the finalize
@@ -671,6 +675,13 @@ async def _add_agent_document(
             await asyncio.to_thread(clear_ingesting, store, source_id, slug,
                                     content_hash, preserve_if_orphans=True)
             return {"status": "error", "error": str(exc)}
+        except KnowledgeHarnessUnavailable as exc:
+            # Extraction cannot run here (Kiro CLI signed out, or an LTS build
+            # with no harness for it). The ingest already failed the job and
+            # wrote no item; hand the caller the remedy instead of a bare 500.
+            await asyncio.to_thread(clear_ingesting, store, source_id, slug,
+                                    content_hash, preserve_if_orphans=True)
+            return {"status": "error", "error": str(exc), "code": exc.code}
         except BaseException:
             # Any other failure (including cancellation) before the finalize hop
             # ran leaves no ``active`` row for THIS attempt; drop its intent

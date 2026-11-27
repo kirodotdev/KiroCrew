@@ -1730,3 +1730,50 @@ async def test_a_cancelled_mark_leaves_no_marker(
             release.set()
         await async_wait_until(writer_done.is_set)
         assert not _marker(dump.path).exists()
+
+
+@pytest.mark.parametrize("unknown", [False, True], ids=["known", "unknown"])
+def test_open_dump_file_header_names_its_build(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, unknown: bool
+) -> None:
+    """The build sits on the first line; the header keeps its 4 lines."""
+    import kiro_crew
+
+    version = kiro_crew.__version__
+    install = str(Path(kiro_crew.__file__).resolve().parent)
+    if unknown:
+        from kiro_crew import install_liveness
+
+        version = install = "unknown"
+        monkeypatch.setattr(install_liveness, "BUILD_IDENTITY", (version, install))
+    with opened_dump_file(dumps_dir) as dump_file:
+        lines = dump_file.path.read_text(encoding="utf-8").splitlines()
+        assert lines[0].endswith(
+            f"{crash_dump_store._CLEAN_EXIT_AWARE_TOKEN} version={version} install={install}"
+        )
+        assert len(lines) == crash_dump_store._HEADER_LINES
+        assert crash_dump_store._PID_LINE_RE.match(lines[1])
+        assert crash_dump_store._is_header_only(dump_file.path)
+        # The token still reads: no marker yet, so this build has not exited cleanly.
+        assert not crash_dump_store._exited_cleanly(dump_file.path)
+        dump_file.write("Thread 0x1234 (most recent call first):\n")
+        dump_file.flush()
+        assert not crash_dump_store._is_header_only(dump_file.path)
+
+
+def test_open_dump_file_header_survives_an_undecodable_install_path(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path byte that is not UTF-8 is escaped, so the strict header write still lands."""
+    from kiro_crew import install_liveness
+
+    root = Path("/opt") / "kiro-\udcff" / "kiro_crew"
+    escaped = str(root).replace("\udcff", "\\udcff")  # the separator is the host's own
+    monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", root)
+    identity = install_liveness._read_build_identity()
+    assert identity[1] == escaped
+    monkeypatch.setattr(install_liveness, "BUILD_IDENTITY", identity)
+    with opened_dump_file(dumps_dir) as dump_file:
+        lines = dump_file.path.read_text(encoding="utf-8").splitlines()
+        assert lines[0].endswith(f"install={escaped}")
+        assert len(lines) == crash_dump_store._HEADER_LINES

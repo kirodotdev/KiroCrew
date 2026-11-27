@@ -206,7 +206,7 @@ class TestRunChatTransientRetryImageDiscard:
         state.sessions.discard_conversation.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
         assert slot._queue == []
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         assert slot._poisoned_reset_used is False
 
     @pytest.mark.asyncio
@@ -232,7 +232,7 @@ class TestRunChatTransientRetryImageDiscard:
 
         state.sessions.discard_conversation.assert_not_awaited()
         assert slot._queue == []
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         assert slot._poisoned_reset_used is True
 
     @pytest.mark.asyncio
@@ -267,7 +267,7 @@ class TestRunChatTransientRetryImageDiscard:
         state.sessions.discard_conversation.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
         assert slot._queue == []
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         assert slot._poisoned_reset_used is False
 
     @pytest.mark.asyncio
@@ -401,7 +401,7 @@ class TestRunChatTransientRetryPoisonedDiscard:
             await _run_chat(state, slot, "hello")
             await self._drain_bg(state)
 
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         state.sessions.discard_conversation.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
         # The exhausted cycle is counted toward the consecutive streak.
@@ -477,7 +477,7 @@ class TestRunChatTransientRetryPoisonedDiscard:
         state.sessions.reset.assert_not_awaited()
         # Cycle 1 ❌ + cycle 2 escalation notice, then the recovered answer.
         errs = self._err_texts(slot)
-        assert any(t.startswith("❌") for t in errs)
+        assert any(t.startswith("Error:") for t in errs)
         assert any("keeps rejecting" in t for t in errs)
         assert any("recovered-after-discard" in t for t in self._assistant_texts(slot))
         # Attempt accounting: two full ladders + the single recovery prompt.
@@ -485,6 +485,87 @@ class TestRunChatTransientRetryPoisonedDiscard:
         # The landed recovery turn re-arms the one-shot and breaks the streak.
         assert slot._poisoned_reset_used is False
         assert slot._prestream_exhausted_cycles == 0
+
+    @pytest.mark.parametrize("synthetic", [False, True])
+    @pytest.mark.asyncio
+    async def test_the_discard_requeue_says_whose_words_it_re_sends(
+        self, tmp_path, monkeypatch, synthetic
+    ):
+        """The requeue after the discard tags the person's message ORIGINAL (it re-sends
+        their words, and its prompt hooks are told so) and a runner continuation
+        CONTINUATION, as every other verbatim requeue does."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND, RecoveryPayload
+        from kiro_crew.hooks import HOOK_EVENT_USER_PROMPT_SUBMIT
+        from kiro_crew.llm_helpers import TRANSIENT_RETRIES
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        _poisoned_calls = 2 * (TRANSIENT_RETRIES + 1)
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= _poisoned_calls:
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered-after-discard")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        fires: list[tuple[str, str, dict]] = []
+
+        class _Store:
+            async def fire(self, event, context="", **kw):
+                fires.append((event, context, kw))
+                return []
+
+        state = self._make_state(tmp_path, monkeypatch)
+        state._hook_store = _Store()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: ())
+        self._wire_sessions(state, self._client(_stream))
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        payloads: list[str] = []
+        repo = slot._queue_repository
+        real_insert = repo.queue_insert
+
+        def _record(owner, index, content, kind="", payload="", *args, **kw):
+            if kind == SYNTHETIC_RECOVERY_KIND and any(
+                "keeps rejecting" in t for t in self._err_texts(slot)
+            ):
+                payloads.append(payload)
+            return real_insert(owner, index, content, kind, payload, *args, **kw)
+
+        kwargs = {"_synthetic_payload": True} if synthetic else {}
+        with (
+            patch.object(chat_runner, "_recovery_delay", new_callable=AsyncMock),
+            patch(
+                "kiro_crew.dashboard.chat_runner.run_bg_oneliner",
+                new_callable=AsyncMock,
+                return_value="OK",
+            ),
+        ):
+            await _run_chat(state, slot, "first try")
+            await self._drain_bg(state)
+            monkeypatch.setattr(repo, "queue_insert", _record)
+            await _run_chat(state, slot, "continue", **kwargs)
+            await self._drain_bg(state)
+
+        state.sessions.discard_conversation.assert_awaited_once()
+        assert any("recovered-after-discard" in t for t in self._assistant_texts(slot))
+        expected = RecoveryPayload.CONTINUATION if synthetic else RecoveryPayload.ORIGINAL
+        assert payloads == [expected], payloads
+        # The row the requeue drains as: the person's re-sent message, or the runner's.
+        re_sent = [
+            m for m in slot.messages if m.get("role") == "inject" and m["content"] == "continue"
+        ]
+        assert re_sent, "the discard requeue never drained -- the test proves nothing"
+        assert (re_sent[-1].get("meta") or {}).get("injectKind") == (
+            "recovery" if synthetic else "user_replay"
+        )
+        last_prompt = [kw for event, _, kw in fires if event == HOOK_EVENT_USER_PROMPT_SUBMIT][-1]
+        assert (last_prompt.get("replay") is True) is (not synthetic)
 
     @pytest.mark.asyncio
     async def test_poisoned_discard_is_one_shot_until_a_turn_lands(self, tmp_path, monkeypatch):
@@ -531,7 +612,7 @@ class TestRunChatTransientRetryPoisonedDiscard:
         # No turn ever landed: the one-shot stays consumed.
         assert slot._poisoned_reset_used is True
         # Terminal ❌ surfaced after the failed recovery and again on cycle 3.
-        assert sum(1 for t in self._err_texts(slot) if t.startswith("❌")) >= 2
+        assert sum(1 for t in self._err_texts(slot) if t.startswith("Error:")) >= 2
 
     @pytest.mark.asyncio
     async def test_cancelled_turn_does_not_rearm_poisoned_one_shot(self, tmp_path, monkeypatch):
@@ -640,7 +721,7 @@ class TestRunChatTransientRetryPoisonedDiscard:
         # later cycle whose canary succeeds, and the streak keeps accruing.
         assert slot._poisoned_reset_used is False
         assert slot._prestream_exhausted_cycles == 2
-        assert sum(1 for t in self._err_texts(slot) if t.startswith("❌")) >= 2
+        assert sum(1 for t in self._err_texts(slot) if t.startswith("Error:")) >= 2
 
     @pytest.mark.asyncio
     async def test_canary_empty_reply_is_not_positive_evidence(self, tmp_path, monkeypatch):

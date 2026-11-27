@@ -25,7 +25,6 @@ import contextlib
 import contextvars
 import enum
 import logging
-import os
 import re
 import time
 from collections import OrderedDict
@@ -37,7 +36,7 @@ from typing import Any
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_policy import channel_refusal, new_channel_refusal
-from kiro_crew.slack.code_channels import hooks, recognition
+from kiro_crew.slack.code_channels import hooks, recognition, thread_stop_gate
 from kiro_crew.slack.code_channels.binding import (
     BindingUnavailable,
     bound_slot,
@@ -60,6 +59,11 @@ from kiro_crew.slack.code_channels.creation import (
 from kiro_crew.slack.code_channels.models import ChannelInfo, CodeChannelApiError, CreateRequest
 from kiro_crew.slack.code_channels.recognition import ChannelKind
 from kiro_crew.slack.code_channels.route_gate import Admit, _route_to_slot, admitted
+from kiro_crew.slack.code_channels.routing_temps import (
+    _INBOUND_TEMPS,
+    _PENDING_TEMPS,
+    _unlink_all,
+)
 from kiro_crew.slack.code_channels.store import (
     ROUTE_CODE_CHANNEL,
     Binding,
@@ -73,7 +77,7 @@ logger = logging.getLogger(__name__)
 _MENTION = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
 
 NOT_AUTHORIZED_TEXT = (
-    "Blocked: You are not authorized to use this bot. Ask the owner to add you to the allowlist."
+    "⛔ You are not authorized to use this bot. Ask the owner to add you to the allowlist."
 )
 
 
@@ -329,11 +333,13 @@ def is_bound_code_channel(orch: Any, channel: str) -> bool:
     """*channel* is one of our bound code channels (feature on).
 
     Such a channel answers without a mention, so ``_route_message`` lets
-    :func:`inbound_gate` see its unmentioned messages before the mention drop.
-    Never the cold store load: no file I/O on the event loop.
+    :func:`inbound_gate` see its unmentioned messages before the mention drop. So
+    does one this process is opening (:data:`_opening`), whose binding is not
+    written yet: the gate holds such a message until it is. Never the cold store
+    load: no file I/O on the event loop.
     """
-    return (
-        code_channels_on(live_config(orch)) and store().get_binding_if_loaded(channel) is not None
+    return code_channels_on(live_config(orch)) and (
+        channel in _opening or store().get_binding_if_loaded(channel) is not None
     )
 
 
@@ -349,6 +355,13 @@ async def _inbound_gate(
 ) -> InboundResult:
     cfg = live_config(orch)
     channel = str(event.get("channel") or "")
+    if not from_trusted_bot and await shared_sender_dropped(sender_id, channel):
+        return DROP
+    in_thread = thread_stop_gate.binding_of(channel, event)
+    if in_thread is not None:
+        return await thread_stop_gate.decide(
+            orch, cfg, in_thread, text=text, sender_id=sender_id, from_trusted_bot=from_trusted_bot
+        )
     if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
         return PASS
     binding = store().get_binding(channel)
@@ -434,6 +447,19 @@ async def _inbound_gate(
         return DROP
     origin = _origin_of(channel, binding, info)
     resources = f"channel={channel} origin={origin}"
+    from kiro_crew.slack.handler import is_shared_listed
+
+    if (
+        is_shared_listed(sender_id)
+        and not opener_admitted(binding, sender_id)
+        and not (binding is None and opening_for(channel, sender_id))
+    ):
+        # A shared user drives only the code channel they opened (a channel
+        # Slack's UI opened has no opener). Told the rule, never the allowlist
+        # below, which is inert for them.
+        _audit(sender_id, "slack.code_channel.message", "denied", resources, "not the opener")
+        await tell_owner_only(_slack(orch), channel, sender_id, event.get("thread_ts"))
+        return DROP
     if not authorized:
         _audit(sender_id, "slack.code_channel.message", "denied", resources, "unauthorized sender")
         try:
@@ -452,6 +478,12 @@ async def _inbound_gate(
         return DROP
     _audit(sender_id, "slack.code_channel.message", "allowed", resources)
     if strip_leading_mention(text).strip().lower() == "!stop":
+        if is_shared_listed(sender_id):
+            # Judged, and stopped, on the binding stored now: the one read above may
+            # have been dropped or rebound during the channel lookup.
+            binding = store().get_binding(channel)
+            if not opener_admitted(binding, sender_id):
+                return DROP
         await _stop_bound(
             orch, binding, sender_id, channel, source="slack.code_channel.stop_command"
         )
@@ -472,6 +504,7 @@ async def dispatch(
     was_mention: bool,
     attachment_paths: Sequence[str] = (),
     slack: Any = None,
+    typed_text: str | None = None,
 ) -> bool:
     """Start the turn for a code-channel message; True when handled here.
 
@@ -487,15 +520,18 @@ async def dispatch(
     *slack* is the client the caller read the message with. Every post, bind and
     route of this dispatch goes through it (:func:`_slack`), so a reconnect that
     clears ``orch.slack`` meanwhile cannot drop the message. None reads
-    ``orch.slack`` as before.
+    ``orch.slack`` as before. *typed_text* is what the sender typed, before ingestion
+    (:func:`.shared_refusal.typed_text`).
     """
     token = _INBOUND_TEMPS.set(list(attachment_paths))
     slack_token = _SLACK.set(slack)
+    typed_token = TYPED_TEXT.set(typed_text)
     handled = False
     try:
         handled = await _dispatch(orch, result, event, clean_text, sender_id, was_mention)
         return handled
     finally:
+        TYPED_TEXT.reset(typed_token)
         _SLACK.reset(slack_token)
         leftover = _INBOUND_TEMPS.get()
         _INBOUND_TEMPS.reset(token)
@@ -621,28 +657,7 @@ async def _open_from_follow_up(
         return await maybe_open_code_channel(orch, event, clean_text, sender_id)
 
 
-# ── Attachment temp files ─────────────────────────────────────────────────
-#
-# A message routed to a bound session carries its attachments as temp-file
-# paths in the prompt. The files must outlive the routing call (the session's
-# turn reads them, perhaps after earlier queued turns) and must not outlive the
-# turns that read them. A path is adopted under the session when the message is
-# routed, and the session's files are deleted at the end of a turn that leaves
-# nothing queued behind it -- so a queued message's upload is never deleted by
-# the turn before it.
-
-_INBOUND_TEMPS: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
-    "code_channel_inbound_temps", default=[]
-)
-_PENDING_TEMPS: dict[str, list[str]] = {}
-
-
-def _unlink_all(paths: Sequence[str]) -> None:
-    for path in paths:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+# ── Attachment temp files (held in :mod:`.routing_temps`) ─────────────────
 
 
 def _adopt_temps(session_key: str) -> None:
@@ -725,7 +740,7 @@ def _folder_name(state: Any, folder_id: str) -> str:
 def _kickoff_text(title: str, state: Any, folder_id: str) -> str:
     where = _folder_name(state, folder_id) if folder_id else ""
     dashboard = f"the *{where}* folder of your dashboard" if where else "your dashboard"
-    heading = f"*{title}*\n" if title else ""
+    heading = f"🛠️ *{title}*\n" if title else ""
     return (
         f"{heading}This channel is one Kiro Crew session: reply here, no @mention "
         f"needed, and use Stop to interrupt me. It is also open in {dashboard}."
@@ -738,6 +753,8 @@ _bind_locks: dict[str, asyncio.Lock] = {}
 #: in the new channel that lands before its binding waits for it, instead of
 #: adopting the channel as one Slack's UI opened.
 _creating: dict[str, asyncio.Event] = {}
+#: ``new channel -> session_id`` while this process opens it (its binding unwritten).
+_opening: dict[str, str] = {}
 CREATION_WAIT_SECS = 60.0
 
 
@@ -800,13 +817,17 @@ async def _bind_channel(
     created_by_us: bool,
     channel_name: str = "",
     replace: bool = False,
+    opener: str = "",
+    actor: str = "",
 ) -> Binding:
     """Post the kickoff, create the dashboard session and record the binding.
 
     Callers hold :func:`_bind_lock`. Without *replace* the first binding wins:
     one already stored is returned and nothing new is created. With it, the
-    channel's own facts (its name, wrap-up and archive stamps) carry over to the
-    new binding; only the session changes.
+    channel's own facts (its name, wrap-up and archive stamps, its *opener*)
+    carry over to the new binding; only the session changes. *actor* is the person
+    whose message asked for this bind: a shared user binds only while they are the
+    channel's opener, asked at the binding write.
     """
     existing = store().get_binding(channel)
     if existing is not None and not replace:
@@ -874,8 +895,34 @@ async def _bind_channel(
                 origin_thread_ts=origin_thread_ts
                 or (existing.origin_thread_ts if existing else ""),
                 repo_root=repo_root,
+                opener=existing.opener if existing else opener,
             )
-            stored.append(await asyncio.to_thread(write, binding))
+            from kiro_crew.slack.handler import is_shared_listed
+
+            if bool(actor) and is_shared_listed(actor):
+                # A shared user's request binds a session only while they are still
+                # this channel's opener, asked in the store's own lock with the write;
+                # a replacement lands only over the very binding it replaces, so a
+                # channel unbound or revoked meanwhile stays so. A refusal takes the
+                # session and its link back down (create_bound_session).
+                admit = partial(opener_admitted, binding, actor)
+                if replace:
+                    expected = existing.session_key if existing is not None else ""
+                    writer = partial(
+                        store().replace_binding, admit=admit, expected_session=expected
+                    )
+                else:
+                    # Never over a revocation: a shared user's adopt cannot restore it.
+                    writer = partial(store().put_binding, admit=admit, keep_revoked=True)
+                written = await asyncio.to_thread(writer, binding)
+                if written is None:
+                    raise BindingUnavailable("the channel's opener or binding changed meanwhile")
+                stored.append(written)
+                return
+            result = await asyncio.to_thread(write, binding)
+            if result is None:  # only a write with expected_session or admit returns None
+                raise BindingUnavailable("the channel's binding was not written")
+            stored.append(result)
 
         _refuse_bind_if_policy_refuses(channel)  # after the kickoff, before the session
         slot = await create_bound_session(
@@ -988,48 +1035,6 @@ async def answer_unroutable(orch: Any, channel: str, user_id: str = "") -> bool:
     return True
 
 
-def options_answer_permitted(channel: str, sender: str = "") -> bool:
-    """A button or selection answered in *channel* may reach its session.
-
-    True when *channel* is not a bound code channel (or code channels are
-    off): the ordinary path's own rules apply there. In a bound code channel
-    an answer is a turn like a typed message, so it obeys the same rule as
-    :func:`inbound_gate`: the channel and its origin must both still admit
-    the channel's turns. A control posted before the channel or its origin
-    went to ``review`` or ``off`` is refused (SEL-audited), never dispatched.
-    So is an answer in a channel this gateway unbound because Slack stopped
-    listing us there (:meth:`CodeChannelStore.was_revoked`). A failed lookup
-    refuses too, since it cannot show the channel is unbound.
-    """
-    try:
-        cfg = live_config(None)
-        if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
-            return True
-        binding = store().get_binding(channel)
-        if binding is None and store().is_quarantined(channel):
-            # Its binding row does not read back whole: the channel is fenced, so
-            # nothing in it -- a kickoff-thread control included -- reaches a session.
-            origin, error = "", "code channel binding row unreadable"
-        elif binding is None:
-            if not store().was_revoked(channel):
-                return True
-            # Unbound because Slack does not list us here: a control its
-            # session posted earlier must not run a turn in that session.
-            origin, error = "", "code channel no longer bound"
-        else:
-            origin = _origin_of(channel, binding, None)
-            if channel_and_origin_permit(cfg, channel, origin):
-                return True
-            error = "origin activation does not admit a code channel"
-    except Exception:
-        logger.warning("code channel: options permit lookup failed", exc_info=True)
-        origin, error = "", "permit lookup failed"
-    _audit(
-        sender, "slack.code_channel.options", "denied", f"channel={channel} origin={origin}", error
-    )
-    return False
-
-
 UNROUTED_TEXT = (
     "I could not reach this channel's session just now. Open it in your dashboard, "
     "or try again in a moment."
@@ -1086,8 +1091,10 @@ async def _wait_for_creation(
 async def _dispatch_directed(
     orch: Any, result: InboundResult, event: dict[str, Any], clean_text: str, sender_id: str
 ) -> bool:
-    """Run a DIRECTED message in the channel's session; always handled here."""
-    await deliver_directed(orch, result, event, clean_text, sender_id)
+    """Run a DIRECTED message in the channel's session; always handled here. A shared
+    user's command is the owner's (:func:`.shared_refusal.shared_command_dropped`)."""
+    if not await shared_command_dropped(orch, event, clean_text, sender_id):
+        await deliver_directed(orch, result, event, clean_text, sender_id)
     return True
 
 
@@ -1155,8 +1162,11 @@ async def deliver_directed(
             if archived or refused:
                 pass  # nothing is adopted, rebound or prepared for these
             elif binding is None:
-                # A code channel Slack's UI opened with us as its agent: adopt it.
+                # A code channel Slack's UI opened with us as its agent, or one our
+                # route opened whose first bind failed (it keeps that route's opener):
+                # adopt it.
                 info = result.info
+                opened = store().route_to(channel)
                 binding = await _bind_channel(
                     orch,
                     channel=channel,
@@ -1167,6 +1177,8 @@ async def deliver_directed(
                     origin_thread_ts="",
                     created_by_us=False,
                     channel_name=info.name if info else "",
+                    opener=opened.opener if opened is not None else "",
+                    actor=sender_id,
                 )
                 _audit(sender_id, "slack.code_channel.adopt", "allowed", f"channel={channel}")
             elif bound_slot(_dashboard_state(), binding) is None:
@@ -1182,6 +1194,7 @@ async def deliver_directed(
                     origin_thread_ts=binding.origin_thread_ts,
                     created_by_us=binding.created_by_us,
                     replace=True,
+                    actor=sender_id,
                 )
     except ChannelRefused:
         return False  # refused mid-bind: nothing bound, and nothing to post into it
@@ -1223,6 +1236,11 @@ async def deliver_directed(
         return False
     # The command's fences again at the route's commit point, after its own awaits.
     gate = None if admit is None else partial(admitted, binding, admit)
+    from kiro_crew.slack.handler import is_shared_listed
+
+    if is_shared_listed(sender_id):
+        # A shared user's message is judged again at that commit point too.
+        gate = partial(opener_still_admitted, binding, sender_id, gate)
     routed = await _route_to_slot(
         orch, binding, clean_text, sender_id, sender=slack_sender(event), admit=gate
     )
@@ -1342,6 +1360,18 @@ def _seed_framing(origin_channel: str, context: str) -> str:
         "[Slack code channel]",
         f"This session is a Slack code channel opened from a thread in <#{origin_channel}>. "
         "Your replies are posted to this code channel.",
+        # Without this an agent asked for a preview reaches for a file upload or
+        # a screenshot, which a code channel may refuse.
+        "To show a preview of a page or site here (an html preview), call "
+        "code_channel_set_view with type html and the page as one self-contained HTML "
+        "document (inline <style>, no external files or data: URLs). It opens as a tab in "
+        "this channel, with no upload or screenshot. Slack shows it as a sandboxed static "
+        "preview where scripts may not run, so put the visible result in the markup and CSS.",
+        # Without this an asked-for (or offered) diff is pasted as a code block.
+        "To show a diff here (asked for, or a 'Show me the diff' option picked), call "
+        "code_channel_set_view with type diff and no other argument: it opens this "
+        "channel's Code tab. Never paste the diff into a message: reply with a one-line "
+        "summary and the PR link. If it finds nothing to show, send the diff as an html view.",
     ]
     # Only while hand-off is on: with the switch off (its default) the guidance
     # would steer the conductor into a call that is refused.
@@ -1468,6 +1498,15 @@ async def maybe_open_code_channel(
         return False
     if store().get_binding(channel) is not None:
         return False  # already a code channel: dispatch() owns it
+    # A shared user (slack.shared_access) may open a code channel of their own: it
+    # records them as its opener. One listed but unconfirmed opens nothing.
+    opener = opener_of_request(sender_id)
+    if opener is None:
+        return False
+    from kiro_crew.slack.shared_access import shared_command_refused
+
+    if shared_command_refused(sender_id, typed_text(clean_text)):
+        return False  # the owner's command: the normal path refuses it, as in any thread
     if not origin_permits(cfg, channel):
         return False  # a review-mode channel keeps its review of every reply
     if await _privacy_restricted(orch, clean_text, canonical_key(thread_ts or msg_ts)):
@@ -1521,6 +1560,7 @@ async def maybe_open_code_channel(
                     title=decision.title,
                     created_at=time.time(),
                     origin_thread_ts=thread_ts or msg_ts,
+                    opener=opener,
                 ),
             )
         except StoreWriteError:
@@ -1570,6 +1610,8 @@ async def maybe_open_code_channel(
         )
         logger.info("code channel not opened (%s); answering in place", refused)
         return False
+    if route.opener and opener_of_request(sender_id) != route.opener:
+        return False  # the opener was removed while the request was classified
     request = CreateRequest(
         name=channel_name_for(route.title),
         session_id=session_id,
@@ -1602,6 +1644,7 @@ async def maybe_open_code_channel(
         _audit(
             sender_id, "slack.code_channel.create", "allowed", f"{resources} channel={new_channel}"
         )
+        _opening[new_channel] = session_id  # until the first turn is delivered
         try:
             await asyncio.to_thread(store().record_destination, session_id, new_channel)
         except StoreWriteError:
@@ -1620,6 +1663,8 @@ async def maybe_open_code_channel(
                     origin_thread_ts=thread_ts or msg_ts,
                     created_by_us=True,
                     channel_name=request.name,
+                    opener=route.opener,
+                    actor=sender_id,
                 )
         except ChannelRefused:
             # The policy refused the new channel while it was being bound: a
@@ -1659,6 +1704,8 @@ async def maybe_open_code_channel(
     finally:
         done.set()
         _creating.pop(session_id, None)
+        for opened in [c for c, sid in _opening.items() if sid == session_id]:
+            _opening.pop(opened, None)
     return True
 
 
@@ -1780,10 +1827,18 @@ async def _deliver_first_turn(
         # so it names no single sender.
         message = f"{message}\n\n{framing}"
         origin_sender = None
-    from kiro_crew.slack.handler import LinkedRoute
+    from kiro_crew.slack.handler import LinkedRoute, is_shared_listed
 
+    # A shared opener's request is judged again at the route's commit point.
+    gate = partial(opener_still_admitted, binding, sender_id, None)
     routed = await _route_to_slot(
-        orch, binding, message, sender_id, sender=origin_sender, request_id=request_id
+        orch,
+        binding,
+        message,
+        sender_id,
+        sender=origin_sender,
+        request_id=request_id,
+        admit=gate if is_shared_listed(sender_id) else None,
     )
     if routed is not LinkedRoute.ROUTED:
         # The session does not have the request, so the route stays unseeded (a
@@ -1890,7 +1945,9 @@ async def stop_from_channel(orch: Any, event: dict[str, Any], user: str) -> str 
         return None
     from kiro_crew.slack.handler import is_allowed_user
 
-    if not is_allowed_user(user):
+    # Code channels are the owner's: a shared user (slack.shared_access) stops only
+    # the one they opened.
+    if not (is_allowed_user(user) or opener_admitted(binding, user)):
         _audit(
             user, "slack.code_channel.stop", "denied", f"channel={channel}", "unauthorized sender"
         )
@@ -1910,3 +1967,21 @@ async def stop_from_channel(orch: Any, event: dict[str, Any], user: str) -> str 
         orch, binding, user, channel, source="slack.code_channel.stop", say_idle=False
     )
     return CHANNEL_STOP_STOPPED
+
+
+from kiro_crew.slack.code_channels.shared_refusal import (  # noqa: E402,F401 - see the module
+    TYPED_TEXT,
+    opener_admitted,
+    opener_of_request,
+    opener_still_admitted,
+    opening_for,
+    options_answer_permitted,
+    shared_command_dropped,
+    shared_sender_dropped,
+    shared_user_refused_for_slot,
+    shared_user_refused_here,
+    shared_user_refused_in,
+    shared_user_refused_unbound,
+    tell_owner_only,
+    typed_text,
+)

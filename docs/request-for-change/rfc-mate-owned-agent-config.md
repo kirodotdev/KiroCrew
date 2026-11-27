@@ -3,8 +3,8 @@ title: Mate-owned agent config — a copied custom agent in its own folder
 status: implemented
 author: gjjnn
 created: 2026-10-16
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr:
 implementation-prs: [21463, 22037, 23010]
 tracking-issues: []
@@ -285,7 +285,11 @@ its report.
 **A worker does not promote itself.** A worker that finds its task too large
 reports back to its conductor; the conductor decides whether to spin up a
 sub-conductor. The dispatch tools a worker holds and the ones a conductor holds
-are separate, so the roles cannot blur.
+are separate, so the roles cannot blur. The one case where a worker holds both
+is the owner's, decided in advance per Bot and off by default
+(`agents.<name>.worker_conducts`,
+[rfc-bot-workers-conduct](rfc-bot-workers-conduct.md)): the worker still does
+not promote itself.
 
 **P0 and P1.**
 

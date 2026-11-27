@@ -49,6 +49,7 @@ _live_slot = live._live_slot
 _watched = live._watched
 lineage = live.lineage
 repo = live.repo
+_repo_template = live._repo_template
 _waiting_board = live._waiting_board
 
 

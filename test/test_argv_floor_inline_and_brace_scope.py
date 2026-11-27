@@ -148,6 +148,11 @@ class _ProductTree:
     implicitly concatenated literal (``"token_signing" ".key"``), which the parser
     folds into one constant, and a dotted import name with whitespace around its
     dots (``from a . b import c``), which black never emits.
+
+    No AST outlives the caller that asked for it: holding every candidate's tree to
+    the end of the module kept a few hundred MiB live on each worker. What the
+    import-graph walk reads again and again -- each module's ``from X import y``
+    lines -- is kept instead, as plain tuples.
     """
 
     def __init__(self, src: Path) -> None:
@@ -163,16 +168,30 @@ class _ProductTree:
                 continue
             name = ".".join(rel.parts[:-1] if rel.name == "__init__" else rel.parts)
             self.paths[name] = path
-        self._trees: dict[str, ast.Module | None] = {}
+        self._imports: dict[str, list[tuple[str | None, str, str]] | None] = {}
 
     def tree(self, name: str) -> ast.Module | None:
-        """*name*'s AST, parsed once; None for a module that does not parse."""
-        if name not in self._trees:
-            try:
-                self._trees[name] = ast.parse(self.paths[name].read_text(encoding="utf-8"))
-            except SyntaxError:
-                self._trees[name] = None
-        return self._trees[name]
+        """*name*'s AST, parsed for this caller; None for a module that does not parse."""
+        try:
+            return ast.parse(self.paths[name].read_text(encoding="utf-8"))
+        except SyntaxError:
+            return None
+
+    def _imports_of(self, name: str) -> list[tuple[str | None, str, str]] | None:
+        """*name*'s ``from <module> import <name> [as <bound>]`` lines, read once."""
+        if name not in self._imports:
+            tree = self.tree(name)
+            self._imports[name] = (
+                None
+                if tree is None
+                else [
+                    (node.module, alias.name, alias.asname or alias.name)
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom)
+                    for alias in node.names
+                ]
+            )
+        return self._imports[name]
 
     def trees_mentioning(self, *words: str) -> Iterator[tuple[str, ast.Module]]:
         """Every parseable module whose source contains any of *words*, with its AST."""
@@ -191,12 +210,14 @@ class _ProductTree:
         ``from a.b.c import`` contains ``a.b.c`` in its text, so the candidates
         are the modules mentioning the target's dotted name.
         """
+        needle = target.encode("utf-8")
         out: list[tuple[str, str, str]] = []
-        for mod, tree in self.trees_mentioning(target):
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.module == target:
-                    for alias in node.names:
-                        out.append((mod, alias.name, alias.asname or alias.name))
+        for mod, path in self.paths.items():
+            if needle not in path.read_bytes():
+                continue
+            for module, name, bound in self._imports_of(mod) or ():
+                if module == target:
+                    out.append((mod, name, bound))
         return out
 
 
@@ -589,6 +610,84 @@ class TestInlinePayloadNamesTheMintSurface:
     def test_a_quoted_import_without_a_loader_is_prose(self):
         assert _rule_of("python -c \"print('from kiro_crew.acp import x; token docs')\"") is None
 
+    _RUN_THE_CLI = "\"import subprocess; subprocess.run(['kirocrew', 'x'])\""
+
+    @pytest.mark.parametrize(
+        "program",
+        [
+            pytest.param(f"import re\nre.compile = exec\nre.compile({_RUN_THE_CLI})", id="assign"),
+            pytest.param(
+                f"import re\nsetattr(re, 'compile', exec)\nre.compile({_RUN_THE_CLI})", id="setattr"
+            ),
+            pytest.param(
+                f"import re\nre.__setattr__('compile', exec)\nre.compile({_RUN_THE_CLI})",
+                id="dunder-setattr",
+            ),
+            pytest.param(
+                f"import re\nvars(re).update(compile=exec)\nre.compile({_RUN_THE_CLI})",
+                id="vars-update",
+            ),
+            pytest.param(
+                f"import operator, re\noperator.setitem(vars(re), 'compile', exec)\n"
+                f"re.compile({_RUN_THE_CLI})",
+                id="operator-setitem",
+            ),
+            pytest.param(
+                f"import re as r, sys\nsys.modules['re'].compile = exec\nr.compile({_RUN_THE_CLI})",
+                id="sys-modules-alias",
+            ),
+            pytest.param(
+                f"from sys import modules\nimport re\nmodules['re'].compile = exec\n"
+                f"re.compile({_RUN_THE_CLI})",
+                id="from-sys-import-modules",
+            ),
+            pytest.param(
+                f"import os, re\nos.path.sys.modules['re'].compile = exec\n"
+                f"re.compile({_RUN_THE_CLI})",
+                id="os-path-sys-modules",
+            ),
+            pytest.param(
+                f"import re\nglobals()['re'].compile = exec\nre.compile({_RUN_THE_CLI})",
+                id="globals",
+            ),
+            pytest.param(
+                f"import re\nlocals()['re'].compile = exec\nre.compile({_RUN_THE_CLI})",
+                id="locals",
+            ),
+            pytest.param(
+                f"import re\nfrom re import __dict__ as d\nd['compile'] = exec\n"
+                f"re.compile({_RUN_THE_CLI})",
+                id="module-dict",
+            ),
+            pytest.param(
+                f"import re\nre._compile.__globals__['compile'] = exec\nre.compile({_RUN_THE_CLI})",
+                id="function-globals",
+            ),
+            pytest.param(
+                f"import re\n[re][0].compile = exec\nre.compile({_RUN_THE_CLI})", id="subscript"
+            ),
+            pytest.param(
+                f"import builtins, sys\nsys.modules.update(re=builtins)\nimport re\n"
+                f"re.compile({_RUN_THE_CLI}, 'k', 'exec')",
+                id="module-swap",
+            ),
+            pytest.param(
+                f"import re\nm = re\nm.compile = exec\nm.compile({_RUN_THE_CLI})", id="local-alias"
+            ),
+        ],
+    )
+    def test_a_runner_rebound_onto_re_compile_stays_a_loader(self, program):
+        """A method named like a loader is read as that loader, whatever its receiver.
+
+        Each program turns ``re.compile`` into a code loader (``exec``, or the builtin
+        ``compile`` once the module is swapped), through a binding no static reading of the
+        receiver can follow, so the call's argument is still read as code. These are the
+        cases a receiver-based exemption for a regex pattern has to keep refusing.
+        """
+        cmd = f"python3 - <<'PY'\n{program}\nPY"
+        assert argv_floor._is_credential_mint(cmd.lower(), raw_text=cmd), cmd
+        assert _rule_of(cmd) == _MINT, cmd
+
     def test_the_mint_surface_covers_every_token_producer_in_the_tree(self, product_tree):
         """Every module that can produce a dashboard token is in reach of the gate -- derived
         from the tree, not from a list.
@@ -721,6 +820,13 @@ class TestInlinePayloadNamesTheMintSurface:
             "warm_auth_singletons": "loads the key into the process cache at startup; returns nothing",
             "extract_numeric_claim": "reads one claim out of a token it VERIFIES; returns the claim",
             "revoke_access_cookie": "adds a verified token's nonce to the denylist; returns a bool",
+            "_materialize_signing_key_mask_target": (
+                "creates an absent key so the sandbox mask binds; returns its path, never the key"
+            ),
+            "approve": (
+                "records MCP launch approvals; the key only keys their env digests under a"
+                " purpose-derived key; returns None"
+            ),
         }
         misses = []
         for mod in seeds:

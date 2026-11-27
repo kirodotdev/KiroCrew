@@ -140,13 +140,13 @@ class TestRunCommandSandboxed:
     def test_nonzero_exit_with_only_stderr_has_no_blank_run(self):
         """An empty stdout is left out, not rendered as empty lines before stderr."""
         result = run_command_sandboxed("printf '\\n\\nmissing\\n\\n' >&2; exit 127")
-        assert result["output"] == "⚠️ Exit code 127\n\nstderr:\nmissing"
+        assert result["output"] == "Warning: Exit code 127\n\nstderr:\nmissing"
         assert result["stdout"] == ""
         assert result["stderr"] == "missing"
 
     def test_nonzero_exit_reports_streams_apart(self):
         result = run_command_sandboxed("printf '\\nhalf\\n\\n'; echo bad >&2; exit 2")
-        assert result["output"] == "⚠️ Exit code 2\n\nhalf\n\nstderr:\nbad"
+        assert result["output"] == "Warning: Exit code 2\n\nhalf\n\nstderr:\nbad"
         assert (result["stdout"], result["stderr"]) == ("half", "bad")
 
     def test_large_output_truncated(self):

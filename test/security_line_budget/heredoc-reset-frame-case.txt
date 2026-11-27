@@ -1,0 +1,6 @@
++14
+The here-document reset reading now keeps its result in the case of the walk's
+own text, lowering only when that text is already lowered, so the git/tar floor's
+original-case and lowered passes stay aligned frame for frame instead of diverging
+by case. This holds whether the ``<<`` opens a real body or none (a here-string
+``<<<``, an arithmetic ``<<`` shift). A comment explains the case guard.

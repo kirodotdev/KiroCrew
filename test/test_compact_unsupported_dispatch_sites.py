@@ -20,7 +20,7 @@ import pytest
 
 from kiro_crew import task_executor
 from kiro_crew.acp.types import TurnUsage
-from kiro_crew.acp_backends import ACP_BACKEND_KAS
+from kiro_crew.acp_backends import ACP_BACKEND_DEEPSEEK, ACP_BACKEND_KAS
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -140,7 +140,7 @@ async def _run_repl(monkeypatch: pytest.MonkeyPatch, provider: _ReplProvider) ->
 
 @pytest.mark.asyncio
 async def test_cli_repl_skips_compact_on_a_backend_that_cannot_serve_it(monkeypatch):
-    provider = _ReplProvider(ACP_BACKEND_KAS)
+    provider = _ReplProvider(ACP_BACKEND_DEEPSEEK)
     await _run_repl(monkeypatch, provider)
     provider.compact.assert_not_awaited()
 

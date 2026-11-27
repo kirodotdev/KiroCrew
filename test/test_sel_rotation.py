@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import time
 from dataclasses import asdict
@@ -289,6 +290,10 @@ class TestSizeRotation:
 
     def test_rotation_failure_still_writes_the_event(self, sel_dir, small_segments, caplog):
         """An audit record must never be lost to a rotation that cannot happen."""
+        # Each failed rotation logs a warning with a traceback, about 35 MiB over this
+        # test, and pytest keeps captured logs for the whole session. No assertion
+        # reads them.
+        caplog.set_level(logging.ERROR, logger="kiro_crew.sel")
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 200)
         before = len(log.recent(limit=10_000))
@@ -506,7 +511,11 @@ class TestRotationIsSerializedAcrossProcesses:
         assert protected.read_bytes() == before, "rotation wrote through the planted link"
         assert not planted.is_symlink(), "the planted link survived"
 
-    def test_an_unremovable_lock_link_declines_to_rotate(self, sel_dir, small_segments):
+    def test_an_unremovable_lock_link_declines_to_rotate(self, sel_dir, small_segments, caplog):
+        # Each declined rotation logs a warning with a traceback, about 35 MiB over
+        # this test, and pytest keeps captured logs for the whole session. No
+        # assertion reads them.
+        caplog.set_level(logging.ERROR, logger="kiro_crew.sel")
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 200)
         before = log._segments_oldest_first()
@@ -994,6 +1003,49 @@ class TestCollisionRetryReanchorsUnconditionally:
         ), "wrote a stale prev_hash after the collision was detected"
         total, valid = log.verify_integrity()
         assert total == valid, f"{total - valid} entries failed verification"
+
+    # may_rotate=False is the inline path (a critical audit): it skips the pre-append
+    # re-anchor, so the append guard's collision retry is what re-reads the tip.
+    @pytest.mark.parametrize("may_rotate", [True, False])
+    def test_a_foreign_append_re_anchors_without_a_log_line(
+        self, sel_dir, small_segments, caplog, may_rotate
+    ):
+        """Every process sharing the data home appends here, so a foreign append is
+        the routine case: re-reading the tip for it must not write a log line."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 5)
+        live = sel_dir / "security_events.jsonl"
+        sibling = _make_event(event_id="grow1", resources="sibling-grew")
+        sibling.prev_hash = log._last_hash
+        sibling.entry_hash = log._compute_hash(sibling)
+        with open(live, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(asdict(sibling)) + "\n")
+
+        with patch.object(SecurityEventLog, "_may_rotate", return_value=may_rotate):
+            with caplog.at_level(logging.DEBUG, logger="kiro_crew.sel"):
+                _fill(log, 1, start=7000)
+
+        ours = json.loads(live.read_text(encoding="utf-8").splitlines()[-1])
+        assert ours["prev_hash"] == sibling.entry_hash, "the tip was not re-read"
+        noise = [r.getMessage() for r in caplog.records if "moved on" in r.getMessage()]
+        assert noise == []
+
+    @pytest.mark.parametrize("may_rotate", [True, False])
+    def test_a_replaced_live_log_still_logs_at_info(
+        self, sel_dir, small_segments, caplog, may_rotate
+    ):
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 5)
+        live = sel_dir / "security_events.jsonl"
+        live.rename(sel_dir / "rotated-away.jsonl")
+
+        with patch.object(SecurityEventLog, "_may_rotate", return_value=may_rotate):
+            with caplog.at_level(logging.DEBUG, logger="kiro_crew.sel"):
+                _fill(log, 1, start=8000)
+
+        assert json.loads(live.read_text(encoding="utf-8").splitlines()[-1])["prev_hash"] == ""
+        moved = [r for r in caplog.records if "moved on" in r.getMessage()]
+        assert [r.levelno for r in moved] == [logging.INFO]
 
     def test_reanchor_now_refreshes_without_asking(self, sel_dir, small_segments):
         log = SecurityEventLog(base_dir=sel_dir, sync=True)

@@ -14,12 +14,16 @@ from kiro_crew.dashboard.chat_utils import (
     _tool_identity_fields,
     open_construct_at_end,
     restore_replacement_if_handover_did_not_land,
+    slack_mirror_is_paused,
     slot_history_key,
     tighten_replacement_to_restricted_original,
 )
 from kiro_crew.dashboard.engine_fallback import hook_session_model
+from kiro_crew.dashboard.slack_reconnect_wait import wait_for_slack_reconnect
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.slack.stream_window import message_landed_since, messages_noted
 from kiro_crew.tool_call_title import derive_tool_call_title
+from kiro_crew.tool_row_prefix import tool_row, tool_row_kind
 from kiro_crew.wakatime.heartbeats import is_coding_event
 
 if TYPE_CHECKING:
@@ -86,19 +90,20 @@ def _refined_tool_row_content(existing: str, new_title: str) -> str | None:
 
     kiro-cli sends the resolved title after a permission is answered, and the row
     is re-rendered as ``"<icon> <title>"``, preserving whichever leading icon the
-    row already carries (🔧 running / ✅ done / 🚫 refused).
+    row already carries (``Tool:`` running / ``Approved:`` approved / ``Refused:``
+    refused, or the glyph an older gateway wrote in its place).
 
     Returns None for a REFUSAL row, which must be left alone: it is terminal (the
     tool will not run, so a better title adds nothing) and its content is
-    ``"🚫 <title> — <reason>"``, so re-rendering from the title alone deletes the
+    ``"Refused: <title> — <reason>"``, so re-rendering from the title alone deletes the
     reason. That tail is the user's only visible explanation, and the model has
     already been told the reason in-band — dropping it leaves the human looking at
     a blocked row with no cause while the agent acts on one they cannot see.
     """
-    prefix = existing[:1] if existing[:1] in ("🔧", "✅", "🚫") else "🔧"
-    if prefix == "🚫":
+    kind = tool_row_kind(existing) or "call"
+    if kind == "refused":
         return None
-    return f"{prefix} {new_title}"
+    return tool_row(kind, new_title)
 
 
 # Distinct redacted tool_call_ids one turn tracks a source digest for. The ids
@@ -116,6 +121,12 @@ _MAX_TCID_SOURCES = 512
 # truncates -- two different over-long ids share a truncated prefix, so a
 # truncated id cannot be told from another and must not be tracked at all.
 _MAX_TCID_LEN = 1024
+
+# A WIRE KEY the dashboard reads: a tool row carries it, true, when the write
+# it makes is recorded for the turn's changed-files card, so TurnBlock may fold
+# the row's diff card. A row without it keeps today's rule and stays out of both
+# folds (rfc-fold-recorded-edit-cards.md).
+FILE_CHANGE_RECORDED_META = "file_change_recorded"
 
 
 def _tcid_identity_key(tcid: str | None) -> str:
@@ -238,6 +249,42 @@ def _withdraw_read_path_arg(state: Any, slot: Any, tcid: str) -> None:
             logger.debug("read mark withdrawal broadcast failed", exc_info=True)
 
 
+def _stamp_recorded_call_row(state: Any, slot: Any, tcid: str) -> None:
+    """Stamp ``FILE_CHANGE_RECORDED_META`` on call *tcid*'s ``Tool:`` row, stored and live.
+
+    Only that row draws the diff card. An approval for the same call appends its
+    own row later, and the refinement's ``tool_call_id`` patch lands on the
+    newest match, so the stamp is written to the call row by its ``ts`` instead.
+    """
+    for row in reversed(slot.messages):
+        meta = row.get("meta") if row.get("role") == "tool" else None
+        if not isinstance(meta, dict) or meta.get("tool_call_id") != tcid:
+            continue
+        if tool_row_kind(row.get("content", "") or "") != "call":
+            continue
+        if meta.get(FILE_CHANGE_RECORDED_META) is True:
+            return
+        meta[FILE_CHANGE_RECORDED_META] = True
+        slot._dirty = True
+        ts = str(row.get("ts") or "")
+        if not ts:
+            return
+        patch: dict[str, Any] = {
+            "slot": slot.key,
+            "ts": ts,
+            "meta": {FILE_CHANGE_RECORDED_META: True},
+        }
+        if isinstance(meta.get("mid"), str) and meta["mid"]:
+            patch["mid"] = meta["mid"]
+        try:
+            state.broadcast_ws("chat_message_update", patch)
+        except Exception:
+            # The stored row is stamped; a client reconciles from slot detail
+            # on its next fetch.
+            logger.debug("recorded-write stamp broadcast failed", exc_info=True)
+        return
+
+
 def _tool_call_ws_payload(event: "LLMEvent") -> dict[str, str | bool]:
     """Build the live dashboard payload for a tool invocation.
 
@@ -320,7 +367,13 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     state = turn.state
     _turn_tool_calls += 1
     turn._turn_tool_calls = _turn_tool_calls
-    _repeat_loop.note_call(event.tool_call_id, event.tool_name or "", event.tool_input, event.title)
+    _repeat_loop.note_call(
+        event.tool_call_id,
+        event.tool_name or "",
+        event.tool_input,
+        event.title,
+        wire_title=event.wire_title or "",
+    )
     if turn._terminal_directive_applied:
         _activity_after_terminal += 1
         turn._activity_after_terminal = _activity_after_terminal
@@ -435,7 +488,7 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     # call, and the persisted transcript line -- from one write.
     # Returns None for every session this seam is off or unsampled
     # for, which is every session by default.
-    _tool_row_meta = _tool_meta(event)
+    _tool_row_meta: dict[str, Any] | None = _tool_meta(event)
     _risk_meta = await _tool_risk_meta(
         state,
         slot,
@@ -446,7 +499,13 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     )
     if _risk_meta:
         _tool_row_meta = {**(_tool_row_meta or {}), **_risk_meta}
-    slot.append("tool", f"🔧 {_tool_payload['tool']}", "msg msg-tool", meta=_tool_row_meta)
+    if _file_snapshots:
+        # The turn's changed-files card records this write, so the
+        # dashboard may fold the row's diff card (rfc-fold-recorded-edit-cards).
+        _tool_row_meta = {**(_tool_row_meta or {}), FILE_CHANGE_RECORDED_META: True}
+    slot.append(
+        "tool", tool_row("call", str(_tool_payload["tool"])), "msg msg-tool", meta=_tool_row_meta
+    )
     _sel_title = _redact_display_text(event.title)
     sel().log_tool_invocation(
         session_key=session_key,
@@ -550,6 +609,7 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
             event.title,
             event.tool_input,
             session_model=hook_session_model(client, in_prompt=True),
+            raw_tool_params=getattr(event, "raw_tool_params", None),
         )
     # Mirror tool call to linked Slack stream. Fenced like the reply
     # legs: a tool's purpose line is the peer's steer showing through in
@@ -559,11 +619,19 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     # before probing anything when no peer steer is recorded -- so paying
     # it per event costs nothing on a turn nobody interfered with. The
     # stream's destination is the thread cached at turn start, judged
-    # as the room it is beside the live comparison.
+    # as the room it is beside the live comparison. A Bot's Heartbeat wake
+    # (``_mirror_reply_only``) opens no stream: the thread gets only its reply.
+    _mirror_paused_in_wait = False
+    if _mirror_chan and _mirror_thread and not state.slack_client and not turn._mirror_reply_only:
+        # A reconnect took the client: wait for it, then re-read the pause as turn start does.
+        await wait_for_slack_reconnect(state)
+        _mirror_paused_in_wait = slack_mirror_is_paused(state, session_key)
     if (
         _mirror_chan
         and _mirror_thread
         and state.slack_client
+        and not _mirror_paused_in_wait
+        and not turn._mirror_reply_only
         and not cross_surface_withheld(state, slot)
         and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
     ):
@@ -576,6 +644,9 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 # Top-level (``None``) for a code channel's own session. The
                 # owner is the recipient: the only person the gateway answers
                 # on Slack, and an org-wide install refuses a stream naming nobody.
+                # The count is read before the request: a message that lands
+                # while Slack opens the stream is below it.
+                _noted = messages_noted()
                 _mirror_stream_ts = (
                     await state.slack_client.start_stream(
                         _mirror_chan,
@@ -586,11 +657,28 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 )
                 turn._mirror_stream_ts = _mirror_stream_ts
                 if _mirror_stream_ts:
+                    turn._mirror_stream_messages_noted = _noted
                     turn._mirror_thinking_ts = await _retire_mirror_thinking(
                         state.slack_client, _mirror_chan, turn._mirror_thinking_ts
                     )
         except Exception:
             logger.debug("Mirror task stream start failed", exc_info=True)
+        if _mirror_stream_ts and message_landed_since(
+            _mirror_chan, turn._mirror_post_ts, turn._mirror_stream_messages_noted
+        ):
+            # A person wrote in the thread below the step list, so this step and
+            # the ones after it are drawn under their message.
+            _mirror_stream_ts, turn._mirror_stream_messages_noted = await _move_mirror_stream(
+                state.slack_client,
+                _mirror_chan,
+                turn._mirror_post_ts or "",
+                state.owner_id or None,
+                _mirror_stream_ts,
+                (_mirror_active_task, _mirror_active_task_title),
+            )
+            turn._mirror_stream_ts = _mirror_stream_ts
+            _mirror_active_task = ""
+            turn._mirror_active_task = _mirror_active_task
         if _mirror_stream_ts:
             try:
                 if _mirror_active_task:
@@ -625,6 +713,38 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 logger.debug("Mirror tool task failed", exc_info=True)
 
 
+async def _move_mirror_stream(
+    slack_client: Any,
+    channel: str,
+    thread_ts: str,
+    owner_id: str | None,
+    stream_ts: str,
+    running: tuple[str, str],
+) -> tuple[str, int | None]:
+    """Close the mirror's step list *stream_ts* and open a fresh one at the thread's end.
+
+    *running* is the id and title of the step still open on it, closed where it
+    was drawn so the old message ends complete. Returns the new stream's ts and
+    the ``messages_noted()`` count it opened at, or ``("", None)`` when Slack
+    gave none: the turn then mirrors no more steps, as when its first stream is
+    refused. Best-effort and never raises: the step list is decoration.
+    """
+    task_id, title = running
+    try:
+        if task_id:
+            await slack_client.append_task(channel, stream_ts, task_id, title, "complete")
+        await slack_client.stop_stream(channel, stream_ts)
+    except Exception:
+        logger.debug("Mirror task stream close failed before a move", exc_info=True)
+    noted = messages_noted()  # before the request, as for the turn's first stream
+    try:
+        new_ts = await slack_client.start_stream(channel, thread_ts, user_id=owner_id) or ""
+    except Exception:
+        logger.debug("Mirror task stream start failed after a move", exc_info=True)
+        new_ts = ""
+    return new_ts, (noted if new_ts else None)
+
+
 async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
     """An update to a tool call already on the turn."""
     _failed_write_calls = turn._failed_write_calls
@@ -650,7 +770,11 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
         return None
     if event.tool_input:
         _repeat_loop.note_call(
-            event.tool_call_id, event.tool_name or "", event.tool_input, event.title
+            event.tool_call_id,
+            event.tool_name or "",
+            event.tool_input,
+            event.title,
+            wire_title=event.wire_title or "",
         )
     _dir_refresh = _pending_dir_for_digest.get(event.tool_call_id, "")
     if not _dir_refresh:
@@ -764,10 +888,10 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
         # Patch the persisted tool message in place so its content
         # shows the refined title and meta carries the populated
         # input.  Walk in reverse and break on the first match —
-        # auto-approved tools may have a later "✅ {title}" entry
+        # auto-approved tools may have a later "Approved: {title}" entry
         # with the same tool_call_id, and we don't want to
         # overwrite that post-approval marker. Preserve whatever
-        # leading icon (🔧/✅/🚫) the existing message has.
+        # lead (Tool:/Approved:/Refused:) the existing message has.
         _meta_patch: dict[str, str] = {}
         if _input_upd:
             _meta_patch["input"] = _input_upd
@@ -810,6 +934,10 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
                     **({"meta": _meta_patch} if _meta_patch else {}),
                 },
             )
+        # A refinement is often the first event naming the file, so its
+        # snapshot is the one that lets the call row's diff card fold.
+        if _file_snapshots_upd:
+            _stamp_recorded_call_row(state, slot, _tcid_upd)
         # Update _pending_tools so PostToolUse hooks see the
         # refined name (e.g. "ls /tmp") instead of the stub
         # ("Terminal").  Strip the "Running: " prefix to match

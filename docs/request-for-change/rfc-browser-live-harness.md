@@ -1,12 +1,12 @@
 ---
 title: Live browser in chat -- Browser Harness behind a gateway CDP relay, watched and taken over from the transcript
-status: draft
+status: implemented
 author: bolichen97
 created: 2026-10-31
-last-audited: 2026-10-31
-audited-at: 0301f8b34f
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr:
-implementation-prs: []
+implementation-prs: [26950]
 tracking-issues: [22561]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,12 @@ superseded-by: []
 
 # RFC: Live Browser in Chat
 
-**Status:** `draft`. Nothing here is on main. Main was read at `0301f8b34f`.
+**Status:** `implemented`. The whole stack, the removal included, shipped in
+[#26950](https://github.com/kirodotdev/KiroCrew/pull/26950) (merged 2026-11-04) as `src/kiro_crew/browser_harness/`, on maintainer
+bolichen97's owner decision recorded on that pull request
+([comment](https://github.com/kirodotdev/KiroCrew/pull/26950#issuecomment-6569794150))
+and the matching `/ai-review override first-principles` comments; checked at
+`0c5d8bd5f3`. The paragraph below is the pre-merge record. Main was read at `0301f8b34f`.
 A prototype of the whole design is on the `feat/browser-live-harness` branch,
 read at `278f08eec6`. This document records the decisions that prototype makes
 so a maintainer can accept or reject them before any of its code lands. It is
@@ -95,9 +100,12 @@ The problems that follow:
 
 - **Browser Use's cloud, proxy or agent library.** The cloud runs the page on a
   third party's machine. The agent library is an LLM agent inside ours.
-- **Arbitrary code through Harness.** Its `run.py`, `browser_js`, `browser_cdp`
-  and `http_get` stay unreachable. The agent gets the tool's ops and nothing
-  else.
+- **Harness's own runner and MCP server.** Its `run.py` and its MCP server
+  stay unreachable. The agent gets the tool's ops and nothing else. Since
+  2026-11-19 those ops include Harness's own `js`, `cdp` and `http_get` helpers,
+  each asking a person on a card every call (the owner's decision,
+  `docs/decisions/2026-11-19-the-browser-tool-runs-harness-js-cdp-and-http-get.md`,
+  reversing this non-goal's earlier "stay unreachable" for those three).
 - **Replacing the Playwright library.** The E2E suite and the recording skills
   keep using it. Only the `playwright-cli` agent path goes.
 - **A password manager.** The sheet does not read or fill a saved password.
@@ -273,7 +281,8 @@ address) is not seen, because names are not resolved. D1 and D5 above.
 - **Fix the native panel.** It still has no logins and no headless or remote
   mode, and the agent keeps two stacks.
 - **Harness's own MCP server.** It exposes `browser_js`, `browser_cdp` and
-  `http_get`, which bypass the approval model.
+  `http_get` outside the approval model. The `browser` tool's `js`, `cdp` and
+  `http_get` ops call the same helpers inside it.
 - **Frames from Harness's event buffer.** That buffer is shared and emptied on
   each read; frames would push out the events Harness waits on. Hence the
   relay's private sessions.

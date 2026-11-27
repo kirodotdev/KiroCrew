@@ -184,10 +184,10 @@ An agent cannot write that folder, which is why a page there may render.
 ## The round-7 set
 
 Five more, each answering ONE question a reader asks out loud rather than one slice of
-the record. The questions and their counts come from `hci/REPORT.md`, which read them
-out of real transcripts instead of guessing; the elements come from Linear, Jira, GitHub
-Projects, Grafana, Datadog, Notion, Obsidian and Azure DevOps, cited per trick in that
-folder's `templates-v2/REFERENCES.md`.
+the record. The questions and their counts were read out of real transcripts instead of
+guessed; the elements come from Linear, Jira, GitHub Projects, Grafana, Datadog, Notion,
+Obsidian and Azure DevOps. The study and its per-trick references are not in this
+repository.
 
 | id | folds it reads | the question it answers | agentic |
 |---|---|---|---|

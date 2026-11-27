@@ -118,7 +118,6 @@ from kiro_crew.executors import discovery_executor
 from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.gateway_identity import gateway_id
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self
-from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
 from kiro_crew.session_workspace import is_valid_id
 from kiro_crew.stt import capabilities as stt_capabilities
@@ -477,7 +476,7 @@ async def api_ready(request: web.Request) -> web.Response:
     # readiness is not a prerequisite for serving the dashboard — a signed-out
     # user is meant to get in and see the reauthentication banner — and gating
     # this endpoint on it would only delay first paint. (It would also not do
-    # what it looks like: the desktop splash polls /api/status and accepts any
+    # what it looks like: the desktop splash polls /api/live and accepts any
     # status < 500, so a 503 here is invisible to it.)
     # Require the literal bool set at the final startup boundary. This stays
     # fail-closed for partial/mocked state objects and cannot become truthy just
@@ -520,29 +519,7 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
 
     One builder for all four response sites so a newly-added preference cannot
     be surfaced by some of them and silently omitted by the rest.
-
-    An LTS build reports ``privacy_acked`` as true and the notice version as
-    current, so the SPA never opens the first-run Privacy chapter there, nor the
-    once-more showing of a changed notice: the admin, not the user, decides where
-    usage data goes. Only the response says so; the stored values are unchanged.
-
-    The notice version is also reported as current while local recording is off
-    (the heartbeat turned off with ``telemetry.enabled`` unset, a written
-    ``false``, or ``DO_NOT_TRACK``): a user who opted out is not asked again. The
-    one exception is a written ``false`` older builds put in every new config
-    (``kiro_export.off_offer_due``): that user sees the current notice once, in
-    its off form, which asks whether to turn recording on.
     """
-    from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
-    from kiro_crew.edition import is_lts
-
-    lts = is_lts()
-    try:
-        recording_on = _metrics_provider._consent_enabled(cfg.telemetry)
-    except Exception:  # noqa: BLE001 - unknown keeps today's behaviour
-        recording_on = True
-    notice_current = lts or (not recording_on and not _off_offer_due(cfg))
-
     return {
         "mode": cfg.dashboard.theme_mode or "",
         "schedule_light": cfg.dashboard.theme_schedule_light or "",
@@ -552,42 +529,8 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "translucent_panels": cfg.dashboard.translucent_panels or "",
         "onboarded": cfg.dashboard.onboarded,
         "import_onboarded": cfg.dashboard.import_onboarded,
-        "privacy_acked": cfg.dashboard.privacy_acked or lts,
-        "privacy_ack_version": (
-            max(cfg.dashboard.privacy_ack_version, PRIVACY_NOTICE_VERSION)
-            if notice_current
-            else _ack_version_for_the_chapter(cfg)
-        ),
         "crewmates_onboarded": cfg.dashboard.crewmates_onboarded,
     }
-
-
-def _off_offer_due(cfg: Any) -> bool:
-    try:
-        from kiro_crew.metrics import kiro_export
-
-        return kiro_export.off_offer_due(cfg)
-    except Exception:  # noqa: BLE001 - not due, as before
-        return False
-
-
-def _ack_version_for_the_chapter(cfg: Any) -> int:
-    """The acknowledged notice version, held back while Kiro telemetry is owed.
-
-    An acknowledgement whose text never named the build's Kiro telemetry
-    destination (a chapter whose text did not name it, a redirected
-    ``kirocrew telemetry enable``) leaves that destination waiting, so the
-    chapter, which names it, shows once more. Unreadable: the stored value.
-    """
-    stored = cfg.dashboard.privacy_ack_version
-    try:
-        from kiro_crew.metrics import kiro_export
-
-        if kiro_export.destinations() and not kiro_export.notice_shown(cfg):
-            return min(stored, cfg.dashboard.kiro_telemetry_ack_version)
-    except Exception:  # noqa: BLE001 - the stored value, as before
-        logger.debug("kiro telemetry notice state unreadable", exc_info=True)
-    return stored
 
 
 async def api_theme_boot(request: web.Request) -> web.Response:
@@ -803,6 +746,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.core_config_patch import (
         _MOVED_CONFIG_FIELDS,
+        _acp_backend_sandbox_refusal,
         _beacon_governance_pinned_off,
         _check_default_profile_is_saved,
         _ConfigKeyAlreadySet,
@@ -857,6 +801,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CODE_STT_FAILED,
         _CODE_STT_MISSING_AUDIO,
         _CODE_STT_UNAVAILABLE,
+        OWNER_ONLY_SPEECH_FIELDS,
         _audit_custom_model_disclosure,
         _audit_stt_custom_model_write_allowed,
         _audit_stt_refusal,
@@ -867,6 +812,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stt_background_tasks,
         _stt_custom_model_refusal,
         _stt_positive_int,
+        deny_non_owner_speech_fields,
     )
     from kiro_crew.dashboard.handlers.core_stt_settings import (
         _LANGUAGE_IDENTIFYING_PROVIDERS,
@@ -1094,17 +1040,12 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     return resp
 
 
-async def api_logout(request: web.Request) -> web.Response:
-    """POST /api/logout — revoke all active dashboard sessions.
+def _local_cli_caller_refusal(request: web.Request) -> web.Response | None:
+    """The 403 for a ``kirocrew logout`` call that is not this owner's CLI, else ``None``.
 
-    Called by ``kirocrew logout`` CLI. Admits a loopback origin OR a
-    kernel-attested same-user AF_UNIX peer (``_unix_peer_is_self``, which the
-    owner-only socket transport arrives as, with an empty ``request.remote``),
-    plus the local secret — same auth as /api/token/local — to prevent
-    unauthorized revocation.
+    Shared by ``/api/logout`` and ``/api/logout/link``, so the two cannot drift apart.
     """
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
-    from kiro_crew.dashboard.token_auth import revoke_all_sessions_async  # noqa: F811
 
     # Reachable over loopback TCP or the dashboard's AF_UNIX socket. A unix peer
     # has an EMPTY request.remote, so the loopback test alone would 403 the
@@ -1132,6 +1073,46 @@ async def api_logout(request: web.Request) -> web.Response:
             resources="invalid-secret",
         )
         return web.json_response({"error": "invalid secret"}, status=403)
+    return None
+
+
+async def api_logout_link(request: web.Request) -> web.Response:
+    """POST /api/logout/link — revoke one link's credential family (``kirocrew logout --link``).
+
+    Its own route rather than a body on ``/api/logout``: a gateway that predates it
+    answers 404 here and changes no session, where ``/api/logout`` would ignore the
+    body and revoke them all. Same caller check as ``/api/logout``.
+    """
+    refusal = _local_cli_caller_refusal(request)
+    if refusal is not None:
+        return refusal
+    try:
+        body = await request.json() if request.can_read_body else None
+    except (ValueError, TypeError):
+        body = None
+    link = body.get("link") if isinstance(body, dict) else None
+    if not isinstance(link, str) or not link.strip():
+        return web.json_response(
+            {"error": "link must be a dashboard link or its token", "code": "invalid_link"},
+            status=400,
+        )
+    return await _logout_link(request, link)
+
+
+async def api_logout(request: web.Request) -> web.Response:
+    """POST /api/logout — revoke all active dashboard sessions.
+
+    Called by ``kirocrew logout`` CLI. Admits a loopback origin OR a
+    kernel-attested same-user AF_UNIX peer (``_unix_peer_is_self``, which the
+    owner-only socket transport arrives as, with an empty ``request.remote``),
+    plus the local secret — same auth as /api/token/local — to prevent
+    unauthorized revocation.
+    """
+    from kiro_crew.dashboard.token_auth import revoke_all_sessions_async  # noqa: F811
+
+    refusal = _local_cli_caller_refusal(request)
+    if refusal is not None:
+        return refusal
 
     # Fail-closed: the counter bump raises when neither the live nor the
     # persisted counter can be read (bumping from an assumed base could persist a LOWER
@@ -1167,6 +1148,56 @@ async def api_logout(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def _logout_link(request: web.Request, link: str) -> web.Response:
+    """Revoke one link's credential family for an already-authorized ``/api/logout/link``."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from kiro_crew.dashboard.token_auth_tokens import LegacyFamilyLink, revoke_token_family
+
+    token = link.strip()
+    try:
+        if "token=" in token:
+            token = (parse_qs(urlsplit(token).query).get("token") or [""])[0]
+    except ValueError:
+        return web.json_response(
+            {"error": "not a dashboard link signed by this gateway", "code": "invalid_link"},
+            status=400,
+        )
+    try:
+        revoked = await asyncio.to_thread(revoke_token_family, token)
+    except LegacyFamilyLink:
+        return web.json_response(
+            {
+                "error": "this link was minted before per-link revocation, so its sessions "
+                "cannot be found; run `kirocrew logout` to revoke every session",
+                "code": "legacy_link",
+            },
+            status=400,
+        )
+    except OSError:
+        logger.warning("logout --link failed: could not persist the revocation", exc_info=True)
+        return web.json_response(
+            {
+                "error": "could not persist the link revocation; logout not completed",
+                "code": "revocation_persist_failed",
+            },
+            status=500,
+        )
+    if not revoked:
+        return web.json_response(
+            {"error": "not a dashboard link signed by this gateway", "code": "invalid_link"},
+            status=400,
+        )
+    _sel().log_api_access(
+        caller=request.remote or "unknown",
+        operation="logout",
+        outcome="success",
+        source="cli",
+        resources="link-family-revoked",
+    )
+    return web.json_response({"ok": True, "scope": "link"})
+
+
 async def api_shutdown(request: web.Request) -> web.Response:
     """POST /api/shutdown — gracefully stop the gateway process.
 
@@ -1177,7 +1208,10 @@ async def api_shutdown(request: web.Request) -> web.Response:
     exits the process.
 
     Intended for the desktop app to call before installing an auto-update, so
-    the Squirrel bundle swap never races a live gateway. Requires loopback (or a
+    the Squirrel bundle swap never races a live gateway, and on Quit, when the
+    body carries ``{"user_stop": true}``: that is a stop the user chose, so it
+    writes the user-stop mark first and the next boot ends the kept YOLO and chat
+    trust (``kept_grants``). Requires loopback (or a
     kernel-attested same-user AF_UNIX peer, ``_unix_peer_is_self``, which is how
     ``kirocrew stop``'s owner-verified socket send arrives, with an empty
     ``request.remote``) plus the local secret (same auth as
@@ -1209,13 +1243,28 @@ async def api_shutdown(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid secret"}, status=403)
 
+    # ``{"user_stop": true}`` says the user chose this stop (the desktop Quit), so the
+    # grants this gateway holds end with it (``kept_grants``). Any other body -- the
+    # desktop's stop before an update, the CLI's fallback, which marks the stop itself
+    # -- keeps them, as every exit the user did not choose does.
+    user_stop = False
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        user_stop = isinstance(body, dict) and body.get("user_stop") is True
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="shutdown",
         outcome="success",
         source="local-app",
-        resources="gateway",
+        resources="gateway, user_stop" if user_stop else "gateway",
     )
+    if user_stop:
+        from kiro_crew import kept_grants
+
+        await asyncio.to_thread(kept_grants.mark_user_stop, "desktop")
     logger.info("shutdown requested via /api/shutdown — triggering graceful stop")
 
     # Fire the shutdown only AFTER this 200 has flushed to the client, so the
@@ -1230,9 +1279,11 @@ async def api_app_token(request: web.Request) -> web.Response:
     Apps authenticate by presenting their per-app secret (stored on disk
     at install time) via the ``X-App-Secret`` header.  On success, returns
     an HMAC token with ``app=<name>`` in the payload so downstream
-    middleware can extract the verified app identity.
+    middleware can extract the verified app identity, and ``expires_in``,
+    the seconds a caller can present it before it must exchange again.
     """
     from kiro_crew.dashboard.token_auth import generate_token, validate_app_secret  # noqa: F811
+    from kiro_crew.dashboard.token_auth_tokens import LINK_WINDOW_SECS
     from kiro_crew.sel import sel
 
     app_name = request.match_info["name"]
@@ -1276,7 +1327,10 @@ async def api_app_token(request: web.Request) -> web.Response:
         outcome="granted",
         source="app_auth",
     )
-    return web.json_response({"token": token})
+    # The token authenticates as ``?token=`` until its ``exp`` (the link window) and
+    # as the session cookie until ``session_exp``. Report the shorter, so a caller
+    # renewing by it never presents an expired token on either path.
+    return web.json_response({"token": token, "expires_in": LINK_WINDOW_SECS})
 
 
 # The session sub-agent routes are owner surfaces under their own audit labels;

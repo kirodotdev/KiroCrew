@@ -18,16 +18,17 @@
 //      real WebContents; passing anything else (an IpcMainEvent, say) makes
 //      undo/redo/cut/copy/paste/delete/selectAll throw instead of run.
 //
-// Why this file — and its enforcement partner in `ipc-registrar.js` — is
-// Windows-only, and why Linux/macOS need no parallel gate:
+// Why this file — and its enforcement partner in `ipc-registrar.js` — gates
+// every sender regardless of platform, and why macOS needs no parallel gate:
 //
 //   - The `app-menu:*` IPC channel (which lets a renderer enumerate and invoke
-//     menu items) is Windows-only. It exists to back the React custom titlebar
-//     (`WindowsTitlebarMenu.tsx`, mounted only when `isWinElectron`). On Linux
-//     and macOS the menu is the OS-native menu drawn via
-//     `Menu.setApplicationMenu(...)`; there is NO renderer API that reaches it,
-//     so a remote gateway page loaded in a connection window has no path to
-//     invoke it programmatically.
+//     menu items) backs the React custom titlebar
+//     (`WindowsTitlebarMenu.tsx`), which mounts on every frameless surface:
+//     Windows, and Linux under a CSD Wayland compositor. On macOS, and on a
+//     framed Linux window, the menu is the OS-native menu drawn via
+//     `Menu.setApplicationMenu(...)`; there is NO renderer API that reaches it
+//     there, so a remote gateway page loaded in a connection window has no
+//     path to invoke it programmatically.
 //   - Custom click handlers (reload, toggleDevTools, zoom) resolve their target
 //     WebContents through `focusedDashboardWebContents()` in
 //     `window-lifecycle.js`, which returns the FOCUSED window's own child view
@@ -48,11 +49,12 @@
 // reachable leaf is LOCAL_ONLY-classified in one of them, so there is no
 // separate "remote-safe" allowlist to keep in sync (First Principles Review
 // removed the empty `REMOTE_SAFE_ITEM_IDS` set as speculative surface).
-// The enforcement point is single (the Windows IPC boundary)
-// because that is the only place a remote sender can reach the menu today —
-// if a second renderer-invocable path is ever added (a Linux frameless custom
-// titlebar menu, an in-page menu popup), it plugs into `executeMenuItem` with
-// `senderIsLocal` and inherits these same sets without a duplicate list.
+// The enforcement point is single (the `app-menu:*` IPC boundary)
+// because that is the only place a remote sender can reach the menu — every
+// renderer-invocable path arrives through it. The Windows custom titlebar menu
+// and the Linux frameless one are the same component on two surfaces, so both
+// plug into `executeMenuItem` with `senderIsLocal` and inherit these same sets
+// without a duplicate list.
 
 // Menu items are activated by pointer here, never by an accelerator, so no
 // modifier is held. Shape matches Electron's menu KeyboardEvent.
@@ -171,6 +173,17 @@ const LOCAL_ONLY_ITEM_IDS = new Set([
   // Electron hands the click — the LOCAL user's, not the sender's. Same
   // focus-scoped window-lifecycle shape as `keep-on-top`, fenced by id.
   "window-zoom",
+  // The content text size tiers. Every one calls `setFontSize`, which applies
+  // to EVERY open dashboard window and persists the choice. Every one of those
+  // windows is the LOCAL user's, never the sender's, so a remote sender in an
+  // unfocused connection window could otherwise resize the local user's text
+  // across all of their windows and make the change stick. Same focus-scoped shape as the zoom items above. Listed
+  // as literals like every other entry here, which keeps this module free of
+  // requires; a fourth tier added without a line here fails the drift pin in
+  // test/windows-menu-model.test.js rather than shipping unclassified.
+  "font-size-small",
+  "font-size-medium",
+  "font-size-large",
 ]);
 
 function isLocalOnlyItem(topLevelItem, item) {

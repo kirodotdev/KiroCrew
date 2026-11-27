@@ -215,3 +215,32 @@ def test_the_context_manager_settles_on_every_exit(raises: bool) -> None:
     else:
         asyncio.run(scenario())
         assert sessions.reinjection_armed is False and ctx.settles == [("commit", KEY)]
+
+
+_RESUME = (True, True)
+_FRESH = (True, False)
+_WARM = (False, False)
+
+
+@pytest.mark.parametrize(
+    ("claims", "landed", "rearmed"),
+    [
+        pytest.param([_RESUME], False, True, id="resume-never-landed"),
+        pytest.param([_RESUME], True, False, id="resume-landed"),
+        pytest.param([_RESUME, _WARM], True, True, id="replay-landed-warm-after-resume"),
+        pytest.param([_RESUME, _FRESH], True, False, id="replay-landed-fresh-after-resume"),
+        pytest.param([_WARM], False, False, id="warm-claim-owes-nothing"),
+    ],
+)
+def test_a_slim_resume_that_did_not_land_re_arms(
+    claims: list[tuple[bool, bool]], landed: bool, rearmed: bool
+) -> None:
+    bracket, sessions, _ctx = _bracket(armed=False)
+    for is_new, resumed in claims:
+        bracket.owe_resume(is_new=is_new, resumed=resumed)
+        bracket.take_reinjection()
+    bracket.landed(landed)
+
+    bracket.settle()
+
+    assert sessions.reinjection_armed is rearmed

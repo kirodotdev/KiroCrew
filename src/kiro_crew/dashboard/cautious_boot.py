@@ -182,7 +182,7 @@ async def initialize() -> CautiousBootDecision:
         # Loud on purpose: an operator reading the journal after an incident
         # must see that the gateway noticed the crash AND changed its behavior.
         logger.warning(
-            "🐢 Cautious boot ACTIVE: %s — staggering the startup battery "
+            "Cautious boot ACTIVE: %s — staggering the startup battery "
             "(%.0fs pause between groups). Disable via dashboard.cautious_boot.",
             _decision.reason,
             _decision.delay_secs,

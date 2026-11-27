@@ -18,6 +18,7 @@ from test_kas_allowed_commands import (  # noqa: F401 - _no_profiles is an autou
 from test_tool_call_classification_kas import _kas_builtin_flow
 
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.platform.allowed_commands import MAX_CHAIN_COMMANDS, MAX_COMMAND_LENGTH
 
 
 def _deny_backdoor() -> None:
@@ -116,6 +117,24 @@ def test_an_allow_mode_glob_refuses_a_command_that_cannot_be_split() -> None:
     _allow_git_glob()
     verdict = _judge(_shell("git status > out.txt"), [])
     assert (verdict.action, verdict.tier) == (TOOL_DENY, "governance")
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git status > out.txt", 'git add -A && git commit -m "x"', 'git commit -m "fix: a; b"'],
+)
+def test_an_unsplittable_command_is_refused_in_plain_words(command: str) -> None:
+    """The refusal says why the command could not be checked, not the marker's text."""
+    _allow_git_glob()
+    verdict = _judge(_shell(command), [])
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "governance")
+    assert "could not be split into plain commands" in verdict.reason
+    # A single command is refused for a ``;`` inside its quotes, not only a chain.
+    assert "even inside quotes" in verdict.reason
+    assert f"at most {MAX_CHAIN_COMMANDS} commands" in verdict.reason
+    assert f"at most {MAX_COMMAND_LENGTH} characters" in verdict.reason
+    assert "\x00" not in verdict.reason
+    assert "<governance:" not in verdict.reason
 
 
 def test_an_allow_glob_matching_the_marker_refuses_an_unsplittable_chain() -> None:

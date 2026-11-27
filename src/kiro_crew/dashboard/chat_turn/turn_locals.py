@@ -97,9 +97,12 @@ class _ChatTurn:
     _directive_source_channels: "tuple[str, ...]"
     _directive_owner_origin: "bool"
     _commands_off: "bool"
+    _expansions_off: "bool"
     _recovery_echo_owed: "bool"
     _card_origin: "bool"
     _prompt_on_channel: "bool"
+    _mirror_reply_only: "bool"
+    _slack_voice: "tuple[str, str, bool] | None"
     _turn_actor: "str"
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
@@ -157,6 +160,12 @@ class _ChatTurn:
     died_notice: "_TurnDiedNote | None"
     _deferred_options_expiry: "bool"
     _deny_override: "DenyOverrideOffer | None"
+    # The web term an organisation's ``ask`` rule names for this request, or ""
+    # (``web_ask_rule.needs_person``); set with ``_deny_override``.
+    _web_ask: "str"
+    # No auto-approve answers this request: a card's turn, a held Bot limit or an
+    # organisation's web ``ask``; set with ``_web_ask``.
+    _no_auto_approve: "bool"
     _dir_consumed_out: "dict[str, str]"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"
@@ -199,12 +208,22 @@ class _ChatTurn:
     _mirror_chan: "str | None"
     _mirror_post_ts: "str | None"
     _mirror_stream_ts: "str"
+    # ``messages_noted()`` count when the mirror's task stream was opened; None with none open.
+    _mirror_stream_messages_noted: "int | None"
     _mirror_task_counter: "int"
     _mirror_thread: "str | None"
     _mirror_stream_tried: "bool"
     _mirror_thinking_ts: "str"
     _mirror_echo_posted: "bool"
+    _mirror_owner_told: "bool"
     _msg: "str"
+    # Whether this turn's native cards are KAS engine sub-agents (``dashboard.engine_subagent_cards``);
+    # ``None`` until the turn's first roster reads it.
+    _engine_children: "bool | None"
+    # The task each engine dispatch named, by its call id, for its approval card.
+    _engine_dispatch_tasks: "dict[str, str]"
+    # The opaque key this turn's engine cards carry (``engine_subagent_cards.engine_turn_key``).
+    _engine_turn_key: "str"
     _native_card_output: "dict[str, list[str]]"
     _native_card_output_len: "dict[str, int]"
     _native_child_tc: "set[str]"
@@ -221,6 +240,9 @@ class _ChatTurn:
     _pending_tool_ids: "dict[str, PostToolIdentity]"
     _pending_tools: "dict[str, str]"
     _person_steered_turn: "bool"
+    # This attempt ran its UserPromptSubmit fire (``turn_dispatch_gates``). Set in
+    # __init__ so a turn that dies before the fire reads False.
+    _prompt_hooks_fired: "bool"
     # The permission request being decided had its PreToolUse hooks fired by the
     # gate and they passed; reset at the start of each request's decision.
     _pre_tool_hooks_fired: "bool"
@@ -233,6 +255,9 @@ class _ChatTurn:
     _refusal_notices: "list[str]"
     _refusal_notices_settled: "int"
     _refusal_reasons: "list[tuple[str, str]]"
+    # The open segment a refusal hop dropped (``session_events._on_model_fallback``):
+    # its text and the slot's raw copy, until a model writes text after the hop.
+    _refused_segment: "tuple[str, str | None, Any, dict[str, str]] | None"
     _repeat_loop: "RepeatLoopTracker"
     _replay_accepted_this_turn: "bool"
     _replay_admitted_incarnation: "object"
@@ -255,6 +280,7 @@ class _ChatTurn:
     _undelivered_watch: "Any"
     _session_stop_gen_at_entry: "int"
     _shell_tool_calls: "set[str]"
+    _slim_resume_pending: "bool"
     _span_base_len: "int"
     _span_probe: "str"
     _prompt_segments: "tuple[Any, ...]"
@@ -288,6 +314,7 @@ class _ChatTurn:
     _ttft_visible: "_FirstVisibleClock"
     _turn_billed: "bool"
     _turn_cache_rewrite: "bool"
+    _turn_cache_likely: "bool"
     _turn_boundary_set: "bool"
     _turn_cost_usd: "float"
     _turn_credits: "float"
@@ -300,6 +327,7 @@ class _ChatTurn:
     _turn_lands: "bool"
     _turn_model: "str"
     _turn_msg_boundary: "int"
+    _turn_native_activity: "bool"
     _turn_priority: "StartPriority"
     _turn_project: "str"
     _turn_refusal: "RefusalInfo | None"
@@ -387,9 +415,12 @@ class _ChatTurn:
         _directive_owner_origin: "bool",
         _directive_source_channels: "tuple[str, ...]" = (),
         _commands_off: "bool",
+        _expansions_off: "bool",
         _recovery_echo_owed: "bool",
         _card_origin: "bool",
         _prompt_on_channel: "bool" = False,
+        _mirror_reply_only: "bool" = False,
+        _slack_voice: "tuple[str, str, bool] | None" = None,
         _turn_actor: "str",
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
@@ -426,9 +457,12 @@ class _ChatTurn:
         self._directive_source_channels = tuple(_directive_source_channels)
         self._directive_owner_origin = _directive_owner_origin
         self._commands_off = _commands_off
+        self._expansions_off = _expansions_off
         self._recovery_echo_owed = _recovery_echo_owed
         self._card_origin = _card_origin
         self._prompt_on_channel = _prompt_on_channel
+        self._mirror_reply_only = _mirror_reply_only
+        self._slack_voice = _slack_voice
         self._turn_actor = _turn_actor
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed
@@ -438,6 +472,7 @@ class _ChatTurn:
         self._agent_started = _agent_started
         self._agent_turn_stream = None
         self._agent_cancel_owed = False
+        self._prompt_hooks_fired = False
         self._agent_cancel_event = None
         # No admission reservation until the context-builder branch opens one.
         self._admission_slot = None
@@ -451,6 +486,7 @@ class _ChatTurn:
         # alternation placeholder, with each one's ``released`` flag: dropped or
         # replayed by ``stream_chunks._settle_echo_hold`` at the segment's end.
         self._echo_held = []
+        self._refused_segment = None
 
     @property
     def assistant_text(self) -> str:

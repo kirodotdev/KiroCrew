@@ -599,6 +599,10 @@ def _run_installer(
             # Always set, so an ambient value cannot reach a run that did not
             # ask for a forced failure.
             "FAKE_CURL_FORCE_EXIT": curl_exit or "",
+            # These runs prove the manifest and wheel checks; the fake pip leaves
+            # no kirocrew to run `kas install`, which a first install now fails on
+            # (the engine guarantee; test_installer_kas_default.py).
+            "KIROCREW_INSTALL_KAS": "0",
         }
     )
     result = run_bounded(["sh", str(script), "--cdn", CDN_BASE, *args], env, cwd=str(root))
@@ -1518,14 +1522,17 @@ def test_installer_fetches_authenticated_urls_without_redirects() -> None:
     fetches = [
         line.strip()
         for line in source.splitlines()
-        if line.strip().startswith("curl ") and '"$' in line
+        if line.strip().removeprefix("if ").startswith("curl ") and '"$' in line
     ]
 
-    assert len(fetches) == 2
+    # The channel manifest, the platform manifest and the wheel.
+    assert len(fetches) == 3
     assert all("--proto '=https'" in line for line in fetches)
     assert all(re.search(r"(?:^|\s)-[^\s]*L", line) is None for line in fetches)
     manifest_fetch = next(line for line in fetches if '"$MANIFEST_URL"' in line)
     assert "--max-filesize 65536" in manifest_fetch
+    platform_fetch = next(line for line in fetches if "latest-cli-$WHEEL_TAG.json" in line)
+    assert "--max-filesize 65536" in platform_fetch
 
 
 # One contract, two verifiers.

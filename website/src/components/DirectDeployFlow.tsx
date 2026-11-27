@@ -63,7 +63,8 @@ export default function DirectDeployFlow({
             }}>
               <Rocket size={11} /> {i18nT('components.directDeploy.deploy_as_permanent')}
             </Btn>
-            <Btn onClick={reset}>{i18nT('components.publishHub.cancel')}</Btn>
+            {/* The stock Btn is transparent, so on the warn tint it has no edge until hovered. */}
+            <Btn onClick={reset} className="border-border-strong bg-bg-elevated">{i18nT('components.publishHub.cancel')}</Btn>
           </div>
           <ErrorDetails details={phase.refusal.details} remediation={phase.refusal.remediation} />
         </div>
@@ -100,7 +101,8 @@ export default function DirectDeployFlow({
               <div className="text-[11px] font-medium text-warn">
                 {i18nT('components.publishHub.credential_security_findings_cannot_be_overridde')}
               </div>
-              <div><Btn onClick={reset}>{i18nT('components.publishHub.cancel')}</Btn></div>
+              {/* The stock Btn is transparent, so on the warn tint it has no edge until hovered. */}
+              <div><Btn onClick={reset} className="border-border-strong bg-bg-elevated">{i18nT('components.publishHub.cancel')}</Btn></div>
             </>
           ) : (
             <div className="flex gap-2">
@@ -111,14 +113,15 @@ export default function DirectDeployFlow({
                   different questions, and clearing the first does not answer the
                   second. `overrideScan` rides along so the confirm that follows
                   the modal carries it. */}
-              <Btn danger onClick={() => {
+              {/* The stock Btn is transparent, so on the warn tint it has no edge until hovered. */}
+              <Btn danger className="border-border-strong bg-bg-elevated" onClick={() => {
                 const p = phase.preview
                   ?? { content_digest: '', profile: '', region: '', bytes: 0, scan: '', site_id: slug }
                 flow.setPhase({ kind: 'ack', preview: p, overrideScan: true })
               }}>
                 {i18nT('pages.artifactDeployPage.deploy_anyway')}
               </Btn>
-              <Btn onClick={reset}>{i18nT('components.publishHub.cancel')}</Btn>
+              <Btn onClick={reset} className="border-border-strong bg-bg-elevated">{i18nT('components.publishHub.cancel')}</Btn>
             </div>
           )}
         </div>

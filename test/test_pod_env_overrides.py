@@ -159,7 +159,11 @@ def test_write_env_file_refuses_env_line_injection(
     cfg = PodConfig.load()
     values = {"SEED": f"/seed{separator}APPROVAL=yolo"}
     if existing:
-        monkeypatch.setattr(rt, "read_env_file", lambda cfg, name: values.copy())
+        # The merge reads its base strictly (``_read_env_bytes_for_write``) and
+        # decodes it with ``_decode_env_file``; stand in for a file whose stored
+        # value already carries the break.
+        monkeypatch.setattr(rt, "_read_env_bytes_for_write", lambda path: b"stored")
+        monkeypatch.setattr(rt, "_decode_env_file", lambda path, raw: values.copy())
     with pytest.raises(rt.PodError, match="must be single-line"):
         rt.write_env_file(cfg, "x", {} if existing else values)
     assert not cfg.env_file("x").exists()

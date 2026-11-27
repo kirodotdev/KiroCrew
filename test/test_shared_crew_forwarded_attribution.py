@@ -121,20 +121,27 @@ async def test_the_post_start_probe_fills_both_rows(monkeypatch):
 async def test_the_maintenance_starter_kicks_the_host_probe(monkeypatch):
     from aiohttp import web
 
-    from kiro_crew.shared_crew import host_power, lifecycle
+    from kiro_crew.shared_crew import host_power, lifecycle, owner
 
     ran: list[bool] = []
+    warmed: list[bool] = []
 
     async def probe() -> None:
         ran.append(True)
 
+    async def warm() -> None:
+        warmed.append(True)
+
     monkeypatch.setattr(host_power, "probe_after_start", probe)
+    monkeypatch.setattr(owner, "warm_login_email", warm)
     start = lifecycle.install_lifecycle(web.Application())
     start()
     start()
     for _ in range(5):
         await asyncio.sleep(0)
     assert ran == [True]
+    # The owner's label source is read once, after the bind, beside the probe.
+    assert warmed == [True]
 
 
 def test_a_failed_source_still_wins_over_the_gap_reason():

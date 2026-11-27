@@ -4,8 +4,8 @@ status: superseded
 kind: decision
 author: junjiequ (incident owner; drafted with Kiro Crew)
 created: 2026-09-26
-last-audited: 2026-10-02
-audited-at: 6916ba17f
+last-audited: 2026-11-20
+audited-at: fc89562d69
 revision: 1
 doc-pr: null
 implementation-prs: [13992]
@@ -32,7 +32,7 @@ lifecycle defect (the ordinary chat-turn ceiling cancelled `_run_chat` without
 first sending native `session/cancel`); it was closed as not planned on
 2026-10-04, and since [#18417](https://github.com/kirodotdev/KiroCrew/pull/18417)
 `_bounded_turn` in `src/kiro_crew/dashboard/turn_dispatch.py` sends the native
-cancel before it cancels the Python task (checked at `1d08e941b3`). That fix did
+cancel before it cancels the Python task (checked at `fc89562d69`). That fix did
 not restore the retired Autopilot mode. The
 proposal below is retained as historical context, not as current direction.
 

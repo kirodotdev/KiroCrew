@@ -83,7 +83,9 @@ def seed_skill(root: Path, name: str, *, always=False, body="Synthetic procedure
 
 class TestDefaultMemory:
     def test_fresh_ordinary_context_keeps_preferences_and_bounded_activity(self, rig):
-        builder, memory, _, _, _ = rig
+        builder, memory, _, _, cfg = rig
+        # The relevance rule would drop the unrelated projects section; this pins its cap.
+        cfg.memory.relevance_rule = "off"
         memory.write_preferences("# Preferences\nAlways preserve approved safety controls.\n")
         memory.write_projects("# Payment migration\n" + "Details stay on demand.\n" * 100)
         text, _ = builder.build_message("Fix today's task", True, session_key="dashboard:synthetic")

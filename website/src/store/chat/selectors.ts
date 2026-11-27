@@ -64,6 +64,13 @@ export const selectSlotRunEpoch = (state: RootState, slot: string): number =>
  *  screen (`pendingTurnSlot`) or not (its run entry's `pendingTurn`). */
 export const selectPendingTurn = (state: RootState, slot: string): boolean =>
   state.chat.pendingTurnSlot === slot || !!state.chat.slotRun?.[safeKey(slot)]?.pendingTurn
+/** Whether the chat page's transcript for `slot`, the active chat, is its
+ *  loaded page: no switch to it is in flight and its last open did not fail.
+ *  A failed open leaves an empty pane that a retry's page fills later, and
+ *  reads loaded once a live row reaches that pane first. */
+export const selectPageLoaded = (state: RootState, slot: string): boolean =>
+  !state.chat.slotLoading && state.chat.slotSwitchTarget !== slot &&
+  (state.chat.slotOpenFailed !== slot || state.chat.messages.length > 0)
 
 const EMPTY_TOOLLOG: ToolActivity[] = []
 /** Per-slot tool log, falling back to the global active mirror. */
@@ -90,6 +97,13 @@ export const selectSlotPendingApproval = (state: RootState, slot: string | null)
   return null
 }
 
+/** Whether `slot`'s own turn is running, sub-agents aside. A composer send
+ *  while only sub-agents run still starts a turn (the gateway exempts it from
+ *  their hold), so this, not `selectComposerBusy`, says whether Stop may cancel
+ *  it. */
+export const selectSlotTurnRunning = (state: RootState, slot: string): boolean =>
+  selectSlotStreamState(state, slot) !== 'idle' || (slot === state.chat.activeSlot && state.chat.slotRunning)
+
 /**
  * Single source of truth for "is this slot's composer busy" — the signal that
  * queues the next message (busy affordance) and skips the optimistic user
@@ -104,8 +118,7 @@ export const selectSlotPendingApproval = (state: RootState, slot: string | null)
  */
 export const selectComposerBusy = (state: RootState, slot: string | null): boolean => {
   if (!slot) return state.chat.slotRunning
-  if (selectSlotStreamState(state, slot) !== 'idle') return true
-  if (slot === state.chat.activeSlot && state.chat.slotRunning) return true
+  if (selectSlotTurnRunning(state, slot)) return true
   if (selectSlotSubagentsActive(state, slot)) return true
   const dashSlot = slotRowByKey(state.dashboard.slots, slot)
   return !!dashSlot?.subagents_running
@@ -135,6 +148,7 @@ export const selectProjectChipLocked = (state: RootState, slot: string | null): 
 const TURN_INJECT_DISPATCHED: Readonly<Record<InjectKind, boolean>> = {
   cron: true,
   mcp_app: true,
+  resource: true,
   recovery: true,
   synthesis: true,
   user_replay: true,

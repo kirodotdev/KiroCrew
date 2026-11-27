@@ -343,6 +343,44 @@ class TestPullRequests:
         assert _kinds(uo.outcome_events([row])) == ["pr"]
 
 
+MR_URL = "https://gitlab.com/acme/widgets/-/merge_requests/9"
+
+
+class TestProgramSpellings:
+    """A program is named the way Windows runs it: ``git.exe``, ``Git`` and a full path are git."""
+
+    @pytest.mark.parametrize(
+        "command, output, kind",
+        [
+            ("/usr/bin/git commit -m x", COMMIT_OUT, "commit"),
+            ("git.exe commit -m x", COMMIT_OUT, "commit"),
+            ("Git commit -m x", COMMIT_OUT, "commit"),
+            ("GIT.EXE commit -m x", COMMIT_OUT, "commit"),
+            ('"C:\\Program Files\\Git\\cmd\\git.exe" commit -m x', COMMIT_OUT, "commit"),
+            ("& 'C:\\Program Files\\Git\\cmd\\git.exe' commit -m x", COMMIT_OUT, "commit"),
+            ('"C:/Program Files/Git/cmd/git.exe" commit -m x', COMMIT_OUT, "commit"),
+            ("gh.exe pr create --fill", PR_URL + "\n", "pr"),
+            ('"C:\\Program Files\\GitHub CLI\\gh.exe" pr create --fill', PR_URL + "\n", "pr"),
+            ("& 'C:\\Program Files\\GitHub CLI\\gh.exe' pr create --fill", PR_URL + "\n", "pr"),
+            ("glab.exe mr create --fill", MR_URL + "\n", "pr"),
+        ],
+    )
+    def test_a_windows_spelling_of_the_program_counts(self, command, output, kind):
+        assert _kinds(uo.outcome_events([_tool(command, output)])) == [kind]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "legit commit -m x",
+            "git.exe commit --amend -m x",
+            "Git commit --dry-run -m x",
+            'GIT.EXE commit -m "a long subject ...',
+        ],
+    )
+    def test_what_git_would_not_count_its_windows_spelling_does_not_count(self, command):
+        assert uo.outcome_events([_tool(command, COMMIT_OUT)]) == ()
+
+
 def _fold(events, *, start=0.0, end=math.inf, credits=12.0, merged_of=None):
     return uo.fold_outcome(events, start=start, end=end, credits=credits, merged_of=merged_of)
 

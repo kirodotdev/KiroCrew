@@ -11,6 +11,7 @@ import {
   ROW_CSS_OPEN,
 } from './fileChangeChipsCss'
 import ErrorNotice from './ErrorNotice'
+import TruncatedText from './TruncatedText'
 import { countLines } from '../utils/diffLineCounts'
 import { normalizeWindowsPath } from '../utils/fileTokens'
 import { useDiffSplit } from '../hooks/useDiffSplit'
@@ -302,7 +303,7 @@ function CollapsedRowHeader({ fc, added, removed, isArtifact, onFileOpen, onTogg
           {name}
         </button>
       ) : (
-        <span className="min-w-0 truncate" title={fc.path} data-fcc-filename>{name}</span>
+        <TruncatedText full={fc.path} className="min-w-0" data-fcc-filename>{name}</TruncatedText>
       )}
       <RowMetadata added={added} removed={removed} isArtifact={isArtifact} />
       {/* `min-w-[8ch]` replaces flex's `min-width:auto`, so without `shrink-0`
@@ -329,7 +330,7 @@ function TruncatedRow({ fc, isArtifact, onFileOpen }: {
         {onFileOpen ? (
           <button type="button" data-fcc-filename className="min-w-0 truncate text-left text-muted hover:text-accent cursor-pointer bg-transparent border-none p-0 font-mono text-[12px]" onClick={() => onFileOpen(fc.path)} title={fc.path} aria-label={i18nT('components.fileChangeChips.open_in_side_panel', { path: fc.path })}>{name}</button>
         ) : (
-          <span className="min-w-0 truncate" title={fc.path} data-fcc-filename>{name}</span>
+          <TruncatedText full={fc.path} className="min-w-0" data-fcc-filename>{name}</TruncatedText>
         )}
         {isArtifact && <span data-fcc-artifact-badge className="shrink-0 text-[10px] leading-none px-1.5 py-0.5 rounded-full border border-border text-muted font-medium">{i18nT('components.fileChangeChips.artifact')}</span>}
         <span className="ml-auto shrink-0">{fc.content_omitted ? <DemotedTag fc={fc} /> : <TruncatedNotice fc={fc} />}</span>
@@ -612,7 +613,7 @@ function ExpandedList({ fileChanges, omittedFiles, onFileOpen, artifactPaths, di
           the card's overflow-hidden; min-h keeps the desktop render identical. */}
       <div className="flex flex-wrap items-center gap-2 px-[10px] py-1.5 min-h-[36px] bg-[color-mix(in_srgb,var(--bg-elevated)_50%,var(--bg))] border-b border-border font-mono text-[12px] leading-[18px] text-muted">
         <FileDiff size={14} className="text-muted shrink-0" />
-        <span className="font-medium">{i18nT('components.fileChangeChips.file', { count: n })} {i18nT('components.fileChangeChips.changed')}</span>
+        <span className="font-medium">{i18nT('components.fileChangeChips.files_changed', { count: n })}</span>
         {!hasTruncatedSnapshot && (totalAdded > 0 || totalRemoved > 0) && (
           <>
             <span className="text-muted/50" aria-hidden="true">·</span>

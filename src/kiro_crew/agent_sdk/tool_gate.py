@@ -506,8 +506,23 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     hosts where a backend can exist. Neither message consults
     ``sandbox_allow_unsandboxed_exec``.
     """
+    reason = sandbox_floor_refusal(backend, mode)
+    if reason:
+        raise ToolGateUnroutable(reason)
+
+
+def sandbox_floor_refusal(backend: str, mode: str) -> str:
+    """The sentence :func:`enforce_sandbox_floor` refuses *backend* with at *mode*, or ``""``.
+
+    The launch's verdict without the launch, for the surfaces that offer or save a
+    harness before any session starts (the Agent Harness rows, the
+    ``agent.acp_backend`` PATCH, a crewmate's harness pin save): reading this one
+    predicate is what keeps the rows from offering, and the saves from storing, a
+    choice every session start then refuses. Blocking -- the mask question can
+    probe for a sandbox backend.
+    """
     if not is_enforced(backend):
-        return
+        return ""
     # Local import for the same reason as the mask builder: this is a leaf that
     # ``acp/client.py`` imports at import time.
     from kiro_crew.sandbox import credential_mask_applies
@@ -518,18 +533,18 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     # and ``sandbox_allow_unsandboxed_exec`` opted in resolves to a non-``off`` tier,
     # passes that guard, and still spawns the adapter with its credential mask dropped.
     if credential_mask_applies(mode):
-        return
+        return ""
     # Platform copy only: the verdict above already decided the session cannot
     # start. Recommending standard/strict is advice that cannot succeed on native
     # Windows, where Crew has no OS sandbox backend to apply the mask.
     if platform_compat.IS_WINDOWS:
-        raise ToolGateUnroutable(
+        return (
             "{} cannot run on native Windows because Kiro Crew has no supported OS "
             "sandbox backend here to protect credential files; changing agent.sandbox "
             "cannot enable it. Select Kiro CLI in Settings → Agent Harness and start "
             "a new session.".format(label_for(backend))
         )
-    raise ToolGateUnroutable(
+    return (
         "{} routes tool calls through an enforced permission route whose "
         "compensating control is an OS-level credential mask, but this session would "
         "spawn it unsandboxed -- either agent.sandbox is 'off', or no sandbox backend "
@@ -539,6 +554,72 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
         "select this harness, or select a harness whose tool calls reach the gate "
         "directly.".format(label_for(backend))
     )
+
+
+#: The ``agent.harness_sandbox`` values that raise a tier, in ``agent.sandbox``'s own
+#: words. ``off`` and an absent entry mean no floor.
+HARNESS_SANDBOX_FLOORS = ("auto", "strict")
+#: (harness, value) pairs already warned about, so a bad entry is logged once, not per spawn.
+_FLOOR_WARNED: set[tuple[str, str]] = set()
+
+
+def harness_sandbox_mode(backend: str, mode: str, floors: object) -> str:
+    """The tier a session of *backend* starts at: *mode* raised to its ``agent.harness_sandbox`` floor.
+
+    The floor only raises: ``auto`` lifts ``off`` to the standard tier and ``strict``
+    lifts ``off`` or ``auto`` to strict, ranked on the governance ``sandbox`` scale as
+    the ``sandbox.min_level`` clamp ranks them (that clamp still applies at the wrap).
+    It is read for an enforced harness only, the ones :func:`enforce_sandbox_floor`
+    refuses unwrapped; any other harness, and an entry holding any other value, keeps
+    *mode*.
+
+    No I/O, so the caller that picks a session's backend resolves its tier ONCE: the
+    credential-mask preflight and the wrap both read that one tier, and the preflight
+    cannot pass on a tier the wrap does not apply.
+    """
+    if not is_enforced(backend) or not isinstance(floors, dict):
+        return mode
+    floor = floors.get(backend)
+    if floor in (None, "", "off"):
+        return mode
+    if floor not in HARNESS_SANDBOX_FLOORS:
+        if (backend, repr(floor)) not in _FLOOR_WARNED:
+            _FLOOR_WARNED.add((backend, repr(floor)))
+            logger.warning(
+                "agent.harness_sandbox.%s = %r is not 'auto', 'strict' or 'off'; no floor applied",
+                backend,
+                floor,
+            )
+        return mode
+    # Local import: this leaf is imported by ``acp/client.py`` at import time.
+    from kiro_crew.sandbox_tiers import _SANDBOX_MODE_ALIASES, _clamp_sandbox_mode_to_floor
+
+    return _clamp_sandbox_mode_to_floor(mode, _SANDBOX_MODE_ALIASES.get(floor, floor))
+
+
+def configured_harness_sandbox_mode(backend: str) -> str:
+    """:func:`harness_sandbox_mode` over the configured ``agent.sandbox`` and floors.
+
+    For the surfaces that judge a harness before any session (the Agent Harness rows,
+    the ``agent.acp_backend`` PATCH, a crewmate's harness pin, first-run setup), so
+    they read the tier the provider factory starts that harness at. Blocking: reads
+    the config. An unreadable config sets no floor.
+    """
+    from kiro_crew import sandbox
+
+    mode = sandbox.configured_sandbox_mode()
+    if not is_enforced(backend):
+        return mode
+    try:
+        # Local import, as ``sandbox_tiers.configured_sandbox_mode`` does: this leaf must
+        # not pull the config loader in at import time.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        floors = KiroCrewConfig.load().agent.harness_sandbox
+    except Exception:
+        logger.warning("Could not read agent.harness_sandbox; no floor for %s", backend)
+        return mode
+    return harness_sandbox_mode(backend, mode, floors)
 
 
 def label_for(backend: str) -> str:
@@ -1214,20 +1295,24 @@ __all__ = [
     "ADAPTER_EXPOSED_CREDENTIAL_LEAVES",
     "ADAPTER_OWN_CREDENTIAL_LEAVES",
     "ENFORCED_ROUTINGS",
+    "HARNESS_SANDBOX_FLOORS",
     "UNENFORCED_CONTROLS",
     "ToolGateUnroutable",
     "Verdict",
     "adapter_expose_files",
     "adapter_hidden_credential_dirs",
+    "configured_harness_sandbox_mode",
     "deepseek_read_only_owner_issue",
     "enforce_runtime_routing",
     "enforce_sandbox_floor",
     "gate_extension_issue",
     "gate_marker_issue",
+    "harness_sandbox_mode",
     "is_enforced",
     "label_for",
     "remediation_for",
     "routing_verdict",
+    "sandbox_floor_refusal",
     "seeded_setting_issue",
     "session_config_issue",
 ]

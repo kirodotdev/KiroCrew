@@ -64,14 +64,21 @@ beforeEach(() => {
   vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
 })
 
+/** Open Add Crew, then its "Connect a machine you have" form. */
+async function openConnectForm(u: ReturnType<typeof userEvent.setup>) {
+  await u.click(await screen.findByRole('button', { name: 'Add Crew' }))
+  await u.click(screen.getByRole('button', { name: /Connect a machine you have/ }))
+}
+
 describe('Remote Crew add form opened by an add link', () => {
-  it('starts from the link, says so, scrolls to it, and adds nothing on its own', async () => {
+  it('opens Add Crew on the add form, starts from the link, says so, scrolls to it, and adds nothing on its own', async () => {
     const scrolled = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {})
     const store = createTestStore()
     store.dispatch(prefillCrewAddForm(link))
     renderWithProviders(<RemoteCrewPanel />, { store })
 
     expect(await screen.findByText(NOTICE)).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Connect a machine you have' })).toBeInTheDocument()
     expect(screen.getByLabelText('Name')).toHaveValue('Dev box')
     expect(screen.getByLabelText('SSH host / alias')).toHaveValue('me@devbox.example.com')
     expect(screen.getByLabelText('Remote port')).toHaveValue('7781')
@@ -99,8 +106,12 @@ describe('Remote Crew add form opened by an add link', () => {
       ssh_host: 'me@devbox.example.com',
       remote_port: 7781,
     })
-    await waitFor(() => expect(screen.queryByText(NOTICE)).toBeNull())
+    // The crew is a row of My Crews now, so the modal closes; opening the form
+    // again starts empty, with no line about the link.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(store.getState().instances.crewForms.addLink).toBeNull()
+    await openConnectForm(u)
+    expect(screen.queryByText(NOTICE)).toBeNull()
     expect(screen.getByLabelText('Name')).toHaveValue('')
     expect(api.connectInstance).not.toHaveBeenCalled()
   })
@@ -150,6 +161,10 @@ describe('Remote Crew add form opened by an add link', () => {
     store.dispatch(prefillCrewAddForm(link))
     store.dispatch(setCrewAddForm({ ...EMPTY_INSTANCE_FORM, name: 'Renamed', sshHost: link.host }))
     renderWithProviders(<RemoteCrewPanel />, { store })
+    // A later visit does not open the modal on its own: the link was taken.
+    await screen.findByRole('button', { name: 'Add Crew' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await openConnectForm(userEvent.setup())
     expect(await screen.findByText(NOTICE)).toBeInTheDocument()
     expect(screen.getByLabelText('Name')).toHaveValue('Renamed')
     expect(scrolled).not.toHaveBeenCalled()
@@ -159,6 +174,10 @@ describe('Remote Crew add form opened by an add link', () => {
   it('renders the add form unchanged when no link was opened', async () => {
     const scrolled = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {})
     renderWithProviders(<RemoteCrewPanel />)
+    expect(await screen.findByRole('button', { name: 'Add Crew' })).toBeInTheDocument()
+    // Only a link opens the add form on its own.
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await openConnectForm(userEvent.setup())
     expect(await screen.findByRole('button', { name: 'Add remote crew' })).toBeInTheDocument()
     expect(screen.queryByText(NOTICE)).toBeNull()
     expect(screen.getByLabelText('Name')).toHaveValue('')

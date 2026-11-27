@@ -4,8 +4,8 @@ status: superseded
 revision: v5
 author: kirocrew agent session, directed by zezhexu
 created: 2026-08-03
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 1280
 implementation-prs: [1295]
 tracking-issues: []

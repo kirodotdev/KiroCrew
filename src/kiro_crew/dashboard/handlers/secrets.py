@@ -32,6 +32,7 @@ from kiro_crew.config.loader import (
     read_env_text,
 )
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.dashboard.source_providers.gerrit import (
@@ -187,10 +188,49 @@ async def _remote_channel_reserved(request: web.Request) -> Callable[[str], bool
     )
 
 
+def _connected_computers_state_names() -> frozenset[str]:
+    """The vault entries connected computers keeps its own state in."""
+    from kiro_crew.connected_computers.devices import DEVICES_ENTRY
+    from kiro_crew.connected_computers.local_store import LOCAL_ENTRY
+
+    return frozenset({LOCAL_ENTRY, DEVICES_ENTRY})
+
+
+def _connected_computers_state_owned(name: str) -> web.Response | None:
+    """Refuse a generic vault write or delete of connected computers' own state.
+
+    ``CONNECTED_COMPUTERS_LOCAL`` holds this computer's grants, its install
+    identity and the queued remote revokes; ``CONNECTED_COMPUTERS_DEVICES`` holds
+    a gateway's enrolled computers. Each is one JSON document written by
+    compare-and-swap (``connected_computers.vault_doc``). Replacing it here would
+    destroy that state, and a value that is not the document makes Off fail
+    before it stops anything, so the routes neither edit nor list these entries.
+    Returns the 409 to send, or ``None`` when the name is not one of them.
+    """
+    if name not in _connected_computers_state_names():
+        return None
+    return web.json_response(
+        {
+            "error": "this entry is connected computers' own state; change it under "
+            "Settings → Connected computers",
+            "code": "managed_by_connected_computers",
+        },
+        status=409,
+    )
+
+
 def _managed_name_owned(name: str) -> web.Response | None:
-    """The 409 for a name a Connections client secret or the WakaTime OAuth tokens own."""
-    owned = _connections_client_secret_owned(name)
-    return owned if owned is not None else _wakatime_oauth_tokens_owned(name)
+    """The 409 for a name a Connections client secret, the WakaTime OAuth tokens or
+    connected computers' state owns."""
+    for owner in (
+        _connections_client_secret_owned,
+        _wakatime_oauth_tokens_owned,
+        _connected_computers_state_owned,
+    ):
+        owned = owner(name)
+        if owned is not None:
+            return owned
+    return None
 
 
 async def _channel_credential_owned(request: web.Request, name: str) -> web.Response | None:
@@ -373,8 +413,10 @@ async def _owner_only(request: web.Request, operation: str) -> web.Response | No
     same predicate the sibling secret-adjacent handlers use
     (`agents.py`, `aws_consent.py`, `messaging.py`), and — matching those
     handlers — write a SEL audit record on the denial so a non-owner attempt on
-    the vault is not silent. Returns the 403 to send, or ``None`` when the
-    caller is the owner.
+    the vault is not silent. Returns the refusal to send, or ``None`` when the
+    caller is the owner. The refusal is the 403 ``owner_only``, except for a
+    session signed in before an owner was configured, which gets the 401
+    ``stale_session_reauth`` every other owner gate gives it.
     """
     if is_owner_dashboard_request(request):
         return None
@@ -392,10 +434,9 @@ async def _owner_only(request: web.Request, operation: str) -> web.Response | No
         )
     except Exception:  # pragma: no cover — audit must never change the outcome
         logger.debug("SEL audit for non-owner %s failed", operation, exc_info=True)
-    return web.json_response(
-        {"error": "owner authorization required", "code": "owner_only"},
-        status=403,
-    )
+    # Deny decision made above; only the response label changes for a signed
+    # pre-owner bootstrap subject (see stale_owner_session_response).
+    return _owner_denial_response(request)
 
 
 def _sanitize_for_log(value: str) -> str:
@@ -491,6 +532,10 @@ async def api_secrets_list(request: web.Request) -> web.Response:
             },
             status=500,
         )
+    # Connected computers' own state is not a secret anyone edits here: it is
+    # neither listed nor writable (_connected_computers_state_owned).
+    hidden = _connected_computers_state_names()
+    listed = [item for item in listed if item["name"] not in hidden]
     names = [str(item["name"]) for item in listed]
     (
         jira_hosts,

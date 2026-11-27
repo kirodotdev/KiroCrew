@@ -15,6 +15,7 @@ which :func:`test_added_line_gate_self_test_passes` runs.
 from __future__ import annotations
 
 import ast
+import glob
 import importlib.util
 import inspect
 import logging
@@ -274,13 +275,13 @@ def test_session_sharing_is_opt_in() -> None:
     # claude-agent-acp runs one process per session (AcpClient), so it cannot
     # host a multiplexed subagent session however the call site is written.
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_SESSION_SHARING
-    # KAS is the case this ratchet exists for: it IS on the shared runtime and its
-    # engine WOULD hold a shared session, so nothing about the transport excludes it
-    # -- only its teardown, ``_kiro/session/delete``, which removes the record a
-    # continuation would load. A capability inferred from "runs on AcpRuntime" would
-    # have granted it.
+    # KAS is a member by deliberate entry, and its own process is still asked
+    # whether it qualifies: an engine that cannot close a session and keep the
+    # record answers no, so the capability is never inferred from "runs on
+    # AcpRuntime" alone.
     assert ACP_BACKEND_KAS in ACP_BACKENDS_ACP_RUNTIME
-    assert ACP_BACKEND_KAS not in ACP_BACKENDS_SESSION_SHARING
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_SESSION_SHARING
+    assert "runtime_hosts_subagents" in source
 
 
 def test_member_capabilities_are_opt_in() -> None:
@@ -327,21 +328,23 @@ def test_the_mate_worker_takes_the_member_rule() -> None:
         source = inspect.getsource(provider.mate_worker_kit_supported.fget)
         assert "in ACP_BACKENDS_MATE_WORKER_KIT" in source
     assert ACP_BACKENDS_MATE_WORKER_KIT == frozenset(
-        {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+        {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI}
     )
     assert ACP_BACKENDS_MATE_WORKER_KIT <= ACP_BACKENDS_MEMBER_CAPABILITIES
     assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MATE_WORKER_KIT
-    # The worker's prompt rides the context block exactly where the host's mirror
-    # projects no spec prompt; KAS's wire spec carries it.
+    # The worker's prompt rides the context block exactly where the host reads no
+    # spec prompt of Crew's: a mirror that withholds it, or a BROKER_ONLY host (pi),
+    # which has no mirror at all. KAS's wire spec carries it.
     from kiro_crew.providers.mirrors.base import Concern, Disposition
-    from kiro_crew.providers.mirrors.registry import mirror_for
+    from kiro_crew.providers.mirrors.registry import ProjectionKind, mirror_for, projection_for
 
     assert ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT <= ACP_BACKENDS_MATE_WORKER_KIT
     for backend in ACP_BACKENDS_MATE_WORKER_KIT:
         mirror = mirror_for(backend)
         withheld = (
-            mirror is not None
-            and mirror.rulings()[Concern.PROMPT].disposition is Disposition.WITHHELD
+            mirror.rulings()[Concern.PROMPT].disposition is Disposition.WITHHELD
+            if mirror is not None
+            else projection_for(backend).kind is ProjectionKind.BROKER_ONLY
         )
         assert withheld is (backend in ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT), backend
     allocation = inspect.getsource(get_or_create)
@@ -1367,38 +1370,14 @@ def test_vocabulary_home_exempts_the_vocabulary_module_and_its_listed_owners_onl
 # good -- a reviewer does that -- but it makes adding a seventh site a deliberate
 # act with a written justification instead of a line nobody notices.
 
-_RUNTIME_PATH_MODULES = (
-    "src/kiro_crew/acp/runtime.py",
-    "src/kiro_crew/acp/runtime_tree_kill.py",
-    "src/kiro_crew/acp/runtime_spawn_launch.py",
-    "src/kiro_crew/acp/runtime_spawn_entry.py",
-    "src/kiro_crew/acp/runtime_session_setup.py",
-    "src/kiro_crew/acp/runtime_session_create.py",
-    "src/kiro_crew/acp/runtime_session_load.py",
-    "src/kiro_crew/acp/runtime_session_registry.py",
-    "src/kiro_crew/acp/runtime_mode_activation.py",
-    "src/kiro_crew/acp/runtime_wire.py",
-    "src/kiro_crew/acp/runtime_liveness.py",
-    "src/kiro_crew/acp/runtime_host_requests.py",
-    "src/kiro_crew/acp/runtime_frame_accounting.py",
-    "src/kiro_crew/acp/runtime_reader_loop.py",
-    "src/kiro_crew/acp/runtime_remote_workspace.py",
-    "src/kiro_crew/acp/runtime_class.py",
-    "src/kiro_crew/acp/session_handle.py",
-    "src/kiro_crew/acp/session_handle_runtime_contract.py",
-    "src/kiro_crew/acp/session_handle_watchdog.py",
-    "src/kiro_crew/acp/session_handle_lifecycle.py",
-    "src/kiro_crew/acp/session_handle_compaction.py",
-    "src/kiro_crew/acp/session_handle_turn.py",
-    "src/kiro_crew/acp/session_handle_dispatch.py",
-    "src/kiro_crew/acp/session_handle_mcp.py",
-    "src/kiro_crew/acp/session_handle_kas.py",
-    "src/kiro_crew/acp/session_handle_native_children.py",
-    "src/kiro_crew/acp/session_handle_model_selection.py",
-    "src/kiro_crew/acp/session_handle_steering.py",
-    "src/kiro_crew/acp/session_handle_permissions.py",
-    "src/kiro_crew/acp/session_handle_updates.py",
-    "src/kiro_crew/acp/session_handle_class.py",
+#: The runtime-path modules: every ``runtime*.py`` and ``session_handle*.py`` file in
+#: ``acp/``, read from the tree so a module split off either one is scanned too.
+_RUNTIME_PATH_MODULES = tuple(
+    sorted(
+        os.path.relpath(path, _REPO_ROOT).replace(os.sep, "/")
+        for pattern in ("runtime*.py", "session_handle*.py")
+        for path in glob.glob(os.path.join(_REPO_ROOT, "src", "kiro_crew", "acp", pattern))
+    )
 )
 
 #: Backend-identity comparisons the runtime path is allowed to make, keyed by
@@ -1407,6 +1386,12 @@ _RUNTIME_PATH_MODULES = (
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     (
+        "src/kiro_crew/acp/session_handle_tool_silence.py",
+        "note_kas_subtask_frame",
+    ): "Positive KAS gate (H5): only KAS streams a native sub-agent on its parent's own "
+    "session, each frame naming the subtask in ``agentSubtaskId``; kiro-cli streams a "
+    "child under the child's own ``sessionId``, so no table holds this answer.",
+    (
         "src/kiro_crew/acp/runtime_session_create.py",
         "create_session",
     ): "the KAS engine that registered a member's agent loads the operator's global "
@@ -1414,6 +1399,20 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "(kas_steering.inheritance_off_notice), so that session records the load as "
     "native; kiro-cli's launch record already carries it, a Kiro Cloud sandbox "
     "registers no agent, and no other harness reads that tree",
+    (
+        "src/kiro_crew/acp/runtime_session_create.py",
+        "_finish_create_session",
+    ): "wording only: the Kiro CLI harness is the one launch that runs kiro-cli's v2 "
+    "engine, which leaves out of its modes a file kiro-cli lists as the v3 agent "
+    "format, so only its mode refusal may name that format "
+    "(``side_readonly_spec.unavailable_mode_explanation``); the refusal itself is "
+    "raised for every harness alike, and no capability table holds an engine version",
+    (
+        "src/kiro_crew/acp/runtime_session_setup.py",
+        "_mirrored_session_mcp",
+    ): "codex-acp folds whitespace in every server name it registers (codex_name, "
+    "codex's own adapter rule), so a Bot chat's record matches its offers under that "
+    "spelling; no other harness renames a server it is handed",
     (
         "src/kiro_crew/acp/runtime_spawn_entry.py",
         "spawn",
@@ -1514,7 +1513,9 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
         "load_session",
     ): "KAS alone must have its custom agents re-attached on resume, and no harness "
     "property means 'this host needs its agent re-sent'. Adding one would cost the "
-    "kiro path an awaited step it does not need (H13).",
+    "kiro path an awaited step it does not need (H13). Its mode refusal also asks "
+    "whether the harness is Kiro CLI's, as ``_finish_create_session`` does, for the "
+    "wording alone.",
     (
         "src/kiro_crew/acp/session_handle_turn.py",
         "command_is_native",
@@ -1876,6 +1877,9 @@ def test_every_runtime_path_identity_test_is_declared():
     """
     import ast
 
+    assert "src/kiro_crew/acp/runtime.py" in _RUNTIME_PATH_MODULES and any(
+        rel.startswith("src/kiro_crew/acp/session_handle") for rel in _RUNTIME_PATH_MODULES
+    ), f"the runtime-path module glob found neither family: {_RUNTIME_PATH_MODULES}"
     undeclared: list[str] = []
     for rel in _RUNTIME_PATH_MODULES:
         path = os.path.join(_REPO_ROOT, rel)

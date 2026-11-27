@@ -10,8 +10,8 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_client``, ``_cloud_governance_scope``,
-``_defer_replay_sid_promotion``, ``_history_replay_needed``, ``_shared_scratch``,
-``kas_memory_mode``, ``kas_memory_new_mode``, ``startup_notice``.
+``_defer_replay_sid_promotion``, ``_history_replay_needed``, ``_resume_refused_sid``,
+``_shared_scratch``, ``kas_memory_mode``, ``kas_memory_new_mode``, ``startup_notice``.
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
 ``background_qos``,
@@ -32,14 +32,11 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import model_scope, turn_timing
+from kiro_crew import turn_timing
 from kiro_crew.acp import kiro_signin_hold
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
-    advertised_model_ids,
-    model_is_unusable,
-    resolve_pin_spelling_on,
     sandbox_init_failure_for_runtime,
 )
 from kiro_crew.acp.kas_cli_settings import default_model_notice, kiro_cli_default_model
@@ -52,28 +49,39 @@ from kiro_crew.acp.mcp_session_report import (
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
+from kiro_crew.acp.session_handle_model_selection import apply_configured_model
+from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored, answer_lost
 from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.session_provider import AcpSessionProvider
-from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed, delegate_launch_failed
-from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKENDS_HARNESS_OWNED_SESSIONS
-from kiro_crew.agent_sdk import host_auth
-from kiro_crew.agent_sdk.backends import (
-    ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS,
-    model_registry_namespace,
+from kiro_crew.acp.session_provider_shared import (
+    RuntimeTreeGone,
+    note_unconfirmed_teardown,
+    teardown_confirmed,
 )
+from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed, delegate_launch_failed
+from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
+    ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
+    ACP_BACKENDS_MEMBER_DISPATCH,
+)
+from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS
 from kiro_crew.agent_sdk.tool_gate import (
     ADAPTER_EXPOSED_CREDENTIAL_LEAVES,
     adapter_expose_files,
     label_for,
 )
 from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
+from kiro_crew.bot_chat_ending_fence import runtime_close_leaves_servers
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.platform_compat import pid_exists
 from kiro_crew.providers.cleanup import _is_safe_path
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.startup_deadline import cancel_outcome
 
 if TYPE_CHECKING:
+    from kiro_crew.acp.transport_errors import AcpError
     from kiro_crew.providers.acp import AcpProvider
 
 #: The provider's own logger, so these records carry the provider's name.
@@ -265,6 +273,39 @@ def _choices_file_may_exist(session_key: str | None = None) -> bool:
     return True
 
 
+def _keep_abandoned_close(
+    provider: AcpProvider, runtime: Any, session_id: str | None, error: object = None
+) -> None:
+    """After a failed start left a shared runtime (``ChatSharePlacement.abandon``),
+    the eviction's own answer decides: a close the host did not confirm stays this
+    provider's unconfirmed close, kept for the retry. On a host whose close leaves
+    the session's servers running (codex) a close answer proves nothing: the close
+    is kept under the runtime's tree until that tree is confirmed dead, as
+    ``shutdown_shared`` keeps it. A Bot chat's start that failed with no session
+    id because the host's answer was lost (*error*, ``answer_lost``: a frame too
+    large, the runtime's death) may have left a session nobody can name: it is
+    kept under the runtime's tree. A refusal, from the host or from this side
+    before anything was sent, left none."""
+    key = provider._owning_session_key()
+    if not session_id:
+        if key and answer_lost(error) and _bot_chat_with_apps(key):
+            note_unconfirmed_teardown(provider, RuntimeTreeGone(runtime), None, session_key=key)
+        return
+    if runtime_close_leaves_servers(runtime):
+        if not teardown_confirmed(runtime, session_id, killed=True):
+            note_unconfirmed_teardown(
+                provider, RuntimeTreeGone(runtime), session_id, session_key=key
+            )
+    elif not teardown_confirmed(runtime, session_id, killed=False):
+        note_unconfirmed_teardown(provider, runtime, session_id, session_key=key)
+
+
+def _bot_chat_with_apps(key: str) -> bool:
+    from kiro_crew.bot_chat_app_tools import session_has_app_mount
+
+    return session_has_app_mount(key)
+
+
 async def _start_kiro_runtime(self: AcpProvider) -> None:
     """Spawn an AcpRuntime + session; time the kiro cold-start split.
 
@@ -293,6 +334,12 @@ async def _start_kiro_runtime(self: AcpProvider) -> None:
     except AcpAuthRequired:
         outcome = "auth_required"
         raise
+    except asyncio.CancelledError as exc:
+        # Stop, a closed chat or a reset is "cancelled", a caller's expired
+        # startup_deadline is "timeout", and a cancel raised while a failure is
+        # handled keeps "error".
+        outcome = cancel_outcome(exc) or outcome
+        raise
     finally:
         # A remote start's stage ends with the start, so a Stop never leaves one stale.
         from kiro_crew.session_environment import clear_start_stage
@@ -317,7 +364,7 @@ def _emit_kiro_startup_metric(
     cold from warm on ``spawned``, so it is emitted unconditionally true.
 
     ``channel`` records WHICH conversation source paid the cost and
-    ``resumed`` which construction path ran (``session/load`` vs
+    ``resumed`` which construction path ran (a restore vs
     ``session/new``) — without them a duration cannot be attributed to a
     surface or a path, which is the whole diagnostic question for TTFT.
     """
@@ -449,8 +496,43 @@ def _kas_engine_refusal(runtime: AcpRuntime, backend: str) -> AcpKasEngineRefuse
     return None
 
 
+def _kas_machine_refusal(
+    runtime: AcpRuntime, exc: BaseException, not_logged_in: bool
+) -> AcpError | None:
+    """A machine-mode start the engine refused, worded as that, or None.
+
+    Under KAS machine mode (``agent_sdk/kas_machine.py``) the engine reads a host
+    credential file, so a sign-in refusal is the host's, not Crew's: personal sign-in
+    cannot repair it, and the readiness latch must not read it as signed out.
+    *not_logged_in* is the runtime's auth latch, as the caller read it.
+    """
+    # Deferred: a module-level AcpError would be one more binding of the name in the
+    # kiro_crew.providers.acp facade family (``_facade_mirror``).
+    from kiro_crew.acp.transport_errors import AcpError
+    from kiro_crew.agent_sdk import kas_machine
+
+    if not kas_machine.runs_machine_auth(runtime):
+        return None
+    text = kas_machine.start_refusal(str(exc), getattr(exc, "code", None))
+    if not text and not not_logged_in:
+        return None
+    return AcpError(
+        text or kas_machine.REFUSED_TEXT,
+        transient=False,
+        user_worded=True,
+    )
+
+
 def _member_session_key(self: AcpProvider) -> str:
-    """This session's key when it is a member DM on a dispatch-capable backend.
+    """This session's key when it mounts session control on a dispatch-capable
+    backend: a member DM, or a Bot worker that conducts
+    (``members.mounts_session_control``). For a worker its thread opened that
+    reads the Bot's switch from the cached config load, the source the worker's
+    spec reads it from (``mate_worker.is_conducting_worker_execution``), so the
+    mount and the spec agree even for a start a save brings at once, ahead of the
+    watcher's copy. Blocking for such a worker: every caller runs it off the loop,
+    and only on a backend in ``ACP_BACKENDS_MEMBER_DISPATCH``; every other backend's
+    caller passes ``""`` without calling it, so the kiro path gains no hop (H13).
 
     Empty for every other session. One resolution rule for BOTH session
     establishment paths (session/new and session/load) — the mount must
@@ -458,14 +540,13 @@ def _member_session_key(self: AcpProvider) -> str:
     thread of its dispatch tools mid-conversation.
     """
     # circular import: members sits above the provider layer.
-    from kiro_crew.acp_backends import ACP_BACKENDS_MEMBER_DISPATCH
-    from kiro_crew.members import is_member_session_key
+    from kiro_crew.members import mounts_session_control
 
     skey = getattr(self._client, "_session_key", None)
     if (
         isinstance(skey, str)
         and self._client.backend in ACP_BACKENDS_MEMBER_DISPATCH
-        and is_member_session_key(skey)
+        and mounts_session_control(skey)
     ):
         return skey
     return ""
@@ -551,7 +632,9 @@ async def _load_session_with_retry(
     * lock never clears        → return ``None`` (caller falls back to a
                                    fresh session + history replay).
     * any OTHER load error     → return ``None`` immediately (retrying a
-                                   genuine failure only wastes time).
+                                   genuine failure only wastes time); an
+                                   ``AcpResumeNotRestored`` also records
+                                   ``resume_sid`` in ``_resume_refused_sid``.
     * runtime dies mid-retry   → return ``None`` (caller's respawn handles it).
     """
 
@@ -602,6 +685,8 @@ async def _load_session_with_retry(
                     resume_sid,
                     exc_info=True,
                 )
+                if isinstance(exc, AcpResumeNotRestored):
+                    self._resume_refused_sid = resume_sid
                 return None
             if not runtime.is_alive():
                 logger.warning(
@@ -894,16 +979,22 @@ async def _start_kiro_runtime_impl(
             kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
             if kas_refusal is not None:
                 raise kas_refusal from exc
+            not_logged_in = runtime.saw_not_logged_in()
+            machine_refusal = _kas_machine_refusal(runtime, exc, not_logged_in)
+            if machine_refusal is not None:
+                raise machine_refusal from exc
             # kiro-cli can exit during initialize when not authenticated —
             # surface an actionable login prompt (parity with AcpClient) rather
             # than a generic runtime-death error.
-            if runtime.saw_not_logged_in():
+            if not_logged_in:
                 # ``self._client`` is still the placeholder AcpClient at this
                 # point, and it carries the backend this runtime was spawned for
                 # (it is the value passed as ``acp_backend`` above) — so the
                 # sign-in advice names the harness that actually failed to
                 # authenticate rather than assuming kiro-cli.
-                signed_out = host_auth.signed_out_message(self._client.backend)
+                signed_out = host_auth.signed_out_message(
+                    self._client.backend, route=runtime.kas_spawn_route
+                )
                 # One synchronous table read, so the kiro path compares and stops (H13).
                 if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                     signed_out = _with_credential_mask_note(runtime, signed_out, exc)
@@ -1055,13 +1146,20 @@ async def _start_kiro_runtime_impl(
                     else None
                 )
                 try:
+                    # Off the loop where a key can exist; every other host stops at the
+                    # membership read, as on create (H13).
+                    member_key = (
+                        await asyncio.to_thread(self._member_session_key)
+                        if self._client.backend in ACP_BACKENDS_MEMBER_DISPATCH
+                        else ""
+                    )
                     handle = await self._load_session_with_retry(
                         runtime,
                         str(session_file) if session_file else "",
                         resume_sid,
                         session_cwd,
                         agent,
-                        member_session_key=self._member_session_key(),
+                        member_session_key=member_key,
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
                         kas_memory_mode=self.kas_memory_mode,
@@ -1168,8 +1266,14 @@ async def _start_kiro_runtime_impl(
                     kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
                     if kas_refusal is not None:
                         raise kas_refusal from exc
-                    if runtime.saw_not_logged_in():
-                        signed_out = host_auth.signed_out_message(self._client.backend)
+                    not_logged_in = runtime.saw_not_logged_in()
+                    machine_refusal = _kas_machine_refusal(runtime, exc, not_logged_in)
+                    if machine_refusal is not None:
+                        raise machine_refusal from exc
+                    if not_logged_in:
+                        signed_out = host_auth.signed_out_message(
+                            self._client.backend, route=runtime.kas_spawn_route
+                        )
                         if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                             signed_out = _with_credential_mask_note(runtime, signed_out, exc)
                         raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
@@ -1185,11 +1289,19 @@ async def _start_kiro_runtime_impl(
                     elif isinstance(remote, PreparedCloudSession) and session_key:
                         _forget_cloud_placement_when_ended(session_key, runtime)
             try:
+                # Read off the loop only on a backend that can mount session control (a
+                # Bot worker's answer reads its Bot's record); every other host reaches
+                # the membership read and stops, with no thread hop (H13).
+                member_key = (
+                    await asyncio.to_thread(self._member_session_key)
+                    if self._client.backend in ACP_BACKENDS_MEMBER_DISPATCH
+                    else ""
+                )
                 handle = await runtime.create_session(
                     cwd=session_cwd,
                     agent=agent or None,
                     harness_options=_harness_session_options(self),
-                    member_session_key=self._member_session_key(),
+                    member_session_key=member_key,
                     # Per session: on a shared chat runtime the process's own
                     # crew identity is the founder's, not this chat's.
                     crew_agent=self._crew_agent,
@@ -1217,8 +1329,14 @@ async def _start_kiro_runtime_impl(
                 kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
                 if kas_refusal is not None:
                     raise kas_refusal from exc
-                if runtime.saw_not_logged_in():
-                    signed_out = host_auth.signed_out_message(self._client.backend)
+                not_logged_in = runtime.saw_not_logged_in()
+                machine_refusal = _kas_machine_refusal(runtime, exc, not_logged_in)
+                if machine_refusal is not None:
+                    raise machine_refusal from exc
+                if not_logged_in:
+                    signed_out = host_auth.signed_out_message(
+                        self._client.backend, route=runtime.kas_spawn_route
+                    )
                     if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                         signed_out = _with_credential_mask_note(runtime, signed_out, exc)
                     raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
@@ -1289,102 +1407,15 @@ async def _start_kiro_runtime_impl(
                     )
                 if not handle.inherited_model:
                     _default_model_notice = default_model_notice(_cli_default)
-        # Apply the configured model override (mirrors AcpClient handshake).
+        # Apply the configured model override: the one function a sub-agent's
+        # session on its parent's runtime also goes through.
         # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
-        if configured_model and configured_model != DEFAULT_MODEL:
-            # Withhold a model this account cannot run. session/new already
-            # reported what is on offer, and this model was NOT picked for
-            # this turn (it comes from the agent spec, the config default, or
-            # a slot value saved before entitlements were known). kiro-cli
-            # ACCEPTS the id here, so the except below never fires; the
-            # service then rejects it mid-prompt with a raw "-32603 ... model
-            # is not available" on every turn. Left unset, the session uses the
-            # backend's default and the turn succeeds.
-            _advertised = advertised_model_ids(handle.available_models)
-            _send_model = configured_model
-            _namespace = model_registry_namespace(self._client.backend)
-            _foreign_scope = not model_scope.pin_applies(
-                configured_model,
-                _namespace,
-                advertised=_advertised,
-            )
-            if _foreign_scope:
-                # Harness ownership and account entitlement are separate
-                # decisions. A foreign pin inherits this harness's default.
-                _send_model = ""
-                logger.info(
-                    "Configured model %s belongs to another harness, not %s; "
-                    "leaving the session on the backend default",
-                    configured_model,
-                    _namespace,
-                )
-            elif model_is_unusable(configured_model, _advertised):
-                # A literal miss can be a stale `<namespace>::` qualifier on a
-                # model the backend fully serves: resolve to the advertised
-                # spelling and send THAT — same fold the display verdict uses,
-                # so chip and wire agree. It can also be a BARE pin on a harness
-                # that advertises only ``<model>[<effort>]`` rows while its
-                # ``model`` option takes the bare id, and the backend-aware
-                # resolver answers that with the model the operator pinned,
-                # leaving the adapter to own the effort. Try the fold FIRST,
-                # against the snapshot we already have: a qualifier-only miss
-                # resolves here with no wire traffic and must not pay a
-                # throwaway session/new on every cold start.
-                _send_model = resolve_pin_spelling_on(
-                    configured_model, _advertised, backend=self._client.backend
-                )
-                if not _send_model:
-                    # The fold found nothing, so this looks like a genuine
-                    # miss — but the snapshot was captured seconds ago at
-                    # session/new, always inside the startup race window where
-                    # an entitlement lookup racing a token refresh answers the
-                    # free-tier default. Withholding an entitled pin on that
-                    # unconfirmed answer drops the user's model for the whole
-                    # session with no retry, so revalidate ONCE against the
-                    # live backend and re-run both checks. A failed probe
-                    # leaves _advertised as it was (fail open: no evidence
-                    # never widens or narrows entitlement).
-                    try:
-                        # force=True: this is a one-shot per cold start
-                        # deciding whether to DROP a configured pin, not a
-                        # burst, so it must earn a fresh probe rather than
-                        # honour a recent no-evidence failure replay.
-                        _advertised = (
-                            advertised_model_ids(await handle.refresh_available_models(force=True))
-                            or _advertised
-                        )
-                    except Exception:
-                        pass
-                    if model_is_unusable(configured_model, _advertised):
-                        _send_model = resolve_pin_spelling_on(
-                            configured_model, _advertised, backend=self._client.backend
-                        )
-                    else:
-                        _send_model = configured_model
-            if not _send_model and not _foreign_scope:
-                logger.warning(
-                    "Configured model %s is not available to this account; "
-                    "leaving the session on the backend default (advertised: %s)",
-                    configured_model,
-                    ", ".join(_advertised),
-                )
-                # The pin never runs: record it where a caller billing or
-                # labelling the turn by the pin reads (model_pin_refused).
-                handle.model_pin_refused = configured_model
-            elif _send_model:
-                _t_model = time.monotonic()
-                try:
-                    await handle.set_model(_send_model)
-                    logger.info("Kiro runtime model set: %s", _send_model)
-                except Exception:
-                    logger.warning(
-                        "Failed to set model %s on kiro runtime session",
-                        _send_model,
-                        exc_info=True,
-                    )
-                finally:
-                    phases["set_model"] = (time.monotonic() - _t_model) * 1000.0
-                    turn_timing.phase("set_model", phases["set_model"])
+        _set_model_ms = await apply_configured_model(
+            handle, configured_model, backend=self._client.backend
+        )
+        if _set_model_ms is not None:
+            phases["set_model"] = _set_model_ms
+            turn_timing.phase("set_model", _set_model_ms)
 
         # A live reload re-sends exactly the policy this SID stated.
         self.kas_memory_mode = handle.kas_memory_mode
@@ -1499,8 +1530,26 @@ async def _start_kiro_runtime_impl(
                 # the lease released, and the runtime killed only when this
                 # start held its last lease.
                 await share.abandon(runtime, getattr(handle, "session_id", None))
+                _keep_abandoned_close(self, runtime, getattr(handle, "session_id", None), setup_exc)
             else:
-                await runtime.kill(expected=True, reason="failed session setup cleanup")
+                killed = False
+                try:
+                    await runtime.kill(expected=True, reason="failed session setup cleanup")
+                    killed = True
+                finally:
+                    # The placeholder ``_client`` this start never replaced launched
+                    # nothing; this runtime did, and the app servers its session
+                    # started may outlive the failure. Unless its whole tree is
+                    # confirmed dead, keep it as this provider's unconfirmed close
+                    # with the runtime as the retry handle, which the provider's
+                    # shutdown then reports (``_settle_shutdown_confirmation``).
+                    if not (killed and teardown_confirmed(runtime, None, killed=True)):
+                        note_unconfirmed_teardown(
+                            self,
+                            runtime,
+                            getattr(handle, "session_id", None),
+                            session_key=self._owning_session_key(),
+                        )
         except Exception:
             logger.debug(
                 "Cleanup kill of runtime after failed session setup failed",

@@ -3,8 +3,8 @@ title: A loop the model arms picks no cycle cap; it ends itself with one final r
 status: implemented
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-11-08
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 33382
 implementation-prs: [33385]
 tracking-issues: [33381]
@@ -154,7 +154,13 @@ A model that arms a loop today also picks when the loop dies.
    `gh pr view` for a PR watch). When the exit condition holds, it sends the user
    ONE final report (what landed, what is left, links), then, in a later step,
    stops the loop. Both conductors use one shared rule and `autonudge_stop`,
-   which both are granted.
+   which both are granted. A `watch="work-ledger"` patrol on a dashboard
+   conductor is the one exception:
+   the conductor sends that report in the turn that closes the last item, and
+   once that turn is over with every item still closed the gateway stops the
+   loop itself (the work-ledger probe's `all-accepted` / `all-closed` terminal),
+   so no turn is spent on `autonudge_stop`. A user's stop while items are open
+   still ends with the report, then `autonudge_stop`.
 6. **System and app callers are unchanged.** Code that arms loops with its own
    bounds, and skills that pass explicit bounds, keep them.
 

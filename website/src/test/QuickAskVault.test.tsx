@@ -9,6 +9,7 @@ import { askUi } from '../pages/chat/quickAsk/askUi'
 import { SHEET_PIN_MIN_PX } from '../pages/chat/quickAsk/QuickAskSheet'
 import { recall, remember } from '../pages/chat/quickAsk/remember'
 import { readQuickAsk } from '../pages/chat/quickAsk/types'
+import { installInitialResizeObserver } from './initialResizeObserver'
 
 /**
  * The sign-in sheet's Secrets vault part: matching logins offered by name and
@@ -207,6 +208,8 @@ describe('quick ask: logins from the vault', () => {
     // jsdom has no layout: give the sheet a scroll box taller than its window.
     const sh = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(600)
     const ch = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(200)
+    // The sheet's edges are first measured on the observer's first delivery.
+    installInitialResizeObserver()
     show(creds({ items: [] }))
     // A short sheet's row scrolls away, so the fade sits on the sheet's bottom edge.
     expect(screen.getByTestId('quick-ask-more-below')).toBeInTheDocument()
@@ -224,6 +227,7 @@ describe('quick ask: logins from the vault', () => {
   ])('a %ipx sheet pins its answer row while typing: %s', (height, pinned) => {
     const ch = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(height)
     const sh = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(height + 300)
+    installInitialResizeObserver()
     show(creds({ items: [] }))
     const row = screen.getByTestId('quick-ask-actions')
     expect(row.hasAttribute('data-pinned')).toBe(pinned)

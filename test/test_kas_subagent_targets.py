@@ -15,10 +15,13 @@ import json
 from pathlib import Path
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
 from kiro_crew.acp.harness.kas import KasHarness
+from kiro_crew.acp.kas_subagent_targets import ENGINE_WIDE_AGENTS, mounts_subagent_tool
+from kiro_crew.agent_files import OWNED_KIRO_AGENT_NAMES
 
 #: Shaped like a kiro-cli or AIM spec: ``allowedTools`` and ``toolsSettings``, no
 #: ``permissions`` block, which KAS's own loader skips as a CLI-only profile.
@@ -152,6 +155,28 @@ async def test_a_pattern_registers_every_agent_it_matches(agents_dir):
             },
             id="write-denied-paths",
         ),
+        pytest.param(
+            # A path-scoped entry KAS has no host deny for: only the gate refuses it.
+            {
+                "tools": ["web_fetch"],
+                "allowedTools": ["web_fetch"],
+                "toolsSettings": {"web_fetch": {"blocked": ["https://example\\.com/private/.*"]}},
+            },
+            id="web-fetch-blocked",
+        ),
+        pytest.param(
+            {
+                "tools": ["web_fetch"],
+                "allowedTools": ["web_fetch"],
+                "toolsSettings": {
+                    "web_fetch": {
+                        "trusted": ["https://example\\.com/docs.*"],
+                        "blocked": ["https://example\\.com/private/.*"],
+                    }
+                },
+            },
+            id="web-fetch-blocked-beside-trusted",
+        ),
     ],
 )
 async def test_a_target_whose_limits_only_the_gate_applies_is_not_registered(agents_dir, limits):
@@ -167,13 +192,125 @@ async def test_a_target_whose_limits_only_the_gate_applies_is_not_registered(age
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored", "registered"),
+    [(True, False), (False, True), (None, True)],
+    ids=["on", "off", "never-set"],
+)
+async def test_a_deny_by_default_target_beside_a_shell_grant_follows_the_preview(
+    agents_dir, monkeypatch, stored, registered
+):
+    # With the `kas_subagents` preview on, the shell in `allowedTools` does not lift
+    # the allowlist, so only the gate holds it and the target cannot be registered.
+    # Off or never set, the grant lifts it and the target carries no limit of the gate's.
+    from test_kas_deny_by_default import _set_switch
+
+    _set_switch(monkeypatch, stored)
+    _write(agents_dir, _delegator("guarded"))
+    guarded = {
+        "tools": ["execute_bash"],
+        "allowedTools": ["execute_bash"],
+        "toolsSettings": {"shell": {"denyByDefault": True, "allowedCommands": ["ls"]}},
+    }
+    _write(agents_dir, {**_SLACK, "name": "guarded", **guarded})
+
+    extras = await _extras()
+
+    assert ("guarded" in _ids(extras)) is registered
+    notice = extras.withheld_credentials_notice or ""
+    assert ("guarded (Kiro Crew applies its shell" in notice) is not registered
+
+
+_REFUSED_DENY = {"capability": "subagent", "match": ["guarded"], "effect": "deny"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_permissions_block", [False, True], ids=["cli-only", "aim-both"])
+async def test_a_refused_target_is_denied_to_the_sub_agent_tool(agents_dir, with_permissions_block):
+    # AIM writes the kiro-cli keys AND a KAS permissions block, and the engine's
+    # own loader runs such a file by name without the target's preToolUse hook.
+    # Unregistered must also mean the sub-agent tool cannot reach it.
+    _write(agents_dir, _delegator("guarded", "slack-agent"))
+    _write(agents_dir, _SLACK)
+    guarded = {
+        **_SLACK,
+        "name": "guarded",
+        "hooks": {"preToolUse": [{"matcher": "*", "command": "exit 2"}]},
+    }
+    if with_permissions_block:
+        guarded["permissions"] = {"rules": [{"capability": "shell", "effect": "deny"}]}
+    _write(agents_dir, guarded)
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", "slack-agent"]
+    parent = extras.custom_agents[0]
+    assert _REFUSED_DENY in parent["permissions"]["rules"]
+    # The registered target stays reachable and is denied nowhere.
+    assert not any(
+        "slack-agent" in (r.get("match") or [])
+        for r in parent["permissions"]["rules"]
+        if r.get("capability") == "subagent" and r.get("effect") == "deny"
+    )
+    assert "start it with spawn_run" in extras.withheld_credentials_notice
+
+
+def test_a_refused_target_deny_is_recorded_in_the_security_event_log(monkeypatch):
+    import types
+
+    import kiro_crew.acp.kas_subagent_targets as targets_mod
+
+    events: list[dict] = []
+    monkeypatch.setattr(
+        targets_mod,
+        "sel",
+        lambda: types.SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+    )
+
+    targets_mod.deny_refused_targets([{"id": "delegator"}], "delegator", ["guarded"])
+
+    [event] = [e for e in events if e["operation"] == "kas_subagent_target_denied"]
+    assert event["source"] == "kas_agent_projection"
+    assert event["resources"] == "sub-agent tool denied guarded for agent delegator"
+
+
+@pytest.mark.asyncio
+async def test_a_name_with_no_spec_adds_no_deny(agents_dir):
+    _write(agents_dir, _delegator("ghost", "slack-*"))
+
+    extras = await _extras()
+
+    rules = extras.custom_agents[0]["permissions"]["rules"]
+    # Beside the list's own rule, only the deny every parent carries for Kiro Crew's own agents.
+    kept = (["*"], sorted(OWNED_KIRO_AGENT_NAMES))
+    assert not any(r.get("capability") == "subagent" and r.get("match") not in kept for r in rules)
+
+
+@pytest.mark.asyncio
+async def test_the_targets_past_the_cap_are_named(agents_dir, monkeypatch):
+    import kiro_crew.acp.kas_subagent_targets as targets_mod
+
+    monkeypatch.setattr(targets_mod, "MAX_SUBAGENT_TARGETS", 1)
+    _write(agents_dir, _delegator("slack-*"))
+    for name in ("slack-agent", "slack-bot"):
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", "slack-agent"]
+    assert "1 more agents its patterns match (slack-bot) (patterns add at most 1" in (
+        extras.withheld_credentials_notice
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_target_whose_deny_record_only_grants_a_fetch_is_registered(agents_dir):
-    # The gate never refuses a fetch by the record's web_fetch lists, it only grants
-    # a trusted one, so the sub-agent's fetch without the record asks instead.
+    # KAS carries the host entry as its own deny, so the record's web_fetch lists
+    # only grant a trusted fetch: without the record the sub-agent's fetch asks.
     fetch = {
         "web_fetch": {
             "trusted": ["https://example\\.com/docs.*"],
-            "blocked": ["https://example\\.com/private.*"],
+            "blocked": ["private\\.example\\.com"],
         }
     }
     _write(agents_dir, _delegator("fetcher"))
@@ -340,6 +477,74 @@ async def test_registration_stops_at_the_cap_and_counts_the_rest(agents_dir):
 
     assert _ids(extras) == ["delegator", *names[:MAX_SUBAGENT_TARGETS]]
     assert "2 more agents" in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_every_agent_the_list_names_outright_is_registered_past_the_cap(agents_dir):
+    from kiro_crew.acp.kas_subagent_targets import MAX_SUBAGENT_TARGETS
+
+    names = [f"helper-{i:02d}" for i in range(MAX_SUBAGENT_TARGETS + 3)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names]
+    assert "more agents" not in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_a_name_after_a_pattern_that_matched_it_is_tried_past_the_cap(agents_dir):
+    from kiro_crew.acp.kas_subagent_targets import MAX_SUBAGENT_TARGETS
+
+    names = [f"helper-{i:02d}" for i in range(MAX_SUBAGENT_TARGETS + 2)]
+    _write(agents_dir, _delegator("helper-*", names[-1]))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names[:MAX_SUBAGENT_TARGETS], names[-1]]
+    assert "1 more agents its patterns match" in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_named_targets_stop_where_the_backend_batch_is_full(agents_dir):
+    from kiro_crew.acp.kas_agents import KAS_MAX_CUSTOM_AGENTS
+
+    # Fewer entries than one rule carries, more than the backend's batch holds.
+    names = [f"helper-{i:02d}" for i in range(KAS_MAX_CUSTOM_AGENTS + 5)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names[: KAS_MAX_CUSTOM_AGENTS - 1]]
+    left_out = names[KAS_MAX_CUSTOM_AGENTS - 1 :]
+    assert (
+        f"{len(left_out)} more agents ({', '.join(left_out)}) (a chat registers at most "
+        f"{KAS_MAX_CUSTOM_AGENTS}"
+    ) in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_a_session_whose_rule_spawns_nothing_registers_no_target(agents_dir):
+    # More distinct entries than one rule carries: the parent's entry denies
+    # every spawn, so a registered target could never be reached.
+    names = [f"helper-{i:02d}" for i in range(65)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert {"capability": "subagent", "effect": "deny"} in (
+        extras.custom_agents[0]["permissions"]["rules"]
+    )
+    assert _ids(extras) == ["delegator"]
+    assert "cannot hand work to" not in extras.withheld_credentials_notice
 
 
 @pytest.fixture
@@ -921,7 +1126,6 @@ async def test_a_switch_back_to_the_delegator_keeps_its_targets_in_the_stale_che
     """KAS keeps the whole batch across a mode switch, so once the session is back
     on the delegator its stale check still counts what its registered target
     auto-approves."""
-    from kiro_crew.acp.session_handle import AcpSessionHandle
     from kiro_crew.acp.types import UPDATE_CURRENT_MODE
     from kiro_crew.agent_sdk import spec_hooks
 
@@ -930,7 +1134,7 @@ async def test_a_switch_back_to_the_delegator_keeps_its_targets_in_the_stale_che
     _write(agents_dir, _FETCHER)
     extras = await _extras()
     assert _ids(extras) == ["delegator", "fetcher"]
-    handle = object.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     KasHarness().record_session_projection(handle, extras.custom_agents, "delegator")
     handle._last_kas_mode_id = "delegator"
     handle._handle_kas_update(UPDATE_CURRENT_MODE, {"currentModeId": "fetcher"})
@@ -1132,6 +1336,96 @@ async def test_with_no_list_the_notice_names_each_agent_the_backend_skips(agents
     assert "kas-ready" not in notice and "plain" not in notice
 
 
+def _subagent_denies(entry: dict) -> list[dict]:
+    rules = (entry.get("permissions") or {}).get("rules") or []
+    return [r for r in rules if r.get("capability") == "subagent" and r.get("effect") == "deny"]
+
+
+#: The engine's bundled agents whose own tools reach past a narrowed parent's.
+_WIDE_DENY = {
+    "capability": "subagent",
+    "match": ["custom-agent-creator", "general-task-execution"],
+    "effect": "deny",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "narrowing",
+    [
+        pytest.param({}, id="built-ins-listed-one-by-one"),
+        pytest.param(
+            {"tools": ["@builtin"], "excludedTools": ["execute_bash"]}, id="built-in-excluded"
+        ),
+    ],
+)
+async def test_with_no_list_a_narrowed_agent_cannot_reach_the_engines_wide_agents(
+    agents_dir, narrowing
+):
+    """The engine runs its bundled ``general-task-execution`` with every tool, so a
+    parent that leaves out a built-in has it, and ``custom-agent-creator``, denied."""
+    _write(agents_dir, _open_delegator(**narrowing))
+
+    extras = await _extras()
+
+    [parent] = extras.custom_agents
+    assert mounts_subagent_tool(parent)
+    assert _WIDE_DENY in _subagent_denies(parent)
+    notice = extras.withheld_credentials_notice
+    assert "general-task-execution (a built-in agent with more built-in tools" in notice
+    assert "custom-agent-creator (" in notice
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "spec_extra",
+    [
+        pytest.param({"tools": ["*"]}, id="every-tool"),
+        pytest.param({"tools": ["@builtin", "@some-server"]}, id="every-built-in"),
+        pytest.param(
+            {"tools": ["*"], "excludedTools": ["@some-server"]}, id="only-a-server-excluded"
+        ),
+    ],
+)
+async def test_with_no_list_an_agent_with_every_built_in_keeps_the_engines_agents(
+    agents_dir, spec_extra
+):
+    _write(agents_dir, _open_delegator(**spec_extra))
+
+    extras = await _extras()
+
+    [parent] = extras.custom_agents
+    # Every parent also carries the deny on Kiro Crew's own agents, which names none
+    # of the engine's bundled agents; the engine's agents stay reachable.
+    own_agents = {
+        "capability": "subagent",
+        "match": sorted(OWNED_KIRO_AGENT_NAMES),
+        "effect": "deny",
+    }
+    rest = [r for r in _subagent_denies(parent) if r != own_agents]
+    assert rest == []
+    assert not any(set(r["match"]) & set(ENGINE_WIDE_AGENTS) for r in _subagent_denies(parent))
+    assert "general-task-execution" not in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_an_agent_that_names_its_sub_agents_is_left_to_its_own_list(agents_dir):
+    """``availableAgents`` already denies every agent it does not name, the engine's
+    own included; naming one keeps it reachable."""
+    _write(agents_dir, _delegator("general-task-execution"))
+
+    extras = await _extras()
+
+    parent = extras.custom_agents[0]
+    assert _WIDE_DENY not in _subagent_denies(parent)
+    assert {
+        "capability": "subagent",
+        "match": ["*"],
+        "exclude": ["general-task-execution"],
+        "effect": "deny",
+    } in _subagent_denies(parent)
+
+
 @pytest.mark.asyncio
 async def test_with_no_list_and_no_sub_agent_tool_nothing_is_named(agents_dir):
     _write(agents_dir, _open_delegator(tools=["fs_read"]))
@@ -1154,3 +1448,61 @@ async def test_a_list_under_the_use_subagent_key_registers_its_target(agents_dir
 
     assert _ids(extras) == ["delegator", "slack-agent"]
     assert "slack-agent" not in extras.withheld_credentials_notice
+
+
+def _held_read_limit(agents_dir: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew import execution_context
+
+    ledger = agents_dir.parent / "mates" / "migrated.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(paths_mod, "kiro_home", lambda: agents_dir.parent)
+    rules = [{"text": "deny reading", "capability": "fs_read"}]
+    ledger.write_text(json.dumps({"held_rules": {"zxc": {"member_id": "m1", "rules": rules}}}))
+    monkeypatch.setattr(
+        execution_context, "read_session_execution", lambda key: SimpleNamespace(member_id="m1")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_bots_session_whose_spec_cannot_be_narrowed_is_refused(agents_dir, monkeypatch):
+    """Refused with a reason, never started with the pre-approvals its held limits cover."""
+    from kiro_crew.acp.session_handle import AcpAgentUnavailable
+    from kiro_crew.agent_sdk import kas_tool_view
+
+    _held_read_limit(agents_dir, monkeypatch)
+    _write(agents_dir, _delegator("slack-agent"))
+    _write(agents_dir, _SLACK)
+
+    def _boom(_block):
+        raise RuntimeError("narrowing failed")
+
+    monkeypatch.setattr(kas_tool_view, "permissions_block_readable", _boom)
+    with pytest.raises(AcpAgentUnavailable, match="held limits"):
+        await KasHarness().session_extras("delegator", work_dir=None, session_key="k")
+
+
+@pytest.mark.asyncio
+async def test_a_target_whose_spec_cannot_be_narrowed_is_left_out_and_the_rest_register(
+    agents_dir, monkeypatch
+):
+    from kiro_crew import mate_held_rules
+
+    _held_read_limit(agents_dir, monkeypatch)
+    other = {**_SLACK, "name": "notes-agent"}
+    _write(agents_dir, _delegator("slack-agent", "notes-agent"))
+    _write(agents_dir, _SLACK)
+    _write(agents_dir, other)
+    real = mate_held_rules.held_child_spec
+
+    def _child(spec, session_key):
+        if spec.get("name") == "slack-agent":
+            raise mate_held_rules.HeldLimitsNotApplied("could not be applied")
+        return real(spec, session_key)
+
+    monkeypatch.setattr(mate_held_rules, "held_child_spec", _child)
+    extras = await KasHarness().session_extras("delegator", work_dir=None, session_key="k")
+
+    assert _ids(extras) == ["delegator", "notes-agent"]
+    assert "slack-agent (its agent file could not be used)" in extras.withheld_credentials_notice

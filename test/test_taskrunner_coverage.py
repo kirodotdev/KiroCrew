@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1710,11 +1711,14 @@ class TestLogTask:
         runner._log_task("hist", run, Task(index=1, title="T", description="d"))
         # The worker thread can be scheduled late on a loaded runner, so wait
         # for its second append under the lost-run bound, not a sleep count.
+        # Read off the loop: on it the transcript read retries without a pause,
+        # so on Windows the worker's open handle fails all three tries at once.
         await async_wait_until(
             lambda: len(_transcript(log, "hist")) >= 2,
             describe=lambda: _transcript(log, "hist"),
+            off_loop=True,
         )
-        assert _transcript(log, "hist") == [
+        assert await asyncio.to_thread(_transcript, log, "hist") == [
             ("user", "[Task: spec.md] Task 1: T"),
             ("assistant", "Task completed."),
         ]
@@ -1778,7 +1782,7 @@ class TestWatchdogLoop:
         assert runner._sessions.reset.await_args.args == ("taskrunner:plan_1:task4",)
         assert notify.sent == [
             (
-                "[demo] 💀 Watchdog: ACP process died",
+                "[demo] Error: Watchdog: ACP process died",
                 "Task 4 sub-agent is not running. Resetting session to trigger recovery.",
             )
         ]
@@ -1870,10 +1874,11 @@ class TestLoadRuns:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         (tmp_path / "runs.json").write_text("{not json", encoding="utf-8")
-        monkeypatch.setattr(Path, "replace", MagicMock(side_effect=OSError("cannot rename")))
+        monkeypatch.setattr(os, "replace", MagicMock(side_effect=OSError("cannot rename")))
         runner = _runner(tmp_path)
         assert runner._runs == {}
         assert (tmp_path / "runs.json").exists()
+        assert runner._snapshot_recovery_incomplete is True
 
     def test_running_run_recovers_as_resumable_without_trust(self, tmp_path: Path) -> None:
         (tmp_path / "runs.json").write_text(json.dumps([_registry_item()]), encoding="utf-8")

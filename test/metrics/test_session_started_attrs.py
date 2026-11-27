@@ -126,3 +126,57 @@ def test_the_compaction_recycle_passes_the_stored_trigger():
     assert len(calls) == 1
     (kw,) = [k for k in calls[0].keywords if k.arg == "trigger"]
     assert isinstance(kw.value, ast.Call) and kw.value.func.id == "started_trigger_of"
+
+
+# -- kirocrew.app.session_started ---------------------------------------------
+
+
+class _AppProvider:
+    def __init__(self, owning_app: object) -> None:
+        self.owning_app = owning_app
+
+
+def _start_counters(key, provider):
+    rec = _Rec()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        asyncio.run(sess.record_session_started(key, provider))
+    return rec.counters
+
+
+@pytest.mark.parametrize(
+    "app,key,expected",
+    [
+        ("weather-app", "subagent:abc", ("weather-app", "1.2.0", "subagent")),
+        ("weather-app", "cron:job1", ("weather-app", "1.2.0", "cron")),
+        ("beta-app", "chat-1-2", ("beta-app", "other", "chat")),
+        ("my-own-app", "chat-1-2", ("private", "private", "chat")),
+    ],
+)
+def test_an_app_owned_session_counts_one_app_session_started(monkeypatch, app, key, expected):
+    from kiro_crew.metrics import feature_usage as fu
+
+    monkeypatch.setattr(fu, "_public_app_ids", {"weather-app": "1.2.0", "beta-app": "1.2.0-beta"})
+    counters = _start_counters(key, _AppProvider(app))
+    (c,) = [c for c in counters if c["name"] == fu.APP_SESSION_STARTED]
+    assert (c["attrs"]["app"], c["attrs"]["entity_version"], c["attrs"]["kind"]) == expected
+    assert c["attrs"]["kind"] in ua.SESSION_KIND_VALUES
+
+
+@pytest.mark.parametrize("provider", [None, _AppProvider(""), _AppProvider(None)])
+def test_a_session_without_owning_app_counts_no_app_session(provider):
+    from kiro_crew.metrics import feature_usage as fu
+
+    names = [c["name"] for c in _start_counters("chat-1-2", provider)]
+    assert sess.SESSION_STARTED_COUNTER in names
+    assert fu.APP_SESSION_STARTED not in names
+
+
+def test_a_raising_app_recorder_leaves_the_session_start_counted():
+    with patch(
+        "kiro_crew.metrics.feature_usage.record_app_session_started",
+        side_effect=RuntimeError("boom"),
+    ):
+        names = [c["name"] for c in _start_counters("chat-1-2", _AppProvider("weather-app"))]
+    assert names == [sess.SESSION_STARTED_COUNTER]
+    with sess._live_lock:
+        assert "chat-1-2" in sess._live_starts

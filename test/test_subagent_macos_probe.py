@@ -10,6 +10,10 @@ from __future__ import annotations
 import ctypes
 
 import pytest
+from admission_gate_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _close_managers,
+    _TestSpawnAdmissionGateHarness,
+)
 
 import kiro_crew.subagent as subagent
 
@@ -64,7 +68,7 @@ def test_deallocates_send_right_on_success(monkeypatch):
 
     result = subagent._macos_vm_reclaimable_pages()
 
-    assert result == 165  # free + inactive + speculative + purgeable
+    assert result == 150  # free + active (0) + inactive; speculative is inside free
     assert fake.dealloc_calls == [(_SENTINEL_TASK, _SENTINEL_PORT)]
 
 
@@ -79,37 +83,71 @@ def test_deallocates_send_right_on_failure(monkeypatch):
     assert fake.dealloc_calls == [(_SENTINEL_TASK, _SENTINEL_PORT)]
 
 
-#: 4 KiB pages: 256 pages == 1 MiB, so the figures below read in MiB.
-_PAGE = 4096
-_PPM = 1024 * 1024 // _PAGE
+#: A loaded 36 GB Apple silicon Mac whose Activity Monitor shows green memory
+#: pressure: large wired and compressed figures, little file cache. ``vm_stat``
+#: shape (16 KiB pages). It is a sample built to that shape, not a capture from
+#: one machine; its sums check out (the page classes add up to under the total,
+#: and anonymous + file-backed == active + inactive + speculative).
+_VM_STAT_GREEN_PRESSURE = """\
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               12000.
+Pages active:                            900000.
+Pages inactive:                          220000.
+Pages speculative:                         3000.
+Pages throttled:                              0.
+Pages wired down:                        330000.
+Pages purgeable:                           4000.
+File-backed pages:                       140000.
+Anonymous pages:                         983000.
+Pages occupied by compressor:            760000.
+"""
+
+_PAGE = 16384
+_TOTAL_PAGES = 36 * 1024**3 // _PAGE
 
 
-class _LoadedMacLibc(_FakeLibc):
-    """A loaded Mac in the measured shape: more inactive pages than
-    file-backed ones, and speculative pages that ``free_count`` already holds."""
+def _mach_fields(vm_stat_text: str) -> dict[str, int]:
+    """The ``host_statistics64`` fields behind a ``vm_stat`` print.
 
-    FIELDS = {
-        "free_count": 1000 * _PPM,
-        "speculative_count": 100 * _PPM,
-        "inactive_count": 900 * _PPM,
-        "external_page_count": 600 * _PPM,
-        "purgeable_count": 50 * _PPM,
+    ``vm_stat`` prints ``free_count - speculative_count`` as "Pages free", so the
+    Mach ``free_count`` is the two lines added back together.
+    """
+    from kiro_crew.dashboard.handlers_system import _parse_vm_stat
+
+    _page, c = _parse_vm_stat(vm_stat_text)
+    return {
+        "free_count": c["Pages free"] + c["Pages speculative"],
+        "active_count": c["Pages active"],
+        "inactive_count": c["Pages inactive"],
+        "speculative_count": c["Pages speculative"],
+        "wire_count": c["Pages wired down"],
+        "purgeable_count": c["Pages purgeable"],
+        "external_page_count": c["File-backed pages"],
+        "internal_page_count": c["Anonymous pages"],
+        "compressor_page_count": c["Pages occupied by compressor"],
     }
+
+
+class _SampleMacLibc(_FakeLibc):
+    def __init__(self, fields: dict[str, int]):
+        super().__init__()
+        self.fields = fields
 
     def _host_statistics64(self, host_port, flavor, stats_ref, count_ref):
         obj = getattr(stats_ref, "_obj", None)
         if obj is not None:
-            for name, value in self.FIELDS.items():
+            for name, value in self.fields.items():
                 setattr(obj, name, value)
         return self.kern_return
 
 
-def _present_as_loaded_mac(monkeypatch) -> None:
+def _present_as_mac(monkeypatch, vm_stat_text: str) -> None:
     from kiro_crew import platform_compat
 
     for name in ("LINUX", "WINDOWS", "MACOS"):
         monkeypatch.setattr(platform_compat, "IS_" + name, name == "MACOS")
-    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: _LoadedMacLibc())
+    fake = _SampleMacLibc(_mach_fields(vm_stat_text))
+    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: fake)
     real_sysconf = getattr(platform_compat.os, "sysconf", None)
 
     def fake_sysconf(name: str) -> int:
@@ -123,29 +161,120 @@ def _present_as_loaded_mac(monkeypatch) -> None:
     monkeypatch.setattr(platform_compat.os, "sysconf", fake_sysconf, raising=False)
 
 
-def test_spawn_floor_reads_host_available_mib_not_the_loose_sum(monkeypatch):
-    """The floor compares against what a new process can really take.
+def test_the_figure_is_what_memory_pressure_reports(monkeypatch):
+    """Wired and compressed pages are the only ones left out.
 
-    Tight (``host_available_mib``): 1000 + 50 + min(inactive, external) 600 = 1650 MiB; the
-    loose sum is 2050 MiB. A 1.75 GB floor between them defers only on the tight figure.
+    ``memory_pressure`` prints the kernel's free percentage, which is
+    (active + inactive + free + speculative) / total on macOS. Here that is
+    1,135,000 of 2,359,296 pages: 48 %, about 17.3 GB.
     """
-    from kiro_crew import platform_compat
+    _present_as_mac(monkeypatch, _VM_STAT_GREEN_PRESSURE)
 
-    _present_as_loaded_mac(monkeypatch)
-    assert platform_compat.host_available_mib() == 1650
-
-    ok, avail = subagent.check_memory_available(min_gb=1.75)
-
-    assert avail == round(1650 / 1024, 2)
-    assert ok is False
+    free_percentage = 100 * 1_135_000 // _TOTAL_PAGES
+    assert free_percentage == 48
+    assert subagent._available_memory_gb() == round(1_135_000 * _PAGE / 1024**3, 2)
 
 
-def test_only_the_floor_moved_the_cap_and_posture_keep_the_loose_sum(monkeypatch):
-    """Pins the residual: the auto cap's memory-sized fallback, the TaskRunner's
-    auto value and the memory posture still read the looser sum on macOS."""
-    _present_as_loaded_mac(monkeypatch)
+def test_a_mac_with_green_pressure_is_not_read_as_low(monkeypatch):
+    """A healthy Mac: big wired and compressed figures, green pressure.
 
-    assert subagent._available_memory_gb() == round(2050 / 1024, 2)
+    Before the fix the floor counted only free, purgeable and file-backed
+    inactive pages (2.43 GB) and the posture added the rest of inactive
+    (3.69 GB), so the default 2 GB floor plus a 1 GB start refused every
+    sub-agent and the posture said memory was tight.
+    """
+    from kiro_crew.resource_status import POSTURE_AMPLE, _classify
+
+    _present_as_mac(monkeypatch, _VM_STAT_GREEN_PRESSURE)
+
+    ok, avail = subagent.check_memory_available(min_gb=3.0)
+    assert ok is True and avail > 17
+    assert _classify(subagent._available_memory_gb(), 4.0, 2.0) == POSTURE_AMPLE
+
+
+def test_the_floor_and_the_posture_read_one_figure(monkeypatch):
+    """One macOS figure, so a start is never refused on a number the posture
+    and the dashboard do not show."""
+    _present_as_mac(monkeypatch, _VM_STAT_GREEN_PRESSURE)
+
+    _ok, floor_gb = subagent.check_memory_available(min_gb=0.0)
+    assert floor_gb == subagent._available_memory_gb()
+
+
+#: The same Mac with most pages wired or compressed. Free + active + inactive
+#: is 175,000 pages, about 2.67 GB; anonymous + file-backed still equals
+#: active + inactive + speculative.
+_VM_STAT_REALLY_FULL = """\
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               12000.
+Pages active:                             60000.
+Pages inactive:                          100000.
+Pages speculative:                         3000.
+Pages throttled:                              0.
+Pages wired down:                        330000.
+Pages purgeable:                           4000.
+File-backed pages:                        60000.
+Anonymous pages:                         103000.
+Pages occupied by compressor:           1600000.
+"""
+
+
+def test_a_mac_that_is_really_full_still_reads_low(monkeypatch):
+    """Most pages wired or compressed: the figure is below the shipped default
+    bar for a first dedicated start (the floor plus the unlearned start price),
+    so the floor refuses it."""
+    from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
+
+    _present_as_mac(monkeypatch, _VM_STAT_REALLY_FULL)
+
+    bar = DEFAULT_SPAWN_MIN_MEMORY_GB + subagent._UNLEARNED_DEDICATED_START_GB
+    ok, avail = subagent.check_memory_available(min_gb=bar)
+    assert avail == round(175_000 * _PAGE / 1024**3, 2)
+    assert ok is False and 0 < avail < bar
+
+
+#: A 16 GiB Mac at WARN pressure with most memory wired (3.73 GB) or in the
+#: compressor (6.06 GB): free + active + inactive is 406,300 pages, about
+#: 6.2 GB. Anonymous + file-backed equals active + inactive + speculative.
+_VM_STAT_16GB_WARN = """\
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               30000.
+Pages active:                            200000.
+Pages inactive:                          174300.
+Pages speculative:                         2000.
+Pages throttled:                              0.
+Pages wired down:                        244450.
+Pages purgeable:                           1000.
+File-backed pages:                       120000.
+Anonymous pages:                         256300.
+Pages occupied by compressor:            397150.
+"""
+
+
+class TestSpawnGateOnA16GbMacAtWarn(_TestSpawnAdmissionGateHarness):
+    """The gate end to end on the Mach reader, with only the platform, the
+    ``host_statistics64`` sample and the kernel pressure level faked."""
+
+    def test_the_first_start_is_admitted_when_nothing_of_ours_runs(self, monkeypatch):
+        """Nothing of ours runs, so no held price comes off the 6.2 GB figure and
+        the pressure hold has no runtime to wait on: the default floor plus the
+        unlearned start price (3 GB) fits."""
+        from kiro_crew import platform_compat
+        from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
+
+        _present_as_mac(monkeypatch, _VM_STAT_16GB_WARN)
+        monkeypatch.setattr(subagent, "session_mcp_roster_gb", lambda: 0.0)
+        monkeypatch.setattr(
+            platform_compat, "memory_pressure_level", lambda: platform_compat.MEMORY_PRESSURE_WARN
+        )
+        figure = subagent._available_memory_gb()
+        assert figure == round(406_300 * _PAGE / 1024**3, 2) == pytest.approx(6.2, abs=0.05)
+        mgr = self._mgr()
+        info, _events, _sel = self._spawn_capturing_queued(
+            mgr, floor_gb=DEFAULT_SPAWN_MIN_MEMORY_GB
+        )
+        assert info is not None and info.queued is False
+        assert info.queued_reason not in ("low_memory", "memory_pressure")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -3,8 +3,8 @@ title: Connection cards and OAuth apps on one page, MCP Servers on the rail, sha
 status: implemented
 author: iamwhatever
 created: 2026-11-10
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 34287
 implementation-prs: [34353, 36241]
 tracking-issues: []

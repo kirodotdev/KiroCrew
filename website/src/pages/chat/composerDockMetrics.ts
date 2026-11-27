@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState, type RefObject } from 'react'
+import { flushSync } from 'react-dom'
 
 /**
  * The composer dock that floats over the bottom of a transcript scroller (the
@@ -62,9 +63,18 @@ export function useComposerDockMetrics(scrollerRef: RefObject<HTMLDivElement | n
       const sc = scrollerRef.current
       setDockGutter(sc ? Math.max(0, sc.offsetWidth - sc.clientWidth) : 0)
     }
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(measure)
+    if (typeof ResizeObserver === 'undefined') { measure(); return }
+    // The first measurement comes from the observer's first delivery, which
+    // runs after the frame's layout and before its paint. Reading
+    // `offsetHeight` here instead would force a layout of the whole page
+    // inside the commit that mounts the dock (opening a session). `flushSync`
+    // commits that first measurement before the paint, so the first painted
+    // frame still carries the right padding.
+    let first = true
+    const ro = new ResizeObserver(() => {
+      if (first) { first = false; flushSync(measure); return }
+      measure()
+    })
     ro.observe(el)
     // The gutter is the scroller's own reserved column, so watch the scroller
     // too: an engine with overlay scrollbars changes that width without the

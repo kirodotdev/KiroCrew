@@ -57,7 +57,7 @@ async def api_slack_pins(request: web.Request) -> web.Response:
     if not isinstance(channel, str):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     channel = channel.strip()
-    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
 
     ts = body.get("ts", "")
@@ -78,8 +78,11 @@ async def api_slack_pins(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=f"channel={channel} action={action}",
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {"error": f"channel {channel} not in tracked channels"}, status=403
+            {"error": untracked_channel_error(channel), "code": "channel_not_tracked"},
+            status=403,
         )
 
     try:
@@ -157,7 +160,7 @@ async def api_slack_reactions(request: web.Request) -> web.Response:
     if not isinstance(channel, str):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     channel = channel.strip()
-    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     ts = body.get("ts", "")
     if not _is_slack_ts(ts):
@@ -182,8 +185,11 @@ async def api_slack_reactions(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=f"channel={channel} action={action}",
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {"error": f"channel {channel} not in tracked channels"}, status=403
+            {"error": untracked_channel_error(channel), "code": "channel_not_tracked"},
+            status=403,
         )
 
     try:
@@ -259,7 +265,7 @@ async def api_slack_profile(request: web.Request) -> web.Response:
     if not user_id:
         return web.json_response({"error": "user required"}, status=400)
     # Validate format first, then redact (#2)
-    if not USER_ID_RE.match(user_id):
+    if not USER_ID_RE.fullmatch(user_id):
         return web.json_response({"error": "invalid user ID format"}, status=400)
     user_id = redact(user_id)
 
@@ -386,7 +392,7 @@ async def api_slack_history(request: web.Request) -> web.Response:
     if (
         not isinstance(channel, str)
         or len(channel) > CHANNEL_MAX_LEN
-        or not CHANNEL_ID_RE.match(channel)
+        or not CHANNEL_ID_RE.fullmatch(channel)
     ):
         return web.json_response(
             {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
@@ -413,8 +419,10 @@ async def api_slack_history(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=resources,
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {"error": f"channel {channel} not in tracked channels", "code": "channel_not_tracked"},
+            {"error": untracked_channel_error(channel), "code": "channel_not_tracked"},
             status=403,
         )
     # The inbound gate's channels policy too: a channel it refuses is read by no one.
@@ -477,15 +485,23 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     Slack app creation without the CLI: the bundled template gets the user's
     alias substituted, and the comment-stripped YAML is URL-encoded into
     Slack's new-app deep link. ``command`` is the slash command that manifest
-    registers. The gateway answers only ``/{slack.command}`` and this endpoint
-    writes no config, so a caller that passes ``?alias=`` gets the value its
-    ``kirocrew config set slack.command`` step needs. With no alias, the
+    registers. The gateway answers it as it is and this endpoint writes no
+    config, so a caller that passes ``?alias=`` saves it as ``slack.command``
+    (applied live, no restart) for later manifest updates to keep it. With no
+    alias, the
     endpoint renders for this install: the alias the saved ``slack.command`` was
     generated from, and that command, so a manifest copied to update an existing
     app keeps its slash command. Serves only the public template — no secrets.
     """
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "slack.manifest.read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew import slack_manifest
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers._update_announce import https_url
     from kiro_crew.slack.features import manifest_features
 
     try:
@@ -521,5 +537,10 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
             "create_url": create_url,
             "command": command or slack_manifest.slash_command(alias),
             "features": [f for f in slack_manifest.FEATURES if f in features],
+            # The setup wizard's link to this organization's own guide: only a
+            # bounded https:// URL (the shared check), and the dashboard checks
+            # again before it renders one.
+            "org_guide_url": https_url(getattr(getattr(cfg, "slack", None), "setup_guide_url", ""))
+            or None,
         }
     )

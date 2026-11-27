@@ -75,8 +75,8 @@ class _Surface:
 
 class TestReceiptText:
     def test_queued_grows_with_the_count(self) -> None:
-        assert receipt_text(["a"]).startswith("Queued (1):")
-        assert receipt_text(["a", "b"]).startswith("Queued (2):")
+        assert receipt_text(["a"]).startswith("⏳ Queued (1):")
+        assert receipt_text(["a", "b"]).startswith("⏳ Queued (2):")
 
     def test_past_the_cap_the_tail_is_summarised_not_dropped(self) -> None:
         texts = [f"m{i}" for i in range(RECEIPT_MAX_ITEMS + 3)]
@@ -1357,7 +1357,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
     def test_the_population_bound_never_releases_a_live_entry(self, caplog) -> None:
         """A live entry's messages are still QUEUED, so its bubble is not the registry's.
 
-        Dropping one strands that bubble on "Queued" and opens a second beside it. Only
+        Dropping one strands that bubble on "⏳ Queued" and opens a second beside it. Only
         terminal entries are candidates, however full the registry is.
         """
 

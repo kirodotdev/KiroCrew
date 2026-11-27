@@ -12,6 +12,7 @@ import { Btn } from './ui'
 import { CopyCommand } from './agentHarness'
 import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
+import { signInSentence } from '../api/signInCommand'
 
 // Shared full-screen chrome for every gate state. This is the SAME container the
 // first-run onboarding chapters use (Import setup / Customize): the identical
@@ -239,7 +240,7 @@ export function SessionSignInRequired() {
       </h1>
       <ErrorNotice
         className="mt-3 max-w-lg text-left"
-        message={i18nT('api.client.session_expired_sign_in_again')}
+        message={signInSentence(i18nT('api.client.session_expired_sign_in_again'))}
         testId="kiro-gate-session-sign-in"
         noHandoffReason="this gate stands between the user and the chat the hand-off would open, and the dashboard sign-in that chat needs is the credential the gateway just refused"
       />

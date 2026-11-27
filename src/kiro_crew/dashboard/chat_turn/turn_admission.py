@@ -9,6 +9,7 @@ import functools
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import turn_timing
+from kiro_crew.agent_sdk.kas_telemetry_notice import deliver as deliver_kas_telemetry_note
 from kiro_crew.config.loader import normalize_agent_model
 from kiro_crew.context import discard_memory_prefetch
 from kiro_crew.dashboard.chat_utils import (
@@ -17,6 +18,14 @@ from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     slot_history_key,
     tighten_live_slot_memory_mode,
+)
+from kiro_crew.dashboard.effort_overlay_mark import (
+    effort_overlay_clear_kwargs,
+    settle_effort_overlay_clear,
+)
+from kiro_crew.dashboard.project_mcp_cards import (
+    offer_cards_for_refused_start,
+    offer_project_mcp_cards,
 )
 from kiro_crew.dashboard.slot_queue_repository import UNREADABLE_SOURCE_CHANNEL
 from kiro_crew.dashboard.state import durable_row_count
@@ -83,6 +92,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.eager_spawn import _clear_eager_spawn_failures
     from kiro_crew.dashboard.chat_turn.mcp_session import (
         _drain_session_init_oauth_requests,
+        _notice_crew_left_out_mcp,
         _notice_unresolved_control_plane,
         _publish_session_mcp_report,
         _watch_session_mcp_report,
@@ -90,6 +100,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.model_fallback import (
         _app_allocation_kwargs,
         _inherited_default_model,
+        _live_session_off_slot_agent,
         _live_session_off_slot_backend,
         _settle_session_model,
         _slot_backend_allocation_kwargs,
@@ -98,6 +109,7 @@ if TYPE_CHECKING:
         _expand_prompt_mention_off_loop,
         _prewarm_startup_query,
     )
+    from kiro_crew.dashboard.chat_turn.prompt_file_notice import _notice_unread_prompt_file
     from kiro_crew.dashboard.chat_turn.recipient import _deliver_linked_slack_message
     from kiro_crew.dashboard.chat_turn.regenerate_swap import rows_before_regenerate_target
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
@@ -273,6 +285,22 @@ def _release_dispatch_lock(turn) -> None:
     if turn._dispatch_lock_held:
         turn._dispatch_lock_held = False
         _dispatch_lock.release()
+
+
+def _is_person_turn(turn: Any) -> bool:
+    """Whether a person typed *turn* here: a channel's message is not one."""
+    return bool(turn._directive_user_origin) and not turn._directive_channel_origin
+
+
+async def _subagents_pending(state: Any, session_key: str) -> bool:
+    """Whether *session_key* has sub-agent work running or queued; an error counts."""
+    from kiro_crew.dashboard.chat_folders import _subagent_work_pending
+
+    subs = getattr(state, "subagents", None)
+    try:
+        return subs is not None and await _subagent_work_pending(subs, session_key)
+    except Exception:  # noqa: BLE001 - fail closed: the session is kept as projected
+        return True
 
 
 async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
@@ -711,6 +739,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             from kiro_crew.dashboard.member_rebind_notice import surface_rebind_notice
 
             await surface_rebind_notice(state, slot, session_key, loaded_cfg, bindings)
+            if bindings.selection_kind == "member":
+                # A chat running a Bot keeps its own harness; it says so once
+                # when the Bot's own chat runs another.
+                from kiro_crew.dashboard.member_harness_notice import surface_harness_notice
+
+                await surface_harness_notice(
+                    state, slot, session_key, loaded_cfg, execution_context
+                )
         elif bindings.selection_kind == "member":
             execution_context = resolve_member_execution(
                 loaded_cfg,
@@ -801,6 +837,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             execution_context = tightened_execution
             turn.execution_context = execution_context
             bindings.execution_context = tightened_execution
+        # The member id is settled: the Bot list reads this turn as that Bot's.
+        from kiro_crew.dashboard import running_bot_turns
+
+        running_bot_turns.begin(turn, execution_context)
         # A crewmate's conductor chat and each of its workers take the
         # crewmate's Profile Permissions before the provider is claimed, so a
         # session restored after a restart (slot trust is in memory only) does
@@ -817,6 +857,20 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             # runs on the worktree, under the dispatch lock it still holds.
             selected_binding = _current_binding(turn)
             turn.selected_binding = selected_binding
+        # A worker whose session this turn starts, or runs for the first time, on
+        # the conducting kit holds no posture looser than its Profile's (never
+        # raised); checked again after the claim, once the start is known. Before the
+        # claim, only a start predicted to mount session control is held, read once
+        # the folder the start runs in is chosen.
+        from kiro_crew.dashboard.crewmate_approval import (
+            predicted_start_mounts,
+            tighten_for_conducting,
+        )
+
+        start_mounts = await predicted_start_mounts(state, slot, loaded_cfg)
+        tighten_for_conducting(
+            state, slot, loaded_cfg, execution_context, start_mounts=start_mounts
+        )
 
     # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
     # self-heal must NOT run the default agent — that generic-substitution is
@@ -912,8 +966,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             )
             arm_model_switch_reset(state, slot)
     # A slot created on a harness whose live session runs another one takes the
-    # same reset, and the claim below starts it on its pick.
+    # same reset, and the claim below starts it on its pick. So does a slot whose
+    # live session runs another agent than this turn resolved, so the chat runs
+    # on the agent it is set to.
     if _live_session_off_slot_backend(state, slot):
+        arm_model_switch_reset(state, slot)
+    if _live_session_off_slot_agent(state, slot, kiro_agent or slot.agent):
         arm_model_switch_reset(state, slot)
     # A model pick the picker took while a turn ran on this session, not yet
     # landed: normally the end of that turn lands it (``_end_turn_tail``), and
@@ -964,6 +1022,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # which decides whether to send it, and the crew log's `session/opened`,
     # which records the choice.
     _requested_model = slot.model or agent_model or ""
+    _overlay_mark = effort_overlay_clear_kwargs(slot)
     _allocation_kwargs: dict[str, Any] = dict(
         agent=kiro_agent or slot.agent or None,
         # Same canonical crew identity as the eager-spawn path — the two
@@ -980,6 +1039,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         channel_id=_provider_channel_id or None,
         reasoning_effort_override=slot.reasoning_effort or None,
         start_priority=_turn_priority,
+        **_overlay_mark,
         **_app_allocation_kwargs(slot),
         **_slot_backend_allocation_kwargs(slot),
     )
@@ -1029,7 +1089,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         if _wait_if_busy
         else not state.sessions.resumable_hint(session_key)
     )
-    if _starts_fresh and not is_slash and not _message_rewritten_before_build(slot, message):
+    if _starts_fresh and not is_slash and not _message_rewritten_before_build(message):
         await _prewarm_startup_query(
             state,
             slot,
@@ -1096,13 +1156,21 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # ``identity_checked``: this turn ran the account check itself above, as
     # the attended caller and before the switch-lock decision, so the claim
     # skips the unattended check the manager runs for every other acquire.
+    # A person's own turn marks its claims, so a ``cron:``-keyed KAS session it
+    # starts projects the folder agent's hooks (``kas_project_hooks.PERSON_TURN``).
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_claim
+    from kiro_crew.agent_sdk.spec_hooks_reproject import reproject_person_turn
+
+    _person_turn = _is_person_turn(turn)
+
     async def _claim_session(wait_if_busy: bool) -> tuple[Any, bool, bool]:
-        return await state.sessions.get_or_create(
-            session_key,
-            wait_if_busy=wait_if_busy,
-            identity_checked=True,
-            **_allocation_kwargs,
-        )
+        with person_turn_claim(_person_turn):
+            return await state.sessions.get_or_create(
+                session_key,
+                wait_if_busy=wait_if_busy,
+                identity_checked=True,
+                **_allocation_kwargs,
+            )
 
     turn_timing.mark("claim_start")
     turn_timing.note(priority=getattr(_turn_priority, "value", _turn_priority))
@@ -1111,7 +1179,17 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             client, is_new, resumed = await _claim_session(_wait_if_busy)
             turn.is_new = is_new
             turn.resumed = resumed
+            # Armed at the claim, before any await a Stop can interrupt: the
+            # claim consumed the one-shot resume, so every later exit owes it.
+            turn._slim_resume_pending = bool(is_new and resumed)
             turn.client = client
+            settle_effort_overlay_clear(slot, _overlay_mark, is_new=is_new, provider=client)
+            if is_new:
+                # A Bot chat that just started on a harness without its app tools
+                # gets its one notice here, where the slot is in hand.
+                from kiro_crew.bot_chat_app_tools import deliver_harness_notice
+
+                await deliver_harness_notice(slot, session_key)
             break
         except SessionBusyError:
             if _wait_if_busy or _claim:
@@ -1119,9 +1197,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                 raise
             _release_dispatch_lock(turn)
             _wait_if_busy = True
-        except BaseException:
+        except BaseException as exc:
             # A start that failed builds nothing: drop the memory read early for it.
             discard_memory_prefetch(slot.workspace or None, memory_store, message)
+            shown = await offer_cards_for_refused_start(state, slot, session_key, exc)
+            if shown is not None:
+                raise shown from exc
             raise
     # Registered: the switch handlers' busy scan sees this session from
     # here on, so the lock has done its job and the turn must not hold it.
@@ -1140,8 +1221,21 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # The pre-claim reset is declined for a session another turn holds, and
     # this claim may have waited for exactly that turn. So the decision is made
     # again on the session this turn now holds, under its lease, before any of
-    # its tools run.
+    # its tools run. A person's turn on a scheduled run's batch is re-projected
+    # for them first, unless that session's sub-agent work still runs.
     try:
+        if _person_turn:
+            client, is_new, resumed = await reproject_person_turn(
+                state.sessions,
+                session_key,
+                kiro_agent or slot.agent or "",
+                (client, turn.is_new, turn.resumed),
+                lambda: _claim_session(True),
+                lambda: _subagents_pending(state, session_key),
+            )
+            turn.is_new = is_new
+            turn.resumed = resumed
+            turn.client = client
         client, is_new, resumed = await reproject_claimed_session(
             state.sessions,
             session_key,
@@ -1151,6 +1245,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         )
         turn.is_new = is_new
         turn.resumed = resumed
+        turn._slim_resume_pending = bool(is_new and resumed)
         turn.client = client
     except BaseException:
         state.sessions.release(session_key)
@@ -1161,7 +1256,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # Held but not yet marked acquired: release it if this await is cancelled, like
     # the reprojection above.
     try:
-        _fallback = await _fallback_turn_project(_turn_project, getattr(client, "cwd", None))
+        _fallback = await _fallback_turn_project(
+            _turn_project,
+            getattr(client, "cwd", None),
+            session_key,
+            _allocation_kwargs.get("backend_override"),
+        )
     except BaseException:
         state.sessions.release(session_key)
         raise
@@ -1373,8 +1473,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn._spec_hooks_cwd = _spec_hooks_cwd
     if is_new:
         _notice_steer_upgrade(state, slot, client)
+        await deliver_kas_telemetry_note(state, client)
         await _notice_seed_declined(state, slot, client)
         await _notice_unresolved_control_plane(state, slot, client)
+        _notice_crew_left_out_mcp(state, slot, client)
+        await _notice_unread_prompt_file(state, slot, client, turn)
+        await offer_project_mcp_cards(
+            state, slot, client, session_key, kiro_agent or slot.agent or ""
+        )
     # A member DM's first turn carries the four-layer member section as
     # session-start context. Record that it is at stake HERE — the moment
     # the session client exists — not at the context build: every early
@@ -1622,6 +1728,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             },
         )
 
+    # The session's start is known now: a Bot's worker whose start took the
+    # conducting kit is held to its Profile here, before the policy below is stored
+    # from its posture, whatever the admission's config predicted.
+    if bindings is not None and loaded_cfg is not None:
+        from kiro_crew.dashboard.crewmate_approval import tighten_for_conducting
+
+        tighten_for_conducting(state, slot, loaded_cfg, turn.execution_context)
+
     # Propagate trust/YOLO to session so subagents inherit auto-approve.
     # A scoped grant is excluded on purpose — see _persistable_session_policy.
     # Assigned unconditionally (not only when granting) so a turn that starts
@@ -1714,7 +1828,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn._is_quick_prompt = _is_quick_prompt
     prompt_expanded = _is_quick_prompt
     turn.prompt_expanded = prompt_expanded
-    if message.startswith("@") and not is_slash and _prompt_depth < 1:
+    if message.startswith("@") and not is_slash and _prompt_depth < 1 and not turn._expansions_off:
         original = message
         # Off the loop, for the same reason the `$skill` expansion in _turn_dispatch_prep is:
         # this resolves and READS files — the project's prompt directory is
@@ -1754,7 +1868,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                 if _status == "blocked"
                 else f"size limit ({MAX_PROMPT_BYTES // 1000}KB)"
             )
-            slot.append("system", f"🔒 Prompt blocked — {label}.", "msg msg-info")
+            slot.append("system", f"Prompt blocked — {label}.", "msg msg-info")
             state.push_slots_update()
             # Append-only the session's log (flag-gated, fail-soft). This gate
             # returns before the normal emit block in _turn_dispatch_gates, so without

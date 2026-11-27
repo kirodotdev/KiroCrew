@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from kiro_crew.cli_chat_stdin import STDIN_MESSAGE
+
 #: Exit codes, one per way a run ends (rfc-builtin-eval.md §12.5).
 EXIT_DONE = 0
 EXIT_ERROR = 1
@@ -76,9 +78,15 @@ HEADLESS_ONLY = (
 
 #: Seconds between status reads. Overridable for tests.
 POLL_SECS = float(os.environ.get("KIROCREW_HEADLESS_POLL_SECS") or 5.0)
+#: The wall cap of a run given no ``--timeout`` (``--timeout 0`` turns it off), so a
+#: run that waits on an ask the poller does not recognise still ends.
+DEFAULT_TIMEOUT_SECS = 6 * 3600.0
 #: How long a finished background agent's result can be held before it reaches its
 #: parent: ``subagent_parts.run_limits._RESET_TIMEOUT + _TEARDOWN_REPORT_GRACE``.
 _DELIVERY_GRACE_SECS = 60.0
+#: How long each sign-in request waits: as long as ``kirocrew token`` waits for the
+#: same mint, since a gateway that is up but busy can take 12-14 s to answer.
+_SIGN_IN_TIMEOUT_SECS = 20.0
 
 #: A turn that ends with an option list is asking the person to pick.
 _OPTIONS_MARK = "[OPTIONS:"
@@ -112,7 +120,7 @@ class Options:
     until_done: bool = False
     idle_grace: float = 900.0
     cwd: str = ""
-    timeout: float = 0.0
+    timeout: float = DEFAULT_TIMEOUT_SECS
     budget: float = 0.0
     json: bool = False
 
@@ -148,6 +156,10 @@ class Result:
 def options_from_args(args: argparse.Namespace) -> Options:
     """Validate the flags of one headless run; raise :class:`UsageError` on a bad set."""
     message = args.message or ""
+    if message == STDIN_MESSAGE:
+        # `-m -` reads stdin only on the interactive chat; sent here it would
+        # seed an unattended run with the text "-" and drop the piped message.
+        raise UsageError("-m - does not read stdin with --headless; use --message-file PATH")
     if getattr(args, "message_file", None):
         if message:
             raise UsageError("give -m or --message-file, not both")
@@ -192,7 +204,7 @@ def options_from_args(args: argparse.Namespace) -> Options:
         until_done=bool(args.until_done),
         idle_grace=900.0 if args.idle_grace is None else float(args.idle_grace),
         cwd=cwd,
-        timeout=float(args.timeout or 0),
+        timeout=DEFAULT_TIMEOUT_SECS if args.timeout is None else float(args.timeout),
         budget=float(args.budget or 0),
         json=bool(args.json),
     )
@@ -269,12 +281,12 @@ class GatewayClient:
             mint = urllib.request.Request(
                 f"{self.base}/api/token/local?ttl=1m", headers={"X-Local-Secret": secret}
             )
-            with self._open(mint, 10, "cli_headless_token") as resp:
+            with self._open(mint, _SIGN_IN_TIMEOUT_SECS, "cli_headless_token") as resp:
                 self._token = json.loads(resp.read())["token"]
             prime = urllib.request.Request(
                 f"{self.base}/api/status?token={urllib.parse.quote(self._token, safe='')}"
             )
-            with self._open(prime, 10, "cli_headless_session") as resp:
+            with self._open(prime, _SIGN_IN_TIMEOUT_SECS, "cli_headless_session") as resp:
                 jar = http.cookies.SimpleCookie()
                 for raw in resp.headers.get_all("Set-Cookie") or []:
                     jar.load(raw)
@@ -289,7 +301,14 @@ class GatewayClient:
             raise NoGateway(f"gateway on port {self.port} not reachable: {exc}") from None
 
     def call(self, method: str, path: str, body: dict | None = None, timeout: float = 60) -> Any:
-        """One owner request; JSON answer. Re-signs once when the session lapsed."""
+        """One owner request; JSON answer. Re-signs once when the session lapsed.
+
+        The session cookie lives as long as the one-minute sign-in token, so a run
+        longer than that re-signs on every lapse. The gateway answers a lapsed
+        credential on ``/api/`` with 403 and ``X-Auth-Required: true``, not 401. Its other
+        auth refusals carry the same header, so a real one costs one extra sign-in and is
+        then raised; a 403 without the header is raised at once.
+        """
         for attempt in (0, 1):
             url = self.base + path
             if not self._cookie:
@@ -312,7 +331,12 @@ class GatewayClient:
                     raw = resp.read()
                     return json.loads(raw) if raw else {}
             except urllib.error.HTTPError as exc:
-                if exc.code == 401 and attempt == 0:
+                lapsed = exc.code == 401 or (
+                    exc.code == 403
+                    and exc.headers is not None
+                    and exc.headers.get("X-Auth-Required") == "true"
+                )
+                if lapsed and attempt == 0:
                     self.sign_in()
                     continue
                 detail = exc.read(2000).decode(errors="replace")
@@ -329,24 +353,20 @@ def transcript_path(slot: str) -> Path:
     return Path(data_home()) / "sessions" / f"dashboard_{slot}.jsonl"
 
 
-def transcript_credits(path: Path) -> float:
-    """Sum of ``meta.turn_stats.credits`` over a slot's transcript; 0 when absent."""
-    total = 0.0
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return 0.0
-    for line in lines:
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        meta = entry.get("meta") if isinstance(entry, dict) else None
-        stats = meta.get("turn_stats") if isinstance(meta, dict) else None
-        value = stats.get("credits") if isinstance(stats, dict) else None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            total += float(value)
-    return total
+def usage_credits(slots: set[str], since: float) -> float:
+    """The credits the per-turn usage store holds for *slots*' turns since *since*.
+
+    Read from the usage rows (``<data home>/usage/tokens``) every billed turn writes
+    when it ends, whether or not it left a reply. A transcript's ``meta.turn_stats``
+    is not enough: it sits on the turn's reply row, so a turn that ends on tool calls
+    with no reply (a conductor turn that stops after ``autonudge_stop``) has no
+    footer and its credits were missed. The window starts at the run's own start, so
+    a run of any length keeps every turn it paid for.
+    """
+    from kiro_crew.dashboard.handlers.usage import slot_turn_usage
+
+    days = max(time.time() - since, 0.0) / 86400
+    return sum(float(row.get("credits", 0.0)) for k in slots for row in slot_turn_usage(k, days))
 
 
 def ledger_items(client: "GatewayClient", slot: str) -> list[dict[str, Any]]:
@@ -567,13 +587,13 @@ def spawn_credits(client: GatewayClient, slots: set[str], settled: Spawns) -> fl
 
 
 def run_spend(client: GatewayClient, slots: set[str], since: float, settled: Spawns) -> float:
-    """The run's credits: its chats' saved turns plus its finished background agents.
+    """The run's credits: its chats' finished turns plus its finished background agents.
 
     Both halves use the same chat set, so the agents of a chat closed between two
     polls (found only from its transcript) count as well.
     """
     chats = spend_slots(slots, since)
-    spent = sum(transcript_credits(transcript_path(k)) for k in chats)
+    spent = usage_credits(chats, since)
     return spent + spawn_credits(client, chats, settled)
 
 
@@ -631,11 +651,14 @@ def spend_slots(roots: set[str], since: float) -> set[str]:
 
 
 def ledger_asks(items: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Items the board reads as waiting on the person (``awaits_person``), or with a recorded ask."""
+    """Items the board reads as waiting on the person (``awaits_person``), or with the
+    conductor's current ask record (a ``human_approval`` item it asks about after a
+    ``done``). The board sends ``ask`` only while it is current, so an item whose newer
+    report the main chat is still checking is neither."""
     out = []
     for item in items:
         ask = item.get("ask")
-        if item.get("awaits_person") or (ask and item.get("state") == "open"):
+        if item.get("awaits_person") or (isinstance(ask, dict) and item.get("state") == "open"):
             text = (ask.get("what") or "") if isinstance(ask, dict) else ""
             out.append(
                 {
@@ -897,7 +920,8 @@ def _stop(client: GatewayClient, slots: set[str], res: Result, status: str) -> R
     gateway declines (the session is compacting) or leaves pending is pressed once
     more with ``force``, the dashboard's own second-press escape to a hard kill. The
     chat's Trust is left as is: the owner route's ``normal`` would also end a
-    process-wide YOLO grant, and a stopped chat with no automation starts no turn.
+    process-wide YOLO grant, and a stopped chat with no automation starts no turn, so
+    a Trust chat the gateway refuses to close is reported as left in Trust.
     *slots* is the last poll's view, so after each round of stops (root first) the
     slot list is read again and any chat created since then is stopped too; *slots*
     grows in place, so the caller's final spend count covers those chats.
@@ -928,7 +952,8 @@ def _stop(client: GatewayClient, slots: set[str], res: Result, status: str) -> R
                 # itself stays open, so the result names it.
                 res.unclosed.append(key)
     if res.unclosed:
-        note = "not closed: " + ", ".join(res.unclosed)
+        left = ", left in Trust" if res.approval_mode == "trust" else ""
+        note = f"not closed{left}: " + ", ".join(res.unclosed)
         res.error = f"{res.error}; {note}" if res.error else note
     return res
 
@@ -940,6 +965,19 @@ def main(args: argparse.Namespace) -> int:
         opts = options_from_args(args)
     except UsageError as exc:
         print(f"kirocrew chat --headless: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    from kiro_crew.cloud.aws import _in_agent_session
+
+    # A run signs in as the owner and can open a Trust chat, which an agent's own
+    # shell must not do outside its session's approval mode.
+    if _in_agent_session():
+        print(
+            "kirocrew chat --headless: refused inside an agent session: it signs in as "
+            "the owner and opens a new chat outside this session's approval mode. "
+            "Run it yourself from a normal terminal, or start a sub-agent from the "
+            "agent instead (spawn_run).",
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     from kiro_crew.config import KiroCrewConfig
     from kiro_crew.port_resolution import resolve_client_port

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand, CircleDashed, CircleSlash } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab, selectSubagent, sseSubagentDone, isActiveSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, reconcileSubagentApprovalGone } from '../../store/chatSlice'
+import { openActivityToTab, selectSubagent, sseSubagentDone, isActiveSubagent, isChipSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, reconcileSubagentApprovalGone } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { isBenignSupersededRetry } from '../../api/apiError'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
@@ -146,6 +146,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   const queued = useAppSelector(s => s.chat.subagentQueued?.[slot ?? ''] ?? 0)
   // Why they wait, when the gateway said; undefined keeps the concurrency text.
   const queuedReason = useAppSelector(s => s.chat.subagentQueuedReason?.[slot ?? ''])
+  // Finished runs the reload's replay left out: an exact count, or a floor with
+  // no number when the log's own retain limit hid some of the newest.
+  const replayCut = useAppSelector(s => s.chat.subagentReplayCut?.[slot ?? ''])
   // null for the ordinary capacity wait and for a count with no reason.
   const waitText = queuedWaitText(queuedReason)
   // Only top-level (managed) subagents belong in the chip — its count must
@@ -154,7 +157,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // agent, not launched by this session's spawn_run, so counting them inflated
   // the histogram past what was actually spawned (e.g. 4 spawned → 9 tracked).
   // They remain fully visible in the Subagents activity sidebar.
-  const all = useMemo(() => Object.values(subagents).filter(a => !a.id.startsWith('native:')), [subagents])
+  // The one native card the chip does list is a KAS engine sub-agent (`engine`):
+  // the chat's own turn started it, and the chat shows nothing else for it.
+  const all = useMemo(() => Object.values(subagents).filter(isChipSubagent), [subagents])
   // Exception-first ordering: retrying/stalled agents need eyes; the healthy
   // majority collapses behind the summary row at scale.
   const activeList = useMemo(() => {
@@ -185,8 +190,8 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     stalled: activeList.filter(a => a.stalled).length,
     orphaned: activeList.filter(a => a.parentStopped).length,
   }), [all, activeList])
-  // `all` already excludes native:* ids, so error entries here are managed.
-  const failedIds = useMemo(() => all.filter(a => a.status === 'error').map(a => a.id), [all])
+  // An engine sub-agent has no run to retry, so only managed errors are offered.
+  const failedIds = useMemo(() => all.filter(a => a.status === 'error' && !a.engine).map(a => a.id), [all])
   const activeListRef = useRef(activeList)
   activeListRef.current = activeList
   // Mount when anything is in flight — running OR queued OR parked on an
@@ -203,8 +208,12 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // Per-row stop remains limited to agents with a live run id. The header also
   // includes accepted work waiting behind the stagger/concurrency queue. Pending
   // spawn approvals keep their explicit approve/reject path.
-  const stoppableCount = useMemo(() => activeList.filter(a => a.status === 'running' || a.status === 'tool').length, [activeList])
+  // An engine sub-agent has no run id either: the gateway stops it only by
+  // stopping the chat's turn. It is never a target of its own, but while one is
+  // open a Stop all press ends it and the answer too, and the control says so.
+  const stoppableCount = useMemo(() => activeList.filter(a => !a.engine && (a.status === 'running' || a.status === 'tool')).length, [activeList])
   const stopTargetCount = stoppableCount + queued
+  const engineActive = useMemo(() => activeList.filter(a => a.engine).length, [activeList])
   // The most recent refused wave action (a stop, a stop-all, a retry). One slot,
   // newest wins: these are all answers to the person's last press, and the row
   // sits under the header where that press happened. The 30s reconcile loop
@@ -293,6 +302,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
         // failed, and "Dismiss done" would then DELETE (cancel) it.
         const backendIds = new Set((d.agents || []).filter((a) => !a.done).map((a) => a.id))
         activeListRef.current.forEach(a => {
+          // The spawn inventory lists the manager's runs only, so an engine
+          // sub-agent is never in it; its own frames settle its row.
+          if (a.engine) return
           if (isSpawnApprovalGone(a) && a.approval_id) {
             const agent = (d.agents || []).find(candidate => candidate.id === a.id) ?? null
             dispatch(reconcileSubagentApprovalGone({ slot, id: a.id, approval_id: a.approval_id, agent }))
@@ -372,6 +384,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             {unresolved > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-unresolved-count" title={i18nT('pages.chat.subagentProgressBar.checking_whether_it_started')}><CircleDashed size={12} /> <HistogramCount n={unresolved} label={i18nT('pages.chat.subagentProgressBar.chip_unresolved', { count: unresolved })} /></span>}
             {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={waitText ?? i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> <HistogramCount n={queued} label={i18nT('pages.chat.subagentProgressBar.chip_queued', { count: queued })} /></span>}
             {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok" data-testid="subagent-done-count"><CheckCircle size={12} /> <HistogramCount n={counts.done} label={i18nT('pages.chat.subagentProgressBar.chip_done', { count: counts.done })} /></span>}
+            {replayCut?.atLeast
+              ? <span className="text-muted font-normal" data-testid="subagent-replay-cut">{i18nT('pages.chat.subagentProgressBar.some_finished_runs_not_shown')}</span>
+              : replayCut && replayCut.n > 0 && <span className="text-muted font-normal" data-testid="subagent-replay-cut">{i18nT('pages.chat.subagentProgressBar.older_runs_not_shown', { count: replayCut.n })}</span>}
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger" data-testid="subagent-failed-count"><AlertCircle size={12} /> <HistogramCount n={counts.failed} label={i18nT('pages.chat.subagentProgressBar.chip_failed', { count: counts.failed })} /></span>}
             {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-stopped-count"><Square size={12} /> <HistogramCount n={counts.stopped} label={i18nT('pages.chat.subagentProgressBar.chip_stopped', { count: counts.stopped })} /></span>}
             {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-stalled-count" title={i18nT('pages.chat.subagentProgressBar.no_activity_possibly_stalled')}><AlertTriangle size={12} /> <HistogramCount n={counts.stalled} label={i18nT('pages.chat.subagentProgressBar.chip_stalled', { count: counts.stalled })} /></span>}
@@ -393,9 +408,10 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               <button
                 className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger-text cursor-pointer transition-all bg-transparent"
                 onClick={stopAll}
-                aria-label={queued > 0 || stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
+                aria-label={engineActive > 0 ? i18nT('pages.chat.subagentProgressBar.stop_all_and_answer') : queued > 0 || stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
+                data-testid="subagent-stop-all"
               >
-                <X size={11} /> {queued > 0 || stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
+                <X size={11} /> {engineActive > 0 ? i18nT('pages.chat.subagentProgressBar.stop_all_and_answer') : queued > 0 || stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
               </button>
             )}
           </span>
@@ -406,6 +422,14 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           // Absent for the ordinary capacity wait, which keeps the chip as it was.
           <div className="px-3 pb-1.5 text-[11px] leading-4 text-warn" data-testid="subagent-wait-reason" role="status">
             {waitText}
+          </div>
+        )}
+        {engineActive > 0 && (
+          // An engine sub-agent's row has no Stop of its own, so the chip says in
+          // words what does stop it. Rendered text, not a tooltip: it has to reach
+          // a touch screen and a screen reader too.
+          <div className="px-3 pb-1.5 text-[11px] leading-4 text-muted" data-testid="subagent-engine-note" role="note">
+            {i18nT('pages.chat.subagentProgressBar.engine_stops_with_answer')}
           </div>
         )}
         {unresolved > 0 && livenessFailed && (
@@ -465,7 +489,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               || taskPreview
               || sanitizeLlmOutput(a.agent)
               || (a.id ? `agent #${a.id.slice(-6)}` : 'agent')
-            const stoppable = a.status === 'running' || a.status === 'tool'
+            const stoppable = !a.engine && (a.status === 'running' || a.status === 'tool')
             return (
               <div key={a.id} data-testid="subagent-row" className="flex items-start gap-1">
                 <button

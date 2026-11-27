@@ -2,7 +2,11 @@
  * The Session Manager plugin row when the plugin is installed but refused by the
  * gateway's safety check: the reason is said in the reader's language from the
  * kind of refusal the gateway names, the diagnosis is the alert, and the steps
- * and the ownership command's note sit under it as plain text.
+ * and the ownership command's note sit under it as plain text. A plugin that
+ * is simply not installed gets a plain next step instead: admin rights for a
+ * sudo install, AWS's install page when the gateway has no command. The
+ * checklist's pending rows, drawn while a check with no earlier answer runs,
+ * share this harness.
  */
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -10,10 +14,12 @@ import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import {
   REMOTE_CREW_PREFLIGHT_GUIDE_URL,
+  SESSION_MANAGER_PLUGIN_INSTALL_URL,
   awsCliRefusalCopy,
   awsCliRefusalReport,
   credentialHelperMissingSentence,
   envCredentialsSentence,
+  pluginMissingSteps,
   pluginRefusalCopy,
   pluginRefusalReport,
 } from '../pages/settings/remoteCrewPluginRefusal'
@@ -59,7 +65,7 @@ vi.mock('../api/client', () => {
     },
   }
 })
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 
 const PLUGIN = '/usr/local/sessionmanagerplugin/bin/session-manager-plugin'
 const CHOWN = 'sudo chown -R root:wheel /usr/local/sessionmanagerplugin'
@@ -81,6 +87,9 @@ const AWS_EC2_ROW = {
   ],
 }
 
+/** A row title in the answered checklist: the pending rows carry the same titles. */
+const ANSWERED = 'ul:not([aria-busy]) div'
+
 /** A preflight whose plugin was found at PLUGIN and refused. */
 function refused(over: Partial<CloudPreflight>): CloudPreflight {
   return {
@@ -100,7 +109,7 @@ async function openSetup(preflight: CloudPreflight) {
   vi.mocked(api.cloudPreflight).mockResolvedValue(preflight)
   const u = userEvent.setup()
   renderWithProviders(<RemoteCrewPanel />)
-  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
   const notice = (await screen.findByText(/^Found at \/usr\/local\/sessionmanagerplugin/)).closest('[role="alert"]') as HTMLElement
   expect(notice).not.toBeNull()
   return { notice, row: notice.closest('li') as HTMLElement }
@@ -115,6 +124,32 @@ beforeEach(() => {
   vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
   vi.mocked(api.cloudProvisioners).mockResolvedValue({ provisioners: [AWS_EC2_ROW] })
   vi.mocked(api.cloudIdentity).mockResolvedValue({ identity: { account_type: 'BuilderId' }, suggested_target: { license: '', start_url: '', region: '' } })
+})
+
+describe('RemoteCrewPanel checklist while a check with no earlier answer runs', () => {
+  it('lists every check the answer fills in, each still checking', async () => {
+    let answer!: (p: CloudPreflight) => void
+    vi.mocked(api.cloudPreflight).mockReturnValue(new Promise<CloudPreflight>(r => { answer = r }))
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    const titles = (list: HTMLElement) => within(list).getAllByRole('listitem').map(r => r.querySelector('.font-medium')?.textContent)
+
+    const pending = await screen.findByRole('list', { busy: true })
+    for (const r of within(pending).getAllByRole('listitem')) {
+      expect(within(r).getByText('Checking…')).toBeInTheDocument()
+      expect(r.querySelector('.lucide-refresh-cw')).not.toBeNull()
+      expect(r.querySelector('.lucide-x, .lucide-check')).toBeNull()
+    }
+    expect(within(pending).queryByRole('button')).toBeNull()
+    const pendingTitles = titles(pending)
+    expect(pendingTitles.length).toBeGreaterThan(0)
+
+    // The answer fills in the same rows, in the same order.
+    answer(PREFLIGHT_OK)
+    const answered = (await screen.findByText(pendingTitles[0] as string, { selector: ANSWERED })).closest('ul') as HTMLElement
+    expect(titles(answered)).toEqual(pendingTitles)
+  })
 })
 
 describe('RemoteCrewPanel refused plugin row', () => {
@@ -194,6 +229,38 @@ describe('RemoteCrewPanel refused plugin row', () => {
       session_manager_plugin_refused_owner_uid: 502,
     }))
     expect(within(row).queryByRole('link', { name: /Remote Crew on EC2 guide/ })).toBeNull()
+  })
+})
+
+describe('RemoteCrewPanel sandbox refusal copy', () => {
+  /** Open the setup tab with the AWS check refused by the sandbox, as the gateway's 503 says. */
+  async function openRefused(kind: string, remedy: string) {
+    vi.mocked(api.cloudPreflight).mockRejectedValue(new ApiError(503, 'x', JSON.stringify({
+      code: 'sandbox_unavailable', kind, detail: 'probe', remedy,
+    })))
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' }))
+    await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+  }
+
+  it.each(['transient', 'no_backend'])('names a cap read as 0 on a %s refusal', async (kind) => {
+    // The probe read user.max_user_namespaces as 0, so no moment clears it and the
+    // host does have a sandbox once the cap is raised: neither older sentence fits.
+    await openRefused(kind, 'userns_cap_zero')
+
+    const message = await screen.findByText(/user namespaces are disabled on this host/)
+    expect(message).toHaveTextContent(/kirocrew doctor/)
+    expect(screen.queryByText(/temporary limit/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Re-check in a moment/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/has no sandbox for the aws command/)).not.toBeInTheDocument()
+  })
+
+  it('keeps the busy copy for the ambiguous cap token', async () => {
+    await openRefused('transient', 'max_user_namespaces')
+
+    expect(await screen.findByText(/temporary limit/)).toBeInTheDocument()
+    expect(screen.queryByText(/user namespaces are disabled on this host/)).not.toBeInTheDocument()
   })
 })
 
@@ -286,7 +353,7 @@ describe('RemoteCrewPanel refused AWS CLI', () => {
     vi.mocked(api.cloudPreflight).mockResolvedValue(cliRefused())
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     const notice = (await screen.findByText(/^Your AWS credentials were not checked\. Found at \/opt\/homebrew\/bin\/aws, /)).closest('[role="alert"]') as HTMLElement
     expect(notice).toHaveTextContent(/belongs to another user account \(workbrew, user ID 502\)/)
     expect(within(notice).getByText('executable is owned by another user (uid 502)')).toBeInTheDocument()
@@ -342,8 +409,8 @@ describe('RemoteCrewPanel env-var AWS credentials', () => {
     vi.mocked(api.cloudPreflight).mockResolvedValue(preflight)
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
-    return (await screen.findByText('AWS credentials')).closest('li') as HTMLElement
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    return (await screen.findByText('AWS credentials', { selector: ANSWERED })).closest('li') as HTMLElement
   }
 
   it('leads with the profile to create and puts the CLI’s own error under it', async () => {
@@ -361,5 +428,69 @@ describe('RemoteCrewPanel env-var AWS credentials', () => {
     const row = await credentialsRow(failed({ env_credentials: false, detail: 'aws: [ERROR]: Unable to locate credentials' }))
     expect(within(row).getByText(/^aws: \[ERROR\]: Unable to locate credentials/)).toBeInTheDocument()
     expect(row).not.toHaveTextContent(/Create an AWS profile/)
+  })
+})
+
+describe('RemoteCrewPanel plugin row when the plugin is not installed', () => {
+  const DPKG = 'p=$(mktemp) && curl -fsSL https://example.invalid/smp.deb -o "$p" && sudo dpkg -i "$p"'
+  const BREW = 'brew install --cask session-manager-plugin'
+
+  /** A preflight whose plugin is simply missing, with *command* as the remedy. */
+  function missing(command: string): CloudPreflight {
+    return { ...PREFLIGHT_OK, session_manager_plugin: false, session_manager_plugin_command: command }
+  }
+
+  async function pluginRow(preflight: CloudPreflight) {
+    vi.mocked(api.cloudPreflight).mockResolvedValue(preflight)
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    return (await screen.findByText('Session Manager plugin', { selector: ANSWERED })).closest('li') as HTMLElement
+  }
+
+  it('picks the step from the command: admin rights for sudo, AWS’s page for none, nothing for brew', () => {
+    const link = { href: SESSION_MANAGER_PLUGIN_INSTALL_URL, label: 'Open AWS’s Session Manager plugin install page' }
+    expect(pluginMissingSteps(missing(DPKG))).toEqual({
+      text: 'Installing it needs admin rights (sudo) on the computer that runs Kiro Crew. If you don’t have them, ask an administrator to install AWS’s Session Manager plugin there, then re-check.',
+      link,
+    })
+    expect(pluginMissingSteps(missing(''))).toEqual({
+      text: 'Install it on the computer that runs Kiro Crew by following AWS’s steps, then re-check.',
+      link,
+    })
+    expect(pluginMissingSteps(missing(BREW))).toBeNull()
+    // "sudo" only as part of another word is not a sudo step.
+    expect(pluginMissingSteps(missing('pseudoinstall smp'))).toBeNull()
+    // Installed, or installed and refused (pluginRefusalCopy owns that row): no step.
+    expect(pluginMissingSteps(PREFLIGHT_OK)).toBeNull()
+    expect(pluginMissingSteps(refused({ session_manager_plugin_command: CHOWN }))).toBeNull()
+  })
+
+  it('says a sudo install needs admin rights and links AWS’s page before the command', async () => {
+    const row = await pluginRow(missing(DPKG))
+    const step = within(row).getByText(/^Installing it needs admin rights \(sudo\)/)
+    const link = within(row).getByRole('link', { name: /Open AWS’s Session Manager plugin install page/ })
+    expect(link).toHaveAttribute('href', SESSION_MANAGER_PLUGIN_INSTALL_URL)
+    const command = within(row).getByText(DPKG)
+    // Read before it is run: the step and the link sit above the command.
+    expect(step.compareDocumentPosition(command) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(link.compareDocumentPosition(command) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The not-installed status is still the row's detail, not an alert.
+    expect(within(row).getByText(/^Not installed — needed to reach the crew/)).toBeInTheDocument()
+    expect(within(row).queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('points at AWS’s page when the gateway has no install command', async () => {
+    const row = await pluginRow(missing(''))
+    expect(within(row).getByText(/^Install it on the computer that runs .* by following AWS’s steps/)).toBeInTheDocument()
+    expect(within(row).getByRole('link', { name: /Open AWS’s Session Manager plugin install page/ })).toHaveAttribute('href', SESSION_MANAGER_PLUGIN_INSTALL_URL)
+    expect(within(row).queryByRole('button', { name: /Copy command/i })).not.toBeInTheDocument()
+  })
+
+  it('adds no step to a Homebrew command, which needs no sudo', async () => {
+    const row = await pluginRow(missing(BREW))
+    expect(within(row).getByText(BREW)).toBeInTheDocument()
+    expect(row).not.toHaveTextContent(/admin rights/)
+    expect(within(row).queryByRole('link')).not.toBeInTheDocument()
   })
 })

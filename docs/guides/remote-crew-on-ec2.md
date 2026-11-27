@@ -151,7 +151,9 @@ loginctl enable-linger <user>
 ```
 
 (A gateway installed as a **system** unit under `/etc/systemd/system` already
-survives logout; linger still matters for pods and for user-level installs.)
+survives logout, and `kirocrew service install` turns linger on for its account
+so the agent runtimes survive too; linger still matters for pods and for
+user-level installs.)
 
 ### "kiro login: not logged in"
 
@@ -203,6 +205,14 @@ property of the launch, not of whichever `kiro-cli login` happens to run:
 The same three flags exist on `kirocrew cloud login` for an already-launched crew;
 with a wrong-but-valid session present, run `kirocrew cloud logout` first.
 
+**The sign-in is optional.** A crew that runs another agent harness works without
+a Kiro sign-in. Turn off **Sign in to Kiro on the new crew** in the launch form,
+press **Skip for now** on the progress card while the sign-in runs, or pass
+`kirocrew cloud launch --no-login`. The sign-in step then reads skipped, not
+failed, and a code already shown is stopped on the instance. The crew connects
+as usual, and it can sign in later in its own Settings → Kiro Account (or with
+`kirocrew cloud login`).
+
 ### Port/tunnel mismatch (the common one)
 
 `kirocrew doctor`'s "Remote access" hint and its `dashboard: http://localhost:5476`
@@ -227,7 +237,7 @@ port into the CSRF allowlist — see
 
 ### Set-up pre-flight: credential helper not found, or plugin refused
 
-The **Set up a new one** pre-flight runs the AWS CLI from the gateway, and a
+The **Add Crew → Set up a new Crew** pre-flight runs the AWS CLI from the gateway, and a
 gateway started from the Dock or Finder has a minimal `PATH`.
 
 - **"The AWS CLI could not find `<name>` on the gateway's PATH."** Your profile's

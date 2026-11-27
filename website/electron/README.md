@@ -15,7 +15,7 @@ The app will:
 
 1. Reuse an existing gateway if one is already reachable and actually serving
    (`/api/ready` 200) — a gateway draining after `/api/shutdown` still answers
-   `/api/status`, so it is never adopted; the app waits for the port to clear
+   `/api/live`, so it is never adopted; the app waits for the port to clear
    and spawns fresh instead. Before reusing a same-family gateway on a fixed-path
    POSIX install, the app detects whether its sole listener is an older gateway
    from the current bundled backend path. If so, it warns that updated features
@@ -78,12 +78,14 @@ and each facade composes cohesive owners under `runtime/<area>/`:
 |---|---|---|
 | `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, the macOS launchd job check that tells a service from an orphan, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app, or stopping its gateway that outlived it) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) · `home-lock.js` (whether a pid holds this data folder's `gateway.lock`, the CLI's pid-pinned stop, the CLI's port stop of an orphaned gateway, the `gateway-pid` lock probe) · `holder-decision.js` (what a launch does about a gateway already on its port: adopt, wait out a drain, warn about an older bundled one, stop and restart an orphaned older one or a stuck one, refuse one it cannot attribute) · `successor-handoff.js` (restarting through a successor copy that must serve before this one exits, whether the failure dialog may offer Start Local Gateway, the `/api/health`, any-responder and `/api/ready` probes) · `failure-dialog.js` (the gateway-failure window and its installing auto-retry, the restart-required dialog, the reveal before the token prompt and both dialogs) · `shutdown.js` (the graceful and pre-update stops, the bounded and the wedge tree kills) · `reconnect.js` (the liveness recoveries that wait instead of killing: an external gateway, an adopted one) · `remote-switch.js` (first-run setup's switch to a crew on another machine: stop the gateway this app spawned, save the crew, turn the local gateway off, reconnect) · `respawn-owner.js` (the one respawn in flight that liveness recovery, the failure dialog's retries and a failed update install's recovery all join, and its hand-over to an update install) · `user-restart.js` (Settings → About's Restart gateway: stop the gateway this app spawned with liveness disarmed, respawn it, reconnect the main window to the page it was on) | All gateway state (child, ownership, start failure, liveness monitor, update handoff) and the getters and setters owners reach it through, the spawn site and its environment, the port occupancy and identity probes every decision reads, the launch and connect flows and their failure wording, the liveness monitor, and the choice of recovery with the kill-and-respawn of its own child |
 | `window-lifecycle.js` (`createWindowLifecycle`) | `runtime/window/chrome.js` (traffic lights, title-bar overlay, native theme, zoom, focus-mode chrome) · `prompts.js` (New Connection Window port prompt, Rename Window) · `session-security.js` (session permission policy, microphone and screen-recording recovery dialogs) · `linux-captions.js` (frameless Linux caption controls) · `browser-panels.js` (per-window native browser panels and their agent command channel) | Window creation and state restore, the drag band, fullscreen handling, close-to-tray and every show path, the tray, the remote-host prompt, the menu, window-control admission, and the browser IPC routing |
-| `auto-update.js` (`initAutoUpdate` and 16 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install, and the download-time freshness gate that re-checks the feed before a click's download) · `freshness-gate.js` (composed by the feed lane: the check lifecycle (claim, settle, abandon) and `verifyStageIsLatest`, the pre-install verdict that re-checks the feed so only the newest build is installed) · `managed-lane.js` (the marker-driven check, the arm click and the quit-time apply) · `managed-exec.js` (the hardened marker-command executor, shared by the lane and the start-time apply) · `update-arm.js` (the armed-update record in the app's store) · `armed-apply.js` + `startup-apply.js` (the apply of a leftover arm at the next app start, before the gateway spawns) · `gateway-arm.js` (best-effort client for the gateway's own armed record) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
+| `auto-update.js` (`initAutoUpdate` and 17 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install, and the download-time freshness gate that re-checks the feed before a click's download) · `freshness-gate.js` (composed by the feed lane: the check lifecycle (claim, settle, abandon) and `verifyStageIsLatest`, the pre-install verdict that reads the feed so only the newest build is installed) · `managed-lane.js` (the marker-driven check, the arm click and the quit-time apply) · `managed-exec.js` (the hardened marker-command executor, shared by the lane and the start-time apply) · `update-arm.js` (the armed-update record in the app's store) · `armed-apply.js` + `startup-apply.js` (the apply of a leftover arm at the next app start, before the gateway spawns) · `install-splash.js` (the boot splash window shown while that apply's command runs; `main.js` composes it, as it does `runtime/update/gateway-probe.js`) · `gateway-arm.js` (best-effort client for the gateway's own armed record) · `policy-channel.js` (the release channel an LTS build must follow, or none) · `policy-source.js` (whether the security policy pins an update provider, read by `startup-apply.js`) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
 | `crash-collector.js` (`armCrashCollector`, `collectCrashReports`, `crashNoticeSummary`) | `runtime/crash/ownership.js` · `artifact-parsers.js` · `candidates.js` · `persistence.js` · `scan.js` | The export surface and `crashNoticeSummary`, the one renderer-facing view |
 
 Three rules keep this layout safe to change:
 
-- Consumers require only the facades. Their export names, factory options,
+- Consumers require only the facades, except the update owners `main.js`
+  (`gateway-probe.js`, `install-splash.js`) and `ipc-registrar.js`
+  (`policy-channel.js`, `update-arm.js`, `gateway-arm.js`) require directly. Their export names, factory options,
   returned object shapes and module-scope constants are the contract. Many tests
   also read source text, so a pinned construct moves only together with its pin,
   and the pin reads the file that defines it: the facade for most, a runtime
@@ -408,8 +410,14 @@ left as the user set it.
   gateway and authentication origin, but does not copy the current session,
   project, draft, or context.
 - Closing the window hides it and keeps the app running, reachable from the tray
-  icon, the Dock on macOS, or a relaunch. Right-click the tray icon and choose
-  Quit, or press Cmd+Q / Ctrl+Q, to quit. To make the close button quit instead,
+  icon, the Dock on macOS, or a relaunch. The first time this happens a system
+  notification says so and names the setting below; clicking it opens that
+  setting. It is shown once: the `closeHideNoticeShown` key is written when the
+  system reports the notification shown (on Linux, once it is sent; at once where
+  notifications are unsupported), so one the
+  system dropped comes back on the next launch (`close-hide-notice.js`). Right-click the tray icon and choose
+  **Quit Kiro Crew** (**Quit Kiro Crew and Stop Background Sessions** while the app runs
+  a gateway it started), or press Cmd+Q / Ctrl+Q, to quit. To make the close button quit instead,
   turn off **Keep running in the background after closing the window** in Settings → Display → View →
   Desktop app. The row appears in the main window only, local or remote
   gateway alike, because it controls that window's close button (connection
@@ -478,16 +486,18 @@ left as the user set it.
   (`chromium-sandbox-notice.js`).
 - External links open in your default browser
 - **`kirocrew://` links.** The installer registers the scheme, and `deep-link.js`
-  accepts exactly four shapes, refusing everything else with a logged reason:
+  accepts exactly six shapes, refusing everything else with a logged reason:
   `kirocrew://` (bring the window forward), `kirocrew://chat?sid=<slot key>`
   (open that session; what `kirocrew open` builds),
   `kirocrew://chat?crew=<crew id>&sid=<slot key>` (open that session on a
   remote crew), `kirocrew://apps/detail/<name>` (show that app's detail page,
   so a companion program can send the user to its app without a walk through
-  the store) and
+  the store),
   `kirocrew://remote-crew/add?host=<ssh host>[&user=<u>][&port=<n>][&name=<label>]`
   (open Settings → Remote Crew with its add form filled in, so a page listing
-  the user's machines can hand one over). The
+  the user's machines can hand one over) and
+  `kirocrew://members[?member=<name>]` (open the Bots page, on the Bot whose
+  roster `name`, its config key, is `<name>` when one is given). The
   route is rebuilt from the validated pieces, never copied from the URL, and a
   link only navigates: the detail page takes its install, update and enable
   trigger from router state, never from a URL, and the add link's values reach
@@ -495,7 +505,13 @@ left as the user set it.
   user's. The add link is capped at 8192 characters, takes each of its four keys
   once and no other, checks the host with a copy of the gateway's
   `validate_ssh_host` (`test/fixtures/ssh-host-samples.json` keeps the two
-  agreeing), and fills in fields only: saving is the user's Add click.
+  agreeing), and fills in fields only: saving is the user's Add click. A members
+  link takes one `member` key, percent-encoded, and opens the Bot as a roster
+  click does, including the first greeting a new Bot still owes. Its name
+  check admits every name the gateway can hold. It refuses control and
+  line-break characters and every format character except four shaping marks
+  (ZWNJ, ZWJ, LRM, RLM), which pass only where the gateway keeps them, beside
+  non-ASCII text (`test/fixtures/member-name-samples.json`).
   `deep-link-handler.js` holds a link until the dashboard document reports
   `navigate-ready`, and `main.js` sends it through the same `navigate` IPC as
   the native menu's Settings and About.

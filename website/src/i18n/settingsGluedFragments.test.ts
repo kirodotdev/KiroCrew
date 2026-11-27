@@ -31,7 +31,6 @@ describe('settings lines take their values inside the translated text', () => {
     expect(i18nT(`${CHANNEL}.channel_turned_off`, { channel: 'Slack' })).toBe('Slack is turned off by your administrator')
     expect(i18nT(`${CHANNEL}.channel_policy_status_unavailable`, { channel: 'Slack' })).toBe('Slack policy status unavailable')
     expect(i18nT(`${POSTURE}.show_more_count`, { count: 3 })).toBe('Show 3 more')
-    expect(i18nT(`${INST}.remote_port_value`, { port: 8000 })).toBe('· remote port 8000')
     expect(i18nT(`${BOT}.loading_channel_config`, { channel: 'Slack' })).toBe('Loading Slack config…')
     expect(i18nT(`${BOT}.cannot_load_channel_config`, { channel: 'Slack' })).toBe('Cannot load Slack config. Is the gateway running?')
     expect(i18nT(`${BOT}.channel_settings_read_only`, { channel: 'Slack' })).toMatch(/^Slack settings are managed on the machine running /)

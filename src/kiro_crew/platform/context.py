@@ -638,6 +638,13 @@ def set_context(ctx: PlatformContext) -> None:
 # must contain the phrase ``no-context answer`` so the justification is greppable
 # and cannot dodge the question it exists to answer.
 PEEK_CALLERS: "dict[str, str]" = {
+    "auth/login/endpoints.py::edition_idc_profiles": (
+        "no-context answer is no edition sign-in profile: every IAM Identity Center "
+        "start URL signs in with the public form, as before the seam existed. The "
+        "sign-in-only app runs without a composed platform, so resolving one here "
+        "would prevent sign-in; an installed contributor's PlatformCompositionError "
+        "still propagates."
+    ),
     "auth/company_sign_in.py::company_sign_in_default": (
         "no-context answer is an empty start URL and region pair, the form as it "
         "was before edition defaults. The sign-in-only app runs without a composed "
@@ -708,6 +715,18 @@ PEEK_CALLERS: "dict[str, str]" = {
         "permitted. Only the installed ceiling can narrow them, and with no installed "
         "context no ceiling exists that could, which is main's answer. The peek runs "
         "on the event loop, where current_context() would load config."
+    ),
+    "slack/code_channels/worker_stop.py::_workspace_still_admitted": (
+        "no-context answer is a refusal: the Workers-tab Stop's final gate stops "
+        "nothing. It re-asks a workspace gate the click already passed through "
+        "current_context(), so a context is installed by then; the peek only keeps "
+        "that synchronous gate from composing or loading one on the way to a stop."
+    ),
+    "slack/code_channels/worker_stop.py::_channel_still_admitted": (
+        "no-context answer is a refusal: the Workers-tab Stop's final gate stops "
+        "nothing. It re-asks the per-channel ceiling the click's entry gate already "
+        "read through current_context(), so a context is installed by then; the "
+        "peek only keeps that synchronous gate from composing one on the way to a stop."
     ),
     "platform/governance_parts/carriers.py::active_policy_distribution": (
         "no-context answer is an unconfigured PolicyDistribution, i.e. no "

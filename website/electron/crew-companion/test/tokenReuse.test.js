@@ -145,3 +145,26 @@ test("a refused token is re-minted exactly once", async () => {
   assert.equal(mints.n, 2, "an auth refusal re-mints once, and only once");
   mod.shutdownCrewCompanion();
 });
+
+test("a link token is re-minted before the gateway's 300 s window refuses it", async (t) => {
+  let clock = 1_000_000;
+  t.mock.method(Date, "now", () => clock);
+  const mints = { n: 0 };
+  const mod = loadCompanion({ status: [200, 200, 200] });
+  mod.initCrewCompanion({
+    backendUrl: "http://127.0.0.1:5476",
+    fetchGatewayAuth: async () => {
+      mints.n += 1;
+      return { value: `tok-${mints.n}` };
+    },
+    glog: () => {},
+  });
+  await settle();
+  clock += 239_000;
+  await mod.reconcileOnce();
+  assert.equal(mints.n, 1, "still inside the refresh age: reused");
+  clock += 1_000;
+  await mod.reconcileOnce();
+  assert.equal(mints.n, 2, "re-minted at 240 s, before any refusal");
+  mod.shutdownCrewCompanion();
+});

@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { isPermissionRefusal } from '../../../api/apiError'
 import { crewBoardQueryKey } from '../../../api/crewBoard'
 import { refreshDashboardReads } from '../../../api/dashboardRefresh'
 import type { ChatSlot, CrewWorker } from '../../../types'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { Btn } from '../../../components/ui'
 import { SearchFilterBar } from '../../../components/SearchFilterBar'
 import { safeGetSessionItem, safeSetSessionItem } from '../../../utils/safeStorage'
 import { useAppDispatch, useAppSelector, type RootState } from '../../../store'
-import { closeActivityPanel, openActivityPanel, resumeFromHistory, switchSlot } from '../../../store/chatSlice'
+import { closeActivityPanel, openActivityPanel, resumeFromHistory, selectSidebarAutomationRunningKeys, selectSidebarWorkflowActiveKeys, switchSlot } from '../../../store/chatSlice'
+import { normalizeRunSessionKey } from '../../../components/workflows/runModel'
 import { openPanelView } from '../../../hooks/usePanelTabs'
 import { ChevronLeft } from 'lucide-react'
 import { useCrewBack } from '../../../components/crew/useCrewBack'
 import { crewRouteNotServed, liveCrewWorkers, mergeCrewWorkers } from '../../../lib/crewWorkers'
-import { crewWorkersGapMs, readCrewWorkers } from '../../../lib/crewWorkersPoll'
+import { CREW_CLOSED_PAGE, crewWorkersGapMs, readCrewWorkers, showOlderCrewWorkers } from '../../../lib/crewWorkersPoll'
 import { crewModeRoot, crewRootOf, runsCrewMode } from '../../../lib/crewMode'
 import ConductorModeCrewPanel from './ConductorModeCrewPanel'
 
@@ -57,6 +60,17 @@ const routeNotServed = crewRouteNotServed
  *  sub-conductor's ledger. */
 export const CREW_WORKERS_FALLBACK_POLL_MS = 60_000
 
+/** A failed read is asked again this soon, so its notice goes when the gateway
+ *  answers instead of a minute later. A permission refusal answers the same
+ *  every time and keeps the slow timer. */
+export const CREW_WORKERS_FAILED_POLL_MS = 10_000
+
+/** The wait before the next timed re-read of *root*'s list. */
+export function crewWorkersPollMs(root: string, state: { status: string; error?: unknown }): number {
+  const failed = state.status === 'error' && !isPermissionRefusal(state.error)
+  return crewWorkersGapMs(root, failed ? CREW_WORKERS_FAILED_POLL_MS : CREW_WORKERS_FALLBACK_POLL_MS)
+}
+
 /** A burst of pushes (a lead opening six workers) is one re-read after this long. */
 export const CREW_WORKERS_PUSH_COALESCE_MS = 250
 
@@ -70,16 +84,44 @@ export function crewWorkersPushKey(slots: readonly ChatSlot[], root: string): st
   const parts: string[] = []
   for (const s of slots) {
     if (s.key === root) {
-      parts.push(JSON.stringify(s.crew_work ?? null))
+      parts.push(JSON.stringify([
+        s.crew_work ?? null, s.running ? 1 : 0, s.subagents_running ? 1 : 0,
+        s.subagents_queued || 0, s.preparing ? 1 : 0, s.compacting ? 1 : 0,
+      ]))
     } else if (s.crew_root === root || s.mate_root === root) {
       parts.push([
-        s.key, s.running ? 1 : 0, s.pending_approval ? 1 : 0, s.pending_approval_info?.request_id || '',
+        s.key, s.running ? 1 : 0, s.subagents_running ? 1 : 0, s.subagents_queued || 0,
+        s.preparing ? 1 : 0, s.compacting ? 1 : 0, s.queue_depth || 0, s.queue_held_depth || 0,
+        s.pending_approval ? 1 : 0, s.pending_approval_info?.request_id || '',
         s.needs_input ? 1 : 0, s.title || '', s.last_turn_ts || '', s.parent?.slot || '', s.created_by || '',
         s.crew_work ? JSON.stringify(s.crew_work) : '',
       ].join('|'))
     }
   }
   return parts.join('\n')
+}
+
+/** The full key that wakes the worker and board reads: slot activity plus the
+ * workflow and automation stores, whose events do not change a slot row. */
+export function crewWorkersRuntimePushKey(state: RootState, root: string): string {
+  if (!root) return ''
+  const slots = state.dashboard.slots
+  const crewKeys = new Set([root])
+  for (const slot of slots) {
+    if (slot.crew_root === root || slot.mate_root === root) crewKeys.add(slot.key)
+  }
+  const normalized = new Set([...crewKeys].map(normalizeRunSessionKey))
+  const workflows = selectSidebarWorkflowActiveKeys(state)
+    .filter(key => normalized.has(key))
+    .sort()
+  const automations = selectSidebarAutomationRunningKeys(state)
+    .filter(key => crewKeys.has(key))
+    .sort()
+  return JSON.stringify({
+    slots: crewWorkersPushKey(slots, root),
+    workflows,
+    automations,
+  })
 }
 
 const pendingRefresh = new Map<string, ReturnType<typeof setTimeout>>()
@@ -89,7 +131,7 @@ const pendingRefresh = new Map<string, ReturnType<typeof setTimeout>>()
  *  state. Every hook mounted for one root shares one coalesced re-read. */
 export function useCrewWorkersPush(root: string, enabled: boolean): void {
   const queryClient = useQueryClient()
-  const key = useAppSelector(s => (enabled ? crewWorkersPushKey(s.dashboard.slots, root) : ''))
+  const key = useAppSelector(s => (enabled ? crewWorkersRuntimePushKey(s, root) : ''))
   // `null` until the first enabled run: a list cached by an earlier mount may predate
   // pushes that landed while nothing was mounted (queries never go stale on their own).
   const seen = useRef<string | null>(null)
@@ -131,7 +173,7 @@ export function useCrewWorkers(root: string, active: boolean) {
     queryKey: crewWorkersQueryKey(root),
     queryFn: () => readCrewWorkers(root),
     enabled: active && !!root,
-    refetchInterval: query => (active && !routeNotServed(query.state.error) ? crewWorkersGapMs(root, CREW_WORKERS_FALLBACK_POLL_MS) : false),
+    refetchInterval: query => (active && !routeNotServed(query.state.error) ? crewWorkersPollMs(root, query.state) : false),
   })
 }
 
@@ -153,13 +195,15 @@ export function useCrewWorkerSummary(root: string): {
   /** The last list a read gave, kept through a failed poll (the cache's data),
    *  with the open live rows the store carries on its own. */
   lastWorkers: CrewWorker[] | undefined
+  /** Closed workers the latest read left out (older than every closed one in it). */
+  closedOmitted: number
 } {
   useCrewWorkersPush(root, true)
   const query = useQuery({
     queryKey: crewWorkersQueryKey(root),
     queryFn: () => readCrewWorkers(root),
     enabled: !!root,
-    refetchInterval: query => (routeNotServed(query.state.error) ? false : crewWorkersGapMs(root, CREW_WORKERS_FALLBACK_POLL_MS)),
+    refetchInterval: query => (routeNotServed(query.state.error) ? false : crewWorkersPollMs(root, query.state)),
   })
   const live = useLiveCrewWorkers(root)
   // A closed root's list is read from saved data and names the root's saved title.
@@ -169,7 +213,7 @@ export function useCrewWorkerSummary(root: string): {
   // A route the gateway does not serve is no data, not a failed read: the row
   // shows what the live rows say and raises no notice.
   const failed = query.isError && !routeNotServed(query.error)
-  return { workers: failed ? (live.length ? live : undefined) : lastWorkers, failed, savedTitle, lastWorkers, paused: !!query.data?.paused }
+  return { workers: failed ? (live.length ? live : undefined) : lastWorkers, failed, savedTitle, lastWorkers, paused: !!query.data?.paused, closedOmitted: query.data?.closed_omitted ?? 0 }
 }
 
 /** Open one of a root's sessions -- a worker, or the root itself -- in the main
@@ -227,6 +271,22 @@ export async function reopenCrewSession(
   } catch {
     return { ok: false, activated: false, key }
   }
+}
+
+/** "Show N more" under a Done group the list answer cut short (`closed_omitted`):
+ *  every later read of the root's list carries one more page of older closed workers. */
+export function CrewShowOlder({ root, omitted }: { root: string; omitted: number }) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  if (omitted <= 0) return null
+  const more = () => {
+    const answer = queryClient.getQueryData<{ workers?: CrewWorker[] }>(crewWorkersQueryKey(root))
+    showOlderCrewWorkers(root, (answer?.workers ?? []).filter(w => w.status === 'closed').length)
+    refreshDashboardReads(queryClient, crewWorkersQueryKey(root))
+  }
+  return <Btn type="button" data-testid="crew-show-older" className="mt-1 text-[12px]" onClick={more}>
+    {t('pages.settings.releases.show_more', { count: Math.min(CREW_CLOSED_PAGE, omitted) })}
+  </Btn>
 }
 
 /** The List's search box (from `CREW_WORKER_SEARCH_MIN` crew members up). */

@@ -30,10 +30,11 @@ import tempfile
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import aws_consent, speech_providers
+from kiro_crew import aws_consent, platform_compat, speech_providers, voice_reply_polly_text
 from kiro_crew.constants import md_link_destination, strip_control_comments
 from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.emoji_list import STANDARD_EMOJIS
+from kiro_crew.kiro_cli_bundle import powershell_single_quoted
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import IS_MACOS, IS_WINDOWS, trusted_system_bin
 from kiro_crew.sandbox import (
@@ -574,31 +575,20 @@ def text_to_ssml(
     return f"<speak>{prosody}</speak>"
 
 
-async def _kill_and_reap(
-    proc: "asyncio.subprocess.Process", label: str, *, timed_out: bool
-) -> None:
+async def _kill_and_reap(proc: "asyncio.subprocess.Process", *, timed_out: bool) -> None:
     """Terminate and drain a child ``asyncio.wait_for`` already gave up on.
 
     ``wait_for`` cancels ``communicate()`` but never terminates the child, and a
-    caller cancellation (client disconnect) or an interpreter-exit signal arrives
-    the same way, so without this a zombie keeps consuming CPU after we return.
-
-    The reap goes through ``communicate()`` rather than ``wait()``: the pipe
-    readers are already cancelled, so a killed child blocked on a full PIPE would
-    never be drained and ``wait()`` would hang. On the non-timeout path a repeat
-    cancellation landing on the reap is swallowed so the ORIGINAL exception is
-    the one that propagates; on the timeout path it is a genuinely new
-    cancellation and is let out.
+    caller cancellation arrives the same way. :func:`platform_compat.kill_and_reap`
+    kills it and reaps it under a bound in a shielded task, so a repeat cancel
+    cannot abandon the reap while the child still holds its files (Windows
+    refuses to remove them) and re-delivers that cancel afterwards. On the
+    non-timeout path it is swallowed so the ORIGINAL exception propagates; on
+    the timeout path it is a genuinely new cancellation and is let out.
     """
     try:
-        proc.kill()
-    except OSError:
-        pass
-    try:
-        await proc.communicate()
-    except Exception:
-        logger.debug("%s wait after kill failed", label, exc_info=True)
-    except BaseException:
+        await platform_compat.kill_and_reap(proc)
+    except asyncio.CancelledError:
         if timed_out:
             raise
 
@@ -672,7 +662,7 @@ async def _run_tts_subprocess(
             timed_out = isinstance(exc, asyncio.TimeoutError)
             if timed_out:
                 logger.error("%s timed out after %ds; killing subprocess", label, timeout)
-            await _kill_and_reap(proc, label, timed_out=timed_out)
+            await _kill_and_reap(proc, timed_out=timed_out)
             if not timed_out:
                 raise  # cancellation/interrupt must propagate to the caller
             return False
@@ -759,10 +749,10 @@ async def _synthesize_system(
     engine, bin_path = resolved
 
     # Coerced at the one consumer rather than at each config reader: the value
-    # arrives raw from config.json, where a hand-edited `"system_voice": []` is
-    # possible, and every engine here would break on it differently — SAPI's
-    # `_ps_quote` raises AttributeError, and the two argv engines raise TypeError
-    # inside the spawn. An unusable name degrades to the engine's own default.
+    # arrives raw from config.json, where a hand-edited `"system_voice": 7` is
+    # possible, and every engine here would break on it — SAPI's `_spill_text`
+    # raises TypeError, and so do the two argv engines inside the spawn. An
+    # unusable name degrades to the engine's own default.
     voice = voice if isinstance(voice, str) else ""
 
     path = await asyncio.to_thread(_new_wav_path)
@@ -849,7 +839,7 @@ def _sapi_encoded_command(out_path: str, text_path: str, voice_path: str, rate: 
     terminate the string.
     """
     select_voice = (
-        f"$v=[IO.File]::ReadAllText({_ps_quote(voice_path)},[Text.Encoding]::UTF8);"
+        f"$v=[IO.File]::ReadAllText({powershell_single_quoted(voice_path)},[Text.Encoding]::UTF8);"
         "$s.SelectVoice($v);"
         if voice_path
         else ""
@@ -857,7 +847,7 @@ def _sapi_encoded_command(out_path: str, text_path: str, voice_path: str, rate: 
     script = (
         "$ErrorActionPreference='Stop';"
         "Add-Type -AssemblyName System.Speech;"
-        f"$t=[IO.File]::ReadAllText({_ps_quote(text_path)},[Text.Encoding]::UTF8);"
+        f"$t=[IO.File]::ReadAllText({powershell_single_quoted(text_path)},[Text.Encoding]::UTF8);"
         "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
         "try{"
         f"{select_voice}"
@@ -868,16 +858,11 @@ def _sapi_encoded_command(out_path: str, text_path: str, voice_path: str, rate: 
         "22050,"
         "[System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen,"
         "[System.Speech.AudioFormat.AudioChannel]::Mono);"
-        f"$s.SetOutputToWaveFile({_ps_quote(out_path)},$f);"
+        f"$s.SetOutputToWaveFile({powershell_single_quoted(out_path)},$f);"
         "$s.Speak($t);"
         "}finally{$s.Dispose()}"
     )
     return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-
-
-def _ps_quote(value: str) -> str:
-    """Return *value* as a PowerShell single-quoted literal."""
-    return "'" + value.replace("'", "''") + "'"
 
 
 # macOS `say -v '?'` pads the voice name with at least two spaces before the
@@ -954,7 +939,7 @@ async def list_system_voices() -> list[dict[str, str]]:
         stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
     except BaseException as exc:
         timed_out = isinstance(exc, asyncio.TimeoutError)
-        await _kill_and_reap(proc, "system voice probe", timed_out=timed_out)
+        await _kill_and_reap(proc, timed_out=timed_out)
         if not timed_out:
             raise
         logger.error("system voice enumeration timed out")
@@ -1197,9 +1182,11 @@ async def _synthesize_polly(
     fd, path = tempfile.mkstemp(suffix=".ogg" if ogg_opus else ".mp3")
     os.close(fd)
     sandbox_cleanup: str | None = None
+    text_file: str | None = None  # the SSML file a .cmd launcher reads, else None
     succeeded = False
     try:
         try:
+            text_args, text_file = await voice_reply_polly_text.polly_text_args_async(aws_bin, ssml)
             cmd: list[str] = [aws_bin, "polly", "synthesize-speech"]
             if aws_profile:
                 cmd += ["--profile", aws_profile]
@@ -1214,16 +1201,13 @@ async def _synthesize_polly(
                 OGG_OPUS_FORMAT if ogg_opus else OUTPUT_FORMAT,
                 "--text-type",
                 "ssml" if ssml.startswith("<speak") else "text",
-                "--text",
-                ssml,
+                *text_args,
                 path,
             ]
-            # LLM-derived SSML is passed on the command line to the AWS CLI.
-            # Apply an OS-level sandbox (namespace on Linux / seatbelt on
-            # macOS) so a compromised CLI or model can't reach private
-            # filesystem areas. ``wrap_argv`` is a no-op on platforms without
-            # a backend and returns a cleanup path that we must unlink after
-            # the child exits.
+            # LLM-derived SSML is passed to the AWS CLI. Apply an OS-level
+            # sandbox (namespace on Linux / seatbelt on macOS) so a compromised
+            # CLI or model can't reach private filesystem areas. ``wrap_argv``
+            # returns a cleanup path that we must unlink after the child exits.
             cmd, sandbox_cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)
             cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
@@ -1335,13 +1319,14 @@ async def _synthesize_polly(
                 os.unlink(path)
             except OSError:
                 pass
-        # Clean up the sandbox launcher script / seatbelt profile spawned
-        # by wrap_argv (None on platforms without a sandbox backend).
-        if sandbox_cleanup:
-            try:
-                os.unlink(sandbox_cleanup)
-            except OSError:
-                pass
+        # The sandbox launcher script / seatbelt profile from wrap_argv, and the
+        # SSML file of a .cmd launcher (each None when there is none).
+        for leftover in (sandbox_cleanup, text_file):
+            if leftover:
+                try:
+                    os.unlink(leftover)
+                except OSError:
+                    pass
 
 
 async def upload_voice_to_slack(
@@ -1362,7 +1347,7 @@ async def upload_voice_to_slack(
             thread_ts=thread_ts,
             file=audio_path,
             filename=f"voice-reply.{ext}",
-            title="\U0001f50a Voice Reply",
+            title="Voice Reply",
         )
         return True
     except Exception:
@@ -1413,6 +1398,17 @@ def _stitch_ffmpeg() -> str | None:
             found,
         )
     return found
+
+
+def _stitch_output_missing_or_empty(output: str) -> bool:
+    # The mkstemp allocation always exists, so "ffmpeg produced no output"
+    # manifests as an empty file, not an absent one.
+    return not os.path.exists(output) or os.path.getsize(output) == 0
+
+
+def _read_file_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
 
 
 async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None:
@@ -1492,28 +1488,15 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
         )
         try:
             await asyncio.wait_for(proc.communicate(), timeout=30)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
             # asyncio.wait_for cancels communicate() but does NOT terminate
             # the child — kill it explicitly (mirroring the polly
             # path) so it stops consuming CPU and, on Windows, releases the
             # output handle that would otherwise make the unlink in the
             # ``finally`` below fail and re-leak the file.
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                await proc.communicate()
-            except Exception:
-                logger.debug("ffmpeg wait after kill failed", exc_info=True)
+            await _kill_and_reap(proc, timed_out=not isinstance(exc, asyncio.CancelledError))
             raise
-        if (
-            proc.returncode != 0
-            or not os.path.exists(output)
-            # The mkstemp allocation always exists, so "ffmpeg produced no
-            # output" manifests as an empty file, not an absent one.
-            or os.path.getsize(output) == 0
-        ):
+        if proc.returncode != 0 or await asyncio.to_thread(_stitch_output_missing_or_empty, output):
             return None
         succeeded = True
         return output
@@ -1584,8 +1567,7 @@ async def streaming_voice_reply(
         if not mp3_path:
             continue
         try:
-            with open(mp3_path, "rb") as f:
-                mp3_bytes = f.read()
+            mp3_bytes = await asyncio.to_thread(_read_file_bytes, mp3_path)
             yield i, sentence, mp3_bytes
         finally:
             try:

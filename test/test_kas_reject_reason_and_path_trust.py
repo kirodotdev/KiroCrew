@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ntpath
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,6 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
+from kiro_crew import platform_compat, trust_patterns
 from kiro_crew.acp._dispatch import build_permission_event
 from kiro_crew.acp.runtime import AcpSessionHandle
 from kiro_crew.acp.types import (
@@ -270,6 +273,70 @@ def test_a_link_at_or_above_the_path_withholds_the_grant(tmp_path):
     link_dir = Path(real) / "link"
     make_dir_link(link_dir, Path(real))
     assert path_trust_unresolved(os.path.join(link_dir, "f.txt"))
+
+
+def _windows_fs(monkeypatch, symlink=""):
+    """Stand in for ``ntpath``: ``realpath`` answers the case stored on disk.
+
+    One regular file ``C:\\w\\Proj\\Allow.txt`` and a junction ``C:\\w\\jlink``
+    to ``C:\\w\\Proj``. Case is folded to match a name, never to spell it.
+    *symlink*, when given, is one more path that is a symlink to that file.
+    """
+    on_disk = "C:\\w\\Proj\\Allow.txt"
+    junction, junction_target = "C:\\w\\jlink", "C:\\w\\Proj"
+
+    def realpath(path: str) -> str:
+        folded = ntpath.normcase(path)
+        if folded.startswith(ntpath.normcase(junction) + "\\"):
+            return junction_target + path[len(junction) :]
+        return on_disk if folded == ntpath.normcase(on_disk) else path
+
+    def first_linked_ancestor(path: str) -> str | None:
+        parents = []
+        while ntpath.dirname(path) != path:
+            path = ntpath.dirname(path)
+            parents.append(path)
+        return next((p for p in reversed(parents) if p == symlink), None)
+
+    fake_path = SimpleNamespace(realpath=realpath, normcase=ntpath.normcase)
+    monkeypatch.setattr(trust_patterns, "os", SimpleNamespace(path=fake_path))
+    monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda path: path == symlink)
+    monkeypatch.setattr(platform_compat, "first_linked_ancestor", first_linked_ancestor)
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "C:\\w\\Proj\\Allow.txt",
+        "c:\\w\\Proj\\Allow.txt",  # lower-case drive letter
+        "C:\\w\\PROJ\\Allow.txt",  # folder in another case
+        "C:\\w\\Proj\\allow.txt",  # file name in another case
+    ],
+)
+def test_a_case_only_difference_is_not_a_link_on_windows(monkeypatch, spelling):
+    _windows_fs(monkeypatch)
+    assert not path_trust_unresolved(spelling)
+
+
+def test_a_junction_still_withholds_the_grant_on_windows(monkeypatch):
+    _windows_fs(monkeypatch)
+    assert path_trust_unresolved("C:\\w\\jlink\\Allow.txt")
+    assert path_trust_unresolved("c:\\w\\JLINK\\allow.txt")
+
+
+def test_a_symlink_to_a_case_variant_sibling_withholds_the_grant_on_windows(monkeypatch):
+    """A case-sensitive NTFS directory can hold ``allow.txt`` as a link to ``Allow.txt``."""
+    _windows_fs(monkeypatch, symlink="C:\\w\\Proj\\allow.txt")
+    assert path_trust_unresolved("C:\\w\\Proj\\allow.txt")
+    assert not path_trust_unresolved("C:\\w\\Proj\\Allow.txt")
+    assert not path_trust_unresolved("c:\\w\\Proj\\Allow.txt")
+
+
+def test_a_folder_link_to_a_case_variant_sibling_withholds_the_grant_on_windows(monkeypatch):
+    """``proj`` can be a link to ``Proj``; a file under it must still withhold the grant."""
+    _windows_fs(monkeypatch, symlink="C:\\w\\proj")
+    assert path_trust_unresolved("C:\\w\\proj\\Allow.txt")
+    assert not path_trust_unresolved("C:\\w\\Proj\\Allow.txt")
 
 
 def test_path_scope_trust_needs_harness_provenance():

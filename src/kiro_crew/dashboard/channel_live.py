@@ -6,7 +6,7 @@ receipt and the reply at the end. :class:`ChannelLiveSink` puts the rest of a
 dashboard turn on the tab while it runs, in the dashboard's own shapes:
 
 * **Tool steps** become the same transcript row a dashboard turn appends
-  (``🔧 <title>``, ``msg msg-tool``, the same row meta) and the same ``tool_call``
+  (``Tool: <title>``, ``msg msg-tool``, the same row meta) and the same ``tool_call``
   frame, both built by the dashboard runner's own helpers
   (``tool_rows._tool_call_ws_payload`` / ``_tool_meta``) so the labels cannot
   drift. The frame is what draws the tool pill and the sidebar's current-step
@@ -48,6 +48,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import TERMINAL_TOOL_STATUSES
 from kiro_crew.dashboard import channel_slots
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.renderer import OutputEvent
+from kiro_crew.tool_row_prefix import tool_row
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ class ChannelLiveSink:
         self._state.broadcast_ws("tool_call", payload)
         if self._log is None or self._abandoned:
             return
-        self._writes.append((f"🔧 {payload['tool']}", _tool_meta(source) or {}))
+        self._writes.append((tool_row("call", str(payload["tool"])), _tool_meta(source) or {}))
         if self._writer is None or self._writer.done():
             self._writer = asyncio.ensure_future(self._write_steps())
 

@@ -114,7 +114,7 @@ def _create_cron_folder(name: str) -> dict[str, object]:
         return {"error": f"gateway ownership not verified: {exc}"}
     except urllib.error.HTTPError as exc:
         try:
-            return {"error": str(json.loads(exc.read()).get("error") or f"{exc.code} {exc.reason}")}
+            return {"error": _refusal_text(json.loads(exc.read()), f"{exc.code} {exc.reason}")}
         except Exception:
             return {"error": f"{exc.code} {exc.reason}"}
     except (urllib.error.URLError, OSError) as exc:
@@ -132,6 +132,19 @@ def _create_cron_folder(name: str) -> dict[str, object]:
     except ValueError:
         return {"error": "gateway returned an unreadable answer"}
     return made if isinstance(made, dict) else {"error": "gateway returned an unreadable answer"}
+
+
+def _refusal_text(body: dict, fallback: object) -> str:
+    """The text to show for a gateway refusal whose JSON *body* was read.
+
+    An auth-layer refusal carries a bare ``Forbidden`` and a ``code``; the code names
+    what went wrong (most often a credential from another instance), so its
+    explanation from :mod:`kiro_crew.auth_refusal_text` is shown instead, the same
+    sentence an MCP tool gets. Any other refusal shows its ``error``, else *fallback*.
+    """
+    from kiro_crew.auth_refusal_text import auth_refusal_text
+
+    return auth_refusal_text(body.get("code")) or str(body.get("error") or fallback)
 
 
 def _spawn_row_text(row: dict[str, object]) -> str:
@@ -198,7 +211,7 @@ def _spawn(args: argparse.Namespace) -> None:
         except urllib.error.HTTPError as e:
             try:
                 body = json.loads(e.read())
-                print(f"Error: {body.get('error', e.reason)}", file=sys.stderr)
+                print(f"Error: {_refusal_text(body, e.reason)}", file=sys.stderr)
             except Exception:
                 print(f"Error: {e.code} {e.reason}", file=sys.stderr)
             sys.exit(1)
@@ -226,7 +239,12 @@ def _spawn(args: argparse.Namespace) -> None:
         queued = [q for q in data.get("queued") or [] if isinstance(q, dict) and q.get("id")]
         partial = data.get("queued_truncated") is True
         if not agents and not queued and not partial:
-            print("No subagents.")
+            # The gateway lists only runs no session started for a caller with
+            # no session key, so an empty reply does not mean nothing runs.
+            print(
+                "No subagents started from the CLI. Runs that a chat or another "
+                "session started are not listed here; see them in the dashboard."
+            )
             return
         for q in queued:
             # Accepted, no run yet (or waiting to resume one): a distinct icon,
@@ -297,7 +315,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
     except urllib.error.HTTPError as e:
         try:
             body = json.loads(e.read())
-            print(f"Error: {body.get('error', e.reason)}", file=sys.stderr)
+            print(f"Error: {_refusal_text(body, e.reason)}", file=sys.stderr)
         except Exception:
             print(f"Error: {e.code} {e.reason}", file=sys.stderr)
         sys.exit(1)
@@ -441,7 +459,7 @@ def _artifact(args: argparse.Namespace) -> None:
             return {"error": f"gateway ownership not verified: {exc}"}
         except urllib.error.HTTPError as exc:
             try:
-                return {"error": json.loads(exc.read()).get("error", str(exc))}
+                return {"error": _refusal_text(json.loads(exc.read()), str(exc))}
             except Exception:
                 return {"error": str(exc)}
         except Exception as exc:
@@ -555,10 +573,50 @@ def _artifact(args: argparse.Namespace) -> None:
         path = f"/api/artifacts/{seg}"
         if version is not None:
             path = f"/api/artifacts/{seg}/versions/{int(version)}"
+        docx_arg = getattr(args, "docx", None)
+        shown = ""
+        if docx_arg is not None:  # an empty name is refused below, never swallowed
+            shown = safe_terminal_line(Path(docx_arg).name) or "an empty name"
+            try:
+                target = Path(docx_arg).expanduser()
+                refused = not target.name or is_sensitive_path(str(target.resolve()))
+            except (OSError, RuntimeError, ValueError):
+                refused = True
+            if refused:
+                print(f"Error: cannot write a Word file to {shown}", file=sys.stderr)
+                sys.exit(1)
         d = _request("GET", path)
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
             sys.exit(1)
+        if docx_arg is not None:
+            kind = str(d.get("kind"))
+            if kind not in ("markdown", "text"):
+                print(
+                    f"Error: a {safe_terminal_line(kind)} artifact cannot be written as a "
+                    "Word file (markdown or text only)",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            from kiro_crew.artifact_docx import DocxTooLarge, write_docx
+
+            source = d.get("content")
+            try:
+                write_docx(source if isinstance(source, str) else "", target, kind == "markdown")
+            except DocxTooLarge:
+                print("Error: too large to write as a Word file", file=sys.stderr)
+                sys.exit(1)
+            except FileExistsError:
+                print(f"Error: {shown} already exists; nothing written", file=sys.stderr)
+                sys.exit(1)
+            except (OSError, RuntimeError, ValueError) as exc:  # never str(exc): it quotes a path
+                print(
+                    f"Error: could not write {shown}: {type(exc).__name__}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(f"Wrote {shown}")
+            return
         if getattr(args, "meta", False):
             d.pop("content", None)
             print(json.dumps(d, indent=2))

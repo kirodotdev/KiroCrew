@@ -3,8 +3,8 @@ title: Small machines release the embedding model sooner, and nothing waits for 
 status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-15
-audited-at: 52a3af8267a3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [37128]
 tracking-issues: [26319, 37556]

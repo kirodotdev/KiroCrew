@@ -185,7 +185,7 @@ second time.
 
 | Endpoint | Method | Path | Effect |
 |----------|--------|------|--------|
-| state | GET | `/api/chat/slots/{slot}/side` | The side conversation the gateway holds in memory, `{open, created_at, last_run_id, running, messages, queue}`, which a reloaded panel restores from. Each row carries the `id` its frame announced and its `run_id`; every text is redacted as the frames redact it. Owner-only for every caller (`chat.side_state`), the audience the side frames reach, so an app is refused even on a slot it owns; an app on a slot it does not own gets the uniform 404 |
+| state | GET | `/api/chat/slots/{slot}/side` | The side conversation the gateway holds in memory, `{open, created_at, last_run_id, running, messages, queue}`, which a reloaded panel restores from. Each row carries the `id` its frame announced and its `run_id`; every text is redacted as the frames redact it, and an answer carries `link_blocks` and its bounded `redactions` as its final frame does (see Wire Protocol). Owner-only for every caller (`chat.side_state`), the audience the side frames reach, so an app is refused even on a slot it owns; an app on a slot it does not own gets the uniform 404 |
 | open | POST | `/api/chat/slots/{slot}/side/open` | Initialise sidecar (idempotent) |
 | turn | POST | `/api/chat/slots/{slot}/side/turn` | Submit question; starts a turn, steers the running one, or queues. A dashboard-user caller must be the owner (`chat.side_turn`); app tokens keep slot scoping |
 | queue cancel | DELETE | `/api/chat/slots/{slot}/side/queue/{queue_id}` | Drop a queued entry; echoes its text back for the composer |
@@ -311,14 +311,23 @@ unaccepted when it was sent, since the read is older than both. A read that land
 after its conversation was closed and replaced in this tab changes nothing
 (`sideResync` checks the conversation's `createdAt`).
 
+**After an Allow or its Undo.** A Blocked link card's Allow or Undo on this slot
+(`mc:redaction-hosts-changed` naming the slot) changes which links the gateway
+serves as blocked, so the panel reads `GET .../side` again for that slot alone,
+through the same read and newest-wins rule (`resyncWaitingSideConversations(slot)`).
+On every read, a settled answer the panel holds by id takes the read's text,
+`link_blocks` and `redactions`; its other fields stay the panel's.
+
 ## Wire Protocol
 
 Event name: `chat.side_result`  
 Kind field: `"side"` (translated from upstream `"btw"`)
 
 Payload shape (broadcast per chunk and per final response, built by
-`dashboard/ws.py`, which owns the wire). `final`, `steer` and `message_id` are
-optional, and `is_error` is present only when true:
+`dashboard/ws_side_frames.py` and re-exported by `dashboard/ws.py`). `final`,
+`steer` and `message_id` are optional, `is_error` is present only when true, and
+a final assistant frame whose text holds blocked links also carries their records
+under `link_blocks`:
 
 ```json
 {
@@ -333,10 +342,28 @@ optional, and `is_error` is present only when true:
     "is_error": true,
     "final": true,
     "steer": true,
-    "message_id": "<sidecar row id>"
+    "message_id": "<sidecar row id>",
+    "link_blocks": [ ... ],
+    "redactions": [ ... ]
   }
 }
 ```
+
+A final assistant frame carries `link_blocks`, the blocked-link records of its
+text under the hosts allowed in the slot's workspace, computed as it is sent
+(`shown_link_blocks`). A stored answer's final frame also carries `redactions`,
+the credential records of its `[REDACTED: credential]` placeholders, bounded as a
+chat row's are (`chat_utils.with_bounded_redaction_records`); a streamed delta, a
+notice and an answer the sidecar did not store carry none. The records come from
+the main chat's own credential pass (`_redact_segment_text`, through
+`chat_runner`): `_run_side_turn` stores that pass's text, which is `redact()` of the
+marker-stripped answer
+(both splice one plan), the text it had without records, with the records beside
+it. The removed values are kept for the owner's
+reveal (`_commit_reveals`, scoped to the parent slot) only when the row is
+stored, before it is appended. The prompt-busy partial answer gets the same credential pass and reveal rule, without
+the marker strip.
+Nothing is persisted.
 
 `message_id` names the `SideState.messages` row the frame announces: a question,
 a consumed steer, a final answer or the stop row. Streaming deltas, and the error
@@ -354,6 +381,14 @@ A run broadcasts its frames only while its sidecar is still the slot's
 (`_run_side_turn`'s `_broadcast`). A close drops the sidecar and every tab clears
 the conversation, and a reopen makes a new sidecar, so a later frame of the old
 run would land in a conversation it does not belong to.
+
+Admission can hold a turn after `_dispatch_side_turn` hands it off, and
+`_run_side_turn` reads `slot._side` when its body starts. So the dispatcher
+checks, once admitted, that the slot still holds the sidecar it dispatched for.
+A turn whose sidecar was closed in that window is dropped: it does not take a
+reopened sidecar's session, binding or transcript, and sends no frame. A turn
+refused at admission after such a close sends no error frame either
+(`test_side_close_broadcast.py`).
 
 `chat.side_closed` (`{kind, slot, origin_client?, dropped?}`) says the slot's
 side conversation was closed. `dropped` is present only when the close dropped
@@ -421,7 +456,7 @@ tab, shows nothing new.
 
 Defined in `ws_side_frames.py` and re-exported by `dashboard/ws.py`, like the two
 broadcasts below. Emits `chat.side_queue` frames — `{kind, slot, action, queue_id, content?, depth,
-ts, front?, steer_id?, origin_client?}` where `action` is `push` | `edit` |
+ts, front?, rev?, steer_id?, origin_client?}` where `action` is `push` | `edit` |
 `cancel` | `drain`, to owner sockets only (`broadcast_ws_owners`). Held apart from
 `chat.side_result` so a queue mutation never enters the transcript reducer, and
 apart from the main chat's `queue_push` so a side entry can never be mistaken for
@@ -435,7 +470,8 @@ a parent-slot turn.
 under), `task` (the running side turn's asyncio task handle, so `/side/stop` can
 cancel it; `None` when idle) and `is_stopping` (the stop-in-progress busy flag).
 Helpers: `append_user` (with a `steer` marker), `append_assistant` (with an
-`is_error` marker, set on the stop row so a restored panel draws it as a notice),
+`is_error` marker, set on the stop row so a restored panel draws it as a notice,
+and the answer's credential records as `redactions`),
 `clear`, `queue_append` / `queue_insert_front` / `queue_pop` / `queue_remove` /
 `queue_edit`, `steer_can_accept`, and the ledger's `steer_register` /
 `steer_state` / `steer_mark` / `steer_pending` / `steer_settle`. Both append
@@ -453,7 +489,7 @@ echo splits one way and settling compares the escaped text.
 
 ### `dashboard/side_prompts.py`
 
-Four prompt constants, two lifted from the upstream protocol:
+Six prompt constants, two lifted from the upstream protocol:
 
 - `SIDE_BOUNDARY_PROMPT` — establishes ephemeral context and the read-only
   tool boundary the `READ_ONLY` policy enforces, in the footer's words:
@@ -475,8 +511,11 @@ Four prompt constants, two lifted from the upstream protocol:
 - `SIDE_BOUNDARY_PROMPT_LISTING` — the read-only boundary for a session that
   can list folders and view images but has no shell and no tool that reads a
   file's text (goose).
-  `side_boundary_prompt(tools_available=, shell_available=, file_reads_available=)`
-  picks one of the four.
+- `SIDE_BOUNDARY_PROMPT_FILE_READS` — the read-only boundary for a session
+  whose one tool reads a file's text by its absolute path, with no shell,
+  search or web tool (strands).
+  `side_boundary_prompt(tools_available=, shell_available=, file_reads_available=,
+  searches_available=)` picks one of the five.
 - `SIDE_DEVELOPER_INSTRUCTIONS` — marks the main-thread/side-thread boundary.
 - `build_side_system_prompt(tools_available=...)` — concatenates the developer
   instructions and the matching boundary prompt into the first-turn envelope;
@@ -579,7 +618,7 @@ decision row, while `pwd` under `execute_bash` raised one the gate approved); a
 native read runs outside the gate, and the guarantee holds because it is a
 read. kiro-cli trusts it only inside the session cwd; a read outside it raises
 a permission request. So the derived spec also adds `deniedPaths` under
-`toolsSettings` `fs_read`, `read`, `grep` and `glob`, built from
+`toolsSettings` `grep`, `glob` and one read key (`read`, else `fs_read`), built from
 `security.sandbox_credential_targets()` (the list the claude side session
 denies), and kiro-cli refuses those reads itself even inside the cwd
 (`side_readonly_spec.credential_denied_paths`). FAIL CLOSED: a turn whose spec
@@ -693,7 +732,11 @@ empty-output fallback and the footer
 `SideChat.tsx` from `GET /api/chat/side/tools`) say tools are unavailable there. Never
 `not is_claude_backend`: a harness joins by demonstrating that every tool call
 it serves either runs natively as a read or reaches `session/request_permission`,
-under a confinement the harness itself enforces.
+under a confinement the harness itself enforces. On every posture a finished reply loses
+each line that only quotes a directive tool's marker
+(`session_directive.strip_quoted_markers`) before it is redacted, stored and sent as
+the final frame: under the `REJECT_ALL` fallback the base agent's spec runs, and a
+directive tool it pre-grants runs without a permission request.
 
 **On claude the confinement is the session's own options.** claude-agent-acp
 reads no kiro agent spec, and its settings (the user's allow rules and default
@@ -796,9 +839,10 @@ it (measured on goose 1.50.1: with `shell` listed, a `touch` ran unasked).
   a `Permission.yaml` on case-insensitive storage stays out too. A side session
   with no scratch window, a home that cannot be built, or a `config.yaml` that
   does not parse as a mapping, is refused rather than started on the user's home.
-  POSIX only (`side_home_supported`): on Windows goose keeps its secrets under
-  `%APPDATA%`, outside the credential leaf the sensitive-path deny names, so a
-  goose side turn there keeps running `REJECT_ALL`, and the footer says so.
+  POSIX only (`side_home_supported`): on Windows goose keeps its config under
+  `%APPDATA%`, which `goose_config_dir` does not resolve, and linking needs a
+  symlink privilege, so a goose side turn there keeps running `REJECT_ALL`, and
+  the footer says so.
 - places no MCP server on the session array (`_goose_session_mcp_servers`), as
   on claude. A server named `developer` would also replace goose's builtin
   read tools.
@@ -860,7 +904,7 @@ call (`read_only_policy_no_hooks`). The gate runs its deny floor and
 governance first; then only the
 read-only classifier may auto-approve, and its verdict carries
 `ToolHookResult.read_only`. The gate is asked `classifier_only`, so the
-operator's `auto_approve_tools` globs and the app-own-server rule are skipped
+operator's `auto_approve_tools` globs and the app-own-server and app-own-tools rules are skipped
 rather than honoured (they vouch for the caller, not for the call's effect),
 and an auto-approve without the tag is rejected. A grant that shadows a read
 therefore still gets the read approved; a grant that shadows a write approves
@@ -1029,6 +1073,33 @@ memo on the second pass and eats the user's punctuation).
 because the IME defect was in the WIRING and a hook test cannot see it. A
 source-level guard fails if this file re-grows a local copy of any of them.
 
+A side question can carry attachments the way a main-composer message can: the
+attach control, Sketch, paste and drop all upload.
+`pages/chat/useSideChatUploads.ts` runs the main composer's upload flow
+(`useChatPaneUploads`, imported through the `components/ChatPane` facade; it uploads
+through `api.uploadFiles`) under a side key of its own (`sideUploadKey(slot)`), so
+the `composerSendHolds` hold, the cancel registry and the arrivals inbox of a side
+upload never touch the main composer's Send for the same slot, and the other way
+round. Finished paths are staged in the slot's `sideChatDrafts` entry (`files`),
+beside the text, so a chip survives an unmount. An upload that finishes while the
+panel is gone waits in the arrivals inbox (mirrored to `sessionStorage`, so a chip
+waiting there outlives a reload) until the panel is back. An upload failure while
+the panel shows another slot, or none, is held for the side key
+(`slotUploadFailures`) and enters the side composer's banner when the panel shows
+that slot again. Send waits while an upload runs. On submit, `buildOutgoingTurn`
+turns the staged images into leading `![image](path)` lines of the question (other
+files become `[attached_file N]` markers) and the paths clear with the text. A
+refused or unconfirmed send hands them back as chips beside the typed text
+(`restoreSideChatDraft`), never as the wire lines. The backend needs nothing extra:
+`build_side_message` returns a plain string, a single user segment, so
+`build_prompt_blocks` sends the picture as an ACP image block within the same
+`_MAX_QUESTION_BYTES` limit. A follow-up chip carries its own text and no
+attachments. `website/src/test/SideChat.attachImage.test.tsx` pins the attach
+control, the upload, the side-only Send hold, the image line on the wire and the
+hand-back. A steer into a running turn sends text only, so a steered question's
+image reaches the model as its path, not as a block, and a cancelled queued question
+comes back as its wire text, image line included.
+
 The transcript is the shared `app-sdk/ChatMessageList`, and `SideChat` takes two
 of the host's openers as props — `onFileOpen` and `onArtifactOpen`, the ones
 `SidePanel` already hands `ActivityViewer` for its Git and Artifacts tabs — and
@@ -1041,6 +1112,19 @@ one, copies the path and says so; a path link stays a plain link; an artifact
 link navigates away).
 `website/src/test/SideChat.fileOpen.test.tsx` pins both the wired and the
 unwired behaviour.
+
+An answer's `link_blocks` and `redactions` ride in the row's `meta`, where the
+shared bubble reads a main chat row's, and `SideChat` draws `assistant` and
+`streaming` rows through one host renderer, `renderAssistantBubble` with
+`redactionSlot: slot`: the side routes always serve this gateway's own slot, the
+local-slot rule the chat page uses (`pages/chat/transcriptRenderers.tsx`). So a
+flagged link draws as the Blocked link chip whose card offers Allow for this
+host, and a removed credential as the lock tag whose card offers the owner's
+reveal, as in the main chat. A settled row passes its `ts` as `messageTs`; a
+streaming row passes none, since its `ts` moves with each delta and would
+re-version its local image URLs. `website/src/test/SideChat.redactionRecords.test.tsx`
+pins the lock tag from a final frame and from a read, the card's Allow, the
+re-read after an Allow or Undo on this slot only, and the steady image URL.
 
 ### `store/chat/side.ts` — Side State
 
@@ -1082,7 +1166,7 @@ Wire Protocol), alongside the existing subagent/tool dispatch cases.
 
 | Concern | Mitigation |
 |---------|-----------|
-| Tool execution | System prompt prohibition + READ_ONLY approval policy: only the read-only classifier's verdict approves, and under `classifier_only` that verdict rests on host-trusted facts alone (`is_read_only_bash` on the recovered shell command, or a `_HOST_READ_ONLY_BUILTIN_TOOLS` name on the non-model-authored `_meta.kiro.toolName` — or, on claude, mapped from the adapter-stamped `_meta.claudeCode.toolName` of the call's `tool_call` frame — with no MCP server); the agent-influenced ACP `kind` and title may narrow but never prove; operator `auto_approve_tools` globs and app-own-server grants are skipped and an unclassified auto-approve is rejected |
+| Tool execution | System prompt prohibition + READ_ONLY approval policy: only the read-only classifier's verdict approves, and under `classifier_only` that verdict rests on host-trusted facts alone (`is_read_only_bash` on the recovered shell command, or a `_HOST_READ_ONLY_BUILTIN_TOOLS` name on the non-model-authored `_meta.kiro.toolName` — or, on claude, mapped from the adapter-stamped `_meta.claudeCode.toolName` of the call's `tool_call` frame — with no MCP server); the agent-influenced ACP `kind` and title may narrow but never prove; operator `auto_approve_tools` globs and app-own-server and app-own-tools grants are skipped and an unclassified auto-approve is rejected |
 | Governance identity | The gate runs under the side session's own key `side:<slot>:<gen>`, which `sel._infer_source` classifies as the `dashboard` surface, so a profile bound to `surface: dashboard` binds side turns exactly as it binds the parent slot |
 | Memory pollution | No calls to memory/learn/save; sidecar never serialised |
 | Context leak to main | The side envelope is built by `side_context.build_side_message`, never through `ContextBuilder.build_message`, and the side path never writes `slot.messages` (a review-time rule, see Testing) |
@@ -1147,7 +1231,11 @@ reading before it asks and holding the question when the read fails),
 steer routing), and the `sseSideResult` block in `chatSlice.messages.test.ts`.
 The read route itself is pinned in `test/test_side_state_route.py` (rows under
 their frames' ids, the queue, `running`, an interrupted turn read back with its
-notice, redaction, owner-only).
+notice, redaction, owner-only), and an answer's credential records in
+`test/test_side_redaction_records.py` (the stored text is `redact(raw)`, its record
+on the row, the final frame and the read, none on a delta, the reveal kept only for
+a stored row, none on the frame of a turn admitted after a close and reopen, the
+prompt-busy partial).
 
 Nothing enforces invariant 2 (separate envelope) mechanically. It is a
 review-time rule, held by the backend and frontend suites above plus the
@@ -1171,5 +1259,5 @@ exists this file does not claim one.
   `side:` prefix is registered in `session._STATELESS_PREFIXES`, so the
   isolated kiro-cli ACP session is never resumed across gateway restarts;
   its on-disk transcript at `~/.kiro/sessions/cli/<sid>.jsonl` exists
-  only while the side is open and is destroyed by `/side close` via
-  `state.sessions.destroy(side_key)`.
+  only while the side is open and is destroyed by the close route
+  (`POST .../side/close`) via `state.sessions.destroy(side_key)`.

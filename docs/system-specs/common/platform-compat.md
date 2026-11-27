@@ -49,8 +49,8 @@ is defined in an owner module beside it. Import and patch every one as
     whether the host can open one right now: its launcher, and on Linux a desktop
     session);
   - `platform_compat_liveness`: whether a pid is alive, a zombie or a thread-group
-    leader, its process group and its thread count, answered without a signal that
-    acts on it;
+    leader, its process group, whether this process has a supervisor's child's
+    shape, and its thread count, answered without a signal that acts on it;
   - `platform_compat_identity`: who a process is: its parent, image, command line and
     argv match, start identity and start time, owning user, Linux namespaces and
     cgroups, and macOS sandbox;
@@ -104,8 +104,9 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Open a lock file the sweep will lock AND unlink while held | `open_lock_file_for_sweep(path)`: `O_RDWR \| O_NOFOLLOW` on POSIX; on Windows it opens with `FILE_SHARE_DELETE`, so the held lock's file can still be unlinked | `os.open` (the Windows CRT omits `FILE_SHARE_DELETE`, so unlinking a held lock fails) |
 | Create-or-open a lock sidecar race-safely | `open_create_or_existing(path, flags, mode, dir_fd=)` creates the name EXCLUSIVELY first and, when a sibling already made it, reopens WITHOUT `O_CREAT` so both hold the sibling's inode; never truncates; returns the raw fd the caller owns. `open_lock_file(path)` is the context-managed form for a plain lock file; `open_lock_file(path, create=False)` opens an existing one only and raises `FileNotFoundError` when it is absent, for a deleter that must not recreate what it locks. A leaf that vanishes between the two opens is a genuine `ENOENT` left to the caller. Every by-name lock-sidecar open under `src/kiro_crew` routes through it; the one standalone skill script that cannot import the package (`five-whys`) spells out the same two opens. `test/test_dir_fd_create_race_ratchet.py` refuses a new `dir_fd=` open whose flags carry `O_CREAT` without `O_EXCL`, and a by-name `os.open` of a lock-named path (the path expression or the enclosing function says `lock`) with the same flags; its `LOCK_ALLOWED` list carries a reason for each site left as it is | nonexclusive `O_CREAT`, which can return `ENOENT` on Darwin when two callers race to create the same absent name |
 | Open a file you write AND lock, never through a link at the name | `open_create_no_reparse(path, mode)`: POSIX is `open_create_or_existing` with `O_RDWR \| O_NOFOLLOW` and no `O_NONBLOCK` (a lease break is waited out, as a plain open would); Windows is `win_open_no_reparse(path, directory=False, links_only=True)`, a `CreateFileW` read/write open-or-create with `FILE_FLAG_OPEN_REPARSE_POINT` and no `FILE_SHARE_DELETE`, refusing a link or junction with `ELOOP` (`win_fd_is_link` reads the name-surrogate bit of the opened handle's own reparse tag and fails closed), while a regular file carrying a non-link tag such as a cloud-files placeholder opens (the decision-log append shares the open without `links_only`, refusing every reparse point). `open_file_no_reparse(path, links_only=True)` is the read-only counterpart. Never truncates; the caller still `fstat`s the descriptor for `S_ISREG`, since a directory, FIFO or socket at the name can open. To name who holds a lock on that file, pass the descriptor's `fstat` to `flock_owner_pid` / `pids_holding_file`, which accept an `os.stat_result` | `os.open(path, O_RDWR \| O_CREAT)` (follows a link at the name, and creates a dangling link's target); an `lstat` check before the open (a check-to-open window); `flock_owner_pid(path)` after a no-follow open (re-resolves the name, so it can name the holder of something else) |
-| Liveness probe | `pid_exists(pid)` / `pid_liveness(pid)` | `os.kill(pid, 0)` (kills on Windows!) |
+| Liveness probe | `pid_exists(pid)` / `pid_liveness(pid)`; a PID outside the native range (an `OverflowError` on POSIX, wider than the Win32 DWORD on Windows) is unknown: `pid_exists` answers True and `pid_liveness` `PID_UNSIGNALABLE` | `os.kill(pid, 0)` (kills on Windows!); letting `OpenProcess` truncate an oversized stamp into another pid |
 | Process-group liveness | `pgroup_exists(pgid)`; an out-of-native-range positive identity is unknown and therefore conservatively reads as alive, so persisted-state cleanup refuses it without aborting the rest of the sweep | `os.killpg(pgid, 0)` directly, or treating an oversized integer as a dead group |
+| Whether this process runs as a supervisor's child (no terminal on stdin, inside its parent's process group, not its leader) | `supervision_shape_failure()`: `None` when it does, else `SUPERVISION_TERMINAL` (`os.tcgetpgrp(0)` answers), `SUPERVISION_OWN_GROUP` (it leads its group, or its parent's group differs or cannot be read) or, off POSIX, `SUPERVISION_NOT_POSIX` | `os.getpgrp()` / `os.tcgetpgrp()` / `os.getpgid()` outside the compatibility layer (absent on Windows) |
 | Kill a process | `kill_pid(pid, sig)` | `os.kill(pid, sig)` |
 | Terminate a captured PID set without crossing PID reuse | `terminate_pids_pinned([(pid, start_id), ...], protected_pids=..., grace_secs=...)`; the caller supplies leaf-first identities, Linux opens a pidfd before each identity check and signals through it (the raw syscalls via `_process_group_supervisor` when the interpreter lacks the wrappers), every other host signals nothing, the filter drops protected and current PIDs, a call that delivered no SIGTERM returns 0 without the grace wait or SIGKILL, and the return value counts only confirmed exits or accepted SIGKILLs | a bare PID list; checking an identity before opening its process handle; a numeric-PID fallback when pinning is unavailable; a raw Linux syscall number on any other kernel; waiting out the grace when no SIGTERM was delivered; counting SIGTERM delivery as confirmed termination; signalling a protected runtime |
 | Kill a tree | `kill_process_tree(pid, sig)` | `os.killpg(os.getpgid(pid), sig)` |
@@ -128,7 +129,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Read Linux process name | `linux_process_name(pid)`; exact kernel `comm`, `None` off Linux or on an unreadable/empty value. Fixture tests may pass `proc_root=`. | reading `/proc/<pid>/comm` outside the compatibility layer |
 | Compare process cgroups | `process_cgroups_match(pid, reference_pid)`; compares stable unified cgroup v2 membership and returns `None` off Linux, on cgroup v1, on unreadable/changing membership, or when identity is otherwise inconclusive. Fixture tests may pass `proc_root=`. | comparing one `/proc/<pid>/cgroup` read without stability rechecks |
 | Process start time (PID-reuse guard) | `process_start_time(pid)` | `/proc/<pid>/stat` / `ps -o lstart=` (both answer `None` on Windows, so the guard silently never confirms) |
-| This process's effective uid, to derive a per-user path from (`/run/user/<uid>/bus`) | `effective_uid()`: `os.geteuid()` on POSIX, `None` on Windows, which has no uid; a caller reads `None` as "no such path on this platform" (`github_runner._user_bus_socket_candidates` then offers no uid-derived candidate and the provider CLI child gets no `DBUS_SESSION_BUS_ADDRESS` at all) | `os.geteuid()` / `os.getuid()` reached directly (neither exists on Windows, so the import-time or call-time `AttributeError` takes the whole builder down); formatting a guessed uid into the path |
+| This process's effective uid, to derive a per-user path from (`/run/user/<uid>/bus`) | `effective_uid()`: `os.geteuid()` on POSIX, `None` on Windows, which has no uid; a caller reads `None` as "no such path on this platform" (`github_runner._user_bus_socket_candidates` then offers no uid-derived candidate and the provider CLI child gets no `DBUS_SESSION_BUS_ADDRESS` at all; `unchanged_file.already_holds` compares it with a file's owner and reads `None` as "not this user's file", so the write goes ahead) | `os.geteuid()` / `os.getuid()` reached directly (neither exists on Windows, so the import-time or call-time `AttributeError` takes the whole builder down); formatting a guessed uid into the path |
 | Is this pid a PROCESS rather than a thread | `is_thread_group_leader(pid)` for one pid; `live_thread_group_leaders()` once for a whole sweep | `pid_exists(pid)` alone (Linux numbers threads from the pid space and POSIX permits signalling a tid, so a pid recycled as a THREAD of an unrelated process reads as alive forever). Both answer `None`, never `False`, when unknowable — treat `None` as "retain", never as licence to act |
 | Signals | `platform_compat.SIGKILL` / `SIGTERM` | `signal.SIGKILL` (undefined on Windows) |
 | Spawn isolation | `start_new_session=IS_POSIX` + `creationflags=CREATE_NEW_PROCESS_GROUP` | bare `start_new_session=True` |
@@ -142,6 +143,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Re-enter an edition's stable gateway launcher | `reexec_launcher(launcher, args)` after `gateway_restart.resolve_restart_launcher()` validates it; keeps the dispatch pathname, original arguments and UTF-8 environment, cancels a managed-venv apply in flight (`cancel_wheel_applies_in_flight`), and puts every variable registered with `keep_for_reexec` back into `os.environ` right before `os.execv` | resolving the symlink basename away, passing Python `-m` flags to a launcher, or evaluating a shell command |
 | Re-exec the current Python module | `reexec_python_module(module, args)`; like `reexec_launcher`, it cancels a managed-venv apply in flight, then restores the UTF-8 environment and the `keep_for_reexec` variables right before `os.execv` | `os.execv(sys.executable, [sys.executable, ...])` (breaks when the Windows interpreter path contains spaces) |
 | Take a variable out of the environment for descendants while this process's own exec successor still gets it (the managed-service launch marker) | `keep_for_reexec(name, value)` after popping it; `kept_for_reexec()` reads what is held. Only the two reexec seams restore it, so a child spawned meanwhile does not inherit it, and if `execv` raises, `os.environ` keeps it until the process exits | re-setting it in `os.environ` by hand before an exec (every child spawned in between inherits it); an exec outside the two reexec seams (the successor loses it) |
+| Collect the children an exec'd predecessor left (POSIX `execv` keeps the pid, so they stay this process's children with no `Popen` left to wait on them) | the two reexec seams name this image's direct children in `KIROCREW_REEXEC_CHILD_PIDS` right before `os.execv` (`_publish_children_for_successor`, in the compatibility layer itself so nothing else must still be loadable at exec time; dropped again if the exec fails), and the gateway entrypoint calls `reexec_children.adopt_inherited_children()`, which pops the variable and `waitpid(pid, WNOHANG)`s exactly those pids until each is collected. A listed pid cannot name a stranger while it is unreaped | `waitpid(-1, ...)` in the successor (it steals the exit status of a child a `Popen` in this image owns); importing a module not yet loaded at exec time (an update may already have removed the old image's tree) |
 | End the process at once, other than the gateway's own final exit | `hard_exit(code)`: cancels a managed-venv apply in flight, then `os._exit` (the second-signal force exit, the owner's `/kirocrew restart`) | a bare `os._exit` (a managed-venv apply in flight keeps writing its tree after the process that supervised it is gone) |
 | Stop a managed-venv apply at every exec, hard exit or shutdown | `cancel_wheel_applies_in_flight(reason)`: looks `kiro_crew.platform.wheel_apply` up in `sys.modules` (never imports it) and calls its `cancel_wheel_applies(reason)` when loaded; both exec seams and `hard_exit` call it, and a shutdown that wants the apply stopped before its own teardown calls it itself. Synchronous, quick, safe to call twice; a cancel that raises never stops the exit | an `atexit` handler (an exec and `os._exit` both skip it); a general exit-hook registry (it had one registrant, so it abstracted over nothing) |
 | Launch a Kiro Crew-owned Python child | `isolated_python_argv(*args, executable=...)`; it adds `-s` for the bundle and parents whose user site is already unavailable, unless the option prefix carries `-s` or stronger `-I`. A self-launch through `-m kiro_crew...` also passes `-P` (safe path: the cwd is not on `sys.path`), pinned by `test/test_stdlib_shadow.py` | a raw `[sys.executable, ...]`, or an ad hoc `PYTHONNOUSERSITE` env that another spawn path can omit |
@@ -165,7 +167,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Is this host on mains or battery | `power_source()` → `POWER_AC` / `POWER_BATTERY` / `POWER_UNKNOWN`. Linux reads `/sys/class/power_supply`: external power is any `type == "Mains"` supply or any `type == "USB"` supply whose `scope` is not `Device` (the USB-C port supplies, `ucsi-source-psy-*`), and ANY online one means mains, so a USB-C PD charger counts even when only its port reports it; a tree with no external supply is `UNKNOWN`, not battery, so a desktop with a peripheral's battery never reads as a laptop. Battery needs every external supply read offline: an unreadable one may be the charger, so with none online the answer is `UNKNOWN`. Battery also needs a system battery (`type == "Battery"`, `scope` not `Device`), so a desktop whose only external supply is an idle USB-C port reads `UNKNOWN`. Windows reads `GetSystemPowerStatus`, whose `ACLineStatus` 255 stays `UNKNOWN`. macOS has no reader yet and answers `UNKNOWN`, so it never throttles. Never raises, never cached: callers read it once per unit of work. Fixture tests pass `sysfs_root=` to `_linux_power_source` and patch `_windows_ac_line_status` | treating `POWER_UNKNOWN` as battery (every consumer MUST read it as mains: deferring optional work on an unreadable probe is a silent, permanent stoppage), reading `/sys/class/power_supply` outside this layer, requiring a supply name like `AC0`, or caching the answer across units of work |
 | Directory link | `symlink_or_junction(target, link)` | `os.symlink` (`WinError 1314` without elevation) |
 | Detect/remove a dir link | `is_link_or_junction(path)` / `unlink_link_or_junction(path)` | `path.is_symlink()` (misses a Windows junction) |
-| Compare paths for identity (`==` / `!=`, `is_relative_to`, an "is this a link or redirect" guard) when either side came from `Path.resolve` / `os.path.realpath`, including two separate resolves | `strip_extended_length_prefix(path)` on BOTH sides before comparing; it folds `\\?\` and `\\?\UNC\` alike (#37114, fixed in #37211: `atomic_write._refuse_linked_parent` compared two resolves of one directory, one came back prefixed, and two concurrent first saves answered 503) | comparing the two spellings as `Path.resolve` returns them (on Windows `ntpath.realpath` keeps the extended-length prefix when its prefix-strip re-check races a concurrent swap of the same file, so a prefixed child against an unprefixed parent reads as a path escape; the fold is LEXICAL and must not re-resolve, which would bless the redirect the caller is testing for) |
+| Compare paths for identity (`==` / `!=`, `is_relative_to`, an "is this a link or redirect" guard) when either side came from `Path.resolve` / `os.path.realpath`, including two separate resolves | `strip_extended_length_prefix(path)` on BOTH sides before comparing; it folds `\\?\` and `\\?\UNC\` alike (`atomic_write._refuse_linked_parent` compares two resolves of one directory this way: unfolded, one can come back prefixed and two concurrent first saves answer 503) | comparing the two spellings as `Path.resolve` returns them (on Windows `ntpath.realpath` keeps the extended-length prefix when its prefix-strip re-check races a concurrent swap of the same file, so a prefixed child against an unprefixed parent reads as a path escape; the fold is LEXICAL and must not re-resolve, which would bless the redirect the caller is testing for) |
 | Read, write or store a path after folding its extended-length prefix | refuse it first when `names_a_verbatim_only_file(path)` is True | using the folded path as-is (a component ending in a dot or a space, or a DOS device stem such as `CON`, is reachable only through the `\\?\` spelling; ordinary Win32 lookup trims or remaps it, so the folded path names a sibling or a device instead of the file that passed the checks) |
 | Hold a directory in place while a child writes into it by path | `pin_directory(path)` (then `os.close`) | `os.open(dir, O_RDONLY)` (EACCES on Windows, and even where it opens it follows a link planted at the name) |
 | Act on the ENTRIES of a directory you inspected (screen-then-remove, screen-then-descend) | `pinned_directory(path)` yielding `PinnedDirectory` (`names` / `is_link` / `is_dir` / `unlink` / `rmdir` / `child` / `child_if_real_dir` / `read_text`); `pinned_directory(path, links_only=True)` carries `pin_directory`'s `links_only` down the whole chain, so a cloud-files or dedup directory is pinned as the directory it is while a link or junction is still refused. On Windows `unlink` opens the entry itself, compares the kernel's final path of that handle with the pinned directory's, and deletes through the same handle: a same-user process holding `FILE_WRITE_ATTRIBUTES` can turn an EMPTY pinned directory into a junction in place, and no share mode refuses that access; a parent stays pinned while its child is in use, so a chain of them pins the whole path, and `child` refuses past `PINNED_TREE_MAX_DEPTH` (64) levels with `ENAMETOOLONG` so a planted chain cannot spend another frame or descriptor. **Descend with `child_if_real_dir`**, which answers None when what is at the name is no longer a real directory and RE-RAISES for one that is: it holds the errno-agnostic dispatch (a refused `O_DIRECTORY \| O_NOFOLLOW` open is ENOTDIR on some kernels, ELOOP on others, `NotADirectoryError` on Windows) in one place, and its callers supply the differing action — two remove the entry, one deliberately leaves it. Its re-raise is also how the depth refusal reaches a caller, so an over-deep tree fails the operation instead of being unlinked as though it were a link | screening a NAME and then operating on that name -- every stdlib walker re-resolves it in between, and `os.walk`'s own descent re-check is `os.path.islink`, which is False for a junction, while `rglob` descends one unconditionally. The two platforms need OPPOSITE routes, which is why this is a helper rather than an `IS_POSIX` branch per call site: `dir_fd`-relative calls on POSIX, where the pin does NOT block a rename, and by-path calls on Windows, where there are no `dir_fd` operations at all and the pin is what holds the path still. Also: hand-spelling the refused-open fallback at a call site, where a fourth copy gets the errno dispatch subtly wrong |
@@ -184,7 +186,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | macOS kernel memory pressure | `memory_pressure_level()`: `kern.memorystatus_vm_pressure_level` through `sysctlbyname` on the cached `_darwin_sysctl_handle()`, in-process (built once under a lock, both prototypes declared before the handle is published, so a concurrent first call never reads None). It answers `MEMORY_PRESSURE_NORMAL` (1), `MEMORY_PRESSURE_WARN` (2) or `MEMORY_PRESSURE_CRITICAL` (4): XNU's `NOTE_MEMORYSTATUS_PRESSURE_*`, the same values as libdispatch's `DISPATCH_MEMORYPRESSURE_*`, with the kernel's internal "urgent" level reported as WARN. `memory_pressure_name(level)` renders it. `None` off macOS and on any failure (no libc, a failed call, a wrong-size answer, an unknown value), and a caller fails open on `None`. The level is the kernel's lagging verdict (subagent.md, *macOS: the kernel memory-pressure hold*): use it as a backstop beside a figure, never as one | a `sysctl` subprocess (the app sandbox can deny the spawn, and callers run on the event loop); a fresh `CDLL` per read; treating the level as a measure of free memory, or a NORMAL reading as proof the host has room |
 | FD soft limit | `raise_nofile_soft_limit(n)` | `resource.setrlimit` |
 | Port to PID | `find_listening_pids(port)` / `listening_pid_tool_available()`; `find_port_listeners(port)` when ownership must be scoped to the local address actually probed; `probe_port_listeners(port)` when completed-empty must be distinguished from timeout or execution failure; `process_owns_loopback_listener(pid, port)` for per-process ownership through Linux procfs (listener inodes from a `NETLINK_SOCK_DIAG` LISTEN dump in `sock_diag.py` for the host's own `/proc`, `/proc/net/tcp{,6}` when that query fails), PID-scoped `lsof`, or Windows `GetExtendedTcpTable` owner-PID tables, and `process_owns_port_listener(pid, port)` for the same question without the loopback filter (any LISTEN socket the pid holds on the port; Windows answers `None`). Prefer them over `find_listening_pids` when the pid to prove is already known: it never runs a system-wide `lsof` | `lsof` or `netstat` directly |
-| Spawn a system tool (`ps`, `lsof`, `netstat`, `taskkill`) | `trusted_system_bin(name)`, treating `None` as "unavailable" | a bare argv name (resolved through a `PATH` that can lead with same-uid-writable dirs) |
+| Spawn a system tool (`ps`, `lsof`, `netstat`, `taskkill`) | `trusted_system_bin(name)`, treating `None` as "unavailable". `test/test_host_introspection_trusted_bin.py` fails any gateway spawn of `ps`, `pgrep`, `sysctl`, `vm_stat` or `netstat` by bare name (skill scripts, which the agent runs in its sandbox, are outside it) | a bare argv name (resolved through a `PATH` that can lead with same-uid-writable dirs), or `shutil.which(name)` first with a fixed path as the fallback (the same `PATH` lookup) |
 | Resolve a system tool on the event loop (a periodically refreshed capability probe) | `trusted_system_bin_quiet(name)`: the same fixed-directory lookup with no miss diagnostic, reporting a miss in the caller's own words | `trusted_system_bin`, whose miss diagnostic walks `PATH` with `shutil.which` and can hang on an entry on a stalled mount |
 | Decide whether an executable's PATH can be trusted (ownership, mode bits, writability by some account) | `traversed_components(path)` for the ENUMERATION, then the site's own predicate over every entry. It resolves the path COMPONENT BY COMPONENT, expanding each symlink it meets, and returns every directory the walk actually reads — the original spelling's side, each hop's side and the target's side — plus the final target, root-first, each once; `None` on `OSError` or past `_MAX_SYMLINK_HOPS`, which every caller treats as a refusal. `traversed_components_and_links(path)` is the same walk returning `(components, links)`, where `links` names each symlink it expanded, spelled under a directory `components` names: a question that admits a sticky directory needs their owners too, because an account that may write a sticky directory replaces only its own entries there. The trust QUESTION stays with the caller, because the sites ask different ones and must keep asking them: `_is_root_owned_path` (`trusted_aws_bin`: root's alone to change), `github_runner.validate_provider_executable` POSIX branch (not another uid's, not world-writable unless sticky; strict mode root-owned and unwritable; its multicall-link rule, Linux-only because elsewhere an ACL can grant write the mode bits do not show, reads `traversed_components_and_links`, since it admits sticky directories), `service.apparmor._substitutable_by_others` (no `0o022` bit, no third-account owner). Windows branches keep their ACL-driven lexical chains; the walker is `os.sep`-rooted and does not model drive anchors or junctions | `realpath` and then `.parents` / `os.path.dirname` (collapses the chain, so a hop through writable space — `gh -> /tmp/link -> /usr/bin/gh` — is never stat'd); a lexical `.parents` walk over the spelling as given (`os.stat` follows symlinks and `dirname` does not, so for `/usr/local/bin -> /opt/x/bin` the target's parent `/opt/x` is never visited); or walking BOTH endpoints' lexical chains (still names no hop in the middle). Adding another spelling of the walk for a new site |
 | Decide whether a group write bit admits an account other than this one | `group_write_admits_another_account(path, gid)` with the path's `st_gid`: the one question every check crediting a group write bit to its owner asks, so one directory gets one answer (`cloud.source._first_replaceable` for the chain holding a staged source tarball, `github_runner._who_can_change` for what a provider CLI link's path reads). `None` means the bit admits this account alone. It reads the POSIX access ACL first (`_acl_admits_another_account`): with an extended ACL the group bits are its MASK, so a named entry can write behind a bit that looks private; only an EFFECTIVE write counts (entry AND mask), a named user that is this account or root is trusted, and a named group gets the membership question. No ACL API (macOS, BSD) or no ACL leaves the mode bits as the test; any other read failure or an unrecognised value fails closed. Then the membership (`_group_shared_with_another_account`): `gr_mem` of every group entry carrying the gid (`getgrgid` returns one, and a second entry from `groupadd -o` grants the gid to its own members), plus a passwd enumeration that must contain this account. Any other answer is a noun phrase naming whom the bit may admit, for an operator-facing message; anything unreadable is such an answer, never `None`. POSIX only: on Windows the staging walk reads the ACL instead, and the link rule runs only on Linux | counting every group write bit as a foreign writer (a user-private group's bit is the owner's own); reading the bit as the owning group's permission without reading the ACL; refusing every ACL (a read-only entry or a default-only ACL lets no one else write); trusting `gr_mem` alone (an account whose primary group it is never appears there), `getgrgid`'s one entry, or a passwd enumeration that does not contain this account; a check asking one half, or its own copy of the question |
@@ -527,11 +529,12 @@ transport's constructor (`_WindowsSubprocessTransport._start` ->
 `windows_utils.Popen`), before the transport's first await. A host whose
 endpoint protection holds `CreateProcess` for seconds therefore holds the
 gateway loop for seconds: every MCP probe and heartbeat on it stalls, and the
-loop-stall watchdog exits the gateway (#24968, #27800, design on #19136).
+loop-stall watchdog exits the gateway.
 
 `platform_compat_offloop_spawn` splits the transport build in two:
 
-1. A worker on `spawn_executor()` (a bounded `mc-spawn` pool) builds the `Popen`:
+1. A worker on `spawn_executor()` (a bounded `mc-spawn` pool whose `submit` only
+   enqueues, see [below](#the-loops-thread-pools-never-wait-on-a-worker-start)) builds the `Popen`:
    `CreateProcess` plus the overlapped pipe handles. No loop state is touched.
 2. On the calling loop, a subclass of the stock transport whose `_start` is the
    interpreter's own `_start` with its `windows_utils.Popen` lookup answered by
@@ -546,7 +549,8 @@ spawn waits for it, adopts any child it built and tears it down with `close()` t
 `_wait()`, exactly as a cancellation at the stock `await waiter` does. When the
 worker's build fails after such a cancellation, the spawn still raises
 `CancelledError` (chained from the build error) so the caller's cancel is not
-turned into an ordinary spawn failure.
+turned into an ordinary spawn failure; so does a cancelled spawn whose pool could
+not start a worker for it (no child exists then).
 
 Both gateway entry points (`cli.main`'s gateway command and `gatewayd.main`) pass
 `gateway_loop_factory()` to `asyncio.run`. On Windows it returns
@@ -554,13 +558,122 @@ Both gateway entry points (`cli.main`'s gateway command and `gatewayd.main`) pas
 so every `create_subprocess_exec` / `create_subprocess_shell` on the gateway loop
 (ACP agent start, MCP server start, the Windows script-hook shell arm) is covered
 without a per-call-site change. The owned ACP spawn in `platform_compat_wintree`
-calls `make_subprocess_transport_off_loop` with its capturing `Popen`. Off Windows
-the factory is `None` (the default loop), so POSIX behaviour does not change. If an
+calls `make_subprocess_transport_off_loop` with its capturing `Popen`. If an
 interpreter's `_start` no longer spawns through `windows_utils.Popen`, the spawn
 refuses before creation rather than silently spawning on the loop. The guards are in
 `test/test_windows_spawn_off_loop.py`: a slow simulated build must leave a heartbeat
 on the loop ticking, on POSIX through the same helper and on the Windows CI shards
 through a real Proactor loop with `CreateProcess` delayed.
+
+## POSIX gateway spawns build their child off the event loop
+
+The Unix loop has the same shape: `_UnixSubprocessTransport._start` calls
+`subprocess.Popen`, which returns only after the child forked and exec'd. Off
+Windows, `gateway_loop_factory()` returns a factory for
+`OffLoopSpawnUnixSelectorEventLoop`, which builds each child on the same worker
+pool with `make_subprocess_transport_off_loop` and the stock Unix transport, then
+registers it with the loop's child watcher (`after_init`). The watcher comes from
+`_posix_child_watcher`: the loop's own on CPython 3.14, the policy's on 3.12 and
+3.13. A `FastChildWatcher` (it reaps with `waitpid(-1)` and drops the exit of a pid
+registered late) or an inactive watcher sends the spawn down the stock path, and
+that fallback logs one warning per process. The factory calls `set_event_loop` on
+the loop it builds, as `asyncio.run` does for its own loop; on 3.12 and 3.13 that is
+what attaches the macOS SIGCHLD watcher `_install_child_watcher` installs.
+
+The worker removes the wait for the child's exec, not the fork itself: CPython holds
+the GIL for the whole `fork()`, and on macOS (no `vfork`) a fork copies the gateway's
+memory map. So the App Store's git children, which run in bursts, start without a
+fork. Inside `sandbox_rlimit.fork_free_spawns()` -- opened per row by the manifest
+fan-out `_gather_bounded` -- `create_subprocess_limited` passes `close_fds=False` and
+no `cwd` / `start_new_session`, which lets `Popen` start the spawn shim with
+`posix_spawn`, and the shim does those three jobs itself (`--setsid`, `--chdir=`,
+`--close-fds`) before it execs the command. A spawn that needs `pass_fds`,
+`process_group`, `umask`, `user`/`group`, or a `chdir_fd` keeps the fork start, as
+does every spawn outside that scope (ACP sessions included). With a 3 GB heap and
+`vfork` off, a `git --version` spawn held the loop 144 ms on the stock loop, 62 ms
+built on the worker with a fork, and 0.5 ms with `posix_spawn`.
+
+The guards are `test/test_spawn_off_loop.py` (a held `Popen` must leave the gateway
+loop turning; cancellation reaps; the fallback logs once) and
+`test/test_fork_free_spawn.py` (no fork start inside the scope; cwd, session and
+inherited-descriptor closing match `Popen`'s; the scope is per task; the manifest
+fan-out opens it).
+
+## The loop's thread pools never wait on a worker start
+
+CPython's `ThreadPoolExecutor.submit` holds `concurrent.futures.thread._global_shutdown_lock`,
+one lock for every pool in the process, while it starts a worker, and `Thread.start()`
+waits for the new thread to run. On a Windows host near its commit limit a start takes
+seconds, so every other thread's `submit` waits on that lock, an idle worker
+notwithstanding, and a pool with no idle worker starts the new one on the caller's
+thread. The loop thread submits to the default executor (`asyncio.to_thread`,
+`run_in_executor(None, ...)`, the loop's `getaddrinfo`), to `spawn_executor()` for
+every child built off the loop as above, and to the thread pools `kiro_crew.executors`
+builds (`subprocess_executor()`, `discovery_executor()`, `maintenance_executor()`,
+`crew_log_executor()` and the rest).
+
+All of them are `enqueue_only_pool.EnqueueOnlyThreadPoolExecutor`
+(`configure_default_executor` installs it as the default executor). Its `submit` takes
+only the pool's own lock, never one held across a `Thread.start()`, and puts the call
+on `_work_queue`. Building a pool starts its first worker and then one grower thread,
+both on the building thread (a shared pool's getter in `kiro_crew.executors` holds
+`executors._lock` across them, once per pool; `memory_preparation_executor()` builds a
+fresh pool per call), so a pool always has a worker and only growth waits on the
+grower, which starts the rest up to the cap. A slow start therefore delays only work
+waiting for a new worker, and the running workers keep taking work. A first worker the
+host refuses to start (thread or commit exhaustion) raises its error to the builder,
+so from the getter where the caller submits, as the stdlib's first `submit` raised it
+to the same caller, and nothing of the pool is kept; the next getter call builds it
+again. A refused growth start leaves the queue to the running workers, and the next
+`submit` asks again. It subclasses `ThreadPoolExecutor` because
+`loop.set_default_executor` accepts nothing else, and keeps `_work_queue` because
+`turn_timing` and `cron_queue_depth()` read its depth. Its threads are daemons:
+`shutdown()` stops them with one sentinel (and `cancel_futures` cancels queued work),
+and a pool dropped without a shutdown stops them through a weak reference. A call
+queued before `shutdown()` still runs. `shutdown(wait=True)` joins the grower before
+the workers, so it returns only once every worker it started has finished.
+
+At interpreter exit every such pool's work is joined as the stdlib joins its own
+pools', so queued and running work (an update apply, a crew-log or memory store write)
+still finishes. One hook does it, registered at import through
+`threading._register_atexit`, the private function the stdlib registers its own exit
+hook (`_python_exit`) with. It makes every pool refuse new work from then on, as the
+stdlib's pools refuse it after interpreter shutdown, shuts every pool registered by
+then down behind its queued work, joins each grower, then puts a stop behind each
+recorded worker's queue and joins every worker recorded by then: workers are recorded
+with their queue, apart from their pool, as the stdlib records its own, so a pool
+already shut down without `wait` and dropped (the default executor after
+`loop.close()`, the per-pass memory-preparation pool) still has its running work
+joined. A pool first built while the hook runs takes no work, so its idle daemon
+threads end with the interpreter. Those hooks run in reverse order of registration and
+this module registers after `concurrent.futures.thread`, so this hook runs just before
+the stdlib's, while stdlib pools still accept work, and both run before the non-daemon
+threads are joined and before `atexit`. `shutdown_maintenance_executor()`, the
+`atexit` handler of the `kiro_crew.executors` pools, therefore still finds nothing
+queued to cancel, as it did after the stdlib's hook. The gateway itself leaves through
+`os._exit` (`slack/gateway_runtime/exit_path.py`; `platform_compat.hard_exit` on a
+forced exit), which runs neither hook, so this governs the processes that exit
+normally: CLI commands, child processes and tests.
+
+Every other pool keeps the stdlib executor: those built outside `kiro_crew.executors`
+(the spawn pool aside) and the two inside `subprocess_pool.SubprocessPoolExecutor`. A
+loop-thread `run_in_executor` on one of them still takes the process-wide lock.
+
+The guards are `test/test_loop_thread_pool_lock.py` (with that lock held by another
+thread, `asyncio.to_thread`, a gateway-loop `create_subprocess_exec` (the child's exit
+status arrives, on the Windows CI shards through a real Proactor loop) and a
+loop-thread `run_in_executor` on every `kiro_crew.executors` pool complete; a built
+pool's getter returns while another thread holds `executors._lock`, as a first build
+does across its starts), `test/test_executors.py` (a getter whose first worker cannot
+start raises, and the next call builds the pool), `test/test_push_branch_gate.py`
+(the push-allow audit is written inline when the maintenance pool cannot start a
+worker) and `test/test_enqueue_only_pool.py` (`submit` returns while a growth start is
+held; a refused first start raises where the pool is built; a refused growth start
+leaves the call to the running worker; a spawn whose pool cannot be built raises the
+start error; cap, results and errors; cancel and shutdown; a worker counts as idle
+once; a dropped pool's threads stop; at a normal interpreter exit a running call and a
+queued call on a live pool, and a running call on a pool shut down without `wait` and
+dropped, all finish, and a pool built while the hook runs refuses its submit).
 
 ## Windows session-tree teardown
 
@@ -698,10 +811,13 @@ not lost: its pins stay in the pending state, and the maintenance sweep resumes 
 drain from the members already confirmed. A slow host meets this routinely,
 because each member's pass costs two identity reads and two Toolhelp snapshots.
 `AcpRuntime` therefore logs it as one WARNING line, not a traceback, and still
-raises. A failed kiro session setup logs its original failure at WARNING before the
-cleanup kill, redacted and folded to one bounded printable line, because that text
-can come from the backend. Without that line, the cleanup's own output would be
-the only trace of a repeating setup failure.
+raises. The supervisors' reaper kill (`process_identity.kill_verified_process`)
+logs it as one WARNING line too, not an ERROR, and still records the run's kill as
+failed; every other drain failure there stays an ERROR. A failed kiro session
+setup logs its original failure at WARNING before the cleanup kill, redacted and
+folded to one bounded printable line, because that text can come from the
+backend. Without that line, the cleanup's own output would be the only trace of a
+repeating setup failure.
 
 This does not reconstruct an intermediary that exited before any available
 handle observed it, and the completeness a successful drain asserts is therefore

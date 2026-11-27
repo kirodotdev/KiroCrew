@@ -33,6 +33,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_REASON_TIMEOUT,
     STOP_RECOVERY_MAX_RETRIES,
     AcpTimeoutError,
+    RefusalHopText,
     timed_out_continuation,
 )
 from kiro_crew.hooks import fire_tool_hooks, get_global_hook_store, unattended_turn
@@ -54,8 +55,8 @@ from kiro_crew.llm_helpers_parts.model_fallback import (
     ActiveModelLine,
     FallbackState,
     advance_fallback_candidate,
-    first_advertised_fallback,
     probe_fallback_restore,
+    reactive_model_candidate,
 )
 from kiro_crew.llm_helpers_parts.tool_approval import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.llm_helpers_parts.turn_results import parse_llm_json
@@ -65,6 +66,7 @@ from kiro_crew.llm_helpers_parts.turn_usage import (
     _billing_stats,
     _sum_usage,
 )
+from kiro_crew.messaging.alternation_echo import could_be_echo, echo_prefix_len, is_echo
 from kiro_crew.sel import sel as _sel
 
 if TYPE_CHECKING:
@@ -125,6 +127,7 @@ async def stream_and_collect(
     session_key: str = "",
     agent: str = "",
     app: str = "",
+    app_run: tuple[str, str] = ("", ""),
     unattended: bool = False,
     model_fallback: bool = False,
     fallback_models: Sequence[str] = (),
@@ -144,6 +147,11 @@ async def stream_and_collect(
     ``STOP_RECOVERY_MAX_RETRIES`` times, and the turn goes on. Its text follows the
     stalled prompt's, its billing is summed with it, and ``on_complete`` sees only
     the completion the turn ends on.
+
+    A prompt's first text is held while it could still be the backend's alternation
+    placeholder, "(No assistant response was recorded ...)", and dropped when it is,
+    so neither the returned text nor ``on_chunk`` carries it. Words after it, and
+    text that only opens like it, are kept.
 
     Args:
         provider: The LLM provider to stream through.
@@ -200,6 +208,10 @@ async def stream_and_collect(
         agent: Calling agent name, forwarded to the gate alongside *session_key*.
         app: Owning app name, forwarded to the gate so the app's governance
             PROFILE is resolved — not just the enterprise ceiling.
+        app_run: ``(app, agent)`` of an unattended run with no slot: the app the
+            gateway stamped on it and the agent that ran it, read by the gate's
+            ``app-own-tools`` grant alone (``ToolCall.app_run``). Never a
+            governance input.
 
             All three matter for ``AUTO_APPROVE``, ``HOOK_BASED``, and
             ``READ_ONLY`` callers. The gate resolves ``ceiling ∩ profile``, and
@@ -280,8 +292,30 @@ async def stream_and_collect(
     timed_out_sent = 0
     continued_text = ""
     continuation = ""
+    # One prompt's text and its held opening: reset at the top of each pass below,
+    # bound here so ``settle_echo_hold`` can rebind them.
+    result_text = ""
+    echo_held = ""
+
+    def settle_echo_hold() -> None:
+        """End the placeholder hold where its text ends: a tool call, the prompt's
+        end. The whole placeholder is dropped; anything else is collected."""
+        nonlocal result_text, echo_held
+        held, echo_held = echo_held, ""
+        if held and not is_echo(held):
+            result_text += held
+            if on_chunk:
+                on_chunk(held)
+
     while True:
         result_text = ""
+        # A refusal hop's cut in this prompt's text. What it cut still streamed, so
+        # a guard below that replays only an attempt with no text counts it.
+        refusal = RefusalHopText()
+        # The prompt's first text, held while it could still be the backend's
+        # alternation placeholder (``messaging.alternation_echo``): the model
+        # repeats it at the start of a turn after one that ended on a tool result.
+        echo_held = ""
         # Set when this prompt ended on a call's silence timer and the turn goes
         # on with the continuation: unlike a retry, what it did stands.
         continuing = False
@@ -337,10 +371,21 @@ async def stream_and_collect(
                         )
                 if spec_hooks is not None:
                     await spec_hooks.observe(event)
+                result_text = refusal.fold(event, result_text)
                 if event.kind == EVENT_TEXT_CHUNK:
-                    result_text += event.text
+                    text = event.text
+                    if not result_text:
+                        held = echo_held + text
+                        if could_be_echo(held):
+                            echo_held = held
+                            continue
+                        echo_held = ""
+                        # The placeholder, then the model's own words after it.
+                        cut = echo_prefix_len(held)
+                        text = held[cut:].lstrip() if cut else held
+                    result_text += text
                     if on_chunk:
-                        on_chunk(event.text)
+                        on_chunk(text)
                 elif event.kind == EVENT_PERMISSION_REQUEST:
                     # Captures this decision's outcome and mechanism, so a hard
                     # security block is distinguishable from a governance denial
@@ -357,6 +402,7 @@ async def stream_and_collect(
                             session_key=session_key,
                             agent=agent,
                             app=app,
+                            app_run=app_run,
                             on_decision=lambda outcome, mech, why: _decision.append(
                                 (outcome, mech, why)
                             ),
@@ -376,6 +422,7 @@ async def stream_and_collect(
                     if not approved:
                         continue
                 elif event.kind == EVENT_TOOL_CALL:
+                    settle_echo_hold()
                     tool_call_count += 1
                     # Sticky across attempts (never reset in the retry loop):
                     # once ANY attempt fired a tool, a transient path must not
@@ -410,6 +457,7 @@ async def stream_and_collect(
                         get_global_hook_store(),
                         event.title,
                         event.tool_input,
+                        raw_tool_params=getattr(event, "raw_tool_params", None),
                     )
                 elif event.kind == EVENT_STEER_CONSUMED:
                     consumed_this_attempt.append(event.text or "")
@@ -420,6 +468,7 @@ async def stream_and_collect(
                         except Exception:
                             logger.debug("on_compaction callback failed", exc_info=True)
                 elif event.kind == EVENT_COMPLETE:
+                    settle_echo_hold()
                     follow_up = (
                         timed_out_continuation(event)
                         if timed_out_sent < STOP_RECOVERY_MAX_RETRIES
@@ -444,6 +493,7 @@ async def stream_and_collect(
                     if unfinished is not None:
                         raise unfinished
                     break
+            settle_echo_hold()
             if continuing:
                 continued_text = _join_continued(continued_text, result_text)
                 continue
@@ -505,14 +555,14 @@ async def stream_and_collect(
             # Guards:
             #   - retry_transient: callers that own an outer transient loop pass
             #     False so the inner arm doesn't compound their attempts.
-            #   - `not result_text`: only retry if NO tokens have streamed yet.
-            #     A partial response must not be retried — the re-run would
-            #     duplicate the already-emitted output.
+            #   - `not (result_text or refusal.kept)`: only retry if NO tokens
+            #     have streamed yet. A partial response must not be retried — the
+            #     re-run would duplicate the already-emitted output.
             #   - `not _turn_tool_activity`: only retry if no attempt fired a
             #     tool call. A textless tool can already have mutated state.
             if (
                 retry_transient
-                and not result_text
+                and not (result_text or refusal.kept)
                 and not _turn_tool_activity
                 and acp_error_is_transient(exc)
                 and transient_attempts < _TRANSIENT_RETRIES
@@ -545,16 +595,20 @@ async def stream_and_collect(
             # directly.
             #
             # ``not _turn_tool_activity`` is load-bearing over and above
-            # ``not result_text``: a tool call can complete an EXTERNAL
+            # the no-text guard: a tool call can complete an EXTERNAL
             # MUTATION before any text streams. Any fired tool across ANY
             # attempt disables every original-prompt replay for this call.
+            #
+            # Kiro's per-user rate limit is shared by every model: a swap cannot
+            # clear it, so it surfaces as its own error instead.
             if (
                 retry_transient
-                and not result_text
+                and not (result_text or refusal.kept)
                 and not _turn_tool_activity
                 and _fb_state is not None
                 and acp_error_is_transient(exc)
                 and transient_attempts >= _TRANSIENT_RETRIES
+                and getattr(exc, "user_rate_limit", False) is not True
             ):
                 if _fb_state.should_retry_active():
                     # Final attempt on the current candidate — the shared
@@ -613,15 +667,13 @@ async def stream_and_collect(
             # turn where the user picked a model must surface the rejection, not
             # swap underneath them (AGENTS.md), so the default is off.
             rejected = getattr(exc, "rejected_model", None)
-            advertised = getattr(exc, "advertised", None) or []
             if (
                 model_fallback
-                and not result_text
+                and not (result_text or refusal.kept)
                 and rejected
-                and advertised
                 and not _model_fallback_attempted
             ):
-                fallback = first_advertised_fallback(advertised, rejected)
+                fallback = reactive_model_candidate(exc, rejected)
                 if fallback:
                     _model_fallback_attempted = True
                     set_model_fn = getattr(provider, "set_model", None)

@@ -28,7 +28,7 @@ async def test_discord_sends_the_result_when_the_edit_fails() -> None:
     )
     await d.handle_message(msg)
     assert cli.edits, "the status line edit was never tried"
-    assert cli.sent[-1][0] == "Context compacted."
+    assert cli.sent[-1][0] == "✅ Context compacted."
 
 
 def test_telegram_sends_the_result_when_the_edit_fails() -> None:
@@ -36,7 +36,7 @@ def test_telegram_sends_the_result_when_the_edit_fails() -> None:
     cli.edit_ok = False
     asyncio.run(d.handle_message(_dm("/compact")))
     assert cli.edits, "the status line edit was never tried"
-    assert cli.sent[-1][0] == "Context compacted."
+    assert cli.sent[-1][0] == "✅ Context compacted."
 
 
 @pytest.mark.asyncio
@@ -46,12 +46,12 @@ async def test_discord_sends_nothing_extra_when_the_edit_lands() -> None:
         channel_type="discord", user_id="u1", conversation_id="c1", text="!compact"
     )
     await d.handle_message(msg)
-    assert cli.edits[-1][1] == "Context compacted."
-    assert "Context compacted." not in [text for text, _ in cli.sent]
+    assert cli.edits[-1][1] == "✅ Context compacted."
+    assert "✅ Context compacted." not in [text for text, _ in cli.sent]
 
 
 def test_telegram_sends_nothing_extra_when_the_edit_lands() -> None:
     d, cli, _sess = _telegram_dispatcher({7})
     asyncio.run(d.handle_message(_dm("/compact")))
-    assert cli.edits[-1][1] == "Context compacted."
-    assert "Context compacted." not in [text for text, _ in cli.sent]
+    assert cli.edits[-1][1] == "✅ Context compacted."
+    assert "✅ Context compacted." not in [text for text, _ in cli.sent]

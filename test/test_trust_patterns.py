@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ntpath
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -171,6 +173,45 @@ class TestMatchesTrustedPattern:
         assert pattern == "rm [*].tmp"
         assert _matches_trusted_pattern("rm *.tmp", {pattern}) == pattern
         assert _matches_trusted_pattern("rm secret.tmp", {pattern}) is None
+
+    @pytest.mark.parametrize(
+        ("granted", "other"),
+        [
+            ("del /q foo", "del \\q foo"),
+            ("rm -rf build/out", "rm -rf build\\out"),
+            ("cat docs\\a.md", "cat docs/a.md"),
+        ],
+    )
+    def test_exact_grant_does_not_fold_separators_under_windows_normcase(self, granted, other):
+        # Windows fnmatch runs ntpath.normcase, which folds / into \.
+        with patch.object(os.path, "normcase", ntpath.normcase):
+            pattern = exact_trust_pattern(granted)
+            assert _canonical_matches_trusted_pattern(granted, {pattern}) == pattern
+            assert _canonical_matches_trusted_pattern(other, {pattern}) is None
+            assert _canonical_matches_trusted_pattern(granted.upper(), {pattern}) == pattern
+            assert _canonical_matches_trusted_pattern(other, {"del *", "rm *", "cat *"})
+
+    @pytest.mark.parametrize(
+        ("granted", "others"),
+        [
+            (r"\\?\C:\Tools\x.exe /q", [r"\\.\C:\Tools\x.exe /q", r"\\h\C:\Tools\x.exe /q"]),
+            (r"\\?\UNC\srv\share\x.exe /q", [r"\\h\UNC\srv\share\x.exe /q"]),
+            (r"\\srv*\share\x.exe", [r"\\srvOTHER\share\x.exe"]),
+            (r"\\srv\sh[1]\x.exe", [r"\\srv\sh1\x.exe"]),
+        ],
+    )
+    def test_exact_grant_escapes_windows_drive_prefix(self, granted, others):
+        # Windows glob.escape skips the ntpath.splitdrive part.
+        with (
+            patch.object(os.path, "splitdrive", ntpath.splitdrive),
+            patch.object(os.path, "normcase", ntpath.normcase),
+        ):
+            pattern = exact_trust_pattern(granted)
+            assert _canonical_matches_trusted_pattern(granted, {pattern}) == pattern
+            for other in others:
+                assert _canonical_matches_trusted_pattern(other, {pattern}) is None
+            assert exact_trust_pattern(r"C:\Tools\[x] y") == r"C:\Tools\[[]x] y"
+            assert base_trust_patterns(r"\\srv*\x.exe") == {r"\\srv[*]\x.exe", r"\\srv[*]\x.exe *"}
 
 
 # ── Extraction helpers tests ──

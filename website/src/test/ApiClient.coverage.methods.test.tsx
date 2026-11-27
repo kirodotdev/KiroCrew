@@ -627,6 +627,8 @@ describe('every api method issues one well-formed /api request', () => {
       { id: 'send', app: 'doc-store', endpoint: '/api/apps/doc-store/send' },
       { surface: 'file-overflow', path: '/tmp/a.txt', kind: 'file' },
     ],
+    // `prepareAppSession(item)`: the URL is `item.endpoint`, as above.
+    prepareAppSession: [{ id: 'new-ws', endpoint: '/api/apps/doc-store/create' }],
     // `importSessionFromFile(file)` posts the file's BYTES as the request body,
     // deliberately un-wrapped. The generic `'sw-1'` would arrive as a STRING
     // body, which `call()` then tries to JSON-parse -- a harness artifact,
@@ -638,6 +640,14 @@ describe('every api method issues one well-formed /api request', () => {
     updateInstance: ['sw-1', {}, { signal: CALLER_SIGNAL }],
     chatSlotDetail: ['sw-1', undefined, undefined, CALLER_SIGNAL],
     sendChat: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],
+    // `sessionsSearchMessages(params, signal)`: the query string is built from `params`.
+    sessionsSearchMessages: [{ q: 'sw-1', agent: 'sw-2', role: 'user', since: 1 }, CALLER_SIGNAL],
+    // `chatHistorySearch(slot, params, signal)`: the query string is built from `params`.
+    chatHistorySearch: ['sw-1', { q: 'sw-2', kind: 'files', since: 1, until: 2, before: 3 }, CALLER_SIGNAL],
+    // `chatHistoryAround(slot, start, end, signal, mid)`: `start` and `end` are row numbers.
+    chatHistoryAround: ['sw-1', 0, 20, CALLER_SIGNAL, 'sw-2'],
+    // `chatHistoryCounts(slot, params, signal)`: the query string is built from `params`.
+    chatHistoryCounts: ['sw-1', { q: 'sw-2', since: 1, until: 2 }, CALLER_SIGNAL],
     spawnStatus: ['sw-1', { signal: CALLER_SIGNAL }],
     fileSearch: ['sw-1', 'sw-2', CALLER_SIGNAL],
     pathComplete: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],

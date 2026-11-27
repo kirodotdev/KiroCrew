@@ -349,6 +349,69 @@ class TestPlacementRacesTheStore:
         assert slot.folder_id == ""
 
     @pytest.mark.asyncio
+    async def test_refused_refile_does_not_restore_a_folder_deleted_in_the_window(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """A refused move puts the slot back only into a folder that still exists.
+
+        The slot's own folder is deleted while the move awaits the store lock, so the
+        id it captured beforehand names nothing; reattaching it would file the
+        session into a deleted folder, and the next save would make that durable.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_folders
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("myslot")
+        state._folders = [
+            {"id": "home", "name": "Home", "order": 0, "collapsed": False},
+            {"id": "target", "name": "Target", "order": 1, "collapsed": False},
+        ]
+        slot.folder_id = "home"
+        refused: list[str] = []
+
+        async def _both_deleted(state_: Any, folder_id: str, **_kw: Any) -> bool:
+            state_._folders[:] = []
+            refused.append(folder_id)
+            return False
+
+        # The app first, so a module it imports binds the real function, not the patch.
+        app = _make_folder_app(state)
+        monkeypatch.setattr(chat_folders, "_unhide_folder", _both_deleted)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch("/api/chat/slots/myslot/folder", json={"folder_id": "target"})
+            assert resp.status == 400
+        assert refused == ["target"]
+        assert slot.folder_id == ""
+
+    @pytest.mark.asyncio
+    async def test_refused_save_does_not_restore_a_folder_deleted_in_the_window(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """The refused-save rollback follows the same rule as the refused move."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_folders
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("myslot")
+        state._folders = [
+            {"id": "home", "name": "Home", "order": 0, "collapsed": False},
+            {"id": "target", "name": "Target", "order": 1, "collapsed": False},
+        ]
+        slot.folder_id = "home"
+
+        async def _home_deleted_then_refused(*_a: Any, **_kw: Any) -> bool:
+            state._folders[:] = [f for f in state._folders if f["id"] != "home"]
+            return False
+
+        app = _make_folder_app(state)
+        monkeypatch.setattr(chat_folders, "save_slot_off_loop", _home_deleted_then_refused)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch("/api/chat/slots/myslot/folder", json={"folder_id": "target"})
+            assert resp.status == 409
+        assert slot.folder_id == ""
+
+    @pytest.mark.asyncio
     async def test_delete_rollback_leaves_a_concurrently_moved_slot_alone(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
@@ -524,6 +587,86 @@ class TestSlotCreateFolderAssignment:
 
         # The failed move must not have unfiled the conversation.
         assert state._slots["myslot"].folder_id == "home"
+
+    @pytest.mark.asyncio
+    async def test_refused_refile_does_not_restore_a_folder_deleted_in_the_window(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """The previous folder is kept only while it exists.
+
+        Here it is deleted in the same window as the target, so the id captured
+        before the await names nothing and the conversation lands Unfiled.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("myslot")
+        slot.append("user", "hello")
+        slot.drain()
+        state._folders = [
+            {"id": "home", "name": "Home", "order": 0, "collapsed": False},
+            {"id": "target", "name": "Target", "order": 1, "collapsed": False},
+        ]
+        slot.folder_id = "home"
+        refused: list[str] = []
+
+        async def _both_deleted(state_: Any, folder_id: str, **_kw: Any) -> bool:
+            state_._folders[:] = []
+            refused.append(folder_id)
+            return False
+
+        monkeypatch.setattr(chat_handlers, "_unhide_folder", _both_deleted)
+
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/chat/slots", chat_handlers.api_chat_slot_create)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots", json={"name": "myslot", "folder_id": "target"}
+            )
+            assert resp.status == 200
+        assert refused == ["target"]
+        assert state._slots["myslot"].folder_id == ""
+
+    @pytest.mark.asyncio
+    async def test_refused_read_does_not_restore_a_folder_deleted_in_the_window(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """The same rule when the locked existence read is what refuses the move."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("myslot")
+        slot.append("user", "hello")
+        slot.drain()
+        state._folders = [
+            {"id": "home", "name": "Home", "order": 0, "collapsed": False},
+            {"id": "target", "name": "Target", "order": 1, "collapsed": False},
+        ]
+        slot.folder_id = "home"
+        real = state.read_folders
+
+        async def _both_deleted_then_read(read: Any) -> Any:
+            # The existence read is the first one after the provisional assignment.
+            if slot.folder_id == "target":
+                state.read_folders = real
+                state._folders[:] = []
+            return await real(read)
+
+        state.read_folders = _both_deleted_then_read
+
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/chat/slots", chat_handlers.api_chat_slot_create)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots", json={"name": "myslot", "folder_id": "target"}
+            )
+            assert resp.status == 200
+        assert state.read_folders is real, "the move's existence read never ran"
+        assert state._slots["myslot"].folder_id == ""
 
 
 @pytest.mark.skipif(os.name == "nt", reason="asserts POSIX mode bits")

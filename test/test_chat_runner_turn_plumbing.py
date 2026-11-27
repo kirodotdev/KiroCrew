@@ -445,15 +445,14 @@ def test_every_function_cut_from_run_chat_takes_the_turn_first() -> None:
 
 
 def test_the_async_guards_reach_every_function_cut_from_run_chat() -> None:
-    """Each cut function is one the async rule reads, in a file it scans (from the ASTs
-    ``_functions`` parses, so no second read of the turn's source)."""
-    from test_no_config_dir_in_async import _ASYNC_CHECKED_FILES, _takes_the_turn
+    """Each cut function is one the async rule reads (from the ASTs ``_functions``
+    parses, so no second read of the turn's source). The rule scans every module in
+    the package, so the file is always in scope."""
+    from test_no_config_dir_in_async import _takes_the_turn
 
     parsed = dict(_functions())
     unreached = []
     for stem, names in _CUT_FROM_RUN_CHAT.items():
-        if f"dashboard/chat_turn/{stem}.py" not in _ASYNC_CHECKED_FILES:
-            unreached.append(stem)
         for name in names:
             node = parsed.get(name)
             if node is None or not (
@@ -474,7 +473,6 @@ def test_the_config_dir_guard_reads_a_function_that_takes_the_turn(
     planted = "def _cut(turn):\n    config_dir()\n\n\ndef _not_cut(slot):\n    config_dir()\n"
     (tmp_path / "planted.py").write_text(planted, encoding="utf-8")
     monkeypatch.setattr(guard, "SRC", tmp_path)
-    monkeypatch.setattr(guard, "_ASYNC_CHECKED_FILES", ["planted.py"])
     with pytest.raises(AssertionError) as caught:
         guard.TestNoConfigDirInAsync().test_update_layout_channel_helpers_never_maintain()
     assert "planted.py:2 in async _cut()" in str(caught.value)

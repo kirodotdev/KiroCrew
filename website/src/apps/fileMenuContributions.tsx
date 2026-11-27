@@ -190,7 +190,7 @@ function warnAttributionClipped(appName: string, id: unknown, reason: string): v
  * met the install check. The trailing slash on the prefix is what stops a sibling app
  * (`/api/apps/foobar/x`) from passing `foo`'s allowlist.
  */
-function endpointAllowed(appName: string, endpoint: string): boolean {
+export function endpointAllowed(appName: string, endpoint: string, allowProxyNamespace: boolean): boolean {
   if (!appName || !endpoint) return false
   // A reserved segment is never an app's own namespace, whatever the app is called:
   // `/api/apps/registry/install` is a shared literal route mounted before the
@@ -224,22 +224,18 @@ function endpointAllowed(appName: string, endpoint: string): boolean {
   // routed, so `/api/apps/foo/./uninstall` reads as an app route here and still arrives
   // at core's uninstall handler. The leading empty segment is the path's own root slash.
   if (path.split('/').slice(1).some(seg => seg === '' || seg === '.')) return false
-  // BOTH documented app namespaces, mirroring `app_endpoint_allowed` in
-  // `apps/manifest.py` AS THE FILE-MENU CALLER INVOKES IT
-  // (`allow_proxy_namespace=True`). This mirror has exactly one consumer, so the
-  // per-caller flag the Python side carries would be a parameter with a single value
-  // here; the flag exists there because that check is shared with the publish-provider
-  // registry, which keeps the narrower in-gateway shape.
+  // Mirrors `app_endpoint_allowed` in `apps/manifest.py`, flag included: a file-menu
+  // row passes `allowProxyNamespace: true`, a Sessions New row (`sessionCreateItems`)
+  // passes false and keeps the narrower in-gateway shape.
   //
   // Which namespace an app owns is decided by whether it declares
   // `backend.entryPoint` (its own process, reverse-proxied at `/apps/<app>/api/`) or only
   // `backend.hooks.routes` (in-gateway at `/api/apps/<app>/`), never by the app. The
   // reserved core segments apply to the in-gateway prefix ALONE — the proxy namespace
   // forwards wholesale into the app's process, so core serves nothing under it.
-  for (const [prefix, reserved] of [
-    [`/api/apps/${appName}/`, CORE_APP_ROUTE_SEGMENTS],
-    [`/apps/${appName}/api/`, new Set<string>()],
-  ] as const) {
+  const namespaces: [string, ReadonlySet<string>][] = [[`/api/apps/${appName}/`, CORE_APP_ROUTE_SEGMENTS]]
+  if (allowProxyNamespace) namespaces.push([`/apps/${appName}/api/`, new Set<string>()])
+  for (const [prefix, reserved] of namespaces) {
     if (!(path + '/').startsWith(prefix)) continue
     // First segment below the app's prefix, cut at a query or fragment for the reason the
     // Python mirror gives: the router matches on the path alone, so `/uninstall?x=1` still
@@ -271,7 +267,7 @@ function readItem(app: FileMenuAppRecord, raw: unknown): ContributedFileMenuItem
     return null
   }
   const endpoint = str(obj.endpoint)
-  if (!endpointAllowed(app.name, endpoint)) {
+  if (!endpointAllowed(app.name, endpoint, true)) {
     warnContributionSkipped(app.name, id, `endpoint must route under /api/apps/${app.name}/`)
     return null
   }

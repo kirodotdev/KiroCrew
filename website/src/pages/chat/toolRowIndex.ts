@@ -1,6 +1,7 @@
 import { createSelector } from '@reduxjs/toolkit'
 import type { ChatMessage, ToolActivity } from '../../types'
 import { isDurableRow } from '../../store/chatSlice'
+import { isToolCallRow, isToolRefusedRow } from '../../lib/toolRowContract'
 
 /**
  * Per-slot index over a transcript's messages + tool log, built ONCE per
@@ -9,7 +10,7 @@ import { isDurableRow } from '../../store/chatSlice'
  *
  * Why this exists: each ToolCallLine used to run O(messages + toolLog)
  * reverse scans INSIDE its useAppSelector bodies — a full permission walk, a
- * 🚫-sibling walk, and a toolLog reverse scan — and useAppSelector re-runs on
+ * Refused:-sibling walk, and a toolLog reverse scan — and useAppSelector re-runs on
  * every store dispatch, per mounted row. With N rows mounted that is N full
  * walks per dispatch. The index converts every one of those scans into an
  * O(1) map lookup; the single O(messages + toolLog) build runs only when one
@@ -34,7 +35,7 @@ export interface ToolRowIndex {
   /** tool_call_ids that have at least one UNRESOLVED permission message. */
   pendingPermIds: Set<string>
   /** All tool-role messages per tool_call_id, in transcript order — the
-   *  🚫-deny-sibling scan walks only this row's own id group. */
+   *  Refused:-deny-sibling scan walks only this row's own id group. */
   toolMsgsById: Map<string, ChatMessage[]>
   /** The transcript's newest tool-role message (owns the wait countdown). */
   lastToolMsg: ChatMessage | undefined
@@ -117,7 +118,7 @@ export function lookupLogEntry(index: ToolRowIndex, toolCallId: string | undefin
 }
 
 /**
- * Whether `ownMessage` is the newest 🔧 row for its tool_call_id. A reused id
+ * Whether `ownMessage` is the newest Tool: row for its tool_call_id. A reused id
  * (reset, reconnect replay) leaves older rows sharing the id-wide log entry, so
  * anything that must belong to one occurrence renders only on the newest row.
  */
@@ -126,14 +127,14 @@ export function isNewestOccurrence(index: ToolRowIndex, toolCallId: string | und
   const siblings = index.toolMsgsById.get(toolCallId)
   if (!siblings) return false
   for (let j = siblings.length - 1; j >= 0; j--) {
-    if (siblings[j].content.startsWith('🔧')) return siblings[j] === ownMessage
+    if (isToolCallRow(siblings[j].content)) return siblings[j] === ownMessage
   }
   return false
 }
 
 /**
- * The 🚫 deny-sibling for a pill: the newest tool message sharing the pill's
- * tool_call_id whose content starts with 🚫, looking only ABOVE the pill's own
+ * The Refused: deny-sibling for a pill: the newest tool message sharing the pill's
+ * tool_call_id whose content starts with Refused:, looking only ABOVE the pill's own
  * message (the old scan walked from the end and stopped at the pill itself).
  * O(k) over the id's own sibling group — in practice 2 messages.
  */
@@ -143,8 +144,8 @@ export function denySiblingContent(index: ToolRowIndex, toolCallId: string | und
   if (!siblings) return ''
   for (let j = siblings.length - 1; j >= 0; j--) {
     const m = siblings[j]
-    if (m.content.startsWith('🚫')) return m.content
-    // The pill's own 🔧 message reached without a 🚫 sibling above it — any
+    if (isToolRefusedRow(m.content)) return m.content
+    // The pill's own Tool: message reached without a Refused: sibling above it — any
     // earlier match would predate this call; stop scanning.
     if (m === ownMessage) break
   }

@@ -231,6 +231,19 @@ def test_probe_sees_a_cron_notification_waiting_in_the_slot_queue() -> None:
     assert not _absent(_probe_state(jobs=()), slot)
 
 
+@pytest.mark.parametrize(
+    ("subscribed", "absent"), [({"chat-77"}, False), (None, False), ({"chat-12"}, True)]
+)
+def test_probe_sees_a_resource_subscription(subscribed, absent) -> None:
+    # A subscribed session is woken when its resource changes; an unreadable
+    # subscribed set (None) is not a definite "nothing will wake it".
+    with patch(
+        "kiro_crew.dashboard.slot_retention.resource_subscribed_slot_keys",
+        AsyncMock(return_value=subscribed),
+    ):
+        assert _absent(_probe_state(), _probe_slot()) is absent
+
+
 def test_probe_failure_never_claims_nothing_is_scheduled() -> None:
     state = _probe_state()
     state.crons.list_jobs_async = AsyncMock(side_effect=OSError("store unreadable"))

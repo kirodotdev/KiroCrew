@@ -68,14 +68,49 @@ class TestOutcomeReports:
         assert "started a turn" in out
 
     def test_a_steer_that_fell_back_to_the_queue_says_so(self) -> None:
-        """The caller asked for an interruption and did not get one. Reporting a
-        plain queue would leave it believing the target was interrupted."""
+        """The caller asked for an interruption and did not get one, and nothing
+        holds it for a tool boundary. Reporting a plain queue would leave it
+        believing the target was interrupted."""
         out, _ = _send(
             {"target": "chat-2", "message": "stop that", "steer": True},
             {"ok": True, "target": "chat-2", "started": False, "steered": False},
         )
         assert "Queued" in out
-        assert "could not go into the running turn" in out
+        assert "Your steer could not go into the running turn, so it was queued instead." in out
+
+    def test_a_held_steer_says_pending_steer(self) -> None:
+        """The caller asked for an interruption that has not landed yet: say it is
+        held for the next tool boundary, never that it was queued or delivered."""
+        out, _ = _send(
+            {"target": "chat-2", "message": "stop that", "steer": True},
+            {
+                "ok": True,
+                "target": "chat-2",
+                "started": False,
+                "steered": False,
+                "pending_steer": True,
+                "steer_id": "abc",
+                "steer_state": "pending-steer",
+            },
+        )
+        assert "pending-steer" in out
+        assert "Queued" not in out and "Steered" not in out
+
+    def test_a_re_sent_steer_still_on_its_way_is_reported_as_such(self) -> None:
+        out, _ = _send(
+            {"target": "chat-2", "message": "stop that", "steer": True},
+            {
+                "ok": True,
+                "target": "chat-2",
+                "started": False,
+                "steered": False,
+                "pending_steer": False,
+                "steer_id": "abc",
+                "steer_state": "steering",
+            },
+        )
+        assert "Already on its way" in out and "Nothing was sent again" in out
+        assert "Queued" not in out and "Delivered" not in out
 
     def test_a_plain_queued_delivery_does_not_mention_steering(self) -> None:
         out, _ = _send(

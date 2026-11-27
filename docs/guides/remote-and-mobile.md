@@ -141,7 +141,7 @@ tmux survives an SSH disconnect but does **not** auto-restart on crash or
 auto-start on reboot. Move to [a real service](#3-keep-it-alive-as-a-service)
 once the smoke test passes, and **kill the tmux session first**: only one
 gateway can own the dashboard port, which defaults to `5476`
-(`config/loader_credentials.py` `_DEFAULT_PORT`, overridable with the `KIROCREW_PORT`
+(`src/kiro_crew/config/loader_credentials.py` `_DEFAULT_PORT`, overridable with the `KIROCREW_PORT`
 environment variable). Two gateways on one port means the second one fails to
 bind.
 
@@ -219,7 +219,7 @@ What NOT to carry over:
   copied.
 - `~/.kiro/crew/security_events.jsonl`: the tamper-evident SEL audit chain
   (`sel.py`); it belongs to the host that wrote it.
-- `~/.kiro/crew/.env`, `.local_secret`, `sel_hmac.key`: secrets. Re-enter
+- `~/.kiro/crew/.env`, `.local_secret`, `trust/sel_hmac.key`: secrets. Re-enter
   channel credentials from the dashboard (or use `kirocrew setup --slack` for
   Slack); the other two are regenerated.
 
@@ -250,8 +250,10 @@ unauthenticated surface beyond the three token-free liveness probes
 (`/api/health`, `/api/live`, `/api/ready`).
 
 A governance policy can narrow both: the `bind_address` list refuses a
-`KIROCREW_BIND` address it does not name (the gateway then binds `127.0.0.1`),
-and the `dashboard_origins` list drops an extra origin it does not name. An
+`KIROCREW_BIND` address it does not name (the gateway then binds `127.0.0.1`;
+when a policy refresh stops permitting the address a running gateway listens
+on, the gateway restarts once nothing is running, so the narrowed address
+applies), and the `dashboard_origins` list drops an extra origin it does not name. An
 LTS build allows neither until a policy names it. Tailnet access there
 follows the policy's `capabilities.tailnet_origin` alone: until a policy turns it
 on, `kirocrew tailnet up` and the dashboard card say "Tailnet is off by policy".
@@ -354,25 +356,41 @@ the same and the difference is the whole security story:
   action appears, Tailscale must be installed and signed in, MagicDNS must be on,
   and the current MagicDNS name must appear in Tailscale's `CertDomains`. On a
   new tailnet the card links to the Tailscale HTTPS settings for the one-time
-  administrator approval, then waits for **Re-check**.
+  administrator approval, then waits for **Re-check**. On a tailnet that
+  requires device approval, a signed-in machine waits for an admin to approve
+  it: the card says so and links to the Tailscale machines page instead of
+  asking you to sign in again.
 
   Once those prerequisites hold, click **Set up & show QR** once. The dashboard
   enables its daemon-derived origin, restarts through the gateway's formal
   single-flight restart path, waits for the replacement listener to prove the
   new startup boundary is active, publishes through Tailscale Serve, verifies
-  the 443 mapping, and only then displays a short-lived sign-in QR. Tailscale
-  creates and renews the private certificate after HTTPS is enabled; there is no
-  certificate file to create or install manually. The action still refuses to
-  replace a different service already mounted at `443/`.
+  the mapping on `dashboard.tailscale.https_port` (443 unless set), and only then
+  displays a short-lived sign-in QR. Tailscale creates and renews the private
+  certificate after HTTPS is enabled; there is no certificate file to create or
+  install manually. The action still refuses to replace a different service
+  already mounted at `/` on that port.
+
+  **Port 443 already taken.** When another service owns port 443 on this tailnet
+  name, set `dashboard.tailscale.https_port` (for example `kirocrew config set
+  dashboard.tailscale.https_port 8443`) and restart. Kiro Crew then publishes,
+  checks and withdraws only that port, and trusts `https://<name>:<port>` in place
+  of `https://<name>`; until the restart the card asks for one instead of showing a
+  QR. Run `kirocrew tailnet down` before changing the port: Kiro Crew manages only
+  the port it is set to, so a handler left on the old port stays until you remove
+  it. Cookies are scoped by host name, not port, so every service on the same
+  tailnet name receives the dashboard's cookies, as it already does on 443.
 
   The same click enrolls this machine's daemon-reported Tailscale login in the
   explicit allowlist and makes the phone session survive gateway restarts and
   application updates. Each request still has to resolve through the local
   Tailscale daemon as that allowed identity; persistence does not turn the QR
-  into a tailnet-wide bearer session. Users who set up phone access on an older
-  build migrate when they next choose **Show QR code** on the desktop. A session
-  already invalidated by the update that installed this migration cannot be
-  revived, so that upgrade requires one final scan; later updates do not.
+  into a tailnet-wide bearer session.
+
+  If `config.local.json` overrides one of those settings, setup stops and names
+  the key. **Fix this** shows each override next to the value that would apply;
+  confirm it and only those keys are removed from `config.local.json`, then
+  setup runs again.
 
   The basic CLI equivalent is:
   ```bash
@@ -385,8 +403,9 @@ the same and the difference is the whole security story:
   card is the path that safely discovers the local login and atomically enables
   identity-bound restart persistence without asking you to hand-edit an
   allowlist.
-  `kirocrew tailnet up` runs `tailscale serve` for you — HTTPS on 443 in front of
-  the dashboard's loopback port — and prints the URL to open on your phone.
+  `kirocrew tailnet up` runs `tailscale serve` for you — HTTPS on
+  `dashboard.tailscale.https_port` (443 unless set) in front of the dashboard's
+  loopback port — and prints the URL to open on your phone.
 
   The URL `tailnet up` prints carries **no session**, so opening it alone lands on a
   login you cannot complete from the phone. `kirocrew token` is the step that hands you
@@ -395,9 +414,10 @@ the same and the difference is the whole security story:
   trusted origin at startup.
 
   It prints that line only when **this** dashboard is the verified service behind that
-  name — `tailscale serve` must be proxying 443 to this gateway's port. That URL carries
-  a session, so handing it out while some other service holds the name would deliver your
-  session to it. Since `tailnet up` refuses to overwrite a foreign `443/` handler, a host
+  name — `tailscale serve` must be proxying `dashboard.tailscale.https_port`, the port the
+  line carries, to this gateway's port. That URL carries a session, so handing it out
+  while some other service holds the name would deliver your session to it. Since
+  `tailnet up` refuses to overwrite a foreign handler on that port, a host
   can legitimately have the setting on and a resolvable name while the mount belongs to
   something else; in that case `token` says so instead of printing the line.
 
@@ -435,25 +455,29 @@ the same and the difference is the whole security story:
   `kirocrew tailnet status` shows the three things that are independently
   required — whether the setting is on, whether a MagicDNS name resolves right
   now, and whether serve is actually pointing at this dashboard. Any one of them
-  being wrong looks identical from your phone. `kirocrew tailnet down` stops
+  being wrong looks identical from your phone. It also prints the HTTPS port it
+  read (`Port: 8443 (dashboard.tailscale.https_port)`), so a value that fell back
+  to 443 is visible. `kirocrew tailnet down` stops
   publishing and leaves the setting alone, since the trusted origin is unreachable
   without serve anyway.
 
   Both directions refuse rather than clobber: `tailscale serve` **replaces**
-  whatever handler is at `443/`, and `off` removes it — so if you published
+  whatever handler is at `/` on `dashboard.tailscale.https_port` (443 unless
+  set), and `off` removes it — so if you published
   something else there by hand, `up` and `down` both stop and print the command
   instead of overwriting or deleting your mapping.
 
   A serve configuration that sits entirely on **other** ports — another project
   on this machine published on port 80 or 8443, say — blocks neither direction.
-  Publishing touches only `443/`, so when Tailscale's own status shows every
-  mapping on some other port, the card and `tailnet up` treat 443 as free and
-  proceed, and `down` leaves the other mappings alone. Only a serve entry
-  naming port 443, or a status this build cannot read or attribute, triggers
-  the refusal.
+  Publishing touches only `/` on the configured HTTPS port, so when Tailscale's
+  own status shows every mapping on some other port, the card and `tailnet up`
+  treat that port as free and proceed, and `down` leaves the other mappings
+  alone. Only a serve entry naming the configured port, or a status this build
+  cannot read or attribute, triggers the refusal.
 
   At startup the setting reads your own MagicDNS name from the local Tailscale
-  daemon and trusts `https://<that name>` as an origin, so you do **not** have to
+  daemon and trusts `https://<that name>` as an origin (`https://<that name>:<port>`
+  when `dashboard.tailscale.https_port` is not 443), so you do **not** have to
   look the name up and hand-write `dashboard.url`. The Overview one-click flow
   performs and waits for the restart required when it turns the setting on. If
   Tailscale is absent, stopped, or MagicDNS is off during a later gateway start,
@@ -465,7 +489,7 @@ the same and the difference is the whole security story:
 
   If you would rather do it by hand, the equivalent is:
   ```bash
-  tailscale serve --bg --https 443 http://127.0.0.1:5476
+  tailscale serve --bg --https 443 http://127.0.0.1:5476   # 443: dashboard.tailscale.https_port
   kirocrew config set dashboard.tailscale.enabled true
   kirocrew restart
   ```
@@ -590,7 +614,7 @@ TLS on a public name and forwards to the loopback port.
 1. Serve the whole dashboard (page, API and WebSocket) from one host name, at
    the root path. The dashboard's Content-Security-Policy admits `'self'` for
    `connect-src`, so the browser accepts `wss://<that name>` sockets. It admits
-   no other public host, and no setting adds one. A split setup, with the
+   no other `wss://` host, and no setting adds one. A split setup, with the
    socket on a second host, is refused by the browser.
 2. Set `dashboard.url` to that public URL, as shown above, and restart. This
    adds the origin to the allowed-origin set, so the CSRF check, the
@@ -635,6 +659,16 @@ The public-internet notes above apply here too: put an auth layer in front of
 the proxy, and change settings over SSH, since proxied requests stay
 read-only.
 
+To expose only the Crew API (no dashboard page, no cookie), point the proxy at
+the entry port instead: set `dashboard.entry_port` to a port from 1024 to 65535
+with `kirocrew config set` and restart. The gateway then also listens on that
+port on `127.0.0.1` and `::1`. It serves Crew API routes only, refuses Owner
+routes, and treats every request as forwarded. The proxy must send a `Host` of
+`127.0.0.1`, `[::1]` or `localhost`; any other `Host` gets `400`. Linux and
+macOS only for now. See
+[dashboard-token-auth.md](../system-specs/modules/dashboard-token-auth.md)
+(*Entry port*).
+
 ### Getting a link on your phone
 
 1. In your Kiro Crew DM, send `/kirocrew dashboard` (or `/kirocrew dashboard 6h`).
@@ -650,6 +684,16 @@ read-only.
 In the Chat composer, tap `+` to open the device's native Files picker and
 attach an image or a regular file. This direct touch path does not open the
 desktop-style command menu first.
+
+On a phone, Return starts a new line in the chat composers (the Chat page, a
+mate's chat, the side panel), in a mate thread reply and in Edit & Resend.
+Tap Send to send. A phone's on-screen keyboard has no Shift+Return, so a
+Return that sent would leave no way to write a second line. This holds in a
+phone browser that draws the page at desktop width or names no phone in its
+user agent, such as an enterprise in-app browser: the phone's own screen size
+decides, not the page width or the user agent. On a tablet or a
+desktop, **Settings → Chat → Composer → Send shortcut** decides what Return
+does.
 
 ### Session duration
 
@@ -699,6 +743,10 @@ dead and you need a fresh one.
 - **`kirocrew logout`** — ends **all** sessions globally, refresh chains
   included: it bumps a persisted revocation generation that every access and
   refresh token embeds, so tokens minted before the logout are rejected.
+  **`kirocrew logout --link <url or token>`** ends only that one dashboard
+  link, every session it opened and their refresh chains; other sessions stay
+  signed in. A link minted before per-link revocation is refused with
+  `legacy_link`; use plain `kirocrew logout` for it.
 - **Reuse detection** — a consumed refresh token replayed outside a 60-second
   same-IP grace window (`REFRESH_GRACE_SECS`) auto-revokes the entire chain
   (RFC 6819 §5.2.2.3). The frontend reports `refresh_chain_revoked` and stops
@@ -722,9 +770,9 @@ opened with; a chain bound this way stops renewing if you later turn identity
 trust off, and a fresh `kirocrew token` link gets you going again.
 
 Chains persist in `~/.kiro/crew/refresh_chains.json` (mode `0600`) — including
-the device binding above — so they survive a gateway restart. On a gateway old enough to predate the feature,
-`GET /api/auth/me` returns 404; the frontend logs once and falls back to the
-20-hour URL-mint behaviour.
+the device binding above — so they survive a gateway restart. When
+`GET /api/auth/me` returns 404 (a gateway without refresh support), the
+frontend logs once and falls back to the 20-hour URL-mint behaviour.
 
 ### Install as an app (PWA)
 
@@ -750,6 +798,16 @@ on the gateway host itself.
 launch from the new icon. The manifest's `"display": "standalone"` is what drops
 Safari's address bar.
 
+**The installed app can reopen the last page it showed.** iOS opens the
+manifest's `/`, not the page you added, so the app opens at Sessions. To change
+that on one device, turn on **Settings > Display > Reopen where I left off**.
+The switch is off by default and shows only in the installed app. With it on, a
+launch at `/` replaces it with the last dashboard page the app was on on that
+device, such as one crewmate's chat. A link or notification that names a page
+still opens that page. Only same-origin dashboard pages are reopened, and
+parameters that look like credentials are never stored. A normal browser tab
+always opens the URL you typed.
+
 **The service worker provides a limited offline shell.**
 [`website/public/sw.js`](../../website/public/sw.js) caches exactly `/` and
 `/index.html`. Every other same-origin `GET` falls into one of two buckets: a
@@ -771,7 +829,7 @@ Declined (handed straight to the network, never intercepted):
 | Path | Why it is not intercepted |
 |---|---|
 | any URL with a `token` query parameter (the `/?token=...` sign-in link) | Never answers from the cached shell and never caches it, so the gateway's token exchange always runs |
-| `/api`, `/apps/` | Gateway and app-backend responses must never be served stale |
+| `/api`, `/v1/`, `/apps/` | Gateway, Crew API and app-backend responses must never be served stale |
 | `/fonts/`, `/sprites/` | Cost looks, not boot — a failed font or sprite does not stop the page running, so it earns no retry |
 | `/logo.png`, `/static/` | Gateway-served brand assets; intercepting them strands a broken image across a gateway restart |
 | `/sandbox-doc/`, `/app-windows/`, navigations into a widget frame | One-shot credentialed URLs, standalone app-window documents, and the shell fallback must not render into a widget frame |
@@ -806,10 +864,9 @@ bugs:
   on iOS it needs iOS 18.4 or later and the app added to the Home Screen. With
   the toggle off, notifications need the app open. In page banners go through
   `ServiceWorkerRegistration.showNotification()`, which an installed iOS PWA
-  and Android Chrome require
-  ([issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828)).
+  and Android Chrome require.
 - **Pinch zoom is off.** The installed app behaves like an application, not a
-  web page: two-finger pinch and double-tap no longer scale the shell. **To
+  web page: two-finger pinch and double-tap do not scale the shell. **To
   magnify, use the OS display-zoom setting** (iOS: Settings → Display &
   Brightness → Display Zoom; Android: Settings → Display → Display size and
   text), which still enlarges everything; in a browser tab Safari's Aa
@@ -991,10 +1048,10 @@ Without a key, the card links the admin console's Machines page, where you can
 share this machine by hand (**Share**). The direct link follows Tailscale's
 access rules.
 
-`dashboard.tailscale.allowed_logins` is not how you add people. The first time
-the gateway starts with this version it carries the logins and `tag:` entries
-already in that list over once. After
-that, editing the list changes nothing. A tagged device (a CI runner, a server)
+`dashboard.tailscale.allowed_logins` is not how you add people. At its first
+start under the Shared Crew preview, the gateway carries the logins and `tag:`
+entries already in that list over once. After that, adding a login admits
+nobody, and removing one removes that person at the next start. A tagged device (a CI runner, a server)
 gets in only when one of its tags was carried over that way.
 
 Removing the Tailscale API key and deleting every stored session cannot be
@@ -1221,8 +1278,10 @@ kirocrew service uninstall   # remove the unit / plist
 ```
 
 **Sudo scope on Linux:** the install shells out to `sudo install` (to place the
-unit as root-owned `0644`) and `sudo systemctl` (daemon-reload, enable,
-restart). No kirocrew, MCP, or LLM code path runs under sudo. Once started the
+unit as root-owned `0644`), `sudo systemctl` (daemon-reload, enable,
+restart) and, unless linger is already on or the host has no per-user
+manager, `sudo loginctl enable-linger` for your account. No kirocrew, MCP, or
+LLM code path runs under sudo. Once started the
 gateway runs as `User=$USER Group=$(id -gn)`, not root. The unit also caps
 crash-looping with `StartLimitBurst=3` / `StartLimitIntervalSec=300` and pins
 `LimitNOFILE=65536`, because a stock 1024 FD limit fails the frontend

@@ -73,6 +73,7 @@ _MASK_STAGES = (
     "verify_fail_closed_aliases",
     "mask_sensitive_files",
     "mask_ssh_keys",
+    "pin_mask_parents",
 )
 
 #: ``mount(2)`` flags, as the kernel defines them.
@@ -99,6 +100,7 @@ def _payload_under(plan: sandbox_plan.ConfinementPlan, root: Path) -> dict:
         "private_dirs",
         "readonly_dirs",
         "parent_pins",
+        "mask_parent_pins",
         "writable_dirs",
         "sensitive_files",
         "required_mask_targets",

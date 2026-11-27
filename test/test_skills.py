@@ -218,6 +218,32 @@ class TestCreateAutoSkill:
             is None
         )
 
+    def test_a_failed_write_leaves_nothing_so_the_slug_can_be_created_again(self, tmp_path):
+        """A lone surrogate in model output fails the encode after ``SKILL.md`` is
+        created. Without the rollback the empty skill stays listed and the
+        ``exists()`` guard refuses every retry of the slug."""
+        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        with pytest.raises(UnicodeEncodeError):
+            loader.create_auto_skill(
+                "half-made",
+                description="desc",
+                triggers="",
+                procedure_md="bad \ud800 body",
+                provenance=self._make_provenance(),
+            )
+        auto_dir = tmp_path / "skills" / "auto"
+        assert [p.name for p in auto_dir.iterdir()] == []
+
+        name = loader.create_auto_skill(
+            "half-made",
+            description="desc",
+            triggers="",
+            procedure_md="good body",
+            provenance=self._make_provenance(),
+        )
+        assert name == "auto/half-made"
+        assert "good body" in (auto_dir / "half-made" / "SKILL.md").read_text(encoding="utf-8")
+
 
 class TestResolveDollarSkills:
     """$skillname inline trigger resolution (allowlist, all sources)."""

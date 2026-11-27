@@ -52,6 +52,14 @@ export interface CrewmateExportPreview {
   fingerprint: string
 }
 
+/** One held limit of a Bot, as `GET /api/members/{slug}/held-limits` answers it.
+ *  `text` is stored text; `capability` names what it covers (`*`: every action,
+ *  `none`: a hook that does not run on its worker). */
+export interface MemberHeldLimit {
+  text: string
+  capability: string
+}
+
 /** One row of GET /api/members — a global crew as a Crew Members roster entry.
  *  Crew-record fields (kiro_agent, workspace, memory_store, model, …) are
  *  spread verbatim from the backend dataclass; only the fields the page reads
@@ -84,6 +92,11 @@ export interface MemberRosterRow {
    *  the newest event is not a stop, and absent again once a newer
    *  conversational row lands. */
   last_message_stopped?: boolean
+  /** The agent file this bot runs on is gone (its package was uninstalled, or
+   *  the file was deleted), so its chats and schedules fail until the file is
+   *  back. The row is kept, because the bot still holds its memory and chats;
+   *  the page marks it and offers Delete bot. Omitted (not `false`) otherwise. */
+  agent_missing?: boolean
   kiro_agent?: string
   workspace?: string
   memory_store?: string
@@ -106,6 +119,11 @@ export interface MemberRosterRow {
   autocompact_pct?: number
   /** The per-crewmate Dynamic capabilities preview (default off). */
   dynamic_capabilities?: boolean
+  /** Workers can conduct (default off): each worker this Bot's thread opens may
+   *  split its task and open further workers of this Bot. Only the owner sets it,
+   *  on the Profile tab or through `PUT /api/agents/{name}`. Absent on an older
+   *  gateway: read it as off. */
+  worker_conducts?: boolean
   /** Optional presentation label shown in place of `name`. `name` stays the
    *  identity every per-member route and binding is keyed on. */
   display_name?: string
@@ -124,6 +142,10 @@ export interface MemberRosterRow {
    *  in one click. Absent on an older gateway, which has no such switch, or when
    *  the crewmate never opted in: read it as off. */
   dashboard_card_send?: boolean
+  /** Whether the sessions this Bot's thread opens also show in the person's
+   *  Sessions list while `dashboard.show_bot_sessions_in_list` is off (which lists
+   *  every Bot's). Off by default; absent reads as off. */
+  show_sessions_in_list?: boolean
   /** The person created this crewmate (the Crewmates page's create, or an
    *  approved `crewmate.create` / `crewmate.import` card): `source` is
    *  `kirocrew` AND the record carries a member id. Never true for the reserved
@@ -247,7 +269,9 @@ export interface MemberGoal {
 }
 
 /** The check-in switches and their shared timing. weekday: 0 = Sunday.
- *  The heartbeat runs every `interval` minutes (30, 60, 120 or 240; 60 by default), not at `time`. */
+ *  The heartbeat runs every `interval` minutes (30, 60, 120 or 240; 60 by default), not at `time`,
+ *  and only in its active hours: whole hours from `active_from` (0-23) up to, not including,
+ *  `active_to` (1-24); 0 and 24, the default, are the whole day. */
 export interface GoalSchedules {
   time: string
   timezone: string
@@ -258,6 +282,8 @@ export interface GoalSchedules {
   month_day: number
   heartbeat: boolean
   interval: number
+  active_from: number
+  active_to: number
 }
 
 /** A saved weekly report or monthly review (an artifact). */
@@ -492,6 +518,15 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
       if (!r.ok) throw await toApiError(r)
       return r.blob()
     },
+    // A Bot's held limits (owner or Shared Crew teammate): the limits its upgrade
+    // move could not apply as written, which make it ask a person first.
+    memberHeldLimits: (slug: string, member: string) =>
+      fetch(
+        '/api/members/' + encodeURIComponent(slug) + '/held-limits?member=' + encodeURIComponent(member),
+      ).then(j) as Promise<{ limits: MemberHeldLimit[]; kiro_cli: boolean }>,
+    // Ends every one of them, only while they are still `limits` (else 409).
+    memberHeldLimitsRelease: (slug: string, member: string, limits: MemberHeldLimit[]) =>
+      post('/api/members/' + encodeURIComponent(slug) + '/held-limits/release', { member, limits }).then(j) as Promise<{ released: MemberHeldLimit[] }>,
     // A member's recent activity pointers (real recorded signal only: session
     // participations and routing decisions). `member` is the exact crew name —
     // slugs are lossy, so the backend filters the shared log by exact name.

@@ -235,9 +235,15 @@ def acp_error_is_pipe_death(exc: BaseException) -> bool:
     answers a failed Claude Code start with ``-32603`` and "Claude Code process
     exited with code 1", which a fresh process reproduces, so treating it as a
     death retried the turn behind "Connection lost — retrying…" until "Session
-    stuck" and never showed the adapter's own words.
+    stuck" and never showed the adapter's own words. Nor does an error its raise
+    site ruled not transient: its text can quote the child's stderr (a start that
+    exited during ``initialize``), and that site already said a retry cannot help.
     """
-    if not isinstance(exc, AcpError) or getattr(exc, "code", None) is not None:
+    if (
+        not isinstance(exc, AcpError)
+        or getattr(exc, "code", None) is not None
+        or getattr(exc, "transient", None) is False
+    ):
         return False
     msg = str(exc)
     return "process exited" in msg or "not running" in msg
@@ -448,6 +454,21 @@ def acp_error_is_server_error(exc: BaseException) -> bool:
     if client is None:
         return False
     return bool(client.classify_provider_error(str(exc)).kind == client.PROVIDER_ERROR_HTTP_5XX)
+
+
+def acp_error_is_capacity_or_throttle(exc: BaseException) -> bool:
+    """True when *exc* is a transient failure another model may serve.
+
+    A provider throttle (:func:`acp_error_is_throttle`) or a capacity/rollout
+    refusal of the selected model (the raise-time ``AcpError.model_unavailable``
+    flag). A plain 5xx or a dropped connection is neither, and neither is Kiro's
+    per-user rate limit (``AcpError.user_rate_limit``), which every model shares.
+    """
+    if getattr(exc, "user_rate_limit", False) is True:
+        return False
+    if acp_error_is_throttle(exc):
+        return True
+    return acp_error_is_transient(exc) and getattr(exc, "model_unavailable", False) is True
 
 
 def connection_recovery_open(

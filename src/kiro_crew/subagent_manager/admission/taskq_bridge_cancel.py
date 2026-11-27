@@ -60,19 +60,23 @@ async def taskq_cancel_queued_async(
     )
 
 
-async def taskq_row_is_claimed_unstarted_async(self: _TaskqBridgeMixin, agent_id: str) -> bool:
-    """True only when *agent_id*'s row is CLAIMED and not started (``admitted``).
+async def taskq_unstarted_claim_generation_async(
+    self: _TaskqBridgeMixin, agent_id: str
+) -> int | None:
+    """The claim's generation when *agent_id*'s row is CLAIMED and not started, else None.
 
-    This is the one state a parent-end teardown must not reap through the live path:
-    the row's claimer sits between its claim and its registration, so stopping it here
-    is the act the store's own state gate just refused, reached through another door.
-    Every other answer -- started, missing, unreadable -- takes the reap.
+    ``admitted`` is the one state a parent-end teardown must not reap through the live
+    path: the row's claimer sits between its claim and its registration, so stopping it
+    here is the act the store's own state gate just refused, reached through another
+    door. Every other answer -- started, missing, unreadable -- takes the reap. The
+    generation is the attempt the teardown's ``parent_end`` record names
+    (``parent_end_record.leave_to_claimer``).
 
-    A row that cannot be read answers ``False`` for "claimed", because an unknown is
-    not a claim. Folding the two together spared a LIVE run whenever the store was
-    briefly unreadable, leaving it working against a conversation that has ended --
-    the failure this path exists to prevent. The narrow exemption needs positive
-    evidence, so only the state that names it earns it.
+    A row that cannot be read answers None, because an unknown is not a claim. Folding
+    the two together spared a LIVE run whenever the store was briefly unreadable,
+    leaving it working against a conversation that has ended -- the failure this path
+    exists to prevent. The narrow exemption needs positive evidence, so only the state
+    that names it earns it.
 
     The read is retried on the same bound the durable sweep uses: an error here is
     normally writer-thread contention rather than a real outage.
@@ -85,7 +89,7 @@ async def taskq_row_is_claimed_unstarted_async(self: _TaskqBridgeMixin, agent_id
 
     store = self.taskq_store()
     if store is None:
-        return False
+        return None
     for attempt in range(_STATE_READ_ATTEMPTS):
         try:
             rec = await store.run(store.get, agent_id)
@@ -100,9 +104,11 @@ async def taskq_row_is_claimed_unstarted_async(self: _TaskqBridgeMixin, agent_id
                 _STATE_READ_ATTEMPTS,
                 exc_info=True,
             )
-            return False
-        return rec is not None and rec.state == _taskq_model.ADMITTED
-    return False
+            return None
+        if rec is None or rec.state != _taskq_model.ADMITTED:
+            return None
+        return rec.generation
+    return None
 
 
 def taskq_cancel_queued(

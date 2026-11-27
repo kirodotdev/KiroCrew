@@ -15,8 +15,9 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``,
 ``_crew_bridge_snapshots``, ``_fork_request``, ``_kill_sent``, ``_last_activity``,
 ``_last_stop_reason``, ``_liveness_oracle``, ``_loaded_capability_template``,
 ``_mcp_json_names``, ``_mcp_ref_spec``, ``_mcp_report``, ``_mcp_report_frame_floor``,
-``_member_stub_allowlist``, ``_mimocode_governed_stop``, ``_oauth_emitted_servers``,
-``_pending_oauth_requests``, ``_pi_mcp_handoff``, ``_pi_mcp_server_names``, ``_pid``,
+``_mcp_spec_dropped``, ``_member_stub_allowlist``, ``_mimocode_governed_stop``,
+``_oauth_emitted_servers``, ``_pending_oauth_requests``, ``_pi_mcp_handoff``,
+``_pi_mcp_server_names``, ``_pi_worker_stub_names``, ``_pid``,
 ``_process``, ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_or_tool_seen``, ``_resume_session_id``, ``_resumed``, ``_sandbox_cleanup``,
 ``_scope_unit``, ``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_id``,
@@ -25,7 +26,7 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``,
 ``_spawn_start_token``, ``_spawn_work_dir``, ``_spec_denied_tools``,
 ``_spec_shell_allowlist``, ``_spec_write_allowlist``, ``_spec_write_cwd``,
 ``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``, ``_stdin_stalled``,
-``_windows_tree_cleanup_failed``.
+``_unreaped_pids``, ``_windows_cleanup_receipt``, ``_windows_tree_cleanup_failed``.
 
 Instance fields read: ``_entitlement_probe_inflight``, ``_mcp_gateway_socket``,
 ``_native_skill_projection``, ``_sandbox_hidden_dirs``, ``_sandbox_mode``,
@@ -54,6 +55,7 @@ from kiro_crew.acp.client_timeouts import (
 from kiro_crew.acp.liveness import LivenessOracle, _consume_future_exception
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_process_tree import ChildRecord
+from kiro_crew.acp.runtime_tree_kill import kill_ending_session_leftovers
 from kiro_crew.acp.stale_compaction import clear_stale_compaction_state
 from kiro_crew.acp.transport_errors import (
     AcpDelegateLaunchFailed,
@@ -620,6 +622,9 @@ def _reset_state(self: AcpClient) -> None:
     ):
         if not cleanup.retired:
             self._windows_tree_cleanup_failed = True
+            # The receipt the cleanup sweep retires once the tree is drained: the
+            # evidence a Bot-chat close retry reads (``windows_receipt_retired``).
+            self._windows_cleanup_receipt = cleanup
     if getattr(self, "_windows_tree_cleanup_failed", False) is True:
         logger.warning("Retaining Windows client PID %s after incomplete tree cleanup", self._pid)
         return
@@ -685,6 +690,7 @@ def _reset_state(self: AcpClient) -> None:
     self._session_mcp_snapshot = None
     self._session_agent_spec = None
     self._member_stub_allowlist = None
+    self._pi_worker_stub_names = frozenset()
     self._loaded_capability_template = ""
     self._capability_projection_gaps = ()
     # Per SESSION, not per spawn: a replacement process' session is judged on its
@@ -694,6 +700,7 @@ def _reset_state(self: AcpClient) -> None:
     # what the next session's guard judges, not this one's.
     self._mcp_ref_spec = None
     self._mcp_json_names = ()
+    self._mcp_spec_dropped = ()
     self._spec_denied_tools = frozenset()
     self._spec_shell_allowlist = None
     self._spec_write_allowlist = None
@@ -709,6 +716,7 @@ def _reset_state(self: AcpClient) -> None:
     # unreadable PID is not enough to reclaim its working directory.
     root_confirmed_dead = bool(self._process and self._process.returncode is not None)
     saved_pid = None if platform_compat.IS_WINDOWS else self._pid
+    had_process = self._process is not None or saved_pid is not None
     saved_start_token = self._spawn_start_token
     saved_child_pids = self._child_pids
     self._process = None
@@ -839,7 +847,15 @@ def _reset_state(self: AcpClient) -> None:
                 saved_pid,
             )
     self._child_pids = {}
-    self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
+    # A reset with no process behind it (already reaped by an earlier reset) keeps
+    # the verdict that reset wrote, so a tree confirmed dead is not re-read as
+    # unconfirmed and an unconfirmed one is not read as dead.
+    if had_process:
+        self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
+        # What a later Bot-chat close retry re-checks (``TreeSurvivors``).
+        self._unreaped_pids = tuple(survivors) + (
+            (saved_pid,) if saved_pid is not None and not root_confirmed_dead else ()
+        )
 
 
 async def _classify_failed_start(self: AcpClient, classify: Callable[[], Awaitable[_T]]) -> _T:
@@ -976,7 +992,8 @@ async def _registration_throttle_line(self: AcpClient) -> str | None:
 
 async def shutdown(self: AcpClient) -> None:
     """Gracefully stop the ACP process."""
-    self._process_tree_confirmed_dead = False
+    if self._process is not None:
+        self._process_tree_confirmed_dead = False
     # Tear down an in-flight entitlement probe first: its throwaway client
     # spawned its OWN kiro-cli (and whatever MCP servers that started), and
     # nothing else reaps it -- `_kill_process` below kills only THIS session's
@@ -1021,11 +1038,22 @@ async def shutdown(self: AcpClient) -> None:
     # `_kill_process` in a function that takes only that keyword, and a gateway
     # stop closes these sessions in batches inside one time budget, where a
     # wait per session could leave the later ones unclosed.
+    #
+    # What the root left in its session outside its tree is ended once the kill
+    # has returned or raised (`kill_ending_session_leftovers`).
     try:
+        process = self._process
         if self._is_kiro:
-            await self._kill_process(force=True, exit_grace=_EOF_EXIT_GRACE_SECS)
+            kill = functools.partial(
+                self._kill_process, force=True, exit_grace=_EOF_EXIT_GRACE_SECS
+            )
         else:
-            await self._kill_process(force=True)
+            kill = functools.partial(self._kill_process, force=True)
+        await kill_ending_session_leftovers(
+            process.pid if process is not None and process.returncode is None else None,
+            getattr(self, "_start_time", None),
+            kill,
+        )
     finally:
         await self._discard_bound_workspace()
         # `finally` for the same reason the kill above has one: `_reset_state`

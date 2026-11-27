@@ -182,7 +182,7 @@ class TestFetchMessage:
 
     @pytest.mark.asyncio
     async def test_extracts_text_from_blocks_after_ack(self):
-        """After acknowledge, text field is 'Acknowledged' but blocks
+        """After acknowledge, text field is '✅ Acknowledged' but blocks
         still contain the original content — fetch_message should extract it."""
         client = RealSlackClient.__new__(RealSlackClient)
         client._web = MagicMock()
@@ -190,7 +190,7 @@ class TestFetchMessage:
             return_value={
                 "messages": [
                     {
-                        "text": "Acknowledged",
+                        "text": "✅ Acknowledged",
                         "blocks": [
                             {
                                 "type": "section",
@@ -198,7 +198,7 @@ class TestFetchMessage:
                             },
                             {
                                 "type": "context",
-                                "elements": [{"type": "mrkdwn", "text": "Acknowledged"}],
+                                "elements": [{"type": "mrkdwn", "text": "✅ Acknowledged"}],
                             },
                         ],
                     }
@@ -218,7 +218,7 @@ class TestFetchMessage:
             return_value={
                 "messages": [
                     {
-                        "text": "Acknowledged",
+                        "text": "✅ Acknowledged",
                         "blocks": [
                             {
                                 "type": "rich_text",

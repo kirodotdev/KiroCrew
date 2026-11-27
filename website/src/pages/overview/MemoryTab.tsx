@@ -142,12 +142,14 @@ export const LESSONS_CARD_ID = 'memory-lessons-card'
 const MEMORY_STORES_POLL_ID = 'memory-stores'
 const MEMORY_STORES_REFRESH_MS = 1_500
 
-export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, selectedStore, onStoreNavigate, focus }: {
+export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, selectedStore, onStoreNavigate, focus, focusLessonKey }: {
   /** Re-reads the whole view; at most once per window of turn ends. */
   refreshTrigger: number
   /** Moves on every turn end: re-reads the store list, and the whole view when it changed. */
   liveRefreshTrigger?: number
   selectedStore?: string; onStoreNavigate?: (store: string) => void; focus?: string | null
+  /** `?lesson=`: the saved lesson a chat's "Review lessons" link opens. */
+  focusLessonKey?: string | null
 }) {
   const stores = useMemoryStores()
   const navigate = useNavigate()
@@ -199,6 +201,7 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
     const selected = new URLSearchParams(window.location.search).get('store') || ''
     return selected === 'default' ? '' : selected
   })
+  const landingStore = useRef(store)
   const storeRef = useRef(store)
   useEffect(() => { storeRef.current = store }, [store])
   // The global view re-reads these on the same trigger itself, and a second
@@ -234,6 +237,7 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
     const url = new URL(window.location.href)
     if (next) url.searchParams.set('store', next)
     else url.searchParams.delete('store')
+    url.searchParams.delete('lesson')
     window.history.replaceState(window.history.state, '', url)
   }
   const choose = (next: string) => {
@@ -243,7 +247,7 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
   }
   return <>
     <MemoryStoreCard store={store} onStoreChange={choose} compact={!!store} />
-    {store ? identityReady ? <MemberMemoryPanel key={store} store={store} summary={selected!} onDirtyChange={setDirty} /> : <Card>
+    {store ? identityReady ? <MemberMemoryPanel key={store} store={store} summary={selected!} onDirtyChange={setDirty} focusLessonKey={store === landingStore.current && focus === MEMORY_FOCUS_LESSONS ? focusLessonKey ?? undefined : undefined} /> : <Card>
       {stores.isPending && !queryReadFailed(stores) ? <div role="status" aria-busy="true" className="flex min-w-0 items-center gap-3">
         <Skeleton className="h-12 w-12 shrink-0 motion-reduce:animate-none" />
         <div className="min-w-0 flex-1 space-y-2">
@@ -264,7 +268,7 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
           }}>{i18nT('pages.kiroCrewAgentsPage.open_crew_manager')}</Btn>
         </div>
       </>}
-    </Card> : <GlobalMemoryTab refreshTrigger={trigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} focusFailures={focus === MEMORY_FOCUS_FAILURES} />}
+    </Card> : <GlobalMemoryTab refreshTrigger={trigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} focusLessonKey={store === landingStore.current ? focusLessonKey ?? undefined : undefined} focusFailures={focus === MEMORY_FOCUS_FAILURES} />}
     {pendingStore !== null && <Modal open title={i18nT('memoryV2.discard_title')} onClose={() => setPendingStore(null)}><div className="flex flex-col gap-3">
       <p className="text-[13px]">{i18nT('memoryV2.discard_explanation')}</p>
       <div className="flex flex-wrap gap-2">
@@ -275,7 +279,7 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
   </>
 }
 
-function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, focusFailures = false }: { refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean; focusFailures?: boolean }) {
+function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, focusLessonKey, focusFailures = false }: { refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean; focusLessonKey?: string; focusFailures?: boolean }) {
   const queryClient = useQueryClient()
   // The failed-session link leaves this tab; through the same guard as the
   // outer tab's exits, since the drafts held here are what the guard protects.
@@ -852,6 +856,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, 
       onSettledChange={setVectorSettled}
       onDirtyChange={setVectorDirty}
       initialSemanticFilter={focusLessons ? 'lesson.' : undefined}
+      focusKey={focusLessons ? focusLessonKey : undefined}
     />
     <EmbeddingModelCard onDirtyChange={setEmbedDirty} />
     <details onToggle={event => setRecordsOpen(event.currentTarget.open)}>

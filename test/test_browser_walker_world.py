@@ -35,6 +35,7 @@ def _ctx(seen: list[str]) -> ops.OpContext:
         "snapshot",
         "observe",
         "cells",
+        "selectorBlocked",
         "resolve",
         "focus",
         "activeField",

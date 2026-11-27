@@ -220,11 +220,12 @@ def _kernel_lock_records(lock_path: Path, orphan: int) -> dict:
     and the whole of ``/proc/locks`` is scanned for the inode key with no owner
     filter. Each read that fails is recorded under ``errors``: the classifier
     treats a recorded error as a measurement that did not happen, never as
-    absence.
+    absence. ``proc_locks`` stays ``None`` when ``/proc/locks`` itself could not
+    be read.
     """
     key = _device_inode_key(lock_path)
     info = lock_path.stat()
-    records: dict = {"key": key, "orphan": orphan, "fdinfo": [], "proc_locks": [], "errors": []}
+    records: dict = {"key": key, "orphan": orphan, "fdinfo": [], "proc_locks": None, "errors": []}
     fd_dir = Path(f"/proc/{orphan}/fd")
     try:
         descriptors = sorted(fd_dir.iterdir())
@@ -260,14 +261,22 @@ def _classify_kernel_records(records: dict, parent: int) -> str:
     """``"retained"`` or ``"discarded"``; anything else is a failed measurement.
 
     Retained: the orphan's one descriptor on the lock file carries one FLOCK
-    record naming the dead parent on the exact inode key, and ``/proc/locks``
-    names that same parent for the key and nobody else.
+    record naming the parent on the exact inode key, and ``/proc/locks`` names
+    no other owner for the key.
 
     Discarded: that one record is blank (``lock:`` with nothing after it) or
     names owner 0 on the exact key, and ``/proc/locks`` has no FLOCK owner row
     for the key at all. A descriptor with no lock record, a record on another
     inode, a record naming anyone else, a disagreement between the two
     surfaces, or any read error is neither -- the caller fails with the records.
+
+    ``/proc/locks`` is not a snapshot: the kernel hands it out a page per
+    ``read()`` and resumes by ordinal index, so locks any process on the host
+    takes or drops between two reads shift the rows under the resume point,
+    and a held lock's row can print more than once or not at all. Every row a
+    scan prints was a lock at some instant of the scan, so a row naming another
+    owner is real; the descriptor's fdinfo, one atomic record, is what says the
+    parent holds the lock once.
     """
     detail = json.dumps(records, sort_keys=True)
     if records["errors"]:
@@ -284,7 +293,7 @@ def _classify_kernel_records(records: dict, parent: int) -> str:
         len(fields) >= 7 and fields[2:5] == ["FLOCK", "ADVISORY", "WRITE"] and fields[6] == key
     )
     if populated and fields[5] == str(parent):
-        if owners == [str(parent)]:
+        if set(owners) <= {str(parent)}:
             return "retained"
         pytest.fail(f"fdinfo names the acquirer but /proc/locks disagrees: {detail}")
     if fields == ["lock:"] or (populated and fields[5] == "0"):
@@ -337,13 +346,11 @@ def _run_orphan_scenario(holder: _OrphaningHolder, *, strict: bool) -> str:
     with pytest.raises(GatewayLockError):
         GatewayLock(home).acquire()
     if sys.platform == "linux":
-        key = _device_inode_key(lock_path)
-        try:
-            rows = Path("/proc/locks").read_text(encoding="utf-8").splitlines()
-        except OSError as error:
-            _step_aside(f"/proc/locks unreadable: {error!r}")
-        live = [fields[4] for fields in _flock_rows(rows, key)]
-        assert live == [str(parent)], f"kernel record for the live acquirer: {live}"
+        live = _kernel_lock_records(lock_path, orphan)
+        if live["proc_locks"] is None:
+            _step_aside(f"/proc/locks unreadable: {live['errors']}")
+        verdict = _classify_kernel_records(live, parent)
+        assert verdict == "retained", f"kernel record for the live acquirer: {json.dumps(live)}"
         assert platform_compat.flock_owner_pid(lock_path) == parent, "live acquirer lookup"
         assert lock_holder(home) == LockHolder(pid=parent, alive=True, source="flock_owner")
 
@@ -475,6 +482,9 @@ def _records(fdinfo_rows, proc_locks=(), errors=()):
     "records, verdict",
     [
         (_records([[_RETAINED_ROW]], [_PROC_LOCKS_ROW]), "retained"),
+        # A scan that repeated the held row across a page boundary, or dropped it there.
+        (_records([[_RETAINED_ROW]], [_PROC_LOCKS_ROW, "2" + _PROC_LOCKS_ROW[1:]]), "retained"),
+        (_records([[_RETAINED_ROW]]), "retained"),
         (_records([["lock:\t"]]), "discarded"),
         (_records([[f"lock:\t1: FLOCK ADVISORY WRITE 0 {_KEY} 0 EOF"]]), "discarded"),
     ],
@@ -509,7 +519,6 @@ def test_classifier_accepts_only_a_positively_observed_record(records, verdict):
             "unrecognised",
             id="record-lock-not-flock",
         ),
-        pytest.param(_records([[_RETAINED_ROW]]), "disagrees", id="fdinfo-only"),
         pytest.param(_records([["lock:\t"]], [_PROC_LOCKS_ROW]), "lacks", id="blank-but-listed"),
         pytest.param(
             _records([[_RETAINED_ROW]], [_PROC_LOCKS_ROW, _PROC_LOCKS_ROW.replace("4242", "77")]),

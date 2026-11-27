@@ -3,10 +3,10 @@
  *  Shares this Crew with teammates who can reach this machine through AWS
  *  Systems Manager. The tab is a status line and the invite form: a name, then
  *  Make link. The link is the whole credential and is shown once. An invite
- *  nobody has opened is a row under Invites in the People list (`SsmInviteRow`); once
+ *  nobody has opened is a row of the People list (`SsmInviteRow`); once
  *  they open it, their own row carries the Remove button (`RevokeControl`, the one
  *  control Tailscale invites use too). */
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, UserPlus } from 'lucide-react'
 import { api } from '../../api/client'
@@ -171,9 +171,9 @@ export function SsmTab({ status }: { status: SsmStatus }) {
   )
 }
 
-/** A row under Invites in the People list for an SSM invite nobody has opened: its text dimmed,
- *  with Remove, like the Tailscale invite rows beside it. */
-export function SsmInviteRow({ invite }: { invite: SsmInvite }) {
+/** A row of the People list for an SSM invite nobody has opened: its text dimmed, its source
+ *  *chip*, and Revoke invite, like the Tailscale invite rows beside it. */
+export function SsmInviteRow({ invite, chip }: { invite: SsmInvite; chip?: ReactNode }) {
   const name = invite.alias || i18nT('sharedCrew.invite_link_row')
   return (
     <li className="flex flex-wrap items-center gap-3 py-2 min-w-0" data-testid={`ssm-invite-${invite.id}`} data-status="pending">
@@ -183,6 +183,7 @@ export function SsmInviteRow({ invite }: { invite: SsmInvite }) {
       <div className="flex flex-col gap-0.5 min-w-0 flex-1 opacity-60">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className="text-sm font-medium text-text-strong truncate max-w-full" title={name}>{name}</span>
+          {chip}
         </div>
         <span className="text-[12px] text-muted">
           {invite.created_at > 0 ? i18nT('sharedCrew.invite_created_at', { when: fmtDateTime(invite.created_at * 1000) }) : null}
@@ -190,7 +191,7 @@ export function SsmInviteRow({ invite }: { invite: SsmInvite }) {
           {!copiedLinks.has(invite.id) ? i18nT('sharedCrew.ssm_not_copied') : null}
         </span>
       </div>
-      <RevokeControl inviteId={invite.id} name={name} transport="ssm" />
+      <RevokeControl inviteId={invite.id} name={name} transport="ssm" label={i18nT('sharedCrew.invite_revoke_invite')} />
     </li>
   )
 }

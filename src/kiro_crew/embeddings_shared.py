@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import logging
 import threading
+import time
 from collections import OrderedDict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ from kiro_crew.embeddings_model import (
     legacy_embedding_ids,
     model_pooling_type,
     models_dir,
+    query_instruction_applies,
+    query_instruction_text,
     resolve_custom_model,
 )
 from kiro_crew.embeddings_ollama import (
@@ -547,32 +550,41 @@ def warm_embedder_for_person() -> None:
     minutes instead of an hour. The dashboard calls this when its owner opens,
     focuses, types in or sends to a chat, and channel admission calls it for each
     routed message, so the model is loaded (or kept loaded) before the turn's
-    context build asks for a vector. Elsewhere it does nothing, which keeps a
-    larger machine exactly as it was.
+    context build asks for a vector. On every machine a model resting after a
+    short idle starts its rebuild here (:meth:`EmbeddingBackend.wake`), so the
+    rebuild runs beside the turn's other preparation.
 
     Only an embedder this process already built is warmed: a process whose memory
-    never asked for the model does not get one from a person showing up. It may
-    read the model file's metadata, so call it off the event loop.
+    never asked for the model does not get one from a person showing up. On a
+    small machine it may read the model file's metadata, so call it off the event
+    loop there.
     """
-    if not small_memory_host():
-        return
     with _shared_embedder_lock:
         backend = _shared_embedder
     if backend is None:
         return
     try:
-        backend.keep_warm()
+        if small_memory_host():
+            backend.keep_warm()
+        else:
+            backend.wake()
     except Exception:  # noqa: BLE001 - a hint; a failure costs only the early load
         logger.debug("Keeping the embedding model warm failed", exc_info=True)
 
 
 def warm_embedder_for_person_soon() -> None:
-    """:func:`warm_embedder_for_person` from the event loop, run on the default executor.
+    """:func:`warm_embedder_for_person` from the event loop.
 
-    The small-machine check is a cached answer, so a larger machine pays one call
-    and schedules nothing; off a running loop it does nothing.
+    The small-machine check is a cached answer. A larger machine only queues a
+    wake, which never waits, so it runs here; a small machine runs on the default
+    executor. Off a running loop it does nothing.
     """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
     if not small_memory_host():
+        warm_embedder_for_person()
         return
     try:
         loop = asyncio.get_running_loop()
@@ -588,6 +600,39 @@ def peek_ready_shared_embedder() -> EmbeddingBackend | None:
     if backend is None or not backend.is_ready():
         return None
     return backend
+
+
+def wait_for_cold_shared_embedder(
+    timeout: float, should_stop: Callable[[], bool] | None = None
+) -> bool:
+    """Load an unloaded shared model for background work. True once it is loaded now.
+
+    A ``PRIORITY_BULK`` embed never waits for a load: it returns ``None`` and only
+    starts one, so a sweep that meets an idle-unloaded model would read every row
+    as failed. A sweep calls this when an embed came back empty, then tries again.
+
+    Only a backend this process already built is loaded, only while it reports it
+    can load on demand (file present, no failed load), and the wait stops at
+    *timeout* or when *should_stop* says so. False when the model was already
+    loaded, so a caller never retries an embed that failed for another reason.
+    """
+    with _shared_embedder_lock:
+        backend = _shared_embedder
+    if backend is None or backend.is_ready():
+        return False
+    can_load = getattr(backend, "can_load_on_demand", None)
+    wait_ready = getattr(backend, "wait_ready", None)
+    if not callable(can_load) or not callable(wait_ready):
+        return False
+    give_up = time.monotonic() + timeout
+    while can_load() and not (should_stop is not None and should_stop()):
+        left = give_up - time.monotonic()
+        if left <= 0:
+            return False
+        # Short slices: a stop (gateway shutdown) ends the wait within 0.1 s.
+        if wait_ready(timeout=min(0.1, left)):
+            return True
+    return False
 
 
 def peek_shared_embedding_identity() -> tuple[str | None, str]:
@@ -721,17 +766,20 @@ def _shared_sync_embed(
 _shared_sync_embed.accepts_priority = True  # type: ignore[attr-defined]
 
 
-def embedding_in_flight(text: str) -> bool:
+def embedding_in_flight(text: str, *, query: bool = False) -> bool:
     """Whether the shared embedder is computing the vector for *text* right now.
 
     A caller that embeds *text* while this holds joins that inference, and a joined
     wait ends at the caller's own deadline even while the inference runs. Starts,
-    loads and reads nothing beyond the in-flight record.
+    loads and reads nothing beyond the in-flight record. *query* looks for the
+    recall-query form of *text*, the one ``_try_embed(..., query=True)`` embeds.
     """
     with _shared_embedder_lock:
         backend = _shared_embedder
     if backend is None:
         return False
+    if query and query_instruction_applies(backend.model_id):
+        text = query_instruction_text(text)
     with _sync_embed_cache_lock:
         return (id(backend), text[:_MAX_EMBED_CHARS]) in _sync_embed_flights
 

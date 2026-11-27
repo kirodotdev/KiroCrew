@@ -52,6 +52,8 @@ export function useBoardColumns() {
   const {
     data: rawColumns = [],
     isFetched: tagColumnsSettled,
+    isPending: columnsPending,
+    isSuccess: columnsReady,
     isError: columnsFailed,
     error: columnsError,
     refetch: refetchColumns,
@@ -83,8 +85,12 @@ export function useBoardColumns() {
     const columns: TagColumn[] = tagColumnsEnabled ? rawColumns : []
     return [...columns].sort((a, b) => a.order - b.order)
   }, [rawColumns, tagColumnsEnabled])
+  // Until the query succeeds, `rawColumns` is the `[]` default, not the board:
+  // nothing may read it as "this board has no lanes". A no-data retry stays
+  // pending until its response arrives, so the board keeps its loading state.
   return {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
+    columnsReady, boardColumnsLoading: tagColumnsEnabled && columnsPending,
     hideEmptyFolderBody, countSubfolderContents, orderedColumns,
     // List view only: the board (any column, see `renderedLane`) draws every folder.
     hideEmptyFolders: hideEmptyFolders && orderedColumns.length === 0,
@@ -165,11 +171,13 @@ export function useColumnPopover() {
 }
 
 /** Column writes and the state-lane seeding. */
-export function useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, paintedWidthRef, widenForBoard, setSeedError }: {
+export function useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, columnsReady, paintedWidthRef, widenForBoard, setSeedError }: {
   queryClient: QueryClient
   setBoardError: Dispatch<SetStateAction<string>>
   orderedColumns: TagColumn[]
   rawColumns: TagColumn[]
+  /** `useBoardColumns().columnsReady`: `rawColumns` is the loaded board. */
+  columnsReady: boolean
   /** The width the sidebar is painted at, which a window narrower than the
    *  saved width holds below it (see sidebarPaintWidth). */
   paintedWidthRef: MutableRefObject<number>
@@ -244,9 +252,10 @@ export function useBoardColumnMutations({ queryClient, setBoardError, orderedCol
    *  decides uniqueness by `state_key` under its write lock and returns the
    *  existing lane instead of creating a second one. */
   const missingLanes = useMemo(() => {
+    if (!columnsReady) return []
     const present = new Set(rawColumns.filter(c => c.source === 'state').map(c => c.state_key))
     return SESSION_LANES.filter(lane => !present.has(lane.key))
-  }, [rawColumns])
+  }, [rawColumns, columnsReady])
 
   /** Add the four derived state lanes to the board.
    *
@@ -266,15 +275,20 @@ export function useBoardColumnMutations({ queryClient, setBoardError, orderedCol
    *    every session. It is one click to remove and is not ours to delete.
    *  - Re-running is harmless, which is what makes the pending-guard on the
    *    menu items a second line of defence rather than the only one.
+   *
+   *  It refuses, writing nothing, until the columns have loaded: a lane the
+   *  user deleted is "missing" from the unloaded `[]`, and would come back.
    */
   const seedStateLanesMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (): Promise<number | null> => {
+      if (!columnsReady) return null
       for (const lane of missingLanes) {
         await api.createTagColumn({ source: 'state', state_key: lane.key, tag_ids: [], mode: 'any' })
       }
       return rawColumns.length + missingLanes.length
     },
-    onSuccess: (columnCount: number) => {
+    onSuccess: (columnCount: number | null) => {
+      if (columnCount === null) return
       queryClient.invalidateQueries({ queryKey: ['tag-columns'] })
       // A board is a horizontal strip inside a 260px-default sidebar, so lanes
       // that do not fit are reachable only by discovering the resize handle.

@@ -44,7 +44,7 @@ def rerun_command(*, agent_only: bool, clean: bool, slack: bool, whatsapp: bool)
 
 def abort_message(reason: str, progress: SetupProgress, command: str) -> str:
     """The lines printed when the wizard stops on a closed stdin."""
-    lines = [f"\nSkipped: Setup aborted: {reason}."]
+    lines = [f"\n⏭  Setup aborted: {reason}."]
     unfinished = progress.unfinished()
     if unfinished:
         lines.append(f"   Not finished: {', '.join(unfinished)}.")

@@ -8,11 +8,16 @@ import {
   acceptSuffix, commandSuffix, commandArgv, unescapeWord,
 } from '../utils/terminalCompletion'
 import type { CompletionMode } from '../utils/terminalCompletion'
-import { sendRawToTerminalSession } from '../utils/terminalRegistry'
+import { dropTerminalDataForThisKey, sendRawToTerminalSession } from '../utils/terminalRegistry'
 import { isMac } from '../utils/platform'
-import { terminalChord } from '../utils/terminalFullscreen'
+import { isChordLetter, terminalChord } from '../utils/terminalFullscreen'
+import { getTerminalFont } from '../hooks/useTerminalFont'
+import { SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
+import { isTerminalClearEvent } from '../lib/panelToggleShortcuts'
+import { safeGetItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
+import { apiTransport } from '../api/apiTransport'
 /** Debounce between the last keystroke and the completion request. Short enough
  *  to feel instant, long enough that holding a key down issues one request. */
 const DEBOUNCE_MS = 70
@@ -155,6 +160,12 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** When the last IME composition finished — see `IME_GRACE_MS`. */
   const imeEndAt = useRef(0)
+  /** Whether the last keydown outside a composition was a dead key. */
+  const deadKey = useRef(false)
+  /** Set when a dead key's composition ends, until xterm sends something for a key. */
+  const afterDeadKey = useRef(false)
+  /** How many times xterm has sent data, so a handler can tell whether a key reached it. */
+  const sends = useRef(0)
   /**
    * Whether the user has moved the highlight (ArrowUp/ArrowDown) on the CURRENT
    * listing. Enter accepts the highlighted row only after that; otherwise it
@@ -292,7 +303,7 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
     refetchOnWindowFocus: false,
     queryFn: async ({ signal }): Promise<CompleteResponse | null> => {
       if (!req) return null
-      const r = await fetch('/api/terminal/complete', {
+      const r = await apiTransport.request('/api/terminal/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -508,8 +519,15 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
       return word.argv.length !== s.argv.length
         || word.argv.some((w, i) => w !== s.argv[i])
     }
-    term.attachCustomKeyEventHandler((e) => {
+    const onKey = (e: KeyboardEvent): boolean => {
       if (e.type !== 'keydown') return true
+      // Firefox sends the key that ends a dead key's composition with its own keyCode; xterm 5.5 then
+      // sends the text composed so far, and the committed text again on `compositionend`. Drop the first.
+      if (!e.isComposing) deadKey.current = e.key === 'Dead'
+      else if (deadKey.current) {
+        dropTerminalDataForThisKey(sessionId)
+        afterDeadKey.current = true
+      }
       // An IME candidate is committed with a keydown the browser marks as
       // composing (Chrome reports keyCode 229 for it). Leave that native action
       // alone. Some browsers clear both flags before the committing key arrives,
@@ -520,6 +538,24 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
       if (Date.now() - imeEndAt.current < IME_GRACE_MS) {
         if (e.key === 'Enter') return true
         if (e.key === 'Tab') return claim(e)
+      }
+      // The user's "Clear terminal" chord (TERMINAL_FOCUS_PANEL_TOGGLE_IDS).
+      // `clear()` keeps the prompt row at fresh buffer coordinates and drops the
+      // scrollback. Re-keying its marker keeps command parsing on that row; the
+      // shell is not told, and cancelling the pending listing keeps an old-row
+      // response from reopening the menu.
+      if ((e.metaKey || e.ctrlKey || e.altKey)
+          && safeGetItem(SHORTCUTS_ENABLED_KEY) !== '0'
+          && isTerminalClearEvent(e)) {
+        const buf = term.buffer.active
+        const promptOffset = markers.current.get(buf.baseY + buf.cursorY)
+        close()
+        setReq(null)
+        term.clear()
+        markers.current.clear()
+        const cleared = term.buffer.active
+        if (promptOffset != null) markers.current.set(cleared.baseY + cleared.cursorY, promptOffset)
+        return claim(e)
       }
       // Ctrl+Shift+C copies the selection. Nothing in this app answers the
       // chord: xterm's evaluateKeyboardEvent yields no key for
@@ -543,13 +579,25 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
         document.execCommand('copy')
         return claim(e)
       }
+      // The opt-in Ctrl+C / Ctrl+V setting (never offered on macOS). Ctrl+C
+      // copies and clears a selection, so the next Ctrl+C interrupts. Ctrl+V
+      // is refused WITHOUT cancelling: xterm sends no ^V and the browser's own
+      // paste reaches xterm's paste listener.
+      if (e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey && getTerminalFont().ctrlCopyPaste) {
+        if (isChordLetter(e.key, e.code, 'c') && term.hasSelection()) {
+          document.execCommand('copy')
+          term.clearSelection()
+          return claim(e)
+        }
+        if (isChordLetter(e.key, e.code, 'v')) return false
+      }
       // Scrollback find + fullscreen chords (#10176, #9906), per platform
       // (terminalChord). The shell owns bare Ctrl+F on every platform
       // (readline forward-char, page-forward in less/man/vim), so it is never
       // intercepted: macOS finds on Cmd+F and toggles fullscreen on
       // Cmd+Shift+F; Linux/Windows find on Ctrl+Shift+F (xterm yields no key
       // for Ctrl+Shift+letter, so nothing reaches the shell for it today) and
-      // have no fullscreen chord: the overflow-menu item is the way in there.
+      // have no fullscreen chord: the dock header's button is the way in there.
       // Matched on the letter typed (isFindChordKey) so a remapped Latin
       // layout keeps its own Ctrl+<letter> shell keys, with the physical F
       // position as the fallback only for non-Latin layouts. It fires only
@@ -616,15 +664,63 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
         default:
           return true
       }
+    }
+    // When Space ends a dead key's composition in Firefox, xterm 5.5 keeps its dead-key state and
+    // swallows the next key it maps: Enter, Backspace, an arrow (a printable key still arrives by its
+    // keypress). If nothing reached xterm for such a key and no other key followed, hand it the key
+    // again: its state is clear by then, so it sends the key. Shift+PageUp/PageDown only scroll.
+    let resending = false
+    let keydowns = 0
+    term.attachCustomKeyEventHandler((e) => {
+      if (resending) return true
+      const pass = onKey(e)
+      if (e.type !== 'keydown') return pass
+      const n = ++keydowns
+      if (pass && afterDeadKey.current && !e.isComposing && e.keyCode !== 229 && e.key !== 'Dead'
+        && (e.key.length > 1 || e.ctrlKey || e.altKey || e.metaKey)
+        && !(e.shiftKey && (e.key === 'PageUp' || e.key === 'PageDown'))) {
+        const before = sends.current
+        setTimeout(() => {
+          if (sends.current === before && keydowns === n) {
+            resending = true
+            term.textarea?.dispatchEvent(new KeyboardEvent('keydown', {
+              key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, cancelable: true,
+              ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey,
+            }))
+            resending = false
+          }
+          if (sends.current !== before) afterDeadKey.current = false
+        }, 0)
+      }
+      return pass
     })
     // xterm exposes a single handler slot; hand it back on unmount so a future
     // consumer (or a re-mount of this pane) is not shadowed by a stale closure.
     return () => { term.attachCustomKeyEventHandler(() => true) }
   }, [term, sessionId, accept, close, readWord])
 
+  useEffect(() => {
+    const sub = term.onData(() => { sends.current += 1 })
+    return () => sub.dispose()
+  }, [term])
+
   /* ── IME composition boundary ── */
   useEffect(() => {
-    const done = () => { imeEndAt.current = Date.now() }
+    // Without an input method, Firefox commits a dead key's character as an `insertText` after
+    // `compositionend`, which xterm ignores while the key is down; xterm's own read on
+    // `compositionend` can run before it lands. Forward it when that read sent nothing.
+    let deadEnd: number | null = null
+    const done = () => {
+      imeEndAt.current = Date.now()
+      deadEnd = deadKey.current ? sends.current : null
+    }
+    const late = (ev: Event) => {
+      const { inputType, data } = ev as InputEvent
+      if (deadEnd === null || inputType !== 'insertText' || !data) return
+      const mark = deadEnd
+      deadEnd = null
+      setTimeout(() => { if (sends.current === mark) term.input(data) }, 0)
+    }
     let attached: HTMLTextAreaElement | null = null
     const attach = (): boolean => {
       if (attached) return true
@@ -634,6 +730,7 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
       // xterm routes typing through a hidden textarea, which is where composition
       // events land.
       ta.addEventListener('compositionend', done)
+      ta.addEventListener('input', late)
       return true
     }
     // On FIRST mount this child's effects run before the parent has called
@@ -645,6 +742,7 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
     return () => {
       rendered.dispose()
       attached?.removeEventListener('compositionend', done)
+      attached?.removeEventListener('input', late)
     }
   }, [term])
 

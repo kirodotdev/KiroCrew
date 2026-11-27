@@ -1,6 +1,8 @@
 /**
- * People has one way to invite someone: the `Invite…` button (`InviteEntry`)
- * opening one dialog holding one form, which makes invites through one API call.
+ * People invites through one entry component (`InviteEntry`): each source the
+ * owner manages has its own button ("Invite…" on Tailscale, "Make invite link"
+ * on AWS SSM), and every one opens the same dialog holding one form, which makes
+ * invites through one API call.
  * These scans read the production sources so a second entry point, a second form
  * or a second create call fails here instead of shipping as a parallel flow.
  */
@@ -29,18 +31,23 @@ describe('one invite path', () => {
     expect(uses(/<InviteDialog\b/g)).toEqual({ 'pages/settings/TailscaleInvites.tsx': 1 })
   })
 
-  it('labels one Invite… button, owned by the entry component', () => {
-    expect(uses(/sharedCrew\.hero_invite\b/g)).toEqual({ 'pages/settings/TailscaleInvites.tsx': 1 })
-  })
-
-  it('mounts the entry once per mutually exclusive People layout', () => {
-    expect(uses(/<InviteEntry\b/g)).toEqual({
-      'pages/settings/PeopleCrew.tsx': 1,
-      'pages/settings/PeoplePanel.tsx': 1,
+  it('labels one working Invite… button, owned by the entry component; a teammate sees the same words locked', () => {
+    expect(uses(/sharedCrew\.hero_invite\b/g)).toEqual({
+      'pages/settings/TailscaleInvites.tsx': 1,
+      'pages/settings/PeopleSources.tsx': 1,
     })
   })
 
-  it('lists not-yet-accepted email invites in People (or under the entry in personal mode) and held links in the dialog, nowhere else', () => {
+  it('mounts the entry once per source card that can invite', () => {
+    expect(uses(/<InviteEntry\b/g)).toEqual({
+      // The Tailscale and AWS SSM cards.
+      'pages/settings/PeopleSources.tsx': 2,
+      // Tailscale not set up keeps the owner's Invite… beside its setup guide.
+      'pages/settings/SharedAccessSetup.tsx': 1,
+    })
+  })
+
+  it('lists not-yet-accepted email invites in the People list and held links in the dialog, nowhere else', () => {
     expect(uses(/<InviteRow\b/g)).toEqual({ 'pages/settings/PeopleCrew.tsx': 1, 'pages/settings/TailscaleInvites.tsx': 1 })
   })
 

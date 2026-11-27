@@ -178,9 +178,41 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # The sweep's own reads can draw on the readiness pool. Its dispatches,
+      # the republish and the reserve below stay on GITHUB_TOKEN. The step is
+      # identical in pr-readiness.yml; test_readiness_read_token.py pins that.
+      - name: Select the token pool for reads
+        env:
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
+          READ_POOL_FLOOR: "50"
+        run: |
+          # Which pool this job reads from. PR_READINESS_READ_TOKEN is a
+          # separate, read-only token. It is used only when it answers
+          # `/rate_limit` (not counted against the quota) with at least
+          # READ_POOL_FLOOR requests left. Unset, refused or nearly spent,
+          # reads stay on GITHUB_TOKEN. Only counts are printed, never a token.
+          pool=shared
+          if [ -z "${READINESS_READ_TOKEN:-}" ]; then
+            echo "readiness reads: token pool -- shared (GITHUB_TOKEN); PR_READINESS_READ_TOKEN is not set"
+          else
+            bound=""
+            if command -v timeout >/dev/null 2>&1; then bound="timeout 60"; fi
+            left="$(GH_TOKEN="$READINESS_READ_TOKEN" $bound gh api rate_limit \
+              --jq '.resources.core | "\(.remaining)/\(.limit)"' 2>/dev/null || true)"
+            if [[ "$left" =~ ^([0-9]+)/[0-9]+$ ]] && [ "${BASH_REMATCH[1]}" -ge "$READ_POOL_FLOOR" ]; then
+              pool=readiness
+              echo "readiness reads: token pool -- readiness (PR_READINESS_READ_TOKEN), $left remaining"
+            else
+              [[ "$left" =~ ^[0-9]+/[0-9]+$ ]] || left="no reading"
+              echo "::warning::PR_READINESS_READ_TOKEN is set but its pool is unreadable or under $READ_POOL_FLOOR requests ($left); reads use the shared GITHUB_TOKEN pool."
+            fi
+          fi
+          echo "$pool" > "$RUNNER_TEMP/readiness-read-pool"
+
       - name: Re-fire readiness for stale pull requests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           STATUS_CONTEXT: "PR Readiness"
           # The grace window for a head that carries NO readiness status yet
@@ -211,6 +243,19 @@ jobs:
           DISPATCH_COST: "25"
         run: |
           set -euo pipefail
+
+          # with_read_token <command...>: runs a READ on the pool the step
+          # above chose. The dispatch and the republish never go through it: a
+          # write made with any token but GITHUB_TOKEN starts workflow runs of
+          # its own.
+          with_read_token() {
+            if [ -n "${READINESS_READ_TOKEN:-}" ] \
+              && [ "$(cat "$RUNNER_TEMP/readiness-read-pool" 2>/dev/null)" = readiness ]; then
+              GH_TOKEN="$READINESS_READ_TOKEN" "$@"
+            else
+              "$@"
+            fi
+          }
 
           now_epoch="$(date -u +%s)"
           stale_seconds=$(( STALE_MINUTES * 60 ))
@@ -282,7 +327,7 @@ jobs:
           # timestamp instead of one per page -- which `date -d` would reject.
           newest_disposition_epoch() {
             local pr_number="$1" newest
-            newest="$(gh api "repos/$REPO/issues/$pr_number/comments" \
+            newest="$(with_read_token gh api "repos/$REPO/issues/$pr_number/comments" \
               --paginate --slurp 2>/dev/null \
               | jq -r '[.[][]? | select((.body // "")
                          | startswith("<!-- ai-review-disposition ")) | .updated_at]
@@ -341,7 +386,7 @@ jobs:
           # pending that is neither read-failure nor verdict-unpublished still
           # costs a single status read, exactly as before.
           readiness_description() {
-            gh api "repos/$REPO/commits/$1/status" \
+            with_read_token gh api "repos/$REPO/commits/$1/status" \
               --jq "[.statuses[]? | select(.context == \"$STATUS_CONTEXT\")][0].description // empty" \
               2>/dev/null || echo ""
           }
@@ -410,7 +455,7 @@ jobs:
           # with a `::warning::` (a cursor comes only from the page that failed),
           # so the sweep runs less completely rather than not at all -- the same
           # trade the concurrency block above already takes.
-          scan="$(python3 .github/scripts/readiness_sweep_scan.py \
+          scan="$(with_read_token python3 .github/scripts/readiness_sweep_scan.py \
             --repo "$REPO" --status-context "$STATUS_CONTEXT")"
 
           total=0
@@ -930,7 +975,7 @@ jobs:
           # display_title: 'PR Readiness' and do not match; the first sweep tick
           # after this merges behaves the old way for those. From the second tick
           # on, newly dispatched runs carry PR-wd-{pr}-{sha} and the set is live.
-          active_wd_json="$(gh api \
+          active_wd_json="$(with_read_token gh api \
             "repos/$REPO/actions/workflows/pr-readiness.yml/runs?event=workflow_dispatch&per_page=100" \
             --paginate --slurp 2>/dev/null)" \
             || { echo "::warning::Failed to list active dispatch runs; active-run skip check disabled for this tick."; active_wd_json="[]"; }

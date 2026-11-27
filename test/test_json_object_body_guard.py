@@ -191,10 +191,14 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
     # A control click is one short closed name, so 256 bytes is far above any
     # legitimate body.
+    # One app view: a short app name and three closed fields.
+    "handlers/telemetry_app_view.py::api_app_view": ("_MAX_BODY_BYTES", _BOUNDED_BY_DEFAULT),
     "handlers/telemetry_ui_control.py::api_ui_control_clicked": (
         "_MAX_BODY_BYTES",
         _BOUNDED_BY_DEFAULT,
     ),
+    # The owner's YOLO acknowledgement: one boolean, so 1 KB is far above any body.
+    "handlers/yolo_ack.py::api_yolo_ack_put": ("_MAX_JSON_BYTES", _BOUNDED_BY_DEFAULT),
     "messaging_api/agent_push.py::api_notification_agent_push": (
         "<default>",
         _BOUNDED_BY_DEFAULT,
@@ -427,6 +431,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
     ),
+    # A hub's batch read: at most 32 items, each a slot key, 16 event ids, a stamp
+    # and a digest, all capped by the route itself, well under the default.
+    "handlers/remote_work_items_pull.py::api_chat_work_items_pull": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "chat_api/continue_turn.py::api_chat_slot_end_wait": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/turn_stop.py::api_chat_slot_interrupt": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),
@@ -453,6 +463,10 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     ),
     # The ultracode and Fast mode routes share one writer, which reads the body.
     "chat_api/slot_effort.py::_write_session_switch": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/slot_effort.py::api_chat_slot_approve_for_me": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "chat_api/session_relaunch.py::api_chat_slot_workspace": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/session_relaunch.py::api_chat_slot_project": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_settings.py::api_chat_slot_turn_timeout": ("<default>", _BOUNDED_CONTROL_FIELDS),
@@ -479,6 +493,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # server config (PUT detail) and per-server toolOverrides maps (apply) do not.
     "handlers/mcp_probe.py::api_mcp_quarantine_clear": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # a folder, one of two file names, a server name and one server entry
+    "handlers/mcp_project_file.py::api_mcp_project_file": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle_tool": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle_all": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_remove": ("<default>", _BOUNDED_CONTROL_FIELDS),

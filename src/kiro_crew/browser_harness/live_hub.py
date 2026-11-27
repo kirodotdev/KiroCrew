@@ -39,6 +39,7 @@ from kiro_crew.browser_harness.live_hub_wheel import (  # noqa: F401 - live_hub 
     _wheel_settle,
     _wheel_target,
 )
+from kiro_crew.browser_harness.run_budget import RunCount
 from kiro_crew.browser_harness.screencast import (
     LiveConfig,
     LiveStream,
@@ -85,6 +86,8 @@ STATES = frozenset(
 
 #: Longest step label kept; the tool's labels are a few words.
 MAX_STEP_LABEL = 120
+#: Longest label on the cursor an app draws over the live view (:meth:`LiveHub.aim`).
+MAX_AIM_LABEL = 48
 #: Steps kept per turn; older ones fold into the count.
 MAX_STEPS = 200
 #: The whole budget for releasing what the person held when control goes back:
@@ -154,6 +157,20 @@ class LiveSession:
     #: drive one daemon tab and a takeover in one chat fences exactly that chat's tab.
     target_id: str = ""
     targets: set[str] = field(default_factory=set)
+    #: The browser context the last bind put this session in ("" is the default):
+    #: the op that follows reads the setting's answer from here, not again.
+    context: str = ""
+    #: The relay an isolated op is bound to (``None`` under ``shared``): every helper
+    #: the op runs is checked against it, so a daemon restart mid-op cannot carry the
+    #: op onto a browser that has no such context.
+    bound_relay: Any = None
+    #: A popup moved ``target_id`` (followed it, or went back to its opener) and no
+    #: answer has told the agent yet. Page-targeted ops are refused while it is set;
+    #: the next answer the route returns carries it and clears it.
+    tab_moved: dict[str, Any] | None = None
+    #: The same move, kept apart for the slot's app (``PagePort``): each side is told
+    #: once, and telling one never clears the other's.
+    app_tab_moved: dict[str, Any] | None = None
     #: The relay the last stream ran on, kept after the stream stops so the finished
     #: card's "Open in Chrome" can still activate the retained tab.
     last_relay: Relay | None = None
@@ -178,6 +195,9 @@ class LiveSession:
     #: event takes the label of the step it reported (:meth:`LiveHub.record_op`).
     step_seq: int = 0
     last_step: str = ""
+    #: The ops run and the current repeat run, against ``browser.run``. Starts again on a
+    #: takeover (:meth:`LiveHub.claim`) and when the chat's session ends (:meth:`LiveHub.reset_run`).
+    run: RunCount = field(default_factory=RunCount)
     #: The loop op's counters for the card's loop line (:meth:`LiveHub.loop`), or
     #: ``None``. Kept after the loop stops, so the card says why, until the next op.
     loop: dict[str, Any] | None = None
@@ -194,11 +214,18 @@ class LiveSession:
     parked: bool = False
     #: When the parked op's hold ends (``HOLD_TIMEOUT_S`` after :meth:`LiveHub.park`;
     #: ``0.0`` at a turn's start). The hub
-    #: owns this end: past it a hand-back goes to chat and the op's poll is told the
-    #: hold is over (:meth:`LiveHub.hold_over`), so the two never disagree.
+    #: owns this end: past it a hand-back goes to chat and, unless one inside it
+    #: still stands (``hold_handed_back``), the op's poll is told the hold is over
+    #: (:meth:`LiveHub.hold_over`), so the two never disagree.
     parked_until: float = 0.0
-    #: The hand-back came while the op was still parked: its poll resumes the op.
+    #: The hand-back came while the op was still parked and no poll has seen it
+    #: yet: a claim before one does parks the op again (:meth:`LiveHub.claim`).
     park_resumed: bool = False
+    #: A hand-back found the op parked inside this hold and sent no words to chat:
+    #: every call parked on it resumes, one polling after the end too
+    #: (:meth:`LiveHub.hold_over`). A poll leaves it; the next claim or turn, or a
+    #: hand-back whose words go to chat, clears it.
+    hold_handed_back: bool = False
     #: A supervisor state (:meth:`LiveHub.set_state`) reported while the person held
     #: the browser, or ``""``. The card stays ``in_control`` until the hand-back,
     #: which publishes this instead of ``live``: only a lock release leaves
@@ -233,6 +260,9 @@ class LiveSession:
     #: A release of control is sending the held input's releases: the lock is still
     #: shut, but no card event is forwarded and no new release starts.
     releasing: bool = False
+    #: Where the cursor drawn over the live view points (:meth:`LiveHub.aim`):
+    #: ``{"x", "y", "label", "seq"}`` in viewport CSS px, or ``None`` before any aim.
+    aim: dict[str, Any] | None = None
 
     @property
     def relay(self) -> Relay | None:
@@ -322,6 +352,8 @@ def live_event(sess: LiveSession) -> dict[str, Any]:
         "ask": sess.ask.wire() if sess.ask is not None and not sess.ask.outcome else None,
         "started_at_ms": int(sess.started_ms),
         "ended_at_ms": int(sess.ended_ms),
+        # Only once something aimed: older readers see the fields they always had.
+        **({"aim": dict(sess.aim)} if sess.aim is not None else {}),
     }
 
 
@@ -507,8 +539,24 @@ class LiveHub:
         #: The turn-replay recorder (``browser_harness.recording``); ``None`` records
         #: nothing. The dashboard attaches the gateway's one at startup.
         self.recorder: LiveRecorder | None = None
+        #: Called with the session key whenever a quick ask is set, moved or ended,
+        #: so the slot list can re-read whether the session waits on one.
+        self._on_ask_changed: Callable[[str], None] | None = None
 
     # ── wiring ─────────────────────────────────────────────────────────────
+
+    def watch_asks(self, callback: Callable[[str], None] | None) -> None:
+        """Install the quick-ask change listener (``None`` removes it)."""
+        self._on_ask_changed = callback
+
+    def _ask_moved(self, session_key: str) -> None:
+        callback = self._on_ask_changed
+        if callback is None:
+            return
+        try:
+            callback(session_key)
+        except Exception:  # noqa: BLE001 - a listener never fails the ask it hears about
+            logger.debug("browser live: ask listener failed", exc_info=True)
 
     def bind(self, publish: Publish | None, send_frame: SendFrame | None) -> None:
         """Install the owner-only senders (JSON events, binary frames)."""
@@ -554,6 +602,7 @@ class LiveHub:
         sess.parked = False
         sess.parked_until = 0.0
         sess.park_resumed = False
+        sess.hold_handed_back = False
         sess.handback_options = []
         # A state queued for the hand-back belongs to the turn that reported it.
         sess.queued_state = ""
@@ -569,7 +618,27 @@ class LiveHub:
             sess.state = ""
         if self.recorder is not None:
             self.recorder.turn_started(session_key, sess.turn_id, sess.url)
-        self._emit(sess)
+        if sess.stream is None:
+            self._emit(sess)
+        else:
+            self._spawn(self._new_turn_picture(sess, sess.stream))
+
+    async def _new_turn_picture(self, sess: LiveSession, stream: LiveStream) -> None:
+        """Announce a turn that joins a running stream, then ask Chrome for its picture.
+
+        The card opens the new turn with no picture, and Chrome sends no frame of a
+        still page (a paused video, a song's end screen), so the card would wait for
+        the page to change. A screencast start answers with the current picture at
+        once; it goes out after the event, so the frame lands on the new turn.
+        ``restart`` does nothing while no card sees the view.
+        """
+        await self._emit_now(sess)
+        if sess.stream is not stream:
+            return
+        try:
+            await stream.restart()
+        except Exception:  # noqa: BLE001 - the tab moved or closed; the next op restarts it
+            logger.debug("browser live: new-turn picture not requested", exc_info=True)
 
     def step(self, session_key: str, label: str) -> None:
         """The agent is on a new step: the previous active one is done."""
@@ -585,6 +654,27 @@ class LiveHub:
         if len(sess.steps) > MAX_STEPS:
             del sess.steps[: len(sess.steps) - MAX_STEPS]
         self._emit(sess)
+
+    def aim(self, session_key: str, x: float, y: float, label: str = "") -> bool:
+        """Point the cursor drawn over *session_key*'s live view at (*x*, *y*), viewport CSS px.
+
+        Drawn by the card over the frame, never inside the page. ``True`` when a
+        stream shows the session now; ``False`` (and nothing sent) with no stream or a
+        point that is not two finite numbers.
+        """
+        sess = self._sessions.get(session_key)
+        if sess is None or sess.stream is None:
+            return False
+        if not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+            for v in (x, y)
+        ):
+            return False
+        seq = int((sess.aim or {}).get("seq", 0)) + 1
+        text = str(label or "")[:MAX_AIM_LABEL]
+        sess.aim = {"x": round(float(x), 1), "y": round(float(y), 1), "label": text, "seq": seq}
+        self._emit(sess)
+        return True
 
     def turn_ended(self, session_key: str) -> None:
         """The turn is over: the stream stops, the lock opens, the card folds to one line.
@@ -616,6 +706,7 @@ class LiveHub:
             # The turn is over: nobody is left to read the answer.
             sess.ask.settle("cancelled")
             sess.ask = None
+            self._ask_moved(sess.session_key)
         sess.input_rect = None
         sess.fold_on_release = False
         sess.parked = False
@@ -706,6 +797,12 @@ class LiveHub:
             logger.info("browser live: releasing held input of %s timed out", sess.session_key)
 
     # ── the replay recorder's events ───────────────────────────────────────
+
+    def reset_run(self, session_key: str) -> None:
+        """The chat's ``browser.run`` repeat count starts again."""
+        sess = self._sessions.get(session_key)
+        if sess is not None:
+            sess.run = RunCount()
 
     def op_mark(self, session_key: str) -> OpMark:
         """Note where an op begins; :meth:`record_op` turns it into its replay event."""
@@ -879,6 +976,64 @@ class LiveHub:
         sess.target_id = str(target_id)
         sess.targets.add(sess.target_id)
 
+    def context_of(self, session_key: str) -> str:
+        """The browser context the last bind put this session in; ``""`` is the default."""
+        sess = self._sessions.get(session_key)
+        return sess.context if sess is not None else ""
+
+    def bind_context(self, session_key: str, context: str, relay: Any = None) -> None:
+        """Record the browser context this session's ops run in from now on, and the
+        relay it lives on when the context is not the default."""
+        sess = self._session(session_key)
+        sess.context = context
+        sess.bound_relay = relay
+
+    def bound_relay(self, session_key: str) -> Any:
+        """The relay the session's isolated op is pinned to, or ``None``."""
+        sess = self._sessions.get(session_key)
+        return sess.bound_relay if sess is not None else None
+
+    def add_target(self, session_key: str, target_id: str) -> None:
+        """Make *target_id* one of this session's tabs without moving its current tab."""
+        self._session(session_key).targets.add(str(target_id))
+
+    def note_tab_moved(self, session_key: str, notice: dict[str, Any]) -> None:
+        """Record that a popup moved this session's tab and no answer has said so yet.
+
+        *notice* holds ``popup`` (a popup was followed) and/or ``popup_closed`` (the
+        session went back to a closed popup's opener); a later move of the same kind
+        replaces the earlier one.
+        """
+        sess = self._session(session_key)
+        sess.tab_moved = {**(sess.tab_moved or {}), **notice}
+        sess.app_tab_moved = {**(sess.app_tab_moved or {}), **notice}
+
+    def pending_tab_move(self, session_key: str) -> dict[str, Any] | None:
+        """The unreported tab move, if any, left in place."""
+        sess = self._sessions.get(session_key)
+        return dict(sess.tab_moved) if sess is not None and sess.tab_moved else None
+
+    def take_tab_move(self, session_key: str) -> dict[str, Any] | None:
+        """The unreported tab move, cleared: the caller is about to report it."""
+        sess = self._sessions.get(session_key)
+        if sess is None or not sess.tab_moved:
+            return None
+        notice, sess.tab_moved = sess.tab_moved, None
+        return notice
+
+    def pending_app_tab_move(self, session_key: str) -> dict[str, Any] | None:
+        """The tab move the slot's app has not been told, left in place."""
+        sess = self._sessions.get(session_key)
+        return dict(sess.app_tab_moved) if sess is not None and sess.app_tab_moved else None
+
+    def take_app_tab_move(self, session_key: str) -> dict[str, Any] | None:
+        """The tab move the slot's app has not been told, cleared; the Bot's stays."""
+        sess = self._sessions.get(session_key)
+        if sess is None or not sess.app_tab_moved:
+            return None
+        notice, sess.app_tab_moved = sess.app_tab_moved, None
+        return notice
+
     def owner_of_target(self, target_id: str) -> str | None:
         """The session key that owns *target_id*, if any session does."""
         for key, sess in self._sessions.items():
@@ -998,6 +1153,15 @@ class LiveHub:
         stream, sess.stream = sess.stream, None
         await stream.stop()
 
+    def forget(self, session_key: str) -> None:
+        """Drop the session of a chat that closed, so no tab is sent its card again.
+
+        :meth:`snapshot_events` sends every kept session to each newly connected
+        tab, and the card routes refuse a closed chat's key (404
+        ``unknown_session``). A chat reopened on the key starts a fresh session.
+        """
+        self._sessions.pop(session_key, None)
+
     def _tick_for(self, sess: LiveSession) -> Callable[[TickStats], Awaitable[None]]:
         async def _on_tick(stats: TickStats) -> None:
             changed = stats.rung != sess.rung or round(stats.fps) != round(sess.fps)
@@ -1063,8 +1227,11 @@ class LiveHub:
             # again, on its first hold's end, and is not resumed by the earlier one.
             sess.parked = True
             sess.park_resumed = False
+        # A call still polling waits for this takeover's hand-back, not the last one.
+        sess.hold_handed_back = False
         sess.claim_turn = sess.turn_id
         sess.seen_at = self._clock()
+        sess.run = RunCount()
         sess.released.clear()
         task = sess.op_task
         if task is not None and not task.done():
@@ -1128,6 +1295,8 @@ class LiveHub:
             delivered = DELIVERED_CHAT
         else:
             delivered = ""
+        # Words sent to chat clear the flag: no call polling past the end runs behind them.
+        sess.hold_handed_back = (sess.hold_handed_back or waiting) and delivered != DELIVERED_CHAT
         sess.handback_options = []
         sess.input_rect = None
 
@@ -1159,26 +1328,27 @@ class LiveHub:
             sess.parked_until = self._clock() + HOLD_TIMEOUT_S
 
     def hold_over(self, session_key: str) -> bool:
-        """The parked op's hold ended before the person handed back to it.
+        """The parked op's hold ended, and no hand-back inside it still stands.
 
-        Its poll then stops the op instead of resuming it: a hand-back after the end
-        went to chat (:meth:`release`), so resuming would run the op behind words
-        the agent never sees.
+        Its poll then stops the op instead of resuming it: a hand-back after the end,
+        or a later one whose words went to chat (:meth:`release`), would otherwise
+        run the op behind words the agent never sees.
         """
         sess = self._sessions.get(session_key)
         return (
             sess is not None
             and sess.parked_until > 0.0
-            and not sess.park_resumed
+            and not sess.hold_handed_back
             and self._clock() >= sess.parked_until
         )
 
     def handback_seen(self, session_key: str) -> None:
         """A parked op's poll saw the hand-back: a later claim has nothing to re-park.
 
-        The hold's end stays as it is: another call parked in the same session may
-        still be polling, and past the end it must be told ``hold_over`` too. The
-        next :meth:`park` or turn sets a fresh one.
+        The hold's end and ``hold_handed_back`` stay as they are: another call parked
+        on the same hold may still be polling; past the end it resumes while
+        ``hold_handed_back`` stands, else it is told ``hold_over``. The next
+        :meth:`park` or turn sets a fresh end.
         """
         sess = self._sessions.get(session_key)
         if sess is not None:
@@ -1206,6 +1376,7 @@ class LiveHub:
         sess = self._sessions.get(session_key)
         if sess is not None:
             await self._emit_now(sess)
+        self._ask_moved(session_key)
 
     def _record_handback(self, sess: LiveSession, note: str, choice: str) -> None:
         rec = self.recorder

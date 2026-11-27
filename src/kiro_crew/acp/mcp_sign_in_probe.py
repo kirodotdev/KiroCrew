@@ -5,8 +5,8 @@ frame about it, so the session's MCP report never lists the server as waiting an
 the chat says nothing. After the session opens, this probe sends each remote element
 that sends no header of its own (so none that could carry a credential) one MCP
 ``initialize``, and a ``401`` whose ``WWW-Authenticate`` is a Bearer challenge (read
-by ``mcp_discovery_remote._is_bearer_challenge``, as the remote MCP row probe reads it)
-lists that server in the report's advisory ``sign_in_suspected``
+by ``mcp_discovery_remote._is_bearer_challenge``, as the remote MCP row probe reads it),
+or a bare ``401`` from a server whose well-known metadata names it, lists that server in the report's advisory ``sign_in_suspected``
 (:meth:`McpSessionReport.record_sign_in_asked`), which the chat's one notice reads.
 It is never put in ``awaiting_auth`` or ``not_ready()``: opencode may already hold
 a sign-in the probe cannot see, so no reader may call the server unusable, and it
@@ -17,7 +17,8 @@ records nothing.
 The fetch is the remote MCP row probe's (:mod:`kiro_crew.mcp_discovery_remote`):
 the URL is SSRF-vetted (``link_unfurl.vet_unfurl_url``, any port, private hosts
 allowed, link-local and metadata refused), the socket is pinned to the vetted
-address, and redirects are not followed. No credential is sent and no body is read.
+address, and redirects are not followed. No credential is sent, and the only body read
+is that metadata document, through the Connections discovery fetch.
 It runs in the background (:func:`schedule_sign_in_probe`), so it never delays a
 session start, and each request is bounded by :data:`PROBE_TIMEOUT_SECS`.
 """
@@ -78,13 +79,18 @@ async def asks_for_sign_in(url: str, *, timeout: float = PROBE_TIMEOUT_SECS) -> 
 
     The challenge is judged by the remote MCP row probe's own reader,
     ``mcp_discovery_remote._is_bearer_challenge`` (a ``Bearer`` scheme with an https
-    ``resource_metadata`` or a ``scope``), so the two probes agree on what counts.
+    ``resource_metadata`` or a ``scope``), so the two probes agree on what counts. A
+    ``401`` without one counts when the server's well-known protected-resource
+    metadata names it (``mcp_discovery_remote.advertises_protected_resource``).
     ``False`` on every other outcome, including a URL the vet refuses and any error.
     """
     import aiohttp
 
     from kiro_crew.link_unfurl import UnfurlRejected, pinned_connector, vet_unfurl_url
-    from kiro_crew.mcp_discovery_remote import _is_bearer_challenge
+    from kiro_crew.mcp_discovery_remote import (
+        _is_bearer_challenge,
+        advertises_protected_resource,
+    )
 
     body = {
         "jsonrpc": "2.0",
@@ -110,9 +116,13 @@ async def asks_for_sign_in(url: str, *, timeout: float = PROBE_TIMEOUT_SECS) -> 
                 headers={"Accept": "application/json, text/event-stream"},
                 allow_redirects=False,
             ) as resp:
-                return resp.status == 401 and _is_bearer_challenge(
-                    resp.headers.get("WWW-Authenticate", "")
-                )
+                if resp.status != 401:
+                    return False
+                if _is_bearer_challenge(resp.headers.get("WWW-Authenticate", "")):
+                    return True
+        # A bare 401 counts when the server's well-known metadata names it, as on
+        # the remote MCP row probe.
+        return await advertises_protected_resource(url)
 
     try:
         return await asyncio.wait_for(_ask(), timeout=timeout)

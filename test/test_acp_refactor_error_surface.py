@@ -368,6 +368,20 @@ def test_session_expired_sign_in_tag_follows_the_backend(backend, auth_required,
     )
 
 
+def test_kas_sign_in_required_frame_is_tagged_for_the_sign_in_card():
+    """KAS 3.4's first prompt with no sign-in: its own errorType, no expiry wording."""
+    frame = {
+        "code": -32000,
+        "message": "Sign in to Kiro to send a prompt.",
+        "data": {"errorType": "SignInRequiredError", "retryErrorType": "CLIENT_ERROR"},
+    }
+    with pytest.raises(acp_client.AcpError) as caught:
+        acp_client._raise_acp_error(frame, None, backend="kas")
+    assert caught.value.auth_required is True
+    assert caught.value.transient is False
+    assert str(caught.value).startswith("Not signed in to Kiro. Sign in from Settings")
+
+
 # What an access refusal looks like from each side: the bare Bedrock-shaped
 # exception, and the expired Kiro login (test_api_models_auth_expired.py).
 _ACCESS_REFUSALS = (

@@ -444,48 +444,13 @@ class TestAdvertisedSet:
     """
 
     def test_the_whole_set_is_advertised(self) -> None:
-        names = {t["name"] for t in _list_tools()}
-        assert names == {
-            "chat_folder_tree",
-            "chat_folder_create",
-            "chat_folder_move",
-            "chat_folder_update",
-            "chat_folder_move_session",
-            "chat_folder_delete",
-            "chat_tag_list",
-            "chat_tag_create",
-            "chat_tag_update",
-            "chat_tag_assign",
-            "chat_tag_column_list",
-            "chat_tag_column_create",
-            "chat_tag_column_move",
-            "session_move_to_column",
-            "chat_session_pin",
-            "chat_session_pin_move",
-            "session_create",
-            "session_fork",
-            "session_stop",
-            "session_end_wait",
-            "session_retry",
-            "session_continue",
-            "session_set_model",
-            "session_set_color",
-            "session_set_note",
-            "session_reload",
-            "session_rename",
-            "session_generate_title",
-            "session_close",
-            "session_revive",
-            "session_history_list",
-            "session_send",
-            "session_broadcast",
-            "session_status",
-            "session_read_message",
-            "session_summary",
-            "session_queue",
-            "session_run_queued",
-            "session_adopt",
-            "session_handoff",
-            "session_release",
-            "work_dispatch",
-        }
+        from kiro_crew.mcp_crew_list import NAME as CREW_LIST
+        from kiro_crew.mcp_dashboard import _tool_definitions
+
+        # Every tool the server's table defines is listed, with no caller filter;
+        # ``crew_list`` alone follows the ``work_ledger.remote_dispatch`` switch.
+        defined = {t["name"] for t in _tool_definitions()}
+        assert defined, "the dashboard MCP table defines no tool"
+        advertised = {t["name"] for t in _list_tools()}
+        assert sorted(defined - {CREW_LIST} - advertised) == []
+        assert sorted(advertised - defined) == []

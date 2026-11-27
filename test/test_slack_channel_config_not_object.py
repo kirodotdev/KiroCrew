@@ -159,26 +159,20 @@ async def test_config_modal_keeps_file_and_runtime(
 @pytest.mark.parametrize(
     "action_id,value,users,channels,lead",
     [
-        (ACTION_ALLOWLIST_APPROVE, "U9:Nine", {"Uold"}, {"Cold"}, "Error: `Nine` not added"),
+        (ACTION_ALLOWLIST_APPROVE, "U9:Nine", {"Uold"}, {"Cold"}, "❌ `Nine` not added"),
         (
             ACTION_ALLOWLIST_APPROVE,
             "Uold:Old",
             {"Uold"},
             {"Cold"},
-            "Warning: `Old` stays on the allowlist",
+            "⚠️ `Old` stays on the allowlist",
         ),
-        (ACTION_ALLOWLIST_DENY, "Uold:Old", set(), {"Cold"}, "Warning: `Old` is off the allowlist"),
-        (
-            ACTION_ALLOWLIST_DENY,
-            "U9:Nine",
-            {"Uold"},
-            {"Cold"},
-            "Warning: `Nine` is off the allowlist",
-        ),
-        (ACTION_TRACK_APPROVE, "C9:general", {"Uold"}, {"Cold"}, "Error: Not tracking `#general`"),
-        (ACTION_TRACK_APPROVE, "Cold:old", {"Uold"}, {"Cold"}, "Warning: Still tracking `#old`"),
-        (ACTION_TRACK_DENY, "Cold:old", {"Uold"}, set(), "Warning: Not tracking `#old`"),
-        (ACTION_TRACK_DENY, "C9:general", {"Uold"}, {"Cold"}, "Warning: Not tracking `#general`"),
+        (ACTION_ALLOWLIST_DENY, "Uold:Old", set(), {"Cold"}, "⚠️ `Old` is off the allowlist"),
+        (ACTION_ALLOWLIST_DENY, "U9:Nine", {"Uold"}, {"Cold"}, "⚠️ `Nine` is off the allowlist"),
+        (ACTION_TRACK_APPROVE, "C9:general", {"Uold"}, {"Cold"}, "❌ Not tracking `#general`"),
+        (ACTION_TRACK_APPROVE, "Cold:old", {"Uold"}, {"Cold"}, "⚠️ Still tracking `#old`"),
+        (ACTION_TRACK_DENY, "Cold:old", {"Uold"}, set(), "⚠️ Not tracking `#old`"),
+        (ACTION_TRACK_DENY, "C9:general", {"Uold"}, {"Cold"}, "⚠️ Not tracking `#general`"),
     ],
     ids=[
         "allow-approve",
@@ -238,10 +232,10 @@ async def test_list_buttons_report_the_refusal(orch: MagicMock, sel_log: MagicMo
         for call in orch.slack.update_message.await_args_list
     ]
     leads = [
-        "Error: <#C9> not added:",
-        "Warning: <#Cold> removed for now;",
-        "Warning: Removed <@Uold> for now;",
-        "Warning: Removed <#C2> for now;",
+        "❌ <#C9> not added:",
+        "⚠️ <#Cold> removed for now;",
+        "⚠️ Removed <@Uold> for now;",
+        "⚠️ Removed <#C2> for now;",
     ]
     assert [text[: len(lead)] for text, lead in zip(shown, leads)] == leads
     assert len(shown) == len(leads) and all("is not a list" in text for text in shown)

@@ -23,8 +23,8 @@ const ACTIVITY_OPEN_PREFIX = 'mc-activity-open:'          // one key per slot
 /** Read every persisted per-slot activityOpen flag (mc-activity-open:<slot>). */
 const loadActivityOpenMap = (): Record<string, boolean> => {
   const out: Record<string, boolean> = {}
-  if (typeof localStorage === 'undefined') return out
   try {
+    if (typeof localStorage === 'undefined') return out
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i)
       if (!k || !k.startsWith(ACTIVITY_OPEN_PREFIX)) continue
@@ -106,6 +106,9 @@ export interface SideMessage {
    *  restore read (`link_blocks`): the links its bubble draws as a Blocked link
    *  card. Validated where they are drawn. */
   link_blocks?: unknown
+  /** A stored answer's credential records, raw from its final frame or the read
+   *  (`redactions`): what its lock tags draw from. Validated where they are drawn. */
+  redactions?: unknown
   /** Shown before the server confirmed it, so it can be found again by identity.
    *  Position is not usable: an in-flight turn's frames interleave, and both the
    *  reconcile and the rollback used to guess this row was simply the last one. */
@@ -341,6 +344,11 @@ export interface ChatState {
    *  onto a session this tab saw closed (#14762). Cleared by the next
    *  `switchSlot.pending` or the notice's dismiss. */
   switchSlotGone: { name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport } | null
+  /** The key whose last open failed transiently and stayed selected with an
+   *  empty pane (`switchSlot.rejected`), until a load of it lands. Unlike
+   *  `switchSlotGone` a notice dismiss does not clear it: the sidebar row reads
+   *  it so a click on that open chat retries instead of toggling the panel. */
+  slotOpenFailed: string | null
   loadingOlder: boolean
   /** Last older-history fetch was rejected; surfaced on the top-of-transcript bar. */
   slotOlderError: boolean
@@ -494,6 +502,11 @@ export interface ChatState {
    *  gateway, or nothing labelled), and the chips then keep their default
    *  "queued behind the concurrency limit" text. Cleared with the count. */
   subagentQueuedReason: Record<string, SubagentQueuedReason>
+  /** What the gateway's durable replay left out of a slot's finished runs, from
+   *  `subagent_replay_truncated`: `n` runs past its row cap, and `atLeast` when
+   *  the log's own retain limit makes `n` a floor. Absent when nothing was cut.
+   *  Cleared on a new subscription and by "Dismiss done". */
+  subagentReplayCut?: Record<string, { n: number; atLeast: boolean }>
   /** Ids of the cards held when a subagent replay began that the replay has
    *  not named yet. `subagentReplayDone` drops what is left. Null outside a
    *  replay. No surface reads it. */
@@ -807,6 +820,7 @@ export const initialState: ChatState = {
   slotSwitchLatestRequestId: null,
   slotSwitchOrigin: null,
   switchSlotGone: null,
+  slotOpenFailed: null,
   loadingOlder: false,
   slotOlderError: false,
   lastChunkSeq: undefined,
@@ -839,6 +853,7 @@ export const initialState: ChatState = {
   subagents: {},
   subagentQueued: {},
   subagentQueuedReason: {},
+  subagentReplayCut: {},
   subagentReplayUnconfirmed: null,
   automations: {},
   selectedSubagentId: null,

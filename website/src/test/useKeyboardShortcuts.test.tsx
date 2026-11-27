@@ -58,6 +58,15 @@ describe('formatShortcut', () => {
     setPlatform('Win32')
     expect(formatShortcut({ id: 't', key: 'Tab', shift: true, group: 'actions' })).toBe('Shift + Tab')
   })
+
+  it('shows a bare Escape as Esc on every platform', () => {
+    const prev = navigator.platform
+    onTestFinished(() => setPlatform(prev))
+    setPlatform('MacIntel')
+    expect(formatShortcut({ id: 't', key: 'Escape', group: 'actions' })).toBe('Esc')
+    setPlatform('Win32')
+    expect(formatShortcut({ id: 't', key: 'Escape', group: 'actions' })).toBe('Esc')
+  })
 })
 
 describe('DEFAULT_SHORTCUTS', () => {
@@ -1667,9 +1676,9 @@ describe('useKeyboardShortcuts — stop speaking (Escape)', () => {
     expect(spy).toHaveBeenCalledTimes(1)
   })
 
-  it('marks the Escape it spent on speech, and only that one (#22315)', () => {
-    // The composer's Escape-to-stop gate reads this mark so the press that
-    // silences read-back never also stops the running turn.
+  it('marks the Escape it spent on speech, and only that one', () => {
+    // The composer's Escape gate and the page-wide Escape layers read this
+    // mark so the press that silences read-back does nothing else.
     const seen: Event[] = []
     const record = (e: Event) => { seen.push(e) }
     document.addEventListener('keydown', record)

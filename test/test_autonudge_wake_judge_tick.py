@@ -24,6 +24,7 @@ from kiro_crew.autonudge import (
     AutoNudgeService,
     NudgeLoop,
 )
+from kiro_crew.conductor_patrol import PATROL_MESSAGE
 from kiro_crew.decisions.points import nudge_wake as point
 from kiro_crew.decisions.types import Answer
 from kiro_crew.irq import Outcome, Verdict
@@ -41,7 +42,7 @@ class TestAnOwedWakeSurvives:
     def _fired(outcome: Outcome) -> NudgeLoop:
         svc = _service()
 
-        async def collect(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             return (
                 [
                     {
@@ -89,7 +90,7 @@ class TestAnOwedWakeSurvives:
         svc = _service()
         asked: list[str] = []
 
-        async def collect(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             asked.append("collected")
             return [], 0, {}
 
@@ -119,7 +120,7 @@ class TestAScreenedPullRequestTickLeavesTheProbesQuietAlone:
     def test_a_probe_covered_tick_answers_quiet(self) -> None:
         svc = _service()
 
-        async def collect(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             # What the reader produces for the probe's own subject with no canonical
             # facts behind it: nothing to judge, and nothing unread either.
             return [], 0, {}
@@ -140,7 +141,7 @@ class TestAScreenedPullRequestTickLeavesTheProbesQuietAlone:
         """The control, and the reason the drop exists at all."""
         svc = _service()
 
-        async def collect(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             return [], 1, {}
 
         svc._collect_judge_evidence = collect
@@ -184,7 +185,7 @@ class TestARetargetDoesNotLeakOrLie:
         loop = _loop({"quiet_when": "the run is green"})
         loop.message = "watch chat-1-1"
 
-        async def collect(lp: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(lp: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             # The retarget lands while this tick is reading, which is the whole window.
             lp.message = "watch chat-2-2"
             return (
@@ -255,7 +256,7 @@ class TestANarrowedWatchIsNeverWidened:
         loop = _loop({"wake_when": "x", "targets": ["!!!bad!!!"]})
         loop.message = "watch chat-7-7"
 
-        async def collect(lp: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(lp: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             raise AssertionError("a loop with no usable target must not collect evidence")
 
         svc._collect_judge_evidence = collect
@@ -272,7 +273,7 @@ class TestANarrowedWatchIsNeverWidened:
         # another whole floor with nothing recording that one was due.
         svc = _service()
 
-        async def collect(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             return (
                 [
                     {
@@ -323,7 +324,7 @@ class TestCursorsMoveOnlyWithAVerdict:
         svc = _service()
         advanced = {"chat-2-2": 99}
 
-        async def collect(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             return (
                 [
                     {
@@ -391,6 +392,7 @@ def _service() -> AutoNudgeService:
     svc = AutoNudgeService.__new__(AutoNudgeService)
     svc._collect_judge_evidence = None
     svc._emit_judge_notice = None
+    svc._worker_closed_resolver = None
 
     # Built without ``__init__``, so it holds no service lock, no store path and no
     # in-flight task set: the real durable write would fail on all three. The judge
@@ -440,7 +442,7 @@ class TestTickLeavesEverythingAloneWhenItShould:
         """
         svc = _service()
 
-        async def never(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def never(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             raise AssertionError("collected evidence while the seam refused")
 
         svc._collect_judge_evidence = never
@@ -477,7 +479,7 @@ class TestTickVerdicts:
     def _armed(verdict_answers: dict[str, Answer] | None) -> tuple[AutoNudgeService, NudgeLoop]:
         svc = _service()
 
-        async def collect(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             return (
                 [
                     {
@@ -522,7 +524,9 @@ class TestTickVerdicts:
         svc, loop = self._armed(None)
         loop.judge_cursors = {"chat-2-2": 5}
 
-        async def replace_then_read(loop_: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def replace_then_read(
+            loop_: NudgeLoop, targets: list[str]
+        ) -> tuple[list[dict], int, dict]:
             loop_.judge = {"wake_when": "something else entirely"}
             return (
                 [
@@ -552,7 +556,7 @@ class TestTickVerdicts:
     def _reads(svc: AutoNudgeService, dropped: int) -> None:
         """Make the collector return an empty delta, with *dropped* targets unread."""
 
-        async def read(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def read(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             return [], dropped, {}
 
         svc._collect_judge_evidence = read  # type: ignore[method-assign]
@@ -667,7 +671,7 @@ class TestTickVerdicts:
     def test_collector_failure_spends_a_turn(self) -> None:
         svc, loop = self._armed(None)
 
-        async def boom(loop_: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def boom(loop_: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             raise RuntimeError("slot read exploded")
 
         svc._collect_judge_evidence = boom
@@ -684,7 +688,7 @@ class TestTheDefaultBrief:
         asked: list[tuple[str, str]] = []
         sink: list[str] = []
 
-        async def collect(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             return (
                 [
                     {
@@ -787,6 +791,116 @@ class TestTheDefaultBrief:
         assert got is True
         assert asked == [("RULING", "")]
 
+    def test_a_default_brief_with_no_readable_target_leaves_the_probe_s_answer(self) -> None:
+        # The gateway's conductor patrol names no session and no pull request, so the
+        # default brief has nothing to read. Firing there turned every quiet probe tick
+        # into a turn once the evidence scope was granted; with no judge applying, the
+        # tick keeps the answer it has with the scope off.
+        svc, asked, _ = self._sees_criteria()
+
+        async def collect(lp: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
+            raise AssertionError("a loop with no readable target must not collect evidence")
+
+        svc._collect_judge_evidence = collect
+        loop = _loop()
+        loop.message = PATROL_MESSAGE
+        assert judge.parse_targets(judge.default_spec(), loop.message) == []
+        assert self._run(svc, loop, asked) is None
+        assert asked == [], "the judge was not asked"
+
+    def test_an_owner_brief_with_no_readable_target_still_fires(self) -> None:
+        # The owner armed a criterion, so a watch that reads nothing spends the turn.
+        svc, asked, _ = self._sees_criteria()
+        loop = _loop({"wake_when": "RULING"})
+        loop.message = PATROL_MESSAGE
+        assert self._run(svc, loop, asked) is False
+        assert asked == []
+
+    def test_a_default_brief_whose_only_session_is_gone_leaves_the_probe_s_answer(self) -> None:
+        # A closed or deleted worker session never comes back on its own, so counting it
+        # as unread fired every quiet probe tick until the loop ended.
+        svc, asked, _ = self._sees_criteria()
+
+        async def collect(lp: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
+            raise AssertionError("a loop whose only session is gone must not collect evidence")
+
+        svc._collect_judge_evidence = collect
+        svc._worker_closed_resolver = lambda key: key == "chat-2-2"
+        assert self._run(svc, _loop(), asked) is None
+        assert asked == [], "the judge was not asked"
+
+    def test_a_default_brief_whose_session_is_only_unreadable_for_now_still_fires(self) -> None:
+        # The session is still open, so an unread tick spends the turn as before.
+        svc, _, _ = self._sees_criteria()
+
+        async def unread(lp: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
+            return [], 1, {}
+
+        svc._collect_judge_evidence = unread
+        svc._worker_closed_resolver = lambda key: False
+        loop = _loop()
+        with (
+            patch("kiro_crew.decisions.is_enabled", lambda *a, **k: True),
+            patch("kiro_crew.decisions.judge_evidence_scope_granted", lambda **k: True),
+        ):
+            assert asyncio.run(svc._judge_tick_is_quiet(loop)) is False
+        assert loop.judge_last_verdict["outcome"] == "fallback"
+
+    @staticmethod
+    def _beside_a_gone_session(
+        brief: dict, cursors: dict[str, int] | None = None, ticks: int = 1
+    ) -> tuple[list[bool | None], list[list[str]], NudgeLoop]:
+        """Tick a loop naming an open session and a gone one, nothing new on either."""
+        svc, _, _ = TestTheDefaultBrief._sees_criteria()
+        read: list[list[str]] = []
+
+        async def collect(lp: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
+            read.append(list(targets))
+            # The gone session's read refuses, which the collector counts as dropped,
+            # and the cursors come back pruned to the targets read, as the gateway's do.
+            kept = {t: c for t, c in lp.judge_cursors.items() if t in targets}
+            return [], targets.count("chat-3-3"), kept
+
+        svc._collect_judge_evidence = collect
+        svc._worker_closed_resolver = lambda key: key == "chat-3-3"
+        loop = _loop(brief)
+        loop.message = "watch chat-2-2 and chat-3-3"
+        loop.judge_cursors = dict(cursors or {})
+        quiet: list[bool | None] = []
+        with (
+            patch("kiro_crew.decisions.is_enabled", lambda *a, **k: True),
+            patch("kiro_crew.decisions.judge_evidence_scope_granted", lambda **k: True),
+        ):
+            for _ in range(ticks):
+                quiet.append(asyncio.run(svc._judge_tick_is_quiet(loop)))
+                loop.judge_wake_pending = False  # the turn a fire owed was delivered
+        return quiet, read, loop
+
+    def test_a_default_brief_judges_an_open_session_beside_a_gone_one_alone(self) -> None:
+        # A conductor's loop still names a finished worker whose tab was closed. Counted
+        # as unread, that one session would fire every tick while the open one is quiet.
+        quiet, read, loop = self._beside_a_gone_session({})
+        assert quiet == [True]
+        assert read == [["chat-2-2"]], "the gone session is not read"
+        assert loop.judge_last_verdict["outcome"] == "quiet"
+
+    def test_a_session_gone_since_its_last_read_fires_that_one_tick(self) -> None:
+        # A worker that writes its last line and closes its own tab between two ticks:
+        # nothing it wrote after the last read can be read once it is gone, so that
+        # tick fires.
+        quiet, read, loop = self._beside_a_gone_session(
+            {}, cursors={"chat-2-2": 4, "chat-3-3": 7}, ticks=2
+        )
+        assert quiet == [False, True], "it fires once, then reads around the gone session"
+        assert read == [["chat-2-2"], ["chat-2-2"]]
+        assert loop.judge_cursors == {"chat-2-2": 4}
+
+    def test_an_owner_brief_still_counts_a_gone_session_as_unread(self) -> None:
+        quiet, read, loop = self._beside_a_gone_session({"wake_when": "RULING"})
+        assert quiet == [False]
+        assert read == [["chat-2-2", "chat-3-3"]]
+        assert loop.judge_last_verdict["outcome"] == "fallback"
+
     def test_the_notice_names_the_default_brief(self) -> None:
         svc, asked, sink = self._sees_criteria()
         self._run(svc, _loop(), asked)
@@ -809,7 +923,7 @@ class TestPersistBeforePublish:
         svc = _service()
         trail: list[str] = []
 
-        async def collect(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             return (
                 [
                     {
@@ -868,7 +982,7 @@ class TestPersistBeforePublish:
         loop = _loop({"wake_when": "RULING"})
         emitted: list[str] = []
 
-        async def collect(inner: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(inner: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             return (
                 [
                     {
@@ -913,7 +1027,7 @@ class TestTranscriptNotice:
         svc = _service()
         sink: list[str] = []
 
-        async def collect(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+        async def collect(loop: NudgeLoop, targets: list[str]) -> tuple[list[dict], int, dict]:
             return (
                 [
                     {

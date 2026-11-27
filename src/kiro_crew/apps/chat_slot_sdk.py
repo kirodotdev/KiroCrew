@@ -258,7 +258,7 @@ class ChatSlotSDK:
         await _load_window(restored)
         return restored
 
-    async def open(self, state: Any, key: str) -> tuple[Any, bool]:
+    async def open(self, state: Any, key: str, *, hidden: bool = False) -> tuple[Any, bool]:
         """This app's slot under *key*, created when absent: ``(slot, created)``.
 
         A slot already under *key* that is not this app's (another app's, or an
@@ -271,6 +271,14 @@ class ChatSlotSDK:
         the gateway folds it to the charset of a session file name. A slot restored
         as a sidebar row has its rows read in, off the event loop, before it is
         returned; :meth:`send` refuses one that has not.
+
+        *hidden* creates the slot under this app's own mode, which keeps it out of
+        the session lists (``apps/hidden_sessions.py``), the mode
+        ``POST /api/chat/slots`` takes from an app that declares
+        ``permissions.hiddenSessions``. It is asked of a new slot only, and only
+        while ``may_hide_sessions`` holds for this app (read off the event loop);
+        otherwise :class:`ChatSlotRefused` and nothing is created. An existing slot
+        keeps the mode it has.
         """
         self.check_key(key)
         existing = state.get_slot(key)
@@ -278,12 +286,22 @@ class ChatSlotSDK:
             meta = await asyncio.to_thread(self._saved_meta, state, key)
             if meta and str(meta.get("app") or "") != self._app:
                 raise ChatSlotRefused(f"the saved conversation under {key!r} is not this app's")
+            if hidden:
+                may_hide = _host("kiro_crew.apps.hidden_sessions", "may_hide_sessions")
+                if not await asyncio.to_thread(may_hide, self._app):
+                    raise ChatSlotRefused(
+                        f"{self._app!r} may not hide its chats: it must declare "
+                        "permissions.hiddenSessions and be enabled and trusted"
+                    )
             existing = state.get_slot(key)
         if existing is not None:
             self._require_own(existing)
             await _load_window(existing)
             return existing, False
-        slot = state.get_or_create_slot(name=key, app=self._app)
+        if hidden:
+            slot = state.get_or_create_slot(name=key, app=self._app, mode=self._app)
+        else:
+            slot = state.get_or_create_slot(name=key, app=self._app)
         # get_or_create_slot folds the key to the session-file charset and answers
         # a slot already under the folded form; one that is not this app's is
         # refused like an existing one.
@@ -643,6 +661,7 @@ class ChatSlotSDK:
         max_cycles: int,
         stop_sentinel_path: str = "",
         caller: str = "",
+        max_runtime_secs: int | None = None,
     ) -> tuple[Any | None, str | None, int]:
         """Arm an AutoNudge loop on this app's *slot*: ``(loop, error, status)``.
 
@@ -652,8 +671,22 @@ class ChatSlotSDK:
         *caller* is the requesting user, for the audit row. A loop is armed only
         when *error* is ``None``. When AutoNudge is not running the answer is
         ``(None, <reason>, 503)``.
+
+        *max_runtime_secs* bounds the loop: 1 up to the owner's
+        ``monitoring.max_runtime_secs`` ceiling, which is also the default, so an
+        app loop always ends. Out of range is ``(None, <reason>, 400)``.
         """
         self._require_live(state, slot)
+        limits = _host("kiro_crew.monitoring.limits", "runtime_ceiling_secs")
+        validate = _host("kiro_crew.monitoring.limits", "validate_runtime_secs")
+        try:
+            runtime = (
+                limits()
+                if max_runtime_secs is None
+                else validate(max_runtime_secs, allow_unbounded=False)
+            )
+        except ValueError as exc:
+            return None, str(exc), 400
         get_instance = _optional_host("kiro_crew.autonudge", "get_instance")
         service = get_instance() if get_instance is not None else None
         if service is None:
@@ -667,6 +700,7 @@ class ChatSlotSDK:
             idle_secs=idle_secs,
             max_cycles=max_cycles,
             stop_sentinel_path=stop_sentinel_path,
+            max_runtime_secs=runtime,
             source=f"app:{self._app}",
             caller=caller,
         )

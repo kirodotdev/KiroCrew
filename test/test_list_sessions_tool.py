@@ -7,6 +7,9 @@ Companion to test_search_chat_history.py — same seeding/dispatch conventions
 
 from __future__ import annotations
 
+import os
+from datetime import UTC, datetime
+
 import pytest
 
 from kiro_crew import mcp_core
@@ -124,3 +127,32 @@ class TestListSessionsTool:
         # all_workspaces opts out of scoping → the other-workspace session shows.
         out_all = mcp_core._call_tool_inner("list_sessions", {"all_workspaces": True})
         assert "dashboard_chat-elsewhere" in out_all
+
+    def test_row_labels_the_last_active_time_the_sort_uses(self, tmp_path, monkeypatch):
+        # The list is ordered by transcript mtime, so each row must show that time,
+        # labelled, beside the creation time; a bare creation date reads as a broken sort.
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        sessions = tmp_path / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        cl = ConversationLog(base_dir=sessions)
+        cl.append("dashboard_chat-old", "user", "started long ago, still active")
+        last_active = datetime(2030, 1, 2, 3, 4, tzinfo=UTC).timestamp()
+        os.utime(sessions / "dashboard_chat-old.jsonl", (last_active, last_active))
+        out = mcp_core._call_tool_inner("list_sessions", {})
+        assert "last active 2030-01-02T03:04 UTC" in out
+        assert "created " in out
+
+    def test_row_shows_both_times_in_utc_when_created_carries_an_offset(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        sessions = tmp_path / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        cl = ConversationLog(base_dir=sessions)
+        cl.append("dashboard_chat-tokyo", "user", "created on a host nine hours ahead")
+        cl.update_metadata("dashboard_chat-tokyo", {"created_at": "2030-01-02T12:04:00+09:00"})
+        last_active = datetime(2030, 1, 2, 3, 4, tzinfo=UTC).timestamp()
+        os.utime(sessions / "dashboard_chat-tokyo.jsonl", (last_active, last_active))
+        out = mcp_core._call_tool_inner("list_sessions", {})
+        assert "last active 2030-01-02T03:04 UTC" in out
+        assert "created 2030-01-02T03:04 UTC" in out

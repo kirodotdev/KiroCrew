@@ -748,7 +748,9 @@ class TestInvalidation:
 
         Read off the connection rather than timed: the busy timeout in force when
         the drop's ``BEGIN IMMEDIATE`` runs is the base one, so no per-drop wait is
-        longer. With a zero base the held write lock refuses the drop at once.
+        longer. With a zero base the held write lock refuses the drop at once. The
+        re-walk the invalidation queues is not run: its store opens a second
+        ``BEGIN IMMEDIATE`` on the spy, and landing the drop it would restore trust.
         """
         monkeypatch.setattr(skill_search_index_module, "_BUSY_TIMEOUT_SECS", 0)
         _skill(harness.root, "alpha")
@@ -757,12 +759,10 @@ class TestInvalidation:
         _await(lambda: loader._load_catalog_snapshot("") is not None, "the snapshot")
         index = loader._search_index
         assert index is not None
-        conn = index._db()
-        assert conn is not None
-        spy = _BusyTimeoutAtBegin(conn)
+        spy = _BusyTimeoutAtBegin(index._db())
         monkeypatch.setattr(index, "_db", lambda: spy)
-        holder = opened(SkillSearchIndex(index._path))
-        held = holder._db()
+        monkeypatch.setattr(loader, "_request_catalog_refresh", lambda _key: None)
+        held = opened(SkillSearchIndex(index._path))._db()
         assert held is not None
         held.execute("BEGIN IMMEDIATE")
         try:

@@ -227,10 +227,10 @@ def close_skills_loaders(monkeypatch):
     inline in a test never does, so every builder leaked three descriptors and a
     thread -- sixty of each from the twenty examples of one property test. Tracks
     every instance through ``SkillsLoader.__init__`` and releases it at teardown,
-    the shape ``test_spawn_reasoning_effort`` uses for managers. Opt-in, not
-    autouse: patching the constructor for all 126k tests to serve the few dozen
-    that build loaders inline is not worth its cost, so a module that builds
-    ``ContextBuilder``s requests it from a one-line module-level autouse fixture.
+    the shape ``test_spawn_reasoning_effort`` uses for managers. The rootdir floor's
+    ``_close_skills_loaders_the_test_opened`` already closes every loader built after
+    it sets up, for every test; this opt-in additionally covers a loader built by an
+    autouse fixture that sets up before the floor's.
     """
     from kiro_crew.skills import SkillsLoader
 

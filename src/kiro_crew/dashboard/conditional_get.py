@@ -77,6 +77,7 @@ def is_not_modified(
     etag: str,
     *,
     last_modified: float | None = None,
+    wildcard: bool = True,
 ) -> bool:
     """True when the client already holds the representation *etag* names.
 
@@ -88,6 +89,10 @@ def is_not_modified(
     as a POSIX timestamp. Both sides of that date compare are second-granular:
     HTTP dates carry no sub-second part, so the stored mtime is truncated
     before the compare rather than rounded.
+
+    A caller whose *etag* names more than the representation, such as the
+    approval a file was checked against, passes ``wildcard=False``: ``*``
+    names no tag, so it then counts as modified.
     """
     if "If-None-Match" in request.headers:
         if_none_match = request.if_none_match
@@ -95,7 +100,7 @@ def is_not_modified(
             return False
         wanted = bare_etag_value(etag)
         if len(if_none_match) == 1 and if_none_match[0].value == "*":
-            return True
+            return wildcard
         return any(tag.value == wanted for tag in if_none_match)
     if last_modified is None:
         return False
@@ -168,7 +173,7 @@ def _accepts_gzip(request: web.Request) -> bool:
     return weight is not None and weight > 0
 
 
-def _gzip_bytes(body: bytes) -> bytes:
+def gzip_bytes(body: bytes) -> bytes:
     # Level 1: the cheapest level still shrinks repetitive JSON several-fold. zlib
     # releases the GIL while it compresses, so the call runs in a worker thread.
     comp = zlib.compressobj(1, zlib.DEFLATED, 31)
@@ -193,6 +198,6 @@ async def conditional_json_response(request: web.Request, body: bytes) -> web.Re
     if is_not_modified(request, headers["ETag"]):
         return web.Response(status=304, headers=headers)
     if len(body) >= GZIP_MIN_BYTES and _accepts_gzip(request):
-        body = await asyncio.to_thread(_gzip_bytes, body)
+        body = await asyncio.to_thread(gzip_bytes, body)
         headers["Content-Encoding"] = "gzip"
     return web.Response(body=body, content_type="application/json", headers=headers)

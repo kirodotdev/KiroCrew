@@ -2,7 +2,8 @@
 
 The advertised model list (parsed from session responses, stored with the session
 config and revalidated on the read path), and mode, model and effort selection through
-the backend's own verbs, with the served-default backfill.
+the backend's own verbs, with the served-default backfill. ``apply_configured_model`` is
+the one function that puts a session that has just started on its configured model.
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -26,7 +27,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, cast
 
-from kiro_crew import model_registry
+from kiro_crew import model_registry, model_scope
 from kiro_crew.acp import harness_notices
 from kiro_crew.acp._dispatch import set_mode_params, set_model_params
 from kiro_crew.acp.client import (
@@ -40,8 +41,10 @@ from kiro_crew.acp.client import (
     _push_model_via_effort_split,
     advertised_model_ids,
     catalog_row_would_drop,
+    model_is_unusable,
     pick_served_default,
     resolve_pin_spelling,
+    resolve_pin_spelling_on,
     resolve_usable_model,
 )
 from kiro_crew.acp.session_handle_runtime_contract import AcpRequestTimeout, AcpRuntimeError
@@ -62,7 +65,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.backends import effort_config_option_levels
 from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
-from kiro_crew.agent_sdk.kas_model_catalog import record_catalog
+from kiro_crew.agent_sdk.kas_model_catalog import record_catalog, recorded_catalog_snapshot
 from kiro_crew.platform.context import redact_log_via_context
 
 if TYPE_CHECKING:
@@ -224,6 +227,32 @@ def select_lists_only_its_current_model(select: dict[str, Any]) -> bool:
     return len(ids) == 1 and ids[0] != DEFAULT_MODEL and ids[0] == select.get("currentModelId")
 
 
+def kas_select_refuses_auto(served: list[str]) -> bool:
+    """Whether a known KAS ``model`` select's ids (``_kas_served_ids``) leave out ``auto``.
+
+    Known means it names a concrete model, the rule a concrete pin is judged by;
+    an empty or ``auto``-only list is not judged. KAS takes ``auto`` on
+    ``session/set_config_option`` whatever the account is served, and fails every
+    later prompt when the region serves no ``auto``.
+    """
+    return DEFAULT_MODEL not in served and any(m != DEFAULT_MODEL for m in served)
+
+
+def kas_auto_judged_ids(handle: AcpSessionHandle) -> list[str]:
+    """The model ids a KAS ``set_model("auto")`` on this session is judged by.
+
+    *handle*'s own full select (``_kas_served_ids``) when it names a concrete
+    model, else the catalog recorded for the vault identity its request
+    went out under, the evidence the pin validators read. ``[]`` when neither is
+    known (a reopened chat in a process that has recorded no catalog for this
+    account): :func:`kas_select_refuses_auto` then judges nothing.
+    """
+    if any(m != DEFAULT_MODEL for m in handle._kas_served_ids):
+        return handle._kas_served_ids
+    rows = recorded_catalog_snapshot(handle.request_vault_identity) or []
+    return [row["model_id"] for row in rows if isinstance(row.get("model_id"), str)]
+
+
 def session_models_envelope(resp: dict[str, Any], backend: str) -> Any:
     """The ``models`` payload of a session response, with the select folded in.
 
@@ -346,10 +375,12 @@ async def set_model(self: AcpSessionHandle, model_id: str, *, inherit: bool = Fa
     can run: a served id is sent; a bare pin a pair-id harness serves only as
     the model half of its advertised ``<model>[<effort>]`` rows is sent as
     that bare id; ``"auto"`` is sent only when the backend
-    advertises it; and anything else — ``"auto"`` on a partition that doesn't
-    serve it, or an unentitled concrete id — resolves to ``""``,
-    meaning **inherit the session's backend default** (the served model
-    ``session/new`` assigned). So this path never puts an unserved model on
+    advertises it (on KAS, which advertises no list, to a session on a concrete
+    model unless its known ``model`` select, or the catalog recorded for its
+    account, leaves it out: :func:`kas_auto_judged_ids`); and anything else —
+    ``"auto"`` on a partition that doesn't serve it, or an unentitled concrete
+    id — resolves to ``""``, meaning **inherit the session's backend default**
+    (the served model ``session/new`` assigned). So this path never puts an unserved model on
     the wire, exactly like the interactive ``_wire_model_id``
     reset-to-default. Explicit user picks raise instead, upstream in
     ``AcpSessionProvider.set_model`` / ``AcpClient.set_model``; on a harness in
@@ -367,10 +398,17 @@ async def set_model(self: AcpSessionHandle, model_id: str, *, inherit: bool = Fa
         model_id = _kas_model_spelling(model_id, self._advertised_model_ids())
         # KAS takes any id on ``set_config_option`` and fails every later prompt
         # on one the account is not served, so judge the pin against the
-        # ``model`` select here. ``auto`` is left to ``ensure_served_default``.
+        # ``model`` select here. ``auto`` is judged against the session's full
+        # select, else (a reopened chat, whose select names one model) the
+        # catalog recorded for this session's account; with neither known it is
+        # sent unjudged, as a concrete pin on a reopened chat is.
         # shortcut: a select that lists only ``auto`` is not trusted as the
         # account's list; judge it too once an auto-only account is captured.
         served = self._kas_served_ids
+        if model_id == DEFAULT_MODEL and kas_select_refuses_auto(kas_auto_judged_ids(self)):
+            logger.warning("KAS model select lists no auto; staying on the session's current model")
+            self.model_pin_refused = model_id
+            return
         if model_id and model_id != DEFAULT_MODEL and any(m != DEFAULT_MODEL for m in served):
             listed = resolve_pin_spelling(model_id, served)
             if not listed:
@@ -387,11 +425,18 @@ async def set_model(self: AcpSessionHandle, model_id: str, *, inherit: bool = Fa
     # the BARE id, so a bare pin misses the list yet is exactly what the wire
     # takes. Without the backend this layer answers the provider's already
     # resolved pin with a SECOND withhold, and the pin is dropped after all.
-    resolved = resolve_usable_model(
-        model_id,
-        self._advertised_model_ids(),
-        backend=self._runtime.acp_backend,
-    )
+    if self._runtime.acp_backend == ACP_BACKEND_KAS and model_id == DEFAULT_MODEL:
+        # KAS advertises no list for ``auto`` to be found in, and ``auto`` is what
+        # a new KAS session runs, so it is sent once the select allows it, to a
+        # session that runs a concrete model. One on ``auto`` or not yet known
+        # keeps its default.
+        resolved = DEFAULT_MODEL if self.served_model not in ("", DEFAULT_MODEL) else ""
+    else:
+        resolved = resolve_usable_model(
+            model_id,
+            self._advertised_model_ids(),
+            backend=self._runtime.acp_backend,
+        )
     if not resolved:
         # Inherit the backend default — nothing to send. For the ephemeral
         # _bg session the current model IS session/new's served default.
@@ -483,6 +528,115 @@ async def set_model(self: AcpSessionHandle, model_id: str, *, inherit: bool = Fa
         model_registry.model_window(resolved) if model_registry.has_known_window(resolved) else None
     )
     self.last_prompt_stats.rebase_to_window(win or 0)
+
+
+async def apply_configured_model(
+    handle: AcpSessionHandle, configured_model: str, *, backend: str
+) -> float | None:
+    """Put a session that has just started on its configured model.
+
+    The ONE place a start applies a model nobody picked for this turn (an agent
+    spec, the config default, a role model, a sub-agent's pin, a slot value saved
+    before entitlements were known). Both starts end here: a process's own first
+    session (``AcpProvider``'s runtime start) and a sub-agent's session on its
+    parent's process (``subagent_manager/run_start.py``), so a pin is judged,
+    spelled and sent the same way whichever process serves the session. *backend*
+    is the harness that process runs, passed by the caller that started it.
+
+    ``""`` and ``auto`` send nothing: the harness picks. Otherwise, in order:
+
+    - a pin another harness's catalog owns is not sent, and the session inherits
+      this harness's default (harness ownership and account entitlement are
+      separate decisions, so this one is logged at INFO and is no refusal);
+    - a pin the session did not advertise is folded onto the spelling it did
+      advertise; a pin the fold cannot place earns ONE forced revalidation of the
+      list before it is withheld, and a withheld pin is recorded in
+      ``model_pin_refused`` for the caller that bills or labels the turn by it;
+    - anything else goes to :meth:`AcpSessionHandle.set_model`.
+
+    Returns the milliseconds the model write took, or ``None`` when nothing was
+    sent. A write that fails is logged and the session keeps the model it has; it
+    never fails the start.
+    """
+    if not configured_model or configured_model == DEFAULT_MODEL:
+        return None
+    # Withhold a model this account cannot run rather than sending it.
+    # session/new has already reported what is on offer. Sending the pin
+    # anyway is what put a raw "-32603 ... model is not available" in the
+    # transcript on every turn: kiro-cli ACCEPTS the id here (so the except
+    # below never fires) and only the service rejects it, mid-prompt. Leaving
+    # it unset keeps the session on the backend's own default, so the turn
+    # succeeds.
+    advertised = advertised_model_ids(handle.available_models)
+    send_model = configured_model
+    namespace = model_registry_namespace(backend)
+    foreign_scope = not model_scope.pin_applies(configured_model, namespace, advertised=advertised)
+    if foreign_scope:
+        send_model = ""
+        logger.info(
+            "Configured model %s belongs to another harness, not %s; "
+            "leaving the session on the backend default",
+            configured_model,
+            namespace,
+        )
+    elif model_is_unusable(configured_model, advertised):
+        # A literal miss can be a stale `<namespace>::` qualifier on a model
+        # the backend fully serves: resolve to the advertised spelling and send
+        # THAT, the same fold the display verdict uses, so chip and wire agree.
+        # It can also be a BARE pin on a harness that advertises only
+        # ``<model>[<effort>]`` rows while its ``model`` option takes the bare
+        # id, and the backend-aware resolver answers that with the model the
+        # operator pinned, leaving the adapter to own the effort. The fold runs
+        # FIRST, against the snapshot already held: a qualifier-only miss
+        # resolves here with no wire traffic and must not pay a throwaway
+        # session/new on every start.
+        send_model = resolve_pin_spelling_on(configured_model, advertised, backend=backend)
+        if not send_model:
+            # The fold found nothing, so this looks like a genuine miss. But
+            # the snapshot was captured seconds ago at session/new, inside the
+            # startup window where an entitlement lookup racing a token refresh
+            # answers the free-tier default. Withholding an entitled pin on that
+            # unconfirmed answer drops the model for the whole session with no
+            # retry, so revalidate ONCE against the live backend and re-run both
+            # checks. A failed probe leaves ``advertised`` as it was (fail open:
+            # no evidence never widens or narrows entitlement).
+            try:
+                # force=True: one probe per start, deciding whether to DROP a
+                # configured pin, so it earns a fresh answer rather than a
+                # recent no-evidence failure replay.
+                advertised = (
+                    advertised_model_ids(await handle.refresh_available_models(force=True))
+                    or advertised
+                )
+            except Exception:
+                pass
+            if model_is_unusable(configured_model, advertised):
+                send_model = resolve_pin_spelling_on(configured_model, advertised, backend=backend)
+            else:
+                send_model = configured_model
+    if not send_model:
+        if not foreign_scope:
+            logger.warning(
+                "Configured model %s is not available to this account; "
+                "leaving the session on the backend default (advertised: %s)",
+                configured_model,
+                ", ".join(advertised),
+            )
+            # The pin never runs: record it where a caller billing or labelling
+            # the turn by the pin reads (model_pin_refused).
+            handle.model_pin_refused = configured_model
+        return None
+    started = time.monotonic()
+    try:
+        await handle.set_model(send_model)
+        logger.info("Kiro runtime model set: %s", send_model)
+    except Exception:
+        logger.warning(
+            "Failed to set model %s on kiro runtime session",
+            send_model,
+            exc_info=True,
+        )
+    return (time.monotonic() - started) * 1000.0
 
 
 async def _push_model_config_option(self: AcpSessionHandle, model_id: str, *, strict: bool) -> str:

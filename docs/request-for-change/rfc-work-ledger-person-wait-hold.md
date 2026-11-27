@@ -3,10 +3,10 @@ title: Work-ledger person-wait hold -- a conductor patrol rests while every open
 status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-08
-last-audited: 2026-10-11
-audited-at: a84f616557
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: null
-implementation-prs: [18109]
+implementation-prs: [18109, 38307]
 tracking-issues: [18054]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Work-ledger person-wait hold
 
-- Status: implemented. The decision was made by the operator who owns the conductor patrol (2026-10-08). This document landed on its own first, as GOVERNANCE.md asks of an RFC, and its implementation [#18109](https://github.com/kirodotdev/KiroCrew/pull/18109) (`c8da67c030`) has merged. [monitor-architecture](../system-specs/modules/monitor-architecture.md) owns the shipped behaviour.
+- Status: implemented. Sections 3.1 to 3.5 shipped in [#18109](https://github.com/kirodotdev/KiroCrew/pull/18109); the ask-record amendment of 2026-11-18 (section 3.6) shipped in [#38307](https://github.com/kirodotdev/KiroCrew/pull/38307). The original decision was made by the operator who owns the conductor patrol (2026-10-08). This document landed on its own first, as GOVERNANCE.md asks of an RFC, and its implementation [#18109](https://github.com/kirodotdev/KiroCrew/pull/18109) (`c8da67c030`) has merged. [monitor-architecture](../system-specs/modules/monitor-architecture.md) owns the shipped behaviour.
 - Amends [rfc-goal-loop-approval-hold.md](rfc-goal-loop-approval-hold.md) in one place, named in section 3.3: a `work-ledger` watch whose open items all wait on a person is no longer extended.
 - Related: [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) (the ledger and `work_report`), [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (how a worker's report wakes the conductor).
 - An amendment proposed in [rfc-work-ledger-resource-pressure.md](rfc-work-ledger-resource-pressure.md) §12 (a host-pressure level change releases a held loop once) was withdrawn by the repository owner on 2026-11-14 and never built. Section 3.2 stands as written.
@@ -66,7 +66,7 @@ Both mean "only a person can move this item", and both count toward the hold. A 
 
 On each tick of a `work-ledger` watch, before the cycle cap is checked, the timer reads the ledger once (off the event loop) and asks two questions:
 
-1. **Is everyone waiting on a person?** True when the ledger has at least one open item, every item file is readable, every open item has `status` `blocked` or `question` with `reason` `approval` or `needs_human`, and no open item's worker session is gone. A worker whose session closed leaves nobody to answer its approval, so its item does not count as a wait on a person, and the probe's stall wake still reaches the conductor.
+1. **Is everyone waiting on a person?** True when the ledger has at least one open item, every item file is readable, every open item has `status` `blocked` or `question` with `reason` `approval` or `needs_human`, and no open item's worker session is gone. Since the ask-record amendment of 2026-11-18 (section 3.6), every open item must also carry the conductor's current `ask` record. A worker whose session closed leaves nobody to answer its approval, so its item does not count as a wait on a person, and the probe's stall wake still reaches the conductor.
 2. **Has any worker said anything since the conductor last looked?** The loop records a fingerprint of the ledger's worker-owned fields (each item's `status`, `reason`, `summary`, `artifacts`, `pr` and `last_report_at`) when it delivers a turn. The tick compares the ledger's current fingerprint with that one. The conductor's own writes (decide, verdict, accept, close, goal) are left out: the conductor already knows what it wrote, and counting them would let a conductor that writes the ledger every turn never stay held. This is the same rule the quiet floor's ledger revision already uses (#18112), which counts worker reports only.
 
 When both are true, the loop **holds**:
@@ -76,7 +76,7 @@ When both are true, the loop **holds**:
 - It re-arms at its own interval, so the next check costs one ledger read and no model call.
 - It sets `waiting_on_person` on the loop record and logs one WARNING when the hold starts.
 
-**Release.** A worker's new report changes the fingerprint, even one that stays blocked (its `last_report_at` moves). A conductor write does not. A new item the conductor creates has no report yet, so the ledger no longer waits only on people and the next tick fires. The next tick finds the fingerprints different, clears `waiting_on_person`, logs a WARNING, and runs as a normal tick. A worker's report also pulls that tick forward through the existing crew-log wake, so release is immediate. No person or agent has to re-arm anything.
+**Release.** A worker's new report changes the fingerprint, even one that stays blocked (its `last_report_at` moves). A conductor write does not move the fingerprint; a `decide` or `close` releases the hold through the ask gate (section 3.6), because both clear the `ask` record. A new item the conductor creates has no report yet, so the ledger no longer waits only on people and the next tick fires. The next tick finds the fingerprints different, clears `waiting_on_person`, logs a WARNING, and runs as a normal tick. A worker's report also pulls that tick forward through the existing crew-log wake, so release is immediate. No person or agent has to re-arm anything.
 
 The turn that delivers after a release records the new fingerprint. If every open item still waits on a person, the tick after it holds again. So the conductor gets exactly one turn per worker report while everyone waits. A person's Nudge now still fires a turn whenever they want one.
 
@@ -102,6 +102,17 @@ Held time **is** credited back to the runtime clock, the same way the approval h
 
 - The worker prompt and the goal-conductor skill tell a worker: when a tool approval times out, report `blocked` with `reason=approval`; when only a person can unblock you, use `needs_human`; for a build or service you do not control, leave `reason` unset.
 - The goal-conductor skill tells the conductor that a ledger waiting only on people holds its patrol, and that its job on that turn is to put the ask in front of the user.
+
+
+### 3.6 Ask-record amendment, 2026-11-18
+
+Owner rulings: on #38307, 2026-11-17, "Needs your input" shows only what needs the owner; and 2026-11-18 ~19:00Z, "很好，按照新规则来，然后联动修改，包括欢迎语改动，让体验自然有好且正确" ("follow the new rule and change everything that depends on it together"). [rfc-delayed-task-brief.md](rfc-delayed-task-brief.md) section 3.11 (#39216) records the rule: an item needs the person only when its worker names one AND the conductor relayed the question with a current `ask` record (`work_ask_record`; no report after the newest `ask` event). Until then the question is the conductor's to vet, so holding its patrol would stall the crew while every surface says nothing needs the person.
+
+- **The gate.** The hold also requires every open item to carry a current `ask` record (`probes.work_ledger.person_wait_asked`). It is read only once the fingerprint matches, and a read that fails answers "not asked", so doubt still fires.
+- **The fingerprint is unchanged.** It still covers worker-owned fields only. The conductor's `work_ask_record` write in the relay turn does not move it, so the tick after that turn holds at once rather than one turn later.
+- **Release.** A worker's report still releases the hold. A `decide` or `close` now releases it too, because both clear the `ask` record; the conductor's other writes (`goal`, `verdict`, `accept`, `bind`, `ask`) leave it held.
+- **Every conductor can relay.** `work_ask_record` joins the base work-ledger grants every conductor spec ships (`_CONDUCTOR_BASE_WORK_GRANTS`, with grant-history rows), and the shared conductor protocol names the relay step. Without that, the pipeline and security conductors could never write a record, so their workers' person waits would never surface. (Neither arms a `work-ledger` watch, so this hold does not apply to their patrols either way.) The tool writes only the ask record on the conductor's own item.
+- **Validation.** `test/test_autonudge_person_wait_hold.py` pins that a person-reason item with no current record does not hold (probe and timer), that the ask write leaves the fingerprint unchanged, that a newer report supersedes the record, and `test/test_pipeline_conductor_agent.py` pins that the pipeline conductor can relay. Undo: reverting #38307 restores the worker-fields-only hold; `ask` records already written stay harmless.
 
 ## 4. Risks
 

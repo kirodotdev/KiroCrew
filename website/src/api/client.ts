@@ -17,6 +17,7 @@
 import { installSessionExpiryHandler } from './sessionExpirySignal'
 import { ApiError, friendlyErrText, statusErrText, toApiError, AcceptedBodyUnreadable, isPermissionRefusal } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
+import { retryEdgeThrottle } from './edgeThrottleRetry'
 import {
   STALE_OWNER_SESSION_CODE,
   installStaleOwnerHandler,
@@ -36,6 +37,7 @@ import { createElement } from 'react'
 import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { X } from 'lucide-react'
+import { signInCommand, signInSentence } from './signInCommand'
 import type { ClientTransport } from './client/transport'
 import { gatedRead } from './readGate'
 import { createSystemEndpoints } from './client/system'
@@ -111,6 +113,7 @@ export type {
   KasLoginSources,
   KasLoginDeviceSession,
   KasLoginPollResult,
+  KasLoginProfile,
   KasLoginLoopbackSession,
   AgentImportCategory,
   AgentImportSource,
@@ -164,6 +167,7 @@ export type {
   TailnetMobileMutation,
   MobileConnectMethodsData,
   TailnetMobileConfigure,
+  TailnetMobileOverride,
   TailnetMobileQr,
 } from './client/remoteAccess'
 export type {
@@ -192,13 +196,15 @@ export type {
   CloudLaunchSignin,
   KiroLoginTarget,
   CloudIdentity,
+  CloudInstanceType,
   LaunchJob,
   LaunchTaskSighting,
   LaunchTaskReport,
 } from './client/cloud'
 export type { MemoryCarveQuery, MemoryCarveResult, RecurringFailure } from './client/memory'
 export { SEARCH_MIN_CHARS } from './client/sessions'
-export type { ArchiveEntry } from './client/sessions'
+export type { ArchiveEntry, MessageSearchHit, MessageSearchParams, MessageSearchResponse, MessageSearchResult } from './client/sessions'
+export type { ChatHistoryAroundResponse, ChatHistoryCountsResponse, ChatHistoryHit, ChatHistoryKind, ChatHistorySearchParams, ChatHistorySearchResponse } from './client/chat'
 export type {
   McpShareReason,
   McpShareRecommendation,
@@ -211,6 +217,7 @@ export type {
   CrewmateExportChoices,
   CrewmateExportPreview,
   MemberRosterRow,
+  MemberHeldLimit,
   MemberActivityEntry,
   MemberGoals,
   MemberGoal,
@@ -278,6 +285,8 @@ export type {
 export type {
   SlackConfigData,
   SlackConfigSave,
+  SlackSharedAccessData,
+  SlackSharedUser,
   SlackCapability,
   SlackCodeSwitchKey,
   SlackCodeChannelDefaults,
@@ -519,17 +528,18 @@ async function exchangePastedToken(token: string): Promise<PasteExchange> {
 /**
  * Render *sentence* into *el* with the command wrapped in a <code> element.
  *
- * The command comes from `api.client.reauth_command`, so the value split on is
- * the SAME value a translator sees, and no untranslated literal sits in this
- * module. Falls back to the plain sentence when the command is absent from it,
- * because a translation that moved or dropped it must still be readable --
- * losing the chip is a styling regression, whereas rendering nothing would be a
- * blank banner. `ApiClient.coverage.test.tsx` pins the relationship across every
- * catalog, so a translation that breaks it reddens CI rather than silently
- * costing the chip.
+ * The command is `signInCommand()`: the catalog's `api.client.reauth_command`,
+ * the SAME value a translator sees, or the one a container gateway sends, which
+ * `signInSentence` put in the sentence in its place. No untranslated literal
+ * sits in this module. Falls back to the plain sentence when the command is
+ * absent from it, because a translation that moved or dropped it must still be
+ * readable -- losing the chip is a styling regression, whereas rendering
+ * nothing would be a blank banner. `ApiClient.coverage.test.tsx` pins the
+ * relationship across every catalog, so a translation that breaks it reddens
+ * CI rather than silently costing the chip.
  */
 function setInstructionWithCommandChip(el: HTMLElement, sentence: string): void {
-  const command = i18nT('api.client.reauth_command')
+  const command = signInCommand()
   const at = command ? sentence.indexOf(command) : -1
   if (at < 0) {
     el.textContent = sentence
@@ -611,7 +621,7 @@ function showSessionExpiredBanner(lead?: string): void {
         return
       }
       if (!ok) {
-        failure.textContent = i18nT('api.client.token_not_accepted')
+        failure.textContent = signInSentence(i18nT('api.client.token_not_accepted'))
         input.focus()
         return
       }
@@ -630,7 +640,7 @@ function showSessionExpiredBanner(lead?: string): void {
       // the banner stays up and says the token was not accepted, which is the
       // accurate reading of a 200 that proves neither.
       if (_staleOwnerBanner && !(tokenAccepted && ownerOk)) {
-        failure.textContent = i18nT('api.client.token_not_accepted')
+        failure.textContent = signInSentence(i18nT('api.client.token_not_accepted'))
         input.focus()
         return
       }
@@ -702,7 +712,7 @@ function showSessionExpiredBanner(lead?: string): void {
   const instruction = document.createElement('div')
   setInstructionWithCommandChip(
     instruction,
-    i18nT('api.client.run_kirocrew_token_then_paste_sign_in_url'),
+    signInSentence(i18nT('api.client.run_kirocrew_token_then_paste_sign_in_url')),
   )
   el.append(b, instruction, input, failure)
   // On a phone the desktop "Connect your phone" QR carries this same sign-in URL,
@@ -734,7 +744,7 @@ function showSessionExpiredBanner(lead?: string): void {
           // The decoded string is never logged: in the intended use it IS the token.
           const settled = submitToken(raw.trim())
           if (!settled) {
-            failure.textContent = i18nT('api.client.token_not_accepted')
+            failure.textContent = signInSentence(i18nT('api.client.token_not_accepted'))
             return
           }
           scan.disabled = true
@@ -940,7 +950,7 @@ export const isAuthExpiredError = (e: unknown): boolean =>
  * `e.message`. `utils/errorReport` then lets a shared error banner recover that
  * context from the message alone — see AskAgentButton / ErrorNotice.
  */
-const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiError => {
+const apiFailure = (r: Response, errText: string, benign?: Benign): ApiError => {
   // An auth denial's own reason text ("invalid signature") describes HMAC
   // verification, not anything the user can act on, and every card that renders
   // it hides the fact that one re-auth clears all of them at once. Substitute
@@ -967,9 +977,9 @@ const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiErr
   // says where to go, so only a top-level document raises the notice.
   if (edgeOutcome === 'challenged') showEdgeChallengeBanner()
   const message = staleOwnerSession
-    ? i18nT('api.client.stale_owner_session_sign_in_again')
+    ? signInSentence(i18nT('api.client.stale_owner_session_sign_in_again'))
     : authRequired
-      ? i18nT('api.client.session_expired_sign_in_again')
+      ? signInSentence(i18nT('api.client.session_expired_sign_in_again'))
       : edgeChallengeMessage(edgeOutcome)
         || friendlyErrText(r.status, errText)
         || statusErrText(r.status, errText)
@@ -991,8 +1001,7 @@ const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiErr
   // ours, so it cannot match `benign`, but the term is kept explicit because each of
   // the three needs a person and none may ever be opted out by a call site.
   const expectedBenign = !!benign
-    && r.status === benign.status
-    && code === benign.code
+    && (Array.isArray(benign) ? benign : [benign]).some(b => r.status === b.status && code === b.code)
     && !authRequired
     && !staleOwnerSession
     && !edgeAuthExpired
@@ -1159,6 +1168,8 @@ export interface SlotEnvironment {
  * emits for exactly that case, so both must match before anything is opted out.
  */
 type BenignDenial = { readonly status: number; readonly code: string }
+/** One benign denial, or the few one endpoint answers routinely (the relay viewer's list). */
+type Benign = BenignDenial | readonly BenignDenial[]
 
 /**
  * The one parser body behind `j`, `jNullable` and `jInstancesDisabled`.
@@ -1167,7 +1178,7 @@ type BenignDenial = { readonly status: number; readonly code: string }
  * share this rather than holding copies that drift as the auth-recovery steps
  * above change.
  */
-const parseJson = async (r: Response, benign?: BenignDenial, nullOn204 = false) => {
+const parseJson = async (r: Response, benign?: Benign, nullOn204 = false) => {
   checkSessionExpired(r)
   if (r.ok) removeAuthBanner()
   // Before the !r.ok branch, because 204 IS ok: the banner clear above still runs,
@@ -1315,13 +1326,24 @@ const APPS_RELAY_TEAMMATE: BenignDenial = { status: 403, code: 'relay_apps_teamm
 const jApps = (r: Response) => parseJson(r, APPS_RELAY_TEAMMATE)
 
 /**
- * The eighth: `GET /api/relay-viewer/crews` answering 404 `RELAY_VIEWER_OFF` while
- * `tunnel.relay_viewer_enabled` is off, which is every install by default. The desktop
- * app's relay Crew list reads it on every load and hides itself on that answer, so
- * journaling it would file one error report per load. Any other failure journals.
+ * The eighth: the relay viewer's routine answers. Every dashboard reads
+ * `GET /api/relay-viewer/crews` on load and every 15 minutes after a refusal, and
+ * hides its list on each of these, so journaling them would file one error report
+ * per read for a person whose dashboard works: 404 `RELAY_VIEWER_OFF` in a build that
+ * keeps the viewer off, a signed-out sign-in, an organization with remote access off,
+ * an account with no relay access, and a session that is not the owner. A server or network failure, a throttle and
+ * `NOT_SET_UP` (a dev setting that is wrong) still journal.
  */
-const RELAY_VIEWER_OFF: BenignDenial = { status: 404, code: 'RELAY_VIEWER_OFF' }
-const jRelayViewer = (r: Response) => parseJson(r, RELAY_VIEWER_OFF)
+const RELAY_VIEWER_ROUTINE: readonly BenignDenial[] = [
+  { status: 404, code: 'RELAY_VIEWER_OFF' },
+  { status: 409, code: 'SIGNED_OUT' },
+  { status: 403, code: 'REMOTE_ACCESS_DISABLED' },
+  { status: 403, code: 'CREW_ACCESS_NOT_GRANTED' },
+  { status: 403, code: 'ACCESS_DENIED' },
+  // A dashboard session that is not the owner: the list hides itself there.
+  { status: 403, code: 'owner_only' },
+]
+const jRelayViewer = (r: Response) => parseJson(r, RELAY_VIEWER_ROUTINE)
 
 /**
  * The ninth: `GET /api/security/config-pending` answering `owner_only` to a caller that is
@@ -1331,6 +1353,16 @@ const jRelayViewer = (r: Response) => parseJson(r, RELAY_VIEWER_OFF)
  */
 const CONFIG_PENDING_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
 const jConfigPending = (r: Response) => parseJson(r, CONFIG_PENDING_NOT_OWNER)
+
+/**
+ * The tenth: the Kiro sign-in reads (`GET /api/kas-login` and `/api/kas-login/sources`)
+ * answering `owner_only` to a caller that is not the dashboard owner. The app-level sign-in
+ * notice reads the status on every page of a KAS gateway, and for a guest that refusal means
+ * "no sign-in to report", so journaling it would file one error report per read. The sign-in
+ * actions keep `j`: a refusal there is a real failure.
+ */
+const KAS_LOGIN_READ_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jKasLoginRead = (r: Response) => parseJson(r, KAS_LOGIN_READ_NOT_OWNER)
 
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
@@ -1480,7 +1512,8 @@ async function keepIfRefused(input: string, r: Response, generation: number): Pr
  * (the composer upload's XMLHttpRequest), so it is journaled the same way.
  */
 function jfetch(input: string, init?: RequestInit, send: (input: string, init?: RequestInit) => Promise<Response> = fetch): Promise<Response> {
-  const isRead = (init?.method ?? 'GET').toUpperCase() === 'GET'
+  const method = (init?.method ?? 'GET').toUpperCase()
+  const isRead = method === 'GET'
   const refused = isRead ? refusedReads.get(input) : undefined
   if (refused && Date.now() - refused.at < REFUSAL_KEEP_MS) return Promise.resolve(refused.response.clone())
   if (refused) refusedReads.delete(input)
@@ -1492,14 +1525,17 @@ function jfetch(input: string, init?: RequestInit, send: (input: string, init?: 
   const generation = callerGeneration
   const start = () => (init === undefined ? send(input) : send(input, init))
   // A read takes its turn among the reads that are out, so they cannot hold every
-  // connection the browser has to the gateway; a write goes straight out.
-  const request = isRead ? gatedRead(input, init?.signal, start) : start()
+  // connection the browser has to the gateway; a write goes straight out, and a
+  // retryable one is re-sent if the tunnel edge throttled it (reads retry in the QueryClient).
+  const request = isRead
+    ? gatedRead(input, init?.signal, start)
+    : retryEdgeThrottle(start, { method, url: input, body: init?.body, signal: init?.signal })
   return request.then((r) => (isRead ? keepIfRefused(input, r, generation) : r)).catch((error: unknown) => {
     if (!isDeliberateAbort(error)) {
       const report = recordTransportRejection({
         message: error instanceof Error ? error.message : String(error),
         endpoint: requestPath(input),
-        method: (init?.method ?? 'GET').toUpperCase(),
+        method,
         code: isDeadlineError(error) ? 'timeout' : 'network',
       })
       if (report && typeof error === 'object' && error !== null) attachReport(error as object, report)
@@ -1580,7 +1616,17 @@ const patch = (url: string, body: object, sessionKey?: string, signal?: AbortSig
 // API module on the SAME session-key-authenticated helpers as core methods
 // (inheriting X-Session-Key + auth-recovery + ApiError), instead of forking this
 // file or writing methods on raw fetch. See api/apiTransport.ts.
-installApiTransport({ get, getWithSignal: (url, signal) => get(url, undefined, signal), post, put, del, patch, j, jNullable })
+installApiTransport({
+  get,
+  getWithSignal: (url, signal) => get(url, undefined, signal),
+  post,
+  put,
+  del,
+  patch,
+  j,
+  jNullable,
+  request: (input, init) => jfetch(input, init),
+})
 
 // The Kiro credit-usage wire payload and the view model normalized from it stay
 // defined here, side by side: `KiroAccountModal` and `api/kiroUsage.ts` read
@@ -1595,9 +1641,11 @@ export interface KiroBonusCreditGrantPayload {
 export interface KiroUsagePayload {
   available?: boolean
   /**
-   * Why usage is unavailable when `available` is false (`signin_required`, or
+   * Why usage is unavailable when `available` is false (`signin_required`,
    * `account_unproven` when the account is named but its reading could not be
-   * tied to it); absent when the gateway simply holds no reading.
+   * tied to it, `api_key` when the sessions run on a `KIRO_API_KEY` whose balance
+   * cannot be read, or `plan_without_limit` when the account's plan reports no
+   * credit limit); absent when the gateway simply holds no reading.
    */
   reason?: string
   /** With `reason: signin_required`: the API refused a credential it was shown. */
@@ -1669,6 +1717,7 @@ const transport: ClientTransport = {
   jApps,
   jRelayViewer,
   jConfigPending,
+  jKasLoginRead,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,
@@ -1900,6 +1949,7 @@ export const api = {
   ...apps.sessionStatus,
   ...autoResearch.campaigns,
   ...apps.fileMenu,
+  ...apps.sessionCreate,
   ...artifacts.publishing,
   ...featureDiscovery.tips,
   ...browserLive.browserLive,

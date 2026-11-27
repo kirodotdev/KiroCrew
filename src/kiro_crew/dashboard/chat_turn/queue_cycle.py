@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from kiro_crew.dashboard.chat_utils import SYNTHESIS_HELD, SYNTHESIS_UNKNOWN
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE, SUBAGENT_SYNTHESIS_PROMPT
+from kiro_crew.messaging.driver import strip_steering_markers
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -563,8 +564,23 @@ async def _hand_off_queue(
     cancellable) and the cycle ends with its terminal ``chat_done``. The
     ``predecessor_*`` pair names the ending turn, so the drain marks its end
     unless the head is that turn's own recovery."""
+    from kiro_crew.tracing import work as trace_work
+
+    # Whatever comes next is not the work-ledger watch's turn, whether or not it bound.
+    trace_work.end_patrol_turn()
+    # Close steer admission for this turn before the hand-off's first await, held
+    # steers or not: a peer steer sent while the hand-off awaits takes the queue.
+    slot._deferred_steer_ended_gen = slot._turn_generation
+    # Steers still held for a tool boundary this turn never reached join the queue
+    # first, so the drain below starts the next turn on them in this same call.
+    if slot._deferred_steers:
+        from kiro_crew.dashboard import deferred_steer
+
+        await deferred_steer.requeue_all(state, slot)
     # Steers outrank queued messages, so they go to the head before the drain.
     _requeue_unconsumed_steers(state, slot)
+    slot._deferred_steer_delivered.clear()
+    slot._deferred_steer_injected.clear()
     if drain and slot._queue:
         # A user message drained at a turn's end ends an armed synthesis's
         # batch only when no child of it is still out (running, delivering,
@@ -667,7 +683,9 @@ class _TurnExit:
     the tail needs: its depth, whether a provider saw it, the local slash
     command it is running, and -- at the top of the ``finally``, before anything
     there can be cancelled -- its outcome. The guard runs :func:`_end_turn_tail`
-    from it unless the turn already did."""
+    from it unless the turn already did. The guard also names it on the slot
+    (``_preparing_turn``) for the turn's length, which is how a Stop finds a
+    runner still preparing its turn and the task to cancel."""
 
     __slots__ = (
         "actor",
@@ -677,6 +695,7 @@ class _TurnExit:
         "outcome",
         "reached_provider",
         "responsive_owner",
+        "runner",
         "stop_reason",
         "turn_id",
     )
@@ -694,6 +713,10 @@ class _TurnExit:
         self.responsive_owner: Any = None
         # The terminal event's stop reason; None while the turn reached none.
         self.stop_reason: str | None = None
+        # The task running the exit guard, the one a Stop cancels
+        # (``turn_stop._cancel_preparing_runner``). Not always ``slot.task``: a
+        # bounded turn runs the guard in an inner task under ``asyncio.shield``.
+        self.runner: asyncio.Task[Any] | None = None
 
 
 def _end_browser_live_turn(slot: _ChatSlot) -> None:
@@ -966,15 +989,27 @@ def _note_failed_before_the_try(slot: _ChatSlot, turn_exit: _TurnExit) -> None:
             },
         )
     else:
-        slot.append(
-            "error",
-            "⚠️ This message failed before it started. The gateway log has the details.",
-            "msg msg-err",
-            meta={
-                TURN_FAILED_META: True,
-                **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TURN_FAILED_BEFORE_START),
-            },
-        )
+        note_message_failed_before_start(slot, turn_failed=True)
+
+
+def note_message_failed_before_start(slot: _ChatSlot, *, turn_failed: bool) -> None:
+    """Append the error row of a message whose turn never started.
+
+    Also posted when the idle sweep resets a session whose newest message has
+    waited over a minute for its turn to take it (``session_events._on_idle_expired``).
+    That turn may still run, so it passes ``turn_failed=False``: the row omits
+    ``TURN_FAILED_META`` and a reply the turn goes on to give still answers."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
+    meta = gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TURN_FAILED_BEFORE_START)
+    if turn_failed:
+        meta = {TURN_FAILED_META: True, **meta}
+    slot.append(
+        "error",
+        "⚠️ This message failed before it started. The gateway log has the details.",
+        "msg msg-err",
+        meta=meta,
+    )
 
 
 async def _turn_record_outcome(turn: _ChatTurn) -> None:
@@ -1049,7 +1084,8 @@ async def _turn_record_outcome(turn: _ChatTurn) -> None:
             "reply_flushed": _turn_flushed_visible_text,
             "nudge_turn": _directive_self_wake and turn._turn_landed,
         },
-        quiet_end=turn._terminal_directive_applied and not _turn_full_reply_text(turn)[0].strip(),
+        quiet_end=turn._terminal_directive_applied
+        and not strip_steering_markers(_turn_full_reply_text(turn)[0]).strip(),
     )
     # Every turn end rewrites this, so it describes the newest turn: one that
     # took the arming result and ended successfully on reply text written

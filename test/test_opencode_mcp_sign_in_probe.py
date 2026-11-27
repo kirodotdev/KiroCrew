@@ -11,6 +11,7 @@ The server stays in the array.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from types import SimpleNamespace
 from typing import Any
 
@@ -160,6 +161,31 @@ async def test_only_401_with_a_bearer_challenge_asks_for_a_sign_in(status, chall
         await runner.cleanup()
     assert len(seen) == 1
     assert "Authorization" not in seen[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("advertised", "expected"), [(True, True), (False, False)])
+async def test_a_bare_401_asks_when_the_well_known_metadata_names_the_server(
+    monkeypatch, advertised, expected
+):
+    from kiro_crew import mcp_discovery
+
+    async def _handler(_request: web.Request) -> web.Response:
+        return web.Response(status=401)
+
+    asked: list[str] = []
+
+    async def _advertises(url: str) -> bool:
+        asked.append(url)
+        return advertised
+
+    monkeypatch.setattr(mcp_discovery, "advertises_protected_resource", _advertises)
+    runner, url, _seen = await _serve(_handler)
+    try:
+        assert await probe.asks_for_sign_in(url) is expected
+    finally:
+        await runner.cleanup()
+    assert asked == [url]
 
 
 @pytest.mark.asyncio
@@ -347,6 +373,23 @@ def test_no_notice_off_opencode_or_with_nothing_waiting(rows):
     )
 
     assert rows == []
+
+
+@pytest.mark.parametrize("reports", [True, False])
+def test_the_notice_follows_the_capability_not_the_backend_name(rows, reports):
+    """``reports_mcp_sign_in_suspects``, not opencode's name, shows the row."""
+    base = ACP_BACKEND_GOOSE if reports else ACP_BACKEND_OPENCODE
+    provider = SimpleNamespace(
+        capabilities=dataclasses.replace(
+            capabilities_for(base), reports_mcp_sign_in_suspects=reports
+        )
+    )
+
+    chat_runner._notice_mcp_may_need_sign_in(
+        SimpleNamespace(), _slot(), {"sign_in_suspected": ["p-oauth"]}, provider
+    )
+
+    assert [role for role, _text in rows] == (["notice"] if reports else [])
 
 
 def test_publishing_the_probed_report_shows_the_notice(rows):

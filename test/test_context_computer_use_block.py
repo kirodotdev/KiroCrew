@@ -154,7 +154,6 @@ class TestTheSlot:
             project=None,
             mode="",
             session_key="dashboard:no-slot",
-            is_cc=False,
             private_owner=False,
             session_start=True,
         )
@@ -171,7 +170,7 @@ class TestTheShippedContract:
             project=None,
             mode="",
             session_key="dashboard:shipped",
-            is_cc=is_cc,
+            provider_type="claude_code" if is_cc else None,
             private_owner=False,
             session_start=True,
         )
@@ -230,7 +229,6 @@ class TestTheShippedContract:
             project=None,
             mode="",
             session_key="dashboard:fork",
-            is_cc=False,
             private_owner=False,
             session_start=True,
         )

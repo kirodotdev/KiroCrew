@@ -146,10 +146,12 @@ _MAX_RATE_BYTES = 256_000
 def worker_running(slot_table: Any, session_key: str) -> bool:
     """Whether *session_key*'s slot has a TURN IN FLIGHT, per *slot_table*.
 
-    The gate's liveness question, as a function of a value rather than as a closure
-    inside a gateway constructor. It lives here so it can be tested without a live
-    gateway: the driver binds it to the dashboard's slot table and hands the result
-    to the probe, and nothing in this module imports the dashboard to do it.
+    A model-turn question only, as a function of a value so it can be tested without
+    a live gateway; nothing in this module imports the dashboard to answer it. It is
+    NOT what the gateway injects as the probe's ``worker_running``: that binding asks
+    the broader ``session_activity.session_work_pending`` (proven current or queued
+    session-owned work). Callers that want only a turn, such as the Slack work
+    board's running word, call this.
 
     RUNNING, not merely open. A worker whose tab is still there but which stopped
     without reporting is exactly the case a stall wake exists to surface, so testing

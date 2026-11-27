@@ -193,6 +193,52 @@ def test_an_abandoned_cached_pass_leaves_no_refusal_state_behind(tmp_path):
     assert record.get("expected_launch"), "the stored refusal cannot be approved from the page"
 
 
+def test_a_changed_command_kept_wrapped_for_its_secret_stays_approvable(tmp_path):
+    """A ``secret://`` server stays wrapped while refused, so the target filter sees it too.
+
+    The filter drops the changed launch, but the rewrite already displayed it in full,
+    so the stored refusal still names it for approval. A target the rewrite never
+    captured keeps the refusal unapprovable.
+    """
+    from kiro_crew.mcp_gateway.rewriter_env import _expand_env_map
+
+    mod = _approval_module()
+    assert mod is not None
+    stem = mod.target_stem("srv")
+    env = {"API_KEY": "secret://srv-key"}
+    approved = mod.LaunchApprovals()
+    approved.approved[stem] = {mod.launch_fingerprint(_APPROVED_CMD, [], env)}
+    pair = mod.launch_pair(
+        rewriter.hash_command(_APPROVED_CMD, []), mod.env_fingerprint(_expand_env_map(env))
+    )
+    approved.approved_pairs[stem] = {pair}
+    approved.approved_displays[stem] = {
+        pair: (mod._bounded_display_argv((_APPROVED_CMD, [])), mod._bounded_display_env(env))
+    }
+    store = tmp_path / "approvals.json"
+    mod._write(store, mod._document(approved, {}))
+    _write_agent(tmp_path / "agents", {"srv": {"command": _ATTACK_CMD, "args": [], "env": env}})
+
+    def boot(extra_targets):
+        approvals = mod.load_approvals(store)
+        target_env = {**_rewrite(tmp_path, frozenset({"srv"}), approvals), **extra_targets}
+        kept, dropped = mod.filter_target_env(target_env, approvals)
+        assert _targets_running(kept, _ATTACK_CMD) == [] and dropped == [stem]
+        assert mod.save_pass(approvals, path=store)
+        return json.loads(store.read_text())["refused"][stem]
+
+    record = boot({})
+    assert record["reason"] == mod.REFUSED_CHANGED
+    assert record["commands"] == [[_ATTACK_CMD]]
+    assert record["approved_commands"] == [[_APPROVED_CMD]]
+    assert record.get("complete") is not False
+    assert record.get("expected_launch"), "a fully displayed changed launch offers no Approve"
+
+    record = boot({"KIROCREW_MCP_TARGET_SRV__other": _target_spec(_ATTACK_CMD, "-c", "id")})
+    assert record["complete"] is False
+    assert "expected_launch" not in record
+
+
 def test_the_gateway_filter_drops_an_unapproved_target():
     mod = _approval_module()
     filt = getattr(mod, "filter_target_env", None)
@@ -244,6 +290,43 @@ def test_gatewayd_fails_closed_without_a_store(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_MCP_TARGET_SRV", _target_spec(_APPROVED_CMD))
 
     assert gatewayd.env_target_resolver(_pool_key("srv")) is None
+
+
+@pytest.mark.asyncio
+async def test_an_unapproved_launch_is_reported_as_unapproved_not_as_a_missing_mapping(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.mcp_gateway import gatewayd
+    from kiro_crew.mcp_gateway.pool import BackendPool
+    from kiro_crew.mcp_gateway.stub_link import must_degrade_unknown_target
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        gatewayd, "spawn_backend", AsyncMock(side_effect=AssertionError("spawned unapproved"))
+    )
+
+    async def refusal() -> str:
+        with pytest.raises(gatewayd._TargetUnknown) as raised:
+            await gatewayd._acquire_backend(
+                BackendPool(max_backends=2), _pool_key("srv"), gatewayd.env_target_resolver
+            )
+        return str(raised.value)
+
+    unmapped = await refusal()
+    monkeypatch.setenv("KIROCREW_MCP_TARGET_SRV", _target_spec(_APPROVED_CMD))
+    unapproved = await refusal()
+
+    assert unmapped == (
+        "no target mapping for server 'srv'; "
+        "set KIROCREW_MCP_TARGET_<SERVER> env var or pass a target_resolver"
+    )
+    assert unapproved == (
+        "no target mapping for server 'srv': its launch is not an approved one; "
+        "review it in MCP Servers > Sharing"
+    )
+    assert must_degrade_unknown_target(unapproved)
 
 
 @pytest.mark.asyncio
@@ -1068,7 +1151,13 @@ def test_new_launch_is_refused_at_the_per_server_cap_and_expected_launch_survive
     refusal = document["refused"]["SRV"]
     assert refusal["reason"] == mod.REFUSED_TOO_MANY
     assert len(refusal["expected_launch"].split(",")) == cap
-    assert mod.refused_servers(store) == {}
+    # The dashboard shows it as over the cap, with nothing it could approve.
+    shown = mod.refused_servers(store)["srv"]
+    assert shown["reason"] == mod.REFUSED_TOO_MANY
+    assert shown["launch_cap"] == cap
+    assert len(shown["commands"]) == len(shown["envs"]) == cap
+    assert shown["complete"] is False
+    assert "expected_launch" not in shown
 
     record = document["servers"]["SRV"]
     record["fingerprints"] = [f"{index:0129d}" for index in range(cap * 2)]
@@ -1077,6 +1166,29 @@ def test_new_launch_is_refused_at_the_per_server_cap_and_expected_launch_survive
     loaded = mod.load_approvals(store)
     assert len(loaded.approved["SRV"]) == cap
     assert len(loaded.approved_pairs["SRV"]) == cap
+
+
+def test_a_launch_repeated_after_the_cap_keeps_the_cap_as_the_reason():
+    mod = _approval_module()
+    assert mod is not None
+    cap = mod._MAX_SERVER_LAUNCHES
+    env_hash = mod.env_fingerprint({})
+    approvals = mod.LaunchApprovals()
+
+    def admit(arg: str) -> bool:
+        return approvals.admit(
+            "srv",
+            mod.launch_fingerprint(_APPROVED_CMD, [arg], {}),
+            launch=(_APPROVED_CMD, [arg]),
+            env={},
+            derived_env_hash=env_hash,
+        )
+
+    assert not any(admit(str(index)) for index in range(cap + 1))
+    assert approvals.refused["SRV"] == mod.REFUSED_TOO_MANY
+    # A later agent declaring a launch the pass already retained, in file order.
+    assert not admit("0")
+    assert approvals.refused["SRV"] == mod.REFUSED_TOO_MANY
 
 
 def test_operator_approval_refuses_a_launch_set_over_the_per_server_cap(tmp_path):
@@ -1393,6 +1505,62 @@ async def test_the_stored_approved_display_is_redacted(tmp_path, toggle_home):
     assert refusal["approved_commands"] == [[_APPROVED_CMD]]
     assert secret not in json.dumps(refusal)
     assert any("<hidden sha256:" in line for line in refusal["approved_envs"][0])
+
+
+@pytest.mark.asyncio
+async def test_a_changed_launch_refusal_names_a_key_whose_redacted_value_changed(
+    tmp_path, toggle_home, monkeypatch
+):
+    from kiro_crew.dashboard import token_secret
+
+    mod = _approval_module()
+    assert mod is not None
+    monkeypatch.setattr(token_secret, "get_persisted_secret", lambda: b"k" * 32)
+    old = "--token=sk-proj-" + "a" * 44
+    new = "--token=sk-proj-" + "b" * 44
+
+    def declare(node_options: str) -> None:
+        env = {"NODE_OPTIONS": node_options, "MODE": "fast"}
+        server = {"command": _APPROVED_CMD, "args": [], "env": env}
+        spec = {"name": "a", "tools": ["*"], "mcpServers": {"srv": server}}
+        (toggle_home / "a.json").write_text(json.dumps(spec))
+
+    declare(old)
+    assert (await _toggle_on())[0] == 200
+    declare(new)
+    _target_env, refused = _next_boot_rewrite(tmp_path, toggle_home)
+    assert refused.refused == {"SRV": mod.REFUSED_CHANGED}
+    assert mod.save_pass(refused)
+    refusal = mod.refused_servers()["srv"]
+
+    # Both sides display the same redacted token, so only the gateway can tell.
+    assert refusal["envs"] == refusal["approved_envs"]
+    assert any("[REDACTED" in line for line in refusal["envs"][0])
+    assert refusal.get("changed_env_keys") == ["NODE_OPTIONS"]
+    stored = mod.approvals_path().read_text(encoding="utf-8")
+    assert old not in stored and new not in stored
+
+
+def test_env_digests_are_kept_only_for_the_keys_the_bounded_display_names(tmp_path, monkeypatch):
+    mod = _approval_module()
+    monkeypatch.setattr("kiro_crew.dashboard.token_secret.get_persisted_secret", lambda: b"k" * 32)
+    max_args = getattr(mod, "_MAX_DISPLAY_ARGS")
+    long_key = "K" * (getattr(mod, "_MAX_DISPLAY_TOTAL_CHARS") + 1)
+    env = {f"KEY_{index:04d}": "v" for index in range(max_args + 8)} | {long_key: "v"}
+    env_hash, fp = mod.env_fingerprint(env), mod.launch_fingerprint(_APPROVED_CMD, [], env)
+    launch = mod.ResolvedLaunch(fp, _APPROVED_CMD, (), frozenset({env_hash}), tuple(env.items()))
+    store = tmp_path / "approvals.json"
+    mod.approve({"srv": [launch]}, path=store)
+    approvals = mod.load_approvals(store)
+    assert approvals.admit(
+        "srv", fp, launch=(_APPROVED_CMD, []), env=env, derived_env_hash=env_hash
+    )
+    raw = json.loads(store.read_text(encoding="utf-8"))
+    (entry,) = raw["servers"]["SRV"]["displays"].values()
+    ((_check, live),) = approvals.launch_env_digests["SRV"].values()
+    shown = mod._displayed_keys([entry["env"]])
+    for kept in (entry["env_digests"]["values"], live):
+        assert set(kept) <= shown and long_key not in kept and len(kept) <= max_args
 
 
 def test_opaque_env_values_are_hidden_in_live_and_persisted_displays(tmp_path):

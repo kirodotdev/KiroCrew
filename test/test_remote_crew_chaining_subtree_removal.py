@@ -26,6 +26,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 from remote_crew_chaining_helpers import (
     VIA_ID,
     _enable,
@@ -38,6 +40,8 @@ from remote_crew_chaining_helpers import (
 
 from kiro_crew.instances.registry import InstancesRegistry
 from kiro_crew.testing.wait import await_until, finished, until_parked
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 
 class _FakeMgr:

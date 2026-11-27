@@ -3,8 +3,8 @@ title: Milestones for new-user feature discovery — one milestone table, quiet 
 status: partial
 author: zejiangg
 created: 2026-10-29
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: [26512, 26488]
 tracking-issues: [26327]

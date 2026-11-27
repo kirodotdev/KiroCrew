@@ -14,7 +14,11 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, Mapping, Optional, Tuple
 
-from kiro_crew.platform.governance_parts.matching import _UnmatchableCommand, _url_host
+from kiro_crew.platform.governance_parts.matching import (
+    _Marker,
+    _UnmatchableCommand,
+    _url_host,
+)
 from kiro_crew.platform.guest_paths import (
     GuestPath,
     guest_also_local,
@@ -216,8 +220,14 @@ _PATH_ARG_KEYS = TARGET_PATH_KEYS
 # byte and glob metacharacters, so no operator allow-list pattern
 # (``allow: ['~/project/**']``) or literal can ever match it, while a deny-mode
 # ceiling that governs the scope still binds on it.  The marker text names why it
-# exists so a denial audit is self-explanatory.
-_TRUNCATED_SCAN_ITEM = "\x00<governance:path-scan-truncated-unverifiable>"
+# exists so a denial audit is self-explanatory; its refusal tells the caller what
+# to do instead.
+_TRUNCATED_SCAN_ITEM = _Marker(
+    "\x00<governance:path-scan-truncated-unverifiable>",
+    "the call is too large, or carries a patch the policy cannot read, so the policy could "
+    "not check every path in it; split a large call into smaller calls, and send a patch "
+    "whole, from '*** Begin Patch' to '*** End Patch', in the standard apply_patch form",
+)
 
 #: Same never-permittable construction, for a file-EDIT whose diff content block
 #: names a path that is still RELATIVE after ``~``/env expansion.  Such a path
@@ -225,14 +235,24 @@ _TRUNCATED_SCAN_ITEM = "\x00<governance:path-scan-truncated-unverifiable>"
 #: allow-mode confinement can be verified against it.  Emitting the marker means
 #: an operator ceiling that governs ``filesystem.write`` DENIES the unverifiable
 #: edit, while an ungoverned scope still permits (standalone default preserved).
-_UNANCHORED_TARGET_ITEM = "\x00<governance:edit-target-unanchored-unverifiable>"
+_UNANCHORED_TARGET_ITEM = _Marker(
+    "\x00<governance:edit-target-unanchored-unverifiable>",
+    "the call names the file it changes by a path that is not a plain absolute path, so "
+    "the policy could not check which file that is; use a full absolute path, without '~' "
+    "or '$'",
+)
 
 #: Same never-permittable construction, for a remote-workspace target whose
 #: spelling another reader could resolve to a different file (a ``$``, a ``~``
 #: segment, a backslash) or that cannot be anchored in the guest. It is emitted
 #: BESIDE the literal guest path, not instead of it: a deny is still checked against
 #: the path the guest opens, and an allow-mode confinement additionally refuses.
-_GUEST_UNVERIFIABLE_ITEM = "\x00<governance:guest-target-unverifiable>"
+_GUEST_UNVERIFIABLE_ITEM = _Marker(
+    "\x00<governance:guest-target-unverifiable>",
+    "a remote workspace path could not be pinned to one file, so the policy could not "
+    "check it; use a plain absolute path in the workspace, without '$', '~' or a "
+    "backslash",
+)
 
 
 #: Same never-permittable construction, for a scope a proven host built-in is
@@ -242,7 +262,20 @@ _GUEST_UNVERIFIABLE_ITEM = "\x00<governance:guest-target-unverifiable>"
 #: Absolute on purpose: the path matcher anchors a relative item at the gateway's
 #: working directory, which would put a relative marker inside a workspace
 #: allow-prefix whenever the gateway runs there.
-_NO_TARGET_ITEM = "/\x00<governance:own-scope-target-absent-unverifiable>"
+_NO_TARGET_ITEM = _Marker(
+    "/\x00<governance:own-scope-target-absent-unverifiable>",
+    "the policy could not tell which file, folder or web address the call reaches, so it "
+    "could not check it; name the path or address in the call where the tool takes one, or "
+    "use a tool whose target the policy can check",
+)
+
+#: :data:`_NO_TARGET_ITEM` asked in ``filesystem.write``, the same item: a write
+#: that does not arrive as an edit may name its path, so the advice differs.
+_NO_WRITE_TARGET_ITEM = _Marker(
+    str(_NO_TARGET_ITEM),
+    "the policy could not tell which file the call writes, so it could not check it; "
+    "make the change as a file edit that names the file's full path",
+)
 
 #: Same never-permittable construction, for a shell call's recovered command that
 #: :func:`~kiro_crew.platform.allowed_commands.chain_commands` cannot split into
@@ -251,7 +284,15 @@ _NO_TARGET_ITEM = "/\x00<governance:own-scope-target-absent-unverifiable>"
 #: ``commands`` set refuses a command it cannot check part by part, while a
 #: deny-mode or ungoverned scope permits it.
 _UNSPLITTABLE_COMMAND_ITEM = _UnmatchableCommand(
-    "\x00<governance:shell-command-unsplittable-unverifiable>"
+    "\x00<governance:shell-command-unsplittable-unverifiable>",
+    "the command could not be split into plain commands to check each one against the "
+    "allow list: it is split at every &&, ||, ; and |, even inside quotes, into at most 16 "
+    "commands, none empty; a chain may not hold a quote, a backslash, a non-ASCII "
+    "character or --%; a command may not hold &, <, >, $ or a backtick, even quoted, a "
+    "parenthesis or brace outside closed quotes or together with a backslash, a non-ASCII "
+    "character or an unclosed quote, or a character that does not print or is whitespace "
+    "other than a space; and the whole is at most 4096 characters; rewrite it within these "
+    "limits, or run a chain's commands one at a time",
 )
 
 
@@ -357,7 +398,8 @@ def classify_tool_args(
     ceiling that governs that filesystem scope DENIES the unverifiable call
     (closing the fail-open), while an ungoverned scope still permits it (the
     standalone default is preserved, and no unrelated scope is touched).  The
-    truncation is auditable via the synthetic item text in the denial reason.
+    truncation is auditable: the denial names the synthetic item as its subject
+    (``Decision.item``), and its reason says why the call could not be checked.
     Rejected alternatives: (a) permit as before = keep the fail-open; (b) deny the
     whole call unconditionally = over-blocks ungoverned hosts and every unrelated
     scope.

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY
 from kiro_crew.tracing import steps as trace_steps
 
 if TYPE_CHECKING:
@@ -103,10 +104,15 @@ DURABLE_SOURCE_CHANNELS_KEY = "source_channels"
 UNREADABLE_SOURCE_CHANNEL = "<unreadable>"
 
 
+def _named_channels(channels: tuple[str, ...]) -> tuple[str, ...]:
+    """The channel ids in *channels* that name a channel."""
+    return tuple(ch for ch in channels if isinstance(ch, str) and ch)
+
+
 def stamp_source_channels(owner: Any, queue_id: str, channels: tuple[str, ...]) -> None:
     """Record *channels* on the queued entry *queue_id*. Called right after the
     append that returned the id, with nothing suspending between the two."""
-    clean = tuple(ch for ch in channels if isinstance(ch, str) and ch)
+    clean = _named_channels(channels)
     if not clean:
         return
     for item in getattr(owner, "_queue", None) or ():
@@ -277,6 +283,11 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     continue
                 if not isinstance(value, dict):
                     continue
+                # Each paste block repeats a span of ``content``, so keeping
+                # them would store the paste twice and could push a long send
+                # past the budget. A restored send's row shows the full text
+                # instead of chips; no words are lost.
+                value.pop(PASTES_META_KEY, None)
             entry[key] = value
         entry_id = entry.get("id")
         if not isinstance(entry_id, str) or not entry_id:
@@ -730,6 +741,15 @@ def _delivery_key(content: str) -> str:
 ATTACHMENT_META_KEYS: tuple[str, ...] = ("files", "dirs")
 _ATTACHMENT_MARKERS: dict[str, str] = {"files": "attached_file", "dirs": "attached_dir"}
 
+#: Queue-entry meta key: an earlier attempt of this queued prompt already ran its
+#: ``UserPromptSubmit`` fire, so the next attempt's prompt hooks are told it is a
+#: replay (``"replay": true``). ``_queue_recovery`` writes it, and Resume's
+#: re-send (``turn_failures._unsent_resend``) carries it; the drain unions it
+#: into the row's meta, where the next attempt reads it, and an edit
+#: that changes the words drops it. Defined here for the same reason as the
+#: lists above.
+PROMPT_HOOKS_RAN_META = "promptHooksRan"
+
 
 def _marker_spans(content: str, marker: str, index: int, path: str) -> list[tuple[int, int]]:
     """Every span of the exact ``[<marker> <index>] <path>`` token in *content*.
@@ -886,8 +906,13 @@ class SlotQueueRepository:
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
         directive_owner_origin: bool = False,
+        source_channels: tuple[str, ...] = (),
     ) -> str:
-        """Append an entry and return its process-local queue ID."""
+        """Append an entry and return its process-local queue ID.
+
+        *source_channels* are on the entry before it joins the queue, so no write
+        of the queue can carry the entry without them.
+        """
         queue_id = self._id_provider()
         item: dict[str, Any] = {
             "id": queue_id,
@@ -904,6 +929,8 @@ class SlotQueueRepository:
             item["_directive_channel_origin"] = True
         if directive_owner_origin:
             item["_directive_owner_origin"] = True
+        if _named_channels(source_channels):
+            item[SOURCE_CHANNELS_KEY] = _named_channels(source_channels)
         owner._queue.append(item)
         owner._note_enqueue()
         # Its queue wait starts now, timed beside the entry for the reason note_enqueue gives.
@@ -929,8 +956,13 @@ class SlotQueueRepository:
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
         directive_owner_origin: bool = False,
+        source_channels: tuple[str, ...] = (),
     ) -> str:
-        """Insert one entry while preserving retry callbacks and provenance."""
+        """Insert one entry while preserving retry callbacks and provenance.
+
+        *source_channels* are on the entry before it joins the queue, as for
+        :meth:`queue_append`.
+        """
         queue_id = self._id_provider()
         item: dict[str, Any] = {
             "id": queue_id,
@@ -952,6 +984,8 @@ class SlotQueueRepository:
             item["_directive_channel_origin"] = True
         if directive_owner_origin:
             item["_directive_owner_origin"] = True
+        if _named_channels(source_channels):
+            item[SOURCE_CHANNELS_KEY] = _named_channels(source_channels)
         owner._queue.insert(index, item)
         owner._note_enqueue()
         return queue_id
@@ -1031,20 +1065,26 @@ class SlotQueueRepository:
             # the linked-thread mirror suppressed, so a human on the mirrored
             # channel never sees what the user typed. Refused, not re-kinded:
             # the entry is not a user prompt to begin with. Scoped to the app
-            # kind and the gateway's own prompts (a workflow follow-up, a
-            # heartbeat prompt): other system kinds (queued cron text among
-            # them) were editable before this endpoint existed, and taking that
-            # away is not this feature's call. The frontend withholds the same
-            # set: the app card's pencil (`isAppMessageQueued`), a gateway
-            # prompt's whole card (`isNonInteractiveQueued`).
+            # kind, a resource wake and the gateway's own prompts (a workflow
+            # follow-up, a heartbeat prompt): other system kinds (queued cron
+            # text among them) were editable before this endpoint existed, and
+            # taking that away is not this feature's call. The frontend withholds
+            # the same set: the server-written cards' pencil
+            # (`isServerWrittenQueued`), a gateway prompt's whole card
+            # (`isNonInteractiveQueued`).
+            from kiro_crew.dashboard.chat_delivery import EXPANSIONS_OFF_META_KEY
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
             from kiro_crew.dashboard.chat_utils_injected_rows import (
                 AUTOMATION_STEER_META,
                 GATEWAY_PROMPT_INJECT_KINDS,
+                RESOURCE_WAKE_KIND,
             )
 
             kind = item.get("kind")
-            if kind == MCP_APP_MESSAGE_KIND or kind in GATEWAY_PROMPT_INJECT_KINDS:
+            if (
+                kind in (MCP_APP_MESSAGE_KIND, RESOURCE_WAKE_KIND)
+                or kind in GATEWAY_PROMPT_INJECT_KINDS
+            ):
                 return False
             # The lists index the OLD text's markers; drop only what this edit
             # removed (named before, unnamed now) and renumber the survivors
@@ -1082,6 +1122,10 @@ class SlotQueueRepository:
                 item["meta"].pop("slack_sender", None)
                 # Nor are the editor's words in the linked thread, so they echo.
                 item["meta"].pop(PROMPT_ON_CHANNEL_META_KEY, None)
+                # Nor did any prompt hook see them: the edited entry is a new prompt.
+                item["meta"].pop(PROMPT_HOOKS_RAN_META, None)
+                # They are typed, too, so their mentions expand.
+                item["meta"].pop(EXPANSIONS_OFF_META_KEY, None)
             item["edit_rev"] = int(item.get("edit_rev") or 0) + 1
             if directive_user_origin:
                 item["_directive_user_origin"] = True

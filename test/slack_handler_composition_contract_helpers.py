@@ -356,7 +356,11 @@ class _Config:
 
     def __init__(self) -> None:
         self.slack = SimpleNamespace(
-            reactions_enabled=True, show_thinking=True, sessions_limit=10, reactions={}
+            reactions_enabled=True,
+            show_thinking=True,
+            show_timing_footer=True,
+            sessions_limit=10,
+            reactions={},
         )
         self.agent = SimpleNamespace(default_agent="")
         self.raw: dict = {}

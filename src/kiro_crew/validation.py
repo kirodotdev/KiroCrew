@@ -232,6 +232,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.validation_parts.core_agent_schemas import (  # noqa: F401
         _BACKEND_NAME_RE,
+        _MONITOR_ALSO_WAKE_ON_FIELD,
         _MONITOR_WATCH_FIELD,
         _WATCH_WORK_LEDGER,
         AUTONUDGE_STOP_SCHEMA,
@@ -271,6 +272,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ABSOLUTE_PATH_RE,
         _GIT_RESERVED_REFS,
         _WF_RUN_ID_RE,
+        APP_STORE_SEARCH_SCHEMA,
         CHAT_RENAME_SCHEMA,
         CHAT_TAG_SCHEMA,
         DELETE_MESSAGE_SCHEMA,
@@ -545,6 +547,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         JSONRPC_PARSE_ERROR,
         JsonRpcEnvelopeError,
         McpTextContent,
+        TextWithImage,
         build_tool_response,
         validate_api_body,
         validate_jsonrpc_request,

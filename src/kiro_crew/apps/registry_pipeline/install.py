@@ -97,6 +97,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env, minimal_env
 from kiro_crew.platform import redact_log_via_context as _redact_log_via_context
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     cgroup_scope_argv,
     create_subprocess_limited,
     sandboxed_spawn_argv,
@@ -251,6 +252,28 @@ def _adoption_pending(name: str) -> str | None:
     return pending_install_refusal(pin)
 
 
+async def _clear_earlier_memory_consent(name: str) -> str:
+    """Remove memory consent an earlier app under *name* left, off the loop; the refusal.
+
+    Only for a new registration (no install record yet): an update keeps its consent.
+    A worker may wait for the consent lock, where the loop could only try it once;
+    ``register_external_app`` then finds nothing left to clear.
+    """
+
+    def clear() -> None:
+        from kiro_crew.apps.manager import _read_installed
+        from kiro_crew.memory_provider.consent import revoke_app
+
+        if _read_installed(name) is None:
+            revoke_app(name)
+
+    try:
+        await asyncio.to_thread(clear)
+    except (OSError, ValueError) as exc:
+        return f"could not clear earlier memory consent for {name!r}: {exc}"
+    return ""
+
+
 async def install_from_registry(
     name: str,
     log_lines: list[str] | None = None,
@@ -293,8 +316,8 @@ async def install_from_registry(
             once every gate, the build and ``onInstall`` have passed. An update takes
             the app down here; a self-managed app replaces no installed file.
         via: How the install was asked for, the ``via`` of
-            ``kirocrew.app.installed``: ``store`` (the store routes, the default) or
-            ``default`` (the default-apps pass).
+            ``kirocrew.app.installed`` and ``kirocrew.app.updated``: ``store`` (the
+            store routes, the default) or ``default`` (the default-apps pass).
 
     Steps:
     1. Validate the app exists in the trusted registry JSON
@@ -734,6 +757,9 @@ async def install_from_registry(
                 base_cmd,
                 mode="strict",
                 env=_detect_probe_env(),
+                # ``strict`` leaves run/ and .local_secret readable, and this shell string
+                # comes from a registry manifest.
+                extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
                 _prepare=sandboxed_spawn_argv,
             )
             proc = await create_subprocess_limited(
@@ -1037,7 +1063,10 @@ async def install_from_registry(
 
             base_cmd = ["/bin/bash", "-c", safe_script]
             sandboxed_cmd, _cleanup = await wrap_argv_async(
-                base_cmd, mode="standard", _prepare=wrap_argv
+                base_cmd,
+                mode="standard",
+                _prepare=wrap_argv,
+                extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
@@ -1422,7 +1451,11 @@ async def install_from_registry(
             # ``manifest_data`` is the identity-checked read from above — reusing
             # it avoids a second read that could see different bytes.
             from kiro_crew.apps.admission import app_version_refusal
-            from kiro_crew.apps.manager import refresh_app_config_keys, register_external_app
+            from kiro_crew.apps.manager import (
+                _app_activation_denied,
+                refresh_app_config_keys,
+                register_external_app,
+            )
 
             display = manifest_data.get("displayName", name)
             version = manifest_data.get("version", "0.0.0")
@@ -1443,6 +1476,15 @@ async def install_from_registry(
                 await _roll_back_refused()
                 outcome = {"ok": False, "name": name, "message": "", "error": version_refusal}
                 return outcome
+            consent_refusal = await _clear_earlier_memory_consent(name)
+            if consent_refusal:
+                log_lines.append(_refusal_line(verb, consent_refusal))
+                await _roll_back_refused()
+                outcome = {"ok": False, "name": name, "message": "", "error": consent_refusal}
+                return outcome
+            # The apps activation check reads the same store, so it is asked off the
+            # loop too and its verdict passed in.
+            activation_permitted = await asyncio.to_thread(_app_activation_denied, name) is None
             reg_result = register_external_app(
                 name=name,
                 version=version,
@@ -1453,6 +1495,7 @@ async def install_from_registry(
                 source_repository=persisted_git_url,
                 start_disabled=start_disabled,
                 version_checked=True,
+                activation_permitted=activation_permitted,
             )
             if not reg_result.ok:
                 # A refused registration leaves the prior record as it was, so the
@@ -1503,10 +1546,9 @@ async def install_from_registry(
                         install_receipt.KIND_UPDATE if was_installed else install_receipt.KIND_FRESH
                     ),
                 )
-            if not was_installed:
-                from kiro_crew.apps.store_origin import count_first_install
+            from kiro_crew.apps.store_origin import count_install
 
-                await count_first_install(name, via)
+            await count_install(name, via, was_installed=was_installed)
             outcome = {
                 "ok": True,
                 "name": name,
@@ -1583,10 +1625,9 @@ async def install_from_registry(
                         install_receipt.KIND_UPDATE if was_installed else install_receipt.KIND_FRESH
                     ),
                 )
-            if not was_installed:
-                from kiro_crew.apps.store_origin import count_first_install
+            from kiro_crew.apps.store_origin import count_install
 
-                await count_first_install(result.name, via)
+            await count_install(result.name, via, was_installed=was_installed)
         # Install/update failed AFTER a successful clone+build: the checkout was
         # rolled back above, durable_success stays False, and the `finally`'s
         # reporter filters the restored stale out — no per-exit report is needed.
@@ -1597,6 +1638,8 @@ async def install_from_registry(
             "message": result.message,
             "error": result.error,
         }
+        if not result.ok and result.error_code:
+            outcome["code"] = result.error_code
         if result.notice:
             # e.g. ``session_approval_reconsent``: the app was left disabled on
             # purpose and the routes must neither start it nor report plain success.

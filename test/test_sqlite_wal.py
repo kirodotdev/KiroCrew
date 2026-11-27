@@ -231,3 +231,27 @@ def test_truncate_wal_before_close_never_raises(
         sqlite_wal.truncate_wal_before_close(conn)  # a closed connection is logged, not raised
     logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.sqlite_wal"]
     assert logged == ["WAL checkpoint before close did not run"]
+
+
+def test_wal_truncated_empties_the_wal_and_says_so(tmp_path: Path) -> None:
+    db, conn = _wal_db(tmp_path)
+    assert sqlite_wal.wal_truncated(conn) is True
+    assert Path(f"{db}-wal").stat().st_size == 0
+    conn.close()
+
+
+def test_a_busy_checkpoint_is_not_reported_as_truncated() -> None:
+    calls: list[str] = []
+    pauses: list[float] = []
+
+    class _BusyConn:
+        def execute(self, sql: str) -> "_BusyConn":
+            calls.append(sql)
+            return self
+
+        def fetchone(self) -> tuple[int, int, int]:
+            return (1, 5, 3)
+
+    assert sqlite_wal.wal_truncated(_BusyConn(), sleep=pauses.append) is False
+    assert len(calls) == sqlite_wal.WAL_TRUNCATE_ATTEMPTS
+    assert len(pauses) == sqlite_wal.WAL_TRUNCATE_ATTEMPTS - 1

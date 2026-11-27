@@ -114,6 +114,78 @@ class CodeChannelDefaultsConfig:
     )
 
 
+def is_slack_user_id(value: object) -> bool:
+    """A Slack member id: ``U`` or ``W`` then 1 to 19 upper-case letters or digits.
+
+    Validated by ``USER_ID_RE``, the pattern the messaging schemas use. A bot id
+    (``B...``) and a workspace id (``T...``) never match.
+    """
+    # Here, not at the top: a module-level name would be a facade owner name the
+    # config.sections facade must bind, and not the kiro_crew.validation facade
+    # either, which imports config.sections, which imports this module.
+    from kiro_crew.validation_parts.input_bounds import USER_ID_RE
+
+    return isinstance(value, str) and USER_ID_RE.fullmatch(value) is not None
+
+
+def shared_user_ids(raw: object) -> list[str]:
+    """``slack.shared_access.user_ids`` as stored ids: trimmed, well-formed, deduped.
+
+    A non-list reads as empty and a malformed entry is dropped, so a hand edit can
+    never admit an id the gateway would not have accepted.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        value = item.strip() if isinstance(item, str) else ""
+        if is_slack_user_id(value) and value not in out:
+            out.append(value)
+    return out
+
+
+@dataclass
+class SlackSharedAccessConfig:
+    """The owner's opt-in to let named Slack users drive this Crew as the owner.
+
+    Read on every Slack event, so a removal or a switch-off applies to the next one.
+    Separate from ``allowed_users``, which stays inert: turning this on never admits
+    a stale allowlist entry.
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Share Slack Access",
+            "Let the Slack users listed in user_ids use this Crew's Slack bot. They act "
+            "as you: with your files, git and cloud credentials and connected tools. "
+            "Off by default; applies to the next Slack event.",
+            tags=["slack"],
+        ),
+    )
+    user_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Shared Slack Users",
+            "Slack member IDs (U... or W...) allowed to use the bot while shared access "
+            "is on. The owner's own ID is never shared. By default a listed ID is used "
+            "as written: Slack is not asked whether it is a bot, deactivated or in "
+            "another workspace (see verify_with_slack).",
+            tags=["slack"],
+        ),
+    )
+    verify_with_slack: bool = field(
+        default=False,
+        metadata=_meta(
+            "Verify Shared Users With Slack",
+            "Check each listed ID with Slack before it is used: same workspace as the "
+            "bot, a person, not deactivated. Needs the users:read bot scope. Off by "
+            "default: you keep the list right yourself.",
+            tags=["slack"],
+        ),
+    )
+
+
 @dataclass
 class SlackConfig:
     allowed_users: list[dict] = field(
@@ -142,12 +214,22 @@ class SlackConfig:
         default="kirocrew",
         metadata=_meta(
             "Command",
-            "Slack slash command trigger word.",
-            # Boot-read: the trigger is registered in the Slack app MANIFEST, so
-            # a local reload cannot make Slack route a new word. Applying it
-            # in-process would only change the help text and report success for a
-            # command that still does not exist on Slack's side.
-            restart=True,
+            "Slash command name shown in Slack help. The gateway also answers "
+            "/kirocrew and any /kirocrew-<alias> the app registers.",
+            # Live: Slack routes only commands the app MANIFEST registers, and the
+            # gateway answers every manifest-shaped name (``/kirocrew`` and
+            # ``/kirocrew-<alias>``) whatever this says. This adds a custom name
+            # and is the name help text shows; the Slack applier refreshes it.
+        ),
+    )
+    setup_guide_url: str = field(
+        default="",
+        metadata=_meta(
+            "Setup Guide URL",
+            "Your organization's own Slack setup guide (for example, how to get a "
+            "workspace you may install apps in). The Slack setup wizard links it on "
+            "its first step. https:// only; any other value is ignored. Empty = no link.",
+            tags=["slack"],
         ),
     )
     forward_to_agent_callback: str = field(
@@ -218,6 +300,15 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    show_timing_footer: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Timing Footer",
+            'Post the "Finished in … · ctx …%" line after each reply. Turn it off for a '
+            "cleaner chat; choice buttons and the Link to Dashboard button still post.",
+            tags=["slack"],
+        ),
+    )
     dm_single_session: bool = field(
         default=False,
         metadata=_meta(
@@ -280,7 +371,9 @@ class SlackConfig:
         metadata=_meta(
             "Session Folder",
             "Optional sidebar folder for sessions that start on this channel. "
-            "Empty (the default) leaves them unfiled; any other value is the "
+            "Empty (the default) files them in a 'Slack' folder, created on "
+            "first use, while Show Slack Conversations In The Session List is "
+            "on, and leaves them unfiled while it is off; any other value is the "
             "folder name, created when these settings are saved and marked with "
             "the channel's brand mark. A configured folder that no longer exists "
             "leaves conversations unfiled until the next save recreates it.",
@@ -288,19 +381,20 @@ class SlackConfig:
         ),
     )
     show_in_session_list: bool = field(
-        default=True,
+        default=False,
         metadata=_meta(
             "Show Slack Conversations In The Session List",
             "List conversations that start in Slack (threads, DMs, channel "
-            "mentions) in the dashboard's session list. Off removes them from "
-            "the list only: they keep working in Slack, stay in History and "
-            "search, still raise approvals and notifications, and come back "
-            "when this is turned on again; nothing is closed or deleted. The "
-            "conversation open in the dashboard, and one waiting on an approval "
-            "or an answer, keep their rows. Sessions started "
-            "in the dashboard and linked to Slack, and Slack code channel "
-            "sessions with their helper agents, are always listed. On by "
-            "default; no restart.",
+            "mentions) in the dashboard's session list. Off (the default) "
+            "keeps them out of the list only: they keep working in Slack, stay "
+            "in History and search, and still raise approvals and "
+            "notifications; nothing is closed or deleted. The conversation "
+            "open in the dashboard, and one waiting on an approval or an "
+            "answer, keep their rows. On, and with no Session Folder set, new "
+            "ones are filed in a 'Slack' folder, created on first use. "
+            "Sessions started in the dashboard and linked to Slack, and Slack "
+            "code channel sessions with their helper agents, are always listed "
+            "and stay in their own folders. No restart.",
             tags=["slack"],
         ),
     )
@@ -353,6 +447,37 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    thread_conductor: bool = field(
+        default=False,
+        metadata=_meta(
+            "Conductor Threads",
+            "Let the owner turn one Slack thread into a Conductor thread: the "
+            "thread's own session may hand work to worker sessions, as a code "
+            "channel's does, without the code-channel scopes. Only turns the owner "
+            "drove, only workers it created itself, one level deep, filed beside it, "
+            "never above its approval mode. By default only the owner's DM with the "
+            "app and private channels; see thread_conductor_public_channels. Off by "
+            "default. Turning it on also shows the thread's worker approval cards, "
+            "its Stop button (`!stop`) and its restart resume in Slack, all owner-only. "
+            "A missing, unreadable or malformed value reads as off. Takes effect on "
+            "the next call; no restart.",
+            tags=["slack"],
+        ),
+    )
+    thread_conductor_public_channels: bool = field(
+        default=False,
+        metadata=_meta(
+            "Conductor Threads In Public Channels",
+            "Also admit Conductor threads in public channels. Every member of such a "
+            "channel can read what the thread shows: the workers' titles, states, "
+            "PRs and CI, and their approval cards. Off by default, which keeps "
+            "Conductor threads to the owner's DM with the app and private channels "
+            "(a channel made public later stops dispatching). Has no effect while "
+            "slack.thread_conductor is off. A missing or malformed value reads as "
+            "off; no restart.",
+            tags=["slack"],
+        ),
+    )
     code_channels: bool = field(
         default=False,
         metadata=_meta(
@@ -368,6 +493,27 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    slack_mcp: bool = field(
+        default=False,
+        metadata=_meta(
+            "Slack Tools For Your Agents",
+            "Let the same Slack app serve Slack's MCP server, so each person can "
+            "connect their agents to Slack as themselves. Adds "
+            "settings.is_mcp_enabled, oauth_config.pkce_enabled and the redirect URL "
+            "http://localhost:48106/callback to the generated app manifest, and "
+            "replaces its user scopes with the read-only ones Slack's MCP server "
+            "needs (search, history, channel and user lists, files, canvases, "
+            "lists); off, the manifest is unchanged. "
+            "PKCE cannot be turned off again in Slack without Slack support, the "
+            "app must stay internal (not publicly distributed), each person still "
+            "connects on the Slack card under Settings > Connections with the "
+            "app's Client ID and Client Secret, and Slack ends those "
+            "sign-ins after 30 days. The settings page shows this switch only "
+            "while Connections offers the Slack card, or while it is on. The "
+            "gateway runs nothing for it. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
     code_channel_defaults: CodeChannelDefaultsConfig = field(
         default_factory=CodeChannelDefaultsConfig,
         metadata=_meta(
@@ -375,6 +521,14 @@ class SlackConfig:
             "Folder, agent, model, reasoning effort and approval mode a new "
             "code-channel session starts with. Takes effect on the next new code "
             "channel; no restart.",
+            tags=["slack"],
+        ),
+    )
+    shared_access: SlackSharedAccessConfig = field(
+        default_factory=SlackSharedAccessConfig,
+        metadata=_meta(
+            "Shared Access",
+            "Let other Slack users drive this Crew as you. Off by default.",
             tags=["slack"],
         ),
     )
@@ -406,11 +560,30 @@ class ChannelConfig:
         default="",
         metadata=_meta("Agent", "Agent override for this channel (empty = default)."),
     )
+    bot: str = field(
+        default="",
+        metadata=_meta(
+            "Channel Bot",
+            "Crew Bot (a config.agents key) whose own chat answers every thread in this "
+            "channel (empty = none). Set with !channel bot <name>.",
+        ),
+    )
     thread_follow: bool = field(
         default=True,
         metadata=_meta(
             "Thread Follow",
             "Respond to all messages in threads where bot was previously @mentioned.",
+        ),
+    )
+    shared_agent: str = field(
+        default="",
+        metadata=_meta(
+            "Agent Set By A Shared User",
+            "Written by Crew, not by hand: the Crew Bot a shared user put this channel "
+            "on with !channel agent. While it equals agent, a shared user may replace "
+            "or clear that agent; otherwise only the owner may. Empty when the owner "
+            "chose the agent. To make a shared user's agent yours, send !channel agent "
+            "<name> or empty this key.",
         ),
     )
 
@@ -422,11 +595,41 @@ class ChannelConfig:
             # Narrows to mention whatever the default is: a typo must not widen who
             # the channel answers.
             activation = ACTIVATION_MENTION
+        agent = section.get("agent")
+        shared_agent = section.get("shared_agent")
         return cls(
             activation=activation,
-            agent=section.get("agent"),
+            agent=agent,
+            bot=section.get("bot"),
             thread_follow=section.get("thread_follow"),
+            # A mark that names another agent is stale (the agent was changed by
+            # another writer since): the agent is the owner's, so the mark is dropped.
+            shared_agent=shared_agent if shared_agent and shared_agent == agent else "",
         )
+
+
+def drop_stale_shared_agents(data: dict) -> bool:
+    """Remove each ``slack.channels.<id>.shared_agent`` that names another agent.
+
+    The mark counts only beside the agent a shared user set. A raw edit that changes
+    ``agent`` leaves the mark behind, and the owner naming that Bot again later would
+    make it count again. Dropping it in the write that changes ``agent`` keeps the
+    owner's agent the owner's. Changes *data* in place; returns whether a mark was removed.
+    """
+    slack = data.get("slack")
+    channels = slack.get("channels") if isinstance(slack, dict) else None
+    if not isinstance(channels, dict):
+        return False
+    changed = False
+    for entry in channels.values():
+        if (
+            isinstance(entry, dict)
+            and "shared_agent" in entry
+            and entry["shared_agent"] != entry.get("agent")
+        ):
+            del entry["shared_agent"]
+            changed = True
+    return changed
 
 
 _VALID_CHANNEL_PREFIXES = ("C", "D", "G")

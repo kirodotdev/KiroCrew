@@ -369,20 +369,19 @@ class _PendingLoss:
 class WriterStats:
     """What the writer holds and has lost, read in one short lock hold.
 
-    ``dropped`` counts appends given up on after a storage refusal or a spent attempt
-    budget -- the only way an append is abandoned. ``overflowed`` counts appends the
-    buffer rejected at a hard memory ceiling, a DIFFERENT cause (one unit's share:
-    :meth:`CrewLogWriter.overflowed_for`). Reading the two apart is how an operator
-    tells a stuck disk from a saturated one.
+    ``dropped`` counts appends given up on after a storage refusal or a spent attempt budget -- the
+    only way an append is abandoned. ``overflowed`` counts appends the buffer rejected at a hard
+    memory ceiling, a DIFFERENT cause (one unit's share: :meth:`CrewLogWriter.overflowed_for`).
+    Reading the two apart is how an operator tells a stuck disk from a saturated one.
 
-    Every field is a counter the writer keeps, so the read is O(1): producers read these
-    around each record, on the event loop, while the writer may be holding a large
-    backlog. How many units are owed a ``write/dropped`` marker is NOT here -- answering
-    it scans every buffered job, so it is its own read
-    (:meth:`CrewLogWriter.loss_markers_owed`) and part of :class:`DrainReport`.
+    Every field is a counter the writer keeps (``claimed`` sums one per batch in flight), so the
+    read is O(1): producers read these around each record, on the event loop, while the writer may
+    be holding a large backlog. Not here: how many units are owed a ``write/dropped`` marker, which
+    scans every buffered job (:meth:`CrewLogWriter.loss_markers_owed`, :class:`DrainReport`).
     """
 
     buffered: int
+    claimed: int
     peak_buffered: int
     dropped: int
     overflowed: int
@@ -393,15 +392,15 @@ class WriterStats:
 class DrainReport:
     """What :meth:`CrewLogWriter.drain_for_shutdown` achieved.
 
-    ``drained`` is True only when the buffers reached empty AND no batch is still in
-    flight. Both, because a claimed batch is not in the buffer any more: the writer takes
-    a batch out before it writes it, so an empty buffer on its own says nothing about
-    whether those entries reached the file. The other three fields are read after the
-    drain finished, for the report a caller exits on.
+    ``drained`` is True only when the buffers reached empty AND no batch is in flight: the
+    writer takes a batch out of the buffer before writing it. ``claimed`` counts what that
+    batch holds and has not attempted, which a hard exit loses (to within the one write under way);
+    a failed batch handed back shows in both for an instant. The rest is read after the drain.
     """
 
     drained: bool
     buffered: int
+    claimed: int
     loss_markers_owed: int
     batch_in_flight: bool
 
@@ -550,12 +549,10 @@ class CrewLogWriter:
         #: gate exists to prevent.
         self._inline: "set[str]" = set()
         #: How many CLAIMED entries each unit still owes: the ones the writer took out of
-        #: ``_pending`` and has not attempted yet. A claimed batch is absent from
-        #: ``_pending``, so a caller asking whether this writer still owes a unit
-        #: anything cannot learn it there. The entry being attempted right NOW is not
-        #: counted, because the only caller that asks is a job of this batch asking about
-        #: its own unit, and a job that counted itself would answer that it must wait for
-        #: itself. Every exit from :meth:`_write_batch` releases what it did not attempt.
+        #: ``_pending`` and has not attempted yet, which :meth:`owes` and the shutdown report
+        #: cannot learn from ``_pending``. The entry being attempted NOW is not counted: its job
+        #: asks :meth:`owes` about its own unit and must not wait for itself; a group commit is,
+        #: while it runs. Every exit from :meth:`_write_batch` releases what it did not attempt.
         self._claimed: "dict[str, int]" = {}
         self._dropped_count = 0
         #: Units whose loss has already been reported, so a wedged disk is named once
@@ -802,10 +799,11 @@ class CrewLogWriter:
         report = self._drain_report(drained)
         if not drained:
             self._log.warning(
-                "session log did not finish writing within %.1fs of shutdown; "
-                "%d append(s) buffered, %d loss marker(s) owed, batch in flight=%s",
+                "session log did not finish writing within %.1fs of shutdown; %d append(s) "
+                "buffered, %d entry(ies) claimed, %d loss marker(s) owed, batch in flight=%s",
                 budget,
                 report.buffered,
+                report.claimed,
                 report.loss_markers_owed,
                 report.batch_in_flight,
             )
@@ -816,6 +814,7 @@ class CrewLogWriter:
         with self._lock:
             return WriterStats(
                 buffered=self._pending_count,
+                claimed=sum(self._claimed.values()),
                 peak_buffered=self._pending_high_water,
                 dropped=self._dropped_count,
                 overflowed=self._overflow_count,
@@ -1408,6 +1407,7 @@ class CrewLogWriter:
             return DrainReport(
                 drained=drained,
                 buffered=self._pending_count,
+                claimed=sum(self._claimed.values()),
                 loss_markers_owed=self._owed_loss_markers_locked(),
                 batch_in_flight=self._busy_locked(),
             )

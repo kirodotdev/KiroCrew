@@ -79,7 +79,8 @@ async def _stop_apply_child(proc: asyncio.subprocess.Process) -> None:
 
 async def _run_apply_child() -> tuple[bool, str]:
     """Run ``kirocrew update`` as a child. ``(ok, tail of its output or the reason)``."""
-    from kiro_crew.security import redact
+    from kiro_crew.platform.context import PlatformCompositionError, redact_via_context
+    from kiro_crew.security.redaction_switch import always_scan
 
     proc = await asyncio.create_subprocess_exec(
         *platform_compat.isolated_python_argv("-P", "-m", "kiro_crew", "update"),
@@ -97,7 +98,15 @@ async def _run_apply_child() -> tuple[bool, str]:
     except asyncio.CancelledError:
         await _stop_apply_child(proc)
         raise
-    text = redact((out or b"").decode("utf-8", "replace")).strip()
+    try:
+        # The context's redactor applies a loaded companion's patterns too; a
+        # standalone install gets the same ``security.redact`` as before. The tail
+        # is cut below, so the credential pass runs in full whatever seam is open.
+        with always_scan():
+            text = redact_via_context((out or b"").decode("utf-8", "replace")).strip()
+    except PlatformCompositionError:
+        # No redactor we can trust: withhold the output rather than show it raw.
+        return proc.returncode == 0, ""
     tail = text[-_OUTPUT_TAIL_CHARS:]
     return proc.returncode == 0, tail
 

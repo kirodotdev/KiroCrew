@@ -101,6 +101,11 @@ class HereDoc(NamedTuple):
     quoted: bool
     #: Raw offset past the tag line that closed the body; ``end`` when nothing closed it.
     tail: int = -1
+    #: The ``<<`` was held inside an open ``$(( ))`` / ``(( ))`` arithmetic span and
+    #: only became a body because the span was still open at a newline (the reader's
+    #: conservative multiline-arithmetic reading). Inside arithmetic ``<<`` is a left
+    #: SHIFT, not a here-document, so this body is a fiction bash never reads.
+    arith_held: bool = False
 
 
 class ShellCommand(NamedTuple):
@@ -294,10 +299,17 @@ def read_commands(
                 cut(step.char)
                 in_redirect = False
                 if step.char == "\n" and pending:  # the bodies start on the next line
+                    # A ``<<`` still HELD in an open arithmetic span at this newline is
+                    # a left shift the reader is about to read as a body only because
+                    # the span never closed with ``))`` on the ``<<``'s line. Record
+                    # which pending docs those are so the body-quote reset can skip
+                    # them: escaping a quote inside such a fiction would reset a real
+                    # command's quote after the arithmetic and over-refuse.
+                    arith_held_ids = {id(doc) for frame in frames for doc in frame[2]}
                     for frame in frames:
                         frame[2] = []  # a held ``<<`` whose span is still open is a heredoc
                     resume = _read_bodies(
-                        command, pos + step.offset + 1, pending, out, track, _base
+                        command, pos + step.offset + 1, pending, out, track, _base, arith_held_ids
                     )
                     pending = []
                     break
@@ -334,11 +346,23 @@ def _heredoc_tag(text: str, at: int) -> "tuple[str, bool, bool]":
 
 
 def _read_bodies(
-    command: str, at: int, pending: "list[list]", out: "list[ShellCommand]", track: bool, base: int
+    command: str,
+    at: int,
+    pending: "list[list]",
+    out: "list[ShellCommand]",
+    track: bool,
+    base: int,
+    arith_held_ids: "set[int] | None" = None,
 ) -> int:
     """Take each pending body from *at* up to its tag line, attach it to its command,
-    read the substitutions of an unquoted one, and return the offset past the last tag line."""
-    for owner, tag, strip, quoted in pending:
+    read the substitutions of an unquoted one, and return the offset past the last tag line.
+
+    *arith_held_ids* are the ``id()`` of the pending docs whose ``<<`` was a left shift
+    held in an open arithmetic span (see the caller): their :class:`HereDoc` is marked
+    ``arith_held`` so the body-quote reset skips the fiction."""
+    for doc_entry in pending:
+        owner, tag, strip, quoted = doc_entry
+        held = arith_held_ids is not None and id(doc_entry) in arith_held_ids
         start = body_end = tail = at
         while at < len(command):
             newline = command.find("\n", at)
@@ -355,7 +379,7 @@ def _read_bodies(
         else:
             body_end = tail = at = len(command)  # an unclosed body runs to the end, as in bash
         body = command[start:body_end]
-        doc = HereDoc(body, base + start, base + body_end, quoted, base + tail)
+        doc = HereDoc(body, base + start, base + body_end, quoted, base + tail, held)
         out[owner] = out[owner]._replace(heredocs=out[owner].heredocs + (doc,))
         if not quoted:
             out.extend(_body_substitutions(body, base + start, track))
@@ -457,13 +481,50 @@ def without_substitutions(command: str) -> str:
         pos = _shell._matching_close_paren(command, hit + 2, quote_at[hit + 2])[0]
 
 
-def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
-    """Raw ``(start, end)`` of each here-document body :func:`read_commands` finds in *text*."""
+def _heredocs(text: str) -> "list[HereDoc]":
+    """Each here-document body :func:`read_commands` finds in *text*."""
     if "<<" not in text:
         return []
-    return [
-        (doc.start, doc.end) for cmd in read_commands(text, heredocs=True) for doc in cmd.heredocs
-    ]
+    return [doc for cmd in read_commands(text, heredocs=True) for doc in cmd.heredocs]
+
+
+def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
+    """Raw ``(start, end)`` of each here-document body :func:`read_commands` finds in *text*."""
+    return [(doc.start, doc.end) for doc in _heredocs(text)]
+
+
+def _close_past_heredocs(rest: str) -> "tuple[int, bool]":
+    """:func:`_matching_close_paren` of *rest* with each heredoc body blanked, read on a
+    prefix that doubles until it is proven to give the same answer as the whole of *rest*.
+
+    :func:`read_commands` reads left to right, and a body starts after the newline that ends
+    its ``<<`` line. So in a prefix, every body that closes before the prefix ends is the
+    body the whole text gives, and a ``<<`` on the prefix's last line has no body in it.
+    A body that runs to the prefix's end may close later, so that prefix is not enough.
+    A body counts as complete only when its tag line's newline is inside the prefix (a tag
+    line cut at the prefix's end can read as the tag when the whole text does not). A close
+    is taken from the prefix only when both walks of :func:`_matching_close_paren_reach`
+    finished inside it, since a ``${...}`` walk that runs on can move the close later.
+    Otherwise the prefix grows; at the whole of *rest* it is the answer.
+    """
+    size = 1024
+    while True:
+        part = rest[:size]
+        whole = len(part) == len(rest)
+        docs = _heredocs(part)
+        if whole or all(d.end < len(part) and d.tail < len(part) for d in docs):
+            for doc in docs:
+                part = (
+                    part[: doc.start]
+                    + re.sub("[^\n]", " ", part[doc.start : doc.end])
+                    + part[doc.end :]
+                )
+            end, proven, reach = _walk._matching_close_paren_reach(part, 0)
+            if whole:
+                return end, proven
+            if reach is not None and reach < len(part):
+                return end, proven
+        size *= 2
 
 
 def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]":
@@ -471,6 +532,12 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
 
     *start* is the ``$``; *end* is just past the matching ``)`` when *proven*, else the end
     of *text*. A ``)`` in a heredoc body inside the substitution does not end it.
+
+    A heredoc body starts after the newline that ends its ``<<`` line, so when the text
+    the close walk read has no newline after its first ``<<`` (none at all, a ``<<<``
+    here-string, a ``$(( 1 << n ))`` shift), no body can change that walk and the
+    heredoc re-read is skipped. Each body that does hold a heredoc before its close
+    re-reads only a prefix of the rest of *text* (:func:`_close_past_heredocs`).
     """
     spans: "list[tuple[int, int, bool]]" = []
     i, state = 0, 0
@@ -481,9 +548,11 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
             dollars = dollars + 1 if step.state == 2 and step.text == "$" else 0
             if dollars % 2 and text.startswith("(", at + 1):
                 rest = text[at + 2 :]
-                for start, end in heredoc_text_spans(rest):
-                    rest = rest[:start] + re.sub("[^\n]", " ", rest[start:end]) + rest[end:]
-                end, proven = _shell._matching_close_paren(rest, 0)
+                end, proven, reach = _walk._matching_close_paren_reach(rest, 0)
+                window = rest if reach is None else rest[:reach]
+                k = window.find("<<")
+                if k >= 0 and "\n" in window[k:]:
+                    end, proven = _close_past_heredocs(rest)
                 spans.append((at, at + 2 + end if proven else len(text), proven))
                 i, state = spans[-1][1], 2
                 break

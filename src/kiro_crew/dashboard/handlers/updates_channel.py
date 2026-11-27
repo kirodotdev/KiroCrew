@@ -218,8 +218,19 @@ _changelog_cache: tuple[tuple[str, int, int], str] | None = None
 
 
 def _read_changelog() -> str:
-    """Return CHANGELOG.md's contents, re-reading only when the file changes."""
+    """Return CHANGELOG.md's contents, re-reading only when the file changes.
+
+    Empty in an LTS build. The bundled CHANGELOG.md describes the open-source
+    releases, whose numbers are a separate line from LTS's (open-source 0.2.0 is
+    not LTS 0.2.0), and LTS follows only its own channel. Served to LTS, the
+    release notes listed open-source 0.13.0 ... 0.3.0 as "Newer than yours" and
+    showed open-source 0.2.0's notes as the installed version's.
+    """
+    from kiro_crew.edition import is_lts
+
     global _changelog_cache
+    if is_lts():
+        return ""
     path = _changelog_path()
     if path is None:
         return ""
@@ -270,6 +281,8 @@ async def api_releases(request: web.Request) -> web.Response:
     on the file staying small.
     """
 
+    from kiro_crew.edition import is_lts
+
     def _read_and_parse() -> list[Release]:
         return build_release_list(_read_changelog(), _display_local_version())
 
@@ -279,6 +292,8 @@ async def api_releases(request: web.Request) -> web.Response:
             "current_version": _display_local_version(),
             "releases": [r._asdict() for r in releases],
             "stale": any(r.in_progress for r in releases),
+            # The page names the LTS line in place of notes it has none of.
+            "edition": "lts" if is_lts() else "oss",
         }
     )
 

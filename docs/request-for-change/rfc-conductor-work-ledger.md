@@ -4,8 +4,8 @@ status: partial
 revision: v5
 author: kirocrew agent session, directed by zejiangg
 created: 2026-09-05
-last-audited: 2026-10-08
-audited-at: 9348a25a34
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: 8842
 implementation-prs: [8855, 9152, 9277, 12781, 12792, 16669, 17992]
 tracking-issues: [17977]
@@ -25,7 +25,8 @@ ship (`work_brief`, `work_report`, `work_ledger_read`, `work_ledger_record`,
 `work_ask_record`, #33805), with the worker/conductor agents, deprecated alias, doctor
 notice, and ledger cleanup command. Phase 3b (sibling visibility) and Phase 5
 (worker-to-worker communication) are proposed and not implemented: no `siblings`,
-`work_request`, `work_message` or `inbox` exists. Every
+`work_request`, `work_message` or `inbox` exists (the tools are dispatched in
+`src/kiro_crew/mcp_work.py`; checked at `fc89562d69`). Every
 historical code reference below was read at `c02cdd67c`. Material added in v4
 was read at `cc385211d8`, except where it describes one of the two open PRs it
 names, which was read at that PR's own head.

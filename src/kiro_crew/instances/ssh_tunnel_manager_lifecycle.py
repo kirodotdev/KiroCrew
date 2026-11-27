@@ -11,7 +11,7 @@ on the one class.
 
 Instance fields written: ``_chained_far_end``, ``_chained_hop_identity``,
 ``_chained_hop_port``, ``_chained_ttl``, ``_connect_timeout``, ``_last_error``,
-``_max_recovery``, ``_mint_timeout``, ``_peer_sessions``, ``_probe_fails``,
+``_last_error_code``, ``_max_recovery``, ``_mint_timeout``, ``_peer_sessions``, ``_probe_fails``,
 ``_reconfiguring``, ``_recover_attempts``, ``_recover_since``, ``_recover_backoff_max``,
 ``_ssh_compression``, ``_tokens``, ``_tunnel_epoch``, ``_tunnels``.
 
@@ -45,6 +45,7 @@ from kiro_crew.instances.ssh_tunnel_manager_transport import _Mint
 from kiro_crew.instances.token_mint import TokenMintError
 from kiro_crew.instances.validation import (
     SshValidationError,
+    SsmTargetUnresolvedError,
     SsmValidationError,
     UnsupportedConnectionMethodError,
 )
@@ -259,11 +260,15 @@ async def connect(
 
         # Injection-safe validation immediately before building command lines.
         try:
-            params = self._resolve_transport(inst, await self._with_parent(inst))
+            params = self._resolve_transport(
+                await self._with_resolved_target(inst), await self._with_parent(inst)
+            )
         except UnsupportedConnectionMethodError:
             # Raised, like a disabled crew, so the route answers with its typed
             # code; nothing has been spawned for this crew.
             raise
+        except SsmTargetUnresolvedError as e:
+            return self._error_status(inst, f"could not look up the SSM target: {e}")
         except (SshValidationError, SsmValidationError) as e:
             return self._error_status(inst, f"invalid {inst.connection_method} settings: {e}")
 
@@ -480,6 +485,11 @@ async def connect(
         ok = await tunnel.start()
         if not ok:
             self._last_error[instance_id] = tunnel.status.error or "tunnel failed to start"
+            if tunnel.status.error_code:
+                self._last_error_code[instance_id] = (
+                    self._last_error[instance_id],
+                    tunnel.status.error_code,
+                )
             # Drop the failed tunnel (matching the mint-failure path below) so
             # status() returns None and _status_for surfaces the error via the
             # last_error() fallback, rather than leaving a stale ERROR tunnel
@@ -606,6 +616,7 @@ async def connect(
         # Connected cleanly — drop any retained failure reason from a prior
         # attempt so status() does not report a stale error.
         self._last_error.pop(instance_id, None)
+        self._last_error_code.pop(instance_id, None)
         return tunnel.status
 
 
@@ -704,6 +715,7 @@ async def _teardown_locked(self: SshTunnelManager, instance_id: str, *, keep_int
     self._recover_attempts.pop(instance_id, None)
     self._recover_since.pop(instance_id, None)
     self._last_error.pop(instance_id, None)
+    self._last_error_code.pop(instance_id, None)
     # A teardown ends the generation: a slow unlocked mint or rebuild in
     # flight captured the pre-teardown stamp, and this bump is what lets
     # the epoch compares at their store/record sites refuse the result —
@@ -902,6 +914,17 @@ def last_error(self: SshTunnelManager, instance_id: str) -> str | None:
     even though there is no live tunnel object to query.
     """
     return self._last_error.get(instance_id)
+
+
+def last_error_code(self: SshTunnelManager, instance_id: str) -> str:
+    """The ``TunnelStatus.error_code`` of the retained failure, or ``""``.
+
+    Only while :meth:`last_error` still answers the reason it came with.
+    """
+    entry = self._last_error_code.get(instance_id)
+    if entry is None or entry[0] != self._last_error.get(instance_id):
+        return ""
+    return entry[1]
 
 
 def status_all(self: SshTunnelManager) -> dict[str, TunnelStatus]:

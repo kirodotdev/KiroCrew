@@ -169,17 +169,22 @@ npm, no local build:
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 ```
 
-Once the wheel is in, the installer runs the new `kirocrew kas install` to
-download the [built-in KAS engine](#first-run) this release pins (about 55-70 MB
-for your platform). If that download fails, for example on a host with no
-access to the CDN, the install still succeeds and the installer prints the
-command to retry. On a host that cannot run the engine at all (no build for its
+On Linux (glibc 2.28+) and macOS 11+ the installer takes the platform wheel,
+which already carries the [built-in KAS engine](#first-run) this release pins,
+so there is nothing more to download. Anywhere else it takes the plain wheel and
+then runs the new `kirocrew kas install` to download the engine (about 55-70 MB
+for your platform). On x86_64 Linux with glibc 2.26 or 2.27, such as Amazon
+Linux 2, that download is an Amazon Linux 2 build of the same engine. If that download fails, for example on a host with no access
+to the CDN, a first install exits 1 with the command to retry, and the gateway
+tries again when it starts; a re-run over an existing install, and an LTS install
+that is not signed in yet, keep exit 0. On a host that cannot run the engine at all (no build for its
 platform, or a glibc older than the engine needs), Kiro Crew stays installed and
 the installer says why a chat on the default agent cannot start there in place
 of its next steps. A first install then exits 3; a re-run over an existing
 install, which is what `kirocrew update` does, exits 0. Pass `--no-kas` (or set
-`KIROCREW_INSTALL_KAS=0`) to skip the engine, for example on a host whose agent
-does not use it:
+`KIROCREW_INSTALL_KAS=0`) to use Kiro CLI only: the installer skips the download
+and saves `agent.kas_bundle` off, and the gateway installs the engine when it
+starts. Settings → Agent Harness changes the choice later:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --no-kas
@@ -226,9 +231,11 @@ The installer verifies the wheel's digest against the signed manifest and
 refuses to install on a mismatch; there is no checksum-only fallback. It uses
 `pipx` when available, otherwise it creates a managed venv **beside** the data
 home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
-`~/.local/bin/kirocrew` at it. The venv is deliberately not nested inside the
-data home, so no whole-home operation can ever delete the live interpreter. The
-selected channel is recorded to `~/.kiro/crew/channel`.
+`~/.local/bin/kirocrew` at it. A relative `KIROCREW_HOME` or `KIROCREW_VENV` is
+taken from the directory the installer runs in, and a `KIROCREW_HOME` of `~`
+or `~/...` from your home folder. The venv is deliberately not nested
+inside the data home, so no whole-home operation can ever delete the live
+interpreter. The selected channel is recorded to `~/.kiro/crew/channel`.
 
 Before it downloads anything, the installer checks free space. It stops, naming
 the directory, when the disk beside the data home (where the managed venv and
@@ -245,7 +252,21 @@ gateway's automatic update) build each new version as its own tree beside it,
 tree, the previous one (a recovery target), and any tree a running `kirocrew`
 process still uses; older ones are removed. A direct installer run still
 rebuilds the fixed `crew-venv` in place (and a pipx install reinstalls into its
-own venv), so a gateway that is running during the re-run keeps the old version
+own venv). A systemd service installed from the fixed `crew-venv` names that
+tree's launcher in `ExecStart`, so after an update it keeps starting the version
+the installer put there. `kirocrew service status` and `kirocrew doctor` then
+print one line that names the loaded program and the fix: for the system unit,
+run the `crew-venv-current/bin/kirocrew service install` it names (without
+`sudo`; it asks for sudo itself); for the per-user unit, point `ExecStart=` in
+the unit file at that path and run `systemctl --user daemon-reload`. A re-run and an update both install the new version with every
+optional extra the install being replaced has, and a re-run whose carried extra
+cannot be installed fails and keeps the previous install. Neither carries a
+package that is not a declared extra (such as `faiss-cpu`): each names, once,
+the packages the previous install had that the new one does not, with the
+`pip install` command that adds them back (a package installed from a local
+path or a URL is named without one: reinstall it from where it came from). The
+update that ships this note is still built by the older running version, so
+that first update prints none. A gateway that is running during the re-run keeps the old version
 loaded while it reads the new files. The installer never restarts it: when it
 finds one running (an active `kirocrew` systemd unit, the
 `dev.kirocrew.gateway` launchd agent, or a `kirocrew gateway` process holding
@@ -312,7 +333,10 @@ or — on a host that does have a toolchain and the headers — opt back into
 compiling with `KIROCREW_ALLOW_SOURCE_BUILDS=1`. The same policy applies to
 `install.sh`'s editable install (the dependency set only; the local kirocrew
 tree is still built) and to the update engine that builds the shadow venv on a
-managed-venv install. The opt-in is not remembered. To compile a dependency
+managed-venv install, where an extra an update or an installer re-run carries
+with no wheel for the host also fails it; uninstall the package that has no
+wheel from the existing install to stop carrying that extra.
+The opt-in is not remembered. To compile a dependency
 during an update, run `KIROCREW_ALLOW_SOURCE_BUILDS=1 kirocrew update` from a
 shell where the toolchain is on `PATH`: that command builds with the shell's own
 environment, while the gateway's automatic and approved updates run their build
@@ -344,7 +368,11 @@ reset would discard the local commits; `kirocrew update --force` discards them
 deliberately. A clone that is only ahead is reported up to date. A detached
 checkout, such as a release tag, is on no branch: `kirocrew update` moves it to
 the first of `main`, `mainline` and `master` that `origin` has, and refuses <!-- wokeignore:rule=master -->
-when `origin` has none of them. After the reset the update rebuilds the
+when `origin` has none of them. A checkout detached exactly at a release tag can
+instead take `kirocrew update --release VERSION`, which fetches only the release
+tag of VERSION and moves to it, and does nothing when the checkout is already on
+that release or a newer one; this is what **Update** runs on a cloud crew from a
+release-build hub. After the reset the update rebuilds the
 dashboard (`npm ci` + `npm run build` in `website/`) and writes that output to
 `logs/frontend-build.log` in the data home; on Windows no log is written, so
 that output is not kept. If the build fails, the update still installs the new
@@ -458,27 +486,42 @@ The pip install name is **`kirocrew`**; the import package is `kiro_crew`.
 
 #### Installing a PUBLISHED wheel with pip
 
-Kiro Crew is not on PyPI, so `pip` reaches it through the release CDN. Two forms
-are published, and they serve different needs:
+Kiro Crew is not on PyPI, and a different project named `kirocrew` is. pip
+pools the candidates from every index it is given and takes the highest
+version, so `pip install kirocrew` and any `--extra-index-url` form that adds
+the channel index beside PyPI install that project instead of Kiro Crew. Both
+supported forms below take `kirocrew` from one source only:
 
 ```bash
-# 1. Track a channel. A PEP 503 simple index per channel, so pip resolves the
-#    newest version itself. Stable versions carry no prerelease suffix, so the
-#    stable line needs no --pre. Every insider and nightly version does carry
-#    one, so those channels need it — and --pre then applies to every package
-#    pip resolves, third-party dependencies included:
-#      pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/insider/simple/
-#    NOTE: --extra-index-url ADDS the channel index beside default PyPI, so pip
-#    pools `kirocrew` candidates across both and a higher-versioned public-PyPI
-#    package of the name would win. Prefer form 2 (or verify the installed
-#    artifact) where that exposure matters.
-pip install kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
+# 1. Track a channel with uv. The channel index is a PEP 503 simple index, and
+#    uv's default index strategy (first-index) takes `kirocrew` only from the
+#    first index that lists it; PyPI serves only the dependencies. The CDN
+#    answers 403 for a package it does not host, so the index needs
+#    ignore-error-codes for uv to move on to PyPI for those.
+cat > kirocrew-uv.toml <<'EOF'
+[[index]]
+url = "https://updates.crew.kiro.dev/feed/stable/simple/"
+ignore-error-codes = [403]
+EOF
+uv tool install --config-file kirocrew-uv.toml kirocrew
+#    uv stores the index in the tool's receipt, so `uv tool upgrade kirocrew`
+#    stays on the channel. Into a venv you manage, the same file works with
+#    `uv pip install --config-file kirocrew-uv.toml kirocrew`.
 
-# 2. Pin one exact wheel by hash. Every version directory publishes a SHA256SUMS
-#    file beside the wheel; take your wheel's hash from there. pip verifies it and
-#    consults no index for Kiro Crew itself — so there is no name to squat.
+# 2. Pin one exact wheel by hash, with pip or uv. The channel's latest-cli.json
+#    names the current wheel_url and sha256 (every version directory also
+#    publishes a SHA256SUMS file beside the wheel). pip verifies the hash and
+#    consults no index for Kiro Crew itself, so there is no name to squat.
+curl -fsS https://updates.crew.kiro.dev/feed/stable/latest-cli.json
 pip install "https://download.crew.kiro.dev/cli/stable/<version>/kirocrew-<version>-py3-none-any.whl#sha256=<sha256>"
 ```
+
+Form 1 suits `stable` and `nightly`. The `nightly` index lists only prerelease
+versions, which uv then takes without a flag. The `insider` index lists stable
+releases beside its release candidates, and uv takes a prerelease only when it
+must, so form 1 there installs the stable release; `--prerelease allow` would
+fix that but also lets uv pick prerelease versions of third-party
+dependencies. Use form 2 for `insider`.
 
 Create the venv and run either form under `umask 022`. Under umask `002`,
 `python -m venv` and pip leave the venv group-writable, and `kirocrew service
@@ -486,7 +529,7 @@ install` then refuses to attach the
 [AppArmor profile](#linux-the-agent-sandbox-and-unprivileged-user-namespaces);
 `chmod -R g-w <venv>` repairs an existing install.
 
-Swap `stable` for `insider` or `nightly` in either URL. The two names split by
+Swap `stable` for another channel in the URLs. The two names split by
 class as a convention — `updates.crew.kiro.dev` for mutable pointers and indexes,
 `download.crew.kiro.dev` for the bytes — and today both alias the same
 distribution, which is why `KIROCREW_CDN_BASE` (or `cli.sh --cdn`) overrides both
@@ -494,14 +537,13 @@ at once. Use the documented name for each class rather than relying on the
 aliasing.
 
 Form 2 pins a byte-exact artifact and consults no index for the `kirocrew` name,
-so it is the one to use where a public-PyPI squat of the name is a concern, or
-when a deployment must pin a byte-exact artifact anyway — a locked requirements
-file, an airgapped mirror, or a reproducible image build. The in-place upgrade
+so it is also the one to use when a deployment must pin a byte-exact artifact
+anyway — a locked requirements file, an airgapped mirror, or a reproducible
+image build. The in-place upgrade
 command Kiro Crew emits for a plain-pip install uses the form-2 pinned wheel for
 exactly this reason, and when it cannot fetch or verify the signed wheel it
 reports that and points at the channel's artifact directory rather than fall
-back to the form-1 name-resolving command. Form 1 tracks a channel hands-free
-when that exposure is acceptable.
+back to a name-resolving pip command. Form 1 tracks a channel hands-free.
 
 Installed console script:
 
@@ -515,10 +557,13 @@ there and ignores `setup.cfg`'s `console_scripts`, so `kirocrew` is the only
 command installed on `PATH`.
 
 Optional extras. Kiro Crew is not on PyPI, so `pip install "kirocrew[voice]"`
-cannot resolve — install an extra's own distributions into the environment that
-runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
+would fetch the unrelated PyPI project of that name — install an extra's own
+distributions into the environment that runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
 "amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"` for `voice`). The dashboard
-prints the exact command, already pointed at the right interpreter.
+prints the exact command, already pointed at the right interpreter. On a
+`cli.sh` managed-venv install, an update and an installer re-run keep every
+extra the existing install has, and name any other package they did not carry,
+with the command that adds it back.
 
 | Extra | Adds | For |
 |-------|------|-----|
@@ -565,7 +610,7 @@ The published, signed apps ([prebuilt downloads](../../README.md#app-downloads))
 update themselves, and the gateway bundled inside them, through the
 app's own updater. By default a new release downloads in the background and
 installs the next time you quit the app (by default closing the window only hides
-it to the tray; quit from the tray or the menu bar, or turn off **Keep running in the background
+it to the tray, and the first time it does a notification says so; quit with **Quit Kiro Crew** (**Quit Kiro Crew and Stop Background Sessions** while the app runs a gateway it started) from the tray or the menu bar, or turn off **Keep running in the background
 after closing the window** in Settings → Display → View → Desktop app so the close button quits). To be asked first, turn off
 **Install app updates automatically** on the About page (an **Update the gateway
 automatically** switch beside it sets only an attached gateway's `auto_update`); the app then offers each release and
@@ -696,18 +741,21 @@ version that included kiro-cli and never installed your own, install it from
 <https://kiro.dev/cli/>; your sign-in carries over, since both copies read the
 same account store.
 
-The built-in KAS engine is an alternative that needs no Kiro CLI. It is in
-shadow testing: the switch is off by default on every platform and nothing turns
-it on for you. The one-line install (`cli.sh`) and `bash install.sh` download
+The built-in KAS engine is an alternative that needs no Kiro CLI. A packaged
+install (the desktop app or the one-line install) prefers it once you are
+signed in to Kiro Crew; a host signed in only to kiro-cli keeps kiro-cli and the
+chat asks you to sign in once. The one-line install (`cli.sh`) and `bash install.sh` download
 the engine version this release pins by default, by running `kirocrew kas
-install` once Kiro Crew is installed; `--no-kas` skips that, and a failed
-download only warns. After any other install, or to retry, run `kirocrew kas
-install` yourself. The desktop app ships that engine inside the app
-(`BUNDLE_KAS=1` at build time), so there is nothing to download. To try the
-route, turn on **Run KAS on Kiro Crew's own engine** under Settings → Developer →
-Feature Previews (or `kirocrew config set agent.kas_bundle true`) and restart; you
-then sign in from the **Kiro sign-in** card on Settings → Kiro account, and
-`kiro-cli login` is not used.
+install` once Kiro Crew is installed, unless the platform wheel already carries
+it. `--no-kas` skips that download and saves the Kiro CLI choice
+(`agent.kas_bundle: false`), and the gateway then installs the engine when
+it starts; a failed install is reported as an error by `kirocrew kas status` and
+`kirocrew doctor`. To retry, run `kirocrew kas install` yourself. The desktop app ships that engine inside the app
+(`BUNDLE_KAS=1` at build time), so there is nothing to download. To pick the
+engine yourself, choose **Built-in engine** or **Kiro CLI** on the KAS row of
+Settings → Agent Harness (or `kirocrew config set agent.kas_bundle true|false`)
+and restart; on the built-in engine you sign in from the **Kiro sign-in** card on
+Settings → Kiro account, and `kiro-cli login` is not used.
 
 Then start Kiro Crew:
 
@@ -805,6 +853,12 @@ it. Details: [browser module spec](../system-specs/modules/browser.md).
 | `KIROCREW_EMBED_MODEL_URL` | CDN default | Mirror for the embedding model download |
 | `KIROCREW_EMBED_MODEL_PATH` | unset | Run a local GGUF instead of the bundled model |
 
+Every `kirocrew` command reads `KIROCREW_HOME`, so set it in your shell profile,
+not for the install command alone: a shell without it uses `~/.kiro/crew`. When
+it is set, the installers' Next steps name the data home and print the
+`export KIROCREW_HOME="..."` line to add. A leading `~` in `KIROCREW_HOME` is
+expanded against `$HOME`, as every command does.
+
 `KIROCREW_PORT` is an environment variable validated at CLI entry, not a config
 key. `--port` on the CLI overrides it (`--port auto` binds an OS-assigned
 ephemeral port). Without either, the port in the `dashboard.url` config key is
@@ -868,18 +922,22 @@ kirocrew service uninstall
 ```
 
 On Linux this writes `/etc/systemd/system/kirocrew.service` (sudo is prompted
-for the unit file and the `systemctl` calls; the gateway itself runs as your own
-user, never under sudo). When you are already root — a minimal container or
-`root` login — no `sudo` binary is required. On macOS it writes a launchd plist
-and needs no sudo. That plist is a per-user LaunchAgent, so on a Mac the gateway
-starts when you log in, not at boot; see
+for the unit file, the `systemctl` calls and `loginctl enable-linger`; the
+gateway itself runs as your own user, never under sudo). When you are already
+root — a minimal container or `root` login — no `sudo` binary is required. On
+macOS it writes a launchd plist and needs no sudo. That plist is a per-user
+LaunchAgent, so on a Mac the gateway starts when you log in, not at boot; see
 [The gateway does not start after a reboot until someone logs in](macos-troubleshooting.md#the-gateway-does-not-start-after-a-reboot-until-someone-logs-in).
 
 On a Linux host that systemd did not boot (no `/run/systemd/system`, as in a
 container whose PID 1 is something else, or WSL without systemd),
 `service install` refuses before anything is written, because no system unit
 could start there. Run `kirocrew gateway` under that host's own supervisor or
-boot script instead.
+boot script instead. On Linux and macOS, `kirocrew restart` keeps that gateway
+under its supervisor when the supervisor runs it inside its own process group
+with no terminal on stdin, as a supervisor script or loop does: the gateway
+restarts itself in place, with the same pid. Any other gateway is stopped and
+started again detached, as before.
 
 The gateway runs untrusted agent tools, so it must run as a **non-root** user:
 the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else
@@ -891,16 +949,23 @@ install as it, e.g. `sudo -u <user> KIROCREW_KIRO_BIN=... kirocrew service
 install` (the official Docker image already runs as the `kirocrew` user).
 
 On Linux the agent runtimes run under the service account's own user manager,
-so enable linger for that account:
+which needs linger on for that account. Without linger, systemd stops that
+manager at the account's last logout: running agent runtimes die, and later
+spawns start without their memory and fork-count ceilings.
+
+`kirocrew service install` turns linger on itself, unless it is already on or
+the host has no per-user systemd manager, and prints a line saying so. It does
+this on every install, a re-install too. Linger also keeps that account's other
+user services and timers running from boot without a login. To turn it off
+again (`id -u <user>` prints the uid):
 
 ```bash
-sudo loginctl enable-linger <user>
+sudo loginctl disable-linger <uid>
 ```
 
-Without linger, systemd stops that manager at the account's last logout: running
-agent runtimes die, and later spawns start without their memory and fork-count
-ceilings. `kirocrew service install` prints a non-fatal warning naming this
-command when linger is off.
+If that step fails, the install still succeeds and prints the command to run by
+hand, `sudo loginctl enable-linger <uid>`. `kirocrew service uninstall` leaves
+linger as it is.
 
 When another gateway already serves the same data home, the unit exits 78 and
 goes `failed` once instead of restarting, because the unit's
@@ -952,11 +1017,8 @@ of your own, or a distribution's, that holds the name is left untouched and is
 not stopped. Run these as your own
 account, not under `sudo`: a root shell cannot reach your user manager, and the
 commands then report `user scope: not reachable from this shell` rather than
-guessing. `service install` itself still writes a system unit — [#10813] tracks
-preferring user units at install time. Installing kirocrew onto a system-labelled
-path such as `/usr/local/bin` also avoids the problem.
-
-[#10813]: https://github.com/kirodotdev/KiroCrew/issues/10813
+guessing. `service install` itself writes a system unit. Installing kirocrew
+onto a system-labelled path such as `/usr/local/bin` also avoids the problem.
 
 ### SELinux labels on files the service writes
 
@@ -1128,7 +1190,12 @@ path — `python -m kiro_crew`, a different venv's entry point, a re-created ven
 the profile has not been re-pointed at — stays unconfined, and `kirocrew doctor`
 reports the attachment as stale in the re-created-venv case. Prefer running the
 gateway as the service: it pins `ExecStart` to the attached path and restarts on
-boot.
+boot. On a Toolbox install `ExecStart` runs the Toolbox launcher
+`~/.toolbox/bin/kirocrew` instead, which starts the current version, so the
+service keeps starting after an update. That launcher execs the version's own
+`tools/kirocrew/<version>/bin/kirocrew` script, so on a Toolbox install the
+profile is attached to that script in every version folder
+(`tools/kirocrew/*/bin/kirocrew`), and to no other Toolbox tool's.
 
 ### The AppImage (desktop app) needs its own profile
 
@@ -1235,7 +1302,8 @@ sandbox probe names the failing step so you can tell them apart:
 | Symptom | Mechanism | Remedy |
 |---|---|---|
 | `unshare(CLONE_NEWNS)` fails `EPERM`, sysctl is `1` | Ubuntu >= 23.10 AppArmor userns restriction | `kirocrew service install`, or `kirocrew sandbox install-profile` for the AppImage (this page) |
-| `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` | `user.max_user_namespaces=0` (CIS-hardened host) | Raise that sysctl |
+| `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` and `/proc/sys/user/max_user_namespaces` reads `0` (token `userns_cap_zero`) | User namespaces are disabled: `user.max_user_namespaces=0`, a deliberate hardening setting on CIS-hardened and IT-managed hosts | Check with whoever manages the host, then raise it (`sudo sysctl -w user.max_user_namespaces=15000`) and persist it in a file under `/etc/sysctl.d/`. On ENOSPC the result is not cached, so no restart is needed once the value is raised. On EUSERS the result is cached for the life of the gateway, so restart the gateway after raising the value. |
+| `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` and that file reads non-zero or cannot be read (token `max_user_namespaces`) | The per-user cap was reached, or (`ENOSPC` only) momentary resource pressure | Retry; if it keeps happening, raise that sysctl |
 | `unshare` fails and `kernel.unprivileged_userns_clone=0` | Debian-family legacy knob (defaults to 1 since Debian 11) | Set it to 1 |
 | `unshare` fails `EINVAL` / `ENOSYS` | Kernel built without `CONFIG_USER_NS` | None short of a different kernel |
 | Fails inside Docker/Podman | The container's seccomp filter denies `unshare` | Container run flags, **not** host config |
@@ -1253,8 +1321,9 @@ sb.reset_backend(); print(sb.detect_backend(), sb._last_unshare_failure)"
 `kirocrew doctor` reports the same verdict without the one-liner, and the
 dashboard's **Sandbox unavailable** screen names the mechanism and the command
 for it directly — the probe classifies the failing step into one of
-`apparmor_userns`, `max_user_namespaces`, `userns_denied`, `no_user_ns` or
-`mount_denied`, which is the row of the table above that applies to you.
+`apparmor_userns`, `userns_cap_zero`, `max_user_namespaces`, `userns_denied`,
+`no_user_ns` or `mount_denied`, which is the row of the table above that applies
+to you.
 
 ## Troubleshooting
 
@@ -1287,11 +1356,9 @@ The `kiro-cli` backend did not answer in time. Five common causes:
    out as a service. Set the proxy variables on the unit with a
    [systemd drop-in](#setting-other-environment-variables-systemd-drop-in),
    then `sudo systemctl daemon-reload && sudo systemctl restart kirocrew`.
-   Agent sessions inherit the service environment, so this fixes them. One
-   known gap: the first-run setup gate's login probe currently filters proxy
-   variables out even when the unit carries them, so it can stay stuck on
-   "Sign in to Kiro CLI" on a proxied host — that is
-   [issue #2648](https://github.com/kirodotdev/KiroCrew/issues/2648).
+   Agent sessions inherit the service environment, so this fixes them, and the
+   first-run setup gate's sign-in probe forwards the same `HTTP_PROXY`,
+   `HTTPS_PROXY`, `NO_PROXY` and `ALL_PROXY` variables to `kiro-cli whoami`.
 
 ### Memory or knowledge search returns nothing
 
@@ -1342,7 +1409,9 @@ Updates add versioned trees beside it (`crew-venv-<version>`), the stable link
 `crew-venv.update.lock`, and, after an interrupted update, a hidden
 `.crew-venv-<version>.deleting-<pid>` tree or a `crew-venv-current.<pid>.new`
 link. Remove them (this works the same in `sh`, `bash` and `zsh`, and removes
-nothing when a pattern matches nothing):
+nothing when a pattern matches nothing). If you installed with a relative
+`KIROCREW_HOME` or `KIROCREW_VENV`, or a `~` `KIROCREW_HOME`, set it to its
+absolute path first:
 
 ```bash
 VENV="${KIROCREW_VENV:-${KIROCREW_HOME:-$HOME/.kiro/crew}-venv}"
@@ -1590,6 +1659,7 @@ For reference, the data home structure and what each uninstall path touches:
 - `kirocrew service uninstall` removes only the systemd unit — the system unit
   and, when your own user manager has one loaded, the per-user unit, naming each
   scope it touched — (plus the AppArmor profile it installed) or the launchd plist.
+  It leaves linger as it is; `sudo loginctl disable-linger <uid>` turns it off.
 - Python and npm package removal has no `preuninstall` or `postuninstall`
   cleanup hook.
 - No uninstall path removes `~/.kiro/crew-python` (the runtime `cli.sh` may

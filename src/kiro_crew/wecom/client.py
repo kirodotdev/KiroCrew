@@ -33,6 +33,7 @@ from typing import Any, Awaitable, Callable
 
 import aiohttp
 
+from kiro_crew.http_proxy import proxy_for_url
 from kiro_crew.messaging.split import truncate_utf8
 from kiro_crew.wecom.attachments import to_attachments
 from kiro_crew.wecom.media import WECOM_MAX_PLAINTEXT_BYTES, mixed_text
@@ -756,7 +757,7 @@ class WeComClient:
             async with session.post(
                 response_url,
                 json=payload,
-                proxy=self._proxy,
+                proxy=proxy_for_url(self._proxy, response_url),
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 data = await resp.json(content_type=None)
@@ -842,7 +843,9 @@ class WeComClient:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
 
-        async with self._session.ws_connect(self._ws_url, proxy=self._proxy) as ws:
+        async with self._session.ws_connect(
+            self._ws_url, proxy=proxy_for_url(self._proxy, self._ws_url)
+        ) as ws:
             self._ws = ws
             self._pending_pongs = 0
             self._ping_reqs.clear()

@@ -105,6 +105,24 @@ class TestResumePrefetchWiring:
         assert kwargs["speculative_resume"] is True
 
     @pytest.mark.asyncio
+    async def test_the_prefetch_claims_as_its_persons_turn(self):
+        """The tab's next turn is its person's, so a ``cron:`` batch it starts is one."""
+        from kiro_crew.agent_sdk.kas_project_hooks import PERSON_TURN
+
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        seen: list[bool] = []
+
+        async def get_or_create(*_a, **_kw):
+            seen.append(PERSON_TURN.get())
+            return MagicMock(), True, False
+
+        state.sessions.get_or_create = AsyncMock(side_effect=get_or_create)
+        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+            await chat_runner._eager_spawn(state, slot)
+        assert seen == [True]
+
+    @pytest.mark.asyncio
     async def test_default_path_does_not_opt_in(self):
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
@@ -402,3 +420,80 @@ class TestSpecResumeFallbackMapGuard:
             with pytest.raises(SpeculativeResumeRefused):
                 await mgr.get_or_create(key, speculative=True, speculative_resume=True)
         dispatch.assert_called_once()
+
+
+class TestRefusedKasResumeIsNotRetried:
+    """A KAS resume prefetch whose load replayed no turn is remembered, so the next
+    focus starts nothing, while the next turn still resumes the mapped sid."""
+
+    @pytest.fixture
+    def cfg(self):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        c = KiroCrewConfig()
+        c.agent.provider = "acp"
+        c.session.pool_size = 0
+        return c
+
+    @staticmethod
+    def _manager(cfg, monkeypatch, refused_sid: str):
+        from kiro_crew.acp.types import PROVIDER_LABEL_BY_BACKEND
+        from kiro_crew.session import SessionManager
+
+        built = []
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            m = AsyncMock()
+            m.start = AsyncMock()
+            m.shutdown = AsyncMock()
+            m.context_usage_pct = lambda: 0.0
+            m.is_alive.return_value = True
+            m.is_process_alive = lambda: True
+            m.cwd = "/tmp"
+            m.client = MagicMock()
+            m.client.backend = ACP_BACKEND_KAS
+            m.client.resumed = False  # the load fell back to a fresh session
+            m.client._session_id = "empty-fallback-sid"
+            m._resume_refused_sid = refused_sid
+            built.append(m)
+            return m
+
+        monkeypatch.setattr("kiro_crew.providers.acp.AcpProvider", object)
+        mgr = SessionManager(cfg, provider_factory=factory)
+        return mgr, built, PROVIDER_LABEL_BY_BACKEND[ACP_BACKEND_KAS]
+
+    @pytest.mark.asyncio
+    async def test_replay_refusal_refuses_the_next_focus_and_the_next_turn_still_resumes(
+        self, cfg, monkeypatch
+    ):
+        from kiro_crew.session import SpeculativeResumeRefused
+
+        mgr, built, label = self._manager(cfg, monkeypatch, refused_sid="sess-empty")
+        key = "dashboard:refused-kas"
+        mgr._session_map.set(key, "sess-empty", provider=label)
+
+        for _ in range(2):
+            with pytest.raises(SpeculativeResumeRefused):
+                await mgr.get_or_create(key, speculative=True, speculative_resume=True)
+        assert len(built) == 1  # the second focus built no provider, so no second load
+
+        # The map is untouched, so the turn resumes the sid and rejoins what that
+        # chat recorded (its scratch tree, its folder) before any fallback.
+        assert mgr._session_map.get(key) == "sess-empty"
+        await mgr.get_or_create(key)
+        built[-1].client.set_resume_session_id.assert_called_once_with("sess-empty")
+        assert mgr._allocation_state.refused_resume_sids == {}
+
+    @pytest.mark.asyncio
+    async def test_no_recorded_refusal_lets_the_next_focus_load_again(self, cfg, monkeypatch):
+        """A fallback the provider recorded no refusal for (a lock may clear) is retried."""
+        from kiro_crew.session import SpeculativeResumeRefused
+
+        mgr, built, label = self._manager(cfg, monkeypatch, refused_sid="")
+        key = "dashboard:locked-kas"
+        mgr._session_map.set(key, "sess-locked", provider=label)
+
+        for _ in range(2):
+            with pytest.raises(SpeculativeResumeRefused):
+                await mgr.get_or_create(key, speculative=True, speculative_resume=True)
+        assert len(built) == 2

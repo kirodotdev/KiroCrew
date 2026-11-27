@@ -1,0 +1,13 @@
++306
+The self-subcommand floors (restart, update, gateway restart, cloud, skills
+authority-retire) read a view where each heredoc body that nothing runs is blanked:
+a body bash expands nothing in, fed to a bare cat, tee, or python - whose every
+statement is provably inert (ast.parse: an import that rebinds no accepted name, an
+assignment whose value runs nothing, or a print / Path / open write on inert
+arguments; a deep or oversized tree keeps the old read), as the only command in the
+text, and only when no heredoc tag carries quote, backslash or $ machinery bash
+resolves before matching. A body a shell or interpreter runs, one the outer shell
+expands, any python call that is not a proven print/write or that shadows an accepted
+name, and any command line with a pipe, group, substitution or lone & keep the read
+they had (#39663). The argv_floor mirror facade's TYPE_CHECKING manifest lists the
+new owner-defined names, as the facade-mirror guard requires.

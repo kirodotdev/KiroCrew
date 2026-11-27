@@ -15,9 +15,12 @@ itself, which is the only part that needs a disk.
 
 Three facts this probe cannot read for itself and takes as values instead:
 
-* ``worker_running`` -- whether a worker's slot has a turn in flight. That lives
-  in the dashboard's in-process slot table, which a probe running on a worker
-  thread has no handle on, so the driver injects a resolver.
+* ``worker_running`` -- whether the worker's session owns proven current or
+  queued work: a turn, or work that outlives it such as a running or queued
+  sub-agent, a workflow, synthesis, preparation or compaction (the gateway binds
+  ``session_activity.session_work_pending``). That lives in the dashboard's
+  in-process state, which a probe running on a worker thread has no handle on, so
+  the driver injects a resolver.
 * ``worker_closed`` -- whether that slot is GONE. Same table, same reason, and a
   separate question: "not running" is true of a worker thinking between turns as
   well as of one that ended, which is why ``is_stale`` makes the first wait out a
@@ -48,13 +51,18 @@ from collections import OrderedDict
 from typing import Callable
 
 from kiro_crew import irq, ledger_wake, work_ledger, work_preview
+from kiro_crew.session_ledger_layout import ledger_key
 from kiro_crew.work_vocab import (
     WORK_BLOCKED_REASONS,
     WORK_REASON_STATUSES,
     WORK_REMOTE_DISPATCH_STATUSES,
+    ask_is_current,
 )
 
 logger = logging.getLogger(__name__)
+
+#: Events read per item to date its ask record: the Board's own tail size.
+_ASK_TAIL = 20
 
 #: This probe's subject kind. ``probes/__init__`` imports this module only inside
 #: ``build``, which keeps the ledger store off the gateway boot path, so it spells the
@@ -76,6 +84,13 @@ _REPORT_KEY = "report"
 #: Prefix for a silence wake's dedupe key.
 _STALL_KEY = "stall"
 
+#: Prefix for a host posture-change wake's dedupe key (rfc-host-memory-guard.md §5.2).
+_POSTURE_KEY = "posture"
+
+#: Prefixes for a same-level worsening wake and a worker growth wake (same budget).
+_WORSE_KEY = "worse"
+_GROWTH_KEY = "growth"
+
 #: Prefix for an undelivered-report wake's dedupe key
 #: (:mod:`kiro_crew.work_ledger_undelivered`).
 _UNDELIVERED_KEY = "undelivered"
@@ -87,11 +102,11 @@ _UNDELIVERED_KEY = "undelivered"
 #: there would otherwise make every finished ledger read as a failure in silence.
 ACCEPTED_STATE = "accepted"
 
-#: Key prefix of the one wake for "every item is closed, and every item's bar was
-#: met". The rest of the key is a digest of the closed board.
+#: Key of the TERMINAL for "every item is closed, and every item's bar was met"
+#: (:func:`_finished`). The one end of this watch that counts as a success.
 ACCEPTED_KEY = "all-accepted"
 
-#: Key prefix of the one wake for "every item is closed, and at least one was NOT
+#: Key of the TERMINAL for "every item is closed, and at least one was NOT
 #: accepted" (rejected or abandoned).
 CLOSED_KEY = "all-closed"
 
@@ -104,11 +119,31 @@ _ALL_CLOSED_ENTRY = "_all_closed"
 _NO_REPORTS = "no-reports"
 
 
+def _finished(items: list[work_ledger.WorkItem]) -> irq.Observation:
+    """The TERMINAL that ends a finished board's patrol: accepted, or closed short."""
+    accepted = sum(1 for item in items if item.state == ACCEPTED_STATE)
+    if accepted == len(items):
+        key, said = ACCEPTED_KEY, f"every item is closed and accepted ({len(items)} total)"
+    else:
+        key, said = CLOSED_KEY, f"every item is closed, {accepted} accepted of {len(items)}"
+    return irq.Observation(
+        key, irq.Severity.TERMINAL, f"[work-ledger] {said}; the gateway ended the patrol."
+    )
+
+
+def _is_channel_conductor(conductor_key: str) -> bool:
+    """Whether *conductor_key* names a messaging-channel session, not a dashboard slot."""
+    from kiro_crew.autonudge_service.model import is_channel_key
+
+    return is_channel_key(conductor_key)
+
+
 def _always_idle(_session_key: str) -> bool:
     """Default liveness resolver: nothing is running.
 
     Not ``True``: an unknown liveness must not be able to SUPPRESS a stall wake.
-    See the module docstring for the full argument.
+    See the module docstring for the full argument. On a board whose every item is
+    closed it ends the watch at once; a next item's bind arms a new patrol.
     """
     return False
 
@@ -140,8 +175,8 @@ class WorkLedgerProbe(irq.Probe):
     """Watch one conductor's work ledger.
 
     Args:
-        worker_running: ``session_key -> has a turn in flight``. Defaults to
-            :func:`_always_idle`.
+        worker_running: ``session_key -> owns proven current or queued session
+            work`` (a turn is one kind). Defaults to :func:`_always_idle`.
         worker_closed: ``session_key -> its slot is gone``. Defaults to
             :func:`_always_open`, so a build with no resolver never skips the
             staleness window.
@@ -177,6 +212,11 @@ class WorkLedgerProbe(irq.Probe):
         #: back. A ledger read with no worker report yet still gets a token, so an
         #: early, quiet board is recognised as unchanged too.
         self.revision: str | None = None
+        #: The store key and ``change_mark`` the last board read was taken at, or
+        #: ``None``. A driver ending the watch on a finished board compares the mark
+        #: with the key's mark then: a write since (the next item's create or bind)
+        #: keeps the watch.
+        self.board_mark: tuple[str, int] | None = None
 
     # -- Probe contract ---------------------------------------------------
 
@@ -226,6 +266,7 @@ class WorkLedgerProbe(irq.Probe):
             # cheap failure is to keep firing on the existing timer.
             return irq.Tick(fetch_ok=False, detail="work ledger unreadable")
         items, all_readable, tails = read.items, read.all_readable, read.tails
+        self.board_mark = (key, read.mark)
         # Open items only: a closed item never wakes again, and every observation
         # this probe raises is ``ResetsOn.NEVER``, which an epoch reset keeps.
         newest = {item_id: events[-1].id for item_id, events in tails.items() if events}
@@ -240,15 +281,30 @@ class WorkLedgerProbe(irq.Probe):
             ledger_wake.forget_items(key, closed)
 
         if items and all_readable and len(closed) == len(items):
-            # Every item closed is NOT the end of the goal: a lead closes item N
-            # and waits for item N+1, a conductor closes a round and opens the
-            # next. So it is one wake that says so, and the watch stays armed;
-            # only a stop or the loop's own bounds end it. Requires at least one
-            # item, so an empty ledger (a watch armed before the first item) says
-            # nothing.
-            return irq.Tick(epoch=epoch, observations=self._all_closed(key, items))
+            # Every item closed. The conductor sends its final report in the turn
+            # that closes the last item, and opens the next item in that same turn
+            # when the goal goes on. So while that turn runs or is queued the tick
+            # stays quiet, and once it is over with no new item the watch ENDS: a
+            # wake would only buy a turn to stop the loop. A next round dispatched
+            # later is patrolled again by its bind (``conductor_patrol``) or the
+            # conductor's own ``monitor_start``. Requires at least one item, so an
+            # empty ledger (a watch armed before the first item) says nothing.
+            #
+            # A channel conductor (Slack, Discord) keeps the one "every item is
+            # closed" wake and stops the loop itself: the liveness resolver reads
+            # dashboard slots only, and a channel terminal settles through an owed
+            # turn whose awaited settlement a concurrent bind could race.
+            if _is_channel_conductor(key):
+                return irq.Tick(
+                    epoch=epoch,
+                    observations=self._all_closed(key, items)
+                    + self._posture_observations(key, items),
+                )
+            if self._worker_running(key):
+                return irq.Tick(epoch=epoch, observations=self._posture_observations(key, items))
+            return irq.Tick(epoch=epoch, observations=[_finished(items)])
 
-        observations: list[irq.Observation] = []
+        observations: list[irq.Observation] = self._posture_observations(key, items)
         for item in items:
             if item.is_terminal:
                 continue
@@ -258,6 +314,15 @@ class WorkLedgerProbe(irq.Probe):
         # as pending would hold a ``question`` wake for the window's hard cap while
         # the worker it blocks waits for the answer.
         return irq.Tick(epoch=epoch, observations=observations)
+
+    def board_moved_since_read(self) -> bool:
+        """Whether the store was written here since the last board read, or no read is
+        recorded. In memory, no file read, so a driver can ask with no await between
+        the answer and what it does on it."""
+        if self.board_mark is None:
+            return True
+        key, mark = self.board_mark
+        return work_ledger.change_mark(key) != mark
 
     def wake_suffix(self) -> str:
         """Said once per wake, not once per item."""
@@ -303,6 +368,79 @@ class WorkLedgerProbe(irq.Probe):
                 irq.ResetsOn.NEVER,
             )
         ]
+
+    def _posture_observations(
+        self, conductor_key: str, items: list[work_ledger.WorkItem]
+    ) -> list[irq.Observation]:
+        """Host wakes: a posture change, a further fall at the same level, a worker's growth.
+
+        rfc-host-memory-guard.md §5.2. The posture is read live from the gateway's
+        notifier, never from a record file. The seen set keeps one ``posture:<level>``
+        token per watcher (``replaces``), so a repeat of the level wakes nobody and a
+        new level wakes once. With no level seen yet, ``ample`` is the baseline and
+        wakes nobody. A same-level step of decline (``worsened``, rfc-resource-control.md
+        §4.2) wakes once per token and is charged to the posture rate entry like a
+        level change. That hourly budget is one wake per patrol tick, so it caps a
+        flapping value's cost without quieting it; the notifier's step reference,
+        which a recovery never raises, is what keeps a swing from re-waking. A growth
+        step of one open item's worker tree (``worker_growth``, §4.3) wakes once per
+        step and is charged to THAT item's budget.
+        """
+        from kiro_crew.conductor_wake import POSTURE_ITEM
+        from kiro_crew.notifications import resource_pressure
+
+        current = resource_pressure.current_posture()
+        if current is None:
+            return []
+        level, reading = current
+        found: list[irq.Observation] = []
+
+        def wake(token: str, replaces: str, brief: str, entry: str = POSTURE_ITEM) -> None:
+            if self._spend(conductor_key, entry, token, replaces=replaces):
+                # Unique per wake: the kernel masks a key for ``realert_secs``, and
+                # tight -> ample -> tight inside that window is two changes.
+                found.append(
+                    irq.Observation(
+                        # The entry too: two workers' growth in one tick share a stamp.
+                        f"{entry}:{token}:{time.time():.3f}",
+                        irq.Severity.WAKE,
+                        f"[work-ledger wake] {brief}",
+                        irq.ResetsOn.NEVER,
+                    )
+                )
+
+        if level != "ample" or any(
+            ledger_wake.already_woke(
+                conductor_key, POSTURE_ITEM, f"{_POSTURE_KEY}:{other}", watcher=self._watcher
+            )
+            for other in ("tight", "critical")
+        ):
+            wake(
+                f"{_POSTURE_KEY}:{level}",
+                f"{_POSTURE_KEY}:",
+                f"host posture is {level} ({reading})",
+            )
+        worse = resource_pressure.worsened()
+        if worse is not None and level != "ample":
+            wake(f"{_WORSE_KEY}:{worse[0]}", f"{_WORSE_KEY}:", worse[1])
+        growth = resource_pressure.worker_growth()
+        for item in items:
+            step = growth.get(ledger_key(item.worker_session_key or ""))
+            # A remote worker's key names a peer's session, never a local tree.
+            if item.is_terminal or not item.worker_session_key or item.worker_instance_id:
+                continue
+            if step is None:
+                continue
+            stamp, size_mb, share, grown_mb = step
+            if grown_mb > 0:
+                text = (
+                    f"worker {item.item_id} grew to {size_mb / 1024:.1f} GB ({share:.0f}% of "
+                    f"RAM; +{grown_mb / 1024:.1f} GB since the last wake)"
+                )
+            else:
+                text = f"worker {item.item_id} holds {size_mb / 1024:.1f} GB ({share:.0f}% of RAM)"
+            wake(f"{_GROWTH_KEY}:{stamp}", f"{_GROWTH_KEY}:", text, entry=item.item_id)
+        return found
 
     def _item_observations(
         self,
@@ -724,9 +862,26 @@ def person_wait_fingerprint(
             if lost is not None:
                 undelivered[item.item_id] = lost["at"]
         revision = worker_report_revision(items)
-        if not undelivered:
+        if undelivered:
+            revision = f"{revision}|undelivered:{ledger_wake.revision(undelivered)}"
+        # The host posture is news no report carries either (rfc-host-memory-guard.md
+        # §5.2): a level change, a further fall at the level, or an open item's
+        # worker growth step releases the hold for the tick that wakes on it.
+        from kiro_crew.notifications import resource_pressure
+
+        posture = resource_pressure.current_posture()
+        if posture is None:
             return revision
-        return f"{revision}|undelivered:{ledger_wake.revision(undelivered)}"
+        growth = resource_pressure.worker_growth()
+        steps = {
+            item.item_id: growth[key][0]
+            for item in open_items
+            if not item.worker_instance_id
+            and (key := ledger_key(item.worker_session_key or "")) in growth
+        }
+        worse = resource_pressure.worsened()
+        revision = f"{revision}|posture:{posture[0]}:{worse[0] if worse else ''}"
+        return f"{revision}|growth:{ledger_wake.revision(steps)}" if steps else revision
     except Exception:  # noqa: BLE001 - a read fault must never hold a patrol
         logger.debug("work-ledger probe: person-wait read failed for %s", conductor_key)
         return None
@@ -757,3 +912,39 @@ def _conductor_key(raw: object) -> str:
     if not key:
         raise ValueError("work-ledger watch config needs a 'conductor' session key")
     return key
+
+
+def person_wait_asked(conductor_key: str) -> bool:
+    """Whether the conductor relayed every open item's question with a current ``ask``.
+
+    The person-wait hold's second half. The Board lists a person wait only with a
+    current ``ask`` record (``work_vocab.ask_is_current``: no report after the newest
+    ``ask`` event), so the hold does too: a question the conductor has not relayed,
+    or one a newer report superseded, is still the conductor's, and holding its
+    patrol would stall the crew while the Board says nothing needs the person.
+
+    Kept apart from :func:`person_wait_fingerprint` on purpose: the fingerprint
+    covers worker-owned fields only, so the conductor's own ``work_ask_record`` write
+    in the relay turn does not move it, and the next tick can hold at once.
+    Positive evidence only: a read that raises answers False, so doubt never holds.
+    Blocking file reads; call it off-loop.
+    """
+    try:
+        open_items = [
+            item for item in work_ledger.list_work_items(conductor_key) if not item.is_terminal
+        ]
+        return bool(open_items) and all(
+            item.ask
+            and ask_is_current(
+                [
+                    event.to_dict()
+                    for event in work_ledger.read_events(
+                        conductor_key, item.item_id, limit=_ASK_TAIL
+                    )
+                ]
+            )
+            for item in open_items
+        )
+    except Exception:  # noqa: BLE001 - a read fault must not hold the patrol
+        logger.debug("work-ledger probe: ask read failed for %s", conductor_key)
+        return False

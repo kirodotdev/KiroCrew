@@ -142,7 +142,9 @@ describe("a focused showMainWindow is reached only from user gestures", () => {
     }
     assert.deepEqual(sites, {
       "ipc-registrar.js": 1,
+      "close-hide-notice.js": 1,
       "main.js": 3,
+      "relay-crew-handoff.js": 1,
       "window-lifecycle.js": 1,
     });
   });
@@ -171,10 +173,24 @@ describe("a focused showMainWindow is reached only from user gestures", () => {
       /const showFromTray = \(\) => \{\s*showMainWindow\(\{ focus: true \}\);\s*\};/,
       "the tray's Show item and icon click",
     );
+    const closeHideNotice = read("close-hide-notice.js");
+    assert.match(
+      closeHideNotice,
+      /function openCloseActionSetting\(\) \{\s*if \(!showMainWindow\(\{ focus: true \}\)/,
+      "clicking the close-to-background notice",
+    );
+    assert.match(closeHideNotice, /onClick: openCloseActionSetting,/);
     assert.match(
       read("ipc-registrar.js"),
       /notification\.on\("click", \(\) => \{[^}]*?windows\.showMainWindow\(\{ focus: true \}\);\s*\}\);/,
       "clicking the update notification",
+    );
+    // A relay Crew picked in another dashboard window: raised in that click's
+    // own IPC call, before any await.
+    assert.match(
+      read("relay-crew-handoff.js"),
+      /handOff\(endpointId\) \{\s*if \(!target \|\| target\.isDestroyed\(\)\) return \{ ok: false, error: "UNAVAILABLE" \};\s*showMainWindow\(\{ focus: true \}\);/,
+      "opening a relay Crew from another dashboard window",
     );
   });
 });

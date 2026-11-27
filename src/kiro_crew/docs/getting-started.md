@@ -1,7 +1,8 @@
 # Getting Started with Kiro Crew
 
 Kiro Crew is an autonomous AI agent layer that runs on your own machine on top of
-the kiro-cli (KiroACP) backend. It adds persistent memory, scheduled jobs,
+a Kiro agent engine: by default KAS, kiro-cli's v3 engine, reached through
+kiro-cli. It adds persistent memory, scheduled jobs,
 background subagents, self-learning, and multi-session orchestration, and you
 talk to it from a web dashboard, from the terminal, or from messaging channels
 like Slack, Discord, and Telegram.
@@ -12,7 +13,7 @@ like Slack, Discord, and Telegram.
 |-------------|------------|-------|
 | **Python** + pip | Backend | `>= 3.12` |
 | **Node.js** + npm | Building the dashboard from source | `>= 22.12` (24 LTS recommended) |
-| **`kiro-cli`** | Driving the LLM | Required, on your `PATH` |
+| **`kiro-cli`** | Driving the LLM | On your `PATH`, unless you run Kiro Crew's own engine (`kirocrew kas install`) |
 
 Node is only needed to *build* the dashboard. The prebuilt wheel, the macOS DMG,
 and the Linux AppImage all ship the dashboard already bundled, so if you install
@@ -40,22 +41,42 @@ faster one, or `--version X.Y.Z` to pin an exact release. The installer uses
 `pipx` when available, otherwise it creates a managed venv and symlinks
 `kirocrew` into `~/.local/bin`.
 
-`pip install kirocrew` alone does **not** work: Kiro Crew is not published to
-PyPI. To install with pip directly, point it at a release channel's index:
+Kiro Crew is not published to PyPI, and a different project named `kirocrew`
+is. So `pip install kirocrew` installs that project, and so does any pip setup
+that adds the release channel's index beside PyPI (`--extra-index-url`): pip
+takes the highest version from either index. Install from one index instead.
+
+**uv** tracks a channel. uv's default index strategy takes `kirocrew` only from
+the first index that has it, and PyPI serves only its dependencies:
 
 ```bash
 umask 022
-pip install kirocrew \
-  --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
+cat > kirocrew-uv.toml <<'EOF'
+[[index]]
+url = "https://updates.crew.kiro.dev/feed/stable/simple/"
+# The CDN answers 403 for a package it does not host; this sends uv on to PyPI.
+ignore-error-codes = [403]
+EOF
+uv tool install --config-file kirocrew-uv.toml kirocrew
 ```
 
-Stable versions carry no prerelease suffix, so this needs no `--pre`. The
-`insider` and `nightly` indexes publish only prerelease versions and need
-`pip install --pre`, which also lets pip pick prerelease versions of
-third-party dependencies.
+uv records the index with the tool, so `uv tool upgrade kirocrew` upgrades from
+the same channel. Swap `stable` for `nightly` to track nightly builds. The
+`insider` index lists both stable and prerelease versions, and uv prefers the
+stable one; use the wheel URL below for insider.
 
-`--extra-index-url` (not `--index-url`) is required, because the channel index
-carries only `kirocrew` and pip still needs PyPI to resolve its dependencies.
+**pip** installs one exact wheel by URL. Read the channel's current wheel and
+its sha256 from `latest-cli.json`, then install it:
+
+```bash
+umask 022
+curl -fsS https://updates.crew.kiro.dev/feed/stable/latest-cli.json
+# Copy wheel_url and sha256 from the output:
+pip install "<wheel_url>#sha256=<sha256>"
+```
+
+pip checks the hash and looks up no `kirocrew` name on any index. Swap `stable`
+for `insider` or `nightly` in the URL for another channel.
 
 Create the venv and install under `umask 022`. Under umask `002`, a common
 default on Ubuntu and Fedora, `python -m venv` and pip leave the venv
@@ -77,9 +98,10 @@ The dashboard has to be built before the backend install, because the built
 `website/dist` is staged into the package and served by the gateway. `make
 build` does both steps plus a `.venv`.
 
-### Agent backend: `kiro-cli` (required)
+### Agent backend: `kiro-cli`
 
-`kiro-cli` is the only provider (`agent.provider` is fixed to `acp`). Install it
+The default harness is KAS (`agent.acp_backend: kas`), reached through
+kiro-cli's ACP relay; `kiro` selects kiro-cli's own engine. Install kiro-cli
 per its own docs, make sure the binary resolves on your `PATH`, and log in:
 
 ```bash
@@ -88,6 +110,22 @@ kiro-cli login
 
 On the first dashboard launch, the Set up Kiro page walks through installing the
 CLI and completing sign-in.
+
+To run without kiro-cli, `kirocrew kas install` downloads Kiro Crew's own
+pinned engine and Node runtime, and `agent.kas_bundle: true` makes the `kas`
+backend use it; `kirocrew kas route` prints which program owns the sign-in.
+
+**Where to sign in on the Kiro Agent (KAS) harness.** Where kiro-cli cannot run
+(not installed, or not signed in), KAS chats run on Kiro Crew's own engine and use
+Kiro Crew's own Kiro sign-in. Sign in from the dashboard's **Kiro account**
+settings tab (a chat that needs it
+offers the same sign-in above the message box), or in a terminal on the gateway host with
+`kirocrew kas login`. A chat error saying "Not signed in to Kiro" or "Access
+denied. Please check your authentication." is fixed there; then send the message
+again. A company (IAM Identity Center) sign-in that can use several Kiro profiles
+asks in the dashboard which profile, and so which credit pool, to use.
+`kirocrew kas login` does not ask: it keeps the profile you are already signed in
+with when it is offered, else the first, and names the one it used.
 
 Already a kiro-cli user? [Coming from kiro-cli](coming-from-kiro-cli.md) covers
 what carries over (agents, MCP servers, steering, your login), why a Crew chat
@@ -161,6 +199,8 @@ is at `http://localhost:5476`.
 ```bash
 kirocrew chat                            # interactive REPL
 kirocrew chat -m "what's the weather like?"   # single message
+kirocrew chat --continue                 # reopen your last chat in this folder
+kirocrew chat --list                     # your recent terminal chats
 ```
 
 Lightweight mode: no messaging channels, no dashboard, just a terminal

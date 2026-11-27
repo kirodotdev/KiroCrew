@@ -127,6 +127,16 @@ async def _fire_dashboard_nudge(
 
     if crew_pause.holds_slot(slot):
         return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+    # A disabled app's slot takes no turn: stop the loop, for a disable this process
+    # never saw in the request (``apps.app_loops``).
+    from kiro_crew.apps.app_loops import stop_loop_if_app_disabled
+
+    if (
+        wake_message is None
+        and self.autonudge_svc is not None
+        and await stop_loop_if_app_disabled(self.autonudge_svc, loop, slot)
+    ):
+        return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
     # STRUCTURAL-TERMINAL GUARD (message loops only). If the slot's LAST
     # delivered turn ended on a malformed-request rejection, the backend
     # refused the payload's SHAPE, deterministically -- re-injecting the same
@@ -401,6 +411,8 @@ async def _start_dashboard_wake_turn(
     if not await self._dashboard_mode_admits(loop, slot):
         await self._audit_fire_refused(loop, slot)
         return MonitorDispatchResult.UNAVAILABLE
+    # A turn of the conductor's work-ledger watch (tracing: its patrol turn).
+    patrol = self._work_ledger_wake_loop(loop, wake_message)
     # Asked again after the last await before the turn is spawned: a Pause all
     # that landed during the body's ledger read or the admission check holds it.
     # From here to the spawn nothing suspends, and a spawned turn is one Pause
@@ -605,6 +617,18 @@ async def _start_dashboard_wake_turn(
         if completion_hook is not None and not await completion_hook.authorize():
             mark_turn_unstarted(turn_slot)
             return
+        # The app may have been disabled while this turn waited for admission: the
+        # disable stopped the loop but not this queued turn, so recheck before it runs.
+        from kiro_crew.apps.app_loops import app_disabled_for_slot
+
+        if wake_message is None and await asyncio.to_thread(app_disabled_for_slot, turn_slot):
+            logger.info(
+                "AutoNudge: loop %s turn dropped on slot %s: its app was disabled",
+                loop.id,
+                loop.slot_key,
+            )
+            mark_turn_unstarted(turn_slot)
+            return
         # NO AUDIENCE FENCE for the work-ledger wake, by construction: the
         # wake carries ``wake_brief`` lines
         # and a ``work_ledger_read`` pointer, so there is no worker-authored
@@ -613,13 +637,17 @@ async def _start_dashboard_wake_turn(
         # ``_caller_key`` -- which judges the containment and records the
         # admission itself, inside this very turn. The gate sits at the one
         # place that reads the board.
-        await _run_chat(
-            dashboard_state,
-            turn_slot,
-            tagged,
-            _directive_user_origin=False,
-            **run_kwargs,
-        )
+        from kiro_crew.tracing import work as trace_work
+
+        # A turn of the conductor's work-ledger watch links to the reports it answers.
+        with trace_work.patrol_turn(patrol):
+            await _run_chat(
+                dashboard_state,
+                turn_slot,
+                tagged,
+                _directive_user_origin=False,
+                **run_kwargs,
+            )
 
     async def _run_background_turn() -> None:
         try:

@@ -91,7 +91,7 @@ describe('composer dock clearance', () => {
     // The same measurement reads the scroller's reserved scrollbar gutter, so
     // the dock's `right` inset lines its column up with the transcript's and
     // leaves the thumb uncovered — hence `scrollerRef` in the deps.
-    const hook = /const dockRef = useCallback\(\(el: HTMLDivElement \| null\) => \{[\s\S]*?if \(!el\) \{ setDockH\(0\); setDockGutter\(0\); return \}[\s\S]*?setDockH\(el\.offsetHeight\)[\s\S]*?setDockGutter\(sc \? Math\.max\(0, sc\.offsetWidth - sc\.clientWidth\) : 0\)[\s\S]*?new ResizeObserver\(measure\)[\s\S]*?ro\.observe\(el\)[\s\S]*?\}, \[scrollerRef\]\)/
+    const hook = /const dockRef = useCallback\(\(el: HTMLDivElement \| null\) => \{[\s\S]*?if \(!el\) \{ setDockH\(0\); setDockGutter\(0\); return \}[\s\S]*?setDockH\(el\.offsetHeight\)[\s\S]*?setDockGutter\(sc \? Math\.max\(0, sc\.offsetWidth - sc\.clientWidth\) : 0\)[\s\S]*?new ResizeObserver\(\(\) => \{[\s\S]*?flushSync\(measure\)[\s\S]*?measure\(\)[\s\S]*?ro\.observe\(el\)[\s\S]*?\}, \[scrollerRef\]\)/
     expect(DOCK).toMatch(hook)
     for (const src of [CHAT_PAGE, CHAT_PANE]) {
       expect(src, 'the host takes dockRef from the shared measurement').toMatch(/const \{ inputAreaRef, dockH, dockGutter, dockRef \} = useComposerDockMetrics\(scrollerRef\)/)

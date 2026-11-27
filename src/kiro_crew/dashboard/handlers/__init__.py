@@ -2,14 +2,19 @@
 
 System metrics (CPU, memory, network, disk) are in ``handlers_system.py``.
 This module re-exports ``api_status`` and ``api_system`` for backward compat.
+
+Six handler modules are not imported with the package: their names are read from the
+owner, which is imported on first access (the end of this module), so a test that
+imports the package does not also load what only those modules import.
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # Imports accessed by submodules via late-binding (_h.X pattern)
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path  # noqa: F401
@@ -25,6 +30,7 @@ from kiro_crew.dashboard.handlers_system import (  # noqa: F401
 from kiro_crew.dashboard.origin import is_loopback  # noqa: F401
 from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.security import (  # noqa: F401
+    is_sensitive_canonical_path,
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -130,6 +136,9 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_test,
     api_mcp_oauth_relay,
 )
+from kiro_crew.dashboard.handlers.connections_app_manifest import (  # noqa: E402, F401
+    api_connections_app_manifests,
+)
 
 # ── Session crew log (handlers/crew_log.py) ──
 from kiro_crew.dashboard.handlers.crew_log import (  # noqa: E402, F401
@@ -152,6 +161,7 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_folders_create,
     api_cron_folders_delete,
     api_cron_folders_update,
+    api_cron_get,
     api_cron_history,
     api_cron_history_all,
     api_cron_history_detail,
@@ -217,31 +227,6 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_workspaces_delete,
     api_workspaces_update,
 )
-
-# ── Hooks (extracted to handlers/hooks.py) ──
-from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
-    _get_hook_store,
-    _load_hook_context,
-    _run_hook_agent,
-    _run_hook_inner,
-    _verify_hook_token,
-    api_hook_detail,
-    api_hook_test,
-    api_hook_toggle,
-    api_hooks,
-    api_hooks_agent,
-    api_hooks_agent_status,
-    api_hooks_create,
-    api_kiro_hooks,
-    api_kiro_hooks_rescan,
-    api_webhook_context_delete,
-    api_webhook_test,
-    api_webhook_token_create,
-    api_webhook_token_delete,
-    api_webhook_token_update,
-    api_webhooks,
-    api_webhooks_switch,
-)
 from kiro_crew.dashboard.handlers.kiro_prerequisite import (  # noqa: E402, F401
     api_kiro_prerequisite_repair_specs,
     api_kiro_prerequisite_status,
@@ -264,6 +249,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     api_mcp_measure_start,
     api_mcp_probe,
     api_mcp_probe_cached,
+    api_mcp_probe_one,
     api_mcp_quarantine_clear,
     api_mcp_remove,
     api_mcp_resolve_refresh,
@@ -323,6 +309,7 @@ from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.memory_admin import (  # noqa: E402, F401
     api_memory_backup,
     api_memory_backups,
+    api_memory_ownerless_stores,
     api_memory_restore,
     api_memory_restore_cancel,
     api_memory_retired,
@@ -382,6 +369,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_discord_config_save,
     api_feishu_config_get,
     api_feishu_config_save,
+    api_feishu_sdk_install,
     api_imessage_config_get,
     api_imessage_config_save,
     api_notification_ack,
@@ -401,6 +389,10 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_history,
     api_slack_manifest,
     api_slack_manifest_status,
+    api_slack_owner_claim_cancel,
+    api_slack_owner_claim_confirm,
+    api_slack_owner_claim_get,
+    api_slack_owner_claim_start,
     api_slack_pins,
     api_slack_profile,
     api_slack_reactions,
@@ -471,16 +463,6 @@ from kiro_crew.dashboard.handlers.session_ledger import (  # noqa: E402, F401
 )
 
 # ── Sessions (extracted to handlers/sessions.py) ──
-from kiro_crew.dashboard.handlers.session_storage import (  # noqa: E402, F401
-    api_session_inventory,
-    api_session_inventory_detail,
-    api_session_inventory_trash,
-    api_session_storage,
-    api_session_storage_cleanup,
-    api_session_storage_empty,
-    api_session_storage_empty_status,
-    api_session_storage_restore,
-)
 from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     _SHUTDOWN_TIMEOUT_SECS,
     _fetch_usage_bg,
@@ -504,21 +486,10 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_sessions_memory,
     api_sessions_restart,
     api_sessions_search,
+    api_sessions_search_messages,
     api_sessions_summarize,
     api_sessions_usage,
     api_sessions_usage_refresh,
-)
-
-# ── Side conversation (extracted to handlers/side.py) ──
-from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
-    api_side_close,
-    api_side_open,
-    api_side_queue_cancel,
-    api_side_queue_edit,
-    api_side_state,
-    api_side_stop,
-    api_side_tools,
-    api_side_turn,
 )
 
 # ── Skill context budget (extracted to handlers/skill_budget.py) ──
@@ -541,36 +512,12 @@ from kiro_crew.dashboard.handlers.tailnet import (  # noqa: E402, F401
     api_tailnet_status,
 )
 from kiro_crew.dashboard.handlers.tailnet_mobile import (  # noqa: E402, F401
+    api_tailnet_mobile_clear_overrides,
     api_tailnet_mobile_configure,
     api_tailnet_mobile_publish,
     api_tailnet_mobile_qr,
     api_tailnet_mobile_status,
     api_tailnet_mobile_unpublish,
-)
-
-# ── Task Runner (extracted to handlers/taskrunner.py) ──
-from kiro_crew.dashboard.handlers.taskrunner import (  # noqa: E402, F401
-    _run_refine,
-    api_taskrunner_cancel,
-    api_taskrunner_delete,
-    api_taskrunner_execute_plan,
-    api_taskrunner_export_yaml,
-    api_taskrunner_from_chat,
-    api_taskrunner_pause,
-    api_taskrunner_plan,
-    api_taskrunner_plan_cancel,
-    api_taskrunner_plan_context,
-    api_taskrunner_refine,
-    api_taskrunner_refine_answer,
-    api_taskrunner_refine_cancel,
-    api_taskrunner_refine_status,
-    api_taskrunner_rename,
-    api_taskrunner_retry,
-    api_taskrunner_start,
-    api_taskrunner_status,
-    api_taskrunner_to_chat,
-    api_taskrunner_update_plan,
-    api_taskrunner_update_task,
 )
 
 # ── Crewmate teams (handlers/teams.py) ──
@@ -628,12 +575,18 @@ async def api_tasks_summary(request):
     return await handler(request)
 
 
+from kiro_crew.dashboard.handlers.prompt_as_sent import (  # noqa: E402, F401
+    api_prompt_as_sent,
+)
 from kiro_crew.dashboard.handlers.telemetry import (  # noqa: E402, F401
     api_beacon_status,
     api_collection_status,
     api_context_trace,
     api_telemetry_startup,
     api_usage_turns,
+)
+from kiro_crew.dashboard.handlers.telemetry_app_view import (  # noqa: E402, F401
+    api_app_view,
 )
 from kiro_crew.dashboard.handlers.telemetry_ui_control import (  # noqa: E402, F401
     api_ui_control_clicked,
@@ -845,7 +798,7 @@ def _prompt_dir_entry(path: Path, root_real: Path, src: str) -> dict[str, Any] |
         # for a directory or a device node.
         if not path.is_file() or path.stat().st_nlink > 1:
             return None
-        if is_sensitive_path(str(resolved)):
+        if is_sensitive_canonical_path(str(resolved)):
             return None
     except (OSError, ValueError, RuntimeError):
         return None
@@ -992,7 +945,7 @@ def _build_prompt_base() -> list[dict[str, Any]]:
                 resolved = str(sop_file.resolve())
             except OSError:
                 continue
-            if is_sensitive_path(resolved):
+            if is_sensitive_canonical_path(resolved):
                 logger.debug("Skipping sensitive path: %s", sop_file)
                 continue
             name = sop_file.stem.removesuffix(".sop")
@@ -1107,6 +1060,7 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     api_kirocrew_config_patch,
     api_live,
     api_logout,
+    api_logout_link,
     api_ready,
     api_security_posture,
     api_security_stats,
@@ -1180,13 +1134,6 @@ from kiro_crew.dashboard.handlers.optimizer import (  # noqa: E402, F401
     handle_optimize,
 )
 
-# ── Portability (export/import as zip) ──
-from kiro_crew.dashboard.handlers.portability import (  # noqa: E402, F401
-    api_portability_export,
-    api_portability_import,
-    api_portability_preview,
-)
-
 # The per-folder project-hooks choice (see ``kiro_crew.project_hooks_consent``).
 from kiro_crew.dashboard.handlers.project_hooks_consent import (  # noqa: E402, F401
     api_project_hooks_consent_get,
@@ -1205,24 +1152,208 @@ from kiro_crew.dashboard.handlers.safety_switches import (  # noqa: E402, F401
     api_safety_switches_get,
     api_safety_switches_put,
 )
-from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
-    api_denied_command_builtin_toggle,
-    api_denied_command_user_add,
-    api_denied_command_user_delete,
-    api_denied_command_user_toggle,
-    api_denied_commands_disable_all,
-    api_denied_commands_list,
-    api_governance_policy,
-    api_trusted_app_grant,
-    api_trusted_app_revoke,
-    api_trusted_apps_allow_all,
-    api_trusted_apps_list,
-    api_trusted_registries_list,
-    api_trusted_registry_grant,
-    api_trusted_registry_revoke,
-)
 from kiro_crew.dashboard.handlers.tool_grants import (  # noqa: E402, F401
     api_tool_grant_add,
     api_tool_grant_remove,
     api_tool_grants_list,
 )
+
+# ── Read from the owner on first access (PEP 562) ──
+# Each module below loads modules no other import of this package loads, so the
+# package leaves them out; ``handlers.X`` still reaches every name. Nothing is cached,
+# so a patch of the owner's name is what the package answers while it lasts. A name
+# a function of this module reads stays an eager import above (a module's own global
+# lookups bypass ``__getattr__``), and so does a name tests patch through the package
+# (``monkeypatch``'s undo writes the original into this module).
+if TYPE_CHECKING:
+    from kiro_crew.dashboard.handlers.hooks import (  # noqa: F401
+        _get_hook_store,
+        _load_hook_context,
+        _run_hook_agent,
+        _run_hook_inner,
+        _verify_hook_token,
+        api_hook_detail,
+        api_hook_test,
+        api_hook_toggle,
+        api_hooks,
+        api_hooks_agent,
+        api_hooks_agent_status,
+        api_hooks_create,
+        api_kiro_hooks,
+        api_kiro_hooks_rescan,
+        api_webhook_context_delete,
+        api_webhook_test,
+        api_webhook_token_create,
+        api_webhook_token_delete,
+        api_webhook_token_update,
+        api_webhooks,
+        api_webhooks_switch,
+    )
+    from kiro_crew.dashboard.handlers.portability import (  # noqa: F401
+        api_portability_export,
+        api_portability_import,
+        api_portability_preview,
+    )
+    from kiro_crew.dashboard.handlers.security import (  # noqa: F401
+        api_denied_command_builtin_toggle,
+        api_denied_command_user_add,
+        api_denied_command_user_delete,
+        api_denied_command_user_toggle,
+        api_denied_commands_disable_all,
+        api_denied_commands_list,
+        api_governance_policy,
+        api_trusted_app_grant,
+        api_trusted_app_revoke,
+        api_trusted_apps_allow_all,
+        api_trusted_apps_list,
+        api_trusted_registries_list,
+        api_trusted_registry_grant,
+        api_trusted_registry_revoke,
+    )
+    from kiro_crew.dashboard.handlers.session_storage import (  # noqa: F401
+        api_session_inventory,
+        api_session_inventory_detail,
+        api_session_inventory_trash,
+        api_session_storage,
+        api_session_storage_cleanup,
+        api_session_storage_empty,
+        api_session_storage_empty_status,
+        api_session_storage_restore,
+    )
+    from kiro_crew.dashboard.handlers.side import (  # noqa: F401
+        api_side_close,
+        api_side_open,
+        api_side_queue_cancel,
+        api_side_queue_edit,
+        api_side_state,
+        api_side_stop,
+        api_side_tools,
+        api_side_turn,
+    )
+    from kiro_crew.dashboard.handlers.taskrunner import (  # noqa: F401
+        _run_refine,
+        api_taskrunner_cancel,
+        api_taskrunner_delete,
+        api_taskrunner_execute_plan,
+        api_taskrunner_export_yaml,
+        api_taskrunner_from_chat,
+        api_taskrunner_pause,
+        api_taskrunner_plan,
+        api_taskrunner_plan_cancel,
+        api_taskrunner_plan_context,
+        api_taskrunner_refine,
+        api_taskrunner_refine_answer,
+        api_taskrunner_refine_cancel,
+        api_taskrunner_refine_status,
+        api_taskrunner_rename,
+        api_taskrunner_retry,
+        api_taskrunner_start,
+        api_taskrunner_status,
+        api_taskrunner_to_chat,
+        api_taskrunner_update_plan,
+        api_taskrunner_update_task,
+    )
+
+_LAZY: dict[str, tuple[str, ...]] = {
+    "kiro_crew.dashboard.handlers.hooks": (
+        "_get_hook_store",
+        "_load_hook_context",
+        "_run_hook_agent",
+        "_run_hook_inner",
+        "_verify_hook_token",
+        "api_hook_detail",
+        "api_hook_test",
+        "api_hook_toggle",
+        "api_hooks",
+        "api_hooks_agent",
+        "api_hooks_agent_status",
+        "api_hooks_create",
+        "api_kiro_hooks",
+        "api_kiro_hooks_rescan",
+        "api_webhook_context_delete",
+        "api_webhook_test",
+        "api_webhook_token_create",
+        "api_webhook_token_delete",
+        "api_webhook_token_update",
+        "api_webhooks",
+        "api_webhooks_switch",
+    ),
+    "kiro_crew.dashboard.handlers.portability": (
+        "api_portability_export",
+        "api_portability_import",
+        "api_portability_preview",
+    ),
+    "kiro_crew.dashboard.handlers.security": (
+        "api_denied_command_builtin_toggle",
+        "api_denied_command_user_add",
+        "api_denied_command_user_delete",
+        "api_denied_command_user_toggle",
+        "api_denied_commands_disable_all",
+        "api_denied_commands_list",
+        "api_governance_policy",
+        "api_trusted_app_grant",
+        "api_trusted_app_revoke",
+        "api_trusted_apps_allow_all",
+        "api_trusted_apps_list",
+        "api_trusted_registries_list",
+        "api_trusted_registry_grant",
+        "api_trusted_registry_revoke",
+    ),
+    "kiro_crew.dashboard.handlers.session_storage": (
+        "api_session_inventory",
+        "api_session_inventory_detail",
+        "api_session_inventory_trash",
+        "api_session_storage",
+        "api_session_storage_cleanup",
+        "api_session_storage_empty",
+        "api_session_storage_empty_status",
+        "api_session_storage_restore",
+    ),
+    "kiro_crew.dashboard.handlers.side": (
+        "api_side_close",
+        "api_side_open",
+        "api_side_queue_cancel",
+        "api_side_queue_edit",
+        "api_side_state",
+        "api_side_stop",
+        "api_side_tools",
+        "api_side_turn",
+    ),
+    "kiro_crew.dashboard.handlers.taskrunner": (
+        "_run_refine",
+        "api_taskrunner_cancel",
+        "api_taskrunner_delete",
+        "api_taskrunner_execute_plan",
+        "api_taskrunner_export_yaml",
+        "api_taskrunner_from_chat",
+        "api_taskrunner_pause",
+        "api_taskrunner_plan",
+        "api_taskrunner_plan_cancel",
+        "api_taskrunner_plan_context",
+        "api_taskrunner_refine",
+        "api_taskrunner_refine_answer",
+        "api_taskrunner_refine_cancel",
+        "api_taskrunner_refine_status",
+        "api_taskrunner_rename",
+        "api_taskrunner_retry",
+        "api_taskrunner_start",
+        "api_taskrunner_status",
+        "api_taskrunner_to_chat",
+        "api_taskrunner_update_plan",
+        "api_taskrunner_update_task",
+    ),
+}
+_OWNERS = {name: owner for owner, owned in _LAZY.items() for name in owned}
+
+# Hidden from type checkers, as in ``acp/__init__.py``: they see the names through the
+# ``TYPE_CHECKING`` imports above instead.
+if not TYPE_CHECKING:
+
+    def __getattr__(name: str) -> Any:
+        if name not in _OWNERS:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return getattr(importlib.import_module(_OWNERS[name]), name)
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_OWNERS})

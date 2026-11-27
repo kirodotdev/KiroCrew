@@ -140,27 +140,12 @@ def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() 
     assert _index().divergent() == ()
 
 
-#: The owner modules, one per line, so two changes that each add an owner edit
-#: different lines (testing-conventions.md § Merge-safe ratchets and counts).
-_OWNER_MODULES = (
-    "kiro_crew.work_ledger_purge",
-    "kiro_crew.work_ledger_records",
-    "kiro_crew.work_ledger_remote",
-    "kiro_crew.work_ledger_rules",
-    "kiro_crew.work_ledger_store",
-    "kiro_crew.work_ledger_undelivered",
-    "kiro_crew.work_ledger_writes",
-)
-
-
 def test_the_owners_are_the_work_ledger_siblings_in_layer_order() -> None:
     """``_OWNERS`` names every ``work_ledger_*.py`` sibling, and each owner imports only
     owners listed before it: the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
+    assert owners, "the facade composes no owner"
     on_disk = {f"kiro_crew.{p.stem}": p for p in SRC_DIR.glob("work_ledger_*.py")}
-    assert sorted(on_disk) == list(
-        _OWNER_MODULES
-    ), f"the owner modules changed; write one line per module in _OWNER_MODULES: {sorted(on_disk)}"
     assert sorted(owners) == sorted(on_disk)
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):

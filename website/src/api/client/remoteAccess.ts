@@ -43,11 +43,13 @@ export interface TailnetStatusData {
  *
  * - `policy_off` — an LTS build whose policy does not turn tailnet on. Dead end.
  * - `pinned` — an administrator's policy forbids tailnet access. Dead end.
- * - `untrusted_cli` / `install` / `start_daemon` / `sign_in` / `enable_magicdns`
- *   — the ways there is no usable tailnet name, kept apart because each is a
- *   different errand for the operator. `untrusted_cli` means Tailscale IS
- *   installed, at a path the gateway refuses to run (user-writable), so the
- *   remedy is `dashboard.url` rather than a download.
+ * - `untrusted_cli` / `install` / `start_daemon` / `sign_in` / `approve_device` /
+ *   `enable_magicdns` — the ways there is no usable tailnet name, kept apart
+ *   because each is a different errand for the operator. `untrusted_cli` means
+ *   Tailscale IS installed, at a path the gateway refuses to run
+ *   (user-writable), so the remedy is `dashboard.url` rather than a download.
+ *   `approve_device` is signed in but waiting for an admin to approve this
+ *   device, which another sign-in cannot do.
  * - `enable_https` — the tailnet has not granted certificate provisioning for
  *   that name; this requires one-time tailnet administrator consent.
  * - `trust_off` — a name exists but the gateway will not accept it as an origin
@@ -66,6 +68,7 @@ export type TailnetMobileStep =
   | 'install'
   | 'start_daemon'
   | 'sign_in'
+  | 'approve_device'
   | 'enable_magicdns'
   | 'enable_https'
   | 'trust_off'
@@ -123,6 +126,15 @@ export interface TailnetMobileConfigure {
   restart_required: boolean
 }
 
+/** One `config.local.json` key a `409 config_overlay_conflict` setup answer
+ *  names: the value that file holds and the `config.json` value that applies
+ *  once it is removed. */
+export interface TailnetMobileOverride {
+  field: string
+  local: unknown
+  applies: unknown
+}
+
 /** A minted mobile-access QR. Carries a LIVE session token in both fields, so
  *  it is fetched only on explicit user action and never cached. */
 export interface TailnetMobileQr {
@@ -142,12 +154,23 @@ export interface TailnetMobileQr {
  * `tunnel.relay_enabled`. `requested` is what config asks for. `locked` says this
  * build ignores the setting (an LTS build's tunnel lock), so no restart connects.
  * `running` says the relay client is connected now, so other devices can reach this
- * Crew. The dashboard can only turn it off; turning it on is the terminal command.
+ * Crew. `relayed` says this page reached the Crew through the Kiro relay, where the
+ * server refuses the off (it could only be undone at the machine), so the card
+ * shows the state read-only. The dashboard can only turn it off; turning it on is
+ * the terminal command.
  */
+/** The one key of the `/api/remote-control` read (the card and the settings search). */
+export const REMOTE_CONTROL_QUERY_KEY = ['remote-control'] as const
+
 export interface RemoteControlState {
   requested: boolean
   locked: boolean
   running: boolean
+  /** Not connected yet but on its way (starting, or waiting for a host token): no restart needed. */
+  connecting?: boolean
+  relayed?: boolean
+  /** Why config keeps a requested relay from starting, in plain words; absent otherwise. */
+  problem?: string
 }
 
 export function createRemoteAccessEndpoints({ get, post, put, j }: ClientTransport) {
@@ -181,6 +204,12 @@ export function createRemoteAccessEndpoints({ get, post, put, j }: ClientTranspo
     tailnetMobile: () => get('/api/tailnet/mobile').then(j) as Promise<TailnetMobileData>,
     tailnetMobileConfigure: () =>
       post('/api/tailnet/mobile/configure', {}).then(j) as Promise<TailnetMobileConfigure>,
+    // Removes only the listed keys from config.local.json; the card calls it
+    // after the owner confirms the overrides a setup conflict listed.
+    tailnetMobileClearOverrides: (fields: string[]) =>
+      post('/api/tailnet/mobile/clear-overrides', { fields }).then(j) as Promise<{
+        removed: string[]
+      }>,
     tailnetMobilePublish: () =>
       post('/api/tailnet/mobile/publish', {}).then(j) as Promise<TailnetMobileMutation>,
     tailnetMobileUnpublish: () =>

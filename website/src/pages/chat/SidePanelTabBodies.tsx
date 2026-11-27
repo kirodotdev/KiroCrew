@@ -18,7 +18,7 @@ import ArtifactPanel, { type ArtifactPanelHandle } from '../../components/Artifa
 import FolderPanel from './FolderPanel'
 import FileBrowserRail from './FileBrowserRail'
 import PreviewTabBody from '../../components/PreviewTabBody'
-import CliPanel from '../../components/CliPanel'
+import CliPanel from '../../components/LazyCliPanel'
 import { countLines } from '../../components/FileChangeChips'
 import { pathBasename } from '../../utils/pathBasename'
 import { useQueryClient } from '@tanstack/react-query'
@@ -413,7 +413,9 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   }
   if (tab.kind === 'folder') {
     return (
+      // Keyed by chat: tab bodies are keyed by tab id only, so two chats' `folder:/x` tabs would share one Back list.
       <FolderPanel
+        key={slot}
         path={tab.path || ''}
         projectDir={projectDir}
         onClose={onClose}

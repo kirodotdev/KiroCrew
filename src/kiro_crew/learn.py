@@ -21,6 +21,7 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ALWAYS,
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_VALUES,
+    LESSON_RULES_HEADER,
     any_request_overlap,
     contains_volatile_lesson_fact,
     order_by_request_relevance,
@@ -44,6 +45,26 @@ except ImportError:
     _config_dir = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+_LOG_RULE_CHARS = 200
+
+
+def _log_rule(rule: str) -> str:
+    """A lesson rule as it may appear in a log line: redacted, then cut.
+
+    Only the log line changes; the stored rule is untouched. Redact before the
+    cut so a secret across the cut cannot leave a fragment. The log spelling runs
+    the credential pass in full even inside a seam where the owner turned
+    redaction off (the cut would otherwise keep a raw fragment), and withholds the
+    text when a companion failed to compose. Any other redactor failure also
+    withholds the text, and never fails the write.
+    """
+    try:
+        from kiro_crew.platform.context import redact_log_via_context
+
+        return redact_log_via_context(rule)[:_LOG_RULE_CHARS]
+    except Exception:  # noqa: BLE001 - a log line must never fail a lesson write
+        return "<lesson text withheld>"
 
 
 def lesson_contains_injection(rule: object, negative: object = None) -> bool:
@@ -166,22 +187,29 @@ class Lesson:
 def _lesson_lines(path: Path) -> list[str | None]:
     """The lines of *path*, with ``None`` for a line that does not decode.
 
-    Read exactly as before (the platform's default text decoding), so a file that
-    loads today reads the same. Only when that whole-file decode fails is the file
-    split into lines and each decoded on its own, so one bad byte costs its own
-    line instead of every lesson in the file.
+    Read as UTF-8, like ``legacy_lessons``. Under another code page (cp1252 on a
+    Windows host without UTF-8 mode) a hand-edited UTF-8 row still decodes, but
+    into the wrong characters, and the next save writes them back for good. Rows
+    the store writes are ASCII, so they read the same either way. Only when the
+    whole-file decode fails is the file split into lines, each tried as UTF-8 and
+    then with the platform's default codec, so a row saved in that code page
+    still reads and one bad byte costs its own line instead of every lesson.
     """
     try:
-        return list(path.read_text().splitlines())
+        return list(path.read_text(encoding="utf-8").splitlines())
     except UnicodeDecodeError:
-        import locale  # in-function: only reached for a damaged file
+        import locale  # in-function: only reached for a file that is not all UTF-8
 
-        encoding = locale.getpreferredencoding(False)
+        encodings = ("utf-8", locale.getpreferredencoding(False))
     lines: list[str | None] = []
     for raw in path.read_bytes().splitlines():
-        try:
-            lines.append(raw.decode(encoding))
-        except UnicodeDecodeError:
+        for encoding in encodings:
+            try:
+                lines.append(raw.decode(encoding))
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
             lines.append(None)
     return lines
 
@@ -527,7 +555,7 @@ class LessonStore:
                 written_by=lesson.written_by or rows[source].written_by,
             )
             self._write_all(updated)
-        logger.info("Replaced lesson: %s", lesson.rule)
+        logger.info("Replaced lesson: %s", _log_rule(lesson.rule))
         return "replaced"
 
     def _insert_or_enrich(
@@ -671,13 +699,13 @@ class LessonStore:
                             "Refused lesson: the store is at its %d-row cap and every "
                             "retained row outranks this one: %s",
                             _MAX_LESSONS_TOTAL,
-                            lesson.rule,
+                            _log_rule(lesson.rule),
                         )
                         return "refused"
             self._write_all(updated)
         if superseded_out is not None:
             superseded_out.extend(replaced)
-        logger.info("%s lesson: %s", outcome.capitalize(), lesson.rule)
+        logger.info("%s lesson: %s", outcome.capitalize(), _log_rule(lesson.rule))
         return outcome
 
     @named_store_operation
@@ -998,10 +1026,7 @@ class LessonStore:
             ranked_directives,
             directive_room,
             omission_kind=context_omissions.LESSON_RULES,
-            header=(
-                "[Learned corrections — retained rules from past mistakes.\n"
-                "Each binds under CRITICAL RULES but adds no ask case.]"
-            ),
+            header=LESSON_RULES_HEADER + "]",
             footer="[End of learned corrections]",
             omission=(
                 "[Context budget: omitted {count} of {total} retained rules above the "

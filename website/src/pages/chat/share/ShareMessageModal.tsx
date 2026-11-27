@@ -315,7 +315,8 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
                   <div role="alert" data-testid="share-withdrawn" className="flex items-start gap-2 rounded-lg bg-warn-subtle ring-1 ring-inset ring-warn/30 px-3 py-2 text-[12px] leading-5 text-text">
                     <AlertTriangle size={14} className="shrink-0 mt-0.5 text-warn" aria-hidden="true" />
                     <span className="flex-1">{i18nT('pages.chat.share.withdrawn_by_policy')}</span>
-                    <Btn onClick={copyTextOnly} data-testid="share-copy-text" aria-label={i18nT('pages.chat.share.copy_text_only')}>
+                    {/* Filled, with the strong edge: the plain edge vanishes on the tint. */}
+                    <Btn className="border-border-strong bg-bg-elevated" onClick={copyTextOnly} data-testid="share-copy-text" aria-label={i18nT('pages.chat.share.copy_text_only')}>
                       {textCopy === 'copied' ? <Check size={14} className="lucide-inline text-ok" /> : textCopy === 'failed' ? <AlertTriangle size={14} className="lucide-inline text-warn" /> : <Copy size={14} className="lucide-inline" />}
                       {' '}
                       {textCopy === 'copied' ? i18nT('pages.chat.share.copied_text') : textCopy === 'failed' ? i18nT('pages.chat.share.copy_text_failed') : i18nT('pages.chat.share.copy_text_only')}

@@ -109,8 +109,6 @@ describe('the card that actually renders it', () => {
 describe('every surface that renders an error message', () => {
   const framed = () => framedMessage()
   it.each([
-    ['a signed-out row, which offers sign-in instead of Resume',
-      () => <ErrorCard content={framed()} onOpenSignIn={() => {}} />],
     ['an entitlement row, which offers the two model actions',
       () => <ErrorCard content={framed()} onPickModel={() => {}} onOpenDefaultModel={() => {}} />],
     ['a resumable row, which carries Resume beside the prose',
@@ -127,5 +125,12 @@ describe('every surface that renders an error message', () => {
     at(ORIGIN)
     render(mount())
     expect(screen.getByRole('link', { name: ORIGIN })).toHaveAttribute('href', ORIGIN)
+  })
+
+  it('a signed-out row shows one line and Sign in, not the framed prose, so it has no address to link', () => {
+    at(ORIGIN)
+    render(<ErrorCard content={framed()} onOpenSignIn={() => {}} />)
+    expect(screen.queryByRole('link', { name: ORIGIN })).toBeNull()
+    expect(screen.getByTestId('kiro-sign-in-open')).toBeInTheDocument()
   })
 })

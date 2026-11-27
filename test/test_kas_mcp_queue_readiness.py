@@ -18,6 +18,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import session_handle
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
@@ -106,7 +107,7 @@ def _handle(monkeypatch, steps, *, tracked: bool = True) -> AcpSessionHandle:
     # ``time``, and its undo restores them all.
     monkeypatch.setattr(session_handle, "time", SimpleNamespace(monotonic=clock.monotonic))
     progress = McpConnectProgress() if tracked else None
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     handle._session_id = _SID
     handle._mcp_report = McpSessionReport()
     handle._mcp_report.begin_session([])

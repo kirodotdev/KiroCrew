@@ -126,6 +126,13 @@ export interface StatusData {
    */
   update_bundled_by_app?: boolean
   /**
+   * The command the sign-in sentences name in place of the catalog's
+   * `kirocrew token`: on a container gateway, `docker exec kirocrew kirocrew
+   * token`, run on the host. Empty, or absent on older gateways, keeps the
+   * catalog's command. Read through `api/signInCommand.ts`.
+   */
+  sign_in_command?: string
+  /**
    * Commit distance from a git checkout's upstream, both directions. Diverged
    * (both > 0) reports `update_available: false` exactly like a current
    * checkout — the destructive apply paths must never be offered local
@@ -554,6 +561,21 @@ export interface InstanceVersions {
   instances: InstanceVersionRow[]
 }
 
+/** One connected crew's bots, as `GET /api/instances/bots` lists them for the
+ *  Bots page. The crew's roster up to the row cap, each string redacted and clamped. */
+export interface InstanceBotsRow {
+  id: string
+  bots: { name: string; display_name: string }[]
+  /** Why the roster could not be read (the carrier's code), or "" when it was. */
+  error: string
+  /** How many of the crew's bots lie past the row cap and are not in `bots`. */
+  omitted: number
+}
+
+export interface InstanceBots {
+  crews: InstanceBotsRow[]
+}
+
 /** The latest "Update remote" job for one crew (`GET /api/instances/{id}/update`). */
 export interface RemoteUpdateJob {
   /** `succeeded`: the crew came back on a different version. `unchanged`: both
@@ -575,8 +597,11 @@ export interface RemoteUpdateJob {
    *  that it is idle). All are retried with `force`. Else "". Absent
    *  from a gateway that predates it. */
   code?: '' | 'still_busy' | 'peer_cannot_wait' | 'idle_check_failed'
-  /** The crew's last in-flight counts while `waiting_for_idle`. */
-  waiting?: { turns: number; background: number }
+  /** The crew's last in-flight counts while `waiting_for_idle`, and the work
+   *  it named behind them (`{kind, name, since_secs, count}` entries, and how
+   *  many it left out). The names are absent from an older hub and empty when
+   *  the crew named none. */
+  waiting?: { turns: number; background: number; holders?: unknown[]; holders_more?: number }
   /** Whether the job restarts without waiting for in-flight work. */
   force?: boolean
   /** The crew's version before the update and after its restart; "" when it

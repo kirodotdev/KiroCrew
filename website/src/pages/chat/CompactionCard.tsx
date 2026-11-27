@@ -64,9 +64,10 @@ export interface ParsedCompaction {
   afterTurn?: { pct: number; limit: number }
 }
 
-// `✅` is U+2705 (no variation selector in practice, tolerate one). The colon
-// is optional: the no-summary form ends in a period instead.
-const COMPLETED_RE = /^\s*\u2705\uFE0F*\s*Conversation compacted\s*[:.]?\s*/u
+// `✅` is U+2705 (no variation selector in practice, tolerate one). Current
+// gateways write no lead at all; saved history keeps the glyph, so it is
+// optional. The colon is optional: the no-summary form ends in a period instead.
+const COMPLETED_RE = /^\s*(?:\u2705\uFE0F*\s*)?Conversation compacted\s*[:.]?\s*/u
 // Failure shapes. Two writers, two glyphs: chat_utils / chat_turn/slash_commands.py lead a
 // failure with ❌ (U+274C) — "Compaction failed: …", "Compaction has failed
 // Nx …" — and the manual /compact timeout and state.py's threshold path lead
@@ -75,8 +76,10 @@ const COMPLETED_RE = /^\s*\u2705\uFE0F*\s*Conversation compacted\s*[:.]?\s*/u
 // that FAILED, so all four are errors however they are dressed (AUTOSDE
 // errors-use-error-notice decides by where the value comes from). The lookahead
 // pins the failure wording, so a ⚠ row that is merely a warning stays a notice.
+// Current gateways write the lead as a word (`Error:`, `Warning:`) or none;
+// both glyphs stay accepted for saved history.
 const FAILED_LEAD_RE =
-  /^\s*(?:\u274C|\u26A0)\uFE0F*\s*(?=(?:Compaction|Auto-compact)\b[^\n]*?\b(?:failed|timed out)\b)/u
+  /^\s*(?:(?:\u274C|\u26A0)\uFE0F*\s*|(?:Error|Warning):\s*)?(?=(?:Compaction|Auto-compact)\b[^\n]*?\b(?:failed|timed out)\b)/u
 // Status glyphs the state.py writers bake into the text (🔄 auto-compacted,
 // ♻️ recycled, ⏳ stuck turn). NoticeCard strips only its own ℹ️/⚠️/⛔ set and
 // keeps any other leading glyph as content, so these would render as raw emoji
@@ -84,17 +87,18 @@ const FAILED_LEAD_RE =
 // where the writer set is known; the tone stays info — none is a warning.
 // ⏳ is U+23F3 (HOURGLASS WITH FLOWING SAND), the glyph state.py writes — not
 // U+231B (⌛ HOURGLASS). ⏹ is U+23F9, the lead on the "compaction ended by
-// Stop" notice (#14841): a status, not a failure, so it lands here.
-const STATUS_LEAD_RE = /^\s*(?:\u{1F504}|\u267B|\u23F3|\u23F9)\uFE0F*\s*/u
+// Stop" notice (#14841): a status, not a failure, so it lands here. Its word
+// form `Stopped:` is the same lead on current gateways.
+const STATUS_LEAD_RE = /^\s*(?:(?:\u{1F504}|\u267B|\u23F3|\u23F9)\uFE0F*|Stopped:)\s*/u
 // The one lead that names an actor rather than the app: the notice for a
 // compaction the user's own forced Stop ended. It keeps the info tone but takes
 // a stop-square glyph, so the two restart notices (this and ♻️'s) are told apart
 // at a glance and the reader is not left guessing which restart was theirs.
-const STOP_LEAD_RE = /^\s*\u23F9\uFE0F*\s*/u
+const STOP_LEAD_RE = /^\s*(?:\u23F9\uFE0F*|Stopped:)\s*/u
 // The mid-turn row chat_turn/recovery.py writes once per turn when the context crosses the
 // compaction threshold (COMPACT_AFTER_TURN_NOTICE). Matched whole, so it renders
 // from the catalog in the reader's language instead of the stored English.
-const AFTER_TURN_RE = /^\s*\u{1F504}\uFE0F*\s*Context at (\d+)% \(limit (\d+)%\) \u2014 will compact after this turn\.\s*$/u
+const AFTER_TURN_RE = /^\s*(?:\u{1F504}\uFE0F*\s*)?Context at (\d+)% \(limit (\d+)%\) \u2014 will compact after this turn\.\s*$/u
 
 export function parseCompactionNotice(content: string): ParsedCompaction {
   const raw = content ?? ''

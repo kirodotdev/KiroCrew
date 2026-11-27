@@ -646,17 +646,36 @@ async def stop_slot_turn(
 
         _config = live.snapshot()
         _peer_recovery = _config is not None and _config.agent.peer_steer_loss_recovery
+        from kiro_crew.dashboard import deferred_steer
+
+        _injected = set(slot._deferred_steer_injected.values())
+        _still_held = {held.text for held in slot._deferred_steers}
+        # Injected held steers the client only buffered: they never left the gateway.
+        _never_sent = deferred_steer.unsent_injected(slot, getattr(slot, "_acp_client", None))
         for _discarded in slot._pending_steers:
             # With the key on a peer steer can wait for its turn's clean end, so a hard stop tells
-            # its sender; one still in its RPC will answer unavailable and be queued instead.
+            # its sender; one still in its RPC will answer unavailable and be queued instead. A
+            # held steer injected at a boundary, marked or not, is told too whatever the key says,
+            # and its receipt stops reading delivered: "discarded" when the client never sent it,
+            # else "unconfirmed". One still held is told by `discard_all`.
             _admission = slot._steer_admissions.get(_discarded)
-            if _peer_recovery and _admission and _discarded not in slot._steer_rpc_in_flight:
+            _unsent = _discarded in _never_sent
+            _was_injected = _discarded in _injected and _discarded not in _still_held
+            if _unsent:
+                deferred_steer.restamp(slot, _discarded, "discarded")
+            elif _was_injected:
+                deferred_steer.mark_unconfirmed(slot, _discarded)
+            if (
+                (_peer_recovery or _was_injected)
+                and _admission
+                and _discarded not in slot._steer_rpc_in_flight
+            ):
                 notify_send_origin_discarded(
                     state,
                     entry_meta=_admission,
                     target_slot=slot,
                     text=_discarded,
-                    cause=SEND_DISCARD_HARD_STOP_STEER,
+                    cause=SEND_DISCARD_HARD_STOP if _unsent else SEND_DISCARD_HARD_STOP_STEER,
                 )
             slot._steer_delivery_ids.pop(_discarded, None)
             # Lockstep with the line above (see `_ChatSlot._steer_send_ids`): a hard
@@ -674,6 +693,23 @@ async def stop_slot_turn(
             slot._steer_possibly_delivered.discard(_discarded)
             crew_steer_discarded(slot, _discarded)
         slot._pending_steers.clear()
+        # A hard stop discards held peer steers with the rest of the turn's pending work.
+        # Each was never injected, so its sender is told it will not run, as a queued
+        # delivery's sender is, and its receipt reads "discarded".
+        deferred_steer.discard_all(
+            slot,
+            lambda held: notify_send_origin_discarded(
+                state,
+                entry_meta=held.origin_meta,
+                target_slot=slot,
+                text=held.text,
+                cause=(
+                    SEND_DISCARD_HARD_STOP_STEER
+                    if held.steer_id in slot._deferred_steer_delivered
+                    else SEND_DISCARD_HARD_STOP
+                ),
+            ),
+        )
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
 
@@ -880,6 +916,7 @@ async def stop_slot_turn(
     # pending ask_question card.
     _unblock_pending_waits(state, slot)
 
+    preparing = getattr(slot, "_preparing_turn", None)
     outcome = await state.sessions.stop_turn(
         cancel_key,
         force=False,
@@ -898,14 +935,25 @@ async def stop_slot_turn(
     # is resolved and the reply names the honest state -- there is no running
     # provider turn here to report as "stopped", and no provider turn to kill.
     _idle_running = outcome == "idle" and slot.running
+    if outcome == "idle" and (
+        _cancel_preparing_runner(slot, preparing) or await _cancel_admission_wait(slot)
+    ):
+        # The turn had no provider turn yet: this press stopped it.
+        _idle_running = False
+    elif _idle_running and await _end_runner_past_its_provider_turn(
+        slot, preparing, stop_generation
+    ):
+        # The runner outlived its provider turn by the whole budget: this press ended it.
+        _idle_running = False
     # A newer press owns the card and the posture now: settling either here
     # would idle its stop, and its next press would start over instead of
-    # escalating to the hard kill.
-    _owns_posture = slot._stop_generation == stop_generation
+    # escalating to the hard kill. So does a press that escalated this card
+    # while the wait above ran: its hard kill settles it.
+    _owns_posture = (
+        slot._stop_generation == stop_generation and slot._stop_escalated_card_id != stop_id
+    )
     if outcome == "idle" and slot._stop_event_id and _owns_posture:
-        _resolve_stop_event(slot, "soft")
-        slot._stop_state = "idle"
-        state.push_slots_update()
+        await _on_soft()
     elif outcome == "compacting" and _owns_posture:
         # The race the pre-check above cannot close: the compaction committed
         # between that read and the cancel. Same answer, and the soft-stop side
@@ -935,6 +983,100 @@ async def stop_slot_turn(
         # Naming it keeps the reply from reading as "stopped a running turn".
         return {"ok": True, "info": "no active turn"}
     return {"ok": True}
+
+
+def _cancel_preparing_runner(slot: "_ChatSlot", preparing: Any) -> bool:
+    """End the runner a Stop found still preparing its turn; whether it did.
+
+    ``stop_turn`` answers ``"idle"`` while a runner is still in fair admission,
+    a cold start or its context build: no provider turn exists to cancel. The
+    runner's own dispatch gate would refuse it once preparation ends, but until
+    then it holds the slot and a second press finds nothing to escalate, so a
+    wedged preparation could not be stopped. *preparing* is the slot's
+    ``_preparing_turn`` record read before the press awaited. Only while it is
+    still current, its own runner task (``preparing.runner``, the task running
+    the exit guard, which a bounded turn keeps apart from ``slot.task``) is not
+    done, and it has opened no provider stream (``reached_provider``), recorded
+    no outcome, is not handed off and runs no local command, is that task
+    cancelled. The record is cleared first, so a second press finds nothing to
+    cancel while the runner unwinds. Its exit guard runs the tail, which hands
+    the queue off.
+    """
+    runner = getattr(preparing, "runner", None)
+    if (
+        preparing is None
+        or getattr(slot, "_preparing_turn", None) is not preparing
+        or runner is None
+        or runner.done()
+        or preparing.reached_provider
+        or preparing.outcome is not None
+        or preparing.handed_off
+        or preparing.local_command
+    ):
+        return False
+    logger.info("Stop: ending slot %s's turn before it reached the provider", slot.key)
+    slot._preparing_turn = None
+    runner.cancel()
+    return True
+
+
+async def _end_runner_past_its_provider_turn(
+    slot: "_ChatSlot", preparing: Any, stop_generation: int
+) -> bool:
+    """End a runner whose provider turn is over but which still holds the slot.
+
+    ``stop_turn`` answers ``"idle"`` once the provider holds no turn. A runner that
+    opened its stream normally ends a moment later by itself, and a press must not
+    cut a reply that is still finishing. A runner that never ends is the
+    stuck-Stop shape: each press settles a "[Stopped]" card and resets the
+    posture, so no press escalates, the slot stays running and the composer never
+    takes another prompt. The press waits the soft-stop budget for the runner to
+    end, then cancels it as :func:`_cancel_preparing_runner` does; the exit guard
+    runs the tail, which hands the queue off. Only while *preparing* is current,
+    reached the provider, is not handed off and runs no local command, and while
+    this press (*stop_generation*) still names the same stop initiation. A press
+    that escalated meanwhile owns the card, but does not prevent ending this
+    runner. Whether it cancelled.
+    """
+    from kiro_crew.dashboard.turn_dispatch import native_cancel_ack_timeout_secs
+
+    def _current() -> bool:
+        return (
+            getattr(slot, "_preparing_turn", None) is preparing
+            and not preparing.handed_off
+            and slot._stop_generation == stop_generation
+        )
+
+    runner = getattr(preparing, "runner", None)
+    if (
+        preparing is None
+        or runner is None
+        or runner.done()
+        or not preparing.reached_provider
+        or preparing.local_command
+        or not _current()
+    ):
+        return False
+    await asyncio.wait({runner}, timeout=native_cancel_ack_timeout_secs())
+    if runner.done() or not _current():
+        return False
+    logger.info("Stop: ending slot %s's turn, still running after its provider turn", slot.key)
+    slot._preparing_turn = None
+    runner.cancel()
+    return True
+
+
+async def _cancel_admission_wait(slot: "_ChatSlot") -> bool:
+    """End a dashboard send still waiting in fair admission; whether it did.
+
+    That wait runs before the send's runner starts, so it has no
+    ``_preparing_turn`` record for :func:`_cancel_preparing_runner` to find. Its
+    work is cancelled as a person's cancel instead: the turn ends unstarted and
+    its own hand-off drains the queue.
+    """
+    from kiro_crew.shared_crew import admission_entry
+
+    return await admission_entry.cancel_waiting_send(slot.key)
 
 
 def _compaction_in_flight(state: DashboardState, cancel_key: str) -> bool:
@@ -970,6 +1112,10 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     force = request.query.get("force", "").lower() == "true"
+    if not request_app:
+        from kiro_crew.dashboard import mate_thread_wakes
+
+        mate_thread_wakes.hold_after_stop(state, slot)
     # The audit has to name who asked: ``stop_slot_turn`` defaults its
     # ``source`` to ``dashboard`` and logs it as the SEL line's ``via``, so the
     # default would audit an app's stop — soft, force or the escalated second
@@ -1502,6 +1648,7 @@ async def _interrupt_claimed_turn(
     # pending ask_question card.
     _unblock_pending_waits(state, slot)
 
+    preparing = getattr(slot, "_preparing_turn", None)
     outcome = await state.sessions.stop_turn(
         cancel_key,
         force=False,
@@ -1509,14 +1656,18 @@ async def _interrupt_claimed_turn(
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
-    # Same ownership rule as ``stop_slot_turn``: a later press that claimed a
-    # new generation during the await owns the card and the posture.
-    _owns_posture = slot._stop_generation == claim_generation
+    if outcome == "idle" and not _cancel_preparing_runner(slot, preparing):
+        # Either tail drains the promoted card, as at the end of any stopped turn.
+        if not await _cancel_admission_wait(slot):
+            await _end_runner_past_its_provider_turn(slot, preparing, claim_generation)
+    # Same ownership rules as ``stop_slot_turn``: a later press that claimed a
+    # new generation during the await, or escalated this card, owns it.
+    _owns_posture = (
+        slot._stop_generation == claim_generation and slot._stop_escalated_card_id != stop_id
+    )
     # Resolve orphaned card when provider reports no active turn
     if outcome == "idle" and slot._stop_event_id and _owns_posture:
-        _resolve_stop_event(slot, "soft")
-        slot._stop_state = "idle"
-        state.push_slots_update()
+        await _on_soft()
     if after_stop is not None:
         await after_stop(outcome)
     if outcome == "compacting":

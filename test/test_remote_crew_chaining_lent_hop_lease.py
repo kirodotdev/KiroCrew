@@ -45,11 +45,14 @@ import socket
 import time
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 from remote_crew_chaining_helpers import _FakeTunnel, _mgr
 
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 
 class TestTheHopOwnershipInvariantHolds:
@@ -1073,6 +1076,7 @@ class TestALentCredentialIsShortLived:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             seen.append(ttl)

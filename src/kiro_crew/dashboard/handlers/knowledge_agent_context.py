@@ -16,13 +16,11 @@ from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig, coerce_config_field, data_home, read_config_text
 from kiro_crew.dashboard.body_numbers import body_int
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
-from kiro_crew.dashboard.handlers.knowledge_access import (
-    _pipeline,
-    _require_knowledge_owner,
-    _sel_log,
-    _store,
+from kiro_crew.dashboard.handlers._shared import (
+    read_bounded_json,
+    require_owner_for_dashboard_caller,
 )
+from kiro_crew.dashboard.handlers.knowledge_access import _pipeline, _sel_log, _store
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_source import add_agent_document
 from kiro_crew.knowledge.ingestion import _redact
@@ -99,7 +97,9 @@ async def search_for_context(request: web.Request) -> web.Response:
     Returns top results formatted for chat injection cards.
     Each result includes token count so frontend can show budget.
     """
-    owner_denied = await _require_knowledge_owner(request, "knowledge.search_for_context.read")
+    owner_denied = await require_owner_for_dashboard_caller(
+        request, "knowledge.search_for_context.read"
+    )
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -178,7 +178,7 @@ async def add_agent_document_route(request: web.Request) -> web.Response:
     the MCP process because ingestion needs the pipeline (reader, chunker,
     extraction pool, embedder), which only the gateway holds.
     """
-    owner_denied = await _require_knowledge_owner(request, "knowledge.agent_document.add")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.agent_document.add")
     if owner_denied is not None:
         return owner_denied
     cfg = KiroCrewConfig.load()
@@ -208,8 +208,12 @@ async def add_agent_document_route(request: web.Request) -> web.Response:
         source_uri=str(body.get("source_uri") or ""),
     )
     if result.get("status") == "error":
+        # A coded error is extraction that cannot run on this host (a harness
+        # that is signed out or unavailable): the document was fine, so 503.
+        code = result.get("code")
         return web.json_response(
-            {"error": result["error"], "code": "document_rejected"}, status=400
+            {"error": result["error"], "code": code or "document_rejected"},
+            status=503 if code else 400,
         )
     _sel_log(
         "agent_document.add",

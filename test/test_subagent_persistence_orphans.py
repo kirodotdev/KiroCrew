@@ -559,10 +559,22 @@ class TestOrphanNotification:
     @pytest.mark.parametrize(
         "whole, has_result, header, outcome, tail",
         [
-            (True, True, "✅ finished before gateway restart", "ok", "Use the read tool"),
-            (True, False, "✅ finished before gateway restart", "ok", "without writing any text"),
-            (False, True, "⚠️ cut off mid-turn by gateway restart", "interrupted", "fragment"),
-            (False, False, "❌ lost to gateway restart", "failed", "No result was captured"),
+            (True, True, "completed: finished before gateway restart", "ok", "Use the read tool"),
+            (
+                True,
+                False,
+                "completed: finished before gateway restart",
+                "ok",
+                "without writing any text",
+            ),
+            (
+                False,
+                True,
+                "interrupted: cut off mid-turn by gateway restart",
+                "interrupted",
+                "fragment",
+            ),
+            (False, False, "failed: lost to gateway restart", "failed", "No result was captured"),
         ],
     )
     async def test_the_notice_follows_the_run_record(

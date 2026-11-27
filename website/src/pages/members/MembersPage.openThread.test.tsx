@@ -212,8 +212,10 @@ vi.mock('../../components/WebPreviewPanel', () => ({
   ),
 }))
 vi.mock('../../components/McpAppFrame', () => ({ default: () => null }))
-vi.mock('../../components/CliPanel', () => ({
+vi.mock('../../components/LazyCliPanel', () => ({
   default: () => null,
+}))
+vi.mock('../../components/terminalSessions', () => ({
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))
@@ -544,7 +546,8 @@ describe('MembersPage identity pill and Profile entry', () => {
     fireEvent.click(await rosterRow('oncall'))
     const pill = await screen.findByTestId('member-identity-pill')
     expect(pill.tagName).toBe('BUTTON')
-    expect(pill.className).toContain('liquid-glass')
+    // The stack is the button; its name chip is the Glass pane under the face.
+    expect(pill.querySelector('.liquid-glass')).toContainElement(screen.getByTestId('member-pill-name'))
     expect(pill).toHaveAccessibleName(expect.stringContaining('oncall'))
     expect(pill).toHaveAccessibleDescription('Profile')
 

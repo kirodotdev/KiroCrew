@@ -274,9 +274,9 @@ class TestMemoryGetContextQueryWiring:
         store = builder.get_memory_for(None)
         store._vector_store = SimpleNamespace(
             get_episodic_context=lambda query_text, cap: "",
-            get_semantic_context=lambda query_text, cap, facts_only=False: "",
+            get_semantic_context=lambda query_text, cap, facts_only=False, **_stage_modes: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: True,
         )
@@ -296,9 +296,9 @@ class TestMemoryGetContextQueryWiring:
         store = builder.get_memory_for(None)
         store._vector_store = SimpleNamespace(
             get_episodic_context=lambda query_text, cap: "",
-            get_semantic_context=lambda query_text, cap, facts_only=False: "",
+            get_semantic_context=lambda query_text, cap, facts_only=False, **_stage_modes: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: False,
         )
@@ -342,9 +342,9 @@ class TestMemoryGetContextQueryWiring:
         store = builder.get_memory_for(None)
         store._vector_store = SimpleNamespace(
             get_episodic_context=lambda query_text, cap: "[EPISODIC-SENTINEL]",
-            get_semantic_context=lambda query_text, cap, facts_only=False: "",
+            get_semantic_context=lambda query_text, cap, facts_only=False, **_stage_modes: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: True,
         )
@@ -368,9 +368,9 @@ class TestMemoryGetContextQueryWiring:
 
         store._vector_store = SimpleNamespace(
             get_episodic_context=_episodic,
-            get_semantic_context=lambda query_text, cap, facts_only=False: "",
+            get_semantic_context=lambda query_text, cap, facts_only=False, **_stage_modes: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: True,
         )
@@ -388,9 +388,9 @@ class TestMemoryGetContextQueryWiring:
         store = builder.get_memory_for(None)
         store._vector_store = SimpleNamespace(
             get_episodic_context=lambda query_text, cap: "",
-            get_semantic_context=lambda query_text, cap, facts_only=False: "",
+            get_semantic_context=lambda query_text, cap, facts_only=False, **_stage_modes: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: True,
         )
@@ -553,9 +553,9 @@ class TestDurableModelVersionLessonContext:
         memory = builder.get_memory_for(None)
         memory._vector_store = SimpleNamespace(
             get_episodic_context=lambda query_text, cap: "",
-            get_semantic_context=lambda query_text, cap, facts_only=False: "",
+            get_semantic_context=lambda query_text, cap, facts_only=False, **_stage_modes: "",
             get_preferences_context=lambda query_text="", cap=0: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, recall_query=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0, **_stage_modes: "",
             startup_lesson_query=lambda query_text: None,
             has_any_lesson=lambda: False,
         )

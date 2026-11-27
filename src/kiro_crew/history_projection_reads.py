@@ -378,37 +378,13 @@ class TranscriptReadProjection:
         the corpus once per page and archives change only on a rotation, so the
         multi-MB parse must not repeat per scroll step.
         """
-        facade = _history_facade()
-        adir = facade._archive_dir(self._log._dir)
-        stem = facade._safe_key(key) + facade.ARCHIVE_SEGMENT_DELIMITER
+        from kiro_crew.history_archive_text import rotated_segment_paths
 
-        def _seg_order(p: Path) -> tuple[str, int]:
-            # Same-second segments carry ``-N`` suffixes; lexicographic order
-            # puts ``-10`` before ``-2``, so split the numeric part out.
-            rest = p.name[len(stem) : -len(".jsonl")]
-            stamp, dash, suffix = rest.partition("-")
-            # The stamp itself contains one dash (YYYYMMDD-HHMMSS): re-join,
-            # then look for a SECOND dash carrying the collision counter.
-            if dash:
-                stamp2, dash2, suffix2 = suffix.partition("-")
-                stamp = f"{stamp}-{stamp2}"
-                suffix = suffix2 if dash2 else ""
-            try:
-                n = int(suffix) if suffix else 0
-            except ValueError:
-                n = 0
-            return (stamp, n)
-
-        try:
-            segs = sorted((p for p in adir.glob(f"{stem}*.jsonl")), key=_seg_order)
-        except OSError as exc:
-            # `return []` here is indistinguishable from "this session never
-            # rotated", and that is the one answer this function must not guess.
-            # An unreadable archive DIRECTORY hides an unknown number of rows, so
-            # every index above them moves and the reader is told their older
-            # history does not exist. Raise and let the handlers answer with the
-            # retryable 503 they already have.
-            raise OSError(f"rotated archive for {key} could not be enumerated") from exc
+        # Raises when the archive DIRECTORY cannot be listed: `return []` there is
+        # indistinguishable from "this session never rotated", and an unreadable
+        # archive hides an unknown number of rows, so every index above them would
+        # move. The handlers answer that with the retryable 503 they already have.
+        segs = rotated_segment_paths(self._log._dir, key)
         if not segs:
             return []
         sig: list[tuple[str, int, int]] = []
@@ -632,9 +608,8 @@ class TranscriptReadProjection:
         facade = _history_facade()
         adir = facade._archive_dir(self._log._dir)
         for chained_key in keys[1:]:
-            stem = facade._safe_key(chained_key) + facade.ARCHIVE_SEGMENT_DELIMITER
             try:
-                if next(adir.glob(f"{stem}*.jsonl"), None) is not None:
+                if facade.archive_segments_of(adir, facade._safe_key(chained_key)):
                     return True
             except OSError as exc:
                 # NOT `continue`. This predicate is consumed as a decision, not a
@@ -887,6 +862,34 @@ class TranscriptReadProjection:
                     messages.append(message)
                 logical_row += 1
         return messages
+
+    def read_rows_from(self, key: str, start: int) -> tuple[list[dict], int] | None:
+        """``(rows[start:], row_count)`` of *key*'s own file, without parsing the rows before *start*.
+
+        Served from the message cache when it holds this revision, otherwise
+        through the sparse row index, which decodes from the checkpoint at or
+        before *start*. The caller holds the transcript lock, so the file
+        cannot change between the index and the range read. None when the
+        index cannot frame the file the way the full reader does, or when any
+        ``OSError`` (a missing file included) interrupts the stat, the index or
+        the range read; the caller then reads the whole file, which retries a
+        transient error and reads a missing file as empty.
+        """
+        from kiro_crew.jsonl_util import UnreadableRecord
+
+        path = self._log._path(key)
+        try:
+            identity = self._log._cache_identity(path.stat())
+        except OSError:
+            return None
+        cached = self._log._msg_cache.get(key)
+        if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
+            return list(cached[2][start:]), len(cached[2])
+        try:
+            index = self._row_index(key)
+            return self._read_message_range(key, start, index.row_count, index), index.row_count
+        except (UnreadableRecord, UnicodeDecodeError, OSError):
+            return None
 
     def _read_messages_chained_page_once(
         self,
@@ -1323,6 +1326,38 @@ class TranscriptReadProjection:
         with self._log._locked(key):
             return self._log._last_row_ts(key)
 
+    # How many newest rows the speech read looks through. A system row lands a
+    # handful of rows after the answer it follows; a window this size is far past
+    # that, and bounds the read on a transcript whose tail is all tool rows.
+    _SPEECH_TS_WINDOW = 64
+
+    def last_speech_row_ts(self, key: str) -> str | None:
+        """Return the timestamp of the newest SPEECH row, skipping system rows.
+
+        Speech is what ``is_speech_row`` accepts: a user or assistant row with
+        visible text, so a compaction or watchdog-recycle notice, a tool row or a
+        sub-agent envelope appended after an answer does not move it. ``None``
+        when the newest rows hold no speech: the caller cannot place the
+        conversation, and treats that as "no evidence it moved on". A full window
+        with no speech (a long tool-only turn) is evidence it did: that case
+        returns the newest row's timestamp, as :meth:`last_row_ts` would.
+        """
+        from kiro_crew.dashboard.system_notices import is_speech_row
+
+        with self._log._locked(key):
+            tail = self._log._read_tail_messages(self._log._path(key), self._SPEECH_TS_WINDOW, None)
+        for row in reversed(tail):
+            if is_speech_row(
+                row.get("role"), row.get("content"), row.get("meta"), variants=row.get("variants")
+            ):
+                timestamp = row.get("ts")
+                return timestamp if isinstance(timestamp, str) and timestamp else None
+        if len(tail) >= self._SPEECH_TS_WINDOW:
+            # The window may have cut off the newest speech: fail closed (stale).
+            timestamp = tail[-1].get("ts")
+            return timestamp if isinstance(timestamp, str) and timestamp else None
+        return None
+
     def last_message_preview(
         self,
         key: str,
@@ -1388,8 +1423,10 @@ class TranscriptReadProjection:
         # Function-local: dashboard.state imports kiro_crew.history at module
         # scope, which lands back here, so a top-level import would be a
         # cycle. By preview time the dashboard module is long since loaded.
+        from kiro_crew.dashboard.host_sandbox_refusal import is_refusal_row
         from kiro_crew.dashboard.state import is_stop_event_row
         from kiro_crew.dashboard.system_notices import is_speech_row
+        from kiro_crew.messaging.alternation_echo import is_stored_echo_row
 
         path = self._log._path(key)
         try:
@@ -1466,12 +1503,18 @@ class TranscriptReadProjection:
                 # renders it; handing the raw list to the predicate would read
                 # legacy structured speech as machinery and blank the roster.
                 text = self._log._content_text(data.get("content"))
-                if speech_only and not is_speech_row(data.get("role"), text, data.get("meta")):
+                if speech_only and not is_speech_row(
+                    data.get("role"), text, data.get("meta"), variants=data.get("variants")
+                ):
                     # Machinery: skipped for the TEXT, kept for the recency.
                     if not newest_epoch:
                         newest_epoch = _row_epoch(data)
                     continue
-                if not text:
+                # The host owner's runbook: a preview string has no row type for the
+                # non-owner edge to redact by, so it never quotes one (as search).
+                if is_refusal_row(data):
+                    continue
+                if not text or is_stored_echo_row(data):
                     continue
                 # The ONE spelling of a roster preview (strip -> sanitize -> cap),
                 # shared with the live `member/message` writer in state_parts/slot_directory.py so

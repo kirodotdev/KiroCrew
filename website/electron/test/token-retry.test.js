@@ -1,6 +1,11 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken } = require("../token-retry");
+const {
+  createTokenRetryHandler,
+  dashboardRetryPath,
+  dashboardUrlFor,
+  loadDashboardWithToken,
+} = require("../token-retry");
 
 describe("createTokenRetryHandler", () => {
   it("calls refreshFn on 403", async () => {
@@ -90,6 +95,64 @@ describe("dashboardRetryPath", () => {
   it("keeps the fallback for an unparseable URL", () => {
     assert.equal(dashboardRetryPath("", BACKEND, "/chat?new=1"), "/chat?new=1");
     assert.equal(dashboardRetryPath(undefined, BACKEND, "/chat?new=1"), "/chat?new=1");
+  });
+});
+
+describe("dashboardUrlFor", () => {
+  // Same-origin paths resolve exactly as a plain `new URL(path, base)` does.
+  const KEPT = [
+    ["http://127.0.0.1:5476", "/chat?sid=abc#m-3", "http://127.0.0.1:5476/chat?sid=abc#m-3"],
+    ["http://localhost:5476", "/settings/about?x=1&y=%2F#h", "http://localhost:5476/settings/about?x=1&y=%2F#h"],
+    ["http://localhost:5476", "/chat?new=1", "http://localhost:5476/chat?new=1"],
+    ["http://[::1]:5476", "/chat?sid=a", "http://[::1]:5476/chat?sid=a"],
+    ["http://localhost:5476/", "/apps/x/?q=a%20b#frag", "http://localhost:5476/apps/x/?q=a%20b#frag"],
+    ["http://localhost:43123", "/chat?sid=r", "http://localhost:43123/chat?sid=r"],
+    ["http://127.0.0.1:5476", "?x=1", "http://127.0.0.1:5476/?x=1"],
+    ["http://127.0.0.1:5476", "#only-hash", "http://127.0.0.1:5476/#only-hash"],
+    ["http://127.0.0.1:5476", "/%2F%2Fevil", "http://127.0.0.1:5476/%2F%2Fevil"],
+  ];
+  for (const [base, path, expected] of KEPT) {
+    it(`keeps ${JSON.stringify(path)} on ${base}`, () => {
+      assert.equal(dashboardUrlFor(base, path), expected);
+      assert.equal(dashboardUrlFor(base, path), new URL(path, base).toString());
+    });
+  }
+
+  // Paths that would resolve to another origin land on the gateway root.
+  const BASE = "http://127.0.0.1:5476";
+  const ROOT = "http://127.0.0.1:5476/";
+  const LEAVING = [
+    "//evil/x",
+    "/\\evil/x",
+    "/\t/evil",
+    "/\n/evil",
+    "\\\\evil",
+    "https://evil/",
+    "http://127.0.0.1:9999/chat",
+    "javascript:alert(1)",
+    "data:text/html,x",
+    "file:///etc/passwd",
+    "blob:http://127.0.0.1:5476/id",
+    "filesystem:http://127.0.0.1:5476/temporary/x",
+  ];
+  for (const path of LEAVING) {
+    it(`sends ${JSON.stringify(path)} to the root`, () => {
+      assert.equal(dashboardUrlFor(BASE, path), ROOT);
+    });
+  }
+
+  it("returns the root for an empty or missing path", () => {
+    assert.equal(dashboardUrlFor(BASE, ""), ROOT);
+    assert.equal(dashboardUrlFor(BASE), ROOT);
+    assert.equal(dashboardUrlFor(BASE, undefined), ROOT);
+  });
+
+  it("returns the root for a path that does not parse", () => {
+    assert.equal(dashboardUrlFor(BASE, "http://[bad"), ROOT);
+  });
+
+  it("still throws for a bad backend URL, as before", () => {
+    assert.throws(() => dashboardUrlFor("not a url", "/chat"));
   });
 });
 

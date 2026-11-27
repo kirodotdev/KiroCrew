@@ -12,7 +12,10 @@ so it needs no ACP import.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import threading
+from collections import OrderedDict
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -180,26 +183,70 @@ def _reports_left_out(provider: Any) -> int:
     return left_out if isinstance(left_out, int) and left_out > 0 else 0
 
 
-async def wait_for_declared_mcp(provider: Any, timeout: float) -> None:
+def given_up_servers(provider: Any) -> tuple[str, ...]:
+    """The servers *provider*'s session has given up on, or ``()``.
+
+    ``SessionMcpReport.given_up``: failed, or still starting
+    :data:`MCP_SERVER_WAIT_SECS` after the session began, the point past which
+    a server is hung. Silent for no provider, one that keeps no report, and a
+    report that cannot be read.
+    """
+    if provider is None:
+        return ()
+    try:
+        report = provider.mcp_session_report()
+        names = report.given_up(MCP_SERVER_WAIT_SECS) if report is not None else ()
+    except Exception:
+        logger.debug("MCP session report unreadable", exc_info=True)
+        return ()
+    if not isinstance(names, (tuple, list)):
+        return ()
+    return tuple(name for name in names if isinstance(name, str) and name)
+
+
+async def wait_for_declared_mcp(provider: Any, timeout: float, *, seen_by: Any = None) -> None:
     """Hold an unattended run's first prompt until the spec's servers report.
 
     Best-effort and bounded by *timeout*: a provider without the capability, or
     one whose wait fails, lets the run go ahead, and :func:`declared_mcp_missing`
     then says what it lacks.
+
+    *seen_by* is another live session on the same host that already started
+    these servers (a sub-agent's parent). A server it has given up on
+    (:func:`given_up_servers`) is not waited for: the wait could only run to its
+    bound for it. Every other server is waited for as before, so one that comes
+    up within the bound is still in the first turn.
+
+    shortcut: matched by server name, not by config. A run whose spec gives a
+    name the other session also uses a different command is not held for it;
+    compare config digests if that is ever seen.
     """
     if provider is None or timeout <= 0:
         return
+    skip = given_up_servers(seen_by)
     try:
-        missing = await provider.wait_for_declared_mcp(timeout)
+        if skip:
+            missing = await provider.wait_for_declared_mcp(timeout, skip)
+        else:
+            missing = await provider.wait_for_declared_mcp(timeout)
     except Exception:
         logger.debug("declared MCP wait failed", exc_info=True)
         return
-    if missing:
+    if not missing:
+        return
+    unwaited = [str(name) for name in missing if name in skip]
+    waited_for = [str(name) for name in missing if name not in skip]
+    if unwaited:
+        logger.warning(
+            "Unattended run not waiting for MCP server(s) a live session on this host gave up on: %s",
+            ", ".join(unwaited),
+        )
+    if waited_for:
         # The run prompts anyway; this line is when and how long it waited.
         logger.warning(
             "Unattended run prompting after a %gs wait without declared MCP server(s): %s",
             timeout,
-            ", ".join(str(name) for name in missing),
+            ", ".join(waited_for),
         )
 
 
@@ -248,3 +295,45 @@ def declared_mcp_not_ready_note(provider: Any) -> str:
     if not names:
         return ""
     return "MCP servers declared by the agent spec were not ready in this run: " + ", ".join(names)
+
+
+#: How many run keys (a cron job, a heartbeat task) keep the
+#: last not-ready note they printed. Past it the oldest key is forgotten, which
+#: costs that key one repeat of its note, never a missed new one.
+_LAST_NOTE_CAP = 1024
+_last_notes: OrderedDict[str, str] = OrderedDict()
+_last_notes_lock = threading.Lock()
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def declared_mcp_not_ready_change(provider: Any, run_key: str, *, record: bool = True) -> str:
+    """:func:`declared_mcp_not_ready_note`, only when it differs from *run_key*'s last run.
+
+    A scheduled run repeats on its own, so the same missing servers would
+    otherwise lead every result it sends. The note is printed when the set of
+    servers changes, including when it comes back after a clean run. Kept in
+    this process only: a gateway restart prints it once more. With *record*
+    false the run is not remembered: its result is not delivered, so the next
+    delivered one must still carry the note.
+    """
+    return declared_mcp_note_change(run_key, declared_mcp_not_ready_note(provider), record=record)
+
+
+def declared_mcp_note_change(run_key: str, note: str, *, record: bool = True) -> str:
+    """*note* when it differs from the last one recorded for *run_key*, else ``""``.
+
+    The store behind :func:`declared_mcp_not_ready_change`, for a caller that
+    records the note only once its result is stored (a cron agent sequence).
+    """
+    key, value = _digest(run_key), _digest(note)
+    with _last_notes_lock:
+        last = _last_notes.get(key)
+        if record:
+            _last_notes.pop(key, None)
+            _last_notes[key] = value
+            while len(_last_notes) > _LAST_NOTE_CAP:
+                _last_notes.popitem(last=False)
+    return note if note and value != last else ""

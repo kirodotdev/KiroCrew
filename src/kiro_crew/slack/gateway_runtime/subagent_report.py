@@ -72,7 +72,6 @@ class _SubagentReport(NamedTuple):
     """What a completion says; see ``_compose_subagent_completion``."""
 
     status: str
-    emoji: str
     title: str
     result_path: str
     detail: str
@@ -116,21 +115,27 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
         # The stop's own origin when the record carries one (a
         # parent-end verb), so the announce does not
         # credit the user with a stop they never pressed.
-        status, emoji, single_outcome = (
+        status, word, single_outcome = (
             getattr(info, "_stop_origin", "") or "stopped by user",
-            "⏹",
+            "stopped",
             OUTCOME_STOPPED,
         )
     elif ending is SubagentEnding.REAPED:
         # A deadline or the reaper ended the run, not the run's own error. The
         # error text names which one (some never started), so the status stays
         # neutral about it.
-        status, emoji, single_outcome = "reaped", "❌", OUTCOME_FAILED
+        status, word, single_outcome = "reaped", "failed", OUTCOME_FAILED
     elif ending is SubagentEnding.FAILED:
-        status, emoji, single_outcome = "failed", "❌", OUTCOME_FAILED
+        status, word, single_outcome = "failed", "failed", OUTCOME_FAILED
     else:
-        status, emoji, single_outcome = "completed", "✅", OUTCOME_OK
-    title = f"Subagent `{info.id}` {emoji}"
+        status, word, single_outcome = "completed", "completed", OUTCOME_OK
+    # The header leads with the outcome word the card reads (completed, failed,
+    # stopped); a status that does not already start with it follows a colon.
+    if status == word or status.startswith(f"{word} "):
+        header_status = status
+    else:
+        header_status = f"{word}: {status}"
+    title = f"Subagent `{info.id}` {word}"
 
     # Chat mode: inline info.result (subagent.py already trimmed it to
     # agent.completion_keep + completion_keep_chars) when it fits. When the
@@ -206,22 +211,34 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     # prose already tells the parent not to treat the output as finished.
     no_tools_note = ""
     if single_outcome == OUTCOME_OK and not _flush_only and info.made_no_tool_calls:
-        no_tools_note = f"⚠ Agent `{info.id}` {NO_TOOL_CALLS_NOTE}"
+        no_tools_note = f"Warning: Agent `{info.id}` {NO_TOOL_CALLS_NOTE}"
     # A completed run whose final segment wrote a tool call as text instead of
     # running it (``SubagentInfo.leaked_tool_call``) reads as a success while
     # that call never executed. Same channel as the note above, so a lone run
     # and a wave digest line both carry it; the outcome stays completed.
     if single_outcome == OUTCOME_OK and not _flush_only and info.leaked_tool_call:
-        _leak_note = f"⚠ Agent `{info.id}` {LEAKED_TOOL_CALL_NOTE}"
+        _leak_note = f"Warning: Agent `{info.id}` {LEAKED_TOOL_CALL_NOTE}"
         no_tools_note = f"{no_tools_note}\n{_leak_note}" if no_tools_note else _leak_note
     if single_outcome == OUTCOME_OK and not _flush_only and info.served_model_unverified:
-        _model_note = f"⚠ Agent `{info.id}` {UNVERIFIED_MODEL_NOTE}"
+        _model_note = f"Warning: Agent `{info.id}` {UNVERIFIED_MODEL_NOTE}"
         no_tools_note = f"{no_tools_note}\n{_model_note}" if no_tools_note else _model_note
+    # An isolated run (``spawn_run`` ``isolate``) names its worktree and commits,
+    # whatever its outcome: a failed run may have committed too.
+    _worktree_note = "" if _flush_only else str(getattr(info, "worktree_note", "") or "")
+    if _worktree_note:
+        no_tools_note = f"{no_tools_note}\n{_worktree_note}" if no_tools_note else _worktree_note
+    # A run whose session got none of Crew's tools, because a settings file in its
+    # folder withheld them, says so and why on any outcome: the parent and the
+    # person reading its chat otherwise see only a worker that had no tools.
+    _withheld = "" if _flush_only else getattr(info, "crew_tools_withheld_note", "")
+    if isinstance(_withheld, str) and _withheld:
+        _withheld_note = f"Warning: Agent `{info.id}` {_withheld}"
+        no_tools_note = f"{no_tools_note}\n{_withheld_note}" if no_tools_note else _withheld_note
     announce = (
         f"{SUBAGENT_COMPLETION_PREFIX}\n"
         f"Agent `{info.id}`"
         f"{f' ({info.agent})' if info.agent else ''}"
-        f" {status} {emoji}\n"
+        f" {header_status}\n"
         f"Task: {task_text}\n\n"
         f"Usage: {usage}\n\n"
         f"{detail}" + (f"\n\n{no_tools_note}" if no_tools_note else "")
@@ -248,7 +265,6 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
         body = task_text
     return _SubagentReport(
         status=status,
-        emoji=emoji,
         title=title,
         result_path=result_path,
         detail=detail,
@@ -281,7 +297,7 @@ def _subagent_wave_digest(
     the completion is settled here (held for a later chunk, or nothing to release);
     otherwise the announce and card facts to route, a digest chunk's when one fires.
     """
-    status, emoji, detail = report.status, report.emoji, report.detail
+    status, detail = report.status, report.detail
     task_text, usage, result_path = report.task_text, report.usage, report.result_path
     no_tools_note = report.no_tools_note
     announce, sub_meta = report.announce, report.sub_meta
@@ -392,14 +408,14 @@ def _subagent_wave_digest(
                 _kept = " (partial: backend failed to generate the final response)"
             _partial = info.ending is SubagentEnding.PARTIAL
             bp["ok_lines"].append(
-                f"— `{info.id}` ✅{_kept if _partial else ''} {task_text[:80]}"
+                f"— `{info.id}` completed{_kept if _partial else ''} · {task_text[:80]}"
                 f"{_model_tag} · {usage}"
                 + (f"\n  → {result_path}" if result_path else "")
                 + (f"\n  {no_tools_note}" if no_tools_note else "")
             )
         else:
             bp["fail_lines"].append(
-                f"— `{info.id}` {status} {emoji} · {task_text[:80]}{_model_tag}\n"
+                f"— `{info.id}` {status} · {task_text[:80]}{_model_tag}\n"
                 f"  Usage: {usage}\n"
                 f"  {detail[:400]}{'…' if len(detail) > 400 else ''}"
                 # A finished answer the stop owned is cut at 400 here, so its
@@ -409,6 +425,7 @@ def _subagent_wave_digest(
                     if result_path and getattr(info, "_answer_finished", False)
                     else ""
                 )
+                + (f"\n  {no_tools_note}" if no_tools_note else "")
             )
         _last = bp["total"] > 0 and bp["done"] >= bp["total"]
         if not _last:
@@ -603,7 +620,7 @@ def _subagent_wave_digest(
                 # spent episode ended at once is counted too, and a
                 # resubmit while that episode lasts is ended at once.
                 _not_run_line = (
-                    f"{bp['not_run']} of the ❌ never started, so their "
+                    f"{bp['not_run']} of the failed runs never started, so their "
                     f"work was not done: resubmit them once memory "
                     f"eases if it is still needed. "
                     if bp.get("not_run")
@@ -612,8 +629,8 @@ def _subagent_wave_digest(
                 if _nested_live:
                     _completion_line = (
                         f"These {bp['total']} sub-agents finished: "
-                        f"{bp['ok']} ✅ · {bp['err']} ❌ · "
-                        f"{bp['stopped']} ⏹. {_not_run_line}"
+                        f"{bp['ok']} completed · {bp['err']} failed · "
+                        f"{bp['stopped']} stopped. {_not_run_line}"
                         f"Their results are below. "
                         f"NOTE: a sub-agent in this wave spawned further "
                         f"work that is still running; that nested work "
@@ -626,8 +643,8 @@ def _subagent_wave_digest(
                 else:
                     _completion_line = (
                         f"wave finished: "
-                        f"{bp['ok']} ✅ · {bp['err']} ❌ · "
-                        f"{bp['stopped']} ⏹ of {bp['total']} agents. "
+                        f"{bp['ok']} completed · {bp['err']} failed · "
+                        f"{bp['stopped']} stopped of {bp['total']} agents. "
                         f"{_not_run_line}"
                         f"All results delivered.\n"
                         f"This run is complete. Finish processing all "

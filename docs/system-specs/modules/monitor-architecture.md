@@ -29,7 +29,7 @@ this spec states the target and that one states the present.
 | Layer | Status | Where it lives today |
 |---|---|---|
 | Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`, and `monitoring/plugins.py` lets a downstream edition register further pull-request-shaped kinds at boot; `probes/__init__.py` still has its separate dispatch branch, now for two kernel-path kinds (`gh-pr`, `work-ledger`), and `work-ledger` has no registry row at all |
-| Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural, and `monitoring/github_pull_request.py` batches its subjects into one GraphQL document per evidence kind; the other adapters loop internally and no driver assembles a batch, and the `irq.Probe` path remains separate |
+| Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural, and `monitoring/github_pull_request.py` batches its subjects into one GraphQL document per evidence kind; a GitHub watch hands it its target plus its open `also_wake_on` extras in one call, the other adapters loop internally, no driver batches across watches, and the `irq.Probe` path remains separate |
 | Observation | `partial` | the `MonitorCondition` type and the `MonitorSeverity` / `MonitorResetsOn` vocabulary live in `monitoring/models.py`, all four pull-request kinds derive their named conditions in `monitoring/pull_request.py`, and `monitoring/decision.py` masks, ages and resets per condition; `irq.py` keeps its own copy of the vocabulary, and a subject's fingerprint is still derived from the canonical facts rather than from the conditions |
 | Decision | `partial` | `decide_monitor` is IO-free but state-mutating: it coalesces successive changes to one subject over time through a window on `MonitorState` (a floor and a head-change reset) and derives its dedup comparison so an unresolved change re-asserts on a re-alert interval. It writes the window fields on the staged state and READS the alert map; the caller stamps the alert map on a wake and persists the same staged state, so decide-and-persist is a required pairing. `irq.py` keeps its own multi-signal coalescing for the kernel path |
 | Persistence | `partial` | versioned in `monitoring/`; unversioned in `irq.py`, which also holds decision logic |
@@ -138,7 +138,7 @@ next step and is not part of the change that made it reachable.
 A conductor does not have to remember that arm. When `work_ledger_record`
 `action=bind` commits and the conductor's slot holds no ACTIVE loop,
 `conductor_patrol.ensure_patrol` arms a default patrol on it: `watch:
-"work-ledger"`, gated, every 600 seconds, with no cycle cap and the
+"work-ledger"`, gated, every 300 seconds (`PATROL_INTERVAL_SECS`), with no cycle cap and the
 `monitoring.max_runtime_secs` ceiling (7 days as shipped) as its runtime: the one
 runaway backstop (`rfc-permanent-patrol.md`). It goes through the
 same chokepoint as an agent's own `monitor_start`
@@ -152,8 +152,11 @@ reads the caller through `conductor_patrol.attested_caller_slot`: transport
 attestation plus a member execution record). Its trust entry is a
 default-patrol grant, not a self-arm: the fire-time guard admits its wakes only
 while the stored row still carries the fixed patrol
-(`conductor_patrol.is_fixed_patrol_payload`), and it vouches for no conversation
-reset (rfc-conductor-default-patrol.md section 10). An
+(`conductor_patrol.is_fixed_patrol_payload`). The default patrol tells the conductor
+to send next steps and answers to `question` or `blocked` workers with
+`session_send` and `steer: true`. `SHIPPED_PATROL_MESSAGES` retains each shipped
+text verbatim so persisted loops still pass the fixed-payload check. The grant
+vouches for no conversation reset (rfc-conductor-default-patrol.md section 10). An
 active record is left alone, so a bind never stacks a second loop. An inactive
 record the SYSTEM stopped -- its subject went terminal, its
 budget or cap ran out, the `_stopped_row_is_replaceable` allowlist -- counts as
@@ -239,6 +242,13 @@ set in the
 gate's terminal recheck cannot spend the loop's own wake), bounded by
 `_MAX_REMEMBERED_TOKENS` and `_MAX_WATCHERS_PER_ITEM`, and dropped when the item
 closes. A newer stall token replaces older ones, since only the newest can recur.
+The probe also raises host wakes that belong to no report
+(`_posture_observations`): a change of the host's memory-and-disk posture, a
+further fall at the same `tight` or `critical` level
+(`resource_pressure.worsened()`), and a growth step of an open item's worker tree
+(`resource_pressure.worker_growth()`). Each is a token in the same seen set, the
+first two charged to the posture rate entry and a growth step to its item's own
+budget; the thresholds and wake texts are in `src/kiro_crew/docs/work-ledger.md`.
 So a worker that reports `progress` and stops, again and again, is one stall, not
 one per report; the item's `stale` flag still shows on every read and on the
 patrol's floor turn. The stall's observation key carries the episode too, so the
@@ -265,8 +275,14 @@ less than `_RACY_SECS` (2 s) after the folders last changed, or that could not r
 every item file or got an empty event tail for an open item, or listed no item, or
 joined a listing already in flight when it began, is not kept, and kept
 reads have the same budgets as the store listing memo (256 boards, 10,000 items). Staleness,
-liveness and undelivered reports are judged on every tick, served read or not.
-`test_work_ledger_watch_board_reads.py` pins it.
+liveness and undelivered reports are judged on every tick, served read or not. The
+gateway's `worker_running` binding reads the same session-activity snapshot as the
+Board and `work_ledger_read`: a turn, workflow, running sub-agent, synthesis,
+preparation or compaction suppresses a false stall, and queued sub-agents suppress
+staleness while remaining queued. An unreadable activity probe suppresses nothing,
+and background work never clears a `needs_human` report; only a new model turn does.
+`test_gateway_nudge_wiring.py`, `test_crew_board_needs_you_dismiss.py`, and
+`test_work_ledger_watch_board_reads.py` pin both sides.
 
 A delivered work-ledger wake is a POINTER, not a copy of the board.
 `ledger_wake.wake_turn_text` prefixes the nudge with the kernel's structural briefs
@@ -276,16 +292,12 @@ naming what moved (truncated at `MAX_WAKE_BRIEF_CHARS`, 4000) and then one
 `work_ledger_read(compact=true)` for the board. The conductor reads the ledger
 itself, through its own identity-gated, audited and containment-judged route.
 
-The wake used to carry the compact board inline, built at delivery by
-`compact_wake_snapshot` and bounded by `WAKE_SNAPSHOT_BUDGET_CHARS` (24000). That
-made the cost of one item moving proportional to the whole goal -- on a twenty-item
-board, around 20 KB of mostly-closed rows re-sent on every wake to save one tool
-call -- so it was replaced by the pointer and the builder, its `WakeSnapshot` value
-and its `work_ledger_wake_snapshot` audit operation were deleted. The board was also
-the only reason the delivery needed an audience fence
-(`record_audience_admission(..., for_pending_turn=True)`, likewise deleted): ledger
-prose may enter only a turn whose cross-surface publication is fenced for that
-turn's whole life, and the fence now belongs to the read route alone.
+The wake does not carry the board inline. That would make the cost of one item
+moving proportional to the whole goal -- on a twenty-item board, around 20 KB of
+mostly-closed rows re-sent on every wake to save one tool call. Leaving the board
+out also means the delivery needs no audience fence: ledger prose may enter only a
+turn whose cross-surface publication is fenced for that turn's whole life, and that
+fence belongs to the read route alone.
 
 A wake that lands while the slot is already running is STEERED into that running
 turn (`_steer_work_ledger_wake`) rather than declined, because its payload is small.
@@ -303,7 +315,9 @@ with `meta.steer`, so it draws as the nudge chip and never as a bubble the perso
 typed; the sender names the origin, the role follows from it. A steer the turn ends
 before taking is requeued with `AUTOMATION_STEER_META` on its entry: the drain
 writes it as a `nudge` row too, and the entry drains alone, never merged into the
-person's own queued text (#22747).
+person's own queued text. Its queue card carries `meta.automationSteer` on the
+`queue_push` frame and in the slot-detail queue view, so a crewmate chat
+(`withQueuedAsBubbles`) does not draw the waiting wake as the person's bubble.
 
 The wake reaches the steer through `session_deliver.deliver`, the session-side entry
 point a non-human sender calls with its origin (`automation`, `cron`, `app`). The
@@ -403,6 +417,17 @@ to the ceiling and bound-checks only a budget the caller supplied.
 Explicit stops remain available.
 Quarantine remains inspectable even below the ordinary four-hour default.
 
+`monitoring.budget_notice_pct` (0, the default, is off; 1 to 99 turns it on, and
+any other value reads as 0 through `coerce_budget_notice_pct`) lets a structured
+watch's wake name its spend before a budget stops it. `budget_notice_pct()` reads
+only the live config snapshot, on every wake, so no restart is needed. When the
+agent turns, tokens or runtime have reached that share,
+`decision.monitor_budget_note` builds one `Budget:` line with each bound's used and
+total (the runtime as time left, the tokens as `at least` when a turn's usage went
+unreported), and `format_monitor_wake` places it above the next action. Below the
+share, or with the setting off, the envelope is unchanged. The line format is in
+[injected-messages](../common/injected-messages.md).
+
 `_timer` stops a prompt loop on a spent runtime budget only when it wakes, so
 `_arm_from_deadline` wakes it just after (`_BUDGET_WAKE_SLACK_SECS`) a budget that
 runs out before the next deadline, not an interval later; the slack keeps a timer
@@ -416,6 +441,25 @@ and an immediate wake would stop it, and notify, on every pass; so a budget that
 runs out during a user turn in the slot, or while the gateway is down, still waits
 for the deadline.
 
+The cycle cap is also enforced only when `_timer` wakes, so an arm that follows a
+turn wakes a prompt loop whose cap is spent within `_CAP_STOP_GRACE_SECS` (two
+minutes) and keeps its deadline: the turn-end re-arm (`notify_turn_complete`,
+directly or deferred past a fire window, which also carries an approval answered
+inside that window) and a channel loop's own re-arm after its inline turn. Not at
+once, because Research Lab uses the cap as its planned cycle count and ends its own
+loop a few seconds after the last cycle; a stop that beat it would post a cycle-cap
+notice on every normal finish. A budget spent at a post-turn arm still waits (that
+residual is kept); the cap's grace is safe there because a post-turn arm is never a
+revival, so a revived capped loop takes the grace once per turn in its slot, not
+once per reconciler pass. Every other arm keeps the deadline, for the reason a spent
+budget does: a revival through `update()` (an app reconciler re-arms a cap-stopped
+loop without zeroing its count), a settings update, `start()` after a restart, a
+rollback re-arm and a reconciler rescue; one of these inside the grace replaces it
+with the deadline. A structured monitor and a person-wait hold keep it too. A capped
+work-ledger watch with open items is extended at that wake and re-armed toward its
+unchanged deadline; one whose open items all wait on a person holds there, which
+moves its deadline one interval past the wake.
+
 A prompt-path work-ledger watch is the one loop whose own bounds do not end it
 while its subject is live. When `_timer` finds the cycle cap or the runtime
 budget spent on a running loop that observes a work ledger
@@ -425,10 +469,21 @@ ledger answers no), it raises the spent bound server-side instead of
 deactivating -- `max_cycles` to the count plus a quarter of the cap (at least
 10), `max_runtime_secs` to the loop's age plus a quarter of the budget (at least
 one hour), clamped to the ceiling -- logs it at WARNING and re-arms. The loop
-then ends only through a user or agent stop. Every item closed is not terminal:
-the probe raises one wake saying so (deduped by a digest of the closed board, so
-a later item that closes wakes once more) and the watch stays armed for the next
-item; with no open item a spent bound ends the loop as usual. The runaway backstop is the same
+then ends only through a user or agent stop, or when every item is closed: once
+the conductor's session owns no current or queued work
+(`session_activity.session_work_pending`), the probe raises a `TERMINAL` keyed
+`all-accepted` or `all-closed`, and a dashboard loop settles with no turn, since
+the conductor sent its final report in the turn that closed the last item. A
+channel conductor (Slack, Discord) keeps the earlier shape: one wake saying every
+item is closed (deduped by a digest of the closed board), the watch stays armed,
+and the conductor stops it with `autonudge_stop`, because the liveness resolver
+reads dashboard slots only and a channel terminal settles through an owed turn. While that turn runs the tick is quiet, so a next item opened in it
+keeps the watch. A next round dispatched later is re-armed by its bind
+(`conductor_patrol.ensure_patrol`) or the conductor's own `monitor_start`. Only a
+`watch="work-ledger"` loop has this probe, and only `monitor_start`,
+`monitor_update` and the default patrol set that watch (`POST /api/autonudge`
+takes no `watch`), so a loop a person armed and no agent re-aimed at the
+ledger is never ended this way. The runaway backstop is the same
 `monitoring.max_runtime_secs` ceiling, measured as the loop's age from
 `created_ts`: past it nothing is extended, the bound stops the loop as before,
 and the refusal is logged at WARNING. The age is read from `created_ts` once per
@@ -454,7 +509,11 @@ pins both readings.
 
 A work-ledger watch also HOLDS while every open item waits on a person: each is
 `blocked` or `question` with the worker's `reason` `approval` or `needs_human`,
-no item's worker session is gone, and the ledger's fingerprint
+no item's worker session is gone, each carries the conductor's current `ask`
+record (`probes.work_ledger.person_wait_asked`: no report after its newest `ask`
+event, read only once the fingerprint matches, so a question the conductor has
+not relayed keeps the patrol running and a `decide` or `close`, which clear the
+record, releases it), and the ledger's fingerprint
 (`probes.work_ledger.person_wait_fingerprint`, which is
 `worker_report_revision` -- the same worker-report digest the quiet floor reads,
 so nothing the conductor writes moves it) equals `ledger_seen_fp`, the one read at the tick
@@ -463,8 +522,10 @@ that delivered the loop's last turn. `_holds_for_person_wait` checks this in
 nothing, reaches no probe gate or quiet floor, and is neither extended nor
 stopped; it re-arms at the loop's interval and sets `waiting_on_person` (with
 `waiting_on_person_at`), which `monitor_inspect`, the REST row and the
-`autonudge_state` frame carry. A worker's report changes the fingerprint and
-releases it on the next tick; the conductor's own writes do not; a manual fire clears `ledger_seen_fp` so it
+`autonudge_state` frame carry. Every held tick sends that frame after its re-arm,
+so the dashboard never keeps a passed deadline and reads the held loop as due
+(which would disable Nudge now). A worker's report changes the fingerprint and
+releases it on the next tick, and so does a conductor `decide` or `close` (both clear the `ask` record); its other writes (`goal`, `verdict`, `ask`) do not; a manual fire clears `ledger_seen_fp` so it
 is never held; a loop already held for an unanswered approval is left to that
 hold. On release the held time is added to `created_ts`, as the approval hold
 does, so it spends neither the runtime budget nor the backstop. That exemption
@@ -581,6 +642,11 @@ replaces.
 A subject is one addressable thing. A pipeline of several pull requests is not a
 subject; it is several subjects sharing a watch.
 
+A structured watch shares itself with other subjects in exactly one way today: a
+`github_pull_request` watch may name up to three other pull requests it waits on
+(`also_wake_on`, see *Extra wake subjects* below). The watch keeps its one
+`target`, which alone decides its completion; the extras only wake it.
+
 ### 2. Probe
 
 The probe turns subjects into observations. Its signature is **plural from day
@@ -598,8 +664,8 @@ interface cannot be batched later without changing every implementation and
 every caller, and batching is not a micro-optimization here: fifty subjects read
 one at a time is roughly 150 process invocations against one query.
 
-**Status: the GitHub pull-request probe batches; no caller passes more than one
-subject yet.** `GitHubPullRequestProvider.probe` spends one GraphQL document per
+**Status: the GitHub pull-request probe batches, and one caller passes more than
+one subject: a GitHub watch with `also_wake_on` extras.** `GitHubPullRequestProvider.probe` spends one GraphQL document per
 evidence kind per chunk of at most 25 subjects, so a tick of any size up to that
 bound costs three requests instead of three per subject, and each further chunk
 adds three. A read the GraphQL point budget REFUSES costs more than that, because
@@ -607,7 +673,10 @@ the fallback below is per subject rather than per chunk. It carries the (host,
 credential) rule as a check rather than as a grouping pass: the credential is the
 call's own argument, and a chunk is refused if it names two hosts. The
 other four adapters still loop internally and declare so in their own docstrings.
-What is missing is above the probe, not inside it: the in-session driver arms one
+`MonitorController.tick` hands the provider the watch's target and its open
+extras in one call, so an extra usually adds no request: it rides every document
+of that batch, as any subject does. What is missing is above the probe, not inside
+it: the in-session driver arms one
 `asyncio` task per loop in `autonudge_service/timers.py`, so a tick structurally sees one
 monitor, and the kernel path's `irq.poll` (called from `autonudge_service/gate.py`)
 runs one subject per call through `irq.Probe.observe`, which is singular. A batch therefore has no assembler; that
@@ -683,16 +752,12 @@ asks for. `irq.py` carries it as:
 Observation(key, severity, brief="", resets_on=ResetsOn.REVISION)
 ```
 
-with `Severity` carrying `WAKE`, `TERMINAL` and `IMMEDIATE`. This landed as a
-**rename of the existing type, not a new one**: `epoch_scoped: bool` became
-`resets_on: ResetsOn`, and `NMI` became `IMMEDIATE`. `PrWatchProbe` in
-`probes/gh_pr.py` constructs these, so it was a mechanical rewrite of live code
-rather than a greenfield addition.
+with `Severity` carrying `WAKE`, `TERMINAL` and `IMMEDIATE`. `PrWatchProbe` in
+`probes/gh_pr.py` constructs these.
 
-Each new name describes the condition where the old one described the
-implementation. `epoch_scoped` said which bookkeeping bucket an entry fell in;
-`resets_on` says what clears it. `NMI` borrowed an interrupt term for what is
-really an urgency claim.
+Each name describes the condition, not the implementation: `resets_on` says what
+clears an entry rather than which bookkeeping bucket it falls in, and `IMMEDIATE`
+is an urgency claim rather than an interrupt term.
 
 `resets_on` is an enum rather than a renamed boolean, because the field answers
 *what clears this* and a boolean can only answer *yes or no*: read as a flag,
@@ -701,8 +766,7 @@ of what `NEVER` says. The kernel already stored the distinction as one of two
 named key spaces, so a two-member enum is also what makes the in-memory type and
 the persisted encoding the same shape.
 
-`brief` stays ahead of `resets_on` positionally, which is not the order this
-section first sketched. Both fields have defaults, so nothing is gained by moving
+`brief` stays ahead of `resets_on` positionally. Both fields have defaults, so nothing is gained by moving
 `resets_on` forward, and reordering would silently redirect every existing
 three-positional call rather than fail at it.
 
@@ -719,8 +783,8 @@ three-positional call rather than fail at it.
 - **`resets_on`** is `ResetsOn.REVISION` when a new revision clears the condition,
   or `ResetsOn.NEVER` when it belongs to the subject rather than the revision. A
   comment survives a force-push; a failing check does not. The kernel stores a
-  `REVISION` key in its epoch space and a `NEVER` key in its sticky one, which is
-  the distinction `epoch_scoped` expressed as a boolean over the epoch.
+  `REVISION` key in its epoch space and a `NEVER` key in its sticky one, so an
+  epoch reset drops the first and keeps the second.
 - **`brief`** is operator-facing text, delivered only if the entry wakes someone.
 
 A subject's fingerprint, where one is still needed, is **not yet** derived from
@@ -765,9 +829,13 @@ decide(entries, prior_state, budgets, now) -> Verdict
 This layer knows nothing about pull requests, hosts, or agents. That is
 verifiable rather than aspirational: `decide_monitor` in `monitoring/decision.py`
 names no host and reaches no IO, and its clock arrives as the `now` parameter. It
-imports only `hashlib`, `json`, the monitoring models and
+imports only `hashlib`, `json`, the monitoring models,
+`monitoring.also_wake.also_wake_waiting` (whether an extra still holds the stall
+streak at zero; the module is IO-free too),
 `monitoring.github_provider_errors.is_unattempted_probe` (the shared "this skip made
-no API call" predicate). `test_monitor_decision.py`
+no API call" predicate) and `metrics.monitor_loops`, whose
+`record_monitor_decision` counts each verdict by decision and kind as an in-memory
+add that swallows its own failures. `test_monitor_decision.py`
 exercises it with no network and no filesystem, and that property is what makes it
 the skeleton the rest is merged into.
 
@@ -787,7 +855,9 @@ fail safe:
 A pull-request watch normally reaches its end turn-free: a merge classifies to
 `SUCCESS`/`pull_request_merged` and `decide_monitor` returns `STOP_SUCCESS`, a
 close to `BLOCKED`/`pull_request_closed` and `STOP_BLOCKED`, and the owner is
-told only by the terminal bell notice (`_notify_nudge_expired`). The session that
+told only by the terminal notice (`_notify_nudge_expired`): a passive feed note
+with no bell for a merge, a note at the `system.monitor` channel's priority for a
+close (see [app-notifications](app-notifications.md)). The session that
 armed the watch gets no turn, even though the merge is often the event an agent
 is waiting for.
 
@@ -815,7 +885,159 @@ The one-shot pivot is `last_wake_reason_code`, which the driver stamps on
 leaves every existing and stored watch on the turn-free stop paths, with
 `review_ready` and both terminal transitions stopping exactly as before.
 
-The engine is **level-triggered**, not edge-triggered, on both paths. `irq.py`
+### Extra wake subjects
+
+`monitor_watch` and `monitor_update` take an optional `also_wake_on`: at most three
+other pull requests of the watch's own kind, each parsed by that kind's target
+rules, where an entry equal to the target or a repeat collapses. The first version
+admits only `github_pull_request`, a kind that reads with the gateway's own CLI
+identity and no per-target grant; any other kind, and a plain `monitor_start` loop,
+refuse the field in band at the tool (from the session-monitor read the arming
+preflight already makes, failing open) and at the applier (`monitoring.also_wake`'s
+`normalize_also_wake_on`, and the legacy branch's `structured_only` refusal).
+Extras never borrow, record, revoke or re-grant the target's owner-credential
+grant, and an `also_wake_on`-only update never runs the retarget credential
+follow-up; their credential flag is the kind's alone, so they share the target's
+batched call.
+
+`MonitorState` keeps three fields for them, all owner-only public fields
+(`MONITOR_PUBLIC_FIELDS`, so `/api/monitors` carries them) and in the compact
+`monitor_inspect` allowlist, never on the legacy presence reads:
+
+- `also_wake_on`, the list as configured. Ticking never edits it: an ended extra
+  stays listed, is no longer read, and shows its end state and time.
+- `also_wake_state`, per extra: `state` (`open`, `merged`, `closed`,
+  `unreadable`), `at` (when that end state was seen), `read_errors` and
+  `wake_claimed`. No provider payload of an extra is stored or shown.
+- `also_wake_claim`: the extra, end state and reason code (`also_wake_merged`,
+  `also_wake_closed`, `also_wake_unreadable`) of the wake `last_wake_fingerprint`
+  names, so a busy retry renders the same message.
+
+What an extra does on a tick:
+
+- Only an open extra is read, on the target's tick and in the same call. Its
+  errors are its own: consecutive ATTEMPTED failures of its primary (lifecycle)
+  read are counted, a good read resets them, an unattempted skip moves nothing,
+  and supplemental reads never count. At the watch's `max_provider_errors` it is
+  retired as `unreadable`. The target's lifetime and consecutive provider-error
+  counts stay the target's; a failure of a shared document counts for every
+  subject in it, the target included.
+- It wakes the session at most once for each end state: merged, closed unmerged,
+  retired as unreadable. Nothing else about an extra wakes (no checks, no reviews).
+- At most one wake per tick, and the target's own wake goes first. An extra's
+  undelivered end state takes the tick's wake only when the target's decision was
+  `NO_CHANGE`, `RECORD_ONLY` or `RETRY_PROVIDER`; otherwise it waits.
+- Its wake goes through the ordinary dispatch, authorization and completion path
+  keyed on `last_wake_fingerprint`, which for an extra is derived from (extra, end
+  state). It sets `last_decision` to `WAKE_ACTIONABLE` like any wake, and NEVER
+  writes `last_wake_reason_code` or calls `stamp_monitor_alerted`, so it cannot
+  re-arm or mask the target's one-shot terminal wake or its re-alert windows. It
+  never writes `last_fingerprint`, `last_observation`, the `coalesce_*` maps or the
+  stall fields. `_dispatch_claimed` takes the reason code from the claim, and
+  `format_monitor_wake` adds one opening line naming the extra and what happened
+  to it; a target-caused wake is byte-identical to a watch with no extras.
+- The claim is honoured only while `wake_in_flight` is set and its fingerprint
+  equals `last_wake_fingerprint`; otherwise it is stale (a downgrade that settled
+  the wake, say) and is cleared when the record loads. It clears when the wake
+  settles: its turn completes, or its completion evidence is recorded unavailable.
+  An extra is marked `wake_claimed` only when a wake carrying it is claimed, and a
+  stop that ends the watch before that wake was dispatched (a budget stop during a
+  busy retry, an unavailable session) marks it not delivered again.
+
+Extras never end the watch and never change the target's completion rule. One set
+of budgets bounds everything: the runtime budget measured from arming
+(`DEFAULT_MONITOR_RUNTIME_SECS`), the agent-turn and token budgets, and
+`max_provider_errors` as a lifetime limit of the watch (`MAX_MONITOR_PROVIDER_ERRORS`
+at most); there is no separate probe budget. The tool descriptions tell an agent
+waiting on a slow extra to raise `max_runtime_secs` and, for a long wait,
+`max_provider_errors` in the same call, noting that a higher limit also slows
+retiring a mistyped extra. When the target's own rules stop the watch, open extras
+stop with it, and an end state not yet delivered is dropped and shows in the
+stopped record as not delivered.
+
+`monitor_update` REPLACES the list; `[]` clears it, and ended entries count toward
+the three until the list is replaced without them. An entry that stays keeps its
+record; one removed and later re-added starts fresh as open, so one that has
+already merged wakes once more on the next tick. The change is allowed while a wake
+is in flight (the woken turn is usually the one that adds an extra): it touches
+neither `last_wake_fingerprint` nor `wake_in_flight`, an in-flight claim keeps its
+own extra and end state, and it bumps `config_generation` so a probe that raced it
+is declined. A retarget onto a listed extra removes that entry. A dashboard restart
+of a stopped watch re-arms no extras: the restart route's copy clears the list,
+the records and the claim together, and the shared arming path forwards the field
+only when set. The dashboard monitor row does not draw extras yet; they are listed
+by `monitor_inspect` and `/api/monitors`.
+
+### A pull request that waits on people
+
+A pull request whose checks are done and that waits only for a review or for its
+mergeability classifies `PENDING`, and on its own a `PENDING` reading wakes
+nobody. So without more, a watch stays silent through the two moments its
+author must act: the checks finishing, and a person writing.
+`pull_request_waiting_conditions` in `monitoring/pull_request.py` names those two
+moments by comparing the reading with the previous one the record holds, and
+attaches them to a `PENDING` reading only:
+
+| Key | Named on the tick when |
+|---|---|
+| `checks_settled` | every check of a non-draft board finished, with at least one pass and none failed, pending or unknown, read from the facts (so more than 100 passing rows count), and its head has not read settled since its last failure or draft reading |
+| `person_comment` | `person_comment_digest` differs from the previous reading's, on any `PENDING` reading, a draft's included |
+
+`_decide_effect` wakes on a `PENDING` reading that names a condition, at once and
+with no mask: the condition is gone on the next tick, so holding it for the floor
+or behind a retryable supplemental retry would lose it, and the window stays
+closed, so a failure on the next tick still wakes at once. Only the presence of a
+condition is read there, never its fields. A permanent supplemental failure
+(authorization, not found) still stops the watch. Every other `PENDING` tick
+records as before, and the stall count still ignores `PENDING`.
+
+These two are edges, unlike the rest of the engine (below). A reading with nothing
+to compare against is a baseline: a watch's first reading (so arming on a green
+board or under old comments wakes nobody), a previous reading without a board or a
+person digest, and, for the checks edge, a current one without a head. An empty
+board is not settled, so the moment after a push when the host reports no checks
+yet is not taken for a finish. The checks edge fires once per head between drafts:
+when the same head reads incomplete or pending again after a settled board (a
+failed read, green checks re-running after a description edit), the shared builder
+writes `checks_settled_head` into that unsettled reading's canonical and carries
+it while the board stays unsettled, and a failed check or a new head drops it, so
+a re-run that turns a red board green wakes and a repeat of a green one does not.
+A settled board is its own evidence and carries no latch, so its canonical keeps
+the shape every provider shares, unless the projection cut its passed list at the
+per-bucket cap: that canonical reads incomplete, so a settled one carries the
+latch. A draft reading never counts as having read settled: it woke nobody, and
+marking a pull request ready re-runs some checks on the same head, so a draft
+marked ready wakes once when its board next reads settled. The accepted cost: a
+check registered late on the same head, after the board already read settled once,
+finishes without a second wake. They are safe as edges because the reading they
+compare against moves only with a decision: a decided wake persists its reading
+beside the wake claim, and while that wake is in flight `apply_monitor_probe`
+refuses each probe without touching `last_observation`, so a settle or a comment
+that lands while the session is busy is still a difference on the next probe.
+
+`person_comment_digest` comes from the GitHub adapter alone
+(`monitoring/github_pull_request_people.py`). The comment read selects each body's
+author, and its first page also reads the pull request's reviews, unpaged, in the
+same document, so a document the host refuses blanks both comment digests for
+that tick, as a refused comment read always did. The digest covers the non-empty
+bodies a `User` other than the pull request's author wrote, logins compared
+without case; a `Bot` does not count, and a row whose author is null -- a deleted
+account -- is skipped rather than read as malformed. Unlike
+`pr_comment_body_digest` it is non-empty on a complete read that found no such
+body, so "nobody wrote" and "could not read" stay apart. An incomplete read (a
+second page of reviews included, which loses the person wake for that pull
+request's comments too) yields none, and the adapter then carries the previous
+reading's digest forward, so a comment posted while the read failed still differs
+once it recovers. Three costs are accepted rather than paid for with another read:
+a machine account GitHub types as a `User` counts as a person; the watching
+account's own comment, on a pull request it did not author, wakes it once (the
+bounded cost `review_comment_bodies` already carries, and reading `viewer` in this
+document would charge a token that cannot read it to every subject's comment
+read); and a review body a person posts while the reading is `ACTIONABLE` moves the
+digest without a wake of its own. `review_comment_bodies:<digest>` is unchanged: it
+covers every comment body and rides on an `ACTIONABLE` reading only.
+
+The engine is otherwise **level-triggered**, not edge-triggered, on both paths. `irq.py`
 level-triggers on the live kernel path: per-key `alerted` timestamps in its loaded
 state, `_dedupe_key` distinguishing `REVISION` from `NEVER` entries, a re-alert
 window defaulting to six hours through `DEFAULT_REALERT_SECS`, a coalescing
@@ -908,6 +1130,12 @@ Four things the shape decides, each for a reason worth keeping:
   wide margin, or a folded burst looks like a stall, and stay well under the
   re-alert interval, because a re-alert wakes the subject and zeroes the streak,
   so a floor at or past it could never be reached: `240 << 1800 << 21600`.
+- **Extras hold the streak at zero.** While any `also_wake_on` extra is open or
+  has an end state whose wake is not claimed yet, a tick is not counted, as for a
+  tick that did not settle: a quiet target blocked on another pull request is
+  waiting, not stuck. Once the last extra's wake is claimed the streak starts again
+  from zero and the rule applies exactly as above. A watch with no extras is
+  unchanged.
 - The stop records `verdict_stall`, distinct from `approval_stall` (a delivery
   failure) and from every `*_budget` reason (a spent bound), because a stop that
   reads like a convergence or like a cost is the cycle-cap anti-pattern under a
@@ -1001,29 +1229,43 @@ lift one already-pure function into place.
 
 ### 5. Persistence
 
-One versioned document per watch, written atomically at mode 0600, filed under a
-digest of (kind, subject identity, watch id).
+The target is one versioned document per watch, written atomically at mode 0600,
+filed under a digest of (kind, subject identity, watch id). Two state records
+exist today, and each holds part of it:
 
-Required contents:
+- **The kernel's watch file** (`irq.state_path`, `irq.load_state`,
+  `irq.save_state`): one JSON file per watch at
+  `<data home>/watch/<kind>/<subject>-<digest>.json`, the digest taken over
+  (kind, subject id, job id), written by `atomic_write` at mode 0600. It is
+  unversioned: `load_state` coerces each field and turns a malformed file into
+  fresh state, which costs one duplicate wake, rather than quarantining it.
+- **The structured `MonitorState`**: versioned (`version`,
+  `MONITOR_STATE_VERSION`), but stored on its loop's row in the shared
+  `autonudge.json` store rather than in a file of its own. A current-version
+  record that does not parse is quarantined (`quarantine_monitor_state`); a
+  version this build does not implement is kept inert with its raw payload and
+  stopped as `unsupported_monitor_version` (`autonudge_service/store_loader.py`).
 
-| Field | Why |
-|---|---|
-| `version` | every bump ships a migration; an unrecognized version is quarantined, never guessed at |
-| `revision` | what `resets_on: REVISION` is measured against |
-| `alerted` | per-key alert timestamps -- the level-triggered state. Records that a wake was DECIDED, not that one was delivered: the persistence-only shadow path stamps a wake it deliberately refuses to deliver, so this is not delivery history and a report must not read it as such. The structured engine's `MonitorState.coalesce_alerted` mirrors it |
-| `coalescing` | the open window: when it opened, which keys joined |
-| `errors` | per-kind counts, so a retryable class stays bounded |
-| `budgets_spent` | turns, tokens and provider errors already charged |
-| `stall` | the verdict digest, its consecutive-match count, and when that streak opened |
+What the target requires, and where each record keeps it:
 
-**The state document holds delivery bookkeeping only. It never holds subject
-state.** What the subject looks like belongs in the evidence file, which is
-disposable and regenerated per wake. This boundary is load-bearing in a way that
-is easy to get wrong: a reader who assumes the state file holds subject state
-will try to read the subject out of it and find only alert timestamps.
+| Field | Why | `irq` watch file | `MonitorState` |
+|---|---|---|---|
+| version | an unrecognized version is never guessed at | none | `version` |
+| revision | what `resets_on: REVISION` is measured against | `epoch`; a new epoch drops the revision-scoped keys | no field: the head arrives on the observation, and `head_changed` drops revision-scoped keys from both maps below |
+| alerted | per-key alert timestamps -- the level-triggered state. Records that a wake was DECIDED, not that one was delivered: the persistence-only shadow path stamps a wake it deliberately refuses to deliver, so this is not delivery history and a report must not read it as such | `alerted` | `coalesce_alerted` |
+| coalescing | the open window: which keys joined and when each opened | `coalescing` (key to `brief` and `opened_at`) | `coalesce_windows` (key to open time) |
+| errors | keeps a retryable failure bounded | `errors`, one consecutive count | `consecutive_provider_errors`, `provider_error_count`, `last_provider_error` |
+| budgets spent | turns, tokens and provider errors already charged | none | `agent_turns`, `input_tokens`, `output_tokens`, `consecutive_provider_errors`, against `budgets` |
+| stall | the verdict digest, its consecutive-match count, and when that streak opened | none | `stall_digest`, `stall_streak`, `stall_started_at` |
 
-The document is rewritten whole and atomically, so it is a snapshot rather than
-a log. Anything that needs a history needs its own append-only file.
+**The kernel's watch file holds delivery bookkeeping only. It never holds
+subject state.** A reader who assumes it does will try to read the subject out
+of it and find only alert timestamps. `MonitorState` does not keep that
+boundary yet: `last_observation` holds the subject's latest canonical reading,
+which `format_monitor_wake` renders into the wake.
+
+Both records are rewritten whole and atomically, so each is a snapshot rather
+than a log. Anything that needs a history needs its own append-only file.
 
 The subject's own history has one: the owner session's crew log. When the service
 publishes an observation whose fingerprint differs from the one it held, the
@@ -1065,16 +1307,59 @@ can run sooner: a head that newly needs a re-sync ends its sleep early (see
 *A monitor is a field, not a system*).
 
 When the gateway starts, every loop whose deadline passed while the gateway was
-down is held `_BOOT_WAKE_STAGGER_SECS` (30 s) longer than the one before it, so
-the sessions they wake cold-start one at a time instead of together. The hold is
-a plain nap ahead of the loop's own countdown (`AutoNudgeService._boot_holds`,
-read once by `_timer`), because the countdown can end early on a subject read.
-Each loop still ticks once; only its start moves. A work-ledger loop's boot
-replay is not held: a user turn cancels a held timer and the re-arm goes to the
-hours-long deadline, which would lose the replay, while an overdue loop re-armed
-that way is overdue again and fires on the overdue beat. A host short of memory
+down, and every work-ledger loop's boot replay (a tick at delay zero), is queued
+in boot order on one `BootPacer` (`autonudge_service/boot_pacer.py`), so the
+sessions they wake cold-start one at a time instead of together. Each loop's
+timer waits its turn there ahead of its own countdown, because the countdown can
+end early on a subject read. The gap after each release follows the memory
+`decision_posture` of a fresh `resource_status.probe`, never the advisory
+`unknown` reported while a container limit is out of view (memory, not disk: a woken
+session costs memory, and waiting frees no disk): `BOOT_WAKE_GAP_SECS` (2 s)
+while the host is `ample`, so two dozen loops are all released within about a
+minute; up to `BOOT_WAKE_TIGHT_GAP_SECS` (30 s) while it is `tight` or
+unreadable, released sooner once it recovers; and no release from a `critical`
+reading until the host reads `ample` again. Whatever the posture, the loop at the
+head is released once it has waited `BOOT_WAKE_MAX_HOLD_SECS` (300 s), so a host
+that stays critical slows the boot wakes down but never stops them. Each loop
+still ticks once; only its start moves, and a held loop only waits. A conductor's
+replay is paced because each one can wake a conductor that dispatches workers: a
+restart that replayed every conductor at once started some 30 sessions and their
+MCP servers together and stalled an 8-core host. A timer cancelled while it waits
+(a user turn, a stop, a replacing arm) leaves the queue, so the loops behind it
+move up. Its re-arm does not come back through the pacer, and an ordinary re-arm
+would go to the hours-long deadline and lose a conductor's replay, so a loop
+whose replay has not ticked yet is listed in `AutoNudgeService._boot_replays` and
+`_arm_from_deadline` re-arms it at delay zero instead, whichever path re-arms it
+(a turn's end, a settings update, a reconciler rescue); the first tick that
+starts drops it. An overdue loop re-armed after a
+turn is overdue again and fires on the overdue beat. A host short of memory
 otherwise starts every woken session and its MCP servers in the same few seconds
-and crash-loops (#33355).
+and crash-loops.
+
+After boot, every prompt loop's tick first asks `resource_status.admission_check`
+(`autonudge_service/memory_hold.py`), the check scheduled cron firings and
+TaskRunner steps pass. While it refuses (memory `critical`), an active loop's
+scheduled tick fires nothing and spends no cycle: it re-arms
+`CRITICAL_HOLD_RECHECK_SECS` (30 s) out and asks again. The first tick after
+memory leaves `critical` runs as usual. The held time counts toward
+`max_runtime_secs`, which bounds wall time, as the boot pacer's wait does, so a
+loop whose budget ran out while held stops as `runtime_budget` on that tick.
+`tight`, an unreadable probe and `agent.admission_gate: false` admit, so the gate
+setting turns the hold off. The hold covers prompt loops, gated work-ledger
+watches included; a structured monitor (`is_structured_monitor_loop`) is never
+held, because its tick runs the typed controller, which mostly reads a provider
+and settles claims. Only scheduled ticks are held. A pushed tick (a
+worker's report, or the posture-change wake of §5.2 of rfc-host-memory-guard,
+marked in `AutoNudgeService._pushed_ticks`) runs, so a conductor can act at
+critical; the hold reads that mark and leaves it for the callback. Any tick of a
+loop that owes a wake (an entry in `AutoNudgeService._pending_monitor_wake`, such
+as the retry of a pushed report whose delivery was refused) runs as well: that
+wake already saw news, and the hold only reads the entry. A tick a
+person's Fire now press armed runs too: `fire_now` marks it in
+`AutoNudgeService._manual_ticks`, any other arm drops the mark, and the tick
+consumes it. Unlike the boot pacer the hold has no longest wait: a scheduled tick
+only starts a turn, and on a host that stays critical that turn is what the hold
+exists to stop.
 
 ### 7. Delivery and turn injection
 
@@ -1304,16 +1589,17 @@ probe exposes no observation; its only terminal is the kernel's own, for a subje
 it cannot name), both in the tick and in `_terminal_still_holds`. And success reads
 `observation.merged` first: a pull request's terminal verdict keys are empty, so
 `gh-pr` success still comes from the observation, while `probes.terminal_succeeded`
-decides keyed kinds. The work ledger contributes no success key: every item closed
-is a wake that leaves the watch armed, not a terminal.
+decides keyed kinds. The work ledger contributes `all-accepted`: a board whose every
+item is closed ends the watch terminal, and only that key is a success.
 
 Two lessons for the consolidation target. A terminal key is part of a kind's
 vocabulary and belongs in the registry row beside its objective, not in a shared
-set that every new kind must be added to by hand. And membership is per OUTCOME,
-not per kind: this kind reports `all-accepted` when every work item's bar was met
-and `all-closed` when at least one was rejected or abandoned, and only the first
-counts as finishing well -- so a kind may own several terminal keys that do not
-agree with each other.
+set that every new kind must be added to by hand (today `_TERMINAL_SUCCESS_KEYS`
+in `probes/__init__.py`, holding only the pull-request probe's `merged`). And
+membership is per OUTCOME, not per kind: this kind's every-item-closed wake is
+keyed `all-accepted` when every work item's bar was met and `all-closed` when at
+least one was rejected or abandoned, and only the first means finishing well --
+so a kind may own several end keys that do not agree with each other.
 
 ### The acceptance test
 
@@ -1404,11 +1690,11 @@ lifecycle stages, in different shapes:
 
 | Site | Lifecycle stage | Shape | Reachable from code |
 |---|---|---|---|
-| `mcp_shared._resolve_tool_policy` | per call, cached per session | `ToolPolicy(excluded, unresolved, detail, included)` from `managedToolPolicy.exclude` and the gateway's `include` (per-server tool sets, present only for a spec that opts in with `managedToolPolicy.honourToolRefs`, or empty for a server the spec names in `managedToolPolicy.excludeServers`) | yes |
+| `mcp_shared_policy._resolve_tool_policy` | per call, cached per session | `ToolPolicy(excluded, unresolved, detail, included)` from `managedToolPolicy.exclude` and the gateway's `include` (per-server tool sets, present only for a spec that opts in with `managedToolPolicy.honourToolRefs`, or empty for a server the spec names in `managedToolPolicy.excludeServers`) | yes |
 | the same function's unresolved returns | before the exclude list is parsed | empty set plus the reason it could not be read; `tools/call` refuses, `tools/list` still lists | nothing to migrate; the refusal is audited per call |
 | `acp/kas_agents.to_client_custom_agent` | startup projection, before the session exists | `excludedTools` list relayed to the agent host | yes |
 | `acp/session_mcp.session_mcp_disabled_tools` | session projection: Claude `permissions.deny`, codex `rawInput.server`/`tool` | `(server, tool)` pairs, unioned from the agent spec AND the dashboard-written global `mcp.json` | yes |
-| `agent._WORKER_MIRRORED_SHAPES` | derive-time copy | copies the persisted key | copies rather than resolves, so a rewrite here would alter a user's stored value |
+| `agent_materialization/worker_agent._WORKER_MIRRORED_SHAPES` | derive-time copy | copies the persisted key | copies rather than resolves, so a rewrite here would alter a user's stored value |
 | `GET /api/session-tool-policy` | on request | the raw persisted rule | deliberately raw, so an operator can see a stale spelling and re-key it |
 | a hand-written block in an on-disk profile | the backend reads the file itself | unknown to this repo | **no** |
 
@@ -1491,8 +1777,8 @@ operator is actually buying, so the key's help text names them.
 
 **Half of a review-ready objective is invisible to the typed provider.** A
 structured observation carries lifecycle, checks, mergeability, review decision,
-review-thread counts and a digest over the PR-level comment bodies, and nothing
-else; `docs/architecture/mcp.md` states the same boundary from the tool's side
+review-thread counts, a digest over the PR-level comment bodies and, on GitHub,
+one over what a person other than the author wrote, and nothing else; `docs/architecture/mcp.md` states the same boundary from the tool's side
 ("requests that need comments or advisory findings route directly to the finite
 legacy tool whose agent turn can inspect them"). On this repository that is not a
 corner case: a pull request reaches `readiness: passed` only once every non-PASS

@@ -50,7 +50,7 @@ vi.mock('../api/client', () => {
     },
   }
 })
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 
 const PREFLIGHT_OK = {
   reachable: true, account: '1234•••7890', arn: 'arn:aws:iam::x:user/dev',
@@ -105,7 +105,7 @@ describe('RemoteCrewPanel launch draft', () => {
     const u = userEvent.setup()
     const first = renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     await u.type(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' }), 'subnet-0123abcd')
     const url = await screen.findByRole('textbox', { name: /Identity Center start URL/i })
     await waitFor(() => expect(url).toHaveValue('https://example.awsapps.com/start'))
@@ -116,7 +116,7 @@ describe('RemoteCrewPanel launch draft', () => {
     first.unmount()
 
     renderWithProviders(<RemoteCrewPanel />, { store: first.store })
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     expect(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })).toHaveValue('subnet-0123abcd')
     expect(screen.getByRole('radio', { name: /Company SSO/i })).toBeChecked()
     // The inherited portal arrives after mount and must not replace the typed one.
@@ -142,13 +142,13 @@ describe('RemoteCrewPanel launch draft', () => {
     const u = userEvent.setup()
     const first = renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     await waitFor(() => expect(screen.getByRole('radio', { name: /Company SSO/i })).toBeChecked())
     await u.click(screen.getByRole('radio', { name: /Builder ID/i }))
     first.unmount()
 
     renderWithProviders(<RemoteCrewPanel />, { store: first.store })
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     await waitFor(() => expect(api.cloudIdentity).toHaveBeenCalled())
     expect(await screen.findByRole('radio', { name: /Builder ID/i })).toBeChecked()
     expect(screen.getByRole('radio', { name: /Company SSO/i })).not.toBeChecked()
@@ -163,7 +163,7 @@ describe('RemoteCrewPanel launch draft', () => {
     const u = userEvent.setup()
     const first = renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     await u.type(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' }), 'subnet-0123abcd')
     await u.click(screen.getByRole('radio', { name: /Company SSO/i }))
     await u.type(screen.getByRole('textbox', { name: /Identity Center start URL/i }), 'https://other.awsapps.com/start')
@@ -175,7 +175,7 @@ describe('RemoteCrewPanel launch draft', () => {
     first.unmount()
 
     renderWithProviders(<RemoteCrewPanel />, { store: first.store })
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     expect(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })).toHaveValue('')
     // Back to this computer's own sign-in (Builder ID in the default mock).
     await waitFor(() => expect(screen.getByRole('radio', { name: /Builder ID/i })).toBeChecked())
@@ -188,7 +188,7 @@ describe('RemoteCrewPanel launch draft', () => {
     const u = userEvent.setup()
     const first = renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     expect(await screen.findByText(/Choose one below to enable Launch/)).toBeInTheDocument()
     await u.click(screen.getByRole('radio', { name: /Company SSO/i }))
     // Once picked, the notice no longer asks for a choice that is on screen.
@@ -197,7 +197,7 @@ describe('RemoteCrewPanel launch draft', () => {
     first.unmount()
 
     renderWithProviders(<RemoteCrewPanel />, { store: first.store })
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     const notice = (await screen.findByText(/The new crew will sign in with the option you picked below\./)).closest('[role="alert"]') as HTMLElement
     expect(notice).not.toHaveTextContent(/Choose one below/)
     expect(screen.getByRole('radio', { name: /Company SSO/i })).toBeChecked()
@@ -212,7 +212,7 @@ describe('RemoteCrewPanel launch draft', () => {
     const u = userEvent.setup()
     const first = renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     const subnet = await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })
     await u.type(subnet, 'subnet-aaaa')
     const launch = screen.getByRole('button', { name: /^Launch$/ })
@@ -227,8 +227,43 @@ describe('RemoteCrewPanel launch draft', () => {
     first.unmount()
 
     renderWithProviders(<RemoteCrewPanel />, { store: first.store })
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     expect(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })).toHaveValue('subnet-bbbb')
+  })
+
+  it('keeps the subnet of a launch refused after an earlier launch was accepted', async () => {
+    const message = 'subnet subnet-0123abcd has no verified internet egress route (NAT or internet gateway).'
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch)
+      .mockResolvedValueOnce(RUNNING_JOB)
+      .mockRejectedValueOnce(new ApiError(400, message, JSON.stringify({ error: message, code: 'invalid_subnet' })))
+    // The first setup has finished, so a second launch is offered.
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue({ ...RUNNING_JOB, status: 'done' as const, instance_id: 'i-0abc123456789def0' })
+    const u = userEvent.setup()
+    const first = renderWithProviders(<RemoteCrewPanel />)
+
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    const subnet = await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })
+    await u.type(subnet, 'subnet-0123abcd')
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Launch$/ })).not.toBeDisabled())
+    await u.click(screen.getByRole('button', { name: /^Launch$/ }))
+    expect(await screen.findByText(/Launched\. Its progress is shown below/)).toBeInTheDocument()
+    // Only the Region changes, so the same subnet goes out again and is refused.
+    const region = screen.getByRole('textbox', { name: 'Region' })
+    await u.clear(region)
+    await u.type(region, 'eu-west-1')
+    await u.tab()
+    await waitFor(() => expect(api.cloudPreflight).toHaveBeenLastCalledWith(undefined, 'eu-west-1'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Launch$/ })).not.toBeDisabled())
+    await u.click(screen.getByRole('button', { name: /^Launch$/ }))
+    await waitFor(() => expect(subnet).toHaveAttribute('aria-invalid', 'true'))
+    expect(api.cloudLaunch).toHaveBeenCalledTimes(2)
+    first.unmount()
+
+    renderWithProviders(<RemoteCrewPanel />, { store: first.store })
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    expect(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })).toHaveValue('subnet-0123abcd')
   })
 
   it('keeps the draft in memory only: nothing in browser storage, and a fresh tab starts empty', async () => {
@@ -236,7 +271,7 @@ describe('RemoteCrewPanel launch draft', () => {
     const u = userEvent.setup()
     const first = renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     await u.type(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' }), 'subnet-0123abcd')
     await u.click(screen.getByRole('radio', { name: /Company SSO/i }))
     await u.type(screen.getByRole('textbox', { name: /Identity Center start URL/i }), 'https://other.awsapps.com/start')
@@ -247,7 +282,7 @@ describe('RemoteCrewPanel launch draft', () => {
 
     // A reload or a new tab gets a new store.
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     expect(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })).toHaveValue('')
     await waitFor(() => expect(screen.getByRole('radio', { name: /Builder ID/i })).toBeChecked())
   })
@@ -260,7 +295,7 @@ describe('RemoteCrewPanel launch draft', () => {
     const u = userEvent.setup()
     const first = renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     await u.click(await screen.findByRole('radio', { name: /Company SSO/i }))
     await u.type(screen.getByRole('textbox', { name: /Identity Center start URL/i }), 'https://other.awsapps.com/start')
     await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'eu-west-1')
@@ -273,7 +308,7 @@ describe('RemoteCrewPanel launch draft', () => {
     // A reload or gateway restart: a new store, the same browser storage.
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     // This computer is Builder ID, so that stays the choice ...
     await waitFor(() => expect(screen.getByRole('radio', { name: /Builder ID/i })).toBeChecked())
     // ... and picking company SSO finds the fields already filled.
@@ -297,7 +332,7 @@ describe('RemoteCrewPanel launch draft', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     const url = await screen.findByRole('textbox', { name: /Identity Center start URL/i })
     await waitFor(() => expect(url).toHaveValue('https://example.awsapps.com/start'))
     expect(screen.getByRole('textbox', { name: /Identity Center region/i })).toHaveValue('ap-southeast-2')
@@ -314,7 +349,7 @@ describe('RemoteCrewPanel launch draft', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     const url = await screen.findByRole('textbox', { name: /Identity Center start URL/i })
     await waitFor(() => expect(url).toHaveValue('https://example.awsapps.com/start'))
     // That region belonged to the other portal, so the reader supplies this one's.
@@ -333,6 +368,15 @@ describe('instancesSlice launch draft', () => {
     expect(reducer(held, dropLaunchedCrewDraft({ subnet_id: 'subnet-a', identity: null })).crewForms.launch).toEqual(a)
   })
 
+  it('keeps a changed sign-in toggle and treats an absent toggle as on', () => {
+    const off = { ...a, signinOnLaunch: false }
+    const held = reducer(undefined, setCrewLaunchDraft(off))
+    expect(reducer(held, dropLaunchedCrewDraft(a)).crewForms.launch).toEqual(off)
+    expect(reducer(held, dropLaunchedCrewDraft({ ...off })).crewForms.launch).toBeNull()
+    const legacy = reducer(undefined, setCrewLaunchDraft(a))
+    expect(reducer(legacy, dropLaunchedCrewDraft({ ...a, signinOnLaunch: true })).crewForms.launch).toBeNull()
+  })
+
   it('drops nothing for a launch sent with no draft while one is held', () => {
     const held = reducer(undefined, setCrewLaunchDraft(a))
     expect(reducer(held, dropLaunchedCrewDraft(null)).crewForms.launch).toEqual(a)
@@ -346,7 +390,7 @@ describe('RemoteCrewPanel more-sizes toggle', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     const toggle = await screen.findByRole('button', { name: /Smaller and x86_64 sizes/ })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     for (const svg of toggle.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')

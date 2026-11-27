@@ -22,9 +22,13 @@
 import type { TurnIdentityFields } from '../../types'
 import { wireTurnIdentity } from '../../store/chatSlice'
 
-type WireIdentity = NonNullable<ReturnType<typeof wireTurnIdentity>>
+export type WireIdentity = NonNullable<ReturnType<typeof wireTurnIdentity>>
 
 const idleRowRefreshes = new Map<string, WireIdentity>()
+/** Records a `_done` already took: it skipped its own read because of them. */
+const takenRefreshes = new Map<string, WireIdentity>()
+
+const sameTurn = (a: WireIdentity | undefined, b: WireIdentity): boolean => !!a && a.gen === b.gen && a.turn === b.turn
 
 /** Remember that the idle row for `identity` dispatched `slot`'s completion
  *  refresh. A row without identity (an older gateway) leaves no record, so the
@@ -43,10 +47,25 @@ export function takeIdleRowRefresh(slot: string, done: TurnIdentityFields): bool
   const recorded = idleRowRefreshes.get(slot)
   idleRowRefreshes.delete(slot)
   const identity = wireTurnIdentity(done)
-  return !!recorded && !!identity && recorded.gen === identity.gen && recorded.turn === identity.turn
+  const matched = !!recorded && !!identity && sameTurn(recorded, identity)
+  if (matched && recorded) takenRefreshes.set(slot, recorded)
+  else takenRefreshes.delete(slot)
+  return matched
+}
+
+/** The idle row's read for `identity` finished. On failure, says whether a
+ *  `_done` already skipped its own read for that turn (#39620), so the caller
+ *  must read again; otherwise it drops the record, so the `_done` that follows
+ *  reads as before. */
+export function settleIdleRowRefresh(slot: string, identity: WireIdentity, failed: boolean): boolean {
+  const taken = sameTurn(takenRefreshes.get(slot), identity)
+  if (taken) takenRefreshes.delete(slot)
+  if (failed && sameTurn(idleRowRefreshes.get(slot), identity)) idleRowRefreshes.delete(slot)
+  return failed && taken
 }
 
 /** A `_done` the old socket never delivered will not arrive on the new one. */
 export function clearIdleRowRefreshes(): void {
   idleRowRefreshes.clear()
+  takenRefreshes.clear()
 }

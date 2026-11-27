@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { AcceptedWork, CapacityResponse, PresenceEntry, SharedDecision } from '../../../api/sharedCrew'
@@ -7,6 +7,10 @@ import { ALL_UNAVAILABLE } from '../../../api/sharedCrewUi'
 import UserMessage from '../UserMessage'
 import { QueuedSendLabel, queuedChatTurn } from './QueuedSendLabel'
 import { SessionCollabStrip } from './SessionCollabStrip'
+import { SendRaceNotice } from './SendRaceNotice'
+import { resetSendRaceForTests, setSendRaceNotice } from '../../../api/sendRace'
+import { sharedCrewInUse } from '../closedOutsideHere'
+import { sharedCrewKeys } from '../../../hooks/sharedCrew/sharedCrewSocket'
 import { PresenceChips, SessionPresence } from './PresenceChips'
 import { refusalMessage, queuedReason } from './overloadCopy'
 import { alreadyResolvedDecision, resolvedByLine, settledElsewhereLine } from '../../../components/chat-input/sharedDecision'
@@ -75,6 +79,24 @@ describe('above the composer', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  // The strip enables mode and People only after the capabilities query resolves, so these
+  // waits sit behind that chain and use CHAIN_TIMEOUT_MS (declared below).
+  it('with the Shared Crew preview off, reads the mode once and never People, and the Crew is not in use', async () => {
+    vi.mocked(api.sharedCrewMode).mockResolvedValue({ schema_version: 1, mode: 'personal', crew_id: 'c1' } as never)
+    const { qc } = mount(<SessionCollabStrip sessionKey="s1" />)
+    await waitFor(() => expect(api.sharedCrewMode).toHaveBeenCalledTimes(1), { timeout: CHAIN_TIMEOUT_MS })
+    await waitFor(() => expect(qc.getQueryData(sharedCrewKeys.mode)).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
+    expect(api.sharedCrewPeople).not.toHaveBeenCalled()
+    expect(sharedCrewInUse(qc)).toBe(false)
+  })
+
+  it('with the Shared Crew preview on, reads People and the mode once', async () => {
+    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, presence: 'available', attribution: 'available', shared_crew_preview: true })
+    mount(<SessionCollabStrip sessionKey="s1" />)
+    await waitFor(() => expect(api.sharedCrewPeople).toHaveBeenCalledTimes(1), { timeout: CHAIN_TIMEOUT_MS })
+    expect(api.sharedCrewMode).toHaveBeenCalledTimes(1)
+  })
+
   it('draws nothing of its own while others are present: presence lives in the context row', async () => {
     const me = person('p_me', 'Me')
     vi.mocked(api.sharedCrewViewer).mockResolvedValue(me as never)
@@ -89,7 +111,26 @@ describe('above the composer', () => {
     const failed = which === 'presence' ? api.sharedCrewPresence : which === 'decisions' ? api.sharedCrewDecisions : api.sharedCrewTypingLease
     vi.mocked(failed).mockRejectedValue(new Error(`${which} read failed`))
     mount(<SessionCollabStrip sessionKey="s1" />)
-    expect(await screen.findByTestId('session-collab-error')).toHaveTextContent(`${which} read failed`)
+    expect(await screen.findByTestId('session-collab-error', {}, { timeout: CHAIN_TIMEOUT_MS })).toHaveTextContent(`${which} read failed`)
+  })
+
+  // The composer dock floats over the transcript: a surface with no pane of its
+  // own lets the text scrolled under the dock show through its words.
+  it('draws the session-state failure on the dock glass', async () => {
+    vi.mocked(api.sharedCrewPresence).mockRejectedValue(new Error('presence read failed'))
+    mount(<SessionCollabStrip sessionKey="s1" />)
+    const notice = await screen.findByTestId('session-collab-error', {}, { timeout: CHAIN_TIMEOUT_MS })
+    expect(notice.parentElement).toHaveClass('liquid-glass', 'glass-thick')
+    // Red text on a red-mixed pane falls below AA in some dark palettes.
+    expect(notice.parentElement).not.toHaveClass('glass-danger')
+  })
+
+  it('draws the lost send race on the dock glass', () => {
+    onTestFinished(resetSendRaceForTests)
+    const winner = { revision: 4, principal: person('p_alice', 'alice'), message_id: 'm-alice', accepted_at: 1 }
+    setSendRaceNotice('s1', { error: 'someone else sent first', code: 'send_race', session_key: 's1', current_revision: 4, winner })
+    mount(<SendRaceNotice sessionKey="s1" onSendNow={vi.fn()} />)
+    expect(screen.getByTestId('send-race-notice')).toHaveClass('liquid-glass', 'glass-thick')
   })
 })
 

@@ -263,11 +263,14 @@ if __name__ == "__main__":
 '''
 
 
+SWEEP_STEP = "Re-fire readiness for stale pull requests"
+
+
 def _script() -> str:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = spec["jobs"]["sweep"]["steps"]
-    runs = [s["run"] for s in steps if "run" in s]
-    assert len(runs) == 1, f"sweep step count changed: {len(runs)}"
+    runs = [s["run"] for s in steps if s.get("name") == SWEEP_STEP]
+    assert len(runs) == 1, f"expected exactly one {SWEEP_STEP!r} step, got {len(runs)}"
     return runs[0]
 
 

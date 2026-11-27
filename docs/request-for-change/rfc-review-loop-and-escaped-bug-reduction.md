@@ -3,8 +3,8 @@ title: Fewer review loops and fewer escaped bugs -- a PASS/BLOCK review gate, li
 status: implemented
 author: unattributed (blameless study write-up)
 created: 2026-10-19
-last-audited: 2026-11-14
-audited-at: e51c773a0c
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [22698, 22425, 22702, 22957, 22961, 22971, 22973, 22694]
 tracking-issues: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Fewer review loops and fewer escaped bugs
 
-- Status: accepted. The repository owner recorded all eight decisions on
+- Status: implemented. The repository owner recorded all eight decisions on
   2026-10-20 in section 2.2: D1 with an amendment, D2 to D8 as written. Each of
   the eight decisions in section 2 is separable. Implemented at `e51c773a0c`: D1 overrides (#22698), D2 lint first (#22425), D3 sibling list (#22957), D4 `Proof:` line (#22971), D5 sweep check (#22961), D6 PR Size (#22694, now a job in `pr-policy.yml` since #25186), D7 the advisory `pre_push_gate.py` with the `Gate proof:` check in `diff_signals.py` (#22973) and D8 metrics (#22702) are on main.
 - This document changes no code. The merged pull request adds this file and one

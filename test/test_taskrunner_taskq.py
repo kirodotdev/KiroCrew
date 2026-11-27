@@ -651,7 +651,7 @@ async def test_a_run_with_a_recovery_left_is_resumed_and_gets_no_limit_notice(
         report = await runner.adopt_task_rows()
 
         assert report.resumed == ["taskrunner:r1"] and report.lost_owner_limit == []
-        runner.execute_plan.assert_awaited_once_with("r1")
+        runner.execute_plan.assert_awaited_once_with("r1", adopting=True)
         assert not [title for title, _body in notices if "not auto-resumed" in title]
     finally:
         store.close()

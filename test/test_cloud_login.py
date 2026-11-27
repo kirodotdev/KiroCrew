@@ -167,6 +167,76 @@ class TestAuthProbe:
         assert login._auth_probe("i-0abc", "dev") is False
 
 
+class TestSigninState:
+    """``signin_state`` keeps "could not tell" apart from "signed out".
+
+    The dashboard's crew row shows this answer, so a box it could not ask must
+    never read as "Needs sign-in". ``is_logged_in`` folds the two together
+    because it only gates whether to START a sign-in.
+    """
+
+    @staticmethod
+    def _box(monkeypatch, check: ssm.CommandResult, whoami: ssm.CommandResult | None = None):
+        def fake(_iid, command, *_a, **_k):
+            if "--format json" in command and whoami is not None:
+                return whoami
+            return check
+
+        monkeypatch.setattr(ssm, "run_command", fake)
+
+    def test_kas_bundle_box_signed_in(self, monkeypatch):
+        # On the bundle route the box runs `kirocrew kas whoami` (Crew's vault)
+        # instead of kiro-cli, and echoes the same sentinel.
+        self._box(
+            monkeypatch,
+            ssm.CommandResult("Success", "Builder ID\n" + login._TOKEN_PRESENT_SENTINEL, "", 0),
+        )
+        assert login.signin_state("i-1", "p", "r") is True
+
+    def test_kas_bundle_box_signed_out(self, monkeypatch):
+        self._box(
+            monkeypatch,
+            ssm.CommandResult("Failed", "Not signed in\n" + login._NOAUTH_SENTINEL, "", 1),
+        )
+        assert login.signin_state("i-1", "p", "r") is False
+
+    def test_kiro_cli_box_signed_in_as_the_target(self, monkeypatch):
+        self._box(
+            monkeypatch,
+            ssm.CommandResult(
+                "Success", "user@example.com\n" + login._TOKEN_PRESENT_SENTINEL, "", 0
+            ),
+            ssm.CommandResult(
+                "Success", '{"email": "user@example.com", "accountType": "BuilderId"}', "", 0
+            ),
+        )
+        assert login.signin_state("i-1", "p", "r", target=login.KiroLoginTarget()) is True
+
+    def test_unreachable_box_is_unknown(self, monkeypatch):
+        self._box(monkeypatch, ssm.CommandResult("TimedOut", "", "", -1))
+        assert login.signin_state("i-1", "p", "r") is None
+        assert login.is_logged_in("i-1", "p", "r") is False  # the start-a-sign-in gate is unchanged
+
+    def test_box_with_no_kiro_sign_in_program_is_unknown(self, monkeypatch):
+        # A crew on another harness (no kiro-cli, not the KAS bundle route): the
+        # box refuses before asking anything. Not "signed out".
+        self._box(
+            monkeypatch,
+            ssm.CommandResult(
+                "Failed", login.vault.NO_SIGNIN_PROGRAM_SENTINEL + "\nno kiro-cli", "", 1
+            ),
+        )
+        assert login.signin_state("i-1", "p", "r") is None
+
+    def test_identity_that_does_not_read_is_unknown(self, monkeypatch):
+        self._box(
+            monkeypatch,
+            ssm.CommandResult("Success", login._TOKEN_PRESENT_SENTINEL, "", 0),
+            ssm.CommandResult("TimedOut", "", "", -1),
+        )
+        assert login.signin_state("i-1", "p", "r", target=login.KiroLoginTarget()) is None
+
+
 class TestLogout:
     def test_reports_signed_out_when_session_gone(self, monkeypatch):
         commands: list[str] = []

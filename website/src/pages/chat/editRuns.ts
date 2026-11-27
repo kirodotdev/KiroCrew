@@ -9,7 +9,7 @@
  * output under the same labels, and the later rows (followers) draw nothing.
  *
  * Adjacency is judged on what the reader sees. A row that draws nothing in the
- * transcript — the ✅/🚫 completion sibling, an approval record (the approval
+ * transcript — the Approved:/Refused: completion sibling, an approval record (the approval
  * bar owns those), a reasoning burst (TurnBlock hoists every burst to the turn
  * top) — does not break a run. Anything else does: a read, a command, a
  * message, an edit to a different file. The timeline therefore stays exact;
@@ -40,6 +40,7 @@ import { readToolRiskRecord, toolRiskFieldOf } from './toolRiskRecord'
 import { extractFilePath } from '../../components/DiffBlock'
 import { presentToolDiff } from './toolDiff'
 import { isReasoningRole } from './groupDisplayItems'
+import { isToolCallRow, isToolRefusedRow } from '../../lib/toolRowContract'
 
 export interface EditRunIndex {
   /** Lead row → every member of its run, lead first, one per tool call.
@@ -54,14 +55,14 @@ const EMPTY_INDEX: EditRunIndex = { membersByLead: new Map(), followers: new Set
 /** Draws nothing in the transcript, so it neither joins nor breaks a run. */
 function isTransparent(m: ChatMessage): boolean {
   if (m.role === 'permission' || m.role === 'queued' || isReasoningRole(m)) return true
-  return m.role === 'tool' && !m.content?.startsWith('🔧')
+  return m.role === 'tool' && !isToolCallRow(m.content)
 }
 
 interface CallState { denied: boolean; hasPerm: boolean }
 
 /** The file a mergeable edit row changes, or null when the row cannot merge. */
 function mergeablePath(m: ChatMessage, calls: Map<string, CallState>, logUnmergeable: Set<string>): { id: string; path: string } | null {
-  if (m.role !== 'tool' || !m.content?.startsWith('🔧')) return null
+  if (m.role !== 'tool' || !isToolCallRow(m.content)) return null
   const meta = m.meta as Record<string, unknown> | undefined
   const id = meta?.tool_call_id
   const kind = meta?.kind
@@ -88,7 +89,7 @@ function buildEditRuns(messages: ChatMessage[], toolLog: ToolActivity[]): EditRu
   for (const e of toolLog) if (e.type === 'tool' && e.tool_call_id) newestById.set(e.tool_call_id, e)
   const logUnmergeable = new Set<string>()
   for (const [id, e] of newestById) if (e.rejected || e.output_cut != null) logUnmergeable.add(id)
-  // Pass 1: per-call facts that can arrive AFTER the edit row (its 🚫 deny
+  // Pass 1: per-call facts that can arrive AFTER the edit row (its Refused: deny
   // sibling, its approval record), so pass 2 can judge each row whole.
   const calls = new Map<string, CallState>()
   for (const m of messages) {
@@ -98,7 +99,7 @@ function buildEditRuns(messages: ChatMessage[], toolLog: ToolActivity[]): EditRu
       const c = calls.get(id) ?? { denied: false, hasPerm: false }
       c.hasPerm = true
       calls.set(id, c)
-    } else if (m.role === 'tool' && m.content?.startsWith('🚫')) {
+    } else if (m.role === 'tool' && isToolRefusedRow(m.content)) {
       const c = calls.get(id) ?? { denied: false, hasPerm: false }
       c.denied = true
       calls.set(id, c)
@@ -118,7 +119,7 @@ function buildEditRuns(messages: ChatMessage[], toolLog: ToolActivity[]): EditRu
     if (!edit) { close(); continue }
     if (run && run.path === edit.path) {
       ;(followers ??= new Set()).add(m)
-      // A second 🔧 row for the same call is the same change written twice;
+      // A second Tool: row for the same call is the same change written twice;
       // it hides with the run but adds no diff of its own.
       if (!run.ids.has(edit.id)) { run.ids.add(edit.id); run.members.push(m) }
       continue

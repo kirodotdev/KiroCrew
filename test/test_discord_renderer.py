@@ -93,7 +93,7 @@ class TestRenderer:
         on_screen = [final[m] for m in mids]
         assert sum(t.count("The answer is Foo.") for t in on_screen) == 1
         # The reasoning note is its own delivered message.
-        assert any("Thinking:" in t for t in on_screen)
+        assert any("💭" in t for t in on_screen)
         # The later text is delivered, and does not re-prepend the shown answer.
         assert any("And here is more." in t and "The answer is Foo." not in t for t in on_screen)
 
@@ -128,7 +128,7 @@ class TestRenderer:
         # No spurious placeholder-only message.
         assert not any(t.strip().startswith("…") for t in on_screen)
         # The reasoning note is still delivered.
-        assert any("Thinking:" in t for t in on_screen)
+        assert any("💭" in t for t in on_screen)
 
     @pytest.mark.asyncio
     async def test_a_trailing_note_is_not_the_predecessor_of_the_bubble_above_it(self) -> None:
@@ -148,7 +148,7 @@ class TestRenderer:
         # At this point a live bubble is still open above the just-posted note.
         assert r._stream_mid is not None
         # The note did NOT displace the answer bubble as the graded predecessor.
-        assert "Thinking:" not in r._sent_tail
+        assert "💭" not in r._sent_tail
         await r.on_done()
         # And the finalized answer is intact (not corrupted by a note-seam grade).
         mids: list[str] = []
@@ -434,7 +434,7 @@ class TestRenderer:
         r, cli = self._renderer()
         await r.on_turn_start()
         await r.on_done(stop_reason="error")
-        assert "Error:" in cli.final_text()
+        assert "⚠️" in cli.final_text()
 
     @pytest.mark.asyncio
     async def test_prompt_choice_sends_separate_approval_message(self) -> None:
@@ -473,14 +473,15 @@ class TestRenderer:
         DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req1"), None)
 
     @pytest.mark.asyncio
-    async def test_prompt_falls_back_to_the_last_tool_without_a_title(self) -> None:
-        """Non-vacuity: the fallback still runs when the event carried no name."""
+    async def test_prompt_without_a_title_names_no_earlier_tool(self) -> None:
+        """No tool call id reaches the prompt, so an untitled request cannot be tied
+        to the last tool_call seen: it reads ``this tool``, never that call's name."""
         r, cli = self._renderer()
         await r.on_turn_start()
         await r.on_tool_call("t1", "fs_read")
         await r.on_prompt_choice([], request_id="req2")
         text, _ = cli.sent[-1]
-        assert "fs_read" in text
+        assert text == "🔐 Approve `this tool`?"
         DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req2"), None)
 
     @pytest.mark.asyncio
@@ -1381,7 +1382,7 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
         await r.on_done()
 
         frames = self._screen(cli)
-        assert any("Thinking:" in f for f in frames), "the reasoning note must be delivered"
+        assert any("💭" in f for f in frames), "the reasoning note must be delivered"
         assert len(frames) >= 2, f"fixture delivered {len(frames)} frame(s); it grades no seam"
         self._assert_no_key_on_screen([_delivered_form(f) for f in frames])
 

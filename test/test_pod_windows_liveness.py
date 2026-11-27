@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import time
+import types
 
 import pytest
 from test_pod_windows_run import contained
@@ -13,7 +15,7 @@ from kiro_crew import platform_compat as pc
 from kiro_crew.pod import _windows_run as runs
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import windows as win
-from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE
+from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, POD_HEALTH_WAIT_SECS_DEFAULT
 
 __all__ = ["model", "supervisor"]
 
@@ -245,7 +247,7 @@ def test_untrackable_boot_or_successor_never_serves_outside_retained_containment
 
 
 def test_ordinary_child_is_not_adopted_and_adoption_timeout_still_drains_job(
-    supervisor, monkeypatch
+    supervisor, monkeypatch, capsys
 ):
     cfg, state, run = supervisor
     state.alive.add(4300)
@@ -253,6 +255,36 @@ def test_ordinary_child_is_not_adopted_and_adoption_timeout_still_drains_job(
     assert run() == 0
     assert state.recorded == [4242]
     assert state.active == 0
+    assert runs.read(cfg, "demo")["state"] == "drained"
+    assert "no restart successor claimed the pod within 0s of gateway pid 4242" in (
+        capsys.readouterr().out
+    )
+
+
+def test_a_successor_that_claims_late_in_a_full_boot_is_still_adopted(supervisor, monkeypatch):
+    """The successor writes its sidecar only once its listener is bound, at the end
+    of a whole boot. One that needs longer than a short fixed window but less than
+    the budget a first boot gets is a restart, and draining it takes the pod down."""
+    cfg, state, run = supervisor
+    state.alive.add(4300)
+    now = [0.0]
+    claim_at = POD_HEALTH_WAIT_SECS_DEFAULT - 5.0
+
+    def sleep(secs):
+        now[0] += secs
+        if now[0] >= claim_at:
+            state.sidecar = (4300, state.tokens[4300])
+
+    monkeypatch.setattr(
+        win, "time", types.SimpleNamespace(monotonic=lambda: now[0], sleep=sleep, time=time.time)
+    )
+
+    def wait(pid, _token, *, on_poll=None):
+        state.alive.discard(pid)
+
+    monkeypatch.setattr(win, "_wait_for_pid", wait)
+    assert run() == 0
+    assert state.recorded == [4242, 4300]
     assert runs.read(cfg, "demo")["state"] == "drained"
 
 

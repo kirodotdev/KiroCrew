@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 #: per tool event would be a burst on the bridge's single mutation worker.
 _TYPING_THROTTLE_S = 4.0
 
-_ERROR_TEXT = "Error: Something went wrong — please try again."
+_ERROR_TEXT = "⚠️ Something went wrong — please try again."
 
 
 def _default_redactor(text: str) -> str:

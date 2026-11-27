@@ -92,6 +92,7 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # (the profile card's own read), not here, so the crew editor does not
         # round-trip it.
         "dashboard_card_send",
+        "show_sessions_in_list",
         # Shipped on GET /api/members (the profile card's own read), not here:
         # the crew editor echoes this row back, and must not round-trip it.
         "approval_mode",
@@ -108,6 +109,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # Same home and same reason: the profile card's Dynamic capabilities
         # preview switch (``kiro_crew.crewmate_dynamic_capabilities``).
         "dynamic_capabilities",
+        # Same home and same reason: the owner's Workers can conduct switch,
+        # read at each worker's session start (``members.conducting_worker_session``).
+        "worker_conducts",
     }
 )
 

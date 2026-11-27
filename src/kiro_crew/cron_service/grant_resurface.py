@@ -63,7 +63,12 @@ def _current_pending_pin(job: CronJob) -> str:
         grant=dict(job.secret_env),
         domain="pending",
         delivery=cron_script.delivery_fingerprint(
-            job.session_key, job.silent, job.channel or "", job.thread_ts or ""
+            job.session_key,
+            job.silent,
+            job.channel or "",
+            job.thread_ts or "",
+            job.channel_type,
+            job.target_id,
         ),
     )
 

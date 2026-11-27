@@ -53,6 +53,19 @@ class TestResetConversationTool:
         human = session_directive.strip_marker(result)
         assert "transcript is not deleted" in human.lower()
 
+    def test_a_heartbeat_caller_is_told_it_is_refused(self):
+        """The consumer applies the directive after the tool returned, so this
+        text and the description are all the model reads. A Bot calling this on
+        its heartbeat must read that such a turn is refused, not only that a
+        reset was requested."""
+        human = session_directive.strip_marker(
+            mcp_core._call_tool_inner("reset_conversation", {})
+        ).lower()
+        descriptor = next(t for t in mcp_core._list_tools() if t["name"] == "reset_conversation")
+        for text in (human, descriptor["description"].lower()):
+            assert "heartbeat" in text, text
+        assert "refused" in human
+
     def test_is_a_recognized_directive_tool(self):
         """The forgery gate honours a marker only under a canonical directive
         tool name; omitting the tool here would make every marker it emits

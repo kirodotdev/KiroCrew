@@ -19,6 +19,7 @@ import time
 import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from kiro_crew.config.paths import data_home
@@ -80,6 +81,45 @@ def crew_log_root(kind: str) -> Path:
     return data_home() / _ROOT_LEAF / _ROOT_DIR[require_kind(kind)]
 
 
+#: The data home resolved once for one fold pass, keyed by its unresolved spelling, or
+#: ``None`` outside a pass. Per context, so a pass on one thread never lends its answer
+#: to another.
+_pass_home: "ContextVar[dict[str, Path] | None]" = ContextVar("crew_log_pass_home", default=None)
+
+
+@contextmanager
+def resolved_home_for_pass() -> Iterator[None]:
+    """Resolve the data home at most once inside this block, for one fold pass.
+
+    Only the data home's own resolution is shared. The kind root's ``lstat``,
+    ``exists`` and ``resolve`` still run on every :func:`_checked_crew_log_root`
+    call, so a root swapped for a link mid-pass is refused on the next call. A data
+    home that moves mid-pass makes the root resolve somewhere the cached canonical
+    path is not, and the check fails closed. A nested block reuses the outer one.
+    """
+    if _pass_home.get() is not None:
+        yield
+        return
+    token = _pass_home.set({})
+    try:
+        yield
+    finally:
+        _pass_home.reset(token)
+
+
+def _canonical_home() -> Path:
+    """``data_home().resolve()``, shared across one :func:`resolved_home_for_pass` block."""
+    home = data_home()
+    memo = _pass_home.get()
+    if memo is None:
+        return home.resolve()
+    key = str(home)
+    resolved = memo.get(key)
+    if resolved is None:
+        resolved = memo[key] = home.resolve()
+    return resolved
+
+
 def _checked_crew_log_root(kind: str) -> Path:
     """:func:`crew_log_root` for *kind*, refused when the directory is not the real one.
 
@@ -100,6 +140,9 @@ def _checked_crew_log_root(kind: str) -> Path:
     * it resolves to exactly the canonical spelling under the data home's own
       ``crew-log`` tree, with both sides resolved so one symlinked ancestor cannot
       make two spellings of the same directory disagree.
+
+    Inside :func:`resolved_home_for_pass` the data home's own resolution is shared for
+    that one pass; both conditions above still run on every call.
 
     An absent directory is fine and is not an error: the callers that write
     create it, and the ones that read report their own absence. Only a directory
@@ -125,7 +168,7 @@ def _checked_crew_log_root(kind: str) -> Path:
         # Anchored at the data home, NOT at ``<home>/crew-log`` resolved: resolving
         # the parent would accept a linked ``crew-log`` -- both sides would then
         # spell the link's target and agree, which is the same escape one level up.
-        canonical = data_home().resolve() / _ROOT_LEAF / _ROOT_DIR[require_kind(kind)]
+        canonical = _canonical_home() / _ROOT_LEAF / _ROOT_DIR[require_kind(kind)]
     except (OSError, RuntimeError) as exc:
         raise CrewLogError(
             f"cannot resolve the crew log root {root}: {exc}",

@@ -3,19 +3,25 @@
 const fs = require("fs");
 const path = require("path");
 
-const { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken } = require("./token-retry");
+const {
+  createTokenRetryHandler,
+  dashboardRetryPath,
+  dashboardUrlFor,
+  loadDashboardWithToken,
+} = require("./token-retry");
 const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./renderer-recovery");
 const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice");
 const { createHangRecovery, endHungRenderer } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { armSwipeHistory, browserPanelUnderCursor } = require("./swipe-history");
-const { armScrollTouch } = require("./scroll-touch");
+const { armScrollTouch, readNaturalScrolling } = require("./scroll-touch");
 const { hideToTray, cancelPendingTrayHide, shouldKeepAppHidden } = require("./hide-to-tray");
 const {
   createCloseHandler,
   getCloseAction,
   setCloseAction,
 } = require("./close-action");
+const { createCloseHideWiring } = require("./close-hide-notice");
 const { getTrayIcon, setTrayIcon } = require("./tray-icon");
 const { createMinimizeToTray } = require("./minimize-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
@@ -29,6 +35,7 @@ const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { stepZoomFactor } = require("./zoom");
 const { registerCaptureSurface } = require("./capture-trust");
 const { isLoopbackUrl } = require("./browser-view");
+const { shownRelayPane } = require("./relay-crew-window");
 const { runAnnotateOp } = require("./browser-annotate");
 const { attachContextMenu } = require("./context-menu");
 const {
@@ -52,6 +59,7 @@ const { DEFAULT_REMOTE_BIN, DEFAULT_REMOTE_PATH } = require("./remote-token");
 const { identityFamily } = require("./instance-guard");
 const { decideLinuxFrame, applyWindowControl } = require("./linux-frame");
 const { buildMenuTemplate } = require("./app-menu");
+const { TEXT_SIZE_TIERS } = require("./text-size");
 const { serializeMenuItems, executeMenuItem } = require("./windows-menu-model");
 const {
   SYMBOL_DARK: WINDOWS_TITLEBAR_SYMBOL_DARK,
@@ -149,6 +157,7 @@ function createWindowLifecycle(options) {
     fetchRemoteToken,
     isQuitting = () => false,
     requestQuit,
+    stopsGatewayOnQuit = () => false, // a gateway this app started is running
     connectWindow,
     // Re-apply the launch port's managed-tunnel choice after a save here, so
     // ticking or un-ticking it takes effect without a relaunch.
@@ -248,6 +257,9 @@ function createWindowLifecycle(options) {
     getZoom,
     setZoom,
     stepZoom,
+    getFontSize,
+    setFontSize,
+    trackFontSizeChrome,
   } = createWindowChrome({
     BaseWindow,
     nativeTheme,
@@ -342,6 +354,10 @@ function createWindowLifecycle(options) {
         // Frameless Linux is a launch-time decision, not a platform constant.
         // The preload reads this argument to reserve caption-control space.
         additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
+        // Content text size, the durable half (chrome.js holds the why). Both
+        // keys: standard alone leaves monospace at Chromium's 13px.
+        defaultFontSize: getFontSize(),
+        defaultMonospaceFontSize: getFontSize(),
       },
     });
     // The preload asks this on every load, so a crew configured or cleared for
@@ -375,10 +391,16 @@ function createWindowLifecycle(options) {
     });
     // The trackpad's real finger-down / finger-up, so a two-finger drag in the
     // dashboard releases on the lift-off instead of a guessed gap (macOS only).
+    // It also tells the page the Natural scrolling setting, which decides
+    // which way the fingers moved for a given wheel sign.
     armScrollTouch(view.webContents, {
       platform,
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
+      readNatural: () => readNaturalScrolling(systemPreferences),
     });
+    // A replaced renderer reads the font size captured in webPreferences above,
+    // which predates any pick the user has made since. Re-push it per load.
+    trackFontSizeChrome(view);
 
     // Teardown order is load-bearing: no embedded view may outlive the page it
     // is composited over. Close the dashboard WebContents only after releasing
@@ -409,8 +431,11 @@ function createWindowLifecycle(options) {
     // menu bar (a notched built-in display).
     const sendFullScreen = () => {
       if (win.isDestroyed() || view.webContents.isDestroyed()) return;
+      // `pageRaised`: a video raised this fullscreen and leaves it on Esc, so
+      // the renderer's "Press F11 to exit" hint stays out of its way.
       view.webContents.send("fullscreen-changed", win.isFullScreen(), {
         menuBarOverlap: menuBarCanOverlap(win, screen),
+        pageRaised: win._mcHtmlFullScreen?.raisedWindow() === true,
       });
     };
 
@@ -433,7 +458,12 @@ function createWindowLifecycle(options) {
     });
     win.on("enter-full-screen", () => {
       updateViewBounds();
-      sendFullScreen();
+      // Windows and Linux emit this before the page's `enter-html-full-screen`
+      // (html-fullscreen.js), so a video's claim, and with it `pageRaised`, is
+      // only readable on the next turn. macOS emits it after, and its layout
+      // wants the state at once.
+      if (IS_MAC) sendFullScreen();
+      else setImmediate(sendFullScreen);
       scheduleFullscreenSettle();
     });
     win.on("leave-full-screen", () => {
@@ -528,6 +558,7 @@ function createWindowLifecycle(options) {
       WebContentsView,
       shell,
       partition: BROWSER_PARTITION,
+      log: glog,
     });
 
     // The dashboard's own webContents, so the link block also gets the origin --
@@ -643,17 +674,27 @@ function createWindowLifecycle(options) {
       getAppOrigin: () => windowBackendUrl,
       log: glog,
     });
+    // Only a window opened on a blob: (a widget's "Open in new tab") may load
+    // one; a window opened on a route runs the dashboard and keeps the strict guard.
+    const blobPopoutNavigationGuard = createNavigationGuard({
+      getAppOrigin: () => windowBackendUrl,
+      allowOwnBlob: true,
+      log: glog,
+    });
     const redirectGuard = createRedirectGuard({
       getAppOrigin: () => windowBackendUrl,
       log: glog,
     });
-    const armWindowOpen = (contents) => {
+    const armWindowOpen = (contents, guard) => {
       contents.setWindowOpenHandler(windowOpenHandler);
-      contents.on("will-navigate", navigationGuard);
+      contents.on("will-navigate", guard);
       contents.on("will-redirect", redirectGuard);
-      contents.on("did-create-window", (child) => armWindowOpen(child.webContents));
+      contents.on("did-create-window", (child, details) => {
+        const openedOnBlob = typeof details?.url === "string" && details.url.startsWith("blob:");
+        armWindowOpen(child.webContents, openedOnBlob ? blobPopoutNavigationGuard : navigationGuard);
+      });
     };
-    armWindowOpen(view.webContents);
+    armWindowOpen(view.webContents, navigationGuard);
 
     // Do not leak the dashboard URL/token as a Referer (dashboardRequestHeaders).
     // This listener remains attached at the same per-window setup point; moving
@@ -738,6 +779,8 @@ function createWindowLifecycle(options) {
       })),
       defaults: { width: 1280, height: 860 },
       minSize: { width: 550, height: 600 },
+      // Only macOS shows a way out of fullscreen (window-state.js explains).
+      restoreFullScreen: IS_MAC,
     });
 
     const opts = applyDashboardChrome({
@@ -1013,6 +1056,7 @@ function createWindowLifecycle(options) {
             fullScreenWatch ? fullScreenWatch.exitSettlingFor() : Infinity
           ),
         });
+        closeHide.noticeOnHide(); // once per install (close-hide-notice.js)
       },
       persist: () => {
         if (saveTimer) {
@@ -1079,10 +1123,14 @@ function createWindowLifecycle(options) {
     return true;
   }
 
+  const showFromTray = () => { showMainWindow({ focus: true }); }; // tray Show item and icon click
+  const closeHide = createCloseHideWiring({
+    app, Menu, Notification: electron.Notification, store, platform, log: glog, stopsGatewayOnQuit,
+    getMainWindow: () => mainWindow, getTray: () => tray, showMainWindow, onShow: showFromTray, onQuit: requestQuit,
+    onNewConnection: () => openNewConnectionWindow(), onOpenConfig: () => openPathHardened(shell, store.path),
+  });
+
   function createTray() {
-    const showFromTray = () => {
-      showMainWindow({ focus: true });
-    };
     const nightly = identityFamily(app.getVersion()) === "nightly";
     const iconFile = nightly && fs.existsSync(path.join(__dirname, "icon-nightly.png"))
       ? "icon-nightly.png"
@@ -1104,15 +1152,7 @@ function createWindowLifecycle(options) {
     }
     tray = new Tray(icon);
     tray.setToolTip(app.name);
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: `Show ${app.name}`, click: showFromTray },
-      { type: "separator" },
-      { label: "New Connection Window…", click: () => openNewConnectionWindow() },
-      { type: "separator" },
-      { label: "Open Config File", click: () => openPathHardened(shell, store.path) },
-      { type: "separator" },
-      { label: "Quit", click: requestQuit },
-    ]));
+    closeHide.refreshTrayMenu();
     tray.on("click", showFromTray);
     return tray;
   }
@@ -1403,8 +1443,8 @@ function createWindowLifecycle(options) {
         ({ token: tokenValue } = await fetchRemoteToken(connectionPort));
       }
       if (tokenValue && !connWin.isDestroyed()) {
-        const target = new URL(retryTarget || "", connectionBackendUrl);
-        await loadDashboardWithToken(connWin.webContents, target.toString(), tokenValue);
+        const target = dashboardUrlFor(connectionBackendUrl, retryTarget);
+        await loadDashboardWithToken(connWin.webContents, target, tokenValue);
       }
     });
     connWin.webContents.on("did-navigate", (_event, url, httpCode) => {
@@ -1527,17 +1567,38 @@ function createWindowLifecycle(options) {
     };
   }
 
+  function pickFontSize(px) {
+    const chosen = setFontSize(px);
+    try {
+      const tier = TEXT_SIZE_TIERS.find((candidate) => candidate.px === chosen);
+      const menu = Menu.getApplicationMenu();
+      const item = tier && menu && menu.getMenuItemById(tier.id);
+      // Only the chosen item. Writing `checked = false` over the siblings
+      // fights Electron's own radio-group handling, and the symptom was the
+      // menu showing the last tier whatever the user picked.
+      if (item) item.checked = true;
+    } catch {
+      // Menu is mid-rebuild; the next build seeds checked from the store.
+    }
+  }
+
   function buildApplicationMenu() {
     appMenu = Menu.buildFromTemplate(buildMenuTemplate({
       isMac: IS_MAC,
       appName: app.name,
       openSettings: () => openSettingsPage(),
       openAbout: () => openSettingsPage("about"),
+      // A relay Crew tab in front takes Reload, as its own window did,
+      // instead of the dashboard reloading and closing every tab.
       reload: () => {
+        const pane = shownRelayPane(BaseWindow.getFocusedWindow());
+        if (pane) { pane.menuReload({ ignoreCache: false }); return; }
         const wc = focusedDashboardWebContents();
         if (wc) wc.reload();
       },
       forceReload: () => {
+        const pane = shownRelayPane(BaseWindow.getFocusedWindow());
+        if (pane) { pane.menuReload({ ignoreCache: true }); return; }
         const wc = focusedDashboardWebContents();
         if (wc) wc.reloadIgnoringCache();
       },
@@ -1552,6 +1613,8 @@ function createWindowLifecycle(options) {
       zoomOut: zoomMenuItem((wc) => {
         wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), -1));
       }),
+      currentFontSize: getFontSize(),
+      setFontSize: pickFontSize,
       alwaysOnTop: !!(store.get("windowState") || {}).alwaysOnTop,
       toggleAlwaysOnTop,
       toggleFocusMode: () => {
@@ -1578,7 +1641,7 @@ function createWindowLifecycle(options) {
   // silently no-ops when clicked. Strict `=== true` matches the fail-closed
   // rule executeMenuItem uses.
   function menuItems(sender, id, senderIsLocal) {
-    if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
+    if (!(IS_WINDOWS || LINUX_FRAMELESS) || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
     const menu = appMenu || Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById(id);
     const win = windowForWebContents(sender);
@@ -1593,7 +1656,7 @@ function createWindowLifecycle(options) {
   // exit says so explicitly.
   function executeMenu(sender, id, index, senderIsLocal) {
     if (
-      !IS_WINDOWS
+      !(IS_WINDOWS || LINUX_FRAMELESS)
       || !WINDOWS_TITLEBAR_MENU_IDS.has(id)
       || !Number.isInteger(index)
     ) return false;
@@ -1822,6 +1885,7 @@ function createWindowLifecycle(options) {
       set: setCloseActionAndLog,
     },
     syncTray,
+    refreshTrayMenu: closeHide.refreshTrayMenu, closeHideNavigation: closeHide.navigation,
     trayIcon: {
       get: () => getTrayIcon(store, { isMac: IS_MAC }),
       set: setTrayIconAndLog,

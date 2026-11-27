@@ -25,6 +25,28 @@
  */
 
 const SCROLL_TOUCH_CHANNEL = "scroll-touch";
+/** Main -> dashboard: macOS Natural scrolling, `true` on or `false` off. */
+const SCROLL_DIRECTION_CHANNEL = "scroll-direction";
+
+/**
+ * macOS Natural scrolling (System Settings > Trackpad), or null when unknown.
+ * A wheel's `deltaX` is the scroll, not the fingers: with Natural scrolling off
+ * its sign is flipped, so the page needs this to tell which way the fingers
+ * moved. Read as a string: the key is absent until the user changes the
+ * setting, and absent means the macOS default, on. A `boolean` read would
+ * report that as false.
+ */
+function readNaturalScrolling(systemPreferences) {
+  let raw;
+  try {
+    raw = systemPreferences.getUserDefault("com.apple.swipescrolldirection", "string");
+  } catch {
+    return null;
+  }
+  if (raw === "" || raw === "1") return true;
+  if (raw === "0") return false;
+  return null;
+}
 
 /** The phase an Electron input event announces, or null for any other event. */
 function scrollTouchPhase(input) {
@@ -39,24 +61,49 @@ function scrollTouchPhase(input) {
  * a CHANGE of phase is sent, so a repeated begin (a second scroll starting
  * before Chromium closed the first) does not reach the page twice.
  *
+ * With `readNatural`, the Natural scrolling setting also goes out on
+ * {@link SCROLL_DIRECTION_CHANNEL}: on every page load, and again when a
+ * gesture begins and the setting has changed since, so a change in System
+ * Settings applies from the next swipe.
+ *
  * Returns the input-event handler (for tests), or null when nothing was armed.
  */
-function armScrollTouch(wc, { platform = process.platform, isAlive = () => true } = {}) {
+function armScrollTouch(wc, { platform = process.platform, isAlive = () => true, readNatural = null } = {}) {
   if (platform !== "darwin" || !wc || typeof wc.on !== "function") return null;
   let last = "end";
-  const onInput = (_event, input) => {
-    const phase = scrollTouchPhase(input);
-    if (phase === null || phase === last) return;
-    last = phase;
+  let natural = null;
+  const send = (channel, value) => {
     try {
       if (!isAlive()) return;
-      wc.send(SCROLL_TOUCH_CHANNEL, phase);
+      wc.send(channel, value);
     } catch {
       /* mid-teardown: same tolerance as the other window helpers */
     }
   };
+  const sendNatural = (always) => {
+    if (typeof readNatural !== "function") return;
+    const now = readNatural();
+    if (now === null || (!always && now === natural)) return;
+    natural = now;
+    send(SCROLL_DIRECTION_CHANNEL, now);
+  };
+  const onInput = (_event, input) => {
+    const phase = scrollTouchPhase(input);
+    if (phase === null || phase === last) return;
+    last = phase;
+    if (phase === "begin") sendNatural(false);
+    send(SCROLL_TOUCH_CHANNEL, phase);
+  };
   wc.on("input-event", onInput);
+  // A new page has a new preload with nothing cached: tell it.
+  wc.on("did-finish-load", () => sendNatural(true));
   return onInput;
 }
 
-module.exports = { armScrollTouch, scrollTouchPhase, SCROLL_TOUCH_CHANNEL };
+module.exports = {
+  armScrollTouch,
+  readNaturalScrolling,
+  scrollTouchPhase,
+  SCROLL_DIRECTION_CHANNEL,
+  SCROLL_TOUCH_CHANNEL,
+};

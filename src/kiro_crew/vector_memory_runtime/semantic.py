@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import context_omissions, injection_receipts
+from kiro_crew import context_omissions
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_relevance_rule as _relevance_rule
 from kiro_crew import memory_schema, memory_v2
@@ -29,6 +29,7 @@ from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_INTERACTIVE
 from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES, order_by_request_relevance
 from kiro_crew.user_json import strict_json_equal
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES
+from kiro_crew.vector_memory_runtime import embedding as _embedding
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime import term_index as _term_index
 from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
@@ -174,7 +175,8 @@ def _scoring_term_index(store: VectorMemoryStore, scoring: _SemanticScoringSet, 
                 key_texts.append(label.replace("_", " ").replace(".", " "))
                 texts.append(key_texts[-1])
                 texts.append(str(raw["value_json"]).lower())
-            index = _term_index.RowTermIndex.build(texts, vm.np)
+            seed = derived.pop("term_index_seed", None)  # set by _install_scoring_set
+            index = _term_index.RowTermIndex.build(texts, vm.np, previous=seed)
             derived["term_index"] = None if index is None else (index, tuple(key_texts))
     return derived["term_index"]
 
@@ -935,7 +937,7 @@ def semantic_candidates_v1(
     if recall_query is not None:
         query_embedding = recall_query.vector
     elif store.embed_fn:
-        query_embedding = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        query_embedding = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     else:
         query_embedding = None
 
@@ -971,6 +973,7 @@ def semantic_candidates_v1(
     # the vector term of the same weighted scale (see _hybrid_score).
     similarity = store._stored_similarity_scorer(query_embedding)
     query_has_vector = query_embedding is not None
+    instructed = _embedding.query_is_instructed(query_embedding)
 
     identities = store._fact_identities()
     scored_rows: list[tuple[float, dict]] = []
@@ -987,13 +990,10 @@ def semantic_candidates_v1(
     else:
         row_tokens = _text_scoring._row_stem_tokens_for_scan(2 * len(all_rows))
 
-    blocked = store._ineligible_ids()
     indexed = _scoring_term_index(store, scoring, identities) if scoring is not None else None
     hits = indexed[0].query(query_words) if indexed is not None else None
     for i, raw in enumerate(all_rows):
         key = raw["key"]
-        if blocked and record_meta.record_id_for("fact", key) in blocked:
-            continue
         identity = identities.get(key)
         label = key if identity is None else store._fact_label({"key": key, "identity": identity})
         key_text = label.replace("_", " ").replace(".", " ")
@@ -1032,8 +1032,23 @@ def semantic_candidates_v1(
                 "score": score,
                 "matched_terms": sorted(query_words & (key_words | val_words)),
                 "cosine": vec_score if query_has_vector else None,
+                "query_instructed": instructed,
             }
             scored_rows.append((score, r))
+
+    # Only scored rows are tested, so look eligibility up by their record ids (the
+    # PRIMARY KEY) rather than scan memory_record_meta, which only grows.
+    if scored_rows:
+        scored_ids = [
+            record_meta.record_identity_or_none("fact", r["key"]) for _score, r in scored_rows
+        ]
+        blocked = store._ineligible_ids([rid for rid in scored_ids if rid is not None])
+        if blocked:
+            scored_rows = [
+                row
+                for row, rid in zip(scored_rows, scored_ids)
+                if rid is None or rid not in blocked
+            ]
 
     # The key is the last tie-break so the order depends on the rows, never on the
     # order they sit in: a resident set patched in place holds the same rows as
@@ -1248,17 +1263,18 @@ def _install_scoring_set(
         data_version=version,
         derived={"used_bytes": used, "max_bytes": max_bytes},
     )
+    # The first term-index build here reuses the replaced set's ids for unchanged texts.
+    built.derived["term_index_seed"] = _term_index.seed_from(store._semantic_scoring)
     store._semantic_scoring_refused = None
     store._semantic_scoring = built
     return built
 
 
-def _fact_lines(store: VectorMemoryStore, rows: list, cap: int) -> tuple[list[str], list[str]]:
-    """The fact lines that fit *cap*, best first, and the keys they render."""
+def _fact_lines(store: VectorMemoryStore, rows: list, cap: int) -> list[str]:
+    """The fact lines that fit *cap*, best first."""
     lines: list[str] = []
-    keys: list[str] = []
     if not rows:
-        return lines, keys
+        return lines
     total = 0
     for r in store._eligible_rows(rows, "fact"):
         try:
@@ -1274,9 +1290,8 @@ def _fact_lines(store: VectorMemoryStore, rows: list, cap: int) -> tuple[list[st
             # Skip a line that does not fit; a shorter, lower-ranked one may.
             continue
         lines.append(line)
-        keys.append(str(r["key"]))
         total += len(line) + 1
-    return lines, keys
+    return lines
 
 
 def get_semantic_context(
@@ -1300,19 +1315,16 @@ def get_semantic_context(
     *relevance_rule* is ``memory.relevance_rule``
     (:mod:`kiro_crew.memory_relevance_rule`). Under ``enforce`` a fact, on
     either store, also needs the private store's evidence gate
-    (``relevance_evidence``) measured on the request's significant terms only;
-    ``shadow`` keeps today's block and records in the injection receipt the
-    fact keys that gate would add or drop. ``pref.*`` rows are never gated.
+    (``relevance_evidence``) measured on the request's significant terms only.
+    ``pref.*`` rows are never gated.
     """
     max_rows = max(cap // 15, 20)
-    mode = relevance_rule_mode_from(relevance_rule)
-    gated = mode != _relevance_rule.MODE_OFF and bool(query_text)
+    gated = relevance_rule_mode_from(relevance_rule) != _relevance_rule.MODE_OFF
 
     # Two row shapes reach the loop below -- dicts from the candidate
     # selectors, sqlite3.Row from the no-query path -- and it reads both as
     # mappings.
     rows: list
-    enforced: list = []
     if query_text:
         # Query-aware filtering: hybrid vector + keyword scoring
         candidates = (
@@ -1320,10 +1332,9 @@ def get_semantic_context(
             if store.algorithm_version == "v2"
             else store._semantic_candidates_v1(query_text)
         )
-        rows = candidates[:max_rows]
         if gated:
             terms = _relevance_rule.fact_terms(query_text)
-            enforced = [
+            candidates = [
                 row
                 for row in candidates
                 if str(row["key"]).startswith("pref.")
@@ -1331,10 +1342,10 @@ def get_semantic_context(
                     terms,
                     _relevance_rule.fact_text(store._fact_label(row), row["value_json"]),
                     (row.get("retrieval") or {}).get("cosine"),
+                    instructed=bool((row.get("retrieval") or {}).get("query_instructed")),
                 )
-            ][:max_rows]
-            if mode == _relevance_rule.MODE_ENFORCE:
-                rows = enforced
+            ]
+        rows = candidates[:max_rows]
     elif store.algorithm_version == "v2":
         rows = store._semantic_candidates_v2(query_text)[:max_rows]
     else:
@@ -1347,28 +1358,8 @@ def get_semantic_context(
         )
     if facts_only:
         rows = [r for r in rows if not str(r["key"]).startswith("pref.")]
-        enforced = [r for r in enforced if not str(r["key"]).startswith("pref.")]
 
-    lines, shown = _fact_lines(store, rows, cap)
-    if gated:
-        if mode == _relevance_rule.MODE_SHADOW:
-            kept = _fact_lines(store, enforced, cap)[1]
-            injection_receipts.record_stage(
-                injection_receipts.RELEVANCE_RULE,
-                mode=mode,
-                policy=_relevance_rule.POLICY_VERSION,
-                would_add=[k for k in kept if k not in shown],
-                would_drop=[k for k in shown if k not in kept],
-                part=_relevance_rule.PART_FACTS,
-                kept=[k for k in shown if k in kept],
-            )
-        else:
-            injection_receipts.record_stage(
-                injection_receipts.RELEVANCE_RULE,
-                mode=mode,
-                policy=_relevance_rule.POLICY_VERSION,
-                part=_relevance_rule.PART_FACTS,
-            )
+    lines = _fact_lines(store, rows, cap)
     if not lines:
         return ""
     if facts_only:
@@ -1397,11 +1388,12 @@ def semantic_candidates_v2(
     if recall_query is not None:
         query_embedding = recall_query.vector
     elif query_text and store.embed_fn:
-        query_embedding = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        query_embedding = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     else:
         query_embedding = None
     query_terms = memory_v2.terms(query_text)
     similarity = store._stored_similarity_scorer(query_embedding)
+    instructed = _embedding.query_is_instructed(query_embedding)
     with store._db_lock:
         store._check_recall_query(recall_query)
         rows = store._fetch_all_locked(
@@ -1420,7 +1412,7 @@ def semantic_candidates_v2(
         if row["key"] in identities:
             row["identity"] = identities[row["key"]]
         text = f"{store._fact_label(row).replace('.', ' ').replace('_', ' ')} {visible_value}"
-        evidence = memory_v2.relevance_evidence(query_terms, text, cosine)
+        evidence = memory_v2.relevance_evidence(query_terms, text, cosine, instructed=instructed)
         # Preferences are stable instructions supplied by this member's own
         # owner/context, not episodic guesses that must match every task.
         preference = row["key"].startswith("pref.")

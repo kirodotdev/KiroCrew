@@ -1239,6 +1239,11 @@ class TestEveryRegistryRemovalRecordsAnEnd:
             "send revisions, bounded by an idle-only LRU -- not the session registry, "
             "and it writes no crumb, so evicting a revision cannot leave one behind"
         ),
+        "browser_harness.live_hub": (
+            "the live browser card hub's dict[str, LiveSession] of per-chat card "
+            "state, dropped when the chat's tab closes -- not the session registry, "
+            "and it writes no crumb, so dropping a card cannot leave one behind"
+        ),
     }
 
     @staticmethod

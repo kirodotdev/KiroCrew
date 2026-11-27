@@ -160,7 +160,7 @@ class TestBroadcastCompactionResultBackoff:
 
         msg = _broadcast_compaction_result(state, slot, self._failed_event())
 
-        assert msg is not None and msg.startswith("❌"), msg
+        assert msg is not None and msg.startswith("Error: "), msg
         assert not [
             c for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "context_usage"
         ]
@@ -168,9 +168,9 @@ class TestBroadcastCompactionResultBackoff:
     def test_notice_prefixes_pin_the_frontend_parser_contract(self, tmp_path, monkeypatch):
         """The dashboard folds the compaction row by parsing its TEXT: the
         frontend (``website/src/pages/chat/CompactionCard.tsx``,
-        ``parseCompactionNotice``) keys on the exact ``✅ Conversation compacted``
-        lead (colon or period) for the folded card and on a ``❌`` lead for the
-        error notice, and the row is tagged ``kind="compaction"`` so the registry
+        ``parseCompactionNotice``) keys on the ``Conversation compacted`` lead
+        (colon or period, with or without the older U+2705) for the folded card
+        and on an ``Error:`` (or older U+274C) lead for the error notice, and the row is tagged ``kind="compaction"`` so the registry
         can claim it. Nothing else pins the writer side, so a wording change here
         would silently unfold a multi-KB summary back into a plain notice. This
         test is that pin — change both sides together."""
@@ -181,11 +181,11 @@ class TestBroadcastCompactionResultBackoff:
         with_summary = _broadcast_compaction_result(
             state, slot, self._completed_event("## Goal\nship")
         )
-        assert with_summary == "\u2705 Conversation compacted: ## Goal\nship"
+        assert with_summary == "Conversation compacted: ## Goal\nship"
         without_summary = _broadcast_compaction_result(state, slot, self._completed_event(""))
-        assert without_summary == "\u2705 Conversation compacted."
+        assert without_summary == "Conversation compacted."
         failed = _broadcast_compaction_result(state, slot, self._failed_event("too large"))
-        assert failed is not None and failed.startswith("\u274c Compaction failed: ")
+        assert failed is not None and failed.startswith("Error: Compaction failed: ")
 
         tagged = [m for m in slot.messages if m.get("role") == "assistant"]
         assert tagged and all((m.get("meta") or {}).get("kind") == "compaction" for m in tagged)
@@ -582,7 +582,7 @@ class TestRunChatCompactDeferredWait:
             tmp_path, monkeypatch, "context too large to summarize"
         )
         assert self._compaction_notice(slot) == (
-            "❌ Compaction failed: context too large to summarize"
+            "Error: Compaction failed: context too large to summarize"
         )
 
     @pytest.mark.asyncio
@@ -591,7 +591,7 @@ class TestRunChatCompactDeferredWait:
     ):
         """No reason means no dangling colon — the old wording stands."""
         slot = await self._run_failed_compaction(tmp_path, monkeypatch, None)
-        assert self._compaction_notice(slot) == "❌ Compaction failed."
+        assert self._compaction_notice(slot) == "Error: Compaction failed."
 
     @pytest.mark.asyncio
     async def test_failed_compaction_blank_reason_keeps_the_bare_notice(
@@ -599,7 +599,7 @@ class TestRunChatCompactDeferredWait:
     ):
         """A whitespace-only reason is treated as absent, not printed."""
         slot = await self._run_failed_compaction(tmp_path, monkeypatch, "   ")
-        assert self._compaction_notice(slot) == "❌ Compaction failed."
+        assert self._compaction_notice(slot) == "Error: Compaction failed."
 
     @pytest.mark.asyncio
     async def test_failed_compaction_reason_is_redacted(self, tmp_path, monkeypatch):

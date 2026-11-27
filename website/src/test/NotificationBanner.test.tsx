@@ -168,6 +168,15 @@ describe('NotificationBanner: arrival', () => {
     input.remove()
   })
 
+  it('only a critical card hides a relay Crew pane; a passing note leaves the Crew on screen', () => {
+    renderBanner()
+    arrive(mkN())
+    expect(cards()[0].hasAttribute('data-relay-pane-overlay')).toBe(false)
+    arrive(mkN({ priority: 'critical', kind: 'approval' }))
+    const critical = cards().find(c => c.getAttribute('data-priority') === 'critical')
+    expect(critical?.hasAttribute('data-relay-pane-overlay')).toBe(true)
+  })
+
   it('switches to an alert region while a critical card is pending', () => {
     renderBanner()
     arrive(mkN({ priority: 'critical', kind: 'approval' }))
@@ -278,6 +287,16 @@ describe('shouldBannerNote / targetsCurrentView (pure)', () => {
     expect(targetsCurrentView(mkN({ url: '/schedule?job=1' }), { pathname: '/schedule', activeSlot: null, windowFocused: true })).toBe(true)
     expect(targetsCurrentView(mkN({ url: '/schedule' }), { pathname: '/schedule', activeSlot: null, windowFocused: false })).toBe(false)
     expect(targetsCurrentView(mkN({ url: '/schedule' }), { pathname: '/settings', activeSlot: null, windowFocused: true })).toBe(false)
+  })
+  it('a relay Crew tab over the Notifications page lets a note banner', () => {
+    const onFeed = { enabled: true, popoverOpen: false, pathname: '/notifications', activeSlot: null, windowFocused: true }
+    expect(shouldBannerNote(mkN(), onFeed)).toBe(false)
+    expect(shouldBannerNote(mkN(), { ...onFeed, relayCovered: true })).toBe(true)
+  })
+  it('a relay Crew tab in front means no local view is on screen, so the note banners', () => {
+    expect(targetsCurrentView(mkN({ url: '/schedule' }), { pathname: '/schedule', activeSlot: null, windowFocused: true, relayCovered: true })).toBe(false)
+    expect(targetsCurrentView(mkN({ slot: 's1' }), { pathname: '/chat', activeSlot: 's1', windowFocused: true, relayCovered: true })).toBe(false)
+    expect(targetsCurrentView(mkN({ slot: 's1' }), { pathname: '/chat', activeSlot: 's1', windowFocused: true, relayCovered: false })).toBe(true)
   })
   it("treats a mate's message as on screen only while its own thread is", () => {
     const ada = mkN({ channel: MEMBER_MESSAGE_CHANNEL, kind: 'agent', slot: 'member-ada', url: '/members?member=Ada', member: { slug: 'ada', name: 'Ada' } })
@@ -666,10 +685,10 @@ describe('NotificationBanner: stack and interaction', () => {
   })
 
   it('leaves the cards alone when a focused surface already handled the Escape', () => {
-    // The composer's Escape-to-stop and dictation-discard both preventDefault
+    // The composer's optimize-cancel and dictation-discard both preventDefault
     // the Escape they claim, before it bubbles to document. The banner must
-    // read that and keep its card, so one Escape in the composer stops the
-    // turn (or discards the dictation) without also dismissing a card (#22315).
+    // read that and keep its card, so one Escape in the composer cancels the
+    // optimize (or discards the dictation) without also dismissing a card.
     renderBanner()
     arrive(mkN({ title: 'First' }))
     const handled = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })

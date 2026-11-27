@@ -10,11 +10,17 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_utils import _broadcast_expired_oauth_banners
+from kiro_crew.dashboard.slack_reconnect_wait import (
+    TURN_END_NOTICE,
+    slack_reply_client,
+    wait_for_slack_reconnect,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         STOP_REASON_CANCELLED,
         STOP_REASON_END_TURN,
+        SUBAGENT_COMPLETION_KIND,
         DashboardState,
         _ChatSlot,
         effective_session_key,
@@ -28,7 +34,11 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.directives import _report_unclaimed_directives
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
     from kiro_crew.dashboard.chat_turn.queue_cycle import _arm_synthesis_recheck
-    from kiro_crew.dashboard.chat_turn.queue_drain import _start_next_queued_turn
+    from kiro_crew.dashboard.chat_turn.queue_drain import (
+        _REPLAYS_COMPLETION_KEY,
+        _start_next_queued_turn,
+        settle_drained_subagent_notices,
+    )
     from kiro_crew.dashboard.chat_turn.recipient import (
         _retire_mirror_thinking,
         cross_surface_withheld,
@@ -163,6 +173,7 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
         released_entries = bool(slot._queue)
         slot._pending_discard_conversation_key = None
         slot._pending_discard_from_wake = False
+        slot._pending_discard_drops_plan = False
         logger.warning(
             "Giving up the queue hold on slot %s: the queued conversation discard "
             "was refused or raised on %d attempts with nothing left to wait for",
@@ -269,13 +280,22 @@ def _wake_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> Non
         wake.set()
 
 
+def _a_completion_is_queued(slot: "_ChatSlot") -> bool:
+    """Whether the tab's queue holds a sub-agent completion, or a verbatim requeue of one."""
+    return any(
+        item.get("kind") == SUBAGENT_COMPLETION_KIND or item.get(_REPLAYS_COMPLETION_KEY) is True
+        for item in slot._queue
+    )
+
+
 async def _consume_pending_reset(
     state: DashboardState, slot: _ChatSlot, *, allow_discard: bool = False, own_turn: bool = False
 ) -> bool:
     """Apply a deferred session reset queued on *slot*, if any.
 
     Returns whether a teardown actually ran, so a caller can decide whether a
-    respawn is owed. A deferral left armed returns False.
+    respawn is owed. A deferral that tore nothing down returns False; a teardown
+    that leaves the project reset owed (below) returns True.
 
     Two independent deferrals share this consumer, and both are queued rather
     than applied inline because their producer runs INSIDE the turn they would
@@ -329,7 +349,9 @@ async def _consume_pending_reset(
 
     Each flag is cleared only after its own effect succeeds, and compare-and-
     cleared so a key queued by a concurrent producer during the await is not
-    clobbered.
+    clobbered. A rebind during the children probe moves the project reset to the
+    slot's new key without tearing the old one down, and a rebind or another
+    project change during the teardown keeps it owed on the key the slot runs on.
     """
     torn_down = False
     if slot._pending_reset_history_key:
@@ -349,7 +371,17 @@ async def _consume_pending_reset(
             slot._pending_reset_history_key = current_key
             _arm_pending_reset_retry(state, slot)
             return torn_down
-        if await subagents_attached_async(state, slot, pending_key, "consume_pending_reset"):
+        children_attached = await subagents_attached_async(
+            state, slot, pending_key, "consume_pending_reset"
+        )
+        if effective_session_key(slot) != pending_key:
+            # The slot rebound during the probe: the reset follows it, as above,
+            # rather than tearing down the session it just left.
+            if slot._pending_reset_history_key == pending_key:
+                slot._pending_reset_history_key = effective_session_key(slot)
+            _arm_pending_reset_retry(state, slot)
+            return torn_down
+        if children_attached:
             # Left armed on purpose, same as the discard branch below: the
             # reset releases the shared runtime attached children run on, so
             # applying it now would discard their work. The retry task owns
@@ -382,6 +414,7 @@ async def _consume_pending_reset(
                     # Again here: a cold start already in flight when the project was
                     # cleared stores the old directory as it registers.
                     state.sessions.retract_cwd(pending_key)
+                settled_project = slot.project
                 # Shielded: the eager-spawn task awaiting this is cancelled by the
                 # next slot signal, and a cancel after the pop would leak the
                 # process holding the session lock. Cancelled, the flag stays armed.
@@ -410,7 +443,15 @@ async def _consume_pending_reset(
                     # show a withheld model as available.
                     slot.forget_session_model_state()
                     torn_down = True
-                    if slot._pending_reset_history_key == pending_key:
+                    rebound = effective_session_key(slot) != pending_key
+                    if rebound or slot.project != settled_project:
+                        # A rebind or another project change landed during the
+                        # teardown, which did not cover it: the reset stays owed
+                        # on the key the slot runs on now.
+                        if slot._pending_reset_history_key == pending_key:
+                            slot._pending_reset_history_key = effective_session_key(slot)
+                        _arm_pending_reset_retry(state, slot)
+                    elif slot._pending_reset_history_key == pending_key:
                         slot._pending_reset_history_key = None
                         slot._pending_reset_clears_cwd = False
                     # Freshness push for open tabs; verdict-driven (see
@@ -436,6 +477,16 @@ async def _consume_pending_reset(
             # children that are still running, queued, or delivering a result.
             logger.debug(
                 "Deferring queued conversation discard for slot %s: sub-agents attached",
+                slot.key,
+            )
+            _arm_pending_reset_retry(state, slot)
+            return torn_down
+        if own_turn and _a_completion_is_queued(slot):
+            # The hand-off drains it into the conversation it was queued for and that
+            # turn's end lands the discard. The retry does not wait on it: a held queue
+            # cannot start it.
+            logger.debug(
+                "Deferring queued conversation discard for slot %s: a completion is queued",
                 slot.key,
             )
             _arm_pending_reset_retry(state, slot)
@@ -498,6 +549,17 @@ async def _consume_pending_reset(
             # flight -> flag stays armed, session untouched), so dropping before
             # would forget a verdict that is still accurate.
             slot.forget_session_model_state()
+            # Notices for the dropped conversation are settled, not handed to the fresh one.
+            notices = slot._pending_subagent_failures[:]
+            slot._pending_subagent_failures.clear()
+            if notices:
+                settle_drained_subagent_notices(state, slot, notices)
+            if slot._pending_discard_drops_plan:
+                # A /clear's discard: the completion turn it waited on may have re-sent
+                # the old conversation's plan, which goes with it as at a landed /clear.
+                slot._pending_discard_drops_plan = False
+                if slot.set_todo(None):
+                    state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
             if slot._pending_discard_conversation_key == discard_key:
                 slot._pending_discard_conversation_key = None
                 slot._pending_discard_from_wake = False
@@ -574,6 +636,16 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
             _deferred_options_expiry = False
             turn._deferred_options_expiry = _deferred_options_expiry
             await expire_slack_options(state, session_key)
+        if (
+            (_mirror_stream_ts or turn._mirror_thinking_ts)
+            and _mirror_chan
+            and not state.slack_client
+        ):
+            # A reconnect took the client: close the stream and remove the
+            # placeholder through the one it publishes. None published leaves
+            # them in the thread, which the owner is told once.
+            await wait_for_slack_reconnect(state)
+            slack_reply_client(state, session_key, _mirror_chan, turn=turn, notice=TURN_END_NOTICE)
         if _mirror_stream_ts and state.slack_client and _mirror_chan:
             try:
                 # Fenced for the same reason _on_tool_call's in-progress append is:

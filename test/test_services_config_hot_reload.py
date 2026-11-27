@@ -663,16 +663,21 @@ class TestTelemetryRecorderRebuild:
 
     @pytest.mark.asyncio
     async def test_the_rebuild_runs_off_the_event_loop(self) -> None:
-        """``shutdown`` flushes on the calling thread, so it must not run on the loop."""
+        """A flush waits on every export, so it runs on a background thread, never the loop."""
         from kiro_crew.metrics import provider as provider_mod
 
         provider_mod.watch_config()
+        doomed = object()
         with (
+            patch.object(provider_mod, "_detach", return_value=doomed),
+            patch.object(
+                provider_mod._provider_flush, "flush_in_background", return_value=True
+            ) as background,
             patch.object(provider_mod, "shutdown") as shutdown,
-            patch("asyncio.to_thread", new=AsyncMock()) as to_thread,
         ):
             await _dispatch(KiroCrewConfig(), "telemetry.enabled")
-        to_thread.assert_awaited_once_with(shutdown)
+        background.assert_called_once_with(doomed, provider_mod._flush_detached_provider)
+        shutdown.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_an_unrelated_write_does_not_rebuild(self) -> None:

@@ -176,7 +176,7 @@ _PI_MCP_SERVER_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 # digest over the raw bytes would read every Windows install as tampered and refuse
 # every pi session there. ``.gitattributes`` pins the checkout LF as well; the
 # normalization here is what keeps the property from resting on a repo-config line.
-PI_GATE_EXTENSION_SHA256 = "9025960d714f2b71806b0fc24b85e06e9a5701b2e9ba67e881cba3f8be71670f"
+PI_GATE_EXTENSION_SHA256 = "72cc30da2b2e3d5f5bc49a32dfacfab4882e1ade235a7fbad9833f86258d3a1c"
 
 _pi_acp_argv_cache: tuple[list[str] | None, str] | object = launch_mod._UNRESOLVED
 
@@ -954,11 +954,20 @@ class PiLaunch(ProcessAdapter):
         self._session: ProcessSession | None = None
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """Resolve both components, check pi's version, then seal and verify the gate."""
+        """Refuse or mask, resolve both components, check pi's version, seal and verify the gate."""
         global _pi_acp_argv_cache, _pi_bin_cache  # noqa: PLW0603
         session = ctx.session
         assert session is not None, "pi is launched for one session"
         self._session = session
+        # The refuse-then-mask preflight every enforced host runs, keyed on the
+        # routing rather than on this harness's identity, and FIRST: before the
+        # binary lookups, so a host that refuses the session never names an install
+        # command, and before the read-back below, which starts a child of this
+        # harness.
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
+        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         # Two components, resolved separately because either can be absent on its
         # own and the not-found message must name the one that is.
         cached_pi_acp: tuple[list[str] | None, str] | object = _pi_acp_argv_cache
@@ -1005,13 +1014,6 @@ class PiLaunch(ProcessAdapter):
         spawn_label = launch_mod._adapter_spawn_label(
             argv, PI_ACP_BIN, pkg_entry=_PI_ACP_PKG_ENTRY, override_env=_ENV_PI_ACP_BIN
         )
-        # The refuse-then-mask preflight every enforced host runs, keyed on the
-        # routing rather than on this harness's identity, and FIRST because the
-        # read-back below starts a child of this harness.
-        hidden = await launch_mod._run_preflight_bounded(
-            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
-        )
-        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         # The Node pi's shebang would find, against pi's own engine floor. Refused
         # here rather than left to the read-back: a pi under too old a Node dies at
         # module load, and the read-back can name only an exit code. When a Node

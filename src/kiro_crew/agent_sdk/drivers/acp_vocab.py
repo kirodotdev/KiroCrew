@@ -3,6 +3,8 @@
 Stop classes and the stop-reason classifier, the tool-call, tool-call-update and
 tool-result event kinds, the stop reasons of a turn the backend did not finish, the
 structured-status frame and its wait reasons, the terminal tool-call statuses, the session-start and prompt timeouts, the
+runtime error family a refused session start raises, the
+reasons the handle auto-rejected a sub-agent's permission request, the
 native-child marker, the notice a harness reports for the person, the mark a dashboard
 turn's stream draws background work under and the background cards its harness still
 runs (and loses) are backend
@@ -23,10 +25,10 @@ the import this module replaces.
 
 from __future__ import annotations
 
-from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.engine_fallback import (
     EngineFallbackWalk,
     ModelFallbackNotice,
+    RefusalHopText,
     engine_served_model,
     follow_engine_promotion,
     is_unpinned_pick,
@@ -53,16 +55,29 @@ from kiro_crew.acp.raw_sdk_tasks import (
 from kiro_crew.acp.raw_sdk_tasks import live_card_ids as live_background_card_ids
 from kiro_crew.acp.raw_sdk_tasks import on_cards_lost as on_background_cards_lost
 from kiro_crew.acp.raw_sdk_workflow_cards import BackgroundCardRow
-from kiro_crew.acp.session_handle import (
+from kiro_crew.acp.session_handle_native_children import (
+    AUTO_REJECT_MISSING_SECURITY_CONTEXT,
+    AUTO_REJECT_STRANDED_BETWEEN_TURNS,
     NATIVE_CHILD_NOT_RESUMABLE,
+)
+from kiro_crew.acp.session_handle_runtime_contract import (
     AcpRequestTimeout,
+    AcpRuntimeError,
     AcpScopeAdmissionTimeout,
 )
 from kiro_crew.acp.timed_out_continuation import continue_timed_out_calls, timed_out_continuation
+from kiro_crew.acp.transport_errors import (
+    AcpError,
+    AcpProcessDied,
+    AcpSandboxInitFailed,
+    AcpTimeoutError,
+)
 from kiro_crew.acp.types import (
     EVENT_HARNESS_NOTICE,
     EVENT_MODEL_FALLBACK,
     EVENT_STRUCTURED_STATUS,
+    EVENT_SUBAGENT_ACTIVITY,
+    EVENT_SUBAGENT_LIST,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
     STATUS_EXTENSION_VERSION,
@@ -74,6 +89,7 @@ from kiro_crew.acp.types import (
     STOP_CLASS_SUCCEEDED,
     STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_CANCELLED,
+    STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TIMEOUT,
     STOP_RECOVERY_MAX_RETRIES,
@@ -86,9 +102,14 @@ from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_CALL_UPDATE, EV
 
 __all__ = [
     "is_runtime_death",
+    "is_sandbox_init_failure",
     "is_user_worded_failure",
+    "AUTO_REJECT_MISSING_SECURITY_CONTEXT",
+    "AUTO_REJECT_STRANDED_BETWEEN_TURNS",
     "EVENT_MODEL_FALLBACK",
     "EVENT_STRUCTURED_STATUS",
+    "EVENT_SUBAGENT_ACTIVITY",
+    "EVENT_SUBAGENT_LIST",
     "EVENT_TOOL_CALL",
     "EVENT_TOOL_CALL_UPDATE",
     "EVENT_TOOL_RESULT",
@@ -104,22 +125,29 @@ __all__ = [
     "STOP_CLASS_SUCCEEDED",
     "STOP_REASON_CANCEL_UNACKED",
     "STOP_REASON_CANCELLED",
+    "STOP_REASON_REFUSAL",
     "STOP_REASON_STALE_RECOVER",
     "STOP_REASON_TIMEOUT",
     "STOP_RECOVERY_MAX_RETRIES",
     "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
+    "AcpError",
     "AcpRequestTimeout",
+    # The runtime family outside ``AcpError``: a session start the backend
+    # refuses (a KAS engine that cannot be fetched) raises it.
+    "AcpRuntimeError",
     "AcpScopeAdmissionTimeout",
     "AcpTimeoutError",
     "InFlightToolTracker",
     "StructuredStatus",
     "classify_stop_reason",
     # The engine's own in-prompt model fallback (``acp/engine_fallback.py``): the
-    # per-turn walk a surface ends with one line, the verdict it reads, and the
-    # readers a surface that shows the model uses to follow the engine.
+    # per-turn walk a surface ends with one line, the verdict it reads, the
+    # readers a surface that shows the model uses to follow the engine, and the
+    # cut a refusal hop makes in the text a turn loop collects.
     "EngineFallbackWalk",
     "ModelFallbackNotice",
+    "RefusalHopText",
     "engine_served_model",
     "follow_engine_promotion",
     "is_unpinned_pick",
@@ -167,6 +195,17 @@ def is_runtime_death(exc: BaseException) -> bool:
     a class test that application code must not spell itself.
     """
     return isinstance(exc, AcpProcessDied)
+
+
+def is_sandbox_init_failure(exc: BaseException) -> bool:
+    """Whether *exc* is an OS sandbox refusing to start the agent child.
+
+    The transport raises ``AcpSandboxInitFailed`` when a backend exists but the
+    host's sandbox will not initialize, so no chat can start until someone fixes
+    the host. The dashboard's host-sandbox notice walks a turn's cause chain with
+    this test, which application code must not spell itself.
+    """
+    return isinstance(exc, AcpSandboxInitFailed)
 
 
 def is_user_worded_failure(exc: BaseException) -> bool:

@@ -142,6 +142,20 @@ describe('ja punctuation (style/ja.md §1)', () => {
   })
 })
 
+describe('ja script boundary (style/ja.md §1.1)', () => {
+  it('spaces Kiro CLI and the product name off adjacent Japanese', () => {
+    // A do-not-translate term always takes the space: `Kiro CLI をインストール`,
+    // never `Kiro CLIをインストール`. Only these two terms are judged, so an
+    // absorbed compound such as `APIキー` is never caught.
+    const term = '(?:Kiro CLI|\\{\\{productName\\}\\})'
+    const glued = new RegExp(`[${JP}]${term}|${term}[${JP}]`)
+    const bad = prose
+      .filter(([, value]) => glued.test(value))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
+    expect(bad, report(bad)).toEqual([])
+  })
+})
+
 describe('ja katakana (style/ja.md §2)', () => {
   it('closes up compound loanwords instead of spacing them', () => {
     // `ナレッジ ライブラリ` is the Microsoft-style convention; this catalog uses
@@ -168,6 +182,8 @@ describe('ja terminology (style/ja.md §2.1)', () => {
   const BANNED: Array<[string, string, string]> = [
     ['write access', 'ライトアクセス', '書き込みアクセス'],
     ['present', 'プレゼント', '在席'],
+    // 地元 is a person's home area; "local" here always means on this computer.
+    ['local', '地元', 'ローカル'],
   ]
 
   for (const [cue, banned, canonical] of BANNED) {

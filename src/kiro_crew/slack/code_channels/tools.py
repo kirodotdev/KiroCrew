@@ -19,14 +19,22 @@ Tools
 -----
 
 ``code_channel_set_view``
-    an ``html`` or ``block_kit`` tab. The Code tab's diff is the workspace's,
-    and the plan tab comes with the plan canvas. HTML is self-contained (no
+    an ``html`` or ``block_kit`` tab, or ``diff``: the workspace publishes the
+    Code tab (its one writer) now, as a turn's end would, and says whether it
+    holds a diff. The plan tab comes with the plan canvas, and the Workers tab and the pull
+    request tabs are the channel's own (:mod:`.tabs`); their keys are reserved,
+    and the agent's tabs are the first to make room at Slack's cap
+    (:mod:`.views`). HTML is self-contained (no
     ``csp`` resource domains are ever sent); Block Kit is display-only (no
     interactive elements, no remote media).
 ``code_channel_publish_plan_canvas``
     create the channel canvas, or replace its content; a create Slack refuses
     with ``channel_canvas_already_exists`` is never retried, and a canvas this
     gateway did not create is never written.
+``code_channel_read_plan_canvas``
+    the plan canvas as it is in Slack now (``getCanvas``) with its open comment
+    threads, redacted and framed as data; a read, so it needs no plan to exist
+    beyond the channel's own canvas id.
 ``code_channel_set_context_bar``
     the agent's own items, shown after the workspace's repo / branch / PR / CI
     items (five in all); informational and link items only.
@@ -55,7 +63,7 @@ from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable, Iterable
 
 from kiro_crew.security import refuses, scan_exfiltration_urls
-from kiro_crew.slack.code_channels import surface
+from kiro_crew.slack.code_channels import surface, view_css
 from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
 from kiro_crew.slack.code_channels.models import (
     MAX_TITLE_CHARS,
@@ -75,12 +83,13 @@ logger = logging.getLogger(__name__)
 
 SET_VIEW = "code_channel_set_view"
 PUBLISH_PLAN_CANVAS = "code_channel_publish_plan_canvas"
+READ_PLAN_CANVAS = "code_channel_read_plan_canvas"
 SET_CONTEXT_BAR = "code_channel_set_context_bar"
 RENAME = "code_channel_rename"
 SET_STATUS = "code_channel_set_status"
 WRAP_UP = "code_channel_wrap_up"
 TOOL_NAMES = frozenset(
-    {SET_VIEW, PUBLISH_PLAN_CANVAS, SET_CONTEXT_BAR, RENAME, SET_STATUS, WRAP_UP}
+    {SET_VIEW, PUBLISH_PLAN_CANVAS, READ_PLAN_CANVAS, SET_CONTEXT_BAR, RENAME, SET_STATUS, WRAP_UP}
 )
 
 #: The plan canvas's view key; the agent's own views may not take it.
@@ -118,7 +127,15 @@ _ICONS = frozenset(
 OFF_TEXT = "Error: Slack code channels are off on this Kiro Crew, so this tool does nothing."
 NOT_BOUND_TEXT = (
     "Error: this session is not bound to a Slack code channel. The code-channel tools act "
-    "only on the channel the calling session runs in, so there is nothing to act on here."
+    "only on the channel the calling session runs in, so there is nothing to act on here. "
+    "No tool opens a code channel: Kiro Crew opens one by itself when someone asks it for "
+    "code work in Slack (the owner, or a person the owner shares Slack access with) and "
+    "it judges the work needs its own channel, or when they ask for a code channel. Do "
+    "the work here, and tell the person it is happening here. To get a code channel, they "
+    "can ask for it again in this thread (in a DM, mention Kiro Crew): that message is "
+    "judged again, and a channel it opens starts with this thread. A new top-level "
+    "message starts without this thread. Slack can't open a code channel from a Slack "
+    "Connect conversation. Never promise to post into a code channel that hasn't opened."
 )
 ARCHIVED_TEXT = "Error: this session's code channel is archived."
 STOPPED_TEXT = (
@@ -134,6 +151,21 @@ CHANNEL_REFUSED_TEXT = (
 CHANNEL_OFF_TEXT = (
     "Error: the bot is off (or in review mode) in this code channel or the channel it "
     "came from, so nothing was posted there."
+)
+NO_CODE_TAB_TEXT = (
+    "Error: this channel's Code tab has no diff to show: the change is not in this "
+    "channel's worktree or in its helper agents' commits (a pull request made in another "
+    "checkout, say). Show the diff as an html view instead (type html, one self-contained "
+    "page), and reply in the channel with a one-line summary and the PR link."
+)
+CODE_TAB_PENDING_TEXT = (
+    "Error: the Code tab could not be confirmed in time (this channel's pull request and "
+    "CI reads are slow). Send the diff as an html view now (type html, one self-contained "
+    "page), and reply in the channel with a one-line summary and the PR link."
+)
+THREAD_NO_CODE_TAB_TEXT = (
+    "Error: this is a Conductor thread, which has no Code tab or view tabs. Reply here "
+    "with a one-line summary of the change and the PR link; do not paste the diff."
 )
 TOO_MANY_VIEWS_TEXT = (
     "Error: this channel already has Slack's maximum of five tabs and none of them is one "
@@ -436,18 +468,10 @@ _URL_LEAD = re.compile(r"^[\x00-\x20]+")
 #: the first ``>``; ``HTMLParser`` would run it to ``]]>``.
 _MARKED_SECTION = re.compile(r"<!\[[^>]*(?:>|\Z)")
 _CSS_ESCAPE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\(.)", re.S)
-_CSS_COMMENT = re.compile(r"/\*.*?(?:\*/|$)", re.S)
-#: CSS that can render author text or load another resource. With no string
-#: token, ``attr()``, ``@import`` or ``@counter-style``, no property (``content``,
-#: ``quotes``, ``list-style-type``, ...) has author text to show.
-_CSS_AUTHOR_TEXT = re.compile(
-    r"[\"']|(?<![-\w])attr\s*\(|@import|@counter-style|@font-face", re.IGNORECASE
-)
-_CSS_URL = re.compile(r"(?<![-\w])(?:url|src)\s*\(([^)]*)\)?", re.IGNORECASE)
 
 
-def _css_decoded(css: str, *, keep_comments: bool = False) -> str:
-    """*css* as a CSS parser reads it: escapes decoded, comments removed.
+def _css_decoded(css: str) -> str:
+    """*css* with its escapes decoded, comments kept (published all the same).
 
     Character references are not decoded: an HTML ``<style>`` never decodes them
     (foreign content, which does, is refused), and a ``style=`` value arrives
@@ -459,22 +483,7 @@ def _css_decoded(css: str, *, keep_comments: bool = False) -> str:
             return chr(point) if 0 < point <= 0x10FFFF else "\ufffd"
         return m.group(2)
 
-    decoded = _CSS_ESCAPE.sub(one, css)
-    return decoded if keep_comments else _CSS_COMMENT.sub(" ", decoded)
-
-
-def _css_refusal(css: str) -> str:
-    """Why *css* could show author text or load something (``""`` when it can't)."""
-    decoded = _css_decoded(css)
-    if _CSS_AUTHOR_TEXT.search(decoded):
-        return (
-            "an html view's CSS may not hold strings, attr(), @import, @counter-style "
-            "or @font-face"
-        )
-    for m in _CSS_URL.finditer(decoded):
-        if not _URL_NOISE.sub("", m.group(1)).strip().lower().startswith("https:"):
-            return "an html view's CSS may load only https: URLs"
-    return ""
+    return _CSS_ESCAPE.sub(one, css)
 
 
 def _is_data_url(key: str, value: str) -> bool:
@@ -503,6 +512,7 @@ class _ViewAudit(HTMLParser):
         self.shown: list[str] = []  # text and shown attribute text, in order
         self.values: list[str] = []  # every attribute value
         self.styles: list[str] = []  # <style> text and style= values
+        self.css: list[tuple[str, bool]] = []  # each sheet or style= value, and if inline
         self._in_style = False
         # In HTML content ``<![CDATA[`` is a bogus comment ending at ``>``. Newer
         # CPython releases read it as CDATA unless told otherwise; older ones
@@ -516,7 +526,10 @@ class _ViewAudit(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in _REFUSED_ELEMENTS:
-            self._refuse(f"an html view may not use <{tag}> (embedded, foreign or linked content)")
+            self._refuse(
+                f"an html view may not use <{tag}> (embedded, foreign or linked content); "
+                "build the page from plain HTML elements and a <style> block"
+            )
         if tag == "style":
             self._in_style = True
         # Every value is screened, duplicates included (a browser keeps the first).
@@ -526,11 +539,17 @@ class _ViewAudit(HTMLParser):
             if key == "http-equiv" and value.strip().lower() == "refresh":
                 self._refuse("an html view may not redirect (meta refresh)")
             if _is_data_url(key, value):
-                self._refuse("an html view may not load a data: URL")
+                self._refuse(
+                    "an html view may not load a data: URL (the view loads nothing from "
+                    "outside the document); drop the image, or draw it with HTML and CSS"
+                )
             if key == "style":
                 self.styles.append(value)
+                self.css.append((value, True))
             if key in _SHOWN_ATTRS and value:
                 self.shown.append(value)
+        if tag == "style":  # after its own style=, so the sheet's text joins this entry
+            self.css.append(("", False))
 
     def parse_comment(self, i: int, report: int = 1) -> int:
         # Comments end where a browser ends them (``<!-->`` is empty), the same
@@ -559,6 +578,7 @@ class _ViewAudit(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._in_style:
             self.styles.append(data)
+            self.css[-1] = (self.css[-1][0] + data, False)  # one sheet, however it arrives
         else:
             self.shown.append(data)
 
@@ -574,18 +594,24 @@ def _audit_view(content: str, redacted: str) -> None:
     # values); the published document is what the value screen reads.
     if original.refusal:
         raise ArgumentError(f"{original.refusal}; nothing was published")
-    for css in original.styles:
-        why = _css_refusal(css)
+    # Both documents: a redaction marker must not change how the CSS reads.
+    for css, inline in original.css + published.css:
+        why = view_css.refusal(css, inline=inline)
         if why:
             raise ArgumentError(f"{why}; nothing was published")
     hidden = (
         "a credential or sensitive value is hidden in an attribute or CSS; nothing was published"
     )
     # Comments are kept for this screen: not shown, but published all the same.
-    for text in published.values + [
-        _css_decoded(css, keep_comments=True) for css in published.styles
-    ]:
-        if refuses(text, _redact_payload):
+    # Each CSS string is read again as a browser joins it (line continuations).
+    for text in (
+        published.values
+        + [_css_decoded(css) for css in published.styles]
+        + [value for css, _ in published.css for value in view_css.string_values(css)]
+    ):
+        # A URL parser drops every tab, LF and CR, so a value split by one
+        # (``\9 `` in CSS, ``&#9;`` in an attribute) loads whole.
+        if refuses(text, _redact_payload) or refuses(_URL_NOISE.sub("", text), _redact_payload):
             raise ArgumentError(hidden)
     _refuse_hidden_split(zip(_joined(original.shown), _joined(published.shown)))
 
@@ -709,14 +735,17 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
         SET_VIEW,
     )
     kind = _text(args, "type") or "html"
-    if kind in ("diff", "pull_request"):
+    if kind == "diff":
+        return await _show_code_tab(call, args)
+    if kind == "pull_request":
         raise ArgumentError(
-            f"{kind} views are published from the worktree automatically; use html, block_kit or canvas"
+            "pull request tabs are opened automatically for the channel's newest open "
+            "pull requests (yours and your workers'); use html or block_kit"
         )
     if kind == "canvas":
         raise ArgumentError("the plan canvas tab comes with code_channel_publish_plan_canvas")
     if kind not in ("html", "block_kit"):
-        raise ArgumentError("type must be html or block_kit")
+        raise ArgumentError("type must be html, diff or block_kit")
     name = _redact(_text(args, "name", max_len=_MAX_VIEW_NAME))
     view_key = _text(args, "view_key", required=True)
     if not _VIEW_KEY_RE.match(view_key):
@@ -728,6 +757,15 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
     if view_key == PLAN_VIEW_KEY:
         raise ArgumentError(f"view_key {PLAN_VIEW_KEY!r} is the plan canvas's; choose another")
     from kiro_crew.slack.code_channels import views
+
+    if views.reserved_key(view_key):
+        # An upsert under one of these keys would overwrite the channel's own
+        # Workers tab or a pull request tab.
+        raise ArgumentError(
+            f"view_key {view_key!r} belongs to the channel's own tabs "
+            f"({views.WORKERS_KEY!r}, {views.DIFF_KEY!r} and '{views.PR_KEY_PREFIX}<number>'); "
+            "choose another"
+        )
 
     channel = call.binding.channel_id
     if kind == "html":
@@ -764,6 +802,38 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
     label = name or view_key
     note = f" To make room, your older view {removed!r} was removed." if removed else ""
     return f"Published the {kind} view {label!r} in this channel (view {view_id}).{note}"
+
+
+async def _show_code_tab(call: Call, args: dict[str, Any]) -> str:
+    """The Code tab (Slack's one ``diff`` view) published now, by the workspace.
+
+    The workspace is the tab's only writer (its turn-end pass builds it from the
+    channel's worktree and its helper agents' commits, screened and scoped), so
+    the agent asks it to publish rather than sending a diff of its own.
+    """
+    given = sorted(k for k, v in args.items() if k != "type" and v not in (None, "", []))
+    if given:
+        raise ArgumentError(
+            "a diff view takes no content or view_key: the Code tab shows this channel's "
+            "own changes and its helper agents' commits"
+        )
+    if call.binding.thread:
+        # No Code tab, and its workspace pass would cut a worktree and move the
+        # thread's session onto it: never asked from a thread.
+        raise ToolRefusal(THREAD_NO_CODE_TAB_TEXT, "thread_room")
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    service = workspace.service()
+    shown = await service.show_code_tab(call.binding) if service is not None else False
+    if shown is None:
+        # The pass goes on, but it may find nothing to show: never promise the tab.
+        raise ToolRefusal(CODE_TAB_PENDING_TEXT, "code_tab_pending")
+    if not shown:
+        raise ToolRefusal(NO_CODE_TAB_TEXT, "no_code_tab")
+    return (
+        "The diff is in this channel's Code tab. Reply with a one-line summary and the "
+        "PR link; do not paste the diff."
+    )
 
 
 async def _publish_plan_canvas(call: Call, args: dict[str, Any]) -> str:
@@ -943,8 +1013,9 @@ async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title:
         )
         _unsaved_canvas.pop(channel, None)
         _maybe_created.pop(channel, None)
+    unchanged = False
     if not created:
-        await call.client.set_canvas_content(channel, canvas_id, markdown)
+        unchanged = await call.client.set_canvas_content(channel, canvas_id, markdown) == 0
     view_note = ""
     record = await surface_get(channel)
     if record is None or not record.plan_view_id:
@@ -971,14 +1042,66 @@ async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title:
                 admits=_admits(call),
             )
             view_note = " It is the Plan tab; people can comment, only you edit it."
-            if removed:
+            if removed and views.is_pr_tab({"key": removed, "type": views.PR_VIEW_TYPE}):
+                view_note += (
+                    f" To make room, the pull request tab {removed!r} was removed; it comes "
+                    "back when a tab frees up."
+                )
+            elif removed:
                 view_note += f" To make room, your older view {removed!r} was removed."
         except CodeChannelApiError as exc:
             logger.info("code channel %s: plan tab not attached: %s", channel, exc.code)
+            if exc.code in {views.STOPPED, views.CHANNEL_OFF, "channels_policy", "archived"}:
+                # The write gate refused the tab (Slack's Stop, Off or Review, the
+                # channels policy, an archive): said as such (the canvas content
+                # itself is already saved).
+                raise
             if exc.code == views.TOO_MANY_VIEWS:
                 view_note = " " + PLAN_TAB_FULL_TEXT
+    if unchanged:
+        return f"The plan canvas is unchanged: Slack already had this exact markdown.{view_note}"
     verb = "Created" if created else "Updated"
     return f"{verb} this channel's plan canvas.{view_note}"
+
+
+async def _read_plan_canvas(call: Call, args: dict[str, Any]) -> str:
+    _only(args, set(), READ_PLAN_CANVAS)
+    from kiro_crew.slack.code_channels import comments
+
+    channel = call.binding.channel_id
+    record = await surface_get(channel)
+    canvas_id = record.plan_canvas_id if record is not None else ""
+    if not canvas_id:
+        raise ToolRefusal(
+            "Error: this channel has no plan canvas yet. Create it with "
+            "code_channel_publish_plan_canvas.",
+            "no_plan_canvas",
+        )
+    from kiro_crew.slack.code_channels.routing import _self_user_id
+    from kiro_crew.slack.handler import is_allowed_user
+
+    try:
+        data = await call.client.get_canvas(channel, canvas_id)
+    except CodeChannelApiError as exc:
+        if exc.code != "canvas_not_found":
+            raise
+        raise ToolRefusal(
+            "Error: Slack cannot find this channel's plan canvas; it may have been deleted "
+            "in Slack.",
+            exc.code,
+        ) from None
+    # The same inbound gates and sender rule the delivery of these comments applies:
+    # what it refuses never reaches the model through this read either.
+    me = _self_user_id()
+    shown = await comments.inbound_admitted(call.binding)
+    # Up to 1 MB of markdown through every display pass: off the event loop.
+    return await asyncio.to_thread(
+        lambda: comments.plan_canvas_text(
+            data,
+            may_read=lambda user: bool(user) and (user == me or is_allowed_user(user)),
+            comments_shown=shown,
+        )
+    )
 
 
 def _bar_items(args: dict[str, Any]) -> list[dict[str, str]]:
@@ -1197,6 +1320,7 @@ async def _wrap_up(call: Call, args: dict[str, Any]) -> str:
 _HANDLERS: dict[str, Callable[[Call, dict[str, Any]], Awaitable[str]]] = {
     SET_VIEW: _set_view,
     PUBLISH_PLAN_CANVAS: _publish_plan_canvas,
+    READ_PLAN_CANVAS: _read_plan_canvas,
     SET_CONTEXT_BAR: _set_context_bar,
     RENAME: _rename,
     SET_STATUS: _set_status,

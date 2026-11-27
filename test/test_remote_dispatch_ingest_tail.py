@@ -46,7 +46,7 @@ def _no_background_puller(_floor_monkeypatch):
 
     _floor_monkeypatch.setattr(remote_puller, "ensure_running", lambda state: None)
     # Each test closes its retired slots afresh, as test_remote_dispatch_retire does.
-    _floor_monkeypatch.setattr(remote_ingest, "_CLOSE_TRIED", set())
+    _floor_monkeypatch.setattr(remote_ingest, "_CLOSE_RETRY", {})
 
 
 @pytest.fixture

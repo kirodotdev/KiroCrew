@@ -53,8 +53,8 @@ def _put(
     source: str = "consolidation",
     vec: list[float] | None = None,
 ) -> None:
-    """Insert one live row, each with a strictly later ``updated_at``."""
-    stamp = (_T0 + timedelta(seconds=next(_tick))).isoformat()
+    """Insert one live row, each with a strictly later ``updated_at``, all before a run."""
+    stamp = (_T0 - timedelta(days=100) + timedelta(seconds=next(_tick))).isoformat()
     blob = struct.pack("4f", *vec) if vec is not None else None
     with store._db_lock:
         store.db.execute(
@@ -346,11 +346,357 @@ def test_a_chat_turn_stops_the_run_at_the_next_batch_and_the_next_run_resumes(st
 
 
 def test_a_run_reads_at_most_its_row_cap_and_the_backlog_resumes(store) -> None:
+    assert md.ROWS_PER_RUN == 2_500
     for n in range(md.ROWS_PER_RUN + 60):
         _put(store, f"project.topic_{chr(97 + n % 26)}{n // 26}x.note", f"value {n}")
     assert _run(store).rows == md.ROWS_PER_RUN
     assert _run(store).rows == 60
     assert _run(store).rows == 0
+
+
+def _cursor(store) -> list[str]:
+    with store._db_lock:
+        return md.read_state(store.db)["cursor"]
+
+
+def _counts(store) -> dict:
+    with store._db_lock:
+        raw = store.db.execute(
+            "SELECT value FROM memory_meta WHERE key = ?",
+            (md.COUNTS_PREFIX + _T0.date().isoformat(),),
+        ).fetchone()
+    return json.loads(raw[0]) if raw else {}
+
+
+def _set_list(store, entries: list[dict]) -> None:
+    with store._db_lock:
+        md._kind_log._upsert(store.db, md.PROPOSALS_KEY, json.dumps(entries), _T0.isoformat())
+        store.db.commit()
+
+
+def _stamp(store, key: str) -> str:
+    with store._db_lock:
+        return store.db.execute(
+            "SELECT updated_at FROM semantic_memory WHERE key = ?", (key,)
+        ).fetchone()[0]
+
+
+def test_a_full_list_rolls_off_the_oldest_and_the_scan_moves_on(store, monkeypatch) -> None:
+    monkeypatch.setattr(md, "PROPOSALS_CAP", 3)
+    for name in ("alpha", "beta", "gamma"):
+        _put(store, f"project.{name}.status", "open")
+    first = _run(store)
+    # Exactly at the cap: everything fits and the run completes.
+    assert (first.rows, first.stopped, first.list_full) == (3, "done", 0)
+    for name in ("delta", "omega"):
+        _put(store, f"project.{name}.status", "open")
+    before = _dump(store)
+    second = _run(store)
+    # A full list does not stop the scan: it reads the new rows and moves on.
+    assert (second.rows, second.stopped, second.list_full) == (2, "done", 0)
+    assert second.rolled_off == {md.KIND_STATE: 2} and second.dropped == {}
+    assert _cursor(store)[1] == "project.omega.status"
+    assert _kinds(store)[md.KIND_STATE] == [
+        ["project.gamma.status"],
+        ["project.delta.status"],
+        ["project.omega.status"],
+    ]
+    assert _counts(store)["rolled_off_work_state"] == 2
+    assert _listing(store)["last_run"]["rolled_off"] == {md.KIND_STATE: 2}
+    # Rolling a proposal off is a list change only.
+    assert _dump(store) == before
+
+
+def test_this_runs_own_proposals_filling_the_list_keep_the_watermark(store, monkeypatch) -> None:
+    monkeypatch.setattr(md, "PROPOSALS_CAP", 2)
+    monkeypatch.setattr(md, "BATCH_ROWS", 2)
+    names = ["alpha", "beta", "gamma", "delta", "omega"]
+    for name in names:
+        _put(store, f"project.{name}.status", "open")
+    before = _dump(store)
+    first = _run(store)
+    # Nothing older to roll off: the watermark goes back to the batch that did not fit.
+    assert (first.rows, first.stopped, first.list_full) == (5, "list_full", 3)
+    assert first.rolled_off == {}
+    assert _cursor(store)[1] == "project.beta.status"
+    with store._db_lock:
+        assert "last_completed_at" not in md.read_state(store.db)
+    # The next run rolls the first run's proposals off and reads on.
+    second = _run(store)
+    assert (second.rows, second.list_full) == (3, 1)
+    assert second.rolled_off == {md.KIND_STATE: 2}
+    assert _cursor(store)[1] == "project.delta.status"
+    third = _run(store)
+    assert third.stopped == "done" and third.rolled_off == {md.KIND_STATE: 1}
+    assert _kinds(store)[md.KIND_STATE] == [["project.delta.status"], ["project.omega.status"]]
+    assert _cursor(store)[1] == "project.omega.status"
+    assert _dump(store) == before
+
+
+def test_a_list_full_by_bytes_rolls_off_too(store, monkeypatch) -> None:
+    for name in ("aa", "bb", "cc", "dd"):
+        _put(store, f"project.{name}.status", "open")
+    stamp = _stamp(store, "project.aa.status")
+    sample = md.Proposal(md.KIND_STATE, ["project.aa.status"], ["project.aa.status"])
+    one = len(json.dumps(sample.entry("r" * 12, seen=stamp)))
+    # Room for two entries by bytes, far under the entry cap.
+    monkeypatch.setattr(md._kind_log, "SAMPLE_BYTES_CAP", 2 * one + 4)
+    first = _run(store)
+    assert (first.stopped, first.list_full) == ("list_full", 2)
+    second = _run(store)
+    assert second.rolled_off == {md.KIND_STATE: 2}
+    assert _kinds(store)[md.KIND_STATE] == [["project.cc.status"], ["project.dd.status"]]
+    assert _cursor(store)[1] == "project.dd.status"
+
+
+def test_the_recheck_drops_a_stale_proposal_by_reason(store) -> None:
+    for name in ("gone", "edited", "taught", "kept"):
+        _put(store, f"project.{name}.status", "open")
+    _put(store, "project.plain.note", "a")
+    _run(store)
+    seen = _stamp(store, "project.plain.note")
+    entries = _listing(store)["proposals"]
+    # An entry today's rules do not give (here: a key that is not work state).
+    entries.append(
+        {
+            "run": "old",
+            "kind": md.KIND_STATE,
+            "keys": ["project.plain.note"],
+            "changes": ["project.plain.note"],
+            "gate": "pass",
+            "seen": seen,
+        }
+    )
+    _set_list(store, entries)
+    later = (_T0 + timedelta(days=300)).isoformat()
+    with store._db_lock:
+        db = store.db
+        db.execute("UPDATE semantic_memory SET is_deleted = 1 WHERE key = 'project.gone.status'")
+        db.execute(
+            "UPDATE semantic_memory SET updated_at = ? WHERE key = 'project.edited.status'",
+            (later,),
+        )
+        db.execute(
+            "UPDATE semantic_memory SET source = 'user_explicit' "
+            "WHERE key = 'project.taught.status'"
+        )
+        db.commit()
+    before = _dump(store)
+    receipt = _run(store)
+    assert receipt.dropped == {
+        md.DROP_GONE: 1,
+        md.DROP_CHANGED: 1,
+        md.DROP_PROTECTED: 1,
+        md.DROP_RULES: 1,
+    }
+    # The edited row is past the watermark again and is proposed afresh; the
+    # user-taught row is never proposed.
+    assert sorted(k for (k,) in _kinds(store)[md.KIND_STATE]) == [
+        "project.edited.status",
+        "project.kept.status",
+    ]
+    assert _counts(store)["dropped_gone"] == 1
+    assert _dump(store) == before
+
+
+def test_an_entry_listed_before_seen_existed_falls_back_to_its_run_start(store) -> None:
+    _put(store, "project.alpha.status", "open")
+    _run(store)
+    entry = _listing(store)["proposals"][0]
+    del entry["seen"]
+    _set_list(store, [entry])
+    with store._db_lock:
+        store.db.execute(
+            "UPDATE semantic_memory SET updated_at = ? WHERE key = 'project.alpha.status'",
+            ((_T0 + timedelta(days=1)).isoformat(),),
+        )
+        store.db.commit()
+    assert _run(store).dropped == {md.DROP_CHANGED: 1}
+
+
+def test_an_entry_with_no_stamp_and_no_receipt_is_dropped_as_changed(store) -> None:
+    _put(store, "project.alpha.status", "open")
+    _run(store)
+    entry = _listing(store)["proposals"][0]
+    del entry["seen"]
+    entry["run"] = "receipt-long-gone"
+    _set_list(store, [entry])
+    assert _run(store).dropped == {md.DROP_CHANGED: 1}
+
+
+def test_a_row_edited_while_the_run_judged_it_is_changed_next_run(store, monkeypatch) -> None:
+    _put(store, "project.alpha.status", "open")
+    real = md.find_candidates
+
+    def then_edit(*args):
+        found = real(*args)
+        with store._db_lock:
+            store.db.execute(
+                "UPDATE semantic_memory SET updated_at = ? WHERE key = 'project.alpha.status'",
+                ((_T0 + timedelta(minutes=1)).isoformat(),),
+            )
+            store.db.commit()
+        return found
+
+    monkeypatch.setattr(md, "find_candidates", then_edit)
+    assert _run(store).proposed == {md.KIND_STATE: 1}
+    monkeypatch.setattr(md, "find_candidates", real)
+    second = _run(store)
+    # The edit came after the run started, so the entry is changed and found afresh.
+    assert second.dropped == {md.DROP_CHANGED: 1} and second.proposed == {md.KIND_STATE: 1}
+
+
+def test_an_edit_racing_the_start_of_a_run_is_proposed_on_a_later_run(store, monkeypatch) -> None:
+    import threading
+
+    _put(store, "project.alpha.status", "open")
+    _run(store)
+    _put(store, "project.beta.status", "open")
+    real = md.read_snapshot
+    writers: list[threading.Thread] = []
+
+    def edit() -> None:
+        with store._db_lock:
+            store.db.execute(
+                "UPDATE semantic_memory SET updated_at = ? WHERE key = 'project.alpha.status'",
+                ((_T0 + timedelta(minutes=1)).isoformat(),),
+            )
+            store.db.commit()
+
+    def racing(*args):
+        # Another thread edits the claimed row between the recheck and the batch read.
+        writer = threading.Thread(target=edit)
+        writer.start()
+        writer.join(0.3)  # flake-ok: the thread should block on the lock; no timing asserted
+        writers.append(writer)
+        return real(*args)
+
+    monkeypatch.setattr(md, "read_snapshot", racing)
+    _run(store)
+    writers[0].join(5)
+    monkeypatch.setattr(md, "read_snapshot", real)
+    _run(store)
+    assert ["project.alpha.status"] in _kinds(store)[md.KIND_STATE]
+
+
+def test_an_edit_before_the_read_is_not_a_change_next_run(store) -> None:
+    _put(store, "project.alpha.status", "open")
+    with store._db_lock:
+        # Edited after the run starts (T0) but before it reads the rows (T0 + 2 min).
+        store.db.execute(
+            "UPDATE semantic_memory SET updated_at = ? WHERE key = 'project.alpha.status'",
+            ((_T0 + timedelta(minutes=1)).isoformat(),),
+        )
+        store.db.commit()
+    clock = iter([_T0, _T0 + timedelta(minutes=2)])
+    asyncio.run(
+        md.run_store(
+            store,
+            store_name="default",
+            trigger="manual",
+            should_stop=lambda: False,
+            merge=None,
+            now=lambda: next(clock, _T0 + timedelta(minutes=3)),
+        )
+    )
+    assert _kinds(store) == {md.KIND_STATE: [["project.alpha.status"]]}
+    second = _run(store)
+    assert second.dropped == {} and _kinds(store) == {md.KIND_STATE: [["project.alpha.status"]]}
+
+
+def test_a_legacy_tier_entry_no_prompt_serves_is_dropped(store, monkeypatch) -> None:
+    _lesson(store, "tier", "Always say hello", applies="always", vec=[0.0, 0.0, 1.0, 0.0])
+    assert _run(store).proposed == {md.KIND_TIER: 1}
+    real = md._dedup._live_lessons
+    monkeypatch.setattr(
+        md._dedup,
+        "_live_lessons",
+        lambda s: [r for r in real(s) if r["key"] != "lesson.tier"],
+    )
+    assert _run(store).dropped == {md.DROP_RULES: 1}
+    assert _kinds(store) == {}
+
+
+def test_an_all_stale_full_list_is_emptied_and_the_scan_moves_on(store, monkeypatch) -> None:
+    monkeypatch.setattr(md, "PROPOSALS_CAP", 2)
+    for name in ("alpha", "beta"):
+        _put(store, f"project.{name}.status", "open")
+    _run(store)
+    with store._db_lock:
+        store.db.execute("UPDATE semantic_memory SET is_deleted = 1 WHERE key LIKE 'project.%'")
+        store.db.commit()
+    _put(store, "project.gamma.status", "open")
+    receipt = _run(store)
+    assert receipt.dropped == {md.DROP_GONE: 2} and receipt.rolled_off == {}
+    assert _kinds(store) == {md.KIND_STATE: [["project.gamma.status"]]}
+
+
+def test_a_full_list_never_brings_a_protected_row_in(store, monkeypatch) -> None:
+    monkeypatch.setattr(md, "PROPOSALS_CAP", 1)
+    _put(store, "project.alpha.status", "open")
+    _run(store)
+    _put(store, "project.taught.status", "open", source="user_explicit")
+    _put(store, "project.quoted.status", {"v": "open", "user_quote": "keep this"})
+    _lesson(store, "rule", "Always say hello", applies="always", source="user_explicit")
+    receipt = _run(store)
+    assert receipt.rows == 3 and receipt.rolled_off == {}
+    assert _kinds(store) == {md.KIND_STATE: [["project.alpha.status"]]}
+
+
+def test_a_proposal_too_large_for_an_empty_list_is_refused_not_waited_on(
+    store, monkeypatch
+) -> None:
+    monkeypatch.setattr(md._kind_log, "SAMPLE_BYTES_CAP", 400)
+    for n in range(20):
+        _put(store, f"project.kirocrew.r{n}_rule", "a")
+    _put(store, "project.later.status", "open")
+    receipt = _run(store)
+    assert receipt.stopped == "done" and receipt.list_full == 0
+    assert receipt.refused == {md.REFUSE_TOO_LARGE: 1}
+    assert _kinds(store) == {md.KIND_STATE: [["project.later.status"]]}
+    with store._db_lock:
+        assert md.read_state(store.db)["cursor"][1] == "project.later.status"
+
+
+def test_a_spent_token_budget_stops_before_the_batch_and_the_next_run_asks(
+    store, monkeypatch
+) -> None:
+    monkeypatch.setattr(md, "BATCH_ROWS", 2)
+    _uncertain_pair(store)
+    _lesson(store, "c", "Squash the branch before review", vec=[1.0, 0.0, 0.0, 0.0])
+    _lesson(
+        store,
+        "d",
+        "Squash your branch before the review",
+        vec=[0.92, 0.0, math.sqrt(1 - 0.92**2), 0.0],
+    )
+    costs = [
+        md.prompt_tokens(md.merge_prompt(a, b))
+        for a, b in (
+            ("Prefer ripgrep when searching code", "Use ripgrep for searching the code"),
+            ("Squash the branch before review", "Squash your branch before the review"),
+        )
+    ]
+    # Room for either pair alone, never both.
+    monkeypatch.setattr(md, "MODEL_INPUT_TOKENS", max(costs) + 1)
+    prompts: list[str] = []
+
+    async def merge(prompt: str) -> object:
+        prompts.append(prompt)
+        return {"same": False}
+
+    first = _run(store, merge=merge)
+    assert (first.rows, first.stopped, first.model_calls, first.budget_skipped) == (
+        2,
+        "budget",
+        1,
+        0,
+    )
+    assert "ripgrep" in prompts[-1]
+    second = _run(store, merge=merge)
+    assert (second.rows, second.stopped, second.model_calls) == (2, "done", 1)
+    assert "Squash" in prompts[-1]
+    assert second.model_tokens <= md.MODEL_INPUT_TOKENS
 
 
 def test_the_wall_clock_cap_stops_the_run(store) -> None:
@@ -449,6 +795,38 @@ def test_work_state_keys_are_proposed(store) -> None:
     _run(store)
     keys = sorted(k for ks in _kinds(store).get(md.KIND_STATE, []) for k in ks)
     assert keys == ["project.kirocrew.memory_rfc_next_action", "project.kirocrew.pr_35231_status"]
+
+
+@pytest.mark.parametrize(
+    ("key", "want"),
+    [
+        # Owner spot-check: durable decisions and contracts wrongly proposed.
+        ("project.kirocrew.prepare_pr.rule_files_decision", False),
+        ("project.kirocrew.ci.error_code_contract_gate", False),
+        ("project.kirocrew.ci.fork_pr_workflow_approval", False),
+        # Nearby durable decisions about a PR, CI, issue or branch topic.
+        ("project.kirocrew.ci.merge_queue_policy", False),
+        ("project.kirocrew.pr_review.override_rule", False),
+        ("project.kirocrew.issue_triage_convention", False),
+        ("project.kirocrew.branch_naming_pattern", False),
+        # Real status: still proposed.
+        ("project.kirocrew.ci.flaky_windows_test", True),
+        ("project.kirocrew.ci.preexisting_failures_20260823", True),
+        ("project.kirocrew.pr40085.status", True),
+        ("project.kirocrew.apply_patch_gate_issue_number", True),
+        ("project.kirocrew.security_a_owner_gate_branch", True),
+        ("project.kirocrew.pr5387_auto_update_gate.split_recommendation", True),
+        # A status word or a number outranks a durable last word.
+        ("project.kirocrew.ci_gate_status", True),
+        ("project.kirocrew.pr_approval_pending", True),
+        ("project.kirocrew.review_round3_decision", True),
+        ("project.kirocrew.release.next_step_decision", True),
+        # No topic word: never work state, durable last word or not.
+        ("project.kirocrew.frontend_build_rule", False),
+    ],
+)
+def test_work_state_key_spares_durable_decisions(key, want) -> None:
+    assert md.is_work_state_key(key) is want
 
 
 def test_numbered_key_families_are_grouped_for_review(store) -> None:

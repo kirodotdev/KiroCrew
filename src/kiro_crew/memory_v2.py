@@ -18,6 +18,12 @@ from typing import Final
 ALGORITHM_VERSION: Final = "member-v2"
 SHORT_COSINE_FLOOR: Final = 0.62
 LONG_COSINE_FLOOR: Final = 0.57
+# A query embedded with the model's query instruction (Qwen3-Embedding) lands on
+# a lower cosine scale, so it has its own floors: on the memory recall dev set,
+# each keeps the plain floor's recall with higher precision (short 0.471 -> 0.508,
+# long 0.589 -> 0.739). Evidence: docs/system-specs/modules/memory-skills-hooks.md.
+INSTRUCTED_SHORT_COSINE_FLOOR: Final = 0.55
+INSTRUCTED_LONG_COSINE_FLOOR: Final = 0.57
 LONG_TEXT_CHARS: Final = 300
 
 # Function words do not constitute evidence about a task. CJK text is also
@@ -67,14 +73,23 @@ def lexical_evidence(query_terms: Iterable[str], text: str) -> tuple[list[str], 
     return matched, coverage, enough
 
 
-def cosine_floor(text: str) -> float:
+def cosine_floor(text: str, *, instructed: bool = False) -> float:
+    if instructed:
+        long_text = len(text) > LONG_TEXT_CHARS
+        return INSTRUCTED_LONG_COSINE_FLOOR if long_text else INSTRUCTED_SHORT_COSINE_FLOOR
     return LONG_COSINE_FLOOR if len(text) > LONG_TEXT_CHARS else SHORT_COSINE_FLOOR
 
 
-def relevance_evidence(query_terms: Iterable[str], text: str, cosine: float | None) -> dict:
-    """A serializable explanation for both admission and rejection."""
+def relevance_evidence(
+    query_terms: Iterable[str], text: str, cosine: float | None, *, instructed: bool = False
+) -> dict:
+    """A serializable explanation for both admission and rejection.
+
+    *instructed* says the query was embedded with the model's query instruction,
+    which selects that scale's floors.
+    """
     matched, coverage, keyword_match = lexical_evidence(query_terms, text)
-    floor = cosine_floor(text)
+    floor = cosine_floor(text, instructed=instructed)
     semantic_match = cosine is not None and math.isfinite(cosine) and cosine >= floor
     if semantic_match and keyword_match:
         reason = "semantic_and_keyword"
@@ -90,6 +105,7 @@ def relevance_evidence(query_terms: Iterable[str], text: str, cosine: float | No
         "reason": reason,
         "cosine": round(cosine, 4) if cosine is not None and math.isfinite(cosine) else None,
         "cosine_floor": floor,
+        "query_instructed": instructed,
         "matched_terms": matched,
         "query_coverage": round(coverage, 4),
     }

@@ -12,7 +12,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { sessionRowIdentity } from './rowIdentity'
 import { HIDDEN_FOLDERS_LS_KEY } from './persistence'
 import { FOLDER_BODY_COLLAPSE_MS } from '../../components/FolderBody'
-import type { SortKey } from '../chat/sessionOrder'
+import { staleCollapseApplies, type SortKey } from '../chat/sessionOrder'
 import type { Slot, RevealBlockingFilter } from './types'
 
 /**
@@ -58,8 +58,10 @@ const REVEAL_FLASH_FADE_MS = 500
 const REVEAL_SETTLE_SLACK_MS = 50
 
 /** Consumes session and folder reveal requests and flashes the target row. */
-export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors, folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView, hideEmptyFolders }: {
+export function useSidebarReveal({ sidebarRootRef, rowsWithheld, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors, folders, drawnFolders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView, hideEmptyFolders }: {
   sidebarRootRef: RefObject<HTMLDivElement>
+  /** Board columns are still loading, so reveal targets are not stable yet. */
+  rowsWithheld: boolean
   dispatch: AppDispatch
   localSlots: Slot[]
   revealBlockingFilters: RevealBlockingFilter[]
@@ -71,6 +73,10 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
   expandFolderAncestors: (folderId: string) => void
   expandConductorAncestors: (key: string) => void
   folders: ChatFolder[]
+  /** The folders the Sessions list draws (`folders` minus a hidden Bot home).
+   *  A folder reveal looks its target up here, so a folder with no row ends the
+   *  request before the text filter or the flat view is touched. */
+  drawnFolders: ChatFolder[]
   /** The folder query is idle and its last fetch succeeded, so a folder
    *  missing from `folders` is missing on the server too. False while the
    *  query is in error, because a failed fetch does not show that. */
@@ -232,6 +238,9 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
   }, [sidebarRootRef])
   useEffect(() => {
     if (!revealRequest) return
+    // Rows are temporarily replaced by a loading body; keep the request for the
+    // dependency change that mounts the list again.
+    if (rowsWithheld) return
     // Off screen: wait for the list to come back (see `shownTick`).
     if (sidebarRootRef.current?.isConnected === false) return
     // One field carries both kinds, so each effect answers for its own and leaves
@@ -320,7 +329,7 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // container's section pre-opened whenever the collapse next re-engages.
     // Deliberately NOT gated on `listNarrowed`: the filter clearing two lines
     // up has not committed yet, so it would still read true here.
-    if (staleCollapseMs > 0 && sortKey === 'date-desc' && !isStaleExempt(slot)) {
+    if (staleCollapseMs > 0 && staleCollapseApplies(sortKey) && !isStaleExempt(slot)) {
       const container = slotFolders[key] || 'root'
       setStaleExpanded(prev => (prev.has(container) ? prev : new Set(prev).add(container)))
     }
@@ -344,7 +353,7 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // session could scroll to the peer's row instead. `slot` above is resolved
     // from the LOCAL `slots` prop, so its identity is the right target.
     runReveal('session', key, sessionRowIdentity(slot))
-  }, [revealRequest, shownTick, sidebarRootRef, dispatch, queryClient, localSlots, folders, foldersSettled, revealBlockingFilters, expandFolderAncestors, expandConductorAncestors, runReveal, isStaleExempt, slotFolders, staleCollapseMs, sortKey, setStaleExpanded])
+  }, [revealRequest, rowsWithheld, shownTick, sidebarRootRef, dispatch, queryClient, localSlots, folders, foldersSettled, revealBlockingFilters, expandFolderAncestors, expandConductorAncestors, runReveal, isStaleExempt, slotFolders, staleCollapseMs, sortKey, setStaleExpanded])
   // ── Reveal a FOLDER row ───────────────────────────────────────────────────
   // The folder twin of the session reveal above, driven by the command launcher's
   // Folders group and the palette's Folders tab ("search a folder, land on it").
@@ -356,14 +365,16 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
   // ChatSidebar.revealFilterDimensions pins that).
   useEffect(() => {
     if (!revealRequest) return
+    if (rowsWithheld) return
     if (revealRequest.kind !== 'folder') return
     if (sidebarRootRef.current?.isConnected === false) return
     const folderId = revealRequest.target
     // Consume immediately: the request must not survive to a later remount.
     dispatch(clearSlotReveal())
-    const target = folders.find(f => f.id === folderId)
+    const target = drawnFolders.find(f => f.id === folderId)
     if (!target) {
-      // Deleted folder, or a request that outlived the folder list it named.
+      // Deleted folder, a request that outlived the folder list it named, or a
+      // Bot home the Sessions list does not draw (#39653).
       // eslint-disable-next-line no-console -- a reveal's only success signal is the scroll+flash, so this early return is the one path where the user's click provably did nothing and nothing else records it
       console.debug('reveal-in-sidebar: no folder for id', folderId)
       return
@@ -377,9 +388,9 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // hides the subtree (`filterHiddenSubtree`), so clearing only the target
     // itself would leave it hidden behind an ancestor.
     const chain = new Set<string>()
-    for (let cur: ChatFolder | undefined = target, guard = 0; cur && guard < folders.length + 1; guard += 1) {
+    for (let cur: ChatFolder | undefined = target, guard = 0; cur && guard < drawnFolders.length + 1; guard += 1) {
       chain.add(cur.id)
-      cur = cur.parent_id ? folders.find(f => f.id === cur!.parent_id) : undefined
+      cur = cur.parent_id ? drawnFolders.find(f => f.id === cur!.parent_id) : undefined
     }
     setFilterHiddenFolders(prev => {
       if (![...chain].some(id => prev.has(id))) return prev
@@ -409,6 +420,6 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // their preference comes back on reload.
     setFlatView(false)
     runReveal('folder', folderId, folderId)
-  }, [revealRequest, shownTick, sidebarRootRef, dispatch, folders, expandFolderAncestors, runReveal, setSlotFilter, setFilterHiddenFolders, setFlatView, setRevealForcedVisible, hideEmptyFolders])
+  }, [revealRequest, rowsWithheld, shownTick, sidebarRootRef, dispatch, drawnFolders, expandFolderAncestors, runReveal, setSlotFilter, setFilterHiddenFolders, setFlatView, setRevealForcedVisible, hideEmptyFolders])
   return { revealFlash }
 }

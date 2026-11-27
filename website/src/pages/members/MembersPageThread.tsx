@@ -96,6 +96,9 @@ function freshStartFailureKey(err: unknown): string {
  *  an at-a-glance status, and a per-second re-render of the whole drawer for
  *  a readout that already drops seconds above a minute buys nothing. */
 const PATROL_TICK_MS = 15_000
+/** The phone identity stack's offset from the top of the viewport: the
+ *  header's `top-1` on the stack button (MembersPageThreadHeader.tsx). */
+const PHONE_STACK_TOP_PX = 4
 
 interface MembersPageThreadStateOptions {
   profileCard: MembersPageProfileState
@@ -428,9 +431,12 @@ export function useMembersPageThreadView({
   // sight. Asking again once `open` is reported finds the shell's current one.
   const topbarSlot = useShellSlot('mobile-topbar-slot', isMobile && rosterBar === 'open')
   const headerInBar = !!topbarSlot
-  /** The transcript's top inset: the floating header's height, or nothing
-   *  once the header sits in the shell bar above the pane. */
-  const headerInset = headerInBar ? 0 : threadHeaderH
+  /** The transcript's top inset: the floating header's height, or, once the
+   *  header sits in the shell bar, how far the identity stack (measured by
+   *  the same ref) hangs below that bar. */
+  const headerInset = headerInBar
+    ? Math.max(0, threadHeaderH + PHONE_STACK_TOP_PX - (topbarSlot?.offsetHeight ?? 0))
+    : threadHeaderH
   const [betweenHeaderRef, betweenHeaderH] = useMeasuredHeight<HTMLDivElement>()
   const pillStreamState = useAppSelector((s) => (pillSlotKey ? selectSlotStreamState(s, pillSlotKey) : 'idle'))
   const pillLiveSlot = useAppSelector((s) => (pillSlotKey ? slotRowByKey(s.dashboard.slots, pillSlotKey) : undefined))
@@ -486,11 +492,13 @@ export function useMembersPageThreadView({
       window.removeEventListener('blur', onVis)
     }
   }, [])
-  // The New crewmate card hides the chat while it
-  // stays mounted: hidden is not viewed, so it neither reads nor suppresses.
-  const threadShown = pageVisible && !createOpen
+  // The New crewmate card hides the chat while it stays mounted, and a relay
+  // Crew tab covers the whole page: hidden is not viewed, so it neither reads
+  // nor suppresses.
+  const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
+  const threadShown = pageVisible && !createOpen && !relayCovered
   // What the PANE may count as seen: the thread is shown AND nothing floats
-  // over the chat. An overlay side panel (a phone sheet, a desktop overlay
+  // over the chat. An overlay side panel (full width on a phone, a desktop overlay
   // under its scrim), a floating Profile card and the phone roster drawer all
   // cover the transcript, while the docked placements sit beside it, so a reply
   // landing behind any of them stays unseen. Narrower than `threadShown` on
@@ -602,7 +610,7 @@ export function MembersPageThreadColumn({
 }: MembersPageThreadColumnProps) {
   const { t } = useTranslation()
   const { rosterQuery, loaded, loadError, members } = rosterRead
-  const { crewAgentsQuery, closeCrewEditor } = crewEditing
+  const { crewAgentsQuery, closeCrewEditor, openCrewDangerZone, profileRegistryQuery } = crewEditing
   const { teamsNoticeShown, dismissTeamsNotice, activeTeam, setTeamDialog } = teamsRead
   const { rosterPinned, landingPending } = layout
   const { openRosterDrawer, rosterDrawerAvailable } = drawers
@@ -613,6 +621,11 @@ export function MembersPageThreadColumn({
   } = thread
   const { pillFaceRef } = profileCard
   const { reduceMotion } = profileFlight
+  // An agent-missing bot gets Delete bot… only when a successful registry read
+  // lists it as a non-default record the editor can open.
+  const canDeleteAgentMissing = !!active && profileRegistryQuery.isSuccess
+    && active.name !== (profileRegistryQuery.data.default_agent ?? '')
+    && profileRegistryQuery.data.agents.some(agent => agent.name === active.name)
   // What Mate says on stage: "your first Mate" only while it IS the only mate
   // on the roster, the same split the server's welcome kickoff makes
   // (`FIRST_WELCOME` vs `FIRST_WELCOME_WITH_CREW`); the reserved `default`
@@ -831,6 +844,7 @@ export function MembersPageThreadColumn({
                   profileFlight={profileFlight} navigation={navigation} navigate={navigate} location={location}
                   setSearchParams={setSearchParams} profile={profile} openQuick={openQuick}
                   createHeld={createHeld} importHeld={importHeld} active={active}
+                  onOpenSearch={sidePanel.openHistorySearch}
                 />
                 {/* Everything that can sit between the header and the pane —
                     notices, the greeting cards — stays in flow and is padded
@@ -952,6 +966,33 @@ export function MembersPageThreadColumn({
                     onDismiss={closeCrewEditor}
                     testId="member-crew-roster-load-error"
                   />
+                )}
+                {active.agent_missing && (
+                  /* Why this bot stopped answering. The bot is never dropped
+                     for the person: it holds its memory, chats and schedules.
+                     The button opens the editor's Danger zone, whose own
+                     confirm does the delete. The default bot cannot be deleted
+                     and its editor has no Danger zone, so it gets no button.
+                     Offer it only after a successful registry read lists this
+                     bot as a non-default record the editor can open; the line
+                     that explains the button shows under the same condition.
+                     The agent name is the roster's `kiro_agent`, a value (it
+                     may be the server's mask, or empty); never a file path,
+                     since the file can live in more than one folder. */
+                  <div className="flex items-center gap-3 px-4 py-2 text-[13px] text-warn" role="status" data-testid="member-agent-missing-notice">
+                    <div className="min-w-0 flex-1">
+                      <p>{active.kiro_agent ? t('pages.membersPage.agent_missing_notice', { agent: active.kiro_agent }) : t('pages.membersPage.agent_missing_notice_unnamed')}</p>
+                      <p className="text-muted">
+                        {t('pages.membersPage.agent_missing_fix')}
+                        {canDeleteAgentMissing && <> {t('pages.membersPage.agent_missing_delete_hint')}</>}
+                      </p>
+                    </div>
+                    {canDeleteAgentMissing && (
+                      <Btn danger className="shrink-0" onClick={() => openCrewDangerZone(active.name)} data-testid="member-agent-missing-remove">
+                        {t('pages.membersPage.agent_missing_delete')}
+                      </Btn>
+                    )}
+                  </div>
                 )}
                 {gone && gone.shown === active.name && (
                   /* Decision-critical (the user is about to type into a thread they
@@ -1129,6 +1170,15 @@ export function MembersPageThreadColumn({
                         // the hidden chat.
                         // ...and gives it up while the side panel's open session holds focus.
                         pushToTalk={threadView.chatUncovered && !sidePanel.panelSessionFocused}
+                        // ⌘F / Ctrl+F: Find in chat, on the same terms as the
+                        // dictation key above (#39585).
+                        // An open search lives in the side panel, so the panel's
+                        // overlay covering the chat keeps it open.
+                        findInChat={(threadView.chatUncovered || sidePanel.historySearchOpen) && !sidePanel.panelSessionFocused}
+                        // The search opens as the side panel's Search tab.
+                        historySearchHost={sidePanel.historySearchHost}
+                        onHistorySearchOpenChange={sidePanel.onHistorySearchOpenChange}
+                        onHistorySearchOpener={sidePanel.setHistorySearchOpener}
                         // The failure notice above owns the verdict on this thread
                         // while a repair has failed; the pane's own "Session
                         // ready" would contradict it one line down.
@@ -1141,6 +1191,10 @@ export function MembersPageThreadColumn({
                         crewmate={crewmateIdentity}
                         crewmateShown={threadView.chatUncovered}
                         onOpenCrewWorkLog={openCrewWorkLog}
+                        // The roster row, already in memory, says whether this
+                        // thread holds a message; absent (an older gateway)
+                        // reads as no, so a first open stays as it is.
+                        historyKnown={active?.has_dm_message === true}
                         openSideChat={openMemberSideChat}
                         threads={threadHooks}
                         onFileOpen={openFileGuarded}

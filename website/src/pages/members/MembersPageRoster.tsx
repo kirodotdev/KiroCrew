@@ -51,6 +51,7 @@ import { type ChatSlot } from '../../types'
 import { useAppSelector } from '../../store'
 import { type MembersPageProfileFlight } from './MembersPageProfile'
 import { CrewmateEmptyHero, MemberRow } from './MembersPageRosterRows'
+import OtherCrewsBots from './OtherCrewsBots'
 import { ROSTER_MAX, ROSTER_MIN, type GoneNotice, type PostCreateFailure, type TFn } from './membersPageModel'
 import { type MembersPageDrawers } from './useMembersPageDrawers'
 import { type MembersPageLayout } from './useMembersPageLayout'
@@ -987,11 +988,20 @@ export function MembersPageRosterColumn({
                         names: fmtList(hiddenNames),
                       })
                     : t('pages.membersPage.hidden_more_hint', {
-                        count: hiddenCount - hiddenNames.length,
-                        names: fmtList(hiddenNames, { type: 'unit', style: 'short' }),
+                        // "N more bots" is the list's last item, so each language
+                        // places its one conjunction and its own separator.
+                        names: fmtList([
+                          ...hiddenNames,
+                          t('pages.membersPage.hidden_more_count', { count: hiddenCount - hiddenNames.length }),
+                        ]),
                       })}
                 </li>
               )}
+              {/* The bots on the user's other crews, in a section of their own
+                  below the local list; nothing when there is no other crew. It
+                  waits for the local rows, and a star, origin or status filter
+                  leaves it out: its rows carry none of those. */}
+              {rowsReady && loaded && !narrowed && <OtherCrewsBots search={filter} />}
             </ul>
             </ListDock>
             {/* Window-splitter between roster and thread: the same component as the

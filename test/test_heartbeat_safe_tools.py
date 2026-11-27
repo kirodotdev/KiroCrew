@@ -1009,3 +1009,33 @@ class TestRecordedWire:
         )
         messages = [r.getMessage() for r in caplog.records]
         assert any("published no trusted tool identity" in m for m in messages), messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edition", ["lts", "oss"])
+async def test_an_org_ask_on_a_kas_web_call_is_refused_by_the_heartbeat(
+    orchestrator, monkeypatch, edition
+) -> None:
+    """``web_ask_rule``: the heartbeat has nobody to ask, so in LTS it refuses KAS's
+    ask on an organisation's web rule; an ``oss`` build approves it as before."""
+    from types import SimpleNamespace
+
+    from kiro_crew import web_ask_rule
+
+    monkeypatch.setattr(web_ask_rule, "edition", SimpleNamespace(is_lts=lambda: edition == "lts"))
+    sel_mock = MagicMock()
+    monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
+    event = dataclasses.replace(
+        _builtin("web_fetch", title="Fetching https://example.com"),
+        harness_tool_id="web_fetch",
+        kas_builtin_ids=True,
+        kas_managed_ask=True,
+    )
+    approved = await orchestrator._heartbeat_approval(event)
+    kwargs = sel_mock.log_tool_invocation.call_args.kwargs
+    if edition == "lts":
+        assert approved is False
+        assert kwargs["outcome"] == "denied"
+        assert kwargs["metadata"]["reason"] == "web_ask_rule"
+    else:
+        assert approved is True

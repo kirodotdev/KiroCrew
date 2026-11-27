@@ -234,8 +234,8 @@ the design:
   and `test_pi_finishes_inside_the_prompt_turn`: one asserts the manual membership, the
   other the inline membership and `capabilities_for(...).compacts_inline`, if step 3 added
   it. If the harness was listed in `TestEveryKnownBackendIsClassified.UNCLASSIFIED`,
-  remove it there; that set is empty on main, and the refusal arm stays covered by the
-  unknown-id case in `TestTheRefusalTextSaysWhatHappens`;
+  remove it there (it holds `strands` and `antigravity`); the refusal arm stays
+  covered by the unknown-id case in `TestTheRefusalTextSaysWhatHappens`;
 - the harness's own backend test, when it has one — `test/test_acp_goose_backend.py`'s
   `test_goose_compacts_inline_on_a_driven_capture` is the shape: it asserts both
   memberships and names the capture in its docstring;

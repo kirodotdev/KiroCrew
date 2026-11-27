@@ -42,45 +42,72 @@ export function hasSubagentCompletionPrefix(content: string): boolean {
 }
 
 /**
- * Per-agent header. Six shapes reach the transcript, and the glyph is the only
- * element common to all of them:
+ * Per-agent header. Current gateways lead the status with an outcome word, and
+ * put a note after a colon on the restart-recovery and delivery-timeout paths:
  *
- *     Agent `53e3e5eb` (kirocrew) completed ✅
- *     Agent `53e3e5eb` ❌
- *     Agent `53e3e5eb` ✅ finished before gateway restart
- *     Agent `53e3e5eb` ⚠️ cut off mid-turn by gateway restart
- *     Agent `53e3e5eb` ❌ lost to gateway restart
- *     Agent `53e3e5eb` ❌ delivery timed out
+ *     Agent `53e3e5eb` (kirocrew) completed
+ *     Agent `53e3e5eb` stopped by user
+ *     Agent `53e3e5eb` completed: finished before gateway restart
+ *     Agent `53e3e5eb` interrupted: cut off mid-turn by gateway restart
+ *     Agent `53e3e5eb` failed: lost to gateway restart
  *
- * The last four are composed by the restart-recovery and delivery-timeout paths
- * in subagent.py, which put the glyph MID-line with an explanation after it — so
- * the glyph cannot be anchored to end-of-line. Everything after the id is
- * captured and scanned for the first glyph instead: the glyph decides the
- * outcome (language-independent, and it does not shift when the backend rewords
- * a status), and any words beside it are carried into the payload rather than
- * dropped, since on those four shapes they are the only explanation there is.
+ * Older gateways marked the outcome with a glyph instead (U+2705 completed,
+ * U+274C failed, U+23F9 stopped, U+26A0 interrupted), sometimes MID-line with
+ * the explanation after it, so for that form everything after the id is
+ * scanned for the first glyph. Saved history keeps those rows, so both forms are
+ * read. The words beside the outcome are carried into the payload rather than
+ * dropped, since on the restart / timeout shapes they are the only explanation
+ * there is.
  */
 const AGENT_HEADER_RE = /^Agent `([^`\n]+)`(?: \(([^)\n]*)\))?([^\n]*)$/m
-const OUTCOME_GLYPH_RE = /[✅❌⏹⚠]/
+const OUTCOME_GLYPH_RE = /[\u2705\u274C\u23F9\u26A0]/
+/** The plain form current gateways write: the outcome word leads the status,
+ *  and a colon separates it from a note (`failed: lost to gateway restart`).
+ *  The glyph form above is what saved history carries; both are read. */
+const OUTCOME_WORD_RE = /^\s*(completed|failed|stopped|interrupted)\b(:\s*)?/
 /** Status words this card already renders as a localized chip; repeating them in
  *  the payload would say the same thing twice in two languages. */
 const REDUNDANT_STATUS_RE = /^(completed|failed|stopped by user)$/i
 const TASK_RE = /^Task: (.*)$/m
 /** Final digest of a wave: carries the terminal tallies. */
 const WAVE_RE =
-  /^Batch results (\d+)\/(\d+) — wave finished: (\d+) ✅ · (\d+) ❌ · (\d+) ⏹ of (\d+) agents\./m
+  /^Batch results (\d+)\/(\d+) — wave finished: (\d+) (?:\u2705|completed) · (\d+) (?:\u274C|failed) · (\d+) (?:\u23F9|stopped) of (\d+) agents\./mu
 /** Mid-wave digest chunk: carries delivered/running progress, no tallies. */
 const CHUNK_RE = /^Batch results (\d+)\/(\d+) — (\d+) of (\d+) delivered, (\d+) still running\./m
 
 export type SubagentOutcome = 'ok' | 'failed' | 'stopped' | 'interrupted'
 
 const OUTCOME_BY_GLYPH: Record<string, SubagentOutcome> = {
-  '✅': 'ok',
-  '❌': 'failed',
-  '⏹': 'stopped',
+  '\u2705': 'ok',
+  '\u274C': 'failed',
+  '\u23F9': 'stopped',
   // A run a gateway restart cut off mid-turn: a fragment of its output is on
   // disk, so this is neither a success nor a plain failure.
-  '⚠': 'interrupted',
+  '\u26A0': 'interrupted',
+}
+
+const OUTCOME_BY_WORD: Record<string, SubagentOutcome> = {
+  completed: 'ok',
+  failed: 'failed',
+  stopped: 'stopped',
+  interrupted: 'interrupted',
+}
+
+/** The outcome and the words beside it from a header's status text, or null
+ *  when it names no outcome this card understands. */
+function headerOutcome(rest: string): { outcome: SubagentOutcome; note: string } | null {
+  const glyph = OUTCOME_GLYPH_RE.exec(rest)
+  if (glyph) {
+    return {
+      outcome: OUTCOME_BY_GLYPH[glyph[0]] || 'ok',
+      note: rest.replace(OUTCOME_GLYPH_RE, ' ').replace(/\uFE0F/g, '').trim(),
+    }
+  }
+  const word = OUTCOME_WORD_RE.exec(rest)
+  if (!word) return null
+  // `failed: <note>` keeps only the note; `stopped by user` is the whole status.
+  const note = word[2] ? rest.slice(word[0].length).trim() : rest.trim()
+  return { outcome: OUTCOME_BY_WORD[word[1]], note }
 }
 
 /**
@@ -237,7 +264,7 @@ function splitHeadBody(content: string): { head: string; body: string } {
  * restart-recovery and delivery-timeout paths in subagent.py do NOT — they run the
  * `Task:` line straight into the payload:
  *
- *     Agent `53e3e5eb` ✅ finished before gateway restart
+ *     Agent `53e3e5eb` completed: finished before gateway restart
  *     Task: …
  *     Result saved at: `/…/result.txt`
  *     Use the read tool to retrieve it.
@@ -396,22 +423,21 @@ export function parseSubagentCompletion(
   const { head, body } = splitAgentHeadBody(content)
   const m = AGENT_HEADER_RE.exec(head)
   if (!m) return null
-  const rest = m[3] || ''
-  const glyph = OUTCOME_GLYPH_RE.exec(rest)
-  // No glyph means this is not a shape this card understands; degrade to normal
-  // rendering rather than guessing an outcome.
-  if (!glyph) return null
-  // Words beside the glyph. On the restart / timeout shapes this is the ONLY
+  const parsed = headerOutcome(m[3] || '')
+  // No outcome means this is not a shape this card understands; degrade to
+  // normal rendering rather than guessing one.
+  if (!parsed) return null
+  // Words beside the outcome. On the restart / timeout shapes this is the ONLY
   // explanation the message carries, so it joins the payload instead of being
   // discarded with the rest of the header.
-  const note = rest.replace(OUTCOME_GLYPH_RE, ' ').replace(/\uFE0F/g, '').trim()
+  const { outcome, note } = parsed
   const task = TASK_RE.exec(head)
   const keptNote = note && !REDUNDANT_STATUS_RE.test(note) ? note : ''
   return {
     kind: 'single',
     agentId: m[1],
     agentName: m[2] || '',
-    outcome: OUTCOME_BY_GLYPH[glyph[0]] || 'ok',
+    outcome,
     task: (task?.[1] || '').trim(),
     // Legacy scrollback prose never carried a model; the meta path supplies it.
     requestedModel: '',

@@ -9,6 +9,9 @@ import type { CronJob } from '../types'
 /**
  * The batch bar applies a row-menu action to every checked job, calling the
  * per-job endpoint once per job and skipping jobs the action would not change.
+ * Set Telegram destination counts the checked jobs it changes, points them at one
+ * Telegram destination, says how many now report there, and names every job it
+ * did not update: a failure as an error, a Slack-pinned job as status.
  */
 
 const mkJob = (overrides: Partial<CronJob> = {}): CronJob => ({
@@ -36,6 +39,8 @@ vi.mock('../api/client', () => ({
     kirocrewAgents: vi.fn().mockResolvedValue({ agents: [], default_agent: '' }),
     agentCatalog: vi.fn().mockResolvedValue({ agents: [], default_agent: '' }),
     defaultAgent: vi.fn().mockResolvedValue({ default_agent: '' }),
+    channelTargets: vi.fn().mockResolvedValue([]),
+    channelTopics: vi.fn().mockResolvedValue([]),
   },
 }))
 
@@ -64,6 +69,41 @@ function openMenu() {
 const menuItem = (label: string) =>
   screen.getAllByRole('menuitem').find(el => el.textContent?.startsWith(label)) as HTMLElement
 
+const TG_CHAT = { channel_type: 'telegram', target_id: 'user:42', label: 'Telegram DM · 42', available: true, unavailable_reason: '' }
+const TG_TOPIC = { channel_type: 'telegram', target_id: 'topic:42:7', label: 'Cron' }
+
+/** Checks `names` among `jobs`, opens Actions and returns its Set Telegram destination row. */
+async function findTelegramRow(jobs: CronJob[], names: string[]) {
+  const { api } = await import('../api/client')
+  vi.mocked(api).crons.mockResolvedValue({ jobs })
+  renderWithProviders(<SchedulePage />)
+  await waitFor(() => expect(screen.getByText(names[0])).toBeInTheDocument())
+  names.forEach(check)
+  openMenu()
+  return (await screen.findByText('Set Telegram destination')).closest('[role="menuitem"]') as HTMLElement
+}
+
+/** The same, then opens that row's submenu. */
+async function openTelegramSubmenu(jobs: CronJob[], names: string[]) {
+  const { api } = await import('../api/client')
+  // A Radix sub-trigger opens on ArrowRight.
+  fireEvent.keyDown(await findTelegramRow(jobs, names), { key: 'ArrowRight' })
+  return api
+}
+
+/** The same with Telegram connected, then picks the Cron topic; `beforePick` reads the open row first. */
+async function sendToCronTopic(jobs: CronJob[], names: string[], beforePick?: (row: HTMLElement) => void) {
+  const { api } = await import('../api/client')
+  vi.mocked(api).channelTargets.mockResolvedValue([TG_CHAT])
+  vi.mocked(api).channelTopics.mockResolvedValue([TG_TOPIC])
+  await openTelegramSubmenu(jobs, names)
+  // useTelegramDestinations starts the topics query only once the targets query has resolved.
+  const topic = await screen.findByText('Topic · Cron', {}, { timeout: 5000 })
+  beforePick?.(menuItem('Set Telegram destination'))
+  fireEvent.click(topic.closest('[role="menuitem"]')!)
+  return api
+}
+
 describe('batchTargets', () => {
   const running = new Set<string>()
   it('keeps only the jobs each action changes', () => {
@@ -81,7 +121,14 @@ describe('batchTargets', () => {
 })
 
 describe('SchedulePage batch actions', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    // Implementations outlive clearAllMocks, so a test's Telegram setup or update failure is undone here.
+    const { api } = await import('../api/client')
+    vi.mocked(api).channelTargets.mockResolvedValue([])
+    vi.mocked(api).channelTopics.mockResolvedValue([])
+    vi.mocked(api).updateCron.mockResolvedValue({})
+  })
 
   it('pauses only the checked jobs that are not paused, and reloads once', async () => {
     const api = await renderChecked(['Alpha job', 'Beta job'])
@@ -127,6 +174,19 @@ describe('SchedulePage batch actions', () => {
 
     await waitFor(() => expect(api.runCron).toHaveBeenCalledTimes(1))
     expect(api.runCron).toHaveBeenCalledWith('a')
+  })
+
+  it('returns focus to Actions after the delete confirm when a click alone opened the menu', async () => {
+    await renderChecked(['Alpha job'])
+    const trigger = screen.getByLabelText('Actions for the checked jobs')
+    // No pointer or key event: `detail: 0` is the click a screen reader sends.
+    fireEvent.click(trigger, { detail: 0 })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Delete 1 selected$/ }))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 
   it('lists at most five skipped jobs in the Run now confirm, then the rest as a count', async () => {
@@ -213,6 +273,82 @@ describe('SchedulePage batch actions', () => {
     openMenu()
     fireEvent.click(menuItem('Pause'))
     expect(await screen.findByText('Pause: 1 of 2 jobs failed. Failed jobs stay selected.')).toBeInTheDocument()
+  })
+
+  it('points the unpinned checked jobs at a Telegram topic and lists a Slack-pinned one as unchanged', async () => {
+    const jobs = [
+      mkJob({ id: 'a', name: 'Alpha job' }),
+      mkJob({ id: 'b', name: 'Beta job', enabled: false }),
+      mkJob({ id: 's', name: 'Slack job', channel: 'C0123456' }),
+    ]
+    const api = await sendToCronTopic(jobs, ['Alpha job', 'Beta job', 'Slack job'])
+
+    await waitFor(() => expect(api.updateCron).toHaveBeenCalledTimes(2))
+    expect(api.updateCron).toHaveBeenCalledWith('a', { channel_type: 'telegram', target_id: 'topic:42:7' })
+    expect(api.updateCron).toHaveBeenCalledWith('b', { channel_type: 'telegram', target_id: 'topic:42:7' })
+    const kept = await screen.findByTestId('schedule-telegram-kept')
+    expect(kept).toHaveTextContent('These checked jobs keep their Slack channel and were not updated. They stay selected.')
+    expect(within(kept).getAllByRole('listitem').map(li => li.textContent)).toEqual(['Slack job'])
+    expect(screen.getByTestId('schedule-telegram-updated')).toHaveTextContent('2 jobs now report to Topic · Cron.')
+    // Nothing failed, so nothing is shown as an error.
+    expect(screen.queryByTestId('schedule-telegram-failed')).not.toBeInTheDocument()
+    // By the checkbox's own name: the kept list repeats the job's name as text.
+    const rowCheckbox = (name: string) => screen.getByRole('checkbox', { name: `Select ${name}` })
+    expect(rowCheckbox('Slack job')).toBeChecked()
+    expect(rowCheckbox('Alpha job')).not.toBeChecked()
+  })
+
+  it('counts on Set Telegram destination only the checked jobs without a Slack channel', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).channelTargets.mockResolvedValue([TG_CHAT])
+    const jobs = [
+      mkJob({ id: 'a', name: 'Alpha job' }),
+      mkJob({ id: 'b', name: 'Beta job', enabled: false }),
+      mkJob({ id: 's', name: 'Slack job', channel: 'C0123456' }),
+    ]
+    const row = await findTelegramRow(jobs, ['Alpha job', 'Beta job', 'Slack job'])
+    expect(row).toHaveTextContent('Set Telegram destinationchanges 2 jobs')
+    expect(row).not.toHaveAttribute('data-disabled')
+  })
+
+  it('updates no job and lists it as kept when every checked job keeps a Slack channel', async () => {
+    const api = await sendToCronTopic([mkJob({ id: 's', name: 'Slack job', channel: 'C0123456' })], ['Slack job'], row =>
+      expect(row).toHaveTextContent('Set Telegram destinationchanges 0 jobs'))
+
+    // The kept list proves the pick was handled, so the missing updates below are not just early.
+    const kept = await screen.findByTestId('schedule-telegram-kept')
+    expect(within(kept).getAllByRole('listitem').map(li => li.textContent)).toEqual(['Slack job'])
+    expect(api.updateCron).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('schedule-telegram-updated')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('schedule-telegram-failed')).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'Select Slack job' })).toBeChecked()
+  })
+
+  it('says how many jobs now report to the picked destination when every update succeeds', async () => {
+    await sendToCronTopic([mkJob({ id: 'a', name: 'Alpha job' }), mkJob({ id: 'b', name: 'Beta job' })], ['Alpha job', 'Beta job'])
+    expect(await screen.findByTestId('schedule-telegram-updated')).toHaveTextContent('2 jobs now report to Topic · Cron.')
+    expect(screen.queryByTestId('schedule-telegram-failed')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('schedule-telegram-kept')).not.toBeInTheDocument()
+  })
+
+  it('lists a job whose Telegram update failed, with the reason', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).updateCron.mockImplementation(async (id: string) => {
+      if (id === 'b') throw new Error('target not allowed')
+      return {}
+    })
+    await sendToCronTopic([mkJob({ id: 'a', name: 'Alpha job' }), mkJob({ id: 'b', name: 'Beta job' })], ['Alpha job', 'Beta job'])
+
+    // The notice text itself names the job and the reason, so the agent hand-off carries them.
+    expect(await screen.findByTestId('schedule-telegram-failed'))
+      .toHaveTextContent('Some checked jobs could not be updated. They stay selected. Beta job (failed: target not allowed)')
+  })
+
+  it('says so in the Telegram submenu when the destinations cannot be loaded', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).channelTargets.mockRejectedValue(new Error('gateway unavailable'))
+    await openTelegramSubmenu([mkJob({ id: 'a', name: 'Alpha job' })], ['Alpha job'])
+    expect(await screen.findByText('Could not load your Telegram destinations.')).toBeInTheDocument()
   })
 
   it('disables an action no checked job would change', async () => {

@@ -3,8 +3,8 @@ title: Crewmate page ambient motion -- a crewmate's own Dashboard page may run s
 status: implemented
 author: rayrayxu, with kirocrew-worker
 created: 2026-10-21
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: [22533]
 tracking-issues: []

@@ -69,6 +69,13 @@ export interface KiroPrerequisiteStatus {
    * absence (undefined ⇒ not permitted), never treat it as true.
    */
   unsandboxed_exec_permitted?: boolean
+  /**
+   * The setup page may name `agent.sandbox_allow_unsandboxed_exec`: the deployment
+   * names its workload identity (`KIROCREW_WORKLOAD_IDENTITY`), as a team Crew pod
+   * does, and no governance floor requires a sandbox. Owner only; false for anyone
+   * else and absent on older gateways.
+   */
+  container_boundary_hint?: boolean
   /** Runtime-enforced harness ids whose credential mask cannot apply at the effective tier. */
   sandbox_blocked_backends?: string[]
   /** Machine-readable: 'transient' | 'foreign_sandbox' | 'no_backend' | ''. */
@@ -77,7 +84,9 @@ export interface KiroPrerequisiteStatus {
   sandbox_detail: string
   /**
    * Machine-readable host mechanism behind a Linux user-namespace denial:
-   * 'apparmor_userns' | 'max_user_namespaces' | 'no_user_ns' | 'userns_denied' | ''.
+   * 'apparmor_userns' | 'max_user_namespaces' | 'userns_cap_zero' | 'no_user_ns' |
+   * 'userns_denied' | ''. 'userns_cap_zero' is the cap read as 0 (user namespaces
+   * disabled), on either failure kind.
    * Selects which concrete remedy the gate renders — the errno alone leaves the
    * user with nothing to act on.
    */
@@ -177,6 +186,19 @@ export interface ConfigSetHintsV1 {
 export interface KasBundleStatus {
   /** `agent.kas_bundle` as saved. */
   enabled: boolean
+  /**
+   * The Settings engine choice: the saved `agent.kas_bundle`, else what this build
+   * prefers (a packaged build prefers the built-in engine). Optional: an older
+   * gateway sends no such key.
+   */
+  engine_choice?: 'engine' | 'kiro_cli'
+  /** Whether `agent.kas_bundle` is saved at all, so `engine_choice` is the user's. */
+  choice_saved?: boolean
+  /**
+   * Owner only: kiro-cli is signed in here and Kiro Crew is not, so new chats stay on
+   * kiro-cli until Kiro Crew is signed in once, then move to the built-in engine.
+   */
+  sign_in_moves_to_engine?: boolean
   /** The engine version this Kiro Crew release pins. */
   pinned_version: string
   /** The version the harness runs: the pin, unless the gateway's environment overrides it. */
@@ -213,6 +235,13 @@ export interface KasBundleStatus {
     reason: string
     summary: string
   } | null
+  /**
+   * True when a new chat would fail for lack of Kiro Crew's own sign-in: KAS
+   * is the main harness and its next spawn takes the bundle route with no
+   * usable sign-in. The gateway decides; false for a non-owner, when unknown,
+   * and from an older gateway that sends no such key.
+   */
+  chat_needs_sign_in?: boolean
 }
 
 export interface KasLoginStatus {
@@ -255,6 +284,12 @@ export interface KasLoginStatus {
    * older gateway.
    */
   company_sign_in?: { start_url: string; region: string }
+  /**
+   * Company portal URLs whose sign-in turns the local agent off (an edition's own
+   * sign-in, `crew_client` preview). Empty while the preview is off; absent on an
+   * older gateway.
+   */
+  local_agent_off_start_urls?: string[]
 }
 
 /** One stored sign-in as `/api/kas-login/sources` names it. No token, no ARN. */
@@ -285,6 +320,18 @@ export interface KasLoginSources {
   same_account: boolean | null
   /** Removing this app's own sign-in would put sessions on kiro-cli's. */
   can_use_kiro_cli: boolean
+  /**
+   * The main harness is Kiro CLI (kiro-cli's own launch), which runs only on
+   * kiro-cli's sign-in: this app's own is used by Kiro Agent alone. Absent from
+   * a gateway that predates the field, which reads as false.
+   */
+  kiro_cli_harness?: boolean
+  /**
+   * A Kiro Agent session with no sign-in stored here would run on kiro-cli's.
+   * Asked on every harness. Absent from a gateway that predates the field, which
+   * reads as false.
+   */
+  relay_runs_on_kiro_cli?: boolean
 }
 
 export interface KasLoginDeviceSession {
@@ -298,8 +345,15 @@ export interface KasLoginDeviceSession {
   expires_at: string
 }
 
+/** One Kiro profile a company sign-in offers on `choose_profile`. */
+export interface KasLoginProfile {
+  arn: string
+  name: string
+  region: string
+}
+
 export interface KasLoginPollResult {
-  status: 'pending' | 'authorized' | 'expired' | 'error'
+  status: 'pending' | 'authorized' | 'expired' | 'error' | 'choose_profile'
   /**
    * Machine-readable failure code — error responses carry one too. On an
    * `authorized` answer it can be `previous_identity_not_removed`: the new
@@ -311,6 +365,10 @@ export interface KasLoginPollResult {
   /** On `authorized` after a begin with `replaces`: every other stored slot the
    *  switch removed so the new account is the one the store resolves to. */
   replaced?: string[]
+  /** On `choose_profile`: the profiles of every Kiro region this company sign-in
+   *  can use, and the one to preselect. The sign-in waits until a poll names one. */
+  profiles?: KasLoginProfile[]
+  selected?: string
 }
 
 /**
@@ -385,7 +443,7 @@ export interface AgentImportApplyResponse {
   agent_spec_rewritten?: boolean
 }
 
-export function createOnboardingEndpoints({ get, post, put, j, jNullable }: ClientTransport) {
+export function createOnboardingEndpoints({ get, post, put, j, jNullable, jKasLoginRead }: ClientTransport) {
   const readiness = {
     // Background polls read the gateway's latched state (no kiro-cli subprocess).
     // `refresh` is the explicit user action (Refresh / Check again) that forces a
@@ -422,9 +480,9 @@ export function createOnboardingEndpoints({ get, post, put, j, jNullable }: Clie
     // read; every step that changes sign-in state is a POST for the same
     // CSRF/audit reasons as the spec repair above. Error responses carry a
     // machine-readable `code` field alongside the human message.
-    kasLoginStatus: () => get('/api/kas-login').then(j) as Promise<KasLoginStatus>,
+    kasLoginStatus: () => get('/api/kas-login').then(jKasLoginRead) as Promise<KasLoginStatus>,
     // Read-only: which stored sign-in sessions run as, and what each account is called.
-    kasLoginSources: () => get('/api/kas-login/sources').then(j) as Promise<KasLoginSources>,
+    kasLoginSources: () => get('/api/kas-login/sources').then(jKasLoginRead) as Promise<KasLoginSources>,
     // `replaces` names the vault slot (`KasLoginStatus.identity`) a signed-in
     // user is switching away from; the gateway removes it only once THIS login's
     // credential has landed, so a failed switch leaves the old account intact
@@ -437,8 +495,12 @@ export function createOnboardingEndpoints({ get, post, put, j, jNullable }: Clie
       post('/api/kas-login/device', { provider, ...(extra ?? {}) }).then(
         j,
       ) as Promise<KasLoginDeviceSession>,
-    kasLoginPoll: (login_id: string) =>
-      post('/api/kas-login/poll', { login_id }).then(j) as Promise<KasLoginPollResult>,
+    // `profile_arn` picks one of a `choose_profile` answer's profiles; a profile the
+    // sign-in did not offer answers 400 `unknown_profile`.
+    kasLoginPoll: (login_id: string, profile_arn?: string) =>
+      post('/api/kas-login/poll', profile_arn ? { login_id, profile_arn } : { login_id }).then(
+        j,
+      ) as Promise<KasLoginPollResult>,
     // Loopback begin answers 409 `loopback_unavailable` when this install shape
     // cannot receive the callback (or every allowlisted port is busy); the gate
     // treats that as "start the device flow instead", not as a failure.

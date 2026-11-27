@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
         HOOK_REPLY,
+        SHARED_OWNER_ONLY_TEXT,
         ConversationLog,
         CronService,
         DashboardState,
@@ -45,12 +46,14 @@ if TYPE_CHECKING:
         _SlackTurn,
         _thread_agents,
         await_replay_gap,
+        channel_handler,
         closed_dashboard_owner_refused,
         current_context,
         expire_slack_options,
         get_dashboard_state,
         is_allowed_user,
         is_owner,
+        is_shared_listed,
         logger,
         maybe_apply_privacy_modifiers,
         maybe_route_linked_thread,
@@ -60,6 +63,8 @@ if TYPE_CHECKING:
         save_conversation_turn_off_loop,
         sel,
         sessions_include_ended,
+        shared_command_refused,
+        shared_user_refused_for_session,
         slack_cfg,
     )
 
@@ -119,6 +124,27 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     # intercepts, review-mode drafts, main LLM path) can forward it.
     _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
 
+    # ── Shared users (slack.shared_access) send no harness `/` command and no
+    #    privacy modifier: both are the owner's. Before the linked-thread hand-off,
+    #    which would carry a `/` command into the owner's dashboard chat. ──
+    # Judged on what the user typed: ingested text leads with an attachment's
+    # absolute temp path and carries file contents (``spool_text``).
+    if shared_command_refused(
+        user_id,
+        text if turn.spool_text is None else turn.spool_text,
+        modifiers=interpret_commands,
+    ):
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.owner_command",
+            outcome="denied",
+            source="slack",
+            resources=channel,
+            error="shared user command",
+        )
+        await slack.post_message(channel, SHARED_OWNER_ONLY_TEXT, reply_ts)
+        return False
+
     # ── Linked thread intercept: route to dashboard slot if linked ──
     # Resolved from the NAME captured when the answer was accepted, not from the
     # thread's current owner: the name survives a link change, a live slot object
@@ -151,6 +177,13 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         route_pinned
         and _target_slot is None
         and turn.asker_key
+        and await shared_user_refused_for_session(user_id, turn.asker_key, reply_ts, channel)
+    ):
+        return False
+    if (
+        route_pinned
+        and _target_slot is None
+        and turn.asker_key
         and await closed_dashboard_owner_refused(
             text, session_key, user_id, channel, slack, reply_ts, owner=turn.asker_key
         )
@@ -167,15 +200,21 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         target_slot=_target_slot,
         route_pinned=route_pinned,
         user_meta=turn.user_meta,
-        # A pinned answer is delivered to its slot rather than run natively, so
-        # an action button's payload must ride along (unpinned keeps today's path).
-        turn_context=turn.action_context if route_pinned else None,
+        # Pinned answers and channel-handler clicks carry their payload to the slot.
+        turn_context=(
+            turn.action_context
+            if route_pinned
+            or channel_handler.channel_bot(channel)
+            or channel_handler.channel_conductor(channel) is not None
+            else None
+        ),
         interpret_commands=interpret_commands,
+        had_voice_input=turn.had_voice_input,
     ):
         return False
 
     logger.info(
-        "handle_message: thread_ts=%s msg_ts=%s → session_key=%s channel=%s",
+        "🔍 handle_message: thread_ts=%s msg_ts=%s → session_key=%s channel=%s",
         thread_ts,
         msg_ts,
         session_key,
@@ -204,8 +243,9 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
                 )
             return False
 
-    # ── Status keyword: reply with stats summary ──
-    if interpret_commands and text.strip().lower() == "status":
+    # ── Status keyword: reply with stats summary (owner-only: the counts are the
+    #    host's, so a shared user's "status" goes to the model) ──
+    if interpret_commands and text.strip().lower() == "status" and not is_shared_listed(user_id):
         # Identity status via the active PlatformContext (Default == OSS no-op
         # stub returning ""; an enterprise companion returns the real SSO line).
         sso_line = await current_context().identity.status_line(prefix=" · sso")
@@ -214,6 +254,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
 
     # ── Sessions keyword: list recent sessions ──
     if interpret_commands and _is_sessions_keyword(text):
+        # Owner-only: the list names every session (slack.shared_access).
         if is_owner(user_id) or is_allowed_user(user_id):
             sel().log_api_access(
                 caller=user_id,
@@ -378,6 +419,7 @@ async def maybe_handle_keyword_command(
     _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
     # ── Sessions keyword: list recent sessions (owner/allowed only) ──
     if handle_sessions and _is_sessions_keyword(text):
+        # Owner-only: the list names every session (slack.shared_access).
         if is_owner(user_id) or is_allowed_user(user_id):
             sel().log_api_access(
                 caller=user_id,
@@ -411,8 +453,10 @@ async def maybe_handle_keyword_command(
             await slack.post_message(channel, "_Permission denied._", reply_ts)
         return True
 
-    # ── Subagent spawn: "spawn <task>" (before cron to avoid NL overlap) ──
-    if subagent_manager:
+    # ── Subagent spawn: "spawn <task>" (before cron to avoid NL overlap; owner-only:
+    #    `spawn list` names every subagent on the host, so a shared user's words go
+    #    to the model, whose spawn tools see only the caller's own runs) ──
+    if subagent_manager and not is_shared_listed(user_id):
         spawn_reply = await _handle_spawn_command(text, subagent_manager, session_key)
         if spawn_reply:
             await slack.post_message(channel, spawn_reply, reply_ts)
@@ -430,8 +474,9 @@ async def maybe_handle_keyword_command(
                 )
             return True
 
-    # ── Task runner: "run <spec-path>" ──
-    if task_runner:
+    # ── Task runner: "run <spec-path>" (owner-only: a shared user's words go to
+    #    the model like any other message) ──
+    if task_runner and not is_shared_listed(user_id):
         run_reply = await _handle_run_command(
             text, task_runner, slack, channel, reply_ts, session_key=session_key
         )
@@ -449,8 +494,8 @@ async def maybe_handle_keyword_command(
                 )
             return True
 
-    # ── Natural language cron: intercept wakeup patterns ──
-    if cron_service:
+    # ── Natural language cron: intercept wakeup patterns (owner-only, as above) ──
+    if cron_service and not is_shared_listed(user_id):
         cron_reply = await _handle_cron_command(
             text, cron_service, channel, reply_ts, user_id=user_id
         )

@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from kiro_crew import model_registry
@@ -66,7 +67,21 @@ _recorded: list[dict[str, Any]] | None = None
 #: read as the recording's request went out: WHICH account the rows are. Under
 #: ``_LOCK`` with the rows, as one state.
 _recorded_identity = ""
+#: The account's hidden models as the engine's connection view last stated them
+#: (``acp.kas_shared_model_picker``), with the vault identity they were read
+#: under; ``None`` until an engine states the row. Under ``_LOCK`` like the rows:
+#: the chat picker reads both together.
+_recorded_hidden: list[str] | None = None
+_recorded_hidden_identity = ""
+#: Receive order of the view the recording came from (:func:`next_hidden_models_seq`),
+#: so a view whose vault read finished late cannot overwrite a newer one.
+_recorded_hidden_seq = 0
+_hidden_models_seq = 0
 _LOCK = threading.Lock()
+#: Told, outside ``_LOCK``, each time the recorded hidden models change, so a
+#: picker that already holds a list reads again (the dashboard registers its
+#: ``models_changed`` broadcast). ``None`` until a consumer registers one.
+_hidden_models_changed: Callable[[], None] | None = None
 
 
 def _clamp(value: object) -> str:
@@ -149,13 +164,35 @@ def catalog_rows_from_session(resp: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def vault_identity() -> str:
+#: :func:`vault_identity`'s default: the machine mode a NEW spawn would get.
+_CONFIGURED: Any = object()
+
+
+def vault_identity(machine: object = _CONFIGURED) -> str:
     """The vault identity fingerprint now; ``""`` when empty or unreadable.
 
     Blocking (reads the vault); call off the loop. Never raises. The one read
     both the KAS harness's stamp (``acp/harness/kas.py``, ``SessionExtras.vault_identity``)
-    and the picker's match go through.
+    and the picker's match go through. On a workload-identity host it is the
+    workload's own key, and the vault is not read.
+
+    In KAS machine mode (``agent_sdk/kas_machine.py``) the rows are keyed by the token
+    file, first, as the spawn gives machine mode precedence on any host. The
+    harness's stamp passes *machine*, the settings its process was started with
+    (``None`` for Crew's own sign-in), so a retained engine keeps recording under the
+    file it still reads after the configuration changes; the picker leaves it out
+    and matches the configured file.
     """
+    from kiro_crew import workload_identity
+    from kiro_crew.agent_sdk.kas_machine import configured_machine_auth
+
+    if machine is _CONFIGURED:
+        machine = configured_machine_auth()
+    key = getattr(machine, "catalog_identity", "")
+    if isinstance(key, str) and key:
+        return key
+    if workload_identity.active():
+        return workload_identity.catalog_identity()
     # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must not
     # load on the session drivers' import path (see kiro_crew.acp.kas_host_auth).
     from kiro_crew.auth.bridge import vault_identity_fingerprint
@@ -211,6 +248,48 @@ def record_catalog(resp: dict[str, Any], backend: str, *, identity: object) -> b
     return False
 
 
+def config_options_refuse_auto(config_options: Any) -> bool:
+    """Whether a KAS session's stored ``configOptions`` select leaves ``auto`` out.
+
+    :func:`kiro_crew.acp.session_handle_model_selection.kas_select_refuses_auto` over
+    the select's ids, for the dashboard's live Auto pick, which holds the stored
+    options rather than the handle. A reopened chat's one-entry select is not the
+    account's list, so it refuses nothing (``select_lists_only_its_current_model``).
+    """
+    # Lazy for the same import-order reason as ``catalog_rows_from_session``.
+    from kiro_crew.acp.session_handle_model_selection import (
+        kas_select_refuses_auto,
+        model_select_envelope,
+        select_lists_only_its_current_model,
+    )
+
+    if not isinstance(config_options, list):
+        return False
+    select = model_select_envelope({"configOptions": config_options})
+    if select is None or select_lists_only_its_current_model(select):
+        return False
+    return kas_select_refuses_auto([m["modelId"] for m in select["availableModels"]])
+
+
+def session_lists_auto(session: object) -> bool:
+    """Whether the ids a KAS ``set_model("auto")`` on *session* is judged by list ``auto``.
+
+    *session* is the dashboard provider's session client: on KAS the
+    ``AcpSessionProvider`` around the session handle, whose ``kas_auto_judged_ids``
+    reads the handle's
+    :func:`kiro_crew.acp.session_handle_model_selection.kas_auto_judged_ids` (the
+    session's full select, else the catalog recorded for its account). Known
+    means they name a concrete model too, the rule that judges the pick; False
+    when they are not known, or when *session* carries no such ids (the
+    placeholder client before the session starts). For the turn's settle step,
+    which moves a session onto an Auto set before it last ran only on this ground.
+    """
+    ids = getattr(session, "kas_auto_judged_ids", None)
+    if not isinstance(ids, list):
+        return False
+    return "auto" in ids and any(m != "auto" for m in ids)
+
+
 def recorded_catalog_snapshot(identity: str) -> list[dict[str, Any]] | None:
     """A copy of the last recorded select's rows, if they belong to *identity*.
 
@@ -226,3 +305,76 @@ def recorded_catalog_snapshot(identity: str) -> list[dict[str, Any]] | None:
         if _recorded is None or not identity or identity != _recorded_identity:
             return None
         return [dict(row) for row in _recorded]
+
+
+def next_hidden_models_seq() -> int:
+    """The receive-order stamp for a view about to be recorded.
+
+    Taken on the loop when the view arrives, before the vault read that precedes
+    :func:`record_hidden_models`; a recording stamped lower than the one held is
+    refused, so two views whose reads finish out of order land in receive order.
+    """
+    global _hidden_models_seq
+    with _LOCK:
+        _hidden_models_seq += 1
+        return _hidden_models_seq
+
+
+def record_hidden_models(hidden: list[str] | None, *, identity: object, seq: int = 0) -> bool:
+    """Remember the account's hidden models the engine stated; ``True`` when recorded.
+
+    *hidden* is the ``modelPickerHidden`` row's ids, ``[]`` for an account that hid
+    nothing, or ``None`` for a view that states no row, which records nothing: the
+    chat picker then keeps whatever an earlier view stated. *identity* is the vault
+    fingerprint the engine's request went out under, refused when empty for the same
+    reason :func:`record_catalog` refuses one. *seq* is the view's
+    :func:`next_hidden_models_seq` stamp; a view older than the recorded one is
+    refused, and ``0`` (no stamp) always records.
+    """
+    global _recorded_hidden, _recorded_hidden_identity, _recorded_hidden_seq
+    if hidden is None or not (isinstance(identity, str) and identity):
+        return False
+    with _LOCK:
+        if seq and seq < _recorded_hidden_seq:
+            logger.debug(
+                "KAS account hidden models: view %d is older than recorded %d",
+                seq,
+                _recorded_hidden_seq,
+            )
+            return False
+        changed = _recorded_hidden != list(hidden) or _recorded_hidden_identity != identity
+        _recorded_hidden = list(hidden)
+        _recorded_hidden_identity = identity
+        _recorded_hidden_seq = max(_recorded_hidden_seq, seq)
+    logger.debug("KAS account hidden models recorded (%d ids)", len(hidden))
+    listener = _hidden_models_changed
+    if changed and listener is not None:
+        try:
+            listener()
+        except Exception:  # noqa: BLE001 - a consumer's failure does not unrecord the row
+            logger.debug("hidden-models listener failed", exc_info=True)
+    return True
+
+
+def on_hidden_models_changed(listener: Callable[[], None] | None) -> None:
+    """Register the one consumer told when the recorded hidden models change.
+
+    The dashboard registers its ``models_changed`` broadcast at install, so an
+    open picker reads again when the account hides or shows a model on another
+    client, or when the first read lands after the picker's own. ``None``
+    unregisters.
+    """
+    global _hidden_models_changed
+    _hidden_models_changed = listener
+
+
+def recorded_hidden_models_snapshot(identity: str) -> list[str] | None:
+    """A copy of the account's hidden models, if they were stated for *identity*.
+
+    ``None`` when no engine stated the row for that account (nothing to hide from
+    the account), as :func:`recorded_catalog_snapshot` answers for the rows.
+    """
+    with _LOCK:
+        if _recorded_hidden is None or not identity or identity != _recorded_hidden_identity:
+            return None
+        return list(_recorded_hidden)

@@ -145,6 +145,46 @@ def is_owner_server(config: object, name: str, entry: object) -> bool:
     return url is not None and recorded_url(config, name) == url
 
 
+def replaced_urls(config: object, entries: Mapping[str, object]) -> dict[str, str]:
+    """The recorded URLs that recording ``entries`` moves or drops, by name.
+
+    ``None`` as an entry stands for a removed server. The grant Crew holds under
+    such a name and URL (``crew_oauth.custom_key``) has no reader left.
+    """
+    return {
+        name: url
+        for name, entry in entries.items()
+        if (url := recorded_url(config, name)) is not None and url != remote_url(entry)
+    }
+
+
+def taken_by_card(slug: str) -> dict[str, str]:
+    """The recorded servers ``slug``'s card has taken over from the owner, by name. Blocking.
+
+    A server named for the slug, in any letter case, keeps its own sign-in only
+    while :func:`is_signable_name` holds; once the card stops yielding
+    (:func:`card_yields`), the grant Crew holds for it has no reader left.
+    Anything unreadable reads as none.
+    """
+    from kiro_crew.config.loader import read_config_for_update
+
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- an unreadable record proves nothing
+        return {}
+    root = config.get(CONFIG_ROOT_KEY) if isinstance(config, Mapping) else None
+    servers = root.get(CONFIG_SERVERS_KEY) if isinstance(root, Mapping) else None
+    if not isinstance(servers, Mapping):
+        return {}
+    return {
+        name: url
+        for name, rec in servers.items()
+        if name.lower() == slug
+        and (url := remote_url(rec)) is not None
+        and not is_signable_name(name, {"url": url})
+    }
+
+
 def _servers(cfg: dict[str, Any]) -> dict[str, Any]:
     root = cfg.get(CONFIG_ROOT_KEY)
     if not isinstance(root, dict):

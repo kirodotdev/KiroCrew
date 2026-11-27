@@ -49,30 +49,33 @@ and do not delete them.
 |---|---|
 | `sso_status.py` | No-op stubs so the dashboard and the Slack handlers keep the same symbols. Reports `available: False`. |
 | `dashboard/handlers/sso_login.py` | Keeps the `api_sso_login_ws` symbol that `dashboard/routes/connections.py` routes at `/api/sso-login` when `DashboardContributor.sso_login_handler()` returns `None`; accepts the WebSocket, reports unavailable, closes. Spawns no subprocess. |
-| `tunnel/manager.py` | A thin wrapper that delegates lifecycle **unconditionally** to `current_context().tunnel`. The public core ships `DefaultTunnelProvider`, a no-op, so there is deliberately no edition branch in the manager itself. The one public provider is the Kiro relay client, composed in its place only when `tunnel.relay_enabled` is on (off by default); `DefaultTunnelProvider` itself stays a no-op. |
+| `tunnel/manager.py` | A thin wrapper that delegates lifecycle **unconditionally** to `current_context().tunnel`. The public core ships `DefaultTunnelProvider`, a no-op, so there is deliberately no edition branch in the manager itself. The one public provider is the Kiro relay client (`RelayTunnelProvider`), which `platform/bootstrap.py` composes in its place, behind `LazyRelayTunnelProvider` so the client is imported only on its first start or status read, only when `edition_locks.relay_selected` says `tunnel.relay_enabled` is on. Unset (the default) is on for a personal sign-in, a team Crew and a host with a workload identity; a stored `false` (`kirocrew remote-control off`) stays off; an LTS build ignores the switch. `DefaultTunnelProvider` itself stays a no-op. |
 | `website/src/rum.ts` | An inert no-op stub. Keep it inert; never add `aws-rum-web`. |
 
 ## OSS-flipped defaults
 
 The public fork chooses different defaults, not different code paths. Do not flip them
 back while syncing: always-on in-process embeddings, the host `system` TTS provider
-(`voice_reply.DEFAULT_PROVIDER`) by default, a default-open Slack enterprise gate, lazy
+(`speech_providers.DEFAULT_PROVIDER`, re-exported by `voice_reply`) by default, a default-open Slack enterprise gate, lazy
 STT extras.
 
 ## Fork UX divergences
 
-- **Channels** stays out of sight until someone turns it on: it was a hidden app, and
-  is now a core page behind `dashboard.channels_enabled` (default off) whose Settings
-  row is drawn only while it is on. The **Board** app is removed. An upstream sync must
-  not restore either, nor offer Channels where it was not offered.
+- **Channels** stays out of sight until someone turns it on: it is a core page behind
+  `dashboard.channels_enabled` (default off), not an App Store app. Its Settings row
+  (`website/src/pages/settings/ChannelsSetting.tsx`) is drawn only while the setting
+  is on, and off hides only the sidebar row and the Search Everywhere result. There
+  is no **Board** app. An upstream sync must not restore a Board app or a Channels
+  app, nor offer Channels where it is not offered.
 - **The built-in app set is closed, and it is being emptied.** Kiro Crew accepts no
   new built-in app: every app, first-party included, lives in a dedicated GitHub
   repository listed in the official registry (`kirodotdev/KiroCrewApps`). The
   built-ins that still ship move out one at a time without changing anything for the
   people who already use them
   ([decision](../decisions/2026-11-01-kiro-crew-accepts-no-new-built-in-apps.md)).
-  The `no-new-builtin-apps` rule in `AUTOSDE.yaml` blocks restoring those two and
-  blocks any NEW built-in app, per-app core table row, or app-specific core MCP tool.
+  The `no-new-builtin-apps` rule in `AUTOSDE.yaml` blocks re-adding an app that has
+  moved out and blocks any NEW built-in app, per-app core table row, per-app frontend
+  registry entry, or app-specific core MCP tool.
 
 ## Keep the generic security controls
 
@@ -87,8 +90,8 @@ disk.
 ## The gate
 
 `.github/workflows/internal-content-scan-gate.yml` invokes the reusable
-`.github/workflows/internal-content-scan.yml` for same-repository `pull_request`,
-`merge_group`, and pushes to `main`. It checks **only the lines a change adds**,
+`.github/workflows/internal-content-scan.yml` for same-repository `pull_request`
+(to `main` and `release/**`), `merge_group`, and pushes to `main`. It checks **only the lines a change adds**,
 against a marker list that
 is deliberately **not in this repo** — it lives in a private bucket and is fetched
 per run over GitHub's OIDC identity, with no long-lived AWS keys anywhere.
@@ -99,9 +102,8 @@ Three things follow from that, and they are the point rather than side effects:
   someone else's line to land yours, and adopting the gate needed no repo-wide
   cleanup first.
 - **A list kept outside the repo it polices cannot be read off to find out what to
-  avoid writing.** The gate this replaced hardcoded its wordlists here, which is
-  also how they drifted for months without anyone noticing. Do not add wordlists
-  back to `scripts/`.
+  avoid writing.** A wordlist in this repo would also drift unseen, because nothing
+  checks it against the private ruleset. Do not add wordlists to `scripts/`.
 - **A false positive is fixed by fixing the rule**, not by adding yourself to an
   exemption file — there isn't one. The rule lives in a private package; say so on
   the PR and it gets fixed at the source.
@@ -140,22 +142,19 @@ files whose job is to DETECT internal hosts, each with a reason and the exact
 digests that file may contain; any other denied host in the same file still
 fails the build.
 
-### What it replaced, and why that one did not work
+### Three ways a scan passes without scanning
 
-The two files that gate used to live in — scripts/scrub-lint.sh and its
-allowlist — **no longer exist in this repo**. Their names are written here without
-backticks on purpose: the docs linter reads a backticked repo path as a citation of
-live code and rightly fails on one that resolves to nothing. That gate was vacuous
-in three independent ways, and the third is why the wordlists could not simply be
-moved:
+The gate is built so that none of these can happen, and a change to it must keep
+it that way:
 
-- Its alias pass read `scripts/.scrub-aliases.txt`, a file deliberately never
-  committed, so in CI it printed `skipped` — and a skip counted as a **PASS on
-  every run since the check was written**.
-- CI invoked it with `--no-history` on a `fetch-depth: 1` checkout, where
-  `git log --all` sees one commit, so the history pass was a no-op.
-- Its wordlists lived in the public repo they were meant to police. Anyone could
-  read them to learn precisely what not to write down.
+- **A skipped pass reads as a pass.** A check that reads a file CI never has (an
+  uncommitted alias list, say) prints `skipped` and exits 0 on every run. A missing
+  input must fail the run, which is what exit 2 above does.
+- **A history pass on a shallow checkout sees nothing.** On a `fetch-depth: 1`
+  checkout `git log --all` sees one commit. The gate scans the change's added lines
+  instead of walking history.
+- **A wordlist in the public repo it polices** tells anyone exactly what not to
+  write down. The marker list stays in the private bucket.
 
 **How it blocks, and on which path.** The check is blocking: `PR Readiness` — the
 one required status on `main` — reads it as a named lane, so an added internal
@@ -177,12 +176,12 @@ actually lands on `main`; `merge-queue-readiness.yml` waits on it alongside CI, 
 Gate and Build, so a red there holds the group as it holds a pull request.
 
 Two lanes are marked ineligible rather than pending, the same treatment CodeQL
-gets: a **stacked** PR (base is another feature branch) never starts the
-`branches:`-filtered workflow, and a fork PR's same-repo lane is skipped in favour
+gets: a hand-made **stacked** PR (base is another feature branch) never starts the
+`branches:`-filtered workflow (a PR in a GitHub-native stack on `main` does run
+it, and readiness counts it), and a fork PR's same-repo lane is skipped in favour
 of the Stage-2 one above.
 
-**This was fixed the hard way.** The gate shipped without a `pull_request` trigger,
-and within hours the `push` run caught real internal content — an internal ticket
-id and an internal workplace path — that had already reached public `main` in a
-merged PR. Post-push detection on a public repository is post-disclosure. That
-window is what the trigger above closes.
+**Why the `pull_request` trigger is load-bearing.** A `push` run on `main` sees
+content only after it is public, and post-push detection on a public repository is
+post-disclosure. The `pull_request` run is what reaches a verdict before the change
+lands; do not remove it in favour of the `push` backstop.

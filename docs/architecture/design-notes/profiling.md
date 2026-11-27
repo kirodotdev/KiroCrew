@@ -59,7 +59,9 @@ usual install locations first (`/opt/homebrew/bin`, `/usr/local/bin`,
 `~/.cargo/bin`, `~/.local/bin`) and only then `PATH` — a process launched by the
 desktop app or launchd gets a minimal `PATH` with no shell profile sourced, so a
 `PATH`-only lookup reports "not installed" on machines that have it. The same
-list lives in `website/electron/pyspy-dump.js`; keep them in sync.
+list lives in `website/electron/pyspy-dump.js`; keep them in sync. Neither side
+probes it on Windows, where the binary is `py-spy.exe` and the `PATH` lookup is
+the only discovery.
 
 On macOS py-spy also needs elevated privileges, because the OS denies
 `task_for_pid` otherwise — the same constraint that led `loop_watchdog` to prefer

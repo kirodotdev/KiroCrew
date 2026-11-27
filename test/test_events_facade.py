@@ -140,6 +140,7 @@ _LOGGER_NAME = FACADE
 _BASE_SLASH_REGISTRATIONS = (
     ("dashboard", "_handle_dashboard"),
     ("agent", "_handle_agent"),
+    ("bot", "_handle_bot"),
     ("voice", "_handle_voice"),
     ("yolo", "_handle_yolo"),
     ("config", "_handle_config"),
@@ -260,6 +261,7 @@ def _test_tree_files() -> list[Path]:
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def _corpus_patched_names() -> frozenset[str]:
     """Every name the test trees patch through the facade, scanned once per worker."""
     found: set[str] = set()

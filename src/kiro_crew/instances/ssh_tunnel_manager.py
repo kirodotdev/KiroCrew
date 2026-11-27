@@ -267,6 +267,7 @@ class SshTunnelManager:
     shutdown = _lifecycle.shutdown
     status = _lifecycle.status
     last_error = _lifecycle.last_error
+    last_error_code = _lifecycle.last_error_code
     status_all = _lifecycle.status_all
     _error_status = _lifecycle._error_status
     # Local forward ports, lent-hop holds and orphan reclaim: ``ssh_tunnel_manager_ports``.
@@ -285,6 +286,8 @@ class SshTunnelManager:
     _resolve_transport = _transport._resolve_transport
     _resolve_chained_transport = _transport._resolve_chained_transport
     _with_parent = _transport._with_parent
+    _with_resolved_target = _transport._with_resolved_target
+    _with_dialled_target = _transport._with_dialled_target
     _peer_gateway_id = _transport._peer_gateway_id
     _peer_identity = _transport._peer_identity
     _chain_cycle_reason = _transport._chain_cycle_reason
@@ -402,6 +405,10 @@ class SshTunnelManager:
         # report *why* (e.g. a startup auto-revive that couldn't reach the host).
         # Cleared on a successful connect or an explicit disconnect.
         self._last_error: dict[str, str] = {}
+        # The ``TunnelStatus.error_code`` of a retained failure, beside the reason it
+        # came with: read only while ``_last_error`` still holds that reason, so a
+        # later writer of a different reason never inherits it.
+        self._last_error_code: dict[str, tuple[str, str]] = {}
         # The TTL a CHAINED crew's current token was actually issued under, keyed
         # by our id for that crew. A chained token is minted by the parent under
         # the PARENT's record for the crew, which this gateway cannot know: our own

@@ -1,29 +1,16 @@
 /**
  * Message-targeted scroll intent (pages/chat/page/transcriptJumps.ts), driven as
- * a hook against a stand-in search state and a spy for the transcript's
- * `navToDisplayIndex`.
+ * a hook against a spy for the transcript's `navToMessage`, which records the
+ * display row each jump was for.
  *
  * Pins the parts ChatPage-level suites never reach:
- *  - clicking a search result is a direct jump: it snaps (`behavior: 'auto'`)
- *    rather than gliding to an estimated offset;
- *  - re-clicking the SELECTED result still scrolls back to it (next frame) and
- *    re-centres the active mark, cancelling a previous converge loop first;
- *  - stepping (Enter/Arrow) centres each match and leaves the glide-vs-snap
- *    choice to `pickSearchScrollBehavior`;
  *  - the approval bar's "Show in chat" scrolls to the tool row by call id;
- *  - a row that is not in the display map is never scrolled to.
+ *  - a message with no row on screen is never scrolled to.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { Provider } from 'react-redux'
-
-const scroll = vi.hoisted(() => ({ cancel: vi.fn(), converge: vi.fn(), behavior: 'smooth' as ScrollBehavior }))
-vi.mock('../utils/searchScroll', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../utils/searchScroll')>()),
-  pickSearchScrollBehavior: () => scroll.behavior,
-  scrollCurrentMatchIntoView: () => { scroll.converge(); return scroll.cancel },
-}))
 
 import { useTranscriptJumps } from '../pages/chat/page/transcriptJumps'
 import { openActivityToTool } from '../store/chatSlice'
@@ -31,17 +18,6 @@ import type { ChatMessage } from '../types'
 import { createTestStore } from './helpers'
 
 type Opts = Parameters<typeof useTranscriptJumps>[0]
-type Search = Opts['search']
-
-function searchState(over: Partial<Search> = {}): Search {
-  return {
-    currentIdx: 0,
-    currentMessageIdx: -1,
-    matches: [{ msgIdx: 0 }, { msgIdx: 2 }, { msgIdx: 5 }],
-    goTo: vi.fn(),
-    ...over,
-  } as unknown as Search
-}
 
 function harness(over: Partial<Opts> = {}) {
   const store = createTestStore()
@@ -52,12 +28,23 @@ function harness(over: Partial<Opts> = {}) {
     { role: 'assistant', content: 'c' },
     { role: 'tool', content: 'd', meta: { tool_call_id: 'call-9' } },
   ] as ChatMessage[]
+  // The rows on screen, as the render being driven has them: message index to
+  // display row through `messageToDisplayIdx`, the way the page's rows draw them.
+  const live = { messages, map }
+  const rowOfMessage = (m: ChatMessage) => live.map.get(live.messages.indexOf(m)) ?? -1
+  /** The display row of each jump that found one, and its options. */
+  const jumped: Array<[number, unknown]> = []
+  const navToMessage = vi.fn((m: ChatMessage, o?: unknown) => {
+    const di = rowOfMessage(m)
+    if (di < 0) return false
+    jumped.push([di, o])
+    return true
+  })
   const opts: Opts = {
-    search: searchState(),
     messages,
     messageToDisplayIdx: map,
-    messageToDisplayIdxRef: { current: map },
-    navToDisplayIndex: vi.fn(),
+    navToMessage,
+    rowOfMessage,
     activeSlot: 'slot-a',
     cursorIsForActiveSlot: true,
     slotHasMore: false,
@@ -65,93 +52,60 @@ function harness(over: Partial<Opts> = {}) {
     initialMsgRef: { current: null },
     initialMidRef: { current: null },
     initialSidRef: { current: null },
-    setHighlightTs: vi.fn(),
+    markJump: vi.fn(),
     handleJumpToPinnedMessage: vi.fn(),
     ...over,
   }
   const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
-  const hook = renderHook((p: Opts) => useTranscriptJumps(p), { initialProps: opts, wrapper })
-  return { opts, hook, store }
+  const hook = renderHook((p: Opts) => {
+    live.messages = p.messages
+    live.map = p.messageToDisplayIdx
+    return useTranscriptJumps(p)
+  }, { initialProps: opts, wrapper })
+  return { opts, hook, store, jumped }
 }
-
-beforeEach(() => {
-  scroll.cancel.mockClear()
-  scroll.converge.mockClear()
-  scroll.behavior = 'smooth'
-})
-
-describe('search result jumps', () => {
-  it('a click on another result selects it and the jump snaps to the centred row', () => {
-    const { opts, hook } = harness()
-    act(() => { hook.result.current.jumpToSearchResult(1) })
-    expect(opts.search.goTo).toHaveBeenCalledWith(1)
-    expect(opts.navToDisplayIndex).not.toHaveBeenCalled()
-    hook.rerender({ ...opts, search: searchState({ currentIdx: 1, currentMessageIdx: 2, goTo: opts.search.goTo }) })
-    expect(opts.navToDisplayIndex).toHaveBeenCalledWith(12, { behavior: 'auto', align: 'center' })
-  })
-
-  it('stepping centres each match and takes the glide/snap choice from the step cadence', () => {
-    const { opts, hook } = harness()
-    hook.rerender({ ...opts, search: searchState({ currentIdx: 1, currentMessageIdx: 2 }) })
-    expect(opts.navToDisplayIndex).toHaveBeenLastCalledWith(12, { behavior: 'smooth', align: 'center' })
-    scroll.behavior = 'auto'
-    hook.rerender({ ...opts, search: searchState({ currentIdx: 0, currentMessageIdx: 0 }) })
-    expect(opts.navToDisplayIndex).toHaveBeenLastCalledWith(10, { behavior: 'auto', align: 'center' })
-  })
-
-  it('never scrolls to a match whose row is not in the display map', () => {
-    const { opts, hook } = harness()
-    hook.rerender({ ...opts, search: searchState({ currentIdx: 2, currentMessageIdx: 5 }) })
-    expect(opts.navToDisplayIndex).not.toHaveBeenCalled()
-  })
-
-  it('a re-click on the selected result scrolls back next frame and re-centres its mark', () => {
-    const rafs: FrameRequestCallback[] = []
-    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => { rafs.push(cb); return rafs.length })
-    try {
-      const { opts, hook } = harness({ search: searchState({ currentIdx: 1, currentMessageIdx: -1 }) })
-      act(() => { hook.result.current.jumpToSearchResult(1) })
-      expect(opts.search.goTo).not.toHaveBeenCalled()
-      expect(opts.navToDisplayIndex).not.toHaveBeenCalled()
-      act(() => { rafs.shift()!(0) })
-      expect(opts.navToDisplayIndex).toHaveBeenCalledWith(12, { behavior: 'auto', align: 'center' })
-      expect(scroll.converge).toHaveBeenCalledTimes(1)
-      expect(scroll.cancel).not.toHaveBeenCalled()
-      // A second re-click cancels the first converge loop before starting one.
-      act(() => { hook.result.current.jumpToSearchResult(1) })
-      act(() => { rafs.shift()!(0) })
-      expect(scroll.cancel).toHaveBeenCalledTimes(1)
-      expect(scroll.converge).toHaveBeenCalledTimes(2)
-    } finally { raf.mockRestore() }
-  })
-
-  it('a re-click on a selected result with no row does nothing', () => {
-    const raf = vi.spyOn(window, 'requestAnimationFrame')
-    try {
-      const { opts, hook } = harness({ search: searchState({ currentIdx: 2 }) })
-      act(() => { hook.result.current.jumpToSearchResult(2) })
-      expect(raf).not.toHaveBeenCalled()
-      expect(opts.search.goTo).not.toHaveBeenCalled()
-    } finally { raf.mockRestore() }
-  })
-})
 
 describe('"Show in chat" from the approval bar', () => {
   it('scrolls smoothly to the tool row that carries the focused call id', () => {
-    const { opts, store } = harness()
+    const { store, jumped } = harness()
     act(() => { store.dispatch(openActivityToTool('call-9')) })
-    expect(opts.navToDisplayIndex).toHaveBeenCalledWith(13, { behavior: 'smooth', align: 'center' })
+    expect(jumped).toEqual([[13, { behavior: 'smooth', align: 'center' }]])
   })
 
   it('ignores a call id that no loaded tool row carries', () => {
     const { opts, store } = harness()
     act(() => { store.dispatch(openActivityToTool('call-missing')) })
-    expect(opts.navToDisplayIndex).not.toHaveBeenCalled()
+    expect(opts.navToMessage).not.toHaveBeenCalled()
   })
 
-  it('ignores a tool row that is not in the display map', () => {
-    const { opts, store } = harness({ messageToDisplayIdx: new Map([[0, 10]]) })
+  it('scrolls to a tool row the rows on screen do not draw yet once they draw it', () => {
+    const { opts, hook, store, jumped } = harness({ messageToDisplayIdx: new Map([[0, 10]]) })
     act(() => { store.dispatch(openActivityToTool('call-9')) })
-    expect(opts.navToDisplayIndex).not.toHaveBeenCalled()
+    expect(jumped).toEqual([])
+    hook.rerender({ ...opts, messageToDisplayIdx: new Map([[0, 10], [3, 13]]) })
+    expect(jumped).toEqual([[13, { behavior: 'smooth', align: 'center' }]])
+  })
+})
+
+describe('a ?msg= link', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('waits while the rows on screen do not draw the linked message, then lands on it', () => {
+    const messages = [
+      { role: 'user', content: 'a', ts: 't0' },
+      { role: 'assistant', content: 'b', ts: 't1' },
+    ] as ChatMessage[]
+    const { opts, hook, jumped } = harness({ messages, messageToDisplayIdx: new Map([[0, 10]]), initialMsgRef: { current: 't1' } })
+    // The link scrolls 500ms after its row is found.
+    act(() => { vi.advanceTimersByTime(600) })
+    expect(jumped).toEqual([])
+    expect(opts.markJump).not.toHaveBeenCalled()
+    expect(opts.initialMsgRef.current).toBe('t1')
+
+    hook.rerender({ ...opts, messageToDisplayIdx: new Map([[0, 10], [1, 11]]) })
+    act(() => { vi.advanceTimersByTime(600) })
+    expect(jumped).toEqual([[11, { behavior: 'auto', align: 'center' }]])
+    expect(opts.markJump).toHaveBeenCalledWith('t1', true, undefined)
   })
 })

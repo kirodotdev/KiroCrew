@@ -1,7 +1,9 @@
 """Copying MCP servers into the Kiro Crew agent spec.
 
 ``_sync_mcp_to_agent`` and its batch form, the refusal when the agent home is not ours to
-write, and whether live sessions pick a change up by hot reload.
+write, the refusal to switch off or remove one of Kiro Crew's own servers (one route's
+name, an apply batch, the toggle-all skip), whether live sessions pick a change up by
+hot reload, and marking the ones that take it at their next turn.
 
 Part of the ``kiro_crew.dashboard.handlers.mcp`` family: callers and tests reach every
 name here as ``kiro_crew.dashboard.handlers.mcp.<name>``, and a patch there reaches this
@@ -10,8 +12,10 @@ module too (:mod:`kiro_crew._facade_mirror`). This module never imports the faca
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -20,16 +24,25 @@ from kiro_crew.agent import (
     SharedAgentHomeRefused,
     _atomic_json_write,
     _declined_foreign_spec_write,
+    emission_eligible_mcp_servers,
     entry_as_enabled,
     kiro_agents_dir_path,
 )
-from kiro_crew.dashboard.handlers.mcp_config_files import _GLOBAL_MCP_JSON
-from kiro_crew.mcp_hot_reload import live_sessions_apply_mcp_live, mark_reinjecting_providers
+from kiro_crew.dashboard.handlers.mcp_config_entries import (
+    _get_kirocrew_entry,
+    _kirocrew_entry_is_muted,
+)
+from kiro_crew.dashboard.handlers.mcp_config_files import _GLOBAL_MCP_JSON, _config_entry_for
+from kiro_crew.mcp_hot_reload import live_sessions_apply_mcp_live, mark_sessions_for_mcp_change
 from kiro_crew.mcp_provenance import WITHHELD_KEY
 from kiro_crew.mcp_utils import mcp_server_alias, without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.sel import sel
 from kiro_crew.user_json import loads_mcp_config
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+    from contextlib import AbstractAsyncContextManager
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
 
@@ -91,6 +104,116 @@ def _agent_home_not_owned(name: str) -> web.Response | None:
     return _agent_home_not_owned_response(name)
 
 
+def _builtin_mcp_server_names() -> frozenset[str]:
+    """The MCP servers no route may switch off or remove: what a fresh spec build would
+    emit right now (:func:`emission_eligible_mcp_servers`), so every ``opt_in`` set is
+    left out and the lock and the rebuild read one predicate.
+
+    Blocking, because the edition seam it reads may compose the platform context, so a
+    caller on the event loop offloads it. A host whose context cannot compose (where
+    the agent rebuild refuses too) answers with no names: every route then answers as
+    it does without this rule, rather than a 500.
+    """
+    try:
+        return emission_eligible_mcp_servers()
+    except Exception:
+        logger.warning("MCP server set unreadable; no built-in server is locked", exc_info=True)
+        return frozenset()
+
+
+async def _is_builtin_mcp_server(name: str) -> bool:
+    """Whether *name*, or the alias it is listed under, is one of Kiro Crew's own servers.
+
+    A raw key such as ``@kirocrew/core`` is listed as its alias ``kirocrew-core``, so
+    both spellings are tested against :func:`_builtin_mcp_server_names`, read off the
+    loop on each call (it is not cached, so an edition change is seen at once).
+    """
+    names = {name, mcp_server_alias(name)}
+    return bool(names & await asyncio.to_thread(_builtin_mcp_server_names))
+
+
+async def _builtin_server_refusal(name: str) -> web.Response | None:
+    """A 409 when *name* is one of Kiro Crew's own MCP servers, else ``None``.
+
+    Those servers (``kirocrew-core``, ``kirocrew-cron``, ``kirocrew-guide`` and the
+    rest) carry the tools Kiro Crew itself runs on, so no route may switch one off or
+    remove it. Callers ask only for the off and remove directions: turning one back on
+    stays accepted, so a built-in server that is already off can be restored. The
+    name test is :func:`_is_builtin_mcp_server`.
+    """
+    if not await _is_builtin_mcp_server(name):
+        return None
+    sel().log_api_access(
+        caller="dashboard",
+        operation="mcp_builtin_disable_refused",
+        outcome="denied",
+        resources=name[:64],
+    )
+    return web.json_response(
+        {
+            "error": f"{name!r} is built into Kiro Crew and cannot be turned off or removed",
+            "code": "mcp_server_builtin",
+        },
+        status=409,
+    )
+
+
+async def _toggle_all_skip(enabled: bool) -> Callable[[str], bool]:
+    """Which raw keys a toggle-all leaves alone.
+
+    Disabling all never reaches Kiro Crew's own servers, by name or by the alias the
+    key is listed under; enabling all still lifts a flag one of them already carries.
+    """
+    if enabled:
+        return lambda _name: False
+    builtin = await asyncio.to_thread(_builtin_mcp_server_names)
+    return lambda name: name in builtin or mcp_server_alias(name) in builtin
+
+
+async def _builtin_apply_refusal(
+    changes: Iterable[Any], lock: Callable[[], AbstractAsyncContextManager[Any]]
+) -> web.Response | None:
+    """The 409 for an apply batch that turns off or uninstalls a built-in, else ``None``.
+
+    Taken for the whole request before the apply's Phase 1, which uninstalls companion
+    packages ahead of every scope write. The off test is the one Phase 2 applies (an
+    absent ``kirocrew`` means on), and it counts only a change that turns the server
+    off: the table sends a row's current presence with every edit, so a built-in the
+    store already mutes keeps its tool and Globals edits. That store read is taken only
+    for a built-in name, under *lock*, the MCP config file lock the caller holds for its
+    writes; a third-party change never takes it.
+    """
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        name = str(change.get("name", "")).strip()
+        uninstall = bool(change.get("uninstall"))
+        if not uninstall and bool(change.get("kirocrew", True)):
+            continue
+        if not await _is_builtin_mcp_server(name):
+            continue
+        if not uninstall:
+            async with lock():
+                if await asyncio.to_thread(_kirocrew_entry_is_muted, name):
+                    continue
+        refused = await _builtin_server_refusal(name)
+        if refused is not None:
+            return refused
+    return None
+
+
+async def _builtin_stays_on(name: str) -> bool:
+    """Whether an apply that asks to turn *name* off must keep it on.
+
+    True for a built-in the store does not mute now: another apply lifted the mute after
+    :func:`_builtin_apply_refusal` read it. Called under the MCP config file lock, so
+    the read and the apply's write see the same file.
+    """
+    return await _is_builtin_mcp_server(name) and not await asyncio.to_thread(
+        _kirocrew_entry_is_muted, name
+    )
+
+
 def _sync_mcp_to_agent(name: str, enabled: bool, *, remove: bool = False) -> None:
     """Serialize the kirocrew.json read-modify-write with bridges' app-MCP
     registration. Both do a FULL RMW of the same file; bridges holds `_mcp_lock`
@@ -107,12 +230,31 @@ def _sync_mcp_to_agent(name: str, enabled: bool, *, remove: bool = False) -> Non
         _sync_mcp_to_agent_unlocked(name, enabled, remove=remove)
 
 
+def _is_page_placeholder(name: str, spec: Any) -> bool:
+    """Whether *spec*, the Kiro global's entry for *name*, is the MCP page's placeholder.
+
+    The placeholder (a per-tool disable or a mute for a server another file
+    supplies) installs nothing: it is no server to copy into the spec, and enabling
+    it mounts a server the spec already holds without granting it, as the rebuild
+    does (``mcp_sources.sync_shared_server_refs``). A server the Kiro Crew store
+    installs under the same name keeps its whole-server grant.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_installs_server
+
+    return (
+        isinstance(spec, dict)
+        and not mcp_entry_installs_server(spec)
+        and not mcp_entry_installs_server(_get_kirocrew_entry(name))
+    )
+
+
 def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = False) -> None:
     """Sync MCP server state to kirocrew.json mcpServers (not tools/allowedTools)."""
     from kiro_crew.atomic_write import read_bytes_with_retry
     from kiro_crew.dashboard.handlers.agents import (  # noqa: F811 circular: agents imports mcp
         _installed_agent_config,
     )
+    from kiro_crew.mcp_cleanup import mcp_entry_installs_server
 
     path = _installed_agent_config()
     try:
@@ -127,29 +269,30 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         mcp_servers = cfg.setdefault("mcpServers", {})
         tool_ref = f"@{alias}"
         changed = False
+        # The global mcp.json entry, by the one key the row stands for (a listed
+        # ``ns-notes`` reads the file's ``ns/notes``). The user's
+        # hand-edited file: unreadable (permissions) or not UTF-8 (a legacy
+        # code-page save) reads as no entry.
+        try:
+            gdata = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
+            spec: Any = _config_entry_for(gdata.get("mcpServers", {}), name)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            spec = None
+        placeholder = _is_page_placeholder(name, spec)
         if alias not in mcp_servers:
-            # Copy spec from global mcp.json (looked up by original name)
-            try:
-                gdata = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
-                spec = gdata.get("mcpServers", {}).get(name, {})
-                if isinstance(spec, dict) and spec:
-                    entry = {k: v for k, v in spec.items() if k != "disabled"}
-                    # Strip a governed `autoApprove`: a verb it keeps on the copied
-                    # entry is granted in `allowedTools` (the skill view on kiro-cli,
-                    # the projection on KAS) and runs WITHOUT reaching the
-                    # PreToolUse gate — the same exemption `allowedTools` is
-                    # withheld for below. Drop it when the ceiling constrains this
-                    # server.
-                    if "autoApprove" in entry and not may_skip_gate_now(tool_ref):
-                        entry.pop("autoApprove", None)
-                    mcp_servers[alias] = entry
-                    changed = True
-                else:
-                    return
-            # The user's hand-edited file: unreadable (permissions) or not UTF-8
-            # (a legacy code-page save) means no spec to copy, same as absent.
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            if not mcp_entry_installs_server(spec):  # a placeholder is nothing to copy
                 return
+            entry = {k: v for k, v in spec.items() if k != "disabled"}
+            # Strip a governed `autoApprove`: a verb it keeps on the copied
+            # entry is granted in `allowedTools` (the skill view on kiro-cli,
+            # the projection on KAS) and runs WITHOUT reaching the
+            # PreToolUse gate — the same exemption `allowedTools` is
+            # withheld for below. Drop it when the ceiling constrains this
+            # server.
+            if "autoApprove" in entry and not may_skip_gate_now(tool_ref):
+                entry.pop("autoApprove", None)
+            mcp_servers[alias] = entry
+            changed = True
         # Strip a governed `autoApprove` from the entry REGARDLESS of whether the
         # alias was just copied or already existed: a re-enable, or a spec written
         # before the ceiling arrived, skips the copy branch above and would keep
@@ -179,7 +322,8 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         # the one path that never reaches the PreToolUse gate — so granting it
         # unconditionally here made the ceiling un-enforceable for any server a
         # user enables from the dashboard, which is the common case.
-        keys = ("tools", "allowedTools") if may_skip_gate_now(tool_ref) else ("tools",)
+        ungoverned = may_skip_gate_now(tool_ref)
+        keys = ("tools", "allowedTools") if ungoverned and not placeholder else ("tools",)
         for key in keys:
             if cfg.get(key) is None:  # a hand-edited null reads as no list yet
                 cfg[key] = []
@@ -187,7 +331,7 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
             if tool_ref not in lst:
                 lst.append(tool_ref)
                 changed = True
-        if "allowedTools" not in keys:
+        if not ungoverned:
             stale = cfg.get("allowedTools")
             if isinstance(stale, list):
                 # A grant written before the ceiling arrived must not survive it,
@@ -198,7 +342,7 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
                     changed = True
         if not changed:
             return
-        if "allowedTools" not in keys:
+        if not ungoverned:
             # Governed: the ref was mounted in `tools` but auto-approve was
             # WITHHELD from allowedTools (and any stale grant/autoApprove
             # removed) because the ceiling constrains this server. Record the
@@ -217,7 +361,7 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
                 operation="mcp_tools_added",
                 outcome="ok",
                 source="dashboard",
-                resources=f"{tool_ref} added to tools/allowedTools",
+                resources=f"{tool_ref} added to {'/'.join(keys)}",
             )
     # On disable/remove, clean up any @server-name refs the user may have added
     if not enabled or remove:
@@ -304,6 +448,7 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
     from kiro_crew.dashboard.handlers.agents import (  # noqa: F811 circular: agents imports mcp
         _installed_agent_config,
     )
+    from kiro_crew.mcp_cleanup import mcp_entry_installs_server
 
     path = _installed_agent_config()
     try:
@@ -322,11 +467,13 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
             gdata = {}
         granted_refs: list[str] = []
         withheld_refs: list[str] = []
+        mounted_refs: list[str] = []
         for name in names:
             alias = mcp_server_alias(name)
+            spec: Any = _config_entry_for(gdata.get("mcpServers", {}), name)
+            placeholder = _is_page_placeholder(name, spec)
             if alias not in mcp_servers:
-                spec = gdata.get("mcpServers", {}).get(name, {})
-                if not isinstance(spec, dict) or not spec:
+                if not mcp_entry_installs_server(spec):
                     continue
                 _entry = {k: v for k, v in spec.items() if k != "disabled"}
                 # Strip a governed autoApprove — see the single-server path.
@@ -354,11 +501,12 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
             # Same split as the single-server path above: mount always,
             # auto-approve only when the ceiling is silent about this server.
             tool_ref = f"@{alias}"
-            keys = ("tools", "allowedTools") if may_skip_gate_now(tool_ref) else ("tools",)
-            if "allowedTools" in keys:
-                granted_refs.append(tool_ref)
-            else:
+            ungoverned = may_skip_gate_now(tool_ref)
+            keys = ("tools", "allowedTools") if ungoverned and not placeholder else ("tools",)
+            if not ungoverned:
                 withheld_refs.append(tool_ref)
+            else:
+                (mounted_refs if placeholder else granted_refs).append(tool_ref)
             for key in keys:
                 if cfg.get(key) is None:  # a hand-edited null reads as no list yet
                     cfg[key] = []
@@ -366,7 +514,7 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
                 if tool_ref not in lst:
                     lst.append(tool_ref)
                     changed = True
-            if "allowedTools" not in keys:
+            if not ungoverned:
                 stale = cfg.get("allowedTools")
                 if isinstance(stale, list):
                     kept = without_mcp_refs(stale, (alias,))
@@ -381,6 +529,14 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
                     outcome="ok",
                     source="dashboard",
                     resources=f"{', '.join(granted_refs)} added to tools/allowedTools",
+                )
+            if mounted_refs:
+                sel().log_api_access(
+                    caller="system",
+                    operation="mcp_tools_added",
+                    outcome="ok",
+                    source="dashboard",
+                    resources=f"{', '.join(mounted_refs)} added to tools",
                 )
             if withheld_refs:
                 # Governed refs: mounted in `tools` but auto-approve withheld
@@ -455,19 +611,24 @@ def _mcp_hot_reload_active(request: web.Request) -> bool:
         providers = list(sessions.active_providers()) + list(sessions.warm_providers())
         if not live_sessions_apply_mcp_live(providers):
             return False
-        marked = mark_reinjecting_providers(providers)
-        # A warm-pool fill between its start and its enqueue is in neither
-        # snapshot; the pool marks it at the enqueue from this fence.
-        fence = getattr(sessions, "mark_mcp_config_changed", None)
-        if callable(fence):
-            fence()
-        if marked:
-            logger.info(
-                "MCP config changed: %d live session(s) will apply it at their next "
-                "turn instead of being reset",
-                marked,
-            )
+        mark_sessions_for_mcp_change(sessions)
         return True
     except Exception:
         logger.warning("MCP hot-reload gate failed; resetting sessions instead", exc_info=True)
         return False
+
+
+def _mark_live_sessions(request: web.Request) -> None:
+    """After an MCP Servers write lands, tell the open chats that take it at their next turn.
+
+    The routes that switch a server or a tool on or off, remove one or register one
+    call this before they answer, so a session that applies a change at its next turn
+    boundary (KAS re-sends its projection, Strands relaunches) uses the new server set
+    on its next message, conversation kept. A kiro-cli session already watches its
+    agent file, and any other session keeps the set it started with until it restarts:
+    these routes never reset a session. Best effort, because the write already landed.
+    """
+    try:
+        mark_sessions_for_mcp_change(request.app["state"].sessions)
+    except Exception:  # noqa: BLE001 -- the write itself already landed
+        logger.warning("could not mark live sessions for an MCP change", exc_info=True)

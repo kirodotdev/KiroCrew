@@ -252,6 +252,19 @@ def test_check_setting_value_holds_a_str_list_to_its_bounds():
         assert reason in str(exc.value), bad
 
 
+def test_check_setting_value_holds_each_str_list_item_to_the_routes_item_pattern():
+    """A list setting whose route checks each item's shape refuses a bad item up front."""
+    from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+    spec = _EDITABLE_CONFIG["dashboard.browser_local_origins"]
+    cards.check_setting_value(spec, ["localhost:5173", "127.0.0.1:8080"])
+    for bad in (["https://example.com"], ["localhost:5173", "localhost"], ["10.0.0.1:80"]):
+        with pytest.raises(catalog.CardCatalogError) as exc:
+            cards.check_setting_value(spec, bad)
+        assert exc.value.code == "invalid_value", bad
+        assert "wrong shape" in str(exc.value), bad
+
+
 def test_a_list_value_stays_refused_on_a_card_for_the_extra_paths():
     """Pin: a card's value is scalar, so the list setting stays out of a card's reach.
 
@@ -264,15 +277,18 @@ def test_a_list_value_stays_refused_on_a_card_for_the_extra_paths():
         assert exc.value.code == "invalid_param"
 
 
-def test_a_scalar_or_a_list_op_is_refused_for_the_extra_paths():
-    target = cards.resolve_setting({"path": _EXTRA_PATHS})
-    assert target["spec"] == _EXTRA_PATHS_SPEC
-    with pytest.raises(catalog.CardCatalogError) as exc:
-        cards.check_target_params(target, {"value": "/a"})
-    assert exc.value.code == "invalid_value"
-    with pytest.raises(catalog.CardCatalogError) as exc:
-        cards.check_target_params(target, {"op": "add", "item": "/a"})
-    assert exc.value.code == "not_a_list"
+def test_no_card_target_resolves_for_the_extra_paths_and_find_setting_says_so(monkeypatch):
+    # Either route is refused before any value or op is read, pointing at the
+    # Settings page, and find_setting answers not writable, so an agent offers
+    # that page instead of trying card shapes that all fail.
+    for params in ({"path": _EXTRA_PATHS}, {"setting_id": "skills.extra-skill-paths"}):
+        with pytest.raises(catalog.CardCatalogError) as exc:
+            cards.resolve_setting(params)
+        assert exc.value.code == "no_write_path" and "settings.show" in exc.value.message
+    monkeypatch.setattr(cards, "read_setting_value", lambda target: None)
+    rows = {r["setting_id"]: r for r in cards.find_settings("extra skill paths")}
+    row = rows["skills.extra-skill-paths"]
+    assert row["writable"] is False and "value_type" not in row and "ops" not in row
     # The catalog refuses the op on its own too, without the gateway's pre-check.
     p = catalog.validate_params("setting.change", {"path": _EXTRA_PATHS, "op": "add", "item": "/a"})
     with pytest.raises(catalog.CardCatalogError) as exc:

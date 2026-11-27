@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps import official_catalog
+from kiro_crew.apps.market_source import is_market_source
 from kiro_crew.apps.registry_pipeline.caches import (
     _external_registry_cache_identity,
     _external_registry_cache_path,
@@ -267,6 +268,11 @@ def published_index(
         if not isinstance(record, dict):
             continue
         name = record.get("name")
+        if isinstance(name, str) and is_market_source(record.get("source")):
+            # A Kiro Space install shares only its NAME with a git row; that row
+            # never answers for it, and no update path exists for it yet.
+            index.pop(name, None)
+            continue
         recorded = _recorded_source(record)
         if not isinstance(name, str) or not name or recorded is None:
             continue

@@ -228,7 +228,7 @@ describe('redaction-card bridges', () => {
     const noCallback = { text: '不用讨论了', slot: 'slot-a', result: null }
     const taken = { text: '不用讨论了', slot: 'slot-a', result: 'pending', onOutcome }
     for (const detail of [mine, other, empty, noSlot, noCallback, taken]) act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
-    expect(composeSend.mock.calls).toEqual([['不用讨论了', 'slot-a', onOutcome], ['不用讨论了', 'slot-b', onOutcome]])
+    expect(composeSend.mock.calls).toEqual([['不用讨论了', 'slot-a', onOutcome, []], ['不用讨论了', 'slot-b', onOutcome, []]])
     expect([mine.result, other.result, empty.result, noSlot.result, noCallback.result, taken.result]).toEqual(['staged', null, null, null, null, 'pending'])
   })
 

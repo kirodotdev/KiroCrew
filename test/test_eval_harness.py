@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -296,6 +297,26 @@ class TestEvalRunner:
         assert result.passed is True
         assert result.total_assertions == 1
         assert result.passed_assertions == 1
+
+    @pytest.mark.asyncio
+    async def test_skills_loader_is_built_off_the_loop(self, monkeypatch):
+        # Its constructor resolves every skills.extra_paths root, which blocks
+        # until a slow or network mount answers.
+        from kiro_crew.eval import runner as runner_mod
+
+        built_on: list[int] = []
+
+        class _SpyLoader(runner_mod.SkillsLoader):
+            def __init__(self, *a, **kw) -> None:
+                built_on.append(threading.get_ident())
+                super().__init__(*a, **kw)
+
+        monkeypatch.setattr(runner_mod, "SkillsLoader", _SpyLoader)
+        scenario = Scenario(
+            name="off_loop", sessions=[Session(name="s1", turns=[Turn(user="hello")])]
+        )
+        await EvalRunner(provider_factory=lambda key, **kw: MockProvider()).run_scenario(scenario)
+        assert built_on and threading.get_ident() not in built_on
 
     @pytest.mark.asyncio
     async def test_run_scenario_fail(self):
@@ -791,8 +812,8 @@ class TestReporting:
         assert "# Eval Results" in report
         assert "test" in report
 
-    def test_the_report_is_never_ascii(self):
-        """Every result carries a ✅ or ❌, so the report cannot be saved as ASCII.
+    def test_the_report_keeps_non_ascii_turn_text(self):
+        """A turn's non-ASCII text reaches the report, so it cannot be saved as ASCII.
 
         This is the premise the artifact writer rests on: `_run_eval` hands this
         string straight to `write_eval_artifacts`, and the coverage tests around
@@ -804,7 +825,7 @@ class TestReporting:
                 name="test",
                 sessions=[SessionResult(name="s1", turns=[
                     TurnResult(
-                        user_message="q",
+                        user_message="café",
                         agent_response="r",
                         assertion_results=[
                             (Assertion(type=AssertionType.CONTAINS, value="r"), ok),
@@ -813,6 +834,7 @@ class TestReporting:
                 ])],
             )
             assert result.passed is ok
+            assert f"## {'PASS' if ok else 'FAIL'} test" in format_results([result])
             with pytest.raises(UnicodeEncodeError):
                 format_results([result]).encode("ascii")
 

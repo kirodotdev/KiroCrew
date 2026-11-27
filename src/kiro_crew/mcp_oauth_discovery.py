@@ -280,7 +280,9 @@ async def approve_discovered_oauth_endpoint(server_name: str, oauth_url: str) ->
         consent = _consent_endpoint(oauth_url)
         if consent is None:
             return False
-        if not await asyncio.to_thread(oauth_rejection_is_endpoint_exemptible, oauth_url):
+        if not await asyncio.to_thread(
+            oauth_rejection_is_endpoint_exemptible, oauth_url, server_name=server_name
+        ):
             return False
         failure_key = _failure_key(server_name, *consent)
         if _recently_failed(failure_key):
@@ -301,7 +303,7 @@ async def approve_discovered_oauth_endpoint(server_name: str, oauth_url: str) ->
                 server_name,
             )
             return False
-        return record_discovered_oauth_endpoint(*consent, mcp_url=mcp_url)
+        return record_discovered_oauth_endpoint(*consent, mcp_url=mcp_url, server_name=server_name)
     except Exception:
         logger.info("OAuth endpoint discovery failed for %r", server_name, exc_info=True)
         return False

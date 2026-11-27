@@ -1,14 +1,15 @@
 /**
  * Settings -> Browser, the setting rows: those under the main card ("Which
- * browser", "Show the live view in chat", and "Use <provider> sign-in" when an
- * edition supplies a sign-in provider) and the collapsed More group (Quality,
- * Max frame rate, the Preview tab's local addresses, Engine, Run with no window).
+ * browser", "Browser isolation", "Show the live view in chat", and "Use
+ * <provider> sign-in" when an edition supplies a sign-in provider) and the
+ * collapsed More group (Quality, Max frame rate, the Preview tab's local
+ * addresses, Engine, Run with no window).
  *
  * Every control carries its `configKey` (except Run with no window, the second
  * view of `browser.choice`, which anchors by label), so a `<SettingRef>` chip or
- * a command palette hit can land on it; More is a collapsible `SettingsSection`, which opens
- * itself when a deep link targets a row inside it. Every explanation is a `hint`
- * (an info tip), never a description line.
+ * a command palette hit can land on it; More is a collapsible `SettingsSection`,
+ * which opens itself when a deep link targets a row inside it. Every explanation
+ * is a `hint` (an info tip), never a description line.
  *
  * `browser.choice` is split across two controls; `browserStatus.ts` defines the
  * mapping (`pickerValueOf`, `choiceFromPicker`, `choiceFromHeadless`).
@@ -27,7 +28,10 @@ import {
   choiceFromHeadless,
   choiceFromPicker,
   isHeadlessChoice,
+  isolationValueOf,
   pickerValueOf,
+  ISOLATIONS,
+  type Isolation,
   type PickerChoice,
 } from './browserStatus'
 import { LIVE_MAX_FPS, LIVE_QUALITIES, type BrowserSettingsView } from './useBrowserSettings'
@@ -44,6 +48,11 @@ const CHOICE_LABEL_KEY: Record<PickerChoice, string> = {
   auto: 'pages.settings.browserPanel.choice_auto',
   user_chrome: 'pages.settings.browserPanel.choice_user_chrome',
   kiro_chromium: 'pages.settings.browserPanel.choice_kiro_chromium',
+}
+
+const ISOLATION_LABEL_KEY: Record<Isolation, string> = {
+  shared: 'pages.settings.browserPanel.isolation_shared',
+  per_session: 'pages.settings.browserPanel.isolation_per_session',
 }
 
 type SetConfig = (path: string, value: unknown) => void
@@ -85,6 +94,16 @@ export function BrowserMainControls({ view, credentials, disabled, setConfig }: 
           const next = choiceFromPicker(view.choice, v)
           if (next !== null) setConfig('browser.choice', next)
         }}
+        disabled={disabled}
+      />
+      <SettingsSelect
+        label={i18nT('pages.settings.browserPanel.isolation_label')}
+        hint={i18nT('pages.settings.browserPanel.isolation_desc')}
+        configKey="browser.isolation"
+        value={isolationValueOf(view.isolation)}
+        options={[...ISOLATIONS]}
+        optionLabels={ISOLATIONS.map(m => i18nT(ISOLATION_LABEL_KEY[m]))}
+        onChange={v => setConfig('browser.isolation', v)}
         disabled={disabled}
       />
       <SettingsToggle

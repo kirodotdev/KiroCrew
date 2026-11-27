@@ -1,8 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { SlidersHorizontal } from 'lucide-react'
 import { api, ApiError } from '../../api/client'
-import { Card, CardTitle } from '../../components/ui'
-import { SettingsToggle } from '../../components/settings'
+import { SettingsCard, SettingsSection, SettingsToggle } from '../../components/settings'
 import ErrorNotice from '../../components/ErrorNotice'
 import {
   PrivacyCommandList,
@@ -239,33 +237,28 @@ function MetricRecordingToggle() {
   )
 }
 
-/** Durable disclosure surface. This page explains controls and offers the
- * in-product opt-out, but does not ask for consent or gate use of the
- * application.
+/**
+ * Settings > Privacy, laid out like Settings > Browser: the switches first, each
+ * with one line saying what it does, then everything else under a collapsed
+ * Details section (what is sent, what never is, what stays local, the command
+ * line). No title of its own: the Settings shell renders the page title and
+ * description (`privacyDisclosure.settingsLabel` / `settingsDescription`).
  *
- * The disclosure copy, the toggle, and the command list live in
- * `components/PrivacyDisclosure.tsx` because the onboarding privacy step renders
- * the same three pieces — single-sourcing them is what keeps the first-run
- * explanation and this durable panel from drifting apart. */
+ * The page explains the switches and offers the opt-out; it never asks for
+ * consent or gates use of the application.
+ */
 export function PrivacyPanel() {
   // The same query the Record metrics switch reads (deduplicated by key), so the
-  // "Stays on your device" line states what is on now, not only the default.
+  // Details section shows the Kiro telemetry row only on a build that lists it.
   const statusQ = useQuery<CollectionStatus>({
     queryKey: ['telemetryCollection'],
     queryFn: () => api.collectionStatus(),
   })
+  const kiroTelemetry = (statusQ.data?.otlp_destinations ?? []).some(isKiroTelemetryRow)
   const { notOwner } = useViewerIsNotOwner()
   return (
     <div aria-label={i18nT('privacyDisclosure.settingsLabel')}>
-      <Card>
-        <PrivacyDisclosureSections recordingOn={statusQ.data?.enabled} shared={notOwner} />
-      </Card>
-
-      <Card>
-        <CardTitle>
-          <SlidersHorizontal className="lucide-inline" aria-hidden="true" />
-          {i18nT('privacyDisclosure.controlsTitle')}
-        </CardTitle>
+      <SettingsCard>
         <TelemetryToggle
           renderControl={({ checked, onChange, disabled }) => (
             <SettingsToggle
@@ -278,15 +271,15 @@ export function PrivacyPanel() {
             />
           )}
         />
-        {/* Recording is a separate decision from the heartbeat: this one never
-            leaves the machine, so it sits below the egress control rather than
-            being folded into it. */}
         <MetricRecordingToggle />
-        <p className="text-sm text-muted leading-relaxed mt-4 mb-3">
-          {i18nT('privacyDisclosure.controlsBody')}
-        </p>
-        <PrivacyCommandList />
-      </Card>
+      </SettingsCard>
+
+      <SettingsSection title={i18nT('privacyDisclosure.detailsTitle')} collapsible>
+        <SettingsCard>
+          <PrivacyDisclosureSections shared={notOwner} kiroTelemetry={kiroTelemetry} />
+          <PrivacyCommandList />
+        </SettingsCard>
+      </SettingsSection>
     </div>
   )
 }

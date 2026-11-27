@@ -17,7 +17,9 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -758,9 +760,11 @@ def test_walk_never_reads_a_wide_directory_past_the_entry_ceiling(tmp_path, monk
             pulled += 1
             return entry
 
-    monkeypatch.setattr(
-        folder_steering.os, "scandir", lambda p, *a, **kw: _Counting(real_scandir(p, *a, **kw))
-    )
+    def _scandir(p, *a, **kw):
+        return _Counting(real_scandir(p, *a, **kw))
+
+    # folder_steering's own os binding: folder_steering.os is the worker's stdlib os.
+    monkeypatch.setattr(folder_steering, "os", SimpleNamespace(**{**vars(os), "scandir": _scandir}))
     docs = collect_folder_steering([str(root)], project=None, home=_fake_home(tmp_path))
     assert docs == []  # the directory could not be listed within budget: fail closed
     assert pulled == folder_steering._MAX_FOLDER_STEERING_ENTRIES + 1
@@ -821,11 +825,16 @@ def test_walk_opens_the_root_pinned_and_children_relative_to_descriptors(tmp_pat
     monkeypatch.setattr(folder_steering.pinned_fs, "open_dir_pinned", _spy_root)
     scandir_args: list[object] = []
     real_scandir = os.scandir
+    walker = threading.get_ident()
 
-    def _spy_scandir(arg, *a, **kw):
-        scandir_args.append(arg)
+    def _spy_scandir(arg=".", *a, **kw):
+        if threading.get_ident() == walker:
+            scandir_args.append(arg)
         return real_scandir(arg, *a, **kw)
 
+    # folder_steering.os is the worker's stdlib os, so a listing through any route that
+    # reaches os.scandir is seen. Only this thread's are kept: the walk runs on it, and
+    # another thread's descriptor scan would count as the walk's.
     monkeypatch.setattr(folder_steering.os, "scandir", _spy_scandir)
     # Not a spy on ``os.open``: the platform probe checks ``os.open in
     # os.supports_dir_fd`` by identity, so wrapping it would silently select the

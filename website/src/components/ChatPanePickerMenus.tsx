@@ -4,10 +4,13 @@ import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter, defaultWriteKind, isCrewmateChat } from './AgentDropdownList'
 import ModelDropdownList from './ModelDropdownList'
+import ProjectPicker from './ProjectPicker'
+import { ProjectAwsProfileSection } from './ProjectAwsProfile'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import EffortOffOnAutoNote from './EffortOffOnAutoNote'
 import SessionSwitchToggle from './SessionSwitchToggle'
 import { ManageModelsFooter, MORE_BELOW_MASK } from './ModelEffortDropdown'
+import { KiroCliModelsSignInNotice, useKiroCliCanRunHere, useKiroCliSignInInTerminal } from './KiroCliSignInInTerminal'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 import { settingsPath } from './settingsPath'
 import { legacyCodexEffort } from '../hooks/useInteractiveModels'
@@ -20,11 +23,11 @@ import type { RootState } from '../store'
 import type { useChatPanePickerActions, useChatPanePickerModels } from './useChatPanePickers'
 
 /**
- * `ChatPane`'s two portaled picker menus, each anchored to the composer chip
+ * `ChatPane`'s portaled picker menus, each anchored to the composer chip
  * that opened it: the agent list (with the default-agent row and the manage
- * footer) and the model list with the reasoning-effort control inside it. Both
- * read `useChatPanePickerModels` / `useChatPanePickerActions`; the pane renders
- * them after its composer dock.
+ * footer), the model list with the reasoning-effort control inside it, and the
+ * project picker. All read `useChatPanePickerModels` / `useChatPanePickerActions`;
+ * the pane renders them after its composer dock.
  */
 
 // One instance covers both dropdown filter inputs (never open at once).
@@ -84,10 +87,15 @@ export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate }: Omit<
 }
 
 export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate }: MenuProps) {
-  const { modelDD, modelBtnRect, hiddenModelsQ, selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, attachModelList, modelListEdges, shownModel, modelPickerConfigured, effortSupported, codexPairModels, defaultEffort, effortLevelsOverride, effortAutoNote } = models
+  const { modelDD, modelBtnRect, hiddenModelsQ, selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, kiroCliSignedOut, attachModelList, modelListEdges, shownModel, modelPickerConfigured, effortSupported, codexPairModels, defaultEffort, effortLevelsOverride, effortAutoNote } = models
   const { modelDialogIme, onModelListKeyDown, switchModel } = actions
+  // Hosted here, not inside the portal: the picker closes before the confirm opens.
+  const kiroCliSignIn = useKiroCliSignInInTerminal()
+  // Both the pane and the active chat that owns the terminal receiver must run here.
+  const kiroCliCanRun = useKiroCliCanRunHere(paneSlot?.executor !== 'remote' && models.paneRunsHere === true && models.activeSlotRunsHere === true)
   return (
     <>
+      {kiroCliSignIn.dialog}
       {/* Model picker portal — anchored to the input-bar model button. */}
       {modelDD.open && modelBtnRect && <OverlayPortal>{
         /* The labeled dialog owns roving-focus key handling for its descendants. */
@@ -163,6 +171,11 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
               </Btn>
             </div>
           )}
+          {kiroCliSignedOut && <KiroCliModelsSignInNotice signIn={{
+            run: () => { modelDD.setOpen(false); kiroCliSignIn.askToSignIn() },
+            command: kiroCliSignIn.command,
+            canRun: kiroCliCanRun,
+          }} />}
           {/* Same bottom fade as ModelEffortDropdown's list (see MORE_BELOW_MASK). */}
           <div ref={attachModelList} role="listbox" aria-label={i18nT('components.chatPane.model_list')} className={`min-h-[96px] flex-1 overflow-y-auto max-h-[280px] ${modelListEdges.bottom ? MORE_BELOW_MASK : ''}`}>
             <ModelDropdownList models={modelDD.filtered} activeModel={jevRouteShownModel(shownModel, paneSlot)} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} />
@@ -193,5 +206,21 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
         </div>
       }</OverlayPortal>}
     </>
+  )
+}
+
+export function ChatPaneProjectMenu({ paneSlot, models, actions }: Pick<MenuProps, 'paneSlot' | 'models' | 'actions'>) {
+  const { projectPickerOpen, setProjectPickerOpen, projectBtnRect } = models
+  const project = paneSlot?.project || ''
+  // No `errorHandoff`: the hand-off navigates away from a pane that may hold an unsent draft.
+  return (
+    <ProjectPicker
+      open={projectPickerOpen}
+      onOpenChange={setProjectPickerOpen}
+      anchorRect={projectBtnRect}
+      onSelect={path => { void actions.switchProject(path); setProjectPickerOpen(false) }}
+      startPath={project}
+      footer={project ? <ProjectAwsProfileSection project={project} /> : undefined}
+    />
   )
 }

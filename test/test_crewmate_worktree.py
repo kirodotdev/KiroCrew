@@ -41,21 +41,30 @@ def _git(cwd, *args: str) -> str:
 
 
 @pytest.fixture
-def git_here(monkeypatch):
-    """Git for these tests: sandboxed where the host has a backend, plain otherwise.
+def git_here(monkeypatch, request):
+    """Git for these tests: plain, except in a case that asks for ``sandboxed_git``.
 
-    The Linux CI runners have no sandbox backend, and a skip there would leave
-    the worktree logic untested; the sandbox wrapper itself is tested in
-    ``test_worktree_create``. Windows is skipped up front, before any probe: the
-    sandbox fails closed there ("not Linux"), and these cases are written for
-    POSIX paths, permissions and links.
+    The worktree logic is what these cases test; the sandbox wrapper itself is
+    tested in ``test_worktree_create``. A sandboxed git costs about 0.3 s a spawn
+    on macOS (``sandbox-exec`` compiles the Seatbelt profile on every exec) and each
+    git call here is four spawns with its hook scan, so the sandbox stays off the
+    cases that do not need it. The Linux CI runners have no backend and run every
+    case plain. A case that names ``sandboxed_git`` keeps the host's real sandbox
+    where it has one, so the composition stays covered end to end.
+    Windows is skipped up front, before any probe: the sandbox fails closed there
+    ("not Linux"), and these cases are written for POSIX paths, permissions and links.
     """
     if sys.platform == "win32":
         pytest.skip("sandboxed git does not run on Windows (no backend)")
-    if _sandbox_exec_reason():
+    if "sandboxed_git" not in request.fixturenames or _sandbox_exec_reason():
         from kiro_crew.dashboard.handlers import worktree as wt
 
         monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
+
+
+@pytest.fixture
+def sandboxed_git():
+    """Named by a case that runs its git under the host's real sandbox (see ``git_here``)."""
 
 
 def _init(root, branch: str = "main") -> str:
@@ -77,6 +86,17 @@ def repo(tmp_path, git_here):
     return _init(root)
 
 
+def _not_a_worktree_reason(path: str) -> str:
+    """Git's reason the checkout at *path* cannot find its repository, or ``""``."""
+    proc = subprocess.run(
+        ["git", "-C", path, "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return "" if proc.returncode == 0 else proc.stderr.strip()
+
+
 def _commit_in(path: str, name: str, message: str) -> None:
     with open(os.path.join(path, name), "w", encoding="utf-8") as fh:
         fh.write(message + "\n")
@@ -87,7 +107,7 @@ def _commit_in(path: str, name: str, message: str) -> None:
 # ── job 1: one worktree per crewmate and repository, on its own branch ──
 
 
-def test_two_crewmates_on_one_repo_get_their_own_worktree_and_branch(repo, tmp_path):
+def test_two_crewmates_on_one_repo_get_their_own_worktree_and_branch(sandboxed_git, repo, tmp_path):
     atlas_ws, briar_ws = str(tmp_path / "ws-atlas"), str(tmp_path / "ws-briar")
     atlas = cw.ensure("atlas", atlas_ws, repo)
     briar = cw.ensure("briar", briar_ws, os.path.join(repo, "docs"))
@@ -365,6 +385,43 @@ def test_a_worktree_folder_deleted_by_hand_is_rebuilt_on_its_branch(repo, tmp_pa
     assert _git(again.path, "rev-parse", "HEAD") == kept
 
 
+def test_rebuilding_a_deleted_worktree_keeps_a_sibling_whose_folder_git_cannot_see(repo, tmp_path):
+    """The gateway's git runs under the sandbox, which hides every session's scratch,
+    so a sibling worktree of the same repository kept there reads as prunable. A
+    repository-wide ``git worktree prune`` would delete its metadata while it is in
+    use; only the Bot worktree's own stale registration may go."""
+    ws = str(tmp_path / "ws-atlas")
+    other_session = tmp_path / "scratch-of-another-session"
+    sibling = other_session / "wt"
+    _git(repo, "worktree", "add", "--detach", str(sibling), "HEAD")
+    found = cw.ensure("atlas", ws, repo)
+    shutil.rmtree(found.path)
+    other_session.rename(tmp_path / "masked")
+    again = cw.ensure("atlas", ws, repo)
+    (tmp_path / "masked").rename(other_session)
+    assert again.path == found.path
+    assert _not_a_worktree_reason(str(sibling)) == ""
+
+
+def test_the_gateway_never_runs_a_repository_wide_worktree_prune():
+    """``git worktree prune`` drops the registration of every worktree whose folder
+    the sandboxed git cannot see, other sessions' live scratch worktrees included.
+    Gateway code removes its own stale entry by path (``git worktree remove <path>``).
+
+    ``apps/builtins/`` is outside this pin: those are wheel copies of adopted apps,
+    which are fixed in their own repositories and mirrored back, never changed here.
+    """
+    from source_corpus import iter_candidate_sources, src_root
+
+    offenders = sorted(
+        rel
+        for path, text in iter_candidate_sources(require_all=('"worktree", "prune"',))
+        for rel in [path.relative_to(src_root()).as_posix()]
+        if not rel.startswith("apps/builtins/")
+    )
+    assert offenders == []
+
+
 def test_a_folder_git_does_not_register_is_refused(repo, tmp_path):
     ws = str(tmp_path / "ws-atlas")
     dest = cw.path_for(ws, "atlas", repo)
@@ -616,7 +673,7 @@ def test_paths_on_different_drives_are_not_contained(monkeypatch):
 # ── job 3: removal with the crewmate ──
 
 
-def test_removal_removes_clean_worktrees_and_keeps_everything_else(repo, tmp_path):
+def test_removal_removes_clean_worktrees_and_keeps_everything_else(sandboxed_git, repo, tmp_path):
     ws = str(tmp_path / "ws-atlas")
     other = _init(tmp_path / "shared" / "other")
     clean = cw.ensure("atlas", ws, repo)

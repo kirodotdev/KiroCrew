@@ -43,6 +43,7 @@ from kiro_crew.mcp_gateway.launch_approval import (
     launch_fingerprint,
     target_stem,
 )
+from kiro_crew.mcp_gateway.launch_approval_heal import prefold_digests
 from kiro_crew.mcp_gateway.rewriter_env import (
     _expand_env_map,
     _must_stay_wrapped,
@@ -496,6 +497,20 @@ def _named_in_tools(servers: Mapping[str, Any], tools: Any) -> dict[str, Any]:
     }
 
 
+def _note_declared(approvals: LaunchApprovals | None, servers: Any) -> None:
+    """Census a raw server map before filtering; unknown shapes retire no trust."""
+    if approvals is None:
+        return
+    if not isinstance(servers, dict):
+        approvals.declared_incomplete = True
+        return
+    for name, entry in servers.items():
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            approvals.declared_incomplete = True
+            continue
+        approvals.note_declared(name)
+
+
 def _rewrite_single_spec(
     spec: dict[str, Any],
     *,
@@ -565,6 +580,8 @@ def _rewrite_single_spec(
     pass routes is the exception; the stub-decoupling design note says why.
     """
     agent_name = spec.get("name") or ""
+    _note_declared(approvals, spec.get("mcpServers", {}))
+    _note_declared(approvals, inject_servers if inject_servers is not None else {})
     servers = spec.get("mcpServers") or {}
     if not isinstance(servers, dict):
         servers = {}
@@ -1126,7 +1143,8 @@ def _admit_launch(
         return True
     target_args = _spec_args(entry)
     fingerprint = launch_fingerprint(resolved_cmd, target_args, entry_env)
-    derived_env_hash = env_fingerprint(_expand_env_map(entry_env))
+    expanded_env = _expand_env_map(entry_env, server=name)
+    derived_env_hash = env_fingerprint(expanded_env)
     if not approvals.admit(
         name,
         fingerprint,
@@ -1136,6 +1154,7 @@ def _admit_launch(
         # host secret behind ``${VAR}`` is never rendered on the dashboard.
         env=entry_env,
         derived_env_hash=derived_env_hash,
+        prefold=prefold_digests(entry_env, expanded_env),
     ):
         # Names only: the args and env may carry tokens.
         if approvals.refused.get(target_stem(name)) == REFUSED_TOO_MANY:

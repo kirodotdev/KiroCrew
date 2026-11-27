@@ -2,7 +2,8 @@
 
 The ``AcpRuntimeError`` family the handle and ``AcpRuntime`` raise, and ``AcpRuntimeProtocol``,
 the interface the handle needs from the runtime. ``kiro_crew.acp.session_handle`` re-exports
-every name, and ``kiro_crew.acp.runtime`` imports them from there.
+every name but ``AcpResumeNotRestored``, and ``kiro_crew.acp.runtime`` imports them from there;
+``AcpResumeNotRestored`` is imported from here by its raiser and its catcher.
 """
 
 from __future__ import annotations
@@ -57,6 +58,10 @@ class AcpFrameTooLarge(AcpRuntimeError):
     session_start_failed = False
 
 
+class AcpResumeNotRestored(AcpRuntimeError):
+    """A KAS ``session/load`` with ``require_replay`` that replayed no earlier turn."""
+
+
 class AcpModeNotFound(AcpRuntimeError):
     """kiro-cli answered ``Mode '<mode_id>' not found`` to an awaited request.
 
@@ -87,6 +92,33 @@ class AcpAgentUnavailable(AcpRuntimeError):
     def __init__(self, message: str, *, agent: str) -> None:
         super().__init__(message)
         self.agent = agent
+
+
+def host_refused(error: object) -> bool:
+    """Whether *error* is the host's own answer refusing a request: an error reply
+    the reader turned into an exception with its JSON-RPC frame (``rpc_error``).
+
+    Anything raised on this side is not: a frame too large to read, a reply that
+    did not parse, a lost connection, a timeout, a dead runtime. The host may have
+    acted on the request then, so a record of what it might have started stays.
+    """
+    return (
+        isinstance(error, AcpRuntimeError)
+        and getattr(error, "rpc_error", None) is not None
+        and not isinstance(error, (AcpRuntimeDead, AcpRequestTimeout, AcpFrameTooLarge))
+    )
+
+
+def answer_lost(error: object) -> bool:
+    """Whether *error* means a request reached the host and its answer was lost on
+    the way back: a frame too large to read, or the runtime dying under it.
+
+    For a caller that only holds what a whole start raised, where most failures
+    (a refusal this side made before anything was sent, a resume this side would
+    not restore) leave no session: those are not this. A timeout is not either:
+    its late answer has a collector of its own (``StartCollector``).
+    """
+    return isinstance(error, (AcpFrameTooLarge, AcpRuntimeDead)) and not host_refused(error)
 
 
 class AcpRequestTimeout(AcpRuntimeError):
@@ -199,6 +231,10 @@ class AcpRuntimeProtocol(Protocol):
     _session_harness_states: dict[str, Any]
     """What the host prepared for each session, by session id."""
 
+    recording_allowed: bool
+    """Whether agent-supplied text may reach the log. Latched False once anything on
+    the process runs outside persistent memory."""
+
     @property
     def pid(self) -> int | None:
         """Subprocess pid (sandbox launcher parent under the Linux namespace
@@ -212,6 +248,15 @@ class AcpRuntimeProtocol(Protocol):
         Only the Linux namespace sandbox leaves its launcher at ``pid``, with the
         harness as that launcher's sole child. macOS Seatbelt execs the harness in
         place, so ``pid`` is the harness there even when this is True.
+        """
+        ...
+
+    @property
+    def engine_is_child(self) -> bool:
+        """Whether the harness relays to a sole engine child that spawns the tools.
+
+        True on KAS's kiro-cli relay: a shell tool's parent is that engine, one
+        level below the harness, so the stalled-shell cleanup pins one more hop.
         """
         ...
 

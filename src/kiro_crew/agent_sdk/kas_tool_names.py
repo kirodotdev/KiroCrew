@@ -27,6 +27,7 @@ import re
 __all__ = [
     "KAS_MCP_TOOL_ID_MAX_LEN",
     "KAS_TOOL_UNAVAILABLE_RE",
+    "backend_of_provider_label",
     "is_kas_provider_label",
     "kas_mcp_display_name",
     "kas_mcp_tool_id",
@@ -66,3 +67,19 @@ def is_kas_provider_label(provider_type: str | None) -> bool:
     from kiro_crew.acp.types import PROVIDER_LABEL_KAS
 
     return provider_type == PROVIDER_LABEL_KAS
+
+
+def backend_of_provider_label(provider_type: str | None) -> str | None:
+    """The ACP backend id whose provider label is *provider_type*, or ``None``.
+
+    The inverse of the ACP layer's label table, read behind the agent-SDK
+    boundary as :func:`is_kas_provider_label` reads it. kiro-cli's id is ``""``.
+    """
+    if not provider_type:
+        return None
+    from kiro_crew.acp.types import PROVIDER_LABEL_BY_BACKEND
+
+    for backend, label in PROVIDER_LABEL_BY_BACKEND.items():
+        if label == provider_type:
+            return str(backend)
+    return None

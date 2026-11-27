@@ -49,6 +49,9 @@ _kill_seam = subagent_force_stop_audit_helpers._kill_seam
 _leads_its_own_group = subagent_force_stop_audit_helpers._leads_its_own_group
 _no_tree_behind_the_leader = subagent_force_stop_audit_helpers._no_tree_behind_the_leader
 
+# Every SubagentManager built here opens tasks.db; close them at teardown.
+pytestmark = pytest.mark.usefixtures("close_subagent_managers")
+
 
 # ── A refused or failed SIGKILL is a kill failure, not a reap ──
 

@@ -16,8 +16,11 @@ from kiro_crew.apps.builtin_host_grants import (
 
 # Strict internal API paths — exact paths that ONLY internal processes
 # (mcp-core, doctor, cron) call, never the browser. Access requires loopback
-# AND a matching ``X-Internal-Secret`` header; non-loopback is always denied and
-# there is no cookie fall-through (see token_auth.token_auth_middleware).
+# AND a matching ``X-Internal-Secret`` header; non-loopback is always denied. A
+# loopback request with no secret falls through to cookie auth, which admits only
+# the owner's or a teammate's dashboard session (an app token stays under its own
+# scope); every other dashboard session is refused 403 ``owner_only`` (see
+# token_auth.token_auth_middleware).
 #
 # Module-level and shared by BOTH ``start_dashboard`` and ``start_api_server``
 # so the two entrypoints can never drift: the ``--slack-only`` headless server
@@ -43,6 +46,10 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # handler re-asserts ``internal_auth`` and hands it to the declaring app's own
         # route. One fixed core path for every app, so no app route is admitted here.
         "/api/app-tools/call",
+        # The ``app_store_search`` tool's read of the store listing; no browser page
+        # calls it (the store reads ``/api/apps/registry``). A loopback cookie still
+        # reaches it, as it does every strict path, and sees the same rows there.
+        "/api/app-store/search",
         # External terminal grant redemption. Its only caller is the desktop
         # shell's main process, loopback + internal-secret; the browser holds
         # the grant but must never redeem it, so
@@ -149,6 +156,12 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # cookie auth and are refused before the handler's own session
         # recognition can run.
         "/api/session-ledger",
+        # MCP-only (the three resource-subscription tools) and the
+        # `kirocrew resource-subs` CLI; no browser caller. Prefix matching covers
+        # "/remove" and "/operator". Without this entry the internal-secret calls
+        # fall through to cookie auth and are refused before the handler's own
+        # session recognition can run.
+        "/api/resource-subscriptions",
         # MCP-only (the four kirocrew-work tools); no browser caller. Prefix
         # matching covers "/record", "/brief" and "/report". Without this entry
         # the tools' internal-secret calls fall through to cookie auth and are

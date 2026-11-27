@@ -157,6 +157,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "_trust": ("property", False, False, "(self) -> 'bool'"),
     "_trust_reads": ("property", False, False, "(self) -> 'bool'"),
     "_turn_timeout_hydrated": ("property", False, False, "(self) -> 'bool'"),
+    "_fold_head": ("function", False, False, "(self, excess: 'int') -> 'None'"),
     "_note_enqueue": ("function", False, False, "(self) -> 'None'"),
     "_pr_source_links": ("function", False, False, "(self) -> 'list[dict]'"),
     "_retry_deferred_release": ("function", False, False, "(self) -> 'int'"),
@@ -215,6 +216,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self) -> 'tuple[list[dict[str, Any]], int]'",
     ),
+    "durable_source": ("function", False, False, "(self) -> 'list[dict[str, Any]]'"),
     "enqueue_or_run_prompt": (
         "function",
         False,
@@ -223,7 +225,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "_ChatSlot, str], Coroutine[Any, Any, None]]', state: "
         "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None, "
         "relay_meta: 'dict[str, Any] | None' = None, gateway_prompt_kind: 'str' = "
-        "'') -> 'bool'",
+        "'', at_head: 'bool' = False) -> 'bool'",
     ),
     "flush_deferred_notes": (
         "function",
@@ -284,7 +286,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, content: 'str', kind: 'str' = '', meta: 'dict | None' = None, *, "
         "directive_user_origin: 'bool' = False, directive_channel_origin: 'bool' = "
-        "False, directive_owner_origin: 'bool' = False) -> 'str'",
+        "False, directive_owner_origin: 'bool' = False, source_channels: "
+        "'tuple[str, ...]' = ()) -> 'str'",
     ),
     "queue_depth": ("property", False, False, "(self) -> 'int'"),
     "queue_edit_by_id": (
@@ -304,7 +307,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "None, on_irreversibly_consumed: 'Callable[[], Awaitable[None] | None] | "
         "None' = None, directive_user_origin: 'bool' = False, "
         "directive_channel_origin: 'bool' = False, directive_owner_origin: 'bool' = "
-        "False) -> 'str'",
+        "False, source_channels: 'tuple[str, ...]' = ()) -> 'str'",
     ),
     "queue_persist_pending": ("property", False, False, "(self) -> 'bool'"),
     "queue_pop": ("function", False, False, "(self, index: 'int' = 0) -> 'dict[str, Any]'"),
@@ -326,6 +329,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "permission_row: 'dict') -> 'None'",
     ),
     "release_pending_chunks": ("function", False, False, "(self) -> 'int'"),
+    "release_saved_head": ("function", False, False, "(self, keep: 'int') -> 'int'"),
     "running": ("property", False, False, "(self) -> 'bool'"),
     "set_rejection_reason": (
         "function",
@@ -439,6 +443,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_carried_ttft_clock": ("value", "None"),
     "_prev_turn_ctx_used": ("value", "0"),
     "_prev_turn_ctx_session": ("value", "''"),
+    "_prev_turn_ended_at": ("value", "0.0"),
     "_channel_folder_filed": ("value", "False"),
     "_channel_runtime_origin": ("value", "False"),
     "_channel_window_mtime": ("value", "0.0"),
@@ -463,6 +468,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_crew_log_previous_sid": ("value", "''"),
     "_crew_log_previous_undecided": ("value", "None"),
     "_cycle_reached_provider": ("value", "False"),
+    "_preparing_turn": ("value", "None"),
     "_dashboard_card_exempt": ("value", "False"),
     "_dashboard_card_identity": ("type", "builtins.str"),
     "_deferred_model_switch_key": ("value", "''"),
@@ -486,7 +492,9 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_eager_spawn_reported_resume": ("value", "False"),
     "_eager_spawn_retry_at": ("value", "0.0"),
     "_eager_spawn_task": ("value", "None"),
+    "_effort_overlay_clear": ("value", "False"),
     "_effort_pick_gen": ("value", "0"),
+    "_engine_promoted_model": ("value", "''"),
     "_embed_question_polled_at": ("value", "None"),
     "_empty_episode_productive": ("value", "False"),
     "_empty_response_retries": ("value", "0"),
@@ -541,6 +549,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_lazy_window": ("value", "None"),
     "_lineage_minted": ("value", "False"),
     "_linked_session_busy": ("value", "None"),
+    "_full_chat_waits": ("value", "None"),
     "_reports_to_creator": ("value", "False"),
     "_work_aggregate": ("value", "None"),
     "_lock": ("type", "asyncio.locks.Lock"),
@@ -573,9 +582,12 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_inflight_merge_contexts": ("value", "[]"),
     "_pending_discard_conversation_key": ("value", "None"),
     "_pending_discard_from_wake": ("value", "False"),
+    "_pending_discard_drops_plan": ("value", "False"),
     "_pending_memory_mode": ("value", "None"),
     "_pending_model_pick": ("value", "None"),
     "_pending_release_deferred": ("value", "False"),
+    "_stream_epoch": ("value", "0"),
+    "_stream_handoffs": ("value", "{}"),
     "_pending_reset_clears_cwd": ("value", "False"),
     "_pending_reset_history_key": ("value", "None"),
     "_pending_rewrite": ("value", "False"),
@@ -616,6 +628,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_row_redacted_memo": ("value", "None"),
     "_row_summary_memo": ("value", "None"),
     "_saved_created_by": ("value", "''"),
+    "_unconfirmed_creator": ("value", "''"),
     "_session_not_found_retry_used": ("value", "False"),
     "_session_notice_marks": ("value", "[]"),
     "_session_requested_model": ("value", "None"),
@@ -628,6 +641,13 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_source_links_revision": ("value", "0"),
     "_stale_recovery_exhausted_emitted": ("value", "False"),
     "_stale_recovery_retries": ("value", "0"),
+    "_deferred_flush_dirty": ("value", "False"),
+    "_deferred_flush_task": ("value", "None"),
+    "_deferred_steer_delivered": ("value", "{}"),
+    "_deferred_steer_ended_gen": ("value", "-1"),
+    "_deferred_steer_injected": ("value", "{}"),
+    "_deferred_steer_receipts": ("value", "{}"),
+    "_deferred_steers": ("value", "[]"),
     "_steer_act_now": ("value", "set()"),
     "_steer_admissions": ("value", "{}"),
     "_steer_attachment_meta": ("value", "{}"),
@@ -699,6 +719,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_generation": ("value", "0"),
     "_turn_lineage": ("type", "builtins.tuple"),
     "_turn_in_flight_generation": ("value", "0"),
+    "_turn_pick_gen": ("value", "0"),
     "_turn_in_flight_prompt": ("value", "None"),
     "_restored_turn_marker": ("value", "None"),
     "_run_started_at": ("value", "None"),
@@ -736,6 +757,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "color_theme": ("value", "''"),
     "created_at": ("type", "builtins.str"),
     "credential_evidence": ("type", "kiro_crew.security.credential_sources.CredentialEvidence"),
+    "cron_run_read_only": ("value", "False"),
     "event": ("type", "asyncio.locks.Event"),
     "executor": ("value", "'local'"),
     "folder_id": ("value", "''"),
@@ -759,6 +781,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "segment_removed": ("value", "{}"),
     "segment_shown_sha": ("type", "_hashlib.HASH"),
     "served_model": ("value", "''"),
+    "source_links_off": ("value", "False"),
+    "_source_links_off_hydrated": ("value", "True"),
     "tags": ("value", "[]"),
     "tags_revision": ("type", "builtins.str"),
     "theme_consent": ("value", "False"),

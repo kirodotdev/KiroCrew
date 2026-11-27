@@ -7,14 +7,19 @@ so a miss costs CI time instead of silently dropping a cross-surface parity guar
 
 from __future__ import annotations
 
+import fnmatch
+import hashlib
 import importlib.util
 import os
+import random
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 import pytest
+
+from scripts.ci_file_shards import FileShards, read_targets
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
 # scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
@@ -45,16 +50,18 @@ def selector():
 
     ``collect`` costs ~3s a call. The memo key carries ``_is_windows()`` because the
     Windows filter runs inside ``collect``, and ``test_posix_scope_is_unfiltered``
-    patches that seam between two ``collect("backend")`` calls.
+    patches that seam between two ``collect("backend")`` calls. ``for_windows``
+    is a key of its own, so the Windows list asked for on a POSIX host is worked
+    out from that argument and never read back from a patched seam.
     """
     module = _load_selector()
-    memo: dict[tuple[str, bool], list[str]] = {}
+    memo: dict[tuple[str, bool, bool], list[str]] = {}
     uncached = module.collect
 
-    def collect(surface: str) -> list[str]:
-        key = (surface, module._is_windows())
+    def collect(surface: str, for_windows: bool = False) -> list[str]:
+        key = (surface, module._is_windows(), for_windows)
         if key not in memo:
-            memo[key] = uncached(surface)
+            memo[key] = uncached(surface, for_windows=for_windows)
         # A copy, so a caller that sorts or filters in place cannot poison the memo.
         return list(memo[key])
 
@@ -312,7 +319,7 @@ def test_own_surface_config_references_stay_single_surface(selector, tmp_path) -
 _IGNORE_LIST = _REPO_ROOT / "test" / "windows-collect-ignore.txt"
 
 _OBSERVED_WINDOWS_FAILURES = (
-    "test_acp_client.py",
+    "test_acp_client_process_lifecycle.py",
     "test_deploy_web_handlers.py",
     "test_deploy_web_handlers_manifest_reaper.py",
     "test_deploy_web_handlers_webapp.py",
@@ -385,27 +392,9 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_terminal_handler_session_routes.py",
         "test_terminal_handler_session_state.py",
         "test_terminal_handler_ws.py",
-        "test_acp_client.py",
-        "test_acp_client_binary_resolution.py",
-        "test_acp_client_commands.py",
-        "test_acp_client_compaction.py",
-        "test_acp_client_inbound.py",
-        "test_acp_client_model_entitlement.py",
-        "test_acp_client_model_substitution.py",
         "test_acp_client_process_lifecycle.py",
-        "test_acp_client_prompt_turn.py",
-        "test_acp_client_session_setup.py",
-        "test_acp_client_settings_restore.py",
-        "test_acp_client_spawn.py",
-        "test_acp_client_stale_turn.py",
-        "test_acp_client_tool_call_updates.py",
-        "test_acp_client_tool_events.py",
-        "test_acp_client_tool_hooks.py",
-        "test_acp_client_transient_errors.py",
         "test_app_backend_stale_reap.py",
         "test_env.py",
-        "test_outbox_notify_broadcast.py",
-        "test_outbox_binary.py",
         "test_deploy_web_handlers.py",
         "test_deploy_web_handlers_manifest_reaper.py",
         "test_deploy_web_handlers_webapp.py",
@@ -413,9 +402,6 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_snapshot_notification_copy_branch.py",
         "test_snapshot_notification_merge_branch.py",
         "test_webapp_preview.py",
-        "test_file_raw.py",
-        "test_file_download.py",
-        "test_dashboard_file_io.py",
         "test_dev_fleet_app.py",
         "test_dev_fleet_app_make_live.py",
         "test_dev_fleet_app_make_live_cutover.py",
@@ -476,6 +462,103 @@ def test_posix_scope_is_unfiltered(selector, monkeypatch) -> None:
     # The POSIX list must still carry suites the Windows one drops, or the filter
     # is a no-op and this whole guard proves nothing.
     assert posix_selected - win_selected
+
+
+@pytest.mark.timeout(POSIX_SCOPE_TIMEOUT_SECS)
+def test_any_host_can_name_the_list_a_windows_run_gets(selector, monkeypatch, capsys) -> None:
+    """One job names the list every Windows shard of a run must hold."""
+    monkeypatch.setattr(selector, "_is_windows", lambda: True)
+    on_windows = selector.collect("backend")
+    monkeypatch.setattr(selector, "_is_windows", lambda: False)
+    assert selector.collect("backend", for_windows=True) == on_windows
+    assert selector.collect("backend") != on_windows
+    # The command line reaches the same list, and without the flag the host's.
+    assert selector.main(["--surface", "backend", "--for-windows"]) == 0
+    assert capsys.readouterr().out.splitlines() == on_windows
+    assert selector.main(["--surface", "backend"]) == 0
+    assert capsys.readouterr().out.splitlines() == selector.collect("backend")
+
+
+def _glob_ignoring_case(monkeypatch) -> None:
+    """Make ``Path.rglob`` match names whatever their case, as it does on Windows."""
+    strict = Path.rglob
+
+    def loose(self, pattern, **_kwargs):
+        wanted = pattern.lower()
+        return (p for p in strict(self, "*") if fnmatch.fnmatchcase(p.name.lower(), wanted))
+
+    monkeypatch.setattr(Path, "rglob", loose)
+
+
+# Each seed under both glob rules: this test runs on the Windows shards too, where
+# the host's glob ignores case, and no list may follow the host it is computed on.
+@pytest.mark.parametrize("host_glob_ignores_case", [False, True])
+@pytest.mark.parametrize("seed", range(6))
+def test_a_windows_shard_and_the_linux_job_name_one_digest_for_one_commit(
+    tmp_path, monkeypatch, capsys, seed, host_glob_ignores_case
+) -> None:
+    """The Linux job's ``--for-windows`` digest is the one a Windows shard computes.
+
+    One tree is read twice. First as the Linux job reads it: LF files, a POSIX
+    host, ``--for-windows``, and the digest ``LC_ALL=C sort -u | sha256sum``
+    gives (test_ci_shard_list_digest.py runs that pipeline itself). Then as a
+    Windows shard does: every file rewritten with CRLF as ``core.autocrlf``
+    checks it out, the selector on Windows, its output as a CRLF list file, and
+    the pytest plugin's digest of that file, from a Windows-form root too.
+    """
+    rng = random.Random(seed)
+    selector = _load_selector()
+    monkeypatch.setattr(selector, "_repo_root", lambda: tmp_path)
+    if host_glob_ignores_case:
+        _glob_ignoring_case(monkeypatch)
+    guard = "import os\n\n\ndef test_x():\n    assert os.path.isfile('website/src/a.ts')\n"
+    pure = "from kiro_crew import config\n\n\ndef test_x():\n    assert config\n"
+    # Spellings a Windows glob matches and a POSIX one does not, a name whose
+    # sort order depends on the comparison, and a directory with a space.
+    spellings = ("test_{}.py", "Test_{}.py", "TEST_{}.PY", "test_{}.Py", "test_\u00e9{}.py")
+    folders = ("", "sub dir/", "Deep/Er/")
+    written: dict[str, str] = {}
+    for index in range(40):
+        name = rng.choice(spellings).format(index)
+        rel = f"{rng.choice(selector._BACKEND_ROOTS)}/{rng.choice(folders)}{name}"
+        written[rel] = rng.choice((guard, guard, pure))
+    # Files the list must never carry: not a test name, and a listed POSIX-only suite.
+    written["test/helper_0.py"] = guard
+    ignored = [rel for rel in written if rel.startswith("test/") and rel.count("/") == 1][:3]
+    ignore_list = "".join(f"{rel.split('/', 1)[1]}   # POSIX-only\n" for rel in ignored)
+    for rel, text in written.items():
+        _seed(tmp_path / rel, text)
+    _seed(tmp_path / "test" / "windows-collect-ignore.txt", ignore_list)
+
+    monkeypatch.setattr(selector, "_is_windows", lambda: False)
+    named_on_linux = selector.collect("backend", for_windows=True)
+    lines = sorted({name.encode("utf-8") + b"\n" for name in named_on_linux})
+    digest = hashlib.sha256(b"".join(lines)).hexdigest()
+    cased = [name for name in named_on_linux if not Path(name).name.startswith("test_")]
+    assert cased and any(name.endswith((".PY", ".Py")) for name in named_on_linux)
+    assert any("\u00e9" in name for name in named_on_linux)
+    assert not set(ignored) & set(named_on_linux) and "test/helper_0.py" not in named_on_linux
+    # The host's own list is the POSIX one: the case rule is asked for, not inherited.
+    assert not set(cased) & set(selector.collect("backend"))
+
+    # The Windows shard: CRLF working tree, the selector's Windows branch.
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    monkeypatch.setattr(selector, "_is_windows", lambda: True)
+    assert selector.main(["--surface", "backend"]) == 0
+    printed = capsys.readouterr().out.splitlines()
+    assert printed == named_on_linux
+    # Its redirected output is CRLF text; a blank line and a repeat change nothing.
+    rng.shuffle(printed)
+    listed = tmp_path / "backend-targets.txt"
+    listed.write_bytes("".join(f"{name}\r\n" for name in [*printed, "", printed[0]]).encode())
+    on_shard = FileShards(tmp_path, 8, 1, None, read_targets(listed, tmp_path), {})
+    assert on_shard.digest == digest
+    # The same list under a Windows root, joined the Windows way.
+    root = PureWindowsPath("D:/a/KiroCrew/KiroCrew")
+    targets = [root / PureWindowsPath(name.replace("/", "\\")) for name in printed]
+    assert FileShards(root, 8, 3, None, targets, {}).digest == digest
 
 
 def test_windows_seam_follows_os_name(selector, monkeypatch) -> None:
@@ -1073,3 +1156,139 @@ def test_the_suite_has_a_module_that_declares_no_test() -> None:
         "yield an item; a tree where every matching file declares a test leaves this "
         "exemption unexercised and the pin stops measuring it"
     )
+
+
+# -- the fast path answers as the pattern does -------------------------------
+
+
+def _reference(selector, text: str) -> bool:
+    """What the rule means: the pattern, searched over the whole text."""
+    return bool(selector._BACKEND_FOREIGN.search(text))
+
+
+def test_every_alternative_starts_with_its_literal_and_the_pattern_is_built_from_them(
+    selector,
+) -> None:
+    parts = selector._BACKEND_FOREIGN_PARTS
+    joined = "|".join(f"(?:{pattern})" for _literal, pattern in parts)
+    assert selector._BACKEND_FOREIGN.pattern == joined
+    assert selector._BACKEND_FOREIGN.flags & re.IGNORECASE
+    for literal, pattern in parts:
+        # Lower-case ASCII, and a match of the alternative on its own.
+        assert literal == literal.lower() and literal.isascii(), literal
+        whole = re.compile(pattern, re.IGNORECASE).fullmatch(literal)
+        assert whole, f"{pattern!r} does not match its own literal {literal!r}"
+        # No way to match without it: optional or alternative leading text would break the
+        # search for places a match can start.
+        stripped = pattern.replace(r"\b", "")
+        assert stripped.startswith(re.escape(literal)), (literal, pattern)
+        assert not re.search(r"[|()\[\]*+{]", stripped[: len(re.escape(literal))]), pattern
+
+
+def test_the_characters_searched_whole_are_all_that_ignorecase_folds_to_ascii(selector) -> None:
+    letters = re.compile("[a-z]", re.IGNORECASE)
+    folds = {
+        chr(point) for point in range(128, sys.maxunicode + 1) if letters.fullmatch(chr(point))
+    }
+    assert folds == set(selector._FOLDS_TO_ASCII)
+    # Lower-casing keeps every other character in its place.
+    grows = {chr(p) for p in range(sys.maxunicode + 1) if len(chr(p).lower()) != 1}
+    assert grows <= set(selector._FOLDS_TO_ASCII)
+
+
+def _texts_around(literal: str) -> list[str]:
+    """`literal` in each case, at each edge, beside word and non-word characters, cut short,
+    doubled, and with each character IGNORECASE folds to an ASCII letter put in."""
+    cases = {literal, literal.upper(), literal.title(), literal.swapcase()}
+    for fold, plain in (("ſ", "s"), ("K", "k"), ("ı", "i"), ("İ", "i")):
+        cases.update(c.replace(plain, fold) for c in list(cases))
+        cases.update(c.replace(plain.upper(), fold) for c in list(cases))
+    edges = ["", " ", "x", "_", "9", ".", "/", "'", "\n", "é", "İ", "s", "x."]
+    texts = []
+    for case in cases:
+        for before in edges:
+            for after in edges:
+                texts.append(f"{before}{case}{after}")
+                texts.append(f"import os\n{before}{case}{after}\nassert 1\n")
+        texts.append(case[:-1])
+        texts.append(case[1:])
+        texts.append(case + case)
+        texts.append(case[:-1] + " " + case)
+        # A place a match cannot start, then one where it can.
+        texts.append(f"x{case}x {case}")
+    return texts
+
+
+def test_the_fast_path_and_the_pattern_agree_on_every_shape_of_a_mention(selector) -> None:
+    disagree = []
+    yes = no = 0
+    for literal, _pattern in selector._BACKEND_FOREIGN_PARTS:
+        for text in _texts_around(literal):
+            want = _reference(selector, text)
+            yes, no = yes + want, no + (not want)
+            if selector._mentions_backend_foreign(text) != want:
+                disagree.append((literal, text))
+    assert not disagree, disagree[:5]
+    # Both answers are exercised: a test of matches alone would pass a path that says yes.
+    assert yes > 1000 and no > 1000
+    for text in ("", "plain python\n", "x" * 5000, "İ" * 3, "WEBſITE", "Kubernetes"):
+        assert selector._mentions_backend_foreign(text) == _reference(selector, text), text
+
+
+def test_the_fast_path_and_the_pattern_agree_on_every_test_file_of_the_tree(selector) -> None:
+    root = selector._repo_root()
+    seen, disagree, must = 0, [], set()
+    for rel_dir in selector._BACKEND_ROOTS:
+        for path in selector._iter_files(root, rel_dir, selector._BACKEND_GLOBS):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            want = _reference(selector, text)
+            seen += 1
+            if want:
+                must.add(path.relative_to(root).as_posix())
+            if selector._mentions_backend_foreign(text) != want:
+                disagree.append(path.name)
+    assert seen > 1000 and 0 < len(must) < seen
+    assert not disagree, disagree[:5]
+    # And so the list every caller gets is the pattern's, file for file.
+    if not selector._is_windows():
+        assert selector.collect("backend") == sorted(must)
+
+
+# One mention of each kind the backend rule keeps running, and near misses it does not.
+_BACKEND_MENTIONS = (
+    "open('website/src/utils/sanitize')",
+    "ELECTRON_RUN_AS_NODE",
+    "Path('packaging') / 'build-desktop.sh'",
+    "node_modules",
+    "the repo-root skills tree",
+    "['docker', 'run']",
+    "sanitize.ts",
+    "App.tsx",
+    "bench-render.mjs",
+    "Info.plist",
+    "tsconfig.json",
+    "entitlements.mac",
+    "['npm', 'ci']",
+    "vitest.config",
+    "Playwright",
+)
+_BACKEND_NEAR_MISSES = (
+    "import os\n",
+    "skillset",
+    "upskills",
+    "dockerfile",
+    "npmrc",
+    "rows.tsv",
+    "a.mjsx",
+    "a.plists",
+)
+
+
+def test_each_kind_of_mention_keeps_a_backend_file_running(selector) -> None:
+    # As many kinds as the rule has alternatives: one that is dropped leaves a mention unmatched.
+    assert len(_BACKEND_MENTIONS) >= len(selector._BACKEND_FOREIGN_PARTS)
+    for text in _BACKEND_MENTIONS:
+        assert _reference(selector, text) and selector._mentions_backend_foreign(text), text
+    for text in _BACKEND_NEAR_MISSES:
+        assert not _reference(selector, text), text
+        assert not selector._mentions_backend_foreign(text), text

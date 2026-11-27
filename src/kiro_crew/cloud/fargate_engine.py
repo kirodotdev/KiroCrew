@@ -1654,6 +1654,17 @@ class FargateLaunchEngine:
             logger.warning("fargate bound sweep: %s", plan.warning)
         return plan
 
+    def resource_exists(self, *, tag: str, profile: str, region: str) -> bool:
+        """Whether any task this launch started is listed; raises when ECS cannot say."""
+        return bool(
+            self._sightings(
+                cluster=self._require_spec().placement.cluster,
+                profile=profile,
+                region=region,
+                started_by=_started_by_for(tag),
+            )
+        )
+
     def teardown(self, *, tag: str, profile: str, region: str) -> bool:
         """Stop the tasks this launch owns, and confirm only when nothing of ours
         may remain.

@@ -253,13 +253,13 @@ def test_a_deny_kas_carries_records_nothing() -> None:
 
 
 def test_an_unreadable_uncarried_deny_refuses_nothing_and_is_named() -> None:
-    """``a|b`` is outside what Crew reads as wide as kiro-cli: it refuses nothing, as
-    before, and the notice names it as not refused. The readable entry beside it
-    still refuses, and is not named."""
+    """A repeated alternation is outside what Crew reads as wide as kiro-cli and
+    has no glob: it refuses nothing, as before, and the notice names it as not
+    refused. The readable entry beside it still refuses, and is not named."""
     from kiro_crew.agent_sdk.spec_hooks import spec_keys_notice
 
     spec = {
-        "toolsSettings": {"shell": {"deniedCommands": ["curl|wget", r"docker\s+push.*"]}},
+        "toolsSettings": {"shell": {"deniedCommands": ["(curl|wget)+", r"docker\s+push.*"]}},
     }
     out, grant = _project(**spec)
     assert grant is not None and grant.denied_commands == (r"docker\s+push.*",)
@@ -270,21 +270,25 @@ def test_an_unreadable_uncarried_deny_refuses_nothing_and_is_named() -> None:
     )
     decoded = [json.loads(item)["deniedCommand"] for item in lost]
     assert {(item["entry"], item["conditional"]) for item in decoded} == {
-        ("curl|wget", False),
+        ("(curl|wget)+", False),
         (r"docker\s+push.*", True),
     }
     notice = spec_keys_notice("a", lost)
-    assert "curl|wget" in notice and "is not refused" in notice
+    assert "(curl|wget)+" in notice and "is not refused" in notice
     assert "It does not judge any other command" in notice
     assert "a newline, a trailing &, a tab, a ( ) group" in notice
     assert "so such a command runs without a refusal." in notice
     assert "docker" not in notice.split("have no effect")[0]
 
 
-@pytest.mark.parametrize("regex", [r"^.*>.*\.kiro/.*$", ".*>.*", ".*<.*", "cat <.*"])
+@pytest.mark.parametrize(
+    "regex",
+    [r"^.*>.*\.kiro/.*$", ".*>.*", ".*<.*", "cat <.*", r".*\x3e.*", r"curl .*\x7c *sh"],
+)
 def test_a_redirect_deny_refuses_nothing_and_is_named(regex: str) -> None:
     """The row judges a plain command and each command of a chain, never a redirect,
     so a deny aimed at a redirect could never refuse: it is not recorded, and the notice names it as not refused.
+    So is one naming such a character by a ``\\x`` escape (``\\x3e``, ``\\x7c``).
     """
     from kiro_crew.acp.kas_spec_denies import uncarried_denied_commands
     from kiro_crew.agent_sdk.spec_hooks import spec_keys_notice
@@ -317,7 +321,7 @@ def test_a_carried_dollar_anchored_deny_is_not_named_beside_an_uncarried_one() -
     """``git push.*$`` reaches KAS as ``git push*``; only the entry neither KAS nor
     the gate enforces may be named."""
     spec = {
-        "toolsSettings": {"shell": {"deniedCommands": ["git push.*$", "curl|wget"]}},
+        "toolsSettings": {"shell": {"deniedCommands": ["git push.*$", "(curl|wget)+"]}},
     }
     lost = kas_agents.spec_keys_without_carrier(
         {"name": "a", **spec}, translates_tools_settings=True
@@ -325,7 +329,7 @@ def test_a_carried_dollar_anchored_deny_is_not_named_beside_an_uncarried_one() -
     assert len(lost) == 1
     item = json.loads(lost[0])["deniedCommand"]
     assert item["key"] == "toolsSettings.shell.deniedCommands"
-    assert item["entry"] == "curl|wget" and item["conditional"] is False
+    assert item["entry"] == "(curl|wget)+" and item["conditional"] is False
 
 
 def test_readable_entries_past_the_bound_are_named_as_not_refused() -> None:
@@ -394,7 +398,15 @@ def test_an_uncarried_deny_refuses_each_command_of_a_chain_not_a_substitution(
     assert (tier == "spec-denies") is refused
 
 
-@pytest.mark.parametrize("entry", [r"^docker\s+push.*$", r"\Adocker\s+push.*\z"])
+@pytest.mark.parametrize(
+    "entry",
+    [
+        r"^docker\s+push.*$",
+        r"\Adocker\s+push.*\z",
+        r"^docker\x20push.*$",
+        r"^docker[ \t\n]+push.*$",
+    ],
+)
 def test_an_anchored_uncarried_deny_is_recorded_and_refuses(entry: str) -> None:
     """kiro-cli anchors every entry itself, so an explicit anchor is no redirect or
     separator: the entry is recorded and refuses what it names."""

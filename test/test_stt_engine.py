@@ -117,7 +117,10 @@ def test_is_present_requires_the_exact_pinned_size(monkeypatch, tmp_path):
     path = tmp_path / model.filename
     path.write_bytes(b"x" * 10)
     assert not models.is_present(model)
-    path.write_bytes(b"x" * model.size_bytes)
+    # Only the size is checked, so a sparse file stands in for the model without
+    # holding its full size in memory.
+    with open(path, "r+b") as f:
+        f.truncate(model.size_bytes)
     assert models.is_present(model)
 
 

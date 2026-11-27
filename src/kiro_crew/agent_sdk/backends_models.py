@@ -374,6 +374,16 @@ ULTRACODE_CONFIG_OPTION_ID = "ultracode"
 # mode switch".
 ACP_BACKENDS_FAST_MODE_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE})
 
+# Backends whose session offers the ``approveForMe`` option Crew sets: the engine
+# approves tool calls on its own (``acp/kas_approve_for_me.py``). Not kiro-cli's own
+# engine: it declares no such option to Crew, so Crew holds the switch off there.
+# KAS 0.66.111 (kiro-cli 3.4.0's relay): spawned with the classifier switch off,
+# session/new lists no option and a shell call asks
+# (acp_frames/kas/approve-for-me-off-live.jsonl); with it enforced the option is
+# listed, written on, and the call runs unasked with
+# ``_meta.kiro.trustClassifierApproved`` (acp_frames/kas/approve-for-me-on-live.jsonl).
+ACP_BACKENDS_APPROVE_FOR_ME = frozenset({ACP_BACKEND_KAS})
+
 #: The ``configId`` of that switch.
 FAST_MODE_CONFIG_OPTION_ID = "fast"
 
@@ -745,6 +755,27 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
 #: picker offers ``auto`` and the model Kiro Crew's settings name for it, and an id
 #: another harness's catalog owns is refused rather than relaunched on.
 ACP_BACKENDS_MODEL_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
+
+#: Backends on which ONE process can run each of its sessions on its own model,
+#: because the model request names the session it is for. A sub-agent given a
+#: session on its parent's process can then be put on its own pin there
+#: (``apply_configured_model``); on a non-member a pin needs a process of its own,
+#: which is what the sub-agent start gives it.
+#:
+#: Opt-in, like every capability set, and a SEPARATE claim from the two channel
+#: sets above: those say which request switches a model, this says the switch
+#: reaches one session of a process that hosts several. kiro-cli is a member on
+#: ``session/set_model`` and codex on ``session/set_config_option``: both requests
+#: carry the ``sessionId`` (``AcpSessionHandle.set_model``), and both harnesses
+#: host a parent and its sub-agents on one process (``ACP_BACKENDS_SESSION_SHARING``).
+#: KAS is a member: the engine writes a model to the addressed session's own state,
+#: so two sessions of one process run on two models (measured on ``@kiro/agent``
+#: 0.66.127, one session switched to another model while its sibling kept its
+#: own). It is read only for a parent whose process may host sub-agents
+#: (``ACP_BACKENDS_SESSION_SHARING`` plus ``acp.kas_subagent_sharing``).
+ACP_BACKENDS_MODEL_PER_SESSION: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_KIRO, ACP_BACKEND_CODEX, ACP_BACKEND_KAS}
+)
 
 #: Backends that take their reasoning effort as a LAUNCH argument, by the same
 #: mechanism: the Strands CLI reads ``--effort`` when it starts, so a level is

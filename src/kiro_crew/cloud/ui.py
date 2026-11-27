@@ -8,12 +8,17 @@ the same code works interactively and under ``curl | bash`` / CI.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import threading
 import time
 from typing import Optional
 
 _ENABLE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+# A spinner up this long adds the elapsed time to its line, so a long wait never looks hung.
+_ELAPSED_AFTER_SECS = 30
+# Indirection so tests can drive the spinner's clock.
+_now = time.monotonic
 
 
 def _c(code: str) -> str:
@@ -60,15 +65,15 @@ def info(msg: str) -> None:
 
 
 def ok(msg: str) -> None:
-    print(f"  {GREEN}✓{RESET} {msg}", flush=True)
+    print(f"  {GREEN}OK{RESET} {msg}", flush=True)
 
 
 def warn(msg: str) -> None:
-    print(f"  {YELLOW}⚠{RESET} {msg}", flush=True)
+    print(f"  {YELLOW}Warning:{RESET} {msg}", flush=True)
 
 
 def fail(msg: str) -> None:
-    print(f"  {RED}✗{RESET} {msg}", flush=True)
+    print(f"  {RED}Error:{RESET} {msg}", flush=True)
 
 
 def detail(msg: str) -> None:
@@ -123,7 +128,7 @@ def _choose_prompt(title: str, options: list[tuple[str, str]], default_index: in
     """Numbered fallback picker for non-TTY input."""
     print(f"  {BOLD}{title}{RESET}")
     for i, (label, sub) in enumerate(options):
-        marker = f"{GREEN}◉{RESET}" if i == default_index else f"{DIM}○{RESET}"
+        marker = f"{GREEN}(*){RESET}" if i == default_index else f"{DIM}( ){RESET}"
         star = f" {GREEN}(recommended){RESET}" if i == default_index else ""
         print(f"    {marker} {BOLD}{label}{RESET}{star}")
         if sub:
@@ -204,7 +209,7 @@ def _choice_lines(title: str, options: list[tuple[str, str]], selected: int) -> 
         f"    {DIM}Use ↑/↓ and Enter, or press 1-{len(options)}.{RESET}",
     ]
     for i, (label, sub) in enumerate(options):
-        marker = f"{GREEN}◉{RESET}" if i == selected else f"{DIM}○{RESET}"
+        marker = f"{GREEN}(*){RESET}" if i == selected else f"{DIM}( ){RESET}"
         star = f" {GREEN}(recommended){RESET}" if i == selected else ""
         lines.append(f"    {marker} {BOLD}{label}{RESET}{star}")
         if sub:
@@ -264,15 +269,24 @@ class Spinner:
             info(self.msg)
         return self
 
+    def _line(self, waited: float) -> str:
+        if waited < _ELAPSED_AFTER_SECS:
+            return self.msg
+        mins, secs = divmod(int(waited), 60)
+        line = f"{self.msg} {mins}:{secs:02d} elapsed"
+        # The 4-column prefix and the line must leave 3+ columns free: a wrap adds a row per redraw.
+        return line if len(line) + 6 < shutil.get_terminal_size().columns else self.msg
+
     def _spin(self) -> None:
         i = 0
+        started = _now()
         while not self._stop.is_set():
             frame = self._FRAMES[i % len(self._FRAMES)]
-            sys.stdout.write(f"\r  {DIM}{frame}{RESET} {self.msg}")
+            sys.stdout.write(f"\033[2K\r  {DIM}{frame}{RESET} {self._line(_now() - started)}")
             sys.stdout.flush()
             i += 1
             time.sleep(0.1)
-        sys.stdout.write("\r" + " " * (len(self.msg) + 6) + "\r")
+        sys.stdout.write("\033[2K\r")
         sys.stdout.flush()
 
     def update(self, msg: str) -> None:

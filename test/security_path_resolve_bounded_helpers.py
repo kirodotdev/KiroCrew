@@ -2,6 +2,7 @@
 
 ``test_security_path_resolve_bounded.py`` and its ``_child`` sibling import these by name:
 the fixture that resets the resolver's state and scales its budgets down for every test,
+the helper that lifts them again for a test that needs a real resolution to finish,
 the shipped budgets and the real classifier of the sampled ``/proc`` syscall, captured
 before it stubs them, and a resolver that stalls the way a wedged child does.
 """
@@ -17,6 +18,7 @@ import pytest
 import kiro_crew.executors as ex
 from kiro_crew import security
 from kiro_crew.subprocess_pool import SubprocessPoolTimeout
+from kiro_crew.testing.wait import default_timeout
 
 # Captured BEFORE the autouse fixture below can stub it.  The fixture replaces this
 # helper for every test in the files that import it, so a test that wants to exercise
@@ -59,6 +61,16 @@ def _fresh_resolver_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # Drop the pool so a child a test left in an odd state cannot leak into the
     # next test's timing.
     ex.shutdown_maintenance_executor()
+
+
+def _lift_resolver_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lift the fixture's 0.2 s budgets to the lost-run bound so a REAL resolution can finish.
+
+    No stall double may run while they are lifted: call it after the stall, or scope it with
+    ``monkeypatch.context()``.
+    """
+    monkeypatch.setattr(security, "_PATH_RESOLVE_TIMEOUT_SECS", default_timeout())
+    monkeypatch.setattr(security.paths, "_PATH_RESOLVE_REBUILD_TIMEOUT_SECS", default_timeout())
 
 
 def _stall_like_a_child() -> None:

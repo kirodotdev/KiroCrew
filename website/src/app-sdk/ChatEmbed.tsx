@@ -53,6 +53,8 @@ import { useRef, useCallback, useEffect, useMemo, useState, type ReactNode } fro
 import { useQuery, useMutation, useQueryClient, focusManager } from '@tanstack/react-query'
 import { Loader2, Paperclip } from 'lucide-react'
 import ChatMessageList, { type VirtualTranscriptHandle } from './ChatMessageList'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
+import { useUserRowSpeaker } from '../pages/chat/shared-crew/MessageByline'
 import ErrorNotice from '../components/ErrorNotice'
 import { FilePreviewStrip } from '../components/chat-input/FilePreviewStrip'
 import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
@@ -78,6 +80,8 @@ import { sendEmbedStop } from './embedStopTransport'
 import { StopControls } from '../components/chat-input/StopControls'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useAppApi, useAppInfo } from './index'
+import { permissionRowTarget } from '../types/approvalTarget'
+import { noPendingApprovalError } from '../api/apiError'
 import { appApiSendWire } from './appSendWire'
 import { sendTurn, mintSendId } from '../chat-core/transport/sendTurn'
 import { Composer, type ComposerCapabilities } from '../chat-core/composer/Composer'
@@ -93,6 +97,7 @@ import { drainEmbedRecovery, stashEmbedRecovery, subscribeEmbedRecovery, type Pe
 import { retireSendTail, sendTailProof, hostProofBaseline, calmLineHolds, isOwnUserRow, rowKey, type HostSendProof, type SendTail } from './embedSendTails'
 import { embedReadPath, isEmbedCursor, mergeEmbedRead, type EmbedCursor } from './embedIncrementalRead'
 import { useSlotPush } from './slotPush'
+import { useEmbedSlotRead } from './embedSlotRead'
 import type { ChatMessage } from '../types'
 import type { ChatEmbedHideKey } from './chatEmbedHide'
 import type { MessageRenderer } from './messageRenderers'
@@ -460,6 +465,7 @@ function ChatEmbed({
   // below — a deliberate smooth scroll to each NEW MESSAGE regardless of
   // position.
   const listRef = useRef<VirtualTranscriptHandle | null>(null)
+  const transcriptScrollerRef = useRef<HTMLDivElement | null>(null)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const scrollToBottom = useCallback(() => { listRef.current?.scrollToBottom() }, [])
 
@@ -639,6 +645,7 @@ function ChatEmbed({
   }, [refetch])
 
   const serverMessages = shown?.messages ?? EMPTY_MESSAGES
+  useEmbedSlotRead(slotKey, serverMessages, dataUpdatedAt, hostActive, transcriptScrollerRef)
 
   const running = !stalled && (shown?.running ?? false)
   // A stale page's half-written reply must not keep its live caret: render
@@ -804,6 +811,23 @@ function ChatEmbed({
     () => shownTails.length === 0 ? messages : [...messages, ...shownTails.map(t => ({ role: t.role, content: t.content, cls: '' }))],
     [messages, shownTails],
   )
+  // Text for the transcript's one live region, the same decision ChatPage makes,
+  // with one difference. The embed polls, and the server sends a `streaming`
+  // row only while chunks are uncollapsed, so a reply that finishes between two
+  // polls goes straight from the user's row to `assistant` and is never seen
+  // streaming. The slot's `running` flag spans the whole turn, so its true ->
+  // false edge is the landing the embed can always see. Both are read off the
+  // page the server last sent, not off the stall's rewrite of it: a stalled
+  // poll relabels a half-written reply as settled and drops `running`, and
+  // reading those would announce the cut-off text as a finished answer.
+  // Send-recovery rows (`shownTails`) are not part of this tail: the embed
+  // speaks them through its own status region below, and reading them here too
+  // would announce one failure twice.
+  const embedTail = announcementTail(messages)
+  const embedStreaming = serverMessages[serverMessages.length - 1]?.role === 'streaming' || (shown?.running ?? false)
+  const embedApprovals = useMemo(() => pendingApprovalsOf(messages), [messages])
+  const embedUserSpeaker = useUserRowSpeaker(embedTail?.meta ?? undefined, slotKey, embedTail?.content)
+  const { announcement, announceSent } = useTranscriptAnnouncement(embedTail, embedStreaming, undefined, slotKey, embedApprovals, messages.length, embedUserSpeaker, shown != null)
   /** Latest rendered draft, for the async send path to read at settle time
    *  instead of a value closed over at render. */
   const draftRef = useRef(draft)
@@ -1223,8 +1247,11 @@ function ChatEmbed({
       text: msg,
       before,
     }])
+    // Spoken at the send, as on ChatPage: a user row at the tail is also what a
+    // still-running session looks like on first load.
+    announceSent(msg)
     sendMutation.mutate({ msg, meta, files, resized, sentPastes, draftText, override: override != null, sendId, slot: slotKey, steer: steerWhileBusy, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
-  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, steerWhileBusy, attachments, closePickers, pastes, armRefocus])
+  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, steerWhileBusy, attachments, closePickers, pastes, armRefocus, announceSent])
 
   const pickerLabel = attachments.uploading
     ? i18nT('appSdk.chatEmbed.uploading_files')
@@ -1301,15 +1328,32 @@ function ChatEmbed({
   // approve|reject, so mapping 'trust' onto it silently downgraded a Trust click
   // to a one-shot approve: the card said "Trusted" and the very next tool call
   // prompted again. POST /api/chat/slots/{slot}/approve carries the decision
-  // verbatim plus the request_id, so trust sets the owner slot's policy.
+  // verbatim, so trust sets the owner slot's policy.
+  //
+  // Every decide is bound to the card's row: it names the row's native target
+  // (`origin: 'native'`, the request id and the row's `request_mid`), the form
+  // the route resolves only while that very request is pending. The id alone
+  // recurs, so a card left up for request A would decide a later request B that
+  // took A's id. A row with no native target (no `mid`, or a row the coordinator
+  // injected, which an app token never resolves) sends nothing and is refused
+  // the way a retired request is, so the row rolls back to "no longer pending".
   //
   // Requires the host app to grant '/api/chat' in its allowedApiPaths.
-  const approveMutation = useMutation({
-    mutationFn: ({ id, decision }: { id: string; decision: string }) =>
-      api.post(`/api/chat/slots/${encodeURIComponent(slotKey)}/approve`, {
+  const decideRow = useCallback(
+    (decision: string, meta: Record<string, unknown> | undefined) => {
+      const target = permissionRowTarget(meta, slotKey)
+      if (!target || target.origin !== 'native') return Promise.reject(noPendingApprovalError())
+      return api.post(`/api/chat/slots/${encodeURIComponent(slotKey)}/approve`, {
         action: decision,
-        request_id: id,
-      }),
+        origin: 'native',
+        request_id: target.id,
+        request_mid: target.mid,
+      })
+    },
+    [api, slotKey],
+  )
+  const approveMutation = useMutation({
+    mutationFn: ({ decision, meta }: { decision: string; meta?: Record<string, unknown> }) => decideRow(decision, meta),
     onSettled: () => { void refetch() },
   })
 
@@ -1317,36 +1361,32 @@ function ChatEmbed({
   // approval row's rollback (CollapsibleToolGroup.submitDecision catches it and
   // restores the buttons). mutate() returns void, so a failed POST would leave
   // the row optimistically resolved while the agent stays parked on the
-  // undelivered decision, with no retry path.
+  // undelivered decision, with no retry path. The id comes from the row's own
+  // meta (the target), so the list's id argument is not read.
   const approve = useCallback(
-    (approvalId: string, decision: string) => approveMutation.mutateAsync({ id: approvalId, decision }),
+    (_approvalId: string, decision: string, meta?: Record<string, unknown>) => approveMutation.mutateAsync({ decision, meta }),
     [approveMutation],
   )
 
   // Batch resolver (Req 4.1-4.4): apply one decision to every pending approval
-  // in a group. Each id goes through the SAME slot-scoped approve endpoint the
-  // single path uses (POST /api/chat/slots/{slot}/approve with request_id) —
-  // Task 4 mandates the slot-scoped path for batches, never the bare id-scoped
-  // one-shot resolve (which matches slot futures by bare id with no session
-  // check). Uses allSettled, NOT a fail-fast loop: a call whose verdict changed
-  // between surfacing and resume (Req 4.3-4.4) is surfaced as an excluded
-  // rejection instead of aborting the batch with earlier ids already approved.
-  // Rejects (so the row rolls back) only if EVERY call failed; a partial
-  // success settles as resolved and refetch reconciles the still-pending rows.
+  // in a group. Each row goes through the SAME row-bound slot decide the single
+  // path uses (`decideRow`, with the row's own meta, aligned 1:1 with the ids)
+  // — Task 4 mandates the slot-scoped path for batches, never the bare
+  // id-scoped one-shot resolve. Uses allSettled, NOT a fail-fast loop: a call
+  // whose verdict changed between surfacing and resume (Req 4.3-4.4), or a row
+  // with no target, is surfaced as an excluded rejection instead of aborting
+  // the batch with earlier ids already approved. Rejects (so the row rolls
+  // back) only if EVERY call failed; a partial success settles as resolved and
+  // refetch reconciles the still-pending rows.
   const approveBatch = useCallback(
-    async (approvalIds: string[], decision: string) => {
-      const results = await Promise.allSettled(
-        approvalIds.map(id => api.post(`/api/chat/slots/${encodeURIComponent(slotKey)}/approve`, {
-          action: decision,
-          request_id: id,
-        })),
-      )
+    async (approvalIds: string[], decision: string, metas?: Record<string, unknown>[]) => {
+      const results = await Promise.allSettled(approvalIds.map((_id, i) => decideRow(decision, metas?.[i])))
       void refetch()
       const rejected = results.filter(r => r.status === 'rejected')
       if (rejected.length === approvalIds.length) throw (rejected[0] as PromiseRejectedResult).reason
       return results
     },
-    [api, slotKey, refetch],
+    [decideRow, refetch],
   )
 
   return (
@@ -1398,6 +1438,8 @@ function ChatEmbed({
           handOff={false}
           transcript={{
             sessionId: `embed:${slotKey}`,
+            scrollerRef: transcriptScrollerRef,
+            announcement,
             followOutput: !!startAtBottom,
             initialPlacement: startAtBottom ? 'bottom' : 'top',
             onAtBottomChange: setIsAtBottom,

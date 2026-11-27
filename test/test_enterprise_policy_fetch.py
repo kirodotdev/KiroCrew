@@ -1259,8 +1259,23 @@ class TestOss:
 
 
 class TestBatchOneRevision:
-    def test_the_revision_names_the_skill_name_translation(self):
-        assert epf.TRANSLATION_REVISION == "t5"
+    def test_the_revision_names_the_web_ask_translation(self):
+        assert epf.TRANSLATION_REVISION == "t6"
+
+    def test_a_t5_cache_is_refetched_and_reads_the_web_ask(self, enterprise, vault, cps):
+        """A ``t5`` copy had no ``unattended_web_tools`` record; it is refetched."""
+        vault()
+        cps.reply = _envelope("rules:\n  - {capability: web_fetch, effect: ask}\n")
+        fresh = epf.fetch(_request())
+        scope = fresh.etag.partition(":")[0]
+        t5_etag = f"{scope}:t5/{epf.cached_version(fresh.etag)}"
+        assert epf.cached_version(t5_etag) == ""
+        again = epf.fetch(_request(t5_etag))
+        assert not again.not_modified
+        assert json.loads(again.body)["unattended_web_tools"] == {
+            "mode": "deny",
+            "deny": ["web_fetch"],
+        }
 
     def test_a_t4_cache_is_refetched_and_reads_the_skill_name(self, enterprise, vault, cps):
         """A ``t4`` copy turned skill install off for a named deny; it is refetched."""

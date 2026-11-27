@@ -34,8 +34,10 @@ _MODES = ("standard", "cc", "strict")
 _PREFIXES = (".kiro/crew", ".kirocrew")
 
 
-#: The real shipped-manifest reader, for the one test that pins what the built-ins declare.
+#: The real shipped-manifest reader, for the one test that pins what the built-ins declare,
+#: and the real reader of what a pin row froze for a deleted copy, the rest of that leg.
 _SHIPPED_MANIFESTS = credential_masks._builtin_manifests
+_FROZEN_DECLARATIONS = credential_masks._frozen_builtin_declarations
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +46,7 @@ def _fresh_cache(_floor_monkeypatch):
     # Every other case reads only the manifests it writes, not what the built-ins ship.
     # The floor's own patcher, so a test's ``monkeypatch.undo()`` cannot lift it.
     _floor_monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
+    _floor_monkeypatch.setattr(credential_masks, "_frozen_builtin_declarations", lambda _kind: [])
     yield
     credential_masks.clear_cache()
 
@@ -165,8 +168,12 @@ class TestManifest:
 
 class TestWhereDeclarationsAreRead:
     def test_the_shipped_built_ins_declare_exactly_the_notes_state_directory(self, monkeypatch):
-        """Notes keeps its token, registry and settings in a masked directory of its own."""
+        """Notes keeps its token, registry and settings in a masked directory of its own.
+
+        Whether its wheel copy ships or its pin row froze the copy a release deleted.
+        """
         monkeypatch.setattr(credential_masks, "_builtin_manifests", _SHIPPED_MANIFESTS)
+        monkeypatch.setattr(credential_masks, "_frozen_builtin_declarations", _FROZEN_DECLARATIONS)
         assert credential_masks.declared_masks(installed=False) == {"md-notebook": ("state/",)}
 
     def test_an_installed_app_declares_leaves_under_its_own_data_dir(self, home):
@@ -328,7 +335,7 @@ class TestThePlanHidesTheDeclaredLeaves:
             sandbox_plan.BACKEND_NAMESPACE, "standard", extra_visible_dirs=lifted
         )
 
-        pins = set(agent.runtime_ancestor_guards)
+        pins = set(agent.runtime_ancestor_guards) | set(agent.mask_parent_pins)
         for parent in ("apps", "apps/demo", "apps/demo/data", "apps/demo/data/tokens"):
             assert str(home / parent) in pins, f"an agent can rename {parent}"
         tokens = str(home / "apps" / "demo" / "data" / "tokens")
@@ -336,6 +343,101 @@ class TestThePlanHidesTheDeclaredLeaves:
         # The move-aside spelling is not handed back, so it stays pinned there too.
         staged = str(home / "apps" / ".demo-data-tmp" / "tokens")
         assert staged in pins and staged in set(backend.runtime_ancestor_guards)
+
+    @pytest.mark.parametrize("mode", _MODES)
+    def test_namespace_pins_the_app_folder_after_the_masks(self, home, mode):
+        """Only ``apps/<app>`` moves to the after-mask pins; every folder stays pinned.
+
+        A keep-data uninstall or an install over kept data replaces ``apps/<app>`` and
+        renames ``data/`` into the new one, so a
+        mask or a ``data/`` pin placed through a pin of the old folder would be left
+        behind. The app folder is pinned after the masks instead; the set of pinned
+        folders is the same as with every pin bound before them.
+        """
+        _install(home, "demo", ["tokens/oauth.json"])
+        (home / "apps" / "demo" / "data" / "tokens").mkdir()
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, mode)
+
+        before_masks = set(plan.runtime_ancestor_guards)
+        apps = str(home / "apps")
+        app_dir = str(home / "apps" / "demo")
+        assert app_dir in plan.mask_parent_pins and app_dir not in before_masks
+        for rel in ("apps/demo/data", "apps/demo/data/tokens"):
+            assert str(home / rel) in before_masks and str(home / rel) not in plan.mask_parent_pins
+        assert apps in before_masks and apps not in plan.mask_parent_pins
+        # One level: nothing in the after-mask list sits above another one of it.
+        for pin in plan.mask_parent_pins:
+            assert not any(o.startswith(pin + os.sep) for o in plan.mask_parent_pins)
+        # Only the entries: the declared leaf itself is masked, not pinned.
+        for target in _targets("apps/demo/data/tokens/oauth.json"):
+            assert target not in before_masks and target not in plan.mask_parent_pins
+
+    @_POSIX_ONLY
+    def test_a_linked_spelling_of_the_app_folder_is_pinned_after_the_masks_too(self, home):
+        """A guard is matched by the folder it resolves to, not by its spelling.
+
+        ``~/.kirocrew`` linked to the data home reaches ``apps/demo`` under a second name;
+        pinned before the masks, that spelling would hold the masks on the old folder.
+        Only one spelling per folder is bound, since either one refuses the rename.
+        """
+        _install(home, "demo", ["secrets.json"])
+        (Path.home() / ".kirocrew").symlink_to(home)
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+
+        app_dir = os.path.realpath(home / "apps" / "demo")
+        before = [g for g in plan.runtime_ancestor_guards if os.path.realpath(g) == app_dir]
+        after = [g for g in plan.mask_parent_pins if os.path.realpath(g) == app_dir]
+        assert before == [], "a spelling of the app folder is still pinned before the masks"
+        assert len(after) == 1, after
+
+    def test_an_app_named_data_has_its_folder_pinned_after_the_masks(self, home):
+        """``apps/data/data/<entry>``: the folder is read from the fixed components."""
+        _install(home, "data", ["secrets.json"])
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        app_dir = str(home / "apps" / "data")
+        assert app_dir in plan.mask_parent_pins
+        assert app_dir not in plan.runtime_ancestor_guards
+
+    @_POSIX_ONLY
+    def test_a_link_into_the_app_folder_stays_pinned_before_the_masks(
+        self, home, tmp_path, monkeypatch
+    ):
+        """A link entry is pinned as itself, so it is never folded into the folder's pin.
+
+        Dropped, the link could be retargeted, and the next spawn would seal whatever it
+        then names instead of the operator's directory behind it.
+        """
+        _install(home, "demo", ["secrets.json"])
+        (home / "apps" / "demo" / "trust").mkdir()
+        link = tmp_path / "app-link"
+        link.symlink_to(home / "apps" / "demo")
+        monkeypatch.setattr(
+            sandbox, "configured_readonly_layer", lambda: ((str(link / "trust"),), ())
+        )
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        assert str(link) in plan.runtime_ancestor_guards, "the link can be retargeted"
+        assert str(link) not in plan.mask_parent_pins
+        assert str(home / "apps" / "demo") in plan.mask_parent_pins
+
+    def test_namespace_pins_no_app_folder_after_the_masks_without_a_declaration(self, home):
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        assert plan.mask_parent_pins == ()
+
+    def test_seatbelt_plan_has_no_after_mask_pins(self, home):
+        _install(home, "demo", ["secrets.json"])
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_SEATBELT, "standard")
+        assert plan.mask_parent_pins == ()
+
+    @_POSIX_ONLY
+    def test_namespace_launcher_payload_carries_the_app_folder_pin(self, home):
+        """The app folder reaches the launcher in its own list, apart from the seal parents."""
+        _install(home, "demo", ["secrets.json"])
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        payload = sandbox_plan.namespace_payload(plan)
+        app_dir = str(home / "apps" / "demo")
+        assert app_dir in payload["mask_parent_pins"]
+        assert app_dir not in payload["parent_pins"]
+        assert str(home / "apps" / "demo" / "data") in payload["parent_pins"]
 
     def test_the_lifecycle_staging_spelling_is_masked_too(self, home):
         _install(home, "demo", ["secrets.json"])
@@ -646,20 +748,27 @@ class TestTheMasksOutliveTheManifestBesideTheData:
 
         self._install_app(tmp_path / "v1", ["secrets.json"])
         (app_home / "apps" / ".demo-credential-masks.json").unlink()
-        seen: list[tuple[bool, tuple[str, ...]]] = []
-        real_copy = manager._copy_app_tree
+        seen: list[tuple[bool, bool, tuple[str, ...]]] = []
+        real_move_in = manager._move_in_new_entries
 
-        def copy_and_look(source, dest):
-            staged = app_home / "apps" / ".demo-data-tmp"
-            seen.append((staged.is_dir(), credential_masks.declared_crew_leaves()))
-            real_copy(source, dest)
+        def look_and_move_in(new, dest, moved_in):
+            app = app_home / "apps" / "demo"
+            seen.append(
+                (
+                    (app / "app.json").exists(),
+                    (app / "data").is_dir(),
+                    credential_masks.declared_crew_leaves(),
+                )
+            )
+            real_move_in(new, dest, moved_in)
 
-        monkeypatch.setattr(manager, "_copy_app_tree", copy_and_look)
+        monkeypatch.setattr(manager, "_move_in_new_entries", look_and_move_in)
         source = _make_app_source(tmp_path / "v2", name="demo", version="2.0.0")
         assert update_app(source).ok
 
-        # While the old manifest is gone and the new one not yet copied, the data waits
-        # aside and is masked there; the new manifest declares nothing, so the record goes.
-        assert seen == [(True, _leaves("demo", "secrets.json"))]
+        # While the old manifest is gone and the new one not yet in, the data stays in
+        # place and is masked there; the new manifest declares nothing, so the record goes.
+        assert seen == [(False, True, _leaves("demo", "secrets.json"))]
+        assert not (app_home / "apps" / ".demo-data-tmp").exists()
         assert not (app_home / "apps" / ".demo-credential-masks.json").exists()
         assert credential_masks.declared_masks() == {}

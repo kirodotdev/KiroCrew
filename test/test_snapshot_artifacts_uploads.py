@@ -495,7 +495,9 @@ class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
         with tarfile.open(bundle, "w:gz") as tf:
             tf.add(str(payload), arcname=payload.name)
 
-        witness = home / snap.COMPONENTS[comp].trees[0] / "witness.md"
+        # `named-workspaces` has no static tree; its trees are named workspace folders.
+        tree = (snap.COMPONENTS[comp].trees or ("workspace-proj",))[0]
+        witness = home / tree / "witness.md"
         witness.parent.mkdir(parents=True, exist_ok=True)
         witness.write_text("the live copy")
         assert (
@@ -600,7 +602,7 @@ class TestMergeDoesNotRestoreTheseComponents:
 
     def test_the_declaration_matches_what_merge_does(self):
         routed = set(snap._REPLACE_ONLY_COMPONENTS)
-        assert routed == {"artifacts", "uploads"}
+        assert routed == {"artifacts", "uploads", "members"}
         assert routed <= set(snap._WHOLE_TREE_COMPONENTS), "a replace-only component is a tree"
         assert routed <= set(snap.COMPONENTS)
 

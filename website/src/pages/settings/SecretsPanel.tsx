@@ -854,10 +854,11 @@ function ItemPane({
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-danger-subtle bg-danger-subtle px-3 py-2">
           <SecretInUseNote name={item.name} />
           <span className="text-[13px] text-danger">{i18nT('settings.secrets.delete_confirm', { name: item.name })}</span>
-          <Btn danger onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
+          {/* The stock Btn is transparent, so on the danger tint it has no edge until hovered. */}
+          <Btn danger onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending} className="border-border-strong bg-bg-elevated">
             {i18nT('settings.secrets.delete')}
           </Btn>
-          <Btn ref={deleteCancelRef} onClick={cancelDelete} disabled={deleteMutation.isPending}>
+          <Btn ref={deleteCancelRef} onClick={cancelDelete} disabled={deleteMutation.isPending} className="border-border-strong bg-bg-elevated">
             {i18nT('settings.secrets.cancel')}
           </Btn>
         </div>

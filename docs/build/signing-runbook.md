@@ -230,9 +230,15 @@ account. Custody rules:
   `password` and `team_id`. It is never a GitHub secret and never a workflow env
   literal: a dedicated secret store gives custody, an audit trail, and a rotation
   lifecycle that a repository secret does not.
-- **Local copy: the macOS Keychain**, via
-  `xcrun notarytool store-credentials "KiroCrewNotary" ...`. Every local command
-  then uses `--keychain-profile "KiroCrewNotary"`.
+- **Local copy: the macOS Keychain**, stored once under a keychain profile name
+  you pick, and passed to every later local command:
+
+  ```sh
+  xcrun notarytool store-credentials "KiroCrewNotary" ...
+  # every later local command then passes:
+  #   --keychain-profile "KiroCrewNotary"
+  ```
+
 - **Never paste the password** into chat, tickets, docs, or a shell command line
   that lands in a shared log. Type it only into the Apple portal, into
   `store-credentials` in your own terminal, or into the Secrets Manager console
@@ -272,8 +278,13 @@ whenever convenient, and not urgent while the password path works.
 
 ## Troubleshooting
 
-**Notarization returns `Invalid`.** Pull the itemized log with
-`xcrun notarytool log <submission-id> --keychain-profile KiroCrewNotary`. Every
+**Notarization returns `Invalid`.** Pull the itemized log with:
+
+```sh
+xcrun notarytool log <submission-id> --keychain-profile KiroCrewNotary
+```
+
+Every
 listed binary must be Developer ID signed with hardened runtime and a secure
 timestamp. If binaries are listed, manifest coverage regressed: check
 `generate-manifest.py`'s scope rules and its layout tripwire.

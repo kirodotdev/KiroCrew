@@ -3,8 +3,8 @@ title: Retire chat Autopilot mode — the plan / approve / stage-loop slot mode
 status: implemented
 author: iamwhatever
 created: 2026-09-30
-last-audited: 2026-10-06
-audited-at: ea7e91c8e6
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [15362, 15359, 15682]
 tracking-issues: []

@@ -1,9 +1,18 @@
-import { EyeOff, Monitor, MessagesSquare, ShieldAlert, Webhook } from 'lucide-react'
+import { EyeOff, Globe, KeyRound, Monitor, MessagesSquare, MousePointerClick, ShieldAlert, Webhook } from 'lucide-react'
+import { useState } from 'react'
 import { i18nT } from '../i18n/t'
+import { api } from '../api/client'
+import { Toggle } from '../components/ui'
+import ErrorNotice from '../components/ErrorNotice'
 import { desktopCapabilityLine, knownDesktopCapabilities, type DesktopCapability } from '../components/appstore/desktopCapabilities'
+import { browserVerbLine, knownBrowserVerbs, type BrowserVerb } from '../components/appstore/browserVerbs'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_APP_BROWSER_SDK } from '../utils/previewFlags'
 import { chatLaunchLine, chatLaunchScopeLine, knownChatLaunch } from '../components/appstore/chatLaunch'
+import { recipeLine } from '../components/appstore/browserRecipes'
+import { BrowserRecipeList, type BrowserRecipeItem } from '../components/appstore/BrowserRecipeList'
 
-export { knownDesktopCapabilities }
+export { browserVerbLine, knownBrowserVerbs, knownDesktopCapabilities }
 
 // The declared-grant boxes of the detail page's permissions card, and the
 // reach lines of its "approve new permissions" notice. They live here because
@@ -181,5 +190,187 @@ export function DesktopCapabilitiesStaged({ staged }: { staged: DesktopCapabilit
         <div key={cap} className="text-[13px]" data-testid="staged-desktop-capability">{desktopCapabilityLine(cap)}</div>
       ))}
     </>
+  )
+}
+
+/**
+ * What `permissions.browser` lets the app do on its own slots' browser tabs
+ * (rfc-app-sdk-browser.md). Each verb not approved yet carries its own tag; with the
+ * `app_browser_sdk` preview off, a line says approved verbs do nothing.
+ */
+export function BrowserVerbsBox({ declared, staged, preview }: { declared: BrowserVerb[]; staged: BrowserVerb[]; preview?: boolean }) {
+  // An installed app's row says whether the gateway has the preview on; a store row
+  // that is not installed has no grant row, so read the switch itself.
+  const switchOn = usePreviewFlag(PREVIEW_APP_BROWSER_SDK)
+  if (declared.length === 0) return null
+  const previewOn = preview ?? switchOn
+  return (
+    <div className="rounded-md border border-border px-2.5 py-2" data-testid="browser-verbs">
+      <div className="flex items-start gap-2 text-text">
+        <Globe size={13} className="mt-[2px] shrink-0 text-muted" />
+        <div className="flex flex-col gap-0.5">
+          {declared.map(verb => (
+            <span key={verb} data-testid={`browser-verb-${verb}`}>
+              {browserVerbLine(verb)}
+              {staged.includes(verb) && <span className="ml-1 text-warn">· {i18nT('pages.appDetailPage.grant_not_approved')}</span>}
+            </span>
+          ))}
+          {!previewOn && <span className="text-muted" data-testid="browser-preview-off">{i18nT('components.appstore.trustAppModal.browser_preview_off')}</span>}
+        </div>
+      </div>
+      <div className="mt-1.5 text-[11px] text-muted">
+        {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>browser</code>
+      </div>
+    </div>
+  )
+}
+
+/** The browser verbs waiting for the owner, one line each, for the approval notice. */
+export function BrowserVerbsStaged({ staged }: { staged: BrowserVerb[] }) {
+  if (staged.length === 0) return null
+  return (
+    <>
+      <div className="text-[13px]" data-testid="staged-browser-note">{i18nT('pages.appDetailPage.grants_reconsent_browser')}</div>
+      {staged.map(verb => (
+        <div key={verb} className="text-[13px]" data-testid="staged-browser-verb">{browserVerbLine(verb)}</div>
+      ))}
+    </>
+  )
+}
+
+/** Held-back entries shown as code chips under a catalog line (browser sites, Kiro operations). */
+export function StagedCodeList({ label, entries, testId }: { label: string; entries: string[]; testId: string }) {
+  if (entries.length === 0) return null
+  return (
+    <div>
+      <div className="text-[13px]">{label}</div>
+      <div className="flex flex-wrap gap-1 mt-1" data-testid={testId}>
+        {entries.map(o => (
+          <code key={o} className="max-w-full break-all bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** `permissions.kiroOperations`: every declared name, the held-back ones marked. */
+export function KiroOperationsBox({ grant }: { grant?: { approved: string[]; staged: string[] } }) {
+  const names = [...(grant?.approved || []), ...(grant?.staged || [])]
+  if (names.length === 0) return null
+  return (
+    <div className="rounded-md border border-border px-2.5 py-2" data-testid="kiro-operations">
+      <div className="flex items-start gap-2 text-text">
+        <KeyRound size={13} className="mt-[2px] shrink-0 text-muted" />
+        <div className="flex min-w-0 flex-col gap-1">
+          <span>{i18nT('pages.appDetailPage.kiro_operations_card_heading')}</span>
+          <div className="flex flex-wrap gap-1">
+            {names.map(op => (
+              <code key={op} data-testid={`kiro-operation-${op}`} className="max-w-full break-all bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">
+                {op}{grant?.staged.includes(op) && <span className="ml-1 text-warn">· {i18nT('pages.appDetailPage.grant_not_approved')}</span>}
+              </code>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="mt-1.5 text-[11px] text-muted">
+        {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>kiroOperations</code>
+      </div>
+    </div>
+  )
+}
+
+/** Stored grant entries as list items; an entry that does not parse is left out. */
+function recipeItems(entries: string[], staged?: string[], watchOn?: string[]): BrowserRecipeItem[] {
+  return entries.flatMap(entry => {
+    const line = recipeLine(entry)
+    return line ? [{ key: entry, line, staged: staged?.includes(entry), watchOn: watchOn?.includes(entry) }] : []
+  })
+}
+
+/** The approval notice's row for recipes an update added or changed, in the same words as the card. */
+export function StagedBrowserRecipes({ label, entries }: { label: string; entries: string[] }) {
+  if (entries.length === 0) return null
+  // Approving sends every entry, so one that does not read as a recipe still shows, as stored.
+  const unread = entries.filter(entry => !recipeLine(entry))
+  return (
+    <div>
+      <div className="text-[13px]">{label}</div>
+      <div className="mt-1 flex flex-col gap-1" data-testid="staged-browser-recipes">
+        <BrowserRecipeList items={recipeItems(entries)} />
+        {unread.map(entry => (
+          <code key={entry} className="max-w-full break-all bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{entry}</code>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * `permissions.browserRecipes`: every declared recipe as it runs, the held-back ones
+ * marked. An approved watch recipe runs only when the page asks until the owner gives
+ * the separate run-by-itself yes here (`browserRecipeWatch`), one recipe at a time and
+ * never in the notice's approve-all. Offered on a running app only: on a disabled one
+ * the enable route would also switch the app on.
+ */
+export function BrowserRecipesBox({ grant, appName, enabled, onChanged }: {
+  grant?: { approved: string[]; staged: string[]; watchOn?: string[]; watchOff?: string[]; preview?: boolean }
+  appName?: string
+  enabled?: boolean
+  onChanged?: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const items = recipeItems([...(grant?.approved || []), ...(grant?.staged || [])], grant?.staged, grant?.watchOn)
+  if (items.length === 0) return null
+  // Each approved watch recipe's own switch: on is the owner's separate yes, off takes
+  // back only that yes (the recipe still runs when the page asks, the app stays on).
+  const watchOn = grant?.watchOn || []
+  const switchable = [...watchOn, ...(grant?.watchOff || [])].filter(entry => grant?.approved.includes(entry) && recipeLine(entry))
+  const setWatch = async (entry: string, on: boolean) => {
+    if (!appName) return
+    setBusy(true)
+    setError('')
+    try {
+      const result = on
+        ? await api.enableApp(appName, false, { api: [], events: [], browserRecipeWatch: [entry] })
+        : await api.stopAppRecipeWatch(appName, entry)
+      if (result && result.ok === false) setError(String(result.error || ''))
+      onChanged?.()
+      window.dispatchEvent(new Event('mc:apps-changed'))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="rounded-md border border-border px-2.5 py-2" data-testid="browser-recipes">
+      <div className="flex items-start gap-2 text-text">
+        <MousePointerClick size={13} className="mt-[2px] shrink-0 text-muted" />
+        <div className="flex min-w-0 flex-col gap-1">
+          <span>{i18nT('pages.appDetailPage.browser_recipes_card_heading')}</span>
+          <BrowserRecipeList items={items} testIdPrefix="browser-recipe-" />
+          <p className="text-[11px] text-muted leading-relaxed">{i18nT('pages.appDetailPage.browser_recipes_card_note')}</p>
+          {grant?.preview === false && <span className="text-[11px] text-muted" data-testid="browser-recipes-preview-off">{i18nT('components.appstore.trustAppModal.browser_preview_off')}</span>}
+          {appName && switchable.map(entry => {
+            const name = recipeLine(entry)?.name || ''
+            const on = watchOn.includes(entry)
+            const label = i18nT('pages.appDetailPage.browser_recipe_watch_switch', { name })
+            return (
+              <div key={entry} className="flex items-center justify-between gap-2" data-testid={`browser-recipe-watch-${name}`}>
+                <span className="text-[12px]">{label}</span>
+                {/* Turning it on is an approval, offered on a running app only; off works either way. */}
+                <Toggle checked={on} onChange={v => void setWatch(entry, v)} busy={busy} disabled={!on && !enabled} label={label} />
+              </div>
+            )
+          })}
+          {switchable.length > 0 && <p className="text-[11px] text-muted leading-relaxed">{i18nT('pages.appDetailPage.browser_recipe_watch_note')}</p>}
+          {error && <ErrorNotice message={error} variant="inline" askAgent />}
+        </div>
+      </div>
+      <div className="mt-1.5 text-[11px] text-muted">
+        {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>browserRecipes</code>
+      </div>
+    </div>
   )
 }

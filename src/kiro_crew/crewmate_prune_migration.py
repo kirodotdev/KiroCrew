@@ -610,7 +610,8 @@ def _chatted(cfg: KiroCrewConfig, name: str, sessions_dir: Path) -> bool:
     the caller keeps the crewmate.
     """
     from kiro_crew import members as members_mod
-    from kiro_crew.history import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER, _safe_key
+    from kiro_crew.history import ARCHIVE_DIR_NAME, _safe_key
+    from kiro_crew.history_files import archive_segment_stem
 
     try:
         slug = members_mod.member_slug(name, cfg)
@@ -629,22 +630,19 @@ def _chatted(cfg: KiroCrewConfig, name: str, sessions_dir: Path) -> bool:
         stems.append(stem)
 
     archive = sessions_dir / ARCHIVE_DIR_NAME
-    prefixes = tuple(f"{stem}{ARCHIVE_SEGMENT_DELIMITER}" for stem in stems)
+    # Whole-stem match: a chat whose stem is <stem>__more shares the <stem>__ prefix.
     try:
         with os.scandir(archive) as entries:
             archive_names = sorted(
-                entry.name
-                for entry in entries
-                if entry.name.endswith(".jsonl") and entry.name.startswith(prefixes)
+                entry.name for entry in entries if archive_segment_stem(entry.name) in stems
             )
     except FileNotFoundError:
         archive_names = []
     except OSError as exc:
         raise HistoryUnreadable(f"could not list archived transcripts: {exc}") from exc
     for stem in stems:
-        prefix = f"{stem}{ARCHIVE_SEGMENT_DELIMITER}"
         for name in archive_names:
-            if name.startswith(prefix) and _transcript_has_a_turn(
+            if archive_segment_stem(name) == stem and _transcript_has_a_turn(
                 archive / name, missing_is_doubt=True
             ):
                 return True
@@ -873,7 +871,9 @@ def prune_synced_crewmates(
     finds the marker. The wait never gives up: every :data:`PRUNE_LOCK_WAIT_S`
     it logs one WARNING (counted in ``lock_waits``) and tries again, since a
     pass that returned with the lock still held would open its barrier while
-    the holder can still delete. A holder's death releases the lock. Between
+    the holder can still delete. Only a held lock is waited on again; any
+    other lock error (a filesystem with no lock service) is raised and
+    nothing is deleted. A holder's death releases the lock. Between
     tries the marker is checked without the lock: it is written last, under
     the lock, so its presence means every delete is done. Blocking; never
     call on the event loop thread (``file_lock`` refuses to poll there).
@@ -898,6 +898,12 @@ def prune_synced_crewmates(
                 held.enter_context(file_lock(lock_fd, exclusive=True, timeout=PRUNE_LOCK_WAIT_S))
                 break
             except OSError as exc:
+                if exc.errno is not None:
+                    # A real lock error (no lock service, a bad descriptor),
+                    # not a held lock: ``file_lock`` builds the one that means
+                    # "still held after the wait" with no errno. Waiting would
+                    # retry at once for ever, so it surfaces to the caller.
+                    raise
                 # Held by another process. That process owns the pass; this
                 # one must not return while it can still delete, because the
                 # caller settles its request barrier on return and a session

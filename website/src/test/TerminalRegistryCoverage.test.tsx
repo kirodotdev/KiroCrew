@@ -43,11 +43,15 @@ import {
   sendToTerminalSession,
   sendRawToTerminalSession,
   ensureTerminalConnection,
+  pasteWhenOpen,
   disposeTerminalConnection,
+  dropTerminalDataForThisKey,
   useTerminalConnStatus,
   useTerminalManualRetry,
   useTerminalInvalidCwd,
   useTerminalWrongMachine,
+  useTerminalAtLimit,
+  isTerminalAtLimit,
   retryTerminalConnection,
 } from '../utils/terminalRegistry'
 
@@ -99,7 +103,7 @@ class MockWebSocket {
  *  and registers one onData + one onResize listener per connection. */
 class FakeTerm {
   reset = vi.fn()
-  write = vi.fn<(data: Uint8Array) => void>()
+  write = vi.fn<(data: Uint8Array | string, cb?: () => void) => void>()
   cols = 80
   rows = 24
   element: { offsetParent: unknown } | undefined = undefined
@@ -443,6 +447,22 @@ describe('terminalRegistry', () => {
       expect(ws.send).not.toHaveBeenCalled()
     })
 
+    it('pastes text typed before the socket opened ahead of keys typed after it, without a newline', () => {
+      const id = session('paste-when-open')
+      const term = new FakeTerm()
+      const paste = vi.fn((data: string) => term.dataCb?.(data))
+      Object.assign(term, { paste })
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+
+      pasteWhenOpen(id, 'echo \nhi')
+      expect(paste).not.toHaveBeenCalled()
+      ws.simulateOpen()
+      term.dataCb?.('!')
+      expect(paste).toHaveBeenCalledWith('echo hi')
+      expect(ws.send.mock.calls.map((_, i) => decode(ws, i))).toEqual(['echo hi', '!'])
+    })
+
     it('does not type into a socket that has not finished dialing', () => {
       const id = session('dialing')
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
@@ -608,7 +628,7 @@ describe('terminalRegistry', () => {
 
       WS_INSTANCES[0].simulateBinary(bytes)
       expect(term.write).toHaveBeenCalledTimes(1)
-      expect(new TextDecoder().decode(term.write.mock.calls[0][0])).toBe('hello from the PTY')
+      expect(new TextDecoder().decode(term.write.mock.calls[0][0] as Uint8Array)).toBe('hello from the PTY')
     })
 
     it('swallows a control frame that is not JSON', () => {
@@ -635,6 +655,21 @@ describe('terminalRegistry', () => {
       term.resizeCb?.({ cols: 100, rows: 30 })
       expect(decode(ws, 0)).toBe('ls -al')
       expect(JSON.parse(decode(ws, 1))).toEqual({ type: 'resize', cols: 100, rows: 30 })
+    })
+
+    it('drops what xterm sends during the key it is told to drop, and nothing after it', async () => {
+      const id = session('drop-key')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+
+      dropTerminalDataForThisKey(id)
+      term.dataCb?.('~') // sent from inside the same keydown
+      await Promise.resolve() // the key event is handled
+      term.dataCb?.('~') // sent later, from xterm's compositionend timer
+      expect(ws.send).toHaveBeenCalledOnce()
+      expect(decode(ws, 0)).toBe('~')
     })
 
     it('closes the socket from the error handler without reconnecting itself', () => {
@@ -722,6 +757,26 @@ describe('terminalRegistry', () => {
       expect(WS_INSTANCES).toHaveLength(1)
       act(() => { retryTerminalConnection(id) })
       expect(result.current.wrongMachine).toBe(false)
+      expect(WS_INSTANCES).toHaveLength(2)
+    })
+    it('parks a shell the gateway refused at its terminal ceiling, until the user retries', () => {
+      vi.useFakeTimers()
+      const id = session('at-limit')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      const failed = vi.fn()
+      onTerminalReady(id, () => {}, failed)
+      const { result } = renderHook(() => ({ status: useTerminalConnStatus(id), atLimit: useTerminalAtLimit(id) }))
+      act(() => { ws.simulateJson({ type: 'error', code: 'terminal_max_sessions', message: 'Max 12 terminal sessions' }); ws.simulateClose() })
+      expect(result.current).toEqual({ status: 'disconnected', atLimit: true })
+      expect(isTerminalAtLimit(id)).toBe(true)
+      expect(failed).toHaveBeenCalledOnce()
+      // No automatic redial into the same refusal, even on a revive event.
+      act(() => { vi.advanceTimersByTime(60_000); window.dispatchEvent(new Event('online')) })
+      expect(WS_INSTANCES).toHaveLength(1)
+      act(() => { retryTerminalConnection(id) })
+      expect(result.current.atLimit).toBe(false)
       expect(WS_INSTANCES).toHaveLength(2)
     })
     it('redials a shell whose placement could not be read, instead of parking it', () => {
@@ -1534,6 +1589,123 @@ describe('terminalRegistry', () => {
       Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
       document.dispatchEvent(new Event('visibilitychange'))
       expect(WS_INSTANCES).toHaveLength(11)
+    })
+  })
+
+  describe('OSC 52 copies during a reconnect replay', () => {
+    function osc52Handle() {
+      return { suspend: vi.fn(), resume: vi.fn(), closeWindow: vi.fn(), dispose: vi.fn() }
+    }
+
+    it('closes the copy window when the dashboard sends a command line', () => {
+      const id = session('osc52-send-line')
+      const osc52 = osc52Handle()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), undefined, undefined, undefined, osc52)
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      ws.simulateJson({ type: 'ready' })
+      expect(sendToTerminalSession(id, 'cat notes.txt')).toBe(true)
+      expect(osc52.closeWindow).toHaveBeenCalledTimes(1)
+    })
+
+    /** A term whose write callbacks run only when the test releases them, as
+     *  xterm runs them once the data written before them is parsed. */
+    function queuedTerm() {
+      const term = new FakeTerm()
+      const callbacks: (() => void)[] = []
+      term.write.mockImplementation((_data, cb) => { if (cb) callbacks.push(cb) })
+      return { term, flush: () => { while (callbacks.length) callbacks.shift()!() } }
+    }
+
+    it('suspends copies before the terminal is reset for the replay', () => {
+      const id = session('osc52-open')
+      const { term } = queuedTerm()
+      const osc52 = osc52Handle()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon(), undefined, undefined, undefined, osc52)
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      expect(osc52.suspend).toHaveBeenCalledTimes(1)
+      expect(term.reset).toHaveBeenCalledTimes(1)
+      expect(osc52.suspend.mock.invocationCallOrder[0]).toBeLessThan(term.reset.mock.invocationCallOrder[0])
+    })
+
+    it('resumes only from the replayed write callback without a ready frame', () => {
+      const id = session('osc52-replayed')
+      const { term, flush } = queuedTerm()
+      const osc52 = osc52Handle()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon(), undefined, undefined, undefined, osc52)
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      ws.simulateBinary(new TextEncoder().encode('\x1b]52;c;b2xk\x07'))
+      expect(term.write).toHaveBeenCalledTimes(1)
+      flush()
+      expect(osc52.resume).not.toHaveBeenCalled()
+
+      ws.simulateJson({ type: 'replayed' })
+      expect(term.write).toHaveBeenCalledTimes(2)
+      expect(osc52.resume).not.toHaveBeenCalled()
+      expect(getTerminalWs(id)).toBeNull()
+      flush()
+      expect(osc52.resume).toHaveBeenCalledTimes(1)
+      expect(getTerminalWs(id)).toBeNull()
+    })
+
+    it('does not resume from ready alone', () => {
+      const id = session('osc52-ready-only')
+      const { term, flush } = queuedTerm()
+      const osc52 = osc52Handle()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon(), undefined, undefined, undefined, osc52)
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      ws.simulateJson({ type: 'ready' })
+      flush()
+      expect(osc52.resume).not.toHaveBeenCalled()
+      expect(term.write).not.toHaveBeenCalled()
+      expect(getTerminalWs(id)).toBe(ws as unknown as WebSocket)
+    })
+
+    it('does not resume from a replayed frame on a replaced socket', () => {
+      const id = session('osc52-stale')
+      vi.useFakeTimers()
+      const { term, flush } = queuedTerm()
+      const osc52 = osc52Handle()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon(), undefined, undefined, undefined, osc52)
+      const first = WS_INSTANCES[WS_INSTANCES.length - 1]
+      first.simulateOpen()
+      first.simulateClose()
+      vi.advanceTimersByTime(60_000)
+      const second = WS_INSTANCES[WS_INSTANCES.length - 1]
+      expect(second).not.toBe(first)
+      second.simulateOpen()
+      expect(osc52.suspend).toHaveBeenCalledTimes(2)
+
+      first.simulateJson({ type: 'replayed' })
+      expect(term.write).not.toHaveBeenCalled()
+      flush()
+      expect(osc52.resume).not.toHaveBeenCalled()
+      second.simulateJson({ type: 'replayed' })
+      expect(term.write).toHaveBeenCalledTimes(1)
+      expect(osc52.resume).not.toHaveBeenCalled()
+      flush()
+      expect(osc52.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not resume when the socket is replaced before the queued write callback runs', () => {
+      const id = session('osc52-stale-callback')
+      vi.useFakeTimers()
+      const { term, flush } = queuedTerm()
+      const osc52 = osc52Handle()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon(), undefined, undefined, undefined, osc52)
+      const first = WS_INSTANCES[WS_INSTANCES.length - 1]
+      first.simulateOpen()
+      first.simulateJson({ type: 'replayed' })
+      expect(term.write).toHaveBeenCalledTimes(1)
+      first.simulateClose()
+      vi.advanceTimersByTime(60_000)
+      const second = WS_INSTANCES[WS_INSTANCES.length - 1]
+      second.simulateOpen()
+      flush()
+      expect(osc52.resume).not.toHaveBeenCalled()
     })
   })
 })

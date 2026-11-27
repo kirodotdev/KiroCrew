@@ -9,7 +9,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const Module = require("node:module");
-const { armScrollTouch, scrollTouchPhase, SCROLL_TOUCH_CHANNEL } = require("../scroll-touch");
+const {
+  armScrollTouch,
+  readNaturalScrolling,
+  scrollTouchPhase,
+  SCROLL_DIRECTION_CHANNEL,
+  SCROLL_TOUCH_CHANNEL,
+} = require("../scroll-touch");
 
 function makeFakeWc() {
   const handlers = {};
@@ -132,5 +138,84 @@ describe("preload onScrollTouch", () => {
     stop();
     emit("begin");
     assert.deepEqual(got, ["begin", "end"], "an unsubscribed caller hears nothing");
+  });
+
+  it("caches the Natural scrolling report, keeping only booleans", () => {
+    const { api, listeners } = loadPreload();
+    const tell = (v) => { for (const fn of [...(listeners.get(SCROLL_DIRECTION_CHANNEL) || [])]) fn({}, v); };
+    assert.equal(api.getNaturalScrolling(), null, "unknown until main says");
+    tell(false);
+    assert.equal(api.getNaturalScrolling(), false);
+    tell("true");
+    tell(null);
+    assert.equal(api.getNaturalScrolling(), false, "a non-boolean is dropped");
+    tell(true);
+    assert.equal(api.getNaturalScrolling(), true);
+  });
+});
+
+describe("readNaturalScrolling", () => {
+  const prefs = (value) => ({ getUserDefault: (key, type) => {
+    assert.equal(key, "com.apple.swipescrolldirection");
+    assert.equal(type, "string");
+    if (value instanceof Error) throw value;
+    return value;
+  } });
+
+  it("reads the stored boolean, and an absent key as the macOS default (on)", () => {
+    // NSUserDefaults stringForKey gives "0" / "1" for a stored boolean, and
+    // nil (Electron: "") when the user never changed the setting.
+    assert.equal(readNaturalScrolling(prefs("0")), false);
+    assert.equal(readNaturalScrolling(prefs("1")), true);
+    assert.equal(readNaturalScrolling(prefs("")), true);
+  });
+
+  it("is unknown for anything else, or when the read fails", () => {
+    for (const v of ["yes", undefined, null, 0, false]) assert.equal(readNaturalScrolling(prefs(v)), null, String(v));
+    assert.equal(readNaturalScrolling(prefs(new Error("no"))), null);
+    assert.equal(readNaturalScrolling(undefined), null);
+  });
+});
+
+describe("armScrollTouch: Natural scrolling", () => {
+  it("tells every page load, and again at a gesture's begin only when it changed", () => {
+    const { wc, sent, input, handlers } = makeFakeWc();
+    let natural = true;
+    armScrollTouch(wc, { platform: "darwin", readNatural: () => natural });
+    handlers["did-finish-load"]();
+    input("gestureScrollBegin");
+    input("gestureScrollEnd");
+    natural = false;
+    input("gestureScrollBegin");
+    input("gestureScrollEnd");
+    handlers["did-finish-load"]();
+    assert.deepEqual(sent, [
+      [SCROLL_DIRECTION_CHANNEL, true],
+      [SCROLL_TOUCH_CHANNEL, "begin"],
+      [SCROLL_TOUCH_CHANNEL, "end"],
+      // Before the begin, so the page reads the first wheel right.
+      [SCROLL_DIRECTION_CHANNEL, false],
+      [SCROLL_TOUCH_CHANNEL, "begin"],
+      [SCROLL_TOUCH_CHANNEL, "end"],
+      // A new page's preload starts empty.
+      [SCROLL_DIRECTION_CHANNEL, false],
+    ]);
+  });
+
+  it("sends nothing when unknown or without a reader", () => {
+    const a = makeFakeWc();
+    armScrollTouch(a.wc, { platform: "darwin", readNatural: () => null });
+    a.handlers["did-finish-load"]();
+    a.input("gestureScrollBegin");
+    assert.deepEqual(a.sent, [[SCROLL_TOUCH_CHANNEL, "begin"]]);
+    const b = makeFakeWc();
+    armScrollTouch(b.wc, { platform: "darwin" });
+    b.handlers["did-finish-load"]();
+    assert.deepEqual(b.sent, []);
+  });
+
+  it("is wired to systemPreferences on the dashboard webContents", () => {
+    const lifecycle = fs.readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
+    assert.match(lifecycle, /readNatural: \(\) => readNaturalScrolling\(systemPreferences\)/);
   });
 });

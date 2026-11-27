@@ -10,6 +10,7 @@ here, so the classes keep one identity whichever module a caller imports them fr
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from typing import List as _List
 
@@ -175,6 +176,23 @@ class ArtifactPublication:
     #: drift is detected remote-vs-remote against this hash — snapshot_seq bumps
     #: on mere viewing and is unreliable. Empty for mirror providers / legacy.
     last_synced_remote_hash: str = ""
+    #: When the destination deletes the published copy (ISO 8601, UTC): set by a first
+    #: publish to a destination that declares expiry choices, from the time the publish
+    #: returned plus the chosen period. Empty means no known expiry. Missing in meta.json
+    #: loads as ``""``.
+    expires_at: str = ""
+
+    def is_expired(self) -> bool:
+        """Whether ``expires_at`` has passed by this gateway's clock."""
+        if not self.expires_at:
+            return False
+        try:
+            at = datetime.fromisoformat(self.expires_at)
+        except ValueError:
+            return False
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= at
 
 
 @dataclass

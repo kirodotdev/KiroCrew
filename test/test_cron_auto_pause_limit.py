@@ -28,6 +28,12 @@ from kiro_crew.cron_service.model import (
     validate_auto_pause_after_failures,
 )
 from kiro_crew.cron_service.schedule import compute_next_run_ts, is_due, next_wake_secs
+
+# ``add_job`` imports this module on first use, and it binds ``sel`` by name at import.
+# Imported here, before any test below replaces ``kiro_crew.sel.sel``, so that binding is
+# the real accessor; bound to a test's stand-in it outlives the test, and the next import
+# of the ``chat_folders`` facade in the process refuses a family that disagrees on ``sel``.
+from kiro_crew.dashboard import chat_folders_paths  # noqa: F401
 from kiro_crew.mcp_cron import _call_tool_inner, _call_tool_locally, _list_tools
 from kiro_crew.validation import MCP_CRON_SCHEMAS, ValidationError, validate_tool_args
 

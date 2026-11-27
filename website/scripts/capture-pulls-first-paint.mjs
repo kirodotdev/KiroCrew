@@ -71,6 +71,12 @@ let fullDelay = 0
 // dashboard boot fixtures.
 await stubDashboardApi(page, {
   theme: 'light',
+  // Both frames open the same repo and view, so the stub seeds them after its
+  // clear on every navigation.
+  localStorageEntries: {
+    'kc:issue-radar:active-repo': JSON.stringify({ owner: 'kirodotdev', repo: 'Kiro' }),
+    'kc:issue-radar:ui-state': JSON.stringify({ mainView: 'pulls', prStateFilter: 'open' }),
+  },
   // `json()` returns route.fulfill()'s promise, which resolves to undefined — so
   // each branch fulfils the route THEN returns true to mark it handled (a falsy
   // return would fall through to the boot map and double-fulfill the route).
@@ -93,26 +99,21 @@ await stubDashboardApi(page, {
   },
 })
 
-async function open(uiState) {
-  await page.addInitScript((s) => {
-    localStorage.setItem('kc:issue-radar:active-repo', JSON.stringify({ owner: 'kirodotdev', repo: 'Kiro' }))
-    if (s) localStorage.setItem('kc:issue-radar:ui-state', JSON.stringify(s))
-    else localStorage.removeItem('kc:issue-radar:ui-state')
-  }, uiState)
+async function open() {
   await page.goto(`${base}/issue-radar`, { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2000)
 }
 
 // ── 01: "loading the rest" — the partial first page paints while /pulls is delayed ──
 fullDelay = 20000
-await open({ mainView: 'pulls', prStateFilter: 'open' })
+await open()
 await page.waitForTimeout(1500)
 await page.screenshot({ path: `${OUT}/pr-01-partial-list.png` })
 
 // ── 02: the full enriched set after it lands (diff bars + check tallies, no hint) ──
 fullDelay = 0
 await context.clearCookies()
-await open({ mainView: 'pulls', prStateFilter: 'open' })
+await open()
 await page.waitForTimeout(1800)
 await page.screenshot({ path: `${OUT}/pr-02-full-list.png` })
 

@@ -35,7 +35,8 @@ type Counts = { gesture: number; announced: number; keepTarget: number; plain: n
 
 /** file -> pinned counts. `reason` documents why the PLAIN sites stay silent. */
 const PINNED: Record<string, Counts> = {
-  'src/shell/appShell.tsx': { gesture: 0, announced: 2, keepTarget: 0, plain: 0, reason: 'popout nav-intent suppliers announce; a forwarded intent or native deep link is not a gesture in this window, so neither marks one' },
+  'src/shell/appShell.tsx': { gesture: 0, announced: 1, keepTarget: 0, plain: 0, reason: 'the popout nav-intent supplier announces; a forwarded intent is not a gesture in this window, so it marks none' },
+  'src/shell/nav/openInAppPath.ts': { gesture: 0, announced: 1, keepTarget: 0, plain: 0, reason: 'a native deep link or in-app link switches first and announces a failed open; a full key the server 404s goes quietly to the shared probe-and-resume outcome instead; it arrives from the shell or a link handler, not a gesture this site sees, so it marks none' },
   'src/apps/auto-improvement/lib/agentSession.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
   'src/components/commandBar/CommandBarOverlayRootRows.tsx': { gesture: 2, announced: 2, keepTarget: 0, plain: 0, reason: 'attention row and recent row announce' },
   'src/components/commandBar/useCommandBarOverlayActivation.ts': { gesture: 0, announced: 0, keepTarget: 1, plain: 0, reason: 'create path keeps target on the create/fetch race' },
@@ -53,9 +54,10 @@ const PINNED: Record<string, Counts> = {
   'src/hooks/useSessionActions.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot (data.key)' },
   'src/lib/crewDeepLink.ts': { gesture: 0, announced: 1, keepTarget: 0, plain: 0, reason: 'a crew deep link the hub forwarded opens its session in this pane: a gone chat is announced, and a link from outside is not a gesture in this window' },
   'src/pages/ChatPage.tsx': { gesture: 2, announced: 2, keepTarget: 1, plain: 1, reason: 'flyout row + split-collapse announce; the split-collapse site is a gesture only for a pane\'s open-full click, not the grid collapsing itself; create path keeps target; the plain site is the comment-batch send moving to the tab it targets, which reports its own verdict' },
-  'src/pages/ChatSidebar.tsx': { gesture: 2, announced: 2, keepTarget: 0, plain: 0, reason: 'both sites open a LISTED row the way that row\'s own click does, so they announce: the broadcast panel\'s "Not confirmed · open" and a row picked from the creator filter' },
+  'src/pages/ChatSidebar.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'the site opens a LISTED row the way that row\'s own click does, so it announces: the broadcast panel\'s "Not confirmed · open"' },
   'src/pages/chat-sidebar/CrewGroups.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'the crew header\'s attention button opens a LISTED row the way that row\'s own click does, so it announces' },
   'src/pages/chat-sidebar/SessionRow.tsx': { gesture: 3, announced: 3, keepTarget: 0, plain: 0, reason: 'every site is a gesture on a LISTED session row, so all three announce: the row\'s keyboard activation, its click, and the source chip\'s onActivateSlot' },
+  'src/pages/chat-sidebar/create.ts': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'an app-contributed New menu row opens the session it just created, once that create settles with the person still where they clicked' },
   'src/pages/chat-sidebar/folderBlocks.tsx': { gesture: 2, announced: 2, keepTarget: 0, plain: 0, reason: 'every site is a gesture on a LISTED folder, so both announce: the two ways to reach a folder\'s conductor -- the item in both folder menus and the chat button in the folder row\'s own hover cluster' },
   'src/pages/chat/ChatInput.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: '`/fork` opens the fork it just made (only when forkMayOpen allows), awaited the way the transcript Fork is' },
   'src/pages/chat/SubagentRunCard.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },

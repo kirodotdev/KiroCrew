@@ -20,6 +20,7 @@ from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import crew_log_path, crew_log_root, eager, emit
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.platform_compat import file_lock
+from kiro_crew.testing.wait import default_timeout
 
 SESSION = "acp-sess-0001"
 
@@ -137,7 +138,17 @@ def _owned_elsewhere(session_id: str = SESSION):
     An advisory lock belongs to an open file description, so a descriptor of our
     own contends exactly as a second gateway's would. Non-blocking, so a lock this
     process already holds is reported here instead of becoming a wait.
+
+    The eager folder is waited for first. Every committed entry wakes it, and the
+    savepoint it writes for a fold -- the seal a ``session/closed`` triggers above all
+    -- is written under this process's share of the same lease, on the folder's own
+    thread. A probe taken while that write runs reports this process as the owner
+    although the emitter has already let go, which is the answer a caller asking
+    about the emitter's handle must not get. ``eager.drain`` returns once every wake
+    queued so far is folded, the same barrier the history-delete funnel waits on
+    before it claims the lease sole.
     """
+    assert eager.drain(timeout=default_timeout()), "the eager folder never settled"
     path = lg.crew_log_dir(lg.KIND_SESSION, session_id) / LEASE_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)

@@ -82,9 +82,10 @@ describe('SideChat footer follows the gateway answer for the side turn', () => {
   it('says only that the tools are unknown when the answer cannot load', async () => {
     vi.mocked(api.sideTools).mockRejectedValue(new Error('down'))
     renderSide()
-    expect((await screen.findByTestId('side-chat-tools-unknown')).textContent).toMatch(
-      /Couldn't check which tools this agent backend allows here/,
-    )
+    const notice = await screen.findByTestId('side-chat-tools-unknown')
+    expect(notice.textContent).toMatch(/Couldn't check which tools this agent backend allows here/)
+    // Theme overlays and the guide panel keep clear of the composer's notices too.
+    expect(notice.closest('[data-guide-keep-clear]')).not.toBeNull()
     expect(screen.queryByRole('note')).toBeNull()
     expect(screen.queryByTestId('side-chat-config-error')).toBeNull()
   })

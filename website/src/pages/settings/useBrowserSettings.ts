@@ -29,6 +29,7 @@ const IDLE_POLL_MS = 15_000
 export interface BrowserSettingsConfig {
   browser?: {
     choice?: string
+    isolation?: string
     live?: {
       enabled?: boolean
       quality?: string
@@ -48,6 +49,7 @@ export interface BrowserSettingsConfig {
 /** The shipped defaults of `config/sections_browser.py`, applied when a key is absent. */
 export const BROWSER_DEFAULTS = {
   choice: 'auto',
+  isolation: 'shared',
   live: { enabled: true, quality: 'auto', maxFps: 60, maskPasswords: true },
 } as const
 
@@ -56,6 +58,7 @@ export const LIVE_MAX_FPS = [15, 30, 60] as const
 
 export interface BrowserSettingsView {
   choice: string
+  isolation: string
   live: { enabled: boolean; quality: string; maxFps: number; maskPasswords: boolean }
   localOrigins: string[]
   /** `browser.credentials.domains` as stored; `[]` follows the provider's default. */
@@ -67,6 +70,7 @@ export function viewOf(cfg: BrowserSettingsConfig | undefined): BrowserSettingsV
   const live = b?.live
   return {
     choice: typeof b?.choice === 'string' ? b.choice : BROWSER_DEFAULTS.choice,
+    isolation: typeof b?.isolation === 'string' ? b.isolation : BROWSER_DEFAULTS.isolation,
     live: {
       enabled: typeof live?.enabled === 'boolean' ? live.enabled : BROWSER_DEFAULTS.live.enabled,
       quality: typeof live?.quality === 'string' ? live.quality : BROWSER_DEFAULTS.live.quality,

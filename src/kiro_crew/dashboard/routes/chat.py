@@ -14,6 +14,7 @@ from aiohttp import web
 from kiro_crew.dashboard import (
     chat,
     chat_follow_default,
+    chat_history_search,
     chat_threads,
     handlers,
     limit_continue,
@@ -78,6 +79,13 @@ async def api_chat_slot_work_item_get(request: web.Request) -> web.Response:
     return await remote_work_item.api_chat_slot_work_item_get(request)
 
 
+async def api_chat_work_items_pull(request: web.Request) -> web.Response:
+    """Remote dispatch's batch read for one hub conductor, imported on first use."""
+    from kiro_crew.dashboard.handlers import remote_work_items_pull
+
+    return await remote_work_items_pull.api_chat_work_items_pull(request)
+
+
 async def api_chat_slot_work_item_patch(request: web.Request) -> web.Response:
     """Remote dispatch's per-slot decision write, imported on first use, never at boot."""
     from kiro_crew.dashboard.handlers import remote_work_item
@@ -137,10 +145,23 @@ def register(app: web.Application) -> None:
     # the tunnel's send, so it is not a pure read of the disk.
     app.router.add_get("/api/chat/slots/{slot}/export", session_export.api_chat_slot_export)
     app.router.add_get("/api/chat/slots/{slot}/summary", chat.api_chat_slot_summary)
+    # The chat's history search window: bounded reads that never touch the
+    # chat's own loaded window (``chat_history_search``).
+    app.router.add_get(
+        "/api/chat/slots/{slot}/history/search", chat_history_search.api_chat_slot_history_search
+    )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/history/around", chat_history_search.api_chat_slot_history_around
+    )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/history/counts", chat_history_search.api_chat_slot_history_counts
+    )
     # Remote dispatch (Feature Preview): a hub reads and steers the work item this
     # crew's slot was born bound to. 404 with the preview off.
     app.router.add_get("/api/chat/slots/{slot}/work-item", api_chat_slot_work_item_get)
     app.router.add_patch("/api/chat/slots/{slot}/work-item", api_chat_slot_work_item_patch)
+    # The same read for every item one hub conductor holds here, in one call.
+    app.router.add_post("/api/chat/work-items/pull", api_chat_work_items_pull)
     app.router.add_get("/api/chat/slots/{slot}/dashboard-card", api_dashboard_card)
     # Same path, POST: reading a summary must stay free of side effects, so
     # generating one is a separate verb rather than a query flag on the GET.
@@ -204,6 +225,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/chat/slots/{slot}/steering", api_chat_slot_steering)
     app.router.add_post("/api/chat/slots/{slot}/ultracode", chat.api_chat_slot_ultracode)
     app.router.add_post("/api/chat/slots/{slot}/fast", chat.api_chat_slot_fast_mode)
+    app.router.add_post("/api/chat/slots/{slot}/approve-for-me", chat.api_chat_slot_approve_for_me)
     app.router.add_put("/api/chat/slots/{slot}/steering", api_chat_slot_steering_switch)
     app.router.add_post("/api/chat/slots/{slot}/workspace", chat.api_chat_slot_workspace)
     app.router.add_post("/api/chat/slots/{slot}/reload", chat.api_chat_slot_reload)

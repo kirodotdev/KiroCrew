@@ -14,6 +14,8 @@ fine but resolves to nothing). One assertion each.
 
 from pathlib import Path
 
+from skill_script_helpers import skill_text
+
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS = ROOT / "src" / "kiro_crew" / "builtin_skills"
 PREPARE_PR = SKILLS / "kirocrew-dev" / "kirocrew-prepare-pr" / "SKILL.md"
@@ -28,7 +30,7 @@ def _flat(path: Path) -> str:
     straddle a newline. Normalizing first keeps the assertions about content
     rather than about where the wrap landed.
     """
-    return " ".join(path.read_text(encoding="utf-8").split())
+    return " ".join(skill_text(path).split())
 
 
 def _flat_with_contract() -> str:

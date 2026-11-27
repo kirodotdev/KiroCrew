@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """A Bot's worker carries the work protocol ``kirocrew-worker`` carries, or says why not.
 
-Two agents work one item for a conductor: ``kirocrew-worker`` (Conductor mode and
-Ultra Mode workers) and ``kirocrew-mate-worker`` (a Bot's worker). They are prompted
+Two agents work one item for a conductor: ``kirocrew-worker`` (conductor-mode
+workers) and ``kirocrew-mate-worker`` (a Bot's worker). They are prompted
 from different places (``agent_parts/spec_prompts.py`` and ``crewmate_prompts.json``
 ``worker.principles``), so a protocol rule that lands on one is easy to leave off
 the other. These tests fail when the worker prompt gains a section that the Bot's

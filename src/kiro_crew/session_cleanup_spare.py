@@ -57,6 +57,17 @@ def rss_limit_for(cleanup: SessionCleanup, pid: int, rss: int | None = None) -> 
     return limit
 
 
+def note_tick_sizes(sessions: list[tuple[str, int, Any]], rss_by_pid: dict[int, int]) -> None:
+    """Hand one RSS tick's tree sizes to the conductor's worker growth wake.
+
+    rfc-resource-control.md §4.3. Here rather than in ``session_cleanup`` (at its
+    line cap); the work is ``resource_pressure.note_watchdog_sizes``. Never raises.
+    """
+    from kiro_crew.notifications.resource_pressure import note_watchdog_sizes
+
+    note_watchdog_sizes(sessions, rss_by_pid)
+
+
 def note_rss_measured(pid: int, rss: int) -> None:
     """Count one tick's tree-RSS reading of *pid* when it is a SHARED chat process.
 

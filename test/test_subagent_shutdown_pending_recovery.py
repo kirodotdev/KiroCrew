@@ -133,7 +133,7 @@ async def test_a_pending_recovery_the_shutdown_cancels_is_announced_by_the_next_
     notify.assert_awaited_once()
     notified_parent, msg = notify.await_args.args[:2]
     assert notified_parent == _DASHBOARD_PARENT
-    assert f"Agent `{info.id}` ⚠️ cut off mid-turn by gateway restart" in msg
+    assert f"Agent `{info.id}` interrupted: cut off mid-turn by gateway restart" in msg
 
 
 @pytest.mark.asyncio
@@ -209,7 +209,7 @@ async def _assert_the_next_start_announces(info: SubagentInfo) -> None:
     notify.assert_awaited_once()
     notified_parent, msg = notify.await_args.args[:2]
     assert notified_parent == _DASHBOARD_PARENT
-    assert f"Agent `{info.id}` ⚠️ cut off mid-turn by gateway restart" in msg
+    assert f"Agent `{info.id}` interrupted: cut off mid-turn by gateway restart" in msg
 
 
 @pytest.mark.asyncio

@@ -94,6 +94,9 @@ from kiro_crew import hooks, pinned_fs, platform_compat  # noqa: F401 - facade s
 from kiro_crew.artifact_source import is_verifiable_root  # noqa: F401 - facade surface
 from kiro_crew.artifact_store import comments as _threads  # noqa: F401 - facade surface
 from kiro_crew.artifact_store import dashboard_package as _dashboard  # noqa: F401 - facade surface
+from kiro_crew.artifact_store import (  # noqa: F401 - loads owner
+    dashboard_widgets as _dashboard_widgets,
+)
 from kiro_crew.artifact_store import records as _records
 from kiro_crew.artifact_store import rules as _rules  # noqa: F401 - facade surface
 from kiro_crew.artifact_store.comments import (  # noqa: F401 - facade surface
@@ -628,6 +631,7 @@ class ArtifactStore:
     artifact_index_key = staticmethod(_artifacts_scans.artifact_index_key)
     index_by_artifact_id = _artifacts_scans.index_by_artifact_id
     find_by_source_path = _artifacts_scans.find_by_source_path
+    kind_of = _artifacts_scans.kind_of
 
     def delete(
         self,

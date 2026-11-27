@@ -321,10 +321,15 @@ class TestCommandFailureReachesTheUser:
         assert "Run failed with exit code -1 on" in text
 
     @pytest.mark.asyncio
-    async def test_command_that_never_ran_names_no_exit_code(self) -> None:
-        """A timeout's -1 is a sentinel, not an exit code, and its ❌ is the header's."""
+    @pytest.mark.parametrize("lead", ["Error: ", "❌ "])
+    async def test_command_that_never_ran_names_no_exit_code(self, lead: str) -> None:
+        """A timeout's -1 is a sentinel, not an exit code, and its lead is the header's.
+
+        The stored reason leads with ``Error: `` now and with ``❌ `` in a
+        result an older build saved; the alert strips either.
+        """
         gw = _make_gw()
-        result = {"status": "error", "output": "❌ Command timed out after 5s", "exit_code": -1}
+        result = {"status": "error", "output": f"{lead}Command timed out after 5s", "exit_code": -1}
         await _run_command(gw, _command_job(), result)
         _, text = gw.slack.post_message.await_args.args
         assert "exit code" not in text and "exit_code" not in text

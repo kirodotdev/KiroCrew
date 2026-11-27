@@ -109,6 +109,7 @@ _NAMESPACE_HANDLERS = [
     (("logs",), "kiro_crew.cli_server", "_logs_cmd"),
     (("token",), "kiro_crew.cli_server", "_token"),
     (("status",), "kiro_crew.cli_server", "_status"),
+    (("mcp", "reload", "github"), "kiro_crew.cli_commands_mcp", "mcp_cmd"),
 ]
 
 
@@ -251,10 +252,12 @@ def test_a_coroutine_handler_runs_to_completion(
 def test_chat_reaches_the_chat_runner_with_its_flags(
     booted: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from kiro_crew.cli_chat_runs import ChatRun
+
     calls: list[Call] = []
     monkeypatch.setattr(cli, "_run_chat", _recorder(calls))
     _run(monkeypatch, "chat", "-m", "hello", "--model", "m1", "--agent", "a1")
-    assert calls == [(("hello", "m1"), {"agent": "a1"})]
+    assert calls == [(("hello", "m1"), {"agent": "a1", "run": ChatRun(agent="a1")})]
     assert "jail:chat" in booted
 
 
@@ -338,15 +341,27 @@ def test_computer_forwards_its_remaining_arguments(
 @pytest.mark.parametrize(
     ("argv", "attr", "expected"),
     [
-        (("update",), "_update", ((), {"force": False})),
-        (("update", "--force"), "_update", ((), {"force": True})),
+        (("update",), "_update", ((), {"force": False, "release": None})),
+        (("update", "--force"), "_update", ((), {"force": True, "release": None})),
+        # A plain string, unvalidated by the parser: a bad value is the update's
+        # exit 1, never argparse's exit 2, which the hub reads as "no --release".
+        (("update", "--release", "junk"), "_update", ((), {"force": False, "release": "junk"})),
         (("update", "approve"), "_update_approve", ((), {})),
         (("stop", "--port", "7001"), "_stop", ((7001,), {"expect_pid": None})),
         (("restart", "--port", "7002"), "_restart", ((7002,), {})),
         (("gateway-pid",), "_gateway_pid", ((None,), {})),
         (("gateway-pid", "--port", "5476"), "_gateway_pid", ((5476,), {})),
     ],
-    ids=["update", "update-force", "update-approve", "stop", "restart", "pid", "pid-port"],
+    ids=[
+        "update",
+        "update-force",
+        "update-release",
+        "update-approve",
+        "stop",
+        "restart",
+        "pid",
+        "pid-port",
+    ],
 )
 def test_a_gateway_control_command_reaches_its_server_handler(
     booted: list[str],

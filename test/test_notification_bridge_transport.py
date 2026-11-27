@@ -268,7 +268,7 @@ class TestRender:
         text = render_transport_text(
             {"priority": "critical", "title": "Job failed", "body": "details", "url": "/chat/a"}
         )
-        assert text.split("\n") == ["🚨 **Job failed**", "details", "/chat/a"]
+        assert text.split("\n") == ["Critical: **Job failed**", "details", "/chat/a"]
 
     def test_default_note_has_no_marker_and_skips_empty_fields(self):
         assert render_transport_text({"priority": "default", "title": "t"}) == "**t**"

@@ -658,7 +658,9 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: layer and the factory that built it. The order is a security contract: latency is
 #: outermost, the relay-path header rule is next so it reads a verified handover before
 #: any inner layer, the client-sent relay-header strip sits just inside it so no inner
-#: layer reads a client-sent relay header, the
+#: layer reads a client-sent relay header, the entry gate (dashboard only, the one
+#: chain beside which the entry port opens) is next so a request on the
+#: entry port is marked before any layer that refuses or routes, the
 #: deny-audit boundary is outer to every barrier that can refuse, the app web origin
 #: router is outer to the host canonicalization and the ``Host`` barrier, the SEL request
 #: audit is inner to them, the redaction audience sits right after token auth, the
@@ -671,8 +673,10 @@ _DASHBOARD_CHAIN = (
     ("card_turn_arrival_middleware", "card_turn_arrival_middleware"),
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
+    ("entry_gate_middleware", "entry_gate_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("app_web_origin_middleware", "build_app_web_origin_middleware.<locals>."),
+    ("relay_origin", "_relay_origin_middleware.<locals>."),
     ("host_canonical_redirect", "build_host_canonical_redirect.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),
@@ -777,7 +781,7 @@ _DASHBOARD_BOOT = tuple("""
     current_context
     _apply_builtin_adoptions
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes _deferred
-    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
+    _deferred _deferred _deferred _deferred _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -792,10 +796,9 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred
-    _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
     _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
-    subprocess_executor
     _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
     setup_secrets_routes setup_whatsapp_routes setup_link_meta_routes bind_address_for
@@ -808,7 +811,7 @@ _DASHBOARD_BOOT = tuple("""
     _make_csrf_middleware
     _make_deny_audit_middleware resolve_dashboard_host build_host_canonical_redirect
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
-    relay_ingress_middleware
+    relay_ingress_middleware _relay_origin_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_lts_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch
@@ -817,10 +820,10 @@ _DASHBOARD_BOOT = tuple("""
     _register_unix_socket_cleanup register_agent_site_cleanup build_hardened_runner
     on_gateway_startup
     init_hook_reconciler async_safe_context_call current_context register_pre_exec_stop
-    _arm_listener_guard
+    register_pre_exec_stop
+    _arm_listener_guard _arm_entry_listener_guards _listener_closed_before_arming
     _kick_crewmate_prune _kick_pinned_order_load _kick_default_app_installs
     _kick_builtin_adoption_staging _kick_interrupted_update_sweep _kick_app_backend_backstop
-    _resolved_bound_port
     _start_unix_site
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
     _reconcile_listener_publication _kick_workflow_initialization
@@ -830,17 +833,18 @@ _DASHBOARD_BOOT = tuple("""
     load_loop_stall_exit_after register_pre_exec_stop
     _arm_prevent_sleep_poll register_pre_exec_stop safety_override safety_override
     safety_override
-    await_crewmate_prune_settled current_context record_boot_to_ready
-    _dispatch_healthy_boot_marker
+    await_crewmate_prune_settled current_context sel setup_tunnel current_context
+    record_boot_to_ready _dispatch_healthy_boot_marker
     """.split())
 _DASHBOARD_TEARDOWN = tuple("""
-    current_context unregister_status_delta_sink stop_hook_reconciler
+    unregister_status_delta_sink stop_hook_reconciler
     on_gateway_shutdown async_safe_context_call current_context _release_sleep_block
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
     S:_initialize_workflow_service S:_prebuild_memory_after_preparation
+    S:_retake_hops_then_revive S:_revive_intended_instances
     S:_stt_idle_sweep
-    S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
+    S:_stt_startup_prewarm S:_sweep_remote_closes T:_apply_startup_yolo T:_claimed_dashboard_slots
     T:_live_sibling_port T:_register_deploy_skills
     T:_take_prior_dropped_grant
     T:_write_instance_credentials T:_write_secret_file T:_write_secret_file
@@ -864,7 +868,7 @@ _API_BOOT = tuple("""
     relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_lts_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
-    _deferred
+    _deferred _deferred _deferred _deferred _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
@@ -880,7 +884,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred
-    _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
     _deferred _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
@@ -1124,7 +1128,10 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 
 
 #: The MCP route table's ``"<method> <path> <handler>"`` rows in registration order,
-#: one per line. The table is shared by both entrypoints, so a route added to it on
+#: one per line. These rows are the gateway's HTTP API contract: the MCP server
+#: processes, the dashboard page and the strict-internal path list call these paths, so a
+#: route dropped, renamed, rebound or reordered is a defect even when no caller's test
+#: names it. The table is shared by both entrypoints, so a route added to it on
 #: purpose edits its own row there; a stored count or digest of the whole table would
 #: make every such change rewrite one shared line (see testing-conventions.md
 #: § Merge-safe ratchets and counts).

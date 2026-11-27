@@ -16,6 +16,7 @@ import { ErrorCard, capabilityRefusal, isAuthRequired, isContextOverflow, isImag
 import type { ChatMessage } from '../types'
 import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
 import { i18nT } from '../i18n/t'
+import { fmtMessageTime } from '../pages/chat/messageTime'
 
 const setupMeta = (member = 'reviewer') => ({
   code: 'memory_unavailable',
@@ -107,6 +108,11 @@ describe('ErrorCard', () => {
       expect(retryProse('⟳ Backend hiccup — please retry.')).toBe('The agent hit a brief problem — resume to pick up where it stopped.')
     })
 
+    it('reads the plain-word form current gateways write the same as the glyph form', () => {
+      expect(retryProse('Connection lost — please retry.')).toBe('Connection lost — resume to pick up where it stopped.')
+      expect(retryProse('Error: Connection lost — please retry.')).toBe('Connection lost — resume to pick up where it stopped.')
+    })
+
     it('keeps the exit-code detail a connection-lost row carries', () => {
       expect(retryProse('⟳ Connection lost (exit 1) — please retry.')).toBe('Connection lost (exit 1) — resume to pick up where it stopped.')
       expect(retryProse('⟳ Connection lost (exit -9) — please retry.')).toBe('Connection lost (exit -9) — resume to pick up where it stopped.')
@@ -114,7 +120,6 @@ describe('ErrorCard', () => {
 
     it('leaves anything else verbatim — an unknown or newer gateway string must still reach the screen', () => {
       expect(retryProse('⟳ Connection lost — please retry')).toBeNull()      // no full stop: not the wire shape
-      expect(retryProse('Connection lost — please retry.')).toBeNull()        // no glyph
       expect(retryProse('⟳ Something new — please retry.')).toBeNull()
       expect(retryProse('boom')).toBeNull()
       render(<ErrorCard content="⟳ Something new — please retry." />)
@@ -299,23 +304,52 @@ describe('ErrorCard — sibling capability refusals', () => {
 })
 
 describe('ErrorCard — agent not signed in', () => {
-  it('offers Sign in to Kiro and NO Continue, even when resumable', () => {
+  it('shows one line and a Sign in button, NO Continue and no raw error text', () => {
     const onContinue = vi.fn()
-    const onOpenSignIn = vi.fn()
     render(
       <ErrorCard
-        content="Your session has expired. Sign in again, then start a new chat."
+        content="Your session has expired. Sign in again, then start a new chat. (request_id: 69c7830a-1b2c-4d5e)"
         onContinue={onContinue}
-        onOpenSignIn={onOpenSignIn}
+        onOpenSignIn={vi.fn()}
       />,
     )
     const card = screen.getByTestId('error-card')
     expect(card).toHaveAttribute('data-auth-required', 'true')
-    expect(card).toHaveTextContent('Your session has expired.')
+    expect(card).toHaveTextContent('Sign in to Kiro to keep chatting')
+    // The wire text and its request id stay out of the row; the id is behind a copy control.
+    expect(card).not.toHaveTextContent('Your session has expired.')
+    expect(card).not.toHaveTextContent('69c7830a')
+    expect(screen.getByTestId('kiro-sign-in-copy-request-id')).toBeInTheDocument()
+    expect(screen.getByTestId('kiro-sign-in-open')).toBeInTheDocument()
     expect(screen.queryByTestId('error-card-continue')).toBeNull()
-    fireEvent.click(screen.getByTestId('error-card-sign-in'))
-    expect(onOpenSignIn).toHaveBeenCalledTimes(1)
     expect(onContinue).not.toHaveBeenCalled()
+    cleanup()
+  })
+
+  it('keeps the request id copy when the shown text is a translated notice', () => {
+    render(
+      <ErrorCard
+        content="Not signed in to Kiro."
+        rawContent="Not signed in to Kiro. (request_id: 69c7830a-1b2c-4d5e)"
+        onOpenSignIn={vi.fn()}
+      />,
+    )
+    expect(screen.getByTestId('kiro-sign-in-copy-request-id')).toBeInTheDocument()
+    cleanup()
+  })
+
+  it('keeps Sign in and adds Resume on its own row once the host reads the sign-in as working', () => {
+    const onContinue = vi.fn()
+    render(
+      <ErrorCard content="Not signed in to Kiro." resumeContent="Signed in again." onContinue={onContinue} onOpenSignIn={vi.fn()} signInWorks />,
+    )
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveAttribute('data-auth-required', 'true')
+    expect(card).toHaveTextContent('Signed in again.')
+    // Resume gets its own row, so the strip's button row keeps two controls.
+    expect(screen.getByTestId('error-card-continue').parentElement).not.toContainElement(screen.getByTestId('kiro-sign-in-open'))
+    fireEvent.click(screen.getByTestId('error-card-continue'))
+    expect(onContinue).toHaveBeenCalledTimes(1)
     cleanup()
   })
 
@@ -328,7 +362,7 @@ describe('ErrorCard — agent not signed in', () => {
 
   it('falls back to plain prose on a surface with no settings route', () => {
     render(<ErrorCard content="not signed in" />)
-    expect(screen.queryByTestId('error-card-sign-in')).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-open')).toBeNull()
     expect(screen.getByTestId('error-card')).not.toHaveAttribute('data-auth-required')
   })
 })
@@ -916,5 +950,28 @@ describe('a Kiro Cloud reopen that started a new sandbox', () => {
   it('keeps the wire text for a kind it does not know', () => {
     render(<ErrorCard content="channel fallback text" meta={{ kind: 'toString' }} />)
     expect(screen.getByTestId('error-card')).toHaveTextContent('channel fallback text')
+  })
+})
+
+describe('a card that stands for a run of identical failures (#38910)', () => {
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  it('says how many times it happened and when the newest did, and lists every attempt when expanded', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-18T21:00:00Z'))
+    const attempts = ['2026-11-18T20:50:00Z', '2026-11-18T20:55:00Z', '2026-11-18T20:59:00Z'].map(ts => ({ ts }))
+    render(<ErrorCard content="The agent could not start." attempts={attempts} onContinue={() => {}} />)
+    const toggle = screen.getByTestId('error-card-run-toggle')
+    expect(toggle).toHaveTextContent(i18nT('pages.chat.errorCard.repeated_in_a_row', { count: 3, time: fmtMessageTime('2026-11-18T20:59:00Z') }))
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('error-card-run-attempts')).toBeNull()
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    const items = within(screen.getByTestId('error-card-run-attempts')).getAllByRole('listitem')
+    expect(items.map(li => li.textContent)).toEqual(attempts.map(a => fmtMessageTime(a.ts)))
+    expect(screen.getByTestId('error-card-continue')).toBeVisible()
   })
 })

@@ -215,7 +215,7 @@ small files, or of files each just under the per-file cap, would be unbounded. T
 allowance is shared across the whole recursion, because a per-directory cap is not
 a cap on a tree, and it is spent only by a copy that landed.
 
-The same bound applies to the schema PROBE, which is reached by more inputs than
+The 4 MiB manifest bound below applies to the schema PROBE too, which is reached by more inputs than
 the manifest read is: it runs on a root `plugin.json` for every candidate,
 including a directory that turns out not to be a plugin.
 

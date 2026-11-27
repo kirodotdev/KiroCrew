@@ -783,6 +783,45 @@ class TestAppPromptPathIsContained:
         assert "prompt" not in merged
 
 
+class TestBootReconcileRefreshesTheToolExclusion:
+    """``managedToolPolicy.exclude`` is computed at materialization, so a managed
+    tool a later upgrade adds is covered only once materialization runs again.
+    Gateway boot is the path that guarantees it: pin that the boot reconcile
+    re-derives the exclusion."""
+
+    def test_a_tool_added_to_a_managed_server_is_excluded_after_boot(
+        self, tmp_path, app_env, monkeypatch
+    ) -> None:
+        import kiro_crew.mcp_discovery_managed as managed
+        from kiro_crew.apps import bridges as bridges_mod
+        from kiro_crew.apps.manager import enable_app
+
+        src = _make_app_source(
+            tmp_path, name="scoped-app", permissions={"cron": True, "mcpTools": ["cron_add"]}
+        )
+        install_app(src)
+        enable_app("scoped-app")
+        register_app("scoped-app")
+        agent_file = app_env["kiro_agents"] / "scoped-app--my-agent.json"
+        before = json.loads(agent_file.read_text())["managedToolPolicy"]["exclude"]
+        assert "brand_new_tool" not in before
+
+        real = managed.managed_tool_names_for_policy
+
+        def upgraded(name):
+            tools = real(name)
+            if name == "kirocrew-core" and tools is not None:
+                return [*tools, "brand_new_tool"]
+            return tools
+
+        monkeypatch.setattr(managed, "managed_tool_names_for_policy", upgraded)
+        bridges_mod.reconcile_enabled_app_resources("scoped-app")
+
+        after = json.loads(agent_file.read_text())["managedToolPolicy"]["exclude"]
+        assert "brand_new_tool" in after, "boot must re-derive the exclusion"
+        assert "cron_add" not in after
+
+
 class TestRegisterPrunesUpgradedAwayResources:
     """A manifest UPGRADE that drops an agent or MCP server must un-register it.
     Pruning lives in the off-loop boot reconcile (reconcile_enabled_app_resources),
@@ -816,12 +855,12 @@ class TestRegisterPrunesUpgradedAwayResources:
         register_app("test-app")
         assert ghost_link.exists(), "register_app must not prune on the event loop"
 
-        # The off-loop boot reconcile is the one path that prunes. Ensure the app
-        # is enabled so reconcile processes it (it skips disabled apps).
+        # The off-loop boot reconcile is the one path that prunes. The gateway boot
+        # runs it per ENABLED, admitted app, so the app is enabled first.
         from kiro_crew.apps.manager import enable_app
 
         enable_app("test-app")
-        bridges_mod.reconcile_enabled_app_resources()
+        bridges_mod.reconcile_enabled_app_resources("test-app")
 
         assert not ghost_link.exists(), "a removed agent must be pruned by reconcile"
         after = _json.loads(bridges_mod._mcp_json_path().read_text(encoding="utf-8"))
@@ -1556,3 +1595,61 @@ class TestRenderFailureIsClassifiedByCause:
         collected: list[str] = []
         assert brmod._render_shipped_agent("app", src, io_failures=collected) is None
         assert collected == []
+
+
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
+class TestAnAgentFileSavedWithAByteOrderMark:
+    """A Windows editor saves UTF-8 "with BOM"; the three agent-file readers accept it.
+
+    Each reader decoded strictly and handed ``json.loads`` text starting with U+FEFF,
+    which it refuses, so the marked file was skipped while the same file without the
+    mark registered. Invalid JSON after the mark is still refused.
+    """
+
+    def _mark_agent(self, root: Path, body: bytes) -> None:
+        (root / "agents" / "my-agent.json").write_bytes(_UTF8_BOM + body)
+
+    def test_a_marked_agent_registers_under_the_same_name(self, tmp_path, app_env):
+        root, manifest = _installed_templated_app(tmp_path, app_env["home"], {"prompt": "hi"})
+        self._mark_agent(root, json.dumps({"name": "my-agent", "prompt": "hi"}).encode())
+
+        assert _register_agents("test-app", manifest, root) == ["test-app/my-agent"]
+        written = app_env["kiro_agents"] / "test-app--my-agent.json"
+        # kiro-cli reads the re-serialized spec, which carries no mark.
+        assert not written.read_bytes().startswith(_UTF8_BOM)
+        assert json.loads(written.read_text(encoding="utf-8"))["name"] == "my-agent"
+
+    def test_a_marked_template_renders_and_the_copy_carries_no_mark(self, tmp_path, app_env):
+        from kiro_crew.apps.bridges import _render_shipped_agent
+
+        template = tmp_path / "a.json"
+        template.write_bytes(_UTF8_BOM + json.dumps({"name": "a", "command": "{UV_BIN}"}).encode())
+
+        out = _render_shipped_agent("pptx-maker", template)
+        assert out is not None
+        assert not out.read_bytes().startswith(_UTF8_BOM)
+        assert json.loads(out.read_text(encoding="utf-8"))["name"] == "a"
+
+    def test_a_marked_agent_does_not_abort_the_stale_agent_prune(self, tmp_path, app_env):
+        from kiro_crew.apps import bridges as bridges_mod
+
+        root, manifest = _installed_templated_app(tmp_path, app_env["home"], {"prompt": "hi"})
+        self._mark_agent(root, json.dumps({"name": "my-agent"}).encode())
+        stale = app_env["kiro_agents"] / "test-app--gone.json"
+        stale.write_text('{"name": "gone"}', encoding="utf-8")
+
+        bridges_mod._prune_stale_app_resources("test-app", manifest, root)
+        assert not stale.exists(), "a readable marked agent must not skip the prune"
+
+    def test_invalid_json_after_a_mark_is_still_refused(self, tmp_path, app_env):
+        from kiro_crew.apps.bridges import _render_shipped_agent
+
+        root, manifest = _installed_templated_app(tmp_path, app_env["home"], {"prompt": "hi"})
+        self._mark_agent(root, b"{ not json")
+        assert _register_agents("test-app", manifest, root) == []
+
+        template = tmp_path / "b.json"
+        template.write_bytes(_UTF8_BOM + b'{"name": "b", "command": "{UV_BIN}"')
+        assert _render_shipped_agent("pptx-maker", template) is None

@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew.autonudge import NudgeLoop
+from kiro_crew.autonudge import MONITOR_TERMINAL_REASON, NudgeLoop
 from kiro_crew.dashboard.handlers.messaging import api_notification_channels
 from kiro_crew.dashboard.notification_coordinator import unread_count
 from kiro_crew.dashboard.state import DashboardState
@@ -62,6 +62,43 @@ def _merged_monitor_loop() -> NudgeLoop:
     return loop
 
 
+def _closed_monitor_loop() -> NudgeLoop:
+    loop = _merged_monitor_loop()
+    assert loop.monitor is not None
+    loop.monitor.outcome = MonitorOutcome.BLOCKED
+    loop.monitor.stopped_reason = "pull_request_closed"
+    return loop
+
+
+def _gated_legacy_loop(outcome: MonitorOutcome) -> NudgeLoop:
+    """A gated prompt loop whose pull-request watch settled on *outcome*."""
+    return NudgeLoop(
+        id="loop-gated",
+        slot_key="chat-9-1700000000",
+        message="watch https://github.com/acme/widgets/pull/7 until it merges",
+        max_cycles=24,
+        cycle_count=3,
+        stopped_reason=MONITOR_TERMINAL_REASON,
+        gate=True,
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="watch until it merges",
+            created_ts=1.0,
+            outcome=outcome,
+            stopped_at=2.0,
+        ),
+    )
+
+
+def _merged_legacy_loop() -> NudgeLoop:
+    return _gated_legacy_loop(MonitorOutcome.SUCCESS)
+
+
+def _closed_legacy_loop() -> NudgeLoop:
+    return _gated_legacy_loop(MonitorOutcome.BLOCKED)
+
+
 def _capped_legacy_loop() -> NudgeLoop:
     return NudgeLoop(
         id="loop-x",
@@ -105,14 +142,27 @@ class TestLegacyChannelOverride:
 
 
 class TestGatewayNoticesLandOnMonitorChannel:
-    @pytest.mark.parametrize("make_loop", [_merged_monitor_loop, _capped_legacy_loop])
-    def test_notice_lands_on_system_monitor_with_kind_agent(self, monkeypatch, tmp_path, make_loop):
+    @pytest.mark.parametrize(
+        ("make_loop", "priority"),
+        [
+            # A merge needs nothing from the user: feed only, no bell.
+            (_merged_monitor_loop, "passive"),
+            (_merged_legacy_loop, "passive"),
+            (_closed_monitor_loop, SYSTEM_CHANNELS[MONITOR_CHANNEL]),
+            (_closed_legacy_loop, SYSTEM_CHANNELS[MONITOR_CHANNEL]),
+            (_capped_legacy_loop, SYSTEM_CHANNELS[MONITOR_CHANNEL]),
+        ],
+    )
+    def test_notice_lands_on_system_monitor_with_kind_agent(
+        self, monkeypatch, tmp_path, make_loop, priority
+    ):
         state = _make_state(monkeypatch, tmp_path)
         assert GatewayOrchestrator._notify_nudge_expired(_orch(state), make_loop()) is True
         [note] = state._notification_log
         assert note["channel"] == MONITOR_CHANNEL
         assert note["kind"] == "agent"  # feed badge and per-kind sound unchanged
-        assert note["priority"] == SYSTEM_CHANNELS["system.agent"]
+        assert note["priority"] == priority
+        assert unread_count(state._notification_log) == (0 if priority == "passive" else 1)
 
     def test_muting_monitor_silences_notices_but_not_agent_notes(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)

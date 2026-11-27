@@ -35,7 +35,7 @@ from kiro_crew.dashboard.chat_delivery import (
     queue_for_next_turn,
     steer_into_running_turn,
 )
-from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
+from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES, SOURCE_CHANNELS_KEY
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
 
 logger = logging.getLogger(__name__)
@@ -108,17 +108,17 @@ def _refused(reason: str) -> ResumedBusyOutcome:
 #: refusals for a slot that cannot take the message -- none open, closing,
 #: remote-bound, idle -- stay with each dispatcher's own wording, which names the
 #: surface's unlink command (``resumed_busy_reply``'s *busy_refusal*).
-RESUMED_STEERED = "↪️ Steering that session — your message was folded into its running turn."
-RESUMED_QUEUED = "⏳ Queued for that session — it runs when the current turn finishes."
+RESUMED_STEERED = "Steering that session — your message was folded into its running turn."
+RESUMED_QUEUED = "Queued for that session — it runs when the current turn finishes."
 #: The session closed while the message was in flight; the close archives the
 #: queue the turn's teardown moved the text onto, so it runs on the next resume.
 RESUMED_QUEUED_AFTER_CLOSE = (
-    "⏳ Queued for that session — it closed while your message was in flight; "
+    "Queued for that session — it closed while your message was in flight; "
     "the message runs when the session is next resumed."
 )
 #: The session changed while the message was in flight and the successor ran it.
 RESUMED_RAN_AFTER_MOVE = (
-    "✅ Delivered to that session — it was reopened while your message was in flight, "
+    "Delivered to that session — it was reopened while your message was in flight, "
     "and the message ran there as its own turn."
 )
 #: The session closed while the message was in flight and the queue the close
@@ -126,14 +126,14 @@ RESUMED_RAN_AFTER_MOVE = (
 #: nothing revisits once the slot is popped. Honest at the instant: the message
 #: may still run if the archive catches up, so the remedy is to watch first.
 RESUMED_BUSY_UNSAVED_CLOSE_REFUSAL = (
-    "⏳ That session closed while your message was in flight, and the message had "
+    "That session closed while your message was in flight, and the message had "
     "not been saved with it yet. If it does not run once the session is reopened, "
     "send it again."
 )
 #: The slot's live queue is at its bound. Refused rather than appended past it or
 #: evicting a waiting entry; the author still holds the text.
 RESUMED_BUSY_QUEUE_FULL_REFUSAL = (
-    "⏳ That session's queue is full, so this message was NOT added. "
+    "That session's queue is full, so this message was NOT added. "
     "Send it again once some of the waiting messages have run."
 )
 #: Attachments cannot ride either arm: ``_session/steer`` carries text only, and
@@ -141,7 +141,7 @@ RESUMED_BUSY_QUEUE_FULL_REFUSAL = (
 #: the consuming turn, which the dashboard drain has no hook to own). The files
 #: stay with the user rather than being dropped or answered without.
 RESUMED_BUSY_ATTACHMENTS_REFUSAL = (
-    "⏳ That session is busy, and a message with attachments cannot wait in its "
+    "That session is busy, and a message with attachments cannot wait in its "
     "queue. Send it again once the turn finishes."
 )
 #: The slot the steer was handed to stopped being the one the session resolves
@@ -149,7 +149,7 @@ RESUMED_BUSY_ATTACHMENTS_REFUSAL = (
 #: key). Nothing would drain a queue entry made now, so the text is refused with
 #: the remedy rather than confirmed and lost.
 RESUMED_BUSY_MOVED_REFUSAL = (
-    "⏳ That session changed while your message was in flight, so it was NOT "
+    "That session changed while your message was in flight, so it was NOT "
     "delivered. Send it again."
 )
 
@@ -337,6 +337,8 @@ async def hand_to_resumed_slot(
     channel_type: str = "",
     conversation_id: str = "",
     principal: str = "",
+    source_channels: tuple[str, ...] = (),
+    user_meta: dict[str, Any] | None = None,
 ) -> ResumedBusyOutcome:
     """Route *text*, sent mid-turn into resumed *session_key*, to its slot.
 
@@ -356,6 +358,15 @@ async def hand_to_resumed_slot(
     told "queued" and reads neither the target's transcript nor the SEL. Left
     empty, nothing is stamped and a drop is reported nowhere, as for a
     dashboard-typed entry.
+
+    *source_channels* and *user_meta* are what the Slack linked-thread route
+    stamps on its own queue entry: the channels admission judges the drained turn
+    by (``slot_queue_repository.SOURCE_CHANNELS_KEY``, kept whatever the slot is
+    linked to by then) and the user row's meta. Whatever the text becomes as a
+    queue entry carries both: the queue arm stamps them on its append, and a steer
+    carries them in its admission dict, from which the teardown requeue stamps
+    them on the entry it inserts. Left empty (every other channel), the entry
+    keeps its exact prior shape.
 
     *mode* is the channel's resolved mid-turn mode (``"steer"`` or ``"queue"``,
     per-message override already applied). Steer is attempted only when asked for
@@ -475,6 +486,8 @@ async def hand_to_resumed_slot(
             channel_type=channel_type,
             conversation_id=conversation_id,
             principal=principal,
+            source_channels=source_channels,
+            user_meta=user_meta,
         ),
         name=f"channel-handoff:{session_key}",
     )
@@ -493,6 +506,8 @@ async def _run_handoff(
     channel_type: str,
     conversation_id: str,
     principal: str,
+    source_channels: tuple[str, ...],
+    user_meta: dict[str, Any] | None,
 ) -> ResumedBusyOutcome:
     """The hand-off proper; :func:`hand_to_resumed_slot` runs it as a shielded task."""
     slot = live_dashboard_slot(state, session_key)
@@ -512,6 +527,8 @@ async def _run_handoff(
     # leaves (see ``standing_after_move``). Minted here, not inside the steer, so
     # it is known on this side of the RPC.
     delivery_id = uuid.uuid4().hex
+    # The caller's row meta, one level deep as Slack's own queue arm copies it.
+    entry_meta = {k: dict(v) if isinstance(v, dict) else v for k, v in (user_meta or {}).items()}
 
     if mode != "queue":
         client = getattr(slot, "_acp_client", None)
@@ -524,7 +541,11 @@ async def _run_handoff(
             # stamp does: the requeue copies that dict onto the entry verbatim,
             # so a steer that ends up queued keeps its drop-notice address. Inert
             # for the fence and the drain, which read only the containment key.
-            admission = {**containment_meta(state, slot), **recipient}
+            # The caller's row meta and source channels ride it the same way; the
+            # requeue moves the channels off the meta onto the entry itself.
+            admission = {**entry_meta, **containment_meta(state, slot), **recipient}
+            if source_channels:
+                admission[SOURCE_CHANNELS_KEY] = tuple(source_channels)
             # The audience fence, recorded BEFORE the RPC (see the docstring):
             # one record per audience per turn, and the set shares the cap every
             # other per-steer store has. At the cap -- an audience that changed
@@ -542,7 +563,7 @@ async def _run_handoff(
                     getattr(slot, "key", "?"),
                     MAX_PENDING_STEERS,
                 )
-                return _queue_arm(state, slot, text, recipient)
+                return _queue_arm(state, slot, text, recipient, source_channels, entry_meta)
             _hold_fence(slot, fence, admission)
             # Which turn this steer is going into. ``_turn_generation`` increments
             # on every task assignment, so it names a turn even when a later task
@@ -621,18 +642,26 @@ async def _run_handoff(
             blocked = slot_unable_to_take(slot)
             if blocked:
                 return _refused(blocked)
-    return _queue_arm(state, slot, text, recipient)
+    return _queue_arm(state, slot, text, recipient, source_channels, entry_meta)
 
 
-def _queue_arm(state: Any, slot: Any, text: str, recipient: dict[str, Any]) -> ResumedBusyOutcome:
+def _queue_arm(
+    state: Any,
+    slot: Any,
+    text: str,
+    recipient: dict[str, Any],
+    source_channels: tuple[str, ...],
+    entry_meta: dict[str, Any],
+) -> ResumedBusyOutcome:
     """Append *text* to the slot's queue, refusing at the live queue's bound.
 
     The bound is read on the object the entry would land on, immediately before
     the append, with nothing suspending between the two. Refused, never evicted:
-    a waiting entry is someone's text with no other copy.
+    a waiting entry is someone's text with no other copy. *source_channels* is
+    on the entry from the moment it joins the queue.
     """
     # circular import: session_control imports this package's modules at module level.
-    from kiro_crew.dashboard.session_control import CHANNEL_RECIPIENT_META_KEY
+    from kiro_crew.dashboard.session_control import CHANNEL_RECIPIENT_META_KEY, containment_meta
 
     if len(getattr(slot, "_queue", None) or []) >= MAX_LIVE_QUEUE_ENTRIES:
         logger.warning(
@@ -646,6 +675,9 @@ def _queue_arm(state: Any, slot: Any, text: str, recipient: dict[str, Any]) -> R
         state,
         slot,
         text,
+        # The caller's row meta under the containment captured now, the order
+        # Slack's own queue arm writes; absent, the enqueue captures it itself.
+        admission={**entry_meta, **containment_meta(state, slot)} if entry_meta else None,
         directive_user_origin=True,
         directive_channel_origin=True,
         channel_recipient=recipient.get(CHANNEL_RECIPIENT_META_KEY),
@@ -655,5 +687,6 @@ def _queue_arm(state: Any, slot: Any, text: str, recipient: dict[str, Any]) -> R
         # dashboard turn reaches the drain as the words "/clear", not as the
         # command that wipes the session.
         commands_off=True,
+        source_channels=source_channels,
     )
     return ResumedBusyOutcome(HANDOFF_QUEUED)

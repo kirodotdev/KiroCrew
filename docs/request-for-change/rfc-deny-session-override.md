@@ -3,8 +3,8 @@ title: A person can override a command deny rule for one call or one session
 status: implemented
 author: Bolin Chen
 created: 2026-11-01
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: [27574, 29427, 33626]
 tracking-issues: [26984, 33406]

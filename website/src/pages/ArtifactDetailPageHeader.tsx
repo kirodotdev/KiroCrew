@@ -8,8 +8,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  ArrowLeft, Camera, Check, Copy, ExternalLink, Download, Eye, FoldHorizontal, MoreHorizontal, Pencil,
-  UnfoldHorizontal, RefreshCw, X, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Star,
+  ArrowLeft, Camera, Check, Copy, Download, Eye, FoldHorizontal, MoreHorizontal, Pencil,
+  UnfoldHorizontal, RefreshCw, X, RotateCcw, Sparkles, MessageSquare, Upload, Star,
   Folder as FolderIcon,
 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
@@ -18,16 +18,19 @@ import SimpleSelect from '../components/SimpleSelect'
 import { fmtNumber } from '../i18n/format'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
+import { platformShortcut } from '../utils/platform'
 import HoverTip from '../components/HoverTip'
+import { ArtifactTagChips } from '../components/ArtifactTagChips'
 import { ArtifactSendToSessionSubmenu, useArtifactSendToSession } from '../components/ArtifactSendToSession'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
 import { FolderPickerItems } from '../components/FolderMoveSubmenu'
 import { folderBreadcrumb } from '../utils/artifactFolderTree'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { artifactAssetUrl } from '../components/ArtifactBody'
+import { canvasDocument, discardCanvas, flushCanvas } from '../components/canvas/canvasPending'
 import { api } from '../api/client'
 import { downloadUrl, isAndroidWebView } from '../utils/download'
-import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
+import { ArtifactPopoutMenuItems } from '../components/ArtifactPopoutMenuItems'
 import { USER_SELECTABLE_KINDS } from '../lib/artifactKinds'
 import { COMPARE_NONE, compareChoices, isComparableKind, stateLabel } from '../lib/artifactCompare'
 import type { Artifact } from '../types'
@@ -106,42 +109,6 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
   )
 }
 
-/**
- * The pop-out control in the artifact detail toolbar. Opens the artifact in its
- * own browser window and, once it's out, swaps to Focus + Bring-back (mirrors
- * the chat session popout menu). Kept as a child so the `useArtifactPopouts`
- * subscription only runs on the main dashboard — never inside the popout window
- * itself (where this control isn't rendered).
- */
-/**
- * Pop-out entries of the toolbar's overflow menu: "Pop out to window" while the
- * artifact is here, or Focus + Bring back once it lives in its own window. Not
- * rendered inside the popout window itself (the frame's Return button closes it).
- */
-function ArtifactPopoutMenuItems({ slug, name }: { slug: string; name: string }) {
-  const { isPoppedOut, open, focus, bringBack } = useArtifactPopouts()
-  if (isPoppedOut(slug)) {
-    return (
-      <>
-        <DropdownMenuItem onSelect={() => focus(slug)}>
-          <Monitor size={13} className="shrink-0 text-accent" aria-hidden="true" />
-          <span>{i18nT('pages.artifactDetailPage.focus_popped_out_window')}</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => bringBack(slug)}>
-          <Undo2 size={13} className="shrink-0 text-muted" aria-hidden="true" />
-          <span>{i18nT('pages.artifactDetailPage.bring_artifact_back_to_this_window')}</span>
-        </DropdownMenuItem>
-      </>
-    )
-  }
-  return (
-    <DropdownMenuItem onSelect={() => open(slug, name)}>
-      <ExternalLink size={13} className="shrink-0 text-muted" aria-hidden="true" />
-      <span>{i18nT('pages.artifactDetailPage.pop_out_to_window')}</span>
-    </DropdownMenuItem>
-  )
-}
-
 /** The More menu's state: copy, open, send to a session and download. */
 export function useArtifactDetailPageMenu({
   stateRead, documentRead, composerRead, companionRead,
@@ -185,7 +152,9 @@ export function useArtifactDetailPageMenu({
     // the text actually reached the clipboard. Gate the confirmation on it so a
     // `false` shows the failure glyph instead of a tick over an unchanged
     // clipboard. (A `.catch` here would be unreachable dead code.)
-    copyToClipboard(artifact?.content ?? '')
+    // A live canvas copies what its editor shows, waiting edits included.
+    const liveCanvas = artifact?.kind === 'canvas' ? canvasDocument(artifact.slug) : null
+    copyToClipboard(liveCanvas ?? artifact?.content ?? '')
       .then((ok) => {
         if (attempt !== copyAttemptRef.current) return
         setCopyStatus(ok ? 'copied' : 'failed')
@@ -211,7 +180,12 @@ export function useArtifactDetailPageMenu({
     slug,
     active: !editing,
     onSend: sendNav,
-    beforeSend: guardSendToSession,
+    // Sending leaves the page, so a canvas's waiting save lands first; one that
+    // fails stays on the page with its notice instead of being dropped.
+    beforeSend: (proceed) => {
+      if (artifact?.kind !== 'canvas') { guardSendToSession(proceed); return }
+      void flushCanvas(slug).then(ok => { if (ok) guardSendToSession(proceed) })
+    },
     onError: setSendToSessionError,
   })
 
@@ -230,15 +204,19 @@ export function useArtifactDetailPageMenu({
       document.body.removeChild(a)
       return
     }
-    const isMarkdownLike = artifact.kind === 'markdown' || artifact.kind === 'text' || artifact.kind === 'json' || artifact.kind === 'svg'
-    const blobBody = exportSrcdoc ?? artifact.content ?? ''
+    const isMarkdownLike = artifact.kind === 'markdown' || artifact.kind === 'text' || artifact.kind === 'json' || artifact.kind === 'svg' || artifact.kind === 'canvas'
+    // A live canvas exports what its editor shows: an autosave may still be waiting.
+    const liveCanvas = artifact.kind === 'canvas' ? canvasDocument(artifact.slug) : null
+    const blobBody = liveCanvas ?? exportSrcdoc ?? artifact.content ?? ''
     const mime = isMarkdownLike
-      ? (artifact.kind === 'json' ? 'application/json' : artifact.kind === 'svg' ? 'image/svg+xml' : 'text/plain')
+      ? (artifact.kind === 'json' || artifact.kind === 'canvas' ? 'application/json' : artifact.kind === 'svg' ? 'image/svg+xml' : 'text/plain')
       : 'text/html'
+    // A canvas downloads as its own file type, the one Add Artifact imports back.
     const ext = artifact.kind === 'markdown' ? 'md'
       : artifact.kind === 'json' ? 'json'
       : artifact.kind === 'svg' ? 'svg'
       : artifact.kind === 'text' ? 'txt'
+      : artifact.kind === 'canvas' ? 'canvas'
       : 'html'
     const safeName = artifact.name.replace(/[^a-zA-Z0-9-_ ]/g, '')
     const filename = `${safeName || artifact.slug}-v${effectiveVersion}.${ext}`
@@ -295,8 +273,7 @@ export function ArtifactDetailPageHeader({
   const {
     slug, navigate, confirm, renaming, nameDraft, setNameDraft, selectedVersion,
     setSelectedVersion, compareWith, setCompareWith, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
-    saving, saveConflict, showPublish, setShowPublish, addingTag, setAddingTag, newTag, setNewTag, ime,
-    refocusAddTagRef, addTagButtonRef,
+    saving, saveConflict, showPublish, setShowPublish, ime,
   } = stateRead
   const { versionsQuery, versions, isCurrent, editable, dirty, usesIframe } = documentRead
   const {
@@ -307,14 +284,6 @@ export function ArtifactDetailPageHeader({
   const {
     copyStatus, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession, downloadAsHtml,
   } = menuRead
-  // A key that closes the tag input unmounts the focused field, so the + Tag
-  // button takes focus back as it mounts. Enter and Space would also activate
-  // that newly focused button, so their default is cancelled; Escape and comma
-  // activate nothing and keep theirs.
-  const closeTagInputByKey = (e: { key: string; preventDefault: () => void }) => {
-    if (e.key === 'Enter' || e.key === ' ') e.preventDefault()
-    refocusAddTagRef.current = true
-  }
   // Version-picker rows as two PARALLEL arrays, newest snapshot first, the order
   // the <option> list had. `live` leads as a static entry: Live is always-current
   // state, distinct from any numbered snapshot because in the explicit-snapshot
@@ -363,7 +332,10 @@ export function ArtifactDetailPageHeader({
       <div className="px-4 md:px-6 py-2 flex flex-wrap items-center gap-2">
         {!popout && (
           <Btn onClick={async () => {
-            if (dirty && !(await confirm({
+            // A canvas saves itself, so `dirty` never covers it: send what is
+            // waiting, and ask only when a save could not land.
+            const canvasSaved = await flushCanvas(artifact.slug)
+            if ((dirty || !canvasSaved) && !(await confirm({
               title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
               confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
             }))) return
@@ -418,80 +390,7 @@ export function ArtifactDetailPageHeader({
             </button>
           </HoverTip>
         )}
-        {artifact.tags.map((t) => (
-          <span key={t} className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-border text-muted group`}>
-            {/* Own element: the remove button's HoverTip keeps an sr-only copy of
-                its label in this chip, so the bare text node would no longer be
-                the chip's whole text. */}
-            <span>{t}</span>
-            <HoverTip label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}>
-              <button
-                type="button"
-                // The chip, and this focused button with it, leaves the page
-                // once the write lands, so focus moves to + Tag first.
-                onClick={() => { removeTag(t); addTagButtonRef.current?.focus() }}
-                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
-                aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
-              >
-                <X size={12} />
-              </button>
-            </HoverTip>
-          </span>
-        ))}
-        {addingTag ? (
-          <input
-            type="text"
-            value={newTag}
-            onChange={e => setNewTag(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                // Rule 2 shape: this handler carries more than Enter (comma/space
-                // also commit), so only the Enter path is gated. Rule 1: single-line
-                // input, so the guard alone is enough.
-                if (ime.isComposing(e)) return
-                // addTag closes the input for any non-blank text, a duplicate included.
-                if (newTag.trim()) closeTagInputByKey(e)
-                addTag(newTag)
-              }
-              if (e.key === ',' || e.key === ' ') {
-                // Space cycles IME candidates mid-composition; committing here
-                // would post the composing buffer and kill candidate selection.
-                // The claim is key-agnostic: it consumes the separator only
-                // when the IME is not itself using the keypress.
-                if (ime.claimEnter(e) && newTag.trim()) { closeTagInputByKey(e); addTag(newTag) }
-              }
-              if (e.key === 'Escape') { ime.reset(); setNewTag(''); closeTagInputByKey(e); setAddingTag(false) }
-            }}
-            {...ime.bindComposition({
-              onBlur: () => {
-                if (newTag.trim()) addTag(newTag)
-                else setAddingTag(false)
-              },
-            })}
-            autoFocus
-            placeholder={i18nT('pages.artifactDetailPage.tag')}
-            className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-accent text-text outline-hidden focus-ring`}
-            style={{ width: '90px' }}
-            aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
-          />
-        ) : (
-          <HoverTip label={i18nT('pages.artifactDetailPage.add_a_tag_comma_separated_tags_supported')}>
-            <button
-              ref={el => {
-                addTagButtonRef.current = el
-                if (!el || !refocusAddTagRef.current) return
-                refocusAddTagRef.current = false
-                el.focus()
-              }}
-              type="button"
-              onClick={() => setAddingTag(true)}
-              className={`${TOOLBAR_CHIP_CLASS} border border-dashed border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors`}
-              aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
-            >
-              <Plus size={13} /> {i18nT('pages.artifactDetailPage.tag_2')}
-            </button>
-          </HoverTip>
-        )}
+        <ArtifactTagChips tags={artifact.tags} addTag={addTag} removeTag={removeTag} stateRead={stateRead} />
         {/* `flex-wrap`: the parent row wraps, but this group did not, so at a
             narrow window the trailing controls (Download last) ran past the
             viewport edge and became unreachable. Wrapping keeps every action
@@ -510,10 +409,14 @@ export function ArtifactDetailPageHeader({
             optionLabels={versionOptionLabels}
             value={selectedVersion === null ? 'live' : String(selectedVersion)}
             onChange={async (raw) => {
-              if (dirty && !(await confirm({
+              const canvasSaved = await flushCanvas(artifact.slug)
+              if ((dirty || !canvasSaved) && !(await confirm({
                 title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
                 confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
               }))) return
+              // The canvas stays mounted across a version switch, so its edits
+              // are dropped here rather than with the page.
+              if (!canvasSaved) discardCanvas(artifact.slug)
               // A typed comment draft is lost with the toolbar the switch unmounts.
               await guardCommentDraft(() => {
                 endEditing()
@@ -537,7 +440,17 @@ export function ArtifactDetailPageHeader({
                 })),
               ]}
               value={compareValue}
-              onChange={(key) => setCompareWith(key)}
+              onChange={async (key) => {
+                if (key !== COMPARE_NONE) {
+                  const canvasSaved = await flushCanvas(artifact.slug)
+                  if (!canvasSaved && !(await confirm({
+                    title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
+                    confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
+                  }))) return
+                  if (!canvasSaved) discardCanvas(artifact.slug)
+                }
+                setCompareWith(key)
+              }}
             />
           )}
           {/* No hand-off: editor buffer editedContent may be dirty */}
@@ -555,7 +468,7 @@ export function ArtifactDetailPageHeader({
             <>
               <HoverTip label={saveConflict
                 ? i18nT('pages.artifactDetailPage.save_overwrite_newer_content_title')
-                : i18nT('pages.artifactDetailPage.save_to_live_cmd_s_updates_the_live_state_withou')}>
+                : i18nT('pages.artifactDetailPage.save_to_live_cmd_s_updates_the_live_state_withou', { shortcut: platformShortcut('Cmd+S') })}>
                 <button
                   type="button"
                   onClick={() => handleSave(false, saveConflict)}

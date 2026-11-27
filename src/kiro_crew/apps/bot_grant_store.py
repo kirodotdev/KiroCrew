@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import member_records, platform_compat
-from kiro_crew.apps.execution import APP_NAME_RE
+from kiro_crew.apps.execution import APP_NAME_RE, INSTALLED_AT_MAX_CHARS
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 
 #: The record kind under ``member-records/``; one of ``member_records.RECORD_KINDS``.
@@ -37,8 +37,8 @@ MAX_BOT_GRANTS = 200
 #: Largest record read; a ticked list of the most slugs fits well under it.
 _RECORD_MAX_BYTES = 64 * 1024
 
-#: Longest ``installedAt`` a record keeps; an ISO timestamp is far shorter.
-_INSTALLED_AT_MAX_CHARS = 64
+#: Longest ``installedAt`` a record keeps (shared with the memory consent record).
+_INSTALLED_AT_MAX_CHARS = INSTALLED_AT_MAX_CHARS
 
 
 def _read_bot_grants(value: Any) -> list[str]:

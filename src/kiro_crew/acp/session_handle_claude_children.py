@@ -45,6 +45,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import client_native_children as children
+from kiro_crew.acp._dispatch import redact_text
 from kiro_crew.acp.types import (
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -158,7 +159,7 @@ def _claude_child_events(
                         kind=EVENT_SUBAGENT_ACTIVITY,
                         sub_session_id=child_sid,
                         tool_call_id=tool_call_id,
-                        title=str(update.get("title") or ""),
+                        title=redact_text(str(update.get("title") or "")),
                     )
                 )
             return events, False

@@ -75,12 +75,13 @@ class TestChatSlot:
         assert slot.messages[0]["content"] == "msg 50"
         assert slot.messages[-1]["content"] == f"msg {count - 1}"
 
-    def test_trim_advances_the_durable_counter_by_durable_rows_only(self):
-        """Transient rows folded into the frozen prefix advance ONLY the all-rows counter.
+    def test_trim_advances_both_counters_by_durable_rows_only(self):
+        """Transient rows folded into the frozen prefix advance neither counter.
 
         ``_disk_older_durable_count`` is the base for absolute message positions, so it
-        counts only rows a durable read returns. The leading transient rows make
-        counting by ``persisted_trim`` or after the ``del`` visibly wrong.
+        counts only rows a durable read returns, and ``_disk_older_count`` counts
+        transcript lines, which a transient row never becomes. The leading transient
+        rows make counting by ``persisted_trim`` or after the ``del`` visibly wrong.
         """
         slot = _ChatSlot("s1")
         # The five oldest window rows: 2 transient, 3 durable.
@@ -99,7 +100,7 @@ class TestChatSlot:
         for i in range(5):
             slot.append("user", f"new {i}")
 
-        assert slot._disk_older_count == 5, "all persisted trimmed rows are credited"
+        assert slot._disk_older_count == 3, "only the trimmed rows on disk are credited"
         assert (
             slot._disk_older_durable_count == 3
         ), "only the durable trimmed rows advance the durable counter"

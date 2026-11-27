@@ -43,7 +43,13 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from kiro_crew.connections.crew_oauth import CrewOAuthError, Tokens, TokenStore, _refresh_locks
+from kiro_crew.connections.crew_oauth import (
+    CrewOAuthError,
+    Tokens,
+    TokenStore,
+    _refresh_locks,
+    safe_error_code,
+)
 from kiro_crew.connections.registry import CALLBACK_PATH, DCR_CALLBACK_PORT, get_provider
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery_probe_state import MCP_CLIENT_PROTOCOL_VERSION
@@ -695,9 +701,7 @@ async def _token(client: Client, form: dict[str, str]) -> dict[str, Any]:
     status, doc, _ = await _post(client.token, form=form, auth=auth)
     error = doc.get("error")
     if status >= 400 or error:
-        raise CrewOAuthError(
-            str(error)[:64] if isinstance(error, str) and error else f"token_http_{status}"
-        )
+        raise CrewOAuthError(safe_error_code(error, f"token_http_{status}"))
     return doc
 
 
@@ -730,13 +734,22 @@ async def revoke(slug: str, tokens: Tokens, store: ClientStore | None = None) ->
         client, _ = await asyncio.to_thread((store or ClientStore()).read, slug)
         if client is None or not client.revoke:
             return False
-        form = {
-            "token": tokens.refresh or tokens.access,
-            "token_type_hint": "refresh_token" if tokens.refresh else "access_token",
-        }
-        auth = _client_auth(client, form)
-        status, _, _ = await _post(client.revoke, form=form, auth=auth)
-        return status == 200
+        # RFC 7009 lets a vendor skip the cascade from a refresh token to its access
+        # token, so each live token is revoked in its own call.
+        pairs = [(tokens.access, "access_token")]
+        if tokens.refresh:
+            pairs.append((tokens.refresh, "refresh_token"))
+        done = True
+        for token, hint in pairs:
+            form = {"token": token, "token_type_hint": hint}
+            auth = _client_auth(client, form)
+            try:
+                status, _, _ = await _post(client.revoke, form=form, auth=auth)
+            except Exception:  # noqa: BLE001 -- one failed call never spares the other token
+                done = False
+                continue
+            done = done and status == 200
+        return done
     except Exception:  # noqa: BLE001 -- best effort, as the pre-registered revoke
         return False
 
@@ -771,8 +784,20 @@ async def _route(request: Any) -> tuple[Any, str]:
     return web.Response(status=400, text=_STALE), ""
 
 
+def titled_page(answer: Any) -> Any:
+    """*answer*'s fixed text as the titled, uncached page the consent tab shows."""
+    from aiohttp import web
+
+    return web.Response(
+        status=answer.status,
+        text=_PAGE.format(html.escape(answer.text or "")),
+        content_type="text/html",
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
 async def _loopback_route(request: Any) -> Any:
-    return (await _route(request))[0]
+    return titled_page((await _route(request))[0])
 
 
 async def gateway_callback(request: Any) -> Any:
@@ -781,17 +806,10 @@ async def gateway_callback(request: Any) -> Any:
     Token auth lets it through (the redirect carries no Crew credential); the
     pending ``state`` is the only admission. The page is fixed text, never input.
     """
-    from aiohttp import web
-
     answer, slug = await _route(request)
     outcome = "ok" if answer.status == 200 else "refused"
     _audit("connections_crew_oauth_callback", outcome, slug or "unknown")
-    return web.Response(
-        status=answer.status,
-        text=_PAGE.format(html.escape(answer.text or "")),
-        content_type="text/html",
-        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
-    )
+    return titled_page(answer)
 
 
 async def listen(state: str, handler: Handler, *, slug: str = "", loopback: bool = True) -> int:

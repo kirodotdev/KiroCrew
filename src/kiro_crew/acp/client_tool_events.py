@@ -332,6 +332,9 @@ async def _maybe_fire_pre_tool_hooks(self: AcpClient, tool_event: "AcpEvent") ->
 
             _serialized = redact(_serialized)
             _redacted_input = _serialized
+        # The structured params, when the frame carried them, are what the
+        # payload's tool_input is built from (redacted value by value in
+        # hooks.hook_tool_input); the redacted string above is the fallback.
         await fire_tool_hooks(
             hook_store,
             # Fall back to 'unknown' when the event carries no title, matching
@@ -340,6 +343,7 @@ async def _maybe_fire_pre_tool_hooks(self: AcpClient, tool_event: "AcpEvent") ->
             tool_event.title or "unknown",
             _redacted_input,
             agent_role=self._agent or None,
+            raw_tool_params=getattr(tool_event, "raw_tool_params", None),
         )
     except Exception:
         logger.warning("ACP-layer PreToolUse hook failed", exc_info=True)
@@ -381,18 +385,16 @@ async def _maybe_fire_post_tool_hooks(self: AcpClient, tool_result_event: "AcpEv
         tool_name = tool_name[9:]
     try:
         # Redact before firing user hooks (parity with chat_runner PostToolUse); addresses security-controls review.
+        from kiro_crew.hook_output import bounded_hook_output
         from kiro_crew.security import redact
 
         _redacted_output = redact(tool_result_event.tool_output or "")
-        # Bound the payload handed to user hook scripts to the first 2000 chars
-        # (parity with chat_runner/subagent.py [:2000]). Redact-then-truncate is
-        # deliberate: redact the FULL output first so secrets anywhere are scrubbed,
-        # only THEN truncate — truncating first could leave a secret past char 2000.
-        _redacted_output = _redacted_output[:2000]
+        # Redact the FULL output, then cut it for the hook: cutting first can split a
+        # credential into a fragment the redactor does not match.
         await hook_store.fire(
             HOOK_EVENT_POST_TOOL_USE,
             tool_name=tool_name,
-            tool_response={"output": _redacted_output},
+            tool_response=bounded_hook_output(_redacted_output),
             agent_role=self._agent or None,
         )
     except Exception:

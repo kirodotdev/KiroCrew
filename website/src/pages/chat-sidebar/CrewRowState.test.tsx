@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { CREW_STATE_STYLE, CrewStateWord, type CrewStateKind } from './CrewRowState'
 import { crewRowOwnState } from './SessionRow'
-import { CONDUCTOR_MODE_FLOW_SECONDS } from '../../components/crew/CrewModeMarks'
 
 const fontWeight = (tone: string) => tone.split(' ').find(c => /^font-/.test(c)) ?? 'font-normal'
 
@@ -17,7 +16,7 @@ describe('Conductor mode row state word', () => {
     expect(run.tone).not.toBe(wait.tone)
   })
 
-  it('Running draws a solid green dot before the word', () => {
+  it('Running draws a solid muted dot before the word', () => {
     render(<CrewStateWord kind="running" title="Thinking" />)
     const state = screen.getByTestId('crew-root-state')
     expect(state).toHaveTextContent(/^Running$/)
@@ -28,7 +27,7 @@ describe('Conductor mode row state word', () => {
     expect(mark).toHaveAttribute('data-mark', 'filled')
     expect(mark).toHaveAttribute('fill', 'currentColor')
     expect(mark).toHaveAttribute('aria-hidden', 'true')
-    expect(mark).toHaveClass('text-[var(--ok)]')
+    expect(mark).toHaveClass('crew-tone-muted')
     // Same glyph size as the session count's bubble.
     expect(mark).toHaveAttribute('width', '11')
     // The mark never moves.
@@ -69,10 +68,5 @@ describe('Conductor mode row state word', () => {
     expect(crewRowOwnState('goal_loop', '', true)?.kind).toBe('stalled')
     expect(crewRowOwnState('unread', '')).toBeNull()
     expect(crewRowOwnState(undefined, '')).toBeNull()
-  })
-
-  it('the conductor mode tag flows fast enough to read as moving', () => {
-    expect(CONDUCTOR_MODE_FLOW_SECONDS).toBeLessThanOrEqual(2.5)
-    expect(CONDUCTOR_MODE_FLOW_SECONDS).toBeGreaterThan(0)
   })
 })

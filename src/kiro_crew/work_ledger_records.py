@@ -85,6 +85,7 @@ ACCEPTANCE_READ_FIELDS: dict[str, tuple[str, ...]] = {
     "human_approval": (),
     "cmd": (),
     "edition_check": ("check", "ref"),
+    "git_commit": ("repo", "branch", "base"),
 }
 
 #: ``accept_eval.py``'s own ``pr_merged`` ``repo`` pattern, mirrored so a bar it can
@@ -97,6 +98,12 @@ ACCEPTANCE_GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1
 #: as there. A test pins both equal to the script's.
 ACCEPTANCE_CHECK_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
 ACCEPTANCE_CHECK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+#: ``accept_eval.py``'s own ``git_commit`` ``branch`` and ``base`` patterns, mirrored
+#: the same way and pinned equal by a test. A ``branch`` holding ``..`` is refused
+#: there too.
+ACCEPTANCE_GIT_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
+ACCEPTANCE_GIT_BASE = re.compile(r"[0-9a-f]{7,64}")
 
 #: The ``kind`` values that script dispatches on at all. Anything else is an error-only
 #: spec (its closing ``return ("error", f"unknown accept kind ...")``), so it is not
@@ -396,7 +403,7 @@ class WorkItem:
     Conductor-owned: ``title``, ``acceptance``, ``state``, ``verdict``, ``decision``,
     ``worker_session_key``, ``round``, ``fails``, ``ask``.
     Worker-owned: ``status``, ``reason``, ``wake_at``, ``summary``, ``artifacts``,
-    ``pr``, ``discussion``, ``last_report_at``.
+    ``pr``, ``discussion``, ``last_report_at``, ``received_at``.
     Server-owned: ``item_id``, ``created_at``, ``closed_at``, ``decided_at``,
     ``pending_since``.
 
@@ -438,6 +445,12 @@ class WorkItem:
     artifacts: dict[str, str] = field(default_factory=dict)
     pr: int | None = None
     last_report_at: str | None = None
+    #: The HUB's clock when it filed the last report, set only on a report ingested
+    #: from a remote peer, else ``None``. ``last_report_at`` is then the peer's own
+    #: stamp, which keys ingest dedup, so the quiet-window rules measure from this
+    #: one instead. Every report replaces it. Serialized only when set, so a local
+    #: item is stored exactly as before the field.
+    received_at: str | None = None
     created_at: str = ""
     closed_at: str | None = None
     #: When the conductor last wrote ``decide`` on this item, or ``None``. A ``decide``
@@ -473,6 +486,8 @@ class WorkItem:
             out["worker_instance_id"] = self.worker_instance_id
         if self.wake_at:
             out["wake_at"] = self.wake_at
+        if self.received_at:
+            out["received_at"] = self.received_at
         if self.retired_bindings:
             out["retired_bindings"] = [dict(b) for b in self.retired_bindings]
         if self.ask:
@@ -540,6 +555,7 @@ class WorkItem:
             artifacts=artifacts,
             pr=_finite_int(raw.get("pr")),
             last_report_at=_as_opt_str(raw.get("last_report_at")),
+            received_at=_as_opt_str(raw.get("received_at")) or None,
             created_at=_as_str(raw.get("created_at")),
             closed_at=_as_opt_str(raw.get("closed_at")),
             decided_at=_as_opt_str(raw.get("decided_at")),

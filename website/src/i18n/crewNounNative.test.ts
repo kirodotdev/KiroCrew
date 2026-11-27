@@ -1,8 +1,8 @@
 /**
  * The generic noun "crew" is written in the catalog's own script in Bengali,
- * Japanese, Korean, Simplified Chinese and Russian, not left in Latin letters
- * beside the native word (#37161). Each of these catalogs words it one way
- * (ক্রু, クルー, 크루, 团队, команда).
+ * Hindi, Japanese, Korean, Simplified Chinese and Russian, not left in Latin
+ * letters beside the native word (#37161, #36383). Each of these catalogs words
+ * it one way (ক্রু, क्रू, クルー, 크루, 团队, команда).
  *
  * What stays Latin and is not counted here: the product names, the
  * `~/.kiro/crew` data path, `{{placeholders}}`, code in backticks, the
@@ -14,7 +14,7 @@ import { describe, it, expect } from 'vitest'
 
 import { CATALOGS } from './catalogs'
 
-const LOCALES = ['bn', 'ja', 'ko', 'zh-CN', 'ru']
+const LOCALES = ['bn', 'hi', 'ja', 'ko', 'zh-CN', 'ru']
 
 const VERBATIM = [
   'Kiro Crew',
@@ -66,7 +66,7 @@ function strings(node: unknown, path: string, out: Array<[string, string]>): voi
     for (const [k, v] of Object.entries(node)) strings(v, path ? `${path}.${k}` : k, out)
 }
 
-describe('the generic noun "crew" is native-script in bn, ja, ko, zh-CN and ru', () => {
+describe('the generic noun "crew" is native-script in bn, hi, ja, ko, zh-CN and ru', () => {
   it('finds a Latin "crew" in an English-looking value (detector self-check)', () => {
     expect(latinCrewWords('Issue Radar で crew を設定')).toEqual(['crew'])
     expect(latinCrewWords('Настройте crews в Issue Radar')).toEqual(['crews'])

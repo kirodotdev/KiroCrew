@@ -33,12 +33,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 
 from kiro_crew import platform_compat, pre_exec_stops
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.pre_exec_stops import register_pre_exec_stop, run_pre_exec_stops
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import await_until
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 #: Bound on reaping a test's own child after a signal. It only names a hang: a
 #: child that ignores SIGTERM is killed at it, and one that outlives the kill

@@ -26,6 +26,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_CLASS_RECOVERING,
     STOP_CLASS_STALLED,
     STOP_RECOVERY_MAX_RETRIES,
+    RefusalHopText,
     classify_stop_reason,
     continue_timed_out_calls,
 )
@@ -55,8 +56,10 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.llm_helpers import (
     provider_last_turn_usage,
+    record_interaction_event,
     stream_and_collect_json,
 )
+from kiro_crew.messaging.alternation_echo import drop_echo
 from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.messaging.dispatch import (
     consume_reinjection,
@@ -84,6 +87,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import strip_quoted_markers
 from kiro_crew.task_models import (
     MAX_RECOVERIES,
     MAX_RETRIES,
@@ -332,7 +336,7 @@ async def _check_error_loop(
         return True
     if consecutive >= 1:
         await on_notify(
-            "⚠️ Possible loop",
+            "Warning: Possible loop",
             f"Same error {consecutive + 1}x: {task.error[:100]}",
             run=run,
         )
@@ -380,11 +384,11 @@ async def execute_single_task(
     # Approval gate
     if task.requires_approval or task.force_approval:
         run.last_task_time = _time.time()
-        label = "🚧 GATE" if task.force_approval else "⏸️"
+        label = "GATE: " if task.force_approval else ""
         safe_title, _ = redact_exfiltration_urls(task.title or "")
         safe_title, _ = redact_credentials(safe_title)
         await on_notify(
-            f"{label} Task {task.index} requires approval",
+            f"{label}Task {task.index} requires approval",
             safe_title,
             run=run,
         )
@@ -430,7 +434,7 @@ async def execute_single_task(
                 run.status = "paused"
                 run.error = f"Task {task.index} approval denied — paused for editing"
                 await on_notify(
-                    f"⏸️ Task {task.index} denied",
+                    f"Task {task.index} denied",
                     "Paused for editing. Modify the task and Resume.",
                     run=run,
                 )
@@ -455,7 +459,7 @@ async def execute_single_task(
             run.status = "failed"
             run.error = f"Task {task.index} denied: {task.error}"
             await on_notify(
-                f"❌ Task {task.index} failed",
+                f"Error: Task {task.index} failed",
                 "No approval handler configured for force_approval gate",
                 run=run,
             )
@@ -502,7 +506,7 @@ async def execute_single_task(
             task.status = TaskStatus.FAILED
             success = False
             await on_notify(
-                f"❌ Task {task.index}/{len(run.tasks)} failed",
+                f"Error: Task {task.index}/{len(run.tasks)} failed",
                 f"{task.title}\n{task.error}",
                 run=run,
             )
@@ -538,13 +542,13 @@ async def execute_single_task(
             log_task_fn(history_key, run, task)
             result_preview = (task.result or "")[:500]
             await on_notify(
-                f"✅ Task {task.index}/{len(run.tasks)}",
+                f"Done: Task {task.index}/{len(run.tasks)}",
                 f"{task.title}\n\n{result_preview}" if result_preview else task.title,
                 run=run,
             )
     else:
         await on_notify(
-            f"❌ Task {task.index}/{len(run.tasks)} failed",
+            f"Error: Task {task.index}/{len(run.tasks)} failed",
             f"{task.title}\n{task.error}",
             run=run,
         )
@@ -925,7 +929,7 @@ async def execute_task(
                 spec_keys_noticed = True
                 try:
                     await on_notify(
-                        f"\u2139\ufe0f Task {task.index}: agent settings not applied",
+                        f"Note: Task {task.index}: agent settings not applied",
                         spec_keys_notice(_spec_agent, list(_spec.lost)),
                         run=run,
                     )
@@ -946,6 +950,7 @@ async def execute_task(
             _policy = _policy_for(spec=_spec)
 
             result_text = ""
+            refusal = RefusalHopText()
             _chunk_count = 0
             _complete_event: LLMEvent | None = None
             # Wall clock for THIS turn only. The acp provider never assigns
@@ -957,8 +962,12 @@ async def execute_task(
             # A call whose own silence timer ends the prompt is handed back to the
             # model on this session (``acp.timed_out_continuation``), so the step
             # goes on with what it already did instead of re-running from the top.
-            async for event in continue_timed_out_calls(client.stream, full_prompt):
+            # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+            async for event in continue_timed_out_calls(
+                lambda prompt: drop_echo(client.stream(prompt)), full_prompt
+            ):
                 await _refuse_person_only(event)
+                result_text = refusal.fold(event, result_text)
                 if event.kind == EVENT_TEXT_CHUNK:
                     _attempt_emitted = True
                     result_text += event.text
@@ -1016,13 +1025,15 @@ async def execute_task(
                             event.tool_input,
                             parent_session_key=session_key or None,
                             agent_role=(agent or "kirocrew"),
+                            raw_tool_params=getattr(event, "raw_tool_params", None),
                         )
                 elif event.kind == EVENT_COMPLETE:
                     _complete_event = event
                     break
 
-            # kiro-cli's [STEERING steer-…] ack is protocol, not the step's result.
-            result_text = strip_steering_markers(result_text)
+            # kiro-cli's [STEERING steer-…] ack and a quoted directive marker line are
+            # protocol, not the step's result.
+            result_text = strip_quoted_markers(strip_steering_markers(result_text))
             final_result = "\n\n".join([*refusals, result_prefix + result_text])
             task.result = redact_credentials(redact_exfiltration_urls(final_result)[0])[0]
             # A stream that ended without any EVENT_COMPLETE proves nothing: the
@@ -1046,6 +1057,8 @@ async def execute_task(
                     retryable=bool(_stop.retryable),
                 )
             sessions.record_success(session_key)
+            # Per-interaction telemetry, as every landed-turn engine reports it.
+            record_interaction_event(client, session_key, "task")
             # The prompt (with any re-injected context) reached the model and
             # the turn completed, so the finally must NOT restore the flag. A
             # cancelled or stalled stream, or one that ended without any
@@ -1163,7 +1176,7 @@ async def execute_task(
                     f"{partial[:500]}\n\nContinue from where you left off."
                 )
             await on_notify(
-                f"💀 Task {task.index}: process died",
+                f"Error: Task {task.index}: process died",
                 f"Recovering ({_death_attempts}/{MAX_RECOVERIES})…",
                 run=run,
             )
@@ -1185,7 +1198,7 @@ async def execute_task(
                 task.error = f"Context overflow {compactions} times — giving up"
                 return False
             result_prefix += (
-                f"⚠️ Context window {pct:.0f}% full — compressing conversation history. "
+                f"Warning: Context window {pct:.0f}% full — compressing conversation history. "
                 "Accuracy may degrade due to summarized context.\n\n"
             )
             unsupported = compact_unsupported_backend(client)
@@ -1218,7 +1231,7 @@ async def execute_task(
                     logger.debug("Mid-stream compaction failed, resetting", exc_info=True)
                     await sessions.reset(session_key)
             await on_notify(
-                f"🗜️ Task {task.index}: context compressed",
+                f"Task {task.index}: context compressed",
                 f"Context was {pct:.0f}% full — compacted to continue.",
                 run=run,
             )
@@ -1288,7 +1301,7 @@ async def execute_task(
                         "the durable recovering write did not commit, so no re-run was started",
                     )
                 await on_notify(
-                    f"\u267b\ufe0f Task {task.index}: turn {tnc.stop_class}",
+                    f"Task {task.index}: turn {tnc.stop_class}",
                     f"{tnc.stop_reason} — re-running in {delay:.0f}s (recovery {stop_recoveries})",
                     run=run,
                 )
@@ -1391,7 +1404,7 @@ async def execute_task(
                     )
                     return False
                 await on_notify(
-                    f"\u23f3 Task {task.index}: waiting on {signal.dependency_scope}",
+                    f"Task {task.index}: waiting on {signal.dependency_scope}",
                     f"{signal.kind}: {signal.detail or exc}",
                     run=run,
                 )
@@ -1464,7 +1477,7 @@ async def execute_task(
                 )
                 try:
                     await on_notify(
-                        f"\u26a0\ufe0f Task {task.index}: MCP servers unusable",
+                        f"Warning: Task {task.index}: MCP servers unusable",
                         f"MCP servers unusable in this step: {mcp_problems}",
                         run=run,
                     )
@@ -1581,11 +1594,11 @@ async def build_task_prompt(run: Project, task: Task, attempt: int, work_dir: Pa
         parts.append(label)
         for t in group:
             if t.status == TaskStatus.PASSED:
-                icon = "✅"
+                icon = "[done]"
             elif t.index == task.index:
-                icon = "🔄"
+                icon = "[now]"
             else:
-                icon = "⬜"
+                icon = "[todo]"
             dep_str = (
                 f" (depends on: {', '.join(str(d) for d in t.depends_on)})" if t.depends_on else ""
             )

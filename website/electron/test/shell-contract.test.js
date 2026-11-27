@@ -105,6 +105,14 @@ test("macOS New Window opens the blank-session route on the existing gateway", (
   );
 });
 
+test("connection-window 403 retry resolves its path through dashboardUrlFor", () => {
+  assert.match(
+    WINDOW_SOURCE,
+    /const target = dashboardUrlFor\(connectionBackendUrl, retryTarget\);\s*await loadDashboardWithToken\(connWin\.webContents, target, tokenValue\);/,
+  );
+  assert.doesNotMatch(WINDOW_SOURCE, /new URL\(retryTarget/);
+});
+
 test("only the primary local window owns the gateway liveness monitor", () => {
   const guardedStarts = GATEWAY_SOURCE.match(
     /if \(targetBackendUrl === BACKEND_URL && window === mainWindow\(\)\) \{\s*startLivenessMonitor\(window\);\s*\}/g,
@@ -178,6 +186,19 @@ test("the folder-pick preload invokes take no renderer arguments", () => {
   );
 });
 
+test("the WakaTime connect preload invoke takes no renderer argument and is withheld from remote windows", () => {
+  assert.match(
+    PRELOAD_SOURCE,
+    /if \(!REMOTE_GATEWAY\) contextBridge\.exposeInMainWorld\("wakatimeConnectAPI", \{\s*openInBrowser:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("wakatime:open-in-browser"\),\s*\}\);/,
+    "window.wakatimeConnectAPI.openInBrowser must invoke the channel with no arguments, only in local-gateway windows",
+  );
+  assert.match(
+    IPC_REGISTRAR_SOURCE,
+    /ipcMain\.handle\("wakatime:open-in-browser",\s*async\s*\(event\)\s*=>/,
+    "the handler must read nothing but the event",
+  );
+});
+
 test("the first-run remote-crew preload invokes take no renderer arguments", () => {
   assert.match(
     PRELOAD_SOURCE,
@@ -240,6 +261,7 @@ test("the local-dashboard gate has exactly one spelling", () => {
     "relay-crew:open",
     "relay-crew:close-all",
     "relay-crew:open-pane",
+    "wakatime:open-in-browser",
   ]) {
     assert.match(
       IPC_REGISTRAR_SOURCE,

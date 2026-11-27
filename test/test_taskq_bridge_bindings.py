@@ -159,7 +159,6 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "taskq_replay_owed_expiries_async": ("coroutine", "fa6cfecd5574", "taskq_bridge_expiry"),
     "taskq_report_refused_settle": ("staticmethod", "7767105a1bdf", "taskq_bridge"),
     "taskq_required_but_unavailable": ("function", "f21e39ec5ffb", "taskq_bridge"),
-    "taskq_row_is_claimed_unstarted_async": ("coroutine", "6140c73448b2", "taskq_bridge_cancel"),
     "taskq_schedule_owed_replay": ("function", "b60c5fea256e", "taskq_bridge_expiry"),
     "taskq_settle": ("function", "75cad662f3a5", "taskq_bridge"),
     "taskq_settle_unlanded_cancel": ("function", "a7044e95935d", "taskq_bridge"),
@@ -167,6 +166,11 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "taskq_should_window_async": ("coroutine", "6140c73448b2", "taskq_bridge_window"),
     "taskq_store": ("function", "ae33a6d89b58", "taskq_bridge"),
     "taskq_superseded_by_live_owner": ("staticmethod", "4ac3f90aa4e1", "taskq_bridge"),
+    "taskq_unstarted_claim_generation_async": (
+        "coroutine",
+        "29d4802ef5f8",
+        "taskq_bridge_cancel",
+    ),
     "taskq_window_ids": ("function", "6806e867af4e", "taskq_bridge"),
     "track_store_task": ("function", "b9848cb44167", "taskq_bridge"),
 }

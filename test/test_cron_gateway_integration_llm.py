@@ -98,7 +98,9 @@ class TestLlmCronAdmission:
         assert job.run_never_started is True
         assert job.last_status == "error"
         assert job.last_error == "gateway admission is closed"
-        assert job.last_result == ""
+        # A message job keeps the previous result: it is the next run's
+        # "do NOT repeat" context.
+        assert job.last_result == "stale result"
         assert job.consecutive_failures == 2
         stream.assert_not_awaited()
 

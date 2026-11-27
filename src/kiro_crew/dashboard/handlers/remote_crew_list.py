@@ -6,17 +6,24 @@ or leaves the pick to placement. The route takes the ``crew=`` verbs' gates in t
 order (switch, ``agent.session_control``, :func:`authorize_remote_dispatch`) and
 makes only the peer reads two existing callers already make, per connected crew:
 
-* placement's own probe, under its own bound: the version gate
-  (:func:`remote_dispatch_routes.check_version`), then, only when the version
-  matches, the headroom read placement ranks on (``GET api/chat/headroom``);
+* placement's own probe, under its own bound: the version read
+  (:func:`remote_dispatch_routes.check_version`, whose ``major.minor`` match is
+  shown as ``version_match`` and never excludes the crew), then the headroom
+  read placement ranks on (``GET api/chat/headroom``);
 * the capability read the crew window's header uses
   (:func:`handlers_instances_peer.read_peer_capabilities`), for the version text and
   the agent and model names, run alongside so a slow model catalog costs only
   the names.
 
-A row carries ids, names, a state word, numbers and the peer's agent and model
-names, each already clamped and redacted by those helpers. No host, port, path,
-profile or token from the registry row is read into it.
+A row carries ids, names, a state word, numbers, the peer's agent and model
+names, each already clamped and redacted by those helpers, and the crew's
+``tags`` and ``logins`` as placement's ``requires`` reads them: tags held to the
+tag shape, logins as a known tool name mapped to one state word. No host, port,
+path, profile or token from the registry row is read into it.
+
+Logins are opt-in (``?logins=1``): the peer then waits up to its own
+``LOGINS_WAIT_S`` on its login checks, inside placement's probe bound, so a plain
+roster read never waits on one.
 """
 
 from __future__ import annotations
@@ -27,6 +34,8 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+import kiro_crew
+from kiro_crew.apps.version import versions_compatible
 from kiro_crew.dashboard.handlers import remote_dispatch_routes as routes
 from kiro_crew.dashboard.handlers.session_control import _counted, _require_internal
 
@@ -74,6 +83,30 @@ def _headroom(payload: object) -> dict[str, Any] | None:
     return out
 
 
+def _tags(payload: object) -> list[str]:
+    """The peer's tags held to the tag shape; any other entry is dropped."""
+    from kiro_crew.work_vocab import coerce_dispatch_tags
+
+    return list(coerce_dispatch_tags(payload.get("tags") if isinstance(payload, dict) else None))
+
+
+def _logins(payload: object) -> dict[str, str] | None:
+    """The peer's login states: a tool this hub knows -> ``valid``/``expired``/``unknown``.
+
+    ``None`` when the peer sent no ``logins`` object. Any other key or word is
+    dropped, so no account, host or token text a peer puts there is shown.
+    """
+    from kiro_crew.remote_dispatch import LOGIN_EXPIRED, LOGIN_UNKNOWN, LOGIN_VALID
+    from kiro_crew.remote_session import git_gateway
+
+    raw = payload.get("logins") if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    tools = {t for h in git_gateway.HOSTS if (t := git_gateway.readiness_tool(h))}
+    words = (LOGIN_VALID, LOGIN_EXPIRED, LOGIN_UNKNOWN)
+    return {tool: raw[tool] for tool in sorted(tools) if tool in raw and raw[tool] in words}
+
+
 def _open_workers(payload: object) -> int | None:
     """The peer's own count of open ``hub:`` workers (its ``crew_busy`` gate's figure)."""
     value = payload.get("open_workers") if isinstance(payload, dict) else None
@@ -88,7 +121,7 @@ def _names(rows: object, key: str) -> list[str]:
     return [r[key] for r in rows if isinstance(r, dict) and isinstance(r.get(key), str) and r[key]]
 
 
-async def _row(mgr: Any, row: Any, bound: dict[str, int]) -> dict[str, Any]:
+async def _row(mgr: Any, row: Any, bound: dict[str, int], logins: bool = False) -> dict[str, Any]:
     from kiro_crew.dashboard.handlers.remote_ingest import _crew_state
 
     instance_id = str(getattr(row, "id", "") or "")
@@ -100,6 +133,9 @@ async def _row(mgr: Any, row: Any, bound: dict[str, int]) -> dict[str, Any]:
         "version_match": None,
         "headroom": None,
         "open_workers": None,
+        "tags": [],
+        # ``None`` unless asked for and answered.
+        "logins": None,
         # Open bindings this hub holds on the crew: placement's reservations.
         "bound_here": int(bound.get(instance_id, 0)),
         "agents": [],
@@ -109,30 +145,36 @@ async def _row(mgr: Any, row: Any, bound: dict[str, int]) -> dict[str, Any]:
     }
     if out["crew_state"] != "connected":
         return out
-    await asyncio.gather(_placement_probe(mgr, instance_id, out), _roster(mgr, instance_id, out))
+    await asyncio.gather(
+        _placement_probe(mgr, instance_id, out, logins), _roster(mgr, instance_id, out)
+    )
     return out
 
 
-async def _placement_probe(mgr: Any, instance_id: str, out: dict[str, Any]) -> None:
-    """Placement's own probe (version gate, then headroom), under its own bound."""
+async def _placement_probe(
+    mgr: Any, instance_id: str, out: dict[str, Any], logins: bool = False
+) -> None:
+    """Placement's own probe (version read, then headroom), under its own bound."""
     from kiro_crew.dashboard.handlers.remote_placement import PROBE_TIMEOUT_S
-    from kiro_crew.dashboard.remote_dispatch_headroom import NO_LOGINS_QUERY
+    from kiro_crew.dashboard.remote_dispatch_headroom import NO_LOGINS_QUERY, WITH_LOGINS_QUERY
+
+    query = WITH_LOGINS_QUERY if logins else NO_LOGINS_QUERY
 
     async def _probe() -> None:
-        try:
-            await routes.check_version(mgr, instance_id)
-        except routes.CrewCallError as exc:
-            if exc.code == "crew_version_mismatch":
-                out["version_match"] = False
-                return
-            raise
-        out["version_match"] = True
+        peer = await routes.check_version(mgr, instance_id)
+        # Information only: a skewed crew is still listed, read and dispatchable.
+        out["version_match"] = versions_compatible(kiro_crew.__version__, peer)
         status, payload = await routes.peer_call(
-            mgr, instance_id, "GET", "api/chat/headroom", params=dict(NO_LOGINS_QUERY)
+            mgr, instance_id, "GET", "api/chat/headroom", params=dict(query)
         )
         if 200 <= status < 300:
             out["headroom"] = _headroom(payload)
             out["open_workers"] = _open_workers(payload)
+            out["tags"] = _tags(payload)
+            if logins:
+                out["logins"] = _logins(payload)
+                if out["logins"] is None:
+                    out["unavailable"].append("logins")
         else:
             out["unavailable"].append("headroom")
 
@@ -153,7 +195,7 @@ async def _roster(mgr: Any, instance_id: str, out: dict[str, Any]) -> None:
     """The crew window header's capability read, for the version and the names.
 
     Not under placement's bound: a cold model catalog may take the carrier's own
-    models timeout, and must not cost the version gate or the headroom above.
+    models timeout, and must not cost the version read or the headroom above.
     """
     from kiro_crew.dashboard.handlers_instances_peer import read_peer_capabilities
 
@@ -176,9 +218,12 @@ async def _roster(mgr: Any, instance_id: str, out: dict[str, Any]) -> None:
         out["unavailable"].extend(k for k in ("agents", "models") if k in missing)
 
 
-async def list_crews(state: "DashboardState") -> tuple[list[dict[str, Any]], int]:
+async def list_crews(
+    state: "DashboardState", logins: bool = False
+) -> tuple[list[dict[str, Any]], int]:
     """``(rows, omitted)``: one row per registered crew up to :data:`MAX_CREWS`,
-    probed at once, and how many more are registered. Raises :class:`CrewCallError`."""
+    probed at once, and how many more are registered. *logins* asks each crew for
+    its login states. Raises :class:`CrewCallError`."""
     from kiro_crew.dashboard.handlers.remote_ingest import open_remote_bindings
 
     mgr = routes._manager(state)
@@ -194,13 +239,13 @@ async def list_crews(state: "DashboardState") -> tuple[list[dict[str, Any]], int
         bound = {}
     rows = sorted(rows, key=lambda r: str(getattr(r, "id", "") or ""))
     shown = rows[:MAX_CREWS]
-    listed = list(await asyncio.gather(*(_row(mgr, r, bound) for r in shown)))
+    listed = list(await asyncio.gather(*(_row(mgr, r, bound, logins) for r in shown)))
     return listed, len(rows) - len(shown)
 
 
 @_counted("other")
 async def api_session_control_crews(request: web.Request) -> web.Response:
-    """GET /api/session-control/crews — the connected-crew roster, conductor only."""
+    """GET /api/session-control/crews[?logins=1] — the connected-crew roster, conductor only."""
     from kiro_crew.dashboard import session_control as sc
     from kiro_crew.dashboard.handlers._shared import _read_session_key
 
@@ -222,7 +267,8 @@ async def api_session_control_crews(request: web.Request) -> web.Response:
         )
     try:
         await routes.authorize_remote_dispatch(request, VERB)
-        crews, omitted = await list_crews(request.app["state"])
+        logins = request.query.get("logins") == "1"
+        crews, omitted = await list_crews(request.app["state"], logins)
     except routes.CrewCallError as exc:
         routes._audit(declared, VERB, "denied" if exc.status < 500 else "failure", error=exc.code)
         return routes._response(exc)

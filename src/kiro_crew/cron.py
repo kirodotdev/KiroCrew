@@ -100,6 +100,7 @@ from kiro_crew.cron_service.fields import (  # noqa: F401 -- re-exported
     _validate_cron_string_fields,
     apply_job_update,
     build_job,
+    resolve_project_path,
     validate_managed_by,
 )
 from kiro_crew.cron_service.folders import (  # noqa: F401 -- re-exported
@@ -385,12 +386,12 @@ _RESTART_STOP_SECS = 5.0
 async def stop_cron_before_restart(crons: CronService | None) -> None:
     """Stop the gateway's cron service for a planned in-app restart. Never raises.
 
-    The dashboard Restart (and update apply), the gateway's update restart and
-    the Slack ``/kirocrew restart`` end in an exec or a hard exit, so the
+    The dashboard's ``_restart_gateway`` behind ``POST /api/restart`` and the
+    Slack ``/kirocrew restart`` end in an exec or a hard exit, so the
     gateway's ``_shutdown``, where ``stop()`` runs on a SIGTERM, never runs. A
     run in flight would end with the process image: no history row, no notice
     (``set_interrupt_alert``), and, as an exec keeps the pid, an in-flight marker
-    whose writer still reads as alive. Each of those restarts calls this past
+    whose writer still reads as alive. Each of those two restarts calls this past
     its last refusal and before its ``close_all()``, the order ``_shutdown``
     takes. Bounded by ``_RESTART_STOP_SECS``: a stop still running then is
     cancelled, not awaited, and the restart goes on. ``None`` is a no-op.
@@ -413,7 +414,9 @@ async def stop_cron_before_restart(crons: CronService | None) -> None:
         logger.warning("Cron: the stop before the restart failed", exc_info=stop.exception())
 
 
-async def _sleep_out_jitter(jitter: float) -> None:
+async def _sleep_out_jitter(
+    jitter: float, *, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+) -> None:
     """Wait ``jitter`` seconds before a scheduled run, ending on the wall clock too.
 
     Jitter spreads the WALL-CLOCK fire time. A bare ``asyncio.sleep`` uses
@@ -431,7 +434,7 @@ async def _sleep_out_jitter(jitter: float) -> None:
         remaining = min(wall_deadline - time.time(), mono_deadline - time.monotonic())
         if remaining <= 0:
             return
-        await asyncio.sleep(min(remaining, _JITTER_WALL_SLICE_SECS))
+        await sleep(min(remaining, _JITTER_WALL_SLICE_SECS))
 
 
 # Loop-safety guard.
@@ -570,6 +573,12 @@ class CronService:
         self.quarantined_store: Path | None = None
         self._on_job = on_job
         self._jobs: list[CronJob] = []
+        #: ``auto_paused`` per job id as the DISK last held it (set by _load
+        #: without announcing, advanced by every _save): the auto-pause notice
+        #: fires on this snapshot's rising edge, at the save, so it never
+        #: outruns the disk, never doubles across the flush/merge race, and
+        #: never fires for a pause another process landed and announced.
+        self._announced_pauses: dict[str, bool] = {}
         self._timer_task: asyncio.Task[None] | None = None
         # True during an _on_timer() dispatch pass, so _arm_timer() does not
         # cancel self._timer_task before the sweep has spawned its due jobs.
@@ -663,6 +672,11 @@ class CronService:
         # and the notices in flight, which stop() waits for before it returns.
         self._interrupt_alert: Callable[[CronJob, str], Coroutine[Any, Any, None]] | None = None
         self._interrupt_alerts: set[asyncio.Task[None]] = set()
+        # The gateway's auto-pause notice (set_auto_pause_alert): a SYNC
+        # callback, because the save that detects the rising edge runs on a
+        # worker thread under the store lock and must not block; the callback
+        # hands delivery to the gateway loop itself.
+        self._auto_pause_alert: Callable[[CronJob, int, str], None] | None = None
         _cfg = KiroCrewConfig.load().cron_history
         _history_dir = base_dir if base_dir is not None else _default_dir()
         # History is BEST-EFFORT: a raise here would take down the whole cron
@@ -769,6 +783,7 @@ class CronService:
     attach_run_task = _run_registry.attach_run_task
     discard_finished_run = _run_registry.discard_finished_run
     running_since = _run_registry.running_since
+    run_trigger = _run_registry.run_trigger
     set_refresh_callback = _run_registry.set_refresh_callback
     set_timeout_alert = _run_registry.set_timeout_alert
     set_interrupt_alert = _run_registry.set_interrupt_alert
@@ -803,6 +818,7 @@ class CronService:
     _apply_loop_stall_breaker = _stall_breaker._apply_loop_stall_breaker
     _loop_stall_breaker_verdict = _stall_breaker._loop_stall_breaker_verdict
     _pause_for_loop_stall = _stall_breaker._pause_for_loop_stall
+    _file_cut_run = _stall_breaker._file_cut_run
     # The service's copy of the cron store: ``kiro_crew.cron_service.service.store_sync``.
     list_jobs = _store_sync.list_jobs
     count_enabled_from_disk = _store_sync.count_enabled_from_disk
@@ -823,6 +839,8 @@ class CronService:
     raise_if_store_unreadable = _store_sync.raise_if_store_unreadable
     _sync_for_write = _store_sync._sync_for_write
     _save = _store_sync._save
+    _announce_saved_pause_edges = _store_sync._announce_saved_pause_edges
+    set_auto_pause_alert = _store_sync.set_auto_pause_alert
 
     def _update_job_locked(self, job_id: str, **kwargs: Any) -> CronJob | None:
         """Lock/reload/mutate/save core of :meth:`update_job` (no timer work).
@@ -857,6 +875,13 @@ class CronService:
         # Not a field: the session making this write, recorded on the
         # auto-pause-limit audit row (see CronJob.audit_auto_pause_limit_change).
         audit_actor = kwargs.pop("audit_actor", "") or ""
+        # Resolved before the lock, as build_job does on create: the check probes
+        # the filesystem, and a slow drive must not hold every other cron write
+        # behind it.
+        resolved_project_path = None
+        if "project_path" in kwargs:
+            _validate_cron_string_fields({"project_path": kwargs["project_path"]})
+            resolved_project_path = resolve_project_path(kwargs["project_path"] or "")
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
@@ -884,7 +909,7 @@ class CronService:
                 previous_limit = job.auto_pause_after_failures
                 staged = copy.copy(job)
                 prior = dict(staged.__dict__)
-                apply_job_update(staged, kwargs, chat_folder_out)
+                apply_job_update(staged, kwargs, chat_folder_out, resolved_project_path)
                 edits = {
                     name: value
                     for name, value in staged.__dict__.items()

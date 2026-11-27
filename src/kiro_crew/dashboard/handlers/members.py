@@ -135,14 +135,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _member_workspace_project,
         _seed_member_approval,
         api_member_thread,
+        retire_stale_member_slot,
     )
     from kiro_crew.dashboard.handlers.members_thread_turns import (  # noqa: F401
         _FRESH_START_POLL_SECS,
         _FRESH_START_STOP_WAIT_SECS,
+        _drop_queue_entries,
         _queue_pending,
         _turn_busy,
         _turn_ends_within,
         _work_pending,
+        _written_held_ids,
         api_member_fresh_start,
         api_member_greet,
     )
@@ -162,7 +165,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.sections import (  # noqa: F401
         MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE,
     )
-    from kiro_crew.dashboard import members_roster_goals  # noqa: F401
+    from kiro_crew.dashboard import members_roster_agent, members_roster_goals  # noqa: F401
     from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
         pin_private_agent_store,
         rehydrate_slot_from_history_async,

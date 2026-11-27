@@ -25,7 +25,7 @@ import {
 } from '../../hooks/useScreenSnip'
 import { useTheme } from '../../hooks/useTheme'
 import { i18nT } from '../../i18n/t'
-import type { AppDispatch } from '../../store'
+import { store, type AppDispatch } from '../../store'
 import { openActivityPanel, switchSlot } from '../../store/chatSlice'
 import { openCrewSession } from './command-center/CrewWorkerList'
 import type { ChatMessage } from '../../types'
@@ -60,8 +60,8 @@ import { errMessage } from '../../utils/thunkError'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { isUnansweredRead } from '../../api/queryClient'
+import { CHAT_HISTORY_SEARCH_TAB_IDS } from './useChatHistorySearchTab'
 import {
-  cancelComposerUploads,
   composerUploadSlot,
   holdComposerSend,
   registerComposerUpload,
@@ -69,8 +69,8 @@ import {
   releaseComposerSend,
   reportComposerUploadProgress,
   unregisterComposerUpload,
-  useComposerUploadCount,
 } from '../../utils/composerSendHolds'
+import { runQueuedUpload } from '../../utils/uploadQueue'
 
 type MutableRef<T> = { current: T }
 
@@ -153,7 +153,8 @@ export function useChatPageResourcesController({
   // `usePanelTabs` stays provider-free so every other consumer of it does not
   // inherit a `QueryClientProvider` requirement.
   const panelTabDescriptors = usePanelTabDescriptors()
-  const tabsCtl = usePanelTabs(activeSlot, panelTabDescriptors, { boardFirst })
+  // The Search tab holds the strip's focus while the history search is open.
+  const tabsCtl = usePanelTabs(activeSlot, panelTabDescriptors, { boardFirst, keepFocusIds: CHAT_HISTORY_SEARCH_TAB_IDS })
   // An MCP App tab hosts a null-origin iframe with no storage: unmounting it
   // reloads the app and destroys whatever the user has drawn (see
   // docs/architecture/dashboard-iframe-hosts.md). The whole SidePanel subtree is normally
@@ -171,11 +172,11 @@ export function useChatPageResourcesController({
   // slot's browser view already unmounts (its WebContentsView released) on the
   // slot switch. So keep-mounted follows THIS slot's tabs, not every slot's.
   const hasBrowserTab = tabsCtl.tabs.some(t => t.kind === 'browser')
-  // Find/search pane state. Declared above handleFileOpen / handleOpenDiff so
-  // those handlers can call search.close() directly when opening a dock panel
-  // (the right-hand dock is a single slot and the file/diff panes are
-  // render-gated behind !search.isOpen).
-  const search = useMessageSearch(messages, activeSlot)
+  // History search state. A tab the person opens from the chat (a file, a
+  // diff, an app) only switches tabs: the Search tab and its query stay until
+  // the person closes it, as in a bot chat. With no chat open there is nothing
+  // to search, so ⌘F falls through to the browser.
+  const search = useMessageSearch(activeSlot, !!activeSlot)
   const sourceLinkIndex = useRef(new PullRequestLinkIndex())
   // Self-managed GitLab hosts the operator authorized (config-only, read-only
   // here). Without them a pasted self-hosted MR link is not a Changes source.
@@ -562,30 +563,37 @@ export function useChatPageResourcesController({
   // mis-injecting the persona.
   const colorThemeRef = useRef(colorTheme)
   useEffect(() => { colorThemeRef.current = colorTheme }, [colorTheme])
-  // Opening a document into the right dock has two page-level consequences the
-  // shared actions do not know about: the dock must be revealed, and the find
-  // pane — which owns that same single dock slot and render-gates the panel
-  // behind !search.isOpen — must close, or the tab we just focused is silently
-  // suppressed underneath it.
-  //
-  // Depends on the stable member, not the whole hook object: `search.close` is
-  // a useCallback([]) in useMessageSearch, while the `search` object changes
-  // identity on every search-state change (isOpen/term/matches), which would
-  // churn this callback and the onFileOpen prop on every row. The lint rule
-  // still asks for the whole object because `close` is INVOKED, and a called
-  // member is attributed to its receiver — not because anything here reads
-  // `search` itself.
-  const revealDockAfterOpen = useCallback(() => {
+  // Opening a document into the side panel has one page-level consequence the
+  // shared actions do not know about: the panel must be revealed. An open
+  // history search keeps its Search tab and query behind the tab just focused.
+  /** The side panel is bound to activeSlot, and split view never moves
+   *  activeSlot with pane focus. So a document a split pane opens for a chat
+   *  the panel is not showing switches the panel to that chat, the way
+   *  `openCrewSession` does. A click on a listed session: it announces and is
+   *  a gesture. */
+  const showPaneChat = useCallback((slot: string) => {
+    dispatch(switchSlot({ key: slot, announceOnMissing: true, gesture: true }))
+  }, [dispatch])
+  // `slot` is the chat a split pane opened the tab for. The document actions
+  // pass it only for an explicit pane open, and only when the active chat did
+  // not change during the read, so this compares against the chat that was
+  // active at the click. An open the user walked away from never pulls them
+  // back. Switching only here, after the tab is open, means a failed read
+  // never switches the panel. A read can still succeed offline from the
+  // query cache, so the switch also waits for a live gateway: offline its
+  // fetch is rejected and blanks the pane until reconnect (the reason
+  // ChatPage withholds the folder opener offline). Read at call time from the
+  // store, so the callback keeps one identity across connection changes.
+  const revealDockAfterOpen = useCallback((slot?: string | null) => {
+    if (slot != null && slot !== activeSlotRef.current && store.getState().dashboard.connected) showPaneChat(slot)
     dispatch(openActivityPanel())
-    search.close()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch, so the listed member already pins everything this body calls; depending on the enclosing object instead would churn the onFileOpen prop on every transcript row each render
-  }, [dispatch, search.close])
+  }, [dispatch, showPaneChat, activeSlotRef])
   // File open / artifact open / file save are the shared SidePanel host actions
   // (`usePanelDocumentActions`) — one implementation with the Members page, so
   // the 404-vs-error read contract, the artifact involvement breadcrumb and the
   // save-baseline reconcile cannot drift between hosts.
   const {
-    openFile: handleFileOpen,
+    openFile: openFileTab,
     openWorkingTreeDiff: handleOpenWorkingTreeDiff,
     openArtifact: handleArtifactOpen,
     saveFile: handleFileSave,
@@ -596,6 +604,19 @@ export function useChatPageResourcesController({
     showActionError,
     onOpened: revealDockAfterOpen,
   })
+
+  /** Open a file as a panel tab. `opts.slot` is the split-pane override
+   *  (#9921). The tab lands in the pane's own strip, and once it is open
+   *  `revealDockAfterOpen` switches the panel to that chat. Without the switch
+   *  the panel kept showing another chat's strip, so a file chip or a diff's
+   *  Open button in a split pane seemed to do nothing. Held, because the
+   *  pane's chat loads its history after the switch and a link found there
+   *  must not take the focus from the file. */
+  const handleFileOpen = useCallback((filePath: string, opts?: Parameters<typeof openFileTab>[1]) => {
+    const slot = opts?.slot
+    if (slot == null || slot === activeSlotRef.current) return openFileTab(filePath, opts)
+    return openFileTab(filePath, { ...opts, hold: true })
+  }, [openFileTab, activeSlotRef])
 
   /** Open a DIRECTORY as a panel tab.
    *
@@ -612,35 +633,28 @@ export function useChatPageResourcesController({
       // `openCrewSession` does: open held (its history loads after the
       // switch), then switch.
       tabsCtl.openFolder(dirPath, slot, { hold: true })
-      dispatch(switchSlot({ key: slot, announceOnMissing: true, gesture: true }))
+      showPaneChat(slot)
     } else {
       tabsCtl.openFolder(dirPath, slot)
     }
     dispatch(openActivityPanel())
-    search.close()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- same as handleFileOpen above: `search.close` is a useCallback([]) and the enclosing `search` object is a fresh literal every render, so listing it would churn the onFolderOpen prop on every transcript row
-  }, [tabsCtl, dispatch, search.close])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `activeSlotRef` is a ref, read at call time; listing it changes nothing
+  }, [tabsCtl, dispatch, showPaneChat])
 
 
   /** Reveal the Crew (Workers) tab from the Crew Mode dispatch-notice button.
    *
-   *  Host-owned because the find pane's open state lives only here (local to
-   *  `useMessageSearch`, and `shouldMountSidePanel` leaves the dock UNMOUNTED
-   *  while it is open, so a reveal that does not close Find mounts nothing).
    *  The slot rebind + tab select + panel open is the SHARED
    *  `openCrewSession` reveal (switch to the card's slot so the panel it opens
    *  is that chat's, not the active one's in split view; select Workers; open
    *  the dock) — reused rather than re-spelled, so there is ONE reveal path.
    *  `keepPanel` is true: the button is a deliberate "open the Crew tab", so it
-   *  always reveals, on desktop and the mobile sheet alike. The one thing
-   *  `openCrewSession` does not do — close Find — is added here. This single
+   *  always reveals, on desktop and the phone overlay alike. This single
    *  callback is threaded to every notice surface (single chat and split pane),
    *  so there is no second copy. */
   const handleOpenCrewTab = useCallback((slot: string) => {
     openCrewSession(dispatch, slot, true)
-    search.close()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- same as handleFolderOpen: `search.close` is a useCallback([]) and its enclosing object is rebuilt every render, so listing it would churn the onOpenCrewTab prop on every transcript row
-  }, [dispatch, search.close])
+  }, [dispatch])
 
 
   // Open the diff panel from a file-change chip click. Closes the
@@ -664,21 +678,15 @@ export function useChatPageResourcesController({
     if (!original || !original.trim() || original === modified) { handleFileOpen(filePath); return }
     tabsCtl.openDiff(filePath, modified, original)
     dispatch(openActivityPanel())
-    // Diff pane is render-gated behind !search.isOpen (single right-dock slot);
-    // close the find pane so the diff shows instead of opening underneath it.
-    search.close()
-    // Depend on the stable `search.close`, not the whole `search` object (see
-    // handleFileOpen above) — avoids recreating this callback on search-state
-    // changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabsCtl, dispatch, search.close, handleFileOpen])
+  }, [tabsCtl, dispatch, handleFileOpen])
 
 
   /** Report an attachment failure to the slot whose files failed. On screen it
    *  is `showOnScreen` (the banner or the action notice). Any other slot holds
    *  it (`holdSlotUploadFailure`) until that chat is shown, where the upload
    *  banner takes it. A slot a memory-mode switch replaced reports to its
-   *  successor, so the failure is never held for a chat that is gone. */
+   *  successor once that switch commits; until then the failure stays with
+   *  the slot, which keeps it if the switch fails. */
   // The page can unmount while a request runs (the person left /chat). Its
   // setters then go nowhere, so the failure is held for the remount.
   const pageMountedRef = useRef(true)
@@ -690,7 +698,7 @@ export function useChatPageResourcesController({
     // A slot still on screen in a mounted page was not replaced, whatever an
     // older entry in the succession table says. An unmounted page's ref is
     // frozen, so it always follows the table.
-    const forSlot = pageMountedRef.current && fromSlot === activeSlotRef.current ? fromSlot : (resolveSlotSuccession(fromSlot) ?? null)
+    const forSlot = pageMountedRef.current && fromSlot === activeSlotRef.current ? fromSlot : (resolveSlotSuccession(fromSlot, { committedOnly: true }) ?? null)
     if (!forSlot || (pageMountedRef.current && forSlot === activeSlotRef.current)) { showOnScreen(message); return }
     holdSlotUploadFailure(forSlot, message)
   }, [activeSlotRef])
@@ -806,23 +814,6 @@ export function useChatPageResourcesController({
     return () => window.removeEventListener(PREVIEW_SNIP_EVENT, onSnip)
   }, [composerLockedRef, snipSlotRef, activeSlotRef, takeScreenshot, snipFrom])
 
-  // Each upload's controller is registered per slot in the shared
-  // composerSendHolds registry, not kept on this hook: the hold outlives a
-  // remount of the page, so a page remounted mid-upload must be able to cancel
-  // a request it did not start. The registry keeps EVERY live one: paste,
-  // drop and a Sketch insert all reach `uploadFiles` with no `uploading` gate,
-  // so two requests can be in flight and one cancel has to end both.
-  //
-  // Cancellable is read from the registry rather than from `uploading`. That
-  // flag is SHARED with takeScreenshot, which registers no controller, so a
-  // control gated on it would offer a cancel during a macOS `screencapture -i`
-  // with nothing to abort.
-  const uploadCount = useComposerUploadCount(activeSlot)
-  /** Abort every upload in flight for the ACTIVE slot, whichever host started it. */
-  const cancelUpload = useCallback(() => {
-    cancelComposerUploads(activeSlotRef.current)
-  }, [activeSlotRef])
-
   /** Upload files via browser File API (cross-platform) */
   // The client-side pre-checks that refuse a file set BEFORE anything is sent:
   // too many files, or one over the cap. Returns the hint to show, or null when
@@ -855,44 +846,57 @@ export function useChatPageResourcesController({
     const refusal = localUploadRefusal(files)
     if (refusal) { setUploadHint(refusal); return true }
     setUploading(true)
-    holdComposerSend(requestSlot)
-    const controller = new AbortController()
-    registerComposerUpload(requestSlot, controller)
-    let completedPaths: string[] = []
-    // Reported in `finally`, once the slot this upload lands in is known.
-    let failure = ''
-    try {
-      const res = await api.uploadFiles(files, controller.signal,
-        (loaded, total) => reportComposerUploadProgress(controller, loaded, total))
-      if (res.error) {
-        failure = i18nT('pages.chatPage.upload_failed_error', { error: res.error })
-      } else if (res.paths?.length) {
-        completedPaths = res.paths
+    // One request per file, each with its own AbortController, Send hold and
+    // registry entry (so its own chip, progress and cancel). Each controller
+    // is registered per slot in the shared composerSendHolds registry, not
+    // kept on this hook: the hold outlives a remount of the page, so a page
+    // remounted mid-upload still shows the chip and can cancel a request it
+    // did not start. Every hold is taken here, before the first await, so the
+    // snip hand-off in handleSnipComplete never leaves Send free.
+    const controllers = files.map(file => {
+      const controller = new AbortController()
+      holdComposerSend(requestSlot)
+      registerComposerUpload(requestSlot, controller, file.name)
+      return controller
+    })
+    await Promise.all(files.map(async (file, index) => {
+      const controller = controllers[index]
+      let completedPaths: string[] = []
+      // Reported in `finally`, once the slot this upload lands in is known.
+      let failure = ''
+      try {
+        // Through the shared in-flight limit: a file waiting its turn has sent
+        // nothing, and a cancel while it waits drops it unsent (an AbortError).
+        const res = await runQueuedUpload(controller.signal, () => api.uploadFiles([file], controller.signal,
+          (loaded, total) => reportComposerUploadProgress(controller, loaded, total)))
+        if (res.error) {
+          failure = i18nT('pages.chatPage.upload_failed_error', { error: res.error })
+        } else if (res.paths?.length) {
+          completedPaths = res.paths
+        }
+        if (!res.error && res.resizedByPath && Object.keys(res.resizedByPath).length) {
+          setResizedInfo(prev => ({ ...prev, ...res.resizedByPath }))
+        }
+      } catch (err) {
+        // A cancel the user asked for is not a failure. Without this branch the
+        // blanket message blames file type and a 50 MB cap for a 150 MB
+        // recording the user deliberately stopped.
+        if ((err as Error | undefined)?.name !== 'AbortError') {
+          failure = i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb')
+        }
+      } finally {
+        // Where THIS upload lives now: the replacement when a memory-mode switch
+        // handed it over (with its hold) while it ran, else where it started.
+        const landing = composerUploadSlot(controller) ?? requestSlot
+        if (failure) reportAttachmentFailure(failure, landing, m => setUploadError(m))
+        // Drop only THIS request's controller: its siblings keep their chips.
+        unregisterComposerUpload(landing, controller)
+        finishComposerAttachment(landing, completedPaths)
       }
-      if (!res.error && res.resizedByPath && Object.keys(res.resizedByPath).length) {
-        setResizedInfo(prev => ({ ...prev, ...res.resizedByPath }))
-      }
-    } catch (err) {
-      // A cancel the user asked for is not a failure. Without this branch the
-      // blanket message blames file type and a 50 MB cap for a 150 MB
-      // recording the user deliberately stopped.
-      if ((err as Error | undefined)?.name !== 'AbortError') {
-        failure = i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb')
-      }
-    } finally {
-      // Where THIS upload lives now: the replacement when a memory-mode switch
-      // handed it over (with its hold) while it ran, else where it started.
-      const landing = composerUploadSlot(controller) ?? requestSlot
-      if (failure) reportAttachmentFailure(failure, landing, m => setUploadError(m))
-      // Drop only THIS request's controller: the registry keeps Cancel offered
-      // while a sibling upload of the slot is still running.
-      unregisterComposerUpload(landing, controller)
-      finishComposerAttachment(landing, completedPaths)
-      // Unchanged from main, and still wrong for concurrent uploads: the first
-      // request to settle clears the shared flag while a sibling runs. Left
-      // alone deliberately -- the cancel control reads the registry, not this.
-      setUploading(false)
-    }
+    }))
+    // Once the whole set has settled. Still shared with a concurrent set or a
+    // screenshot, which can clear it first; Send reads the holds, not this.
+    setUploading(false)
     // The files were sent (a server-side refusal surfaces as an error above,
     // not a local pre-check hint), so no local-refusal hint was set.
     return false
@@ -1050,8 +1054,6 @@ export function useChatPageResourcesController({
     handleSnipCancel,
     uploadFiles,
     composerUploadFiles,
-    cancelUpload,
-    uploadCount,
     handleOptimizeResult,
     dragOver,
     dropTargetProps,

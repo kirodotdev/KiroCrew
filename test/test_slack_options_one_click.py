@@ -2,7 +2,7 @@
 
 Each choice is a plain button whose click sends that choice, more than five wrap into
 further rows, and the last row's ⋯ menu opens a modal for picking several. After any
-answer the card is edited in place to "<who> chose <choice> · <time>"; a second or
+answer the card is edited in place to "✅ <who> chose <choice> · <time>"; a second or
 stale click gets a private "Already answered" and sends nothing.
 """
 
@@ -168,6 +168,32 @@ class TestOneClick:
         assert outbound._ANSWERED == {("C1", "m1"): True}
 
     @pytest.mark.asyncio
+    async def test_a_shared_users_command_option_leaves_the_card_answerable(
+        self, world, monkeypatch
+    ):
+        # slack.shared_access: the harness would read "/tools trust-all" as its own
+        # command, so a shared user may not send it, and the card is not spent.
+        orch, sent = world
+        monkeypatch.setattr(interactions, "is_shared_user", lambda uid: uid == "U2")
+        from kiro_crew.slack import handler
+
+        monkeypatch.setattr(handler, "is_shared_listed", lambda uid: uid == "U2")
+        payload = _click(["/tools trust-all", "Beta"], 0)
+        payload["user"] = {"id": "U2"}
+        await interactions.dispatch(payload)
+        await _settle()
+        sent.assert_not_called()
+        assert outbound._ANSWERED == {}
+        orch.slack.update_message.assert_not_called()
+        assert (
+            orch.slack.post_ephemeral.call_args.args[2]
+            == "Blocked: Only the bot owner can do that."
+        )
+        await interactions.dispatch(_click(["/tools trust-all", "Beta"], 1))
+        await _settle()
+        assert sent.call_args.args[3] == "Beta"
+
+    @pytest.mark.asyncio
     async def test_the_card_is_edited_in_place_to_who_chose_what(self, world, monkeypatch):
         orch, _ = world
         forget = MagicMock()
@@ -180,7 +206,7 @@ class TestOneClick:
         assert not [b for b in blocks if b["type"] == "actions"], "buttons removed"
         assert blocks[0]["type"] == "section", "the question stays"
         line = blocks[-1]["elements"][0]["text"]
-        assert line.startswith("<@U1> chose *Alpha* · <!date^")
+        assert line.startswith("✅ <@U1> chose *Alpha* · <!date^")
         orch.slack.post_blocks.assert_not_called()
 
     @pytest.mark.asyncio

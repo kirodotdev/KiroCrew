@@ -10,7 +10,9 @@ Two rules hold here rather than at the call site:
   project-path validator (absolute, not sensitive, an existing directory) plus the
   data-home overlap pre-flight the project endpoint applies, so the setting can never
   name a directory the user could not pick by hand. A UNC-shaped root is refused before
-  anything resolves it, because resolving a share reaches the network.
+  anything resolves it, because resolving a share reaches the network, and a root that
+  resolves to one (a mapped network drive on Windows) is refused after, so a share is
+  never stored.
 * **The root is re-validated on every use.** The config file can be edited by hand, so
   the value written through the settings page is not trusted at creation time: a root
   that has since become sensitive, overlapping or missing is refused there too, and the
@@ -79,6 +81,8 @@ def validate_session_folder_root(raw: str) -> tuple[str, str | None]:
     resolved, err = _validate_project_dir(value)
     if err:
         return "", err
+    if is_unc_shape(resolved):
+        return "", "Session folder root must be a local directory"
     conflict = _folder_project_overlap_denied(resolved)
     if conflict is not None:
         return "", conflict

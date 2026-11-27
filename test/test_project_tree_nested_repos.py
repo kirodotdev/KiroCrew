@@ -17,6 +17,7 @@ import json
 import shutil
 from pathlib import Path
 
+import git_repo_templates
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from test_project_tree import (  # noqa: F401
@@ -26,6 +27,8 @@ from test_project_tree import (  # noqa: F401
     passthrough_sandbox,
 )
 
+repo_templates = git_repo_templates.repo_templates  # the fixture, bound for this module
+
 
 def _commit_all(root: Path, message: str) -> None:
     _git(root, "add", ".")
@@ -33,13 +36,20 @@ def _commit_all(root: Path, message: str) -> None:
 
 
 @pytest.fixture()
-def workspace(tmp_path):
+def workspace(tmp_path, repo_templates):
     """A repo holding a submodule, an untracked nested clone and a plain folder.
 
     The submodule has its own ``.gitignore`` (``build/``, ``out/``), a source
     folder, two ignored build artifacts and one untracked file; the nested clone has a file
     and a folder; ``plain/`` is an ordinary tracked folder.
+
+    Built once and copied per test. The committed ``.gitmodules`` keeps the URL
+    it was built with; the URL git reads, in ``.git/config``, is the copy's.
     """
+    return repo_templates.copy(_build_workspace, tmp_path) / "proj"
+
+
+def _build_workspace(tmp_path: Path) -> None:
     inner = tmp_path / "inner"
     inner.mkdir()
     _git(inner, "init", "-q", "-b", "trunk")
@@ -71,7 +81,6 @@ def workspace(tmp_path):
     (clone / "notes.txt").write_text("n\n")
     (clone / "lib").mkdir()
     (clone / "lib" / "util.py").write_text("y = 2\n")
-    return root
 
 
 async def _get(project: Path, **query: str) -> tuple[int, dict]:

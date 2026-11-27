@@ -11,6 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 
+from conftest import requires_symlinks
 from kiro_crew.dashboard.handlers import api_file_raw
 
 
@@ -156,6 +157,7 @@ async def test_rejects_missing_file(tmp_path, mock_sel):
 
 
 @pytest.mark.asyncio
+@requires_symlinks
 async def test_rejects_symlink(tmp_path, mock_sel):
     real = tmp_path / "real.png"
     real.write_bytes(_PNG_HEADER)
@@ -201,6 +203,7 @@ class TestOpenRbNofollow:
         with os.fdopen(fd, "rb") as fh:
             assert fh.read() == b"\x89PNG payload"
 
+    @requires_symlinks
     def test_symlink_rejected_with_eloop_without_o_nofollow(self, tmp_path, monkeypatch):
         """The lstat fallback must keep the POSIX ELOOP contract so callers'
         error handling (403 symlinks not allowed) is platform-invariant."""
@@ -215,6 +218,7 @@ class TestOpenRbNofollow:
             _open_rb_nofollow(str(link))
         assert exc_info.value.errno == errno.ELOOP
 
+    @requires_symlinks
     def test_symlink_rejected_with_o_nofollow_present(self, tmp_path):
         from kiro_crew.dashboard.handlers.files import _open_rb_nofollow
 

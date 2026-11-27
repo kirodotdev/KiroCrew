@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { columnLetter, CsvViewer, detectFileType, HtmlViewer, JsonlViewer, JsonViewer, OfficeViewer, SheetViewer } from '../components/FileRenderers'
+import { installInitialResizeObserver } from './initialResizeObserver'
 import { consumeChatHandoff, installSoftNavigate, __resetNavSeamForTests } from '../utils/errorReport'
 
 // `useCanOpenFile` reads both of these, and it is the gate deciding whether the
@@ -1006,6 +1007,9 @@ describe('OfficeViewer structured blocks', () => {
     // or skipped by an engine that does not focus scrollers itself.
     stubTableGeometry(240)
     stubByFormat([WIDE_TABLE], null)
+    // The scroller's edges are first measured on the observer's first delivery.
+    installInitialResizeObserver()
+    onTestFinished(() => { vi.unstubAllGlobals() })
     renderWithQuery(<OfficeViewer filePath="/home/user/docs/wide.docx" />)
     const region = await screen.findByRole('region', { name: 'Table' })
     expect(region).toHaveAttribute('tabindex', '0')

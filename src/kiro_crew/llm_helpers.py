@@ -86,6 +86,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         PromptBusyExhaustedError,
         _is_transient_acp_error,
         acp_error_after_tool_activity,
+        acp_error_is_capacity_or_throttle,
         acp_error_is_connection_failure,
         acp_error_is_pipe_death,
         acp_error_is_server_error,
@@ -104,11 +105,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         transient_retry_delay,
     )
     from kiro_crew.llm_helpers_parts.background_turns import (  # noqa: F401
+        BackgroundAdmissionRefused,
         _background_crew_log_owner,
+        _background_spawn_backend,
         _cleanup_memory_consolidation_session,
+        _delete_retired_conversation_record,
         _lite_resets_failed,
         _lite_rewrite_tasks,
         _lite_rewrites,
+        _lite_spec_refusal,
         _lite_spec_unconfirmed,
         _raise_if_unfinished,
         _record_background_crew_log,
@@ -116,6 +121,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _rewrite_lite_spec,
         _start_fresh_conversation,
         background_turn,
+        repair_lite_spec,
         run_bg_oneliner,
     )
     from kiro_crew.llm_helpers_parts.model_fallback import (  # noqa: F401
@@ -132,9 +138,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _fallback_wire_spelling,
         _latch_identity,
         _slot_switch_session_locks,
+        advance_fallback_after_activity,
         advance_fallback_candidate,
         annotate_model_fallback,
         append_fallback_story,
+        attach_fallback_story,
         configured_fallback_chain,
         engine_attributed_model,
         fallback_rewound_transient_budget,
@@ -151,6 +159,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         provider_model_pin_partial,
         provider_model_pin_refused,
         provider_raw_model,
+        reactive_model_candidate,
         resolve_substitute_set_model,
         route_baseline_latch,
         slot_switch_session_lock,
@@ -242,6 +251,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         STOP_REASON_TIMEOUT,
         STOP_RECOVERY_MAX_RETRIES,
         AcpTimeoutError,
+        RefusalHopText,
         engine_served_model,
         same_model,
         timed_out_continuation,
@@ -274,12 +284,19 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         fire_tool_hooks,
         get_global_hook_store,
         hook_gate_kwargs,
+        is_fetch_url_text,
+        proven_fetch_url,
         title_is_trusted_mcp_identity,
         unattended_turn,
         untruncated_shell_title,
     )
     from kiro_crew.image_refs import (  # noqa: F401
         strip_image_refs,
+    )
+    from kiro_crew.messaging.alternation_echo import (  # noqa: F401
+        could_be_echo,
+        echo_prefix_len,
+        is_echo,
     )
     from kiro_crew.messaging.link import (  # noqa: F401
         canonical_key,
@@ -291,6 +308,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         OUTCOME_REJECTED_TRANSPORT_FLOOR,
     )
     from kiro_crew.platform.context import redact_via_context  # noqa: F401
+    from kiro_crew.platform.tool_paths import (  # noqa: F401
+        FETCH_PATH_FREE_FIELDS,
+    )
     from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS as _WRITE_PLANE_KINDS  # noqa: F401
     from kiro_crew.platform.tool_paths import (  # noqa: F401
         command_shaped_strings,

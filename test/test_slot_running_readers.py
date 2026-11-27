@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import source_corpus
+
 # Busy-check helpers, and the slot state each one reads on its caller's behalf.
 #
 # A handler that delegates its refusal to a helper still consumes that state, so the
@@ -24,9 +26,13 @@ _BUSY_HELPERS: dict[str, frozenset[str]] = {
     # slot's task, minus the caller's own turn, since the turn-path consume runs
     # inside that task.
     "_a_foreign_turn_owns_the_slot": frozenset({"running"}),
+    # Session-owned activity reads both turn execution and admission reservation.
+    "session_activity": frozenset({"running", "turn_running"}),
+    "session_activity_for_key": frozenset({"running", "turn_running"}),
 }
 
 
+@source_corpus.untraced()
 def test_running_guarded_task_loads_null_check_task() -> None:
     """Every ``x.task`` read under an ``x.running`` guard also checks it is set."""
     dashboard = Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard"
@@ -63,6 +69,7 @@ def test_running_guarded_task_loads_null_check_task() -> None:
     assert {path for path, _line in guarded_task_loads} == {"slot_lifecycle.py"}
 
 
+@source_corpus.untraced()
 def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
     """Every slot reader declares whether it needs reservation or execution state."""
     dashboard = Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard"
@@ -139,6 +146,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The app's Bot list reports a reserved thread as busy, like the
                 # owner's roster does.
                 ("handlers/members_app.py", "app_bot_list"),
+                # The Crew API's Bot list reports it the same way.
+                ("crew_api_bots.py", "_list_bots"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_api/slot_guards.py", "_switch_target_busy"),
                 ("chat_turn/session_reset.py", "_arm_pending_reset_retry"),
@@ -174,6 +183,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/slot_effort.py", "api_chat_slot_reasoning_effort"),
                 # The ultracode and Fast mode routes' shared writer.
                 ("chat_api/slot_effort.py", "_write_session_switch"),
+                # The approve-for-me route restarts only an idle session; a running
+                # turn refuses the switch with 409 and changes nothing.
+                ("chat_api/slot_effort.py", "api_chat_slot_approve_for_me"),
+                # A mode change ends approve-for-me but never resets a session a
+                # turn holds or that waits on a person; the restart waits for idle.
+                ("chat_api/slot_effort.py", "_restart_for_approve_for_me"),
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),
@@ -201,6 +216,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/session_relaunch.py", "api_chat_slot_workspace"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),
                 ("chat_api/slot_model.py", "api_chat_slots_model"),
+                # The bulk switch's effort-only pass: a reserved slot is skipped,
+                # or deferred when the caller asked not to skip running slots.
+                ("chat_api/slot_model.py", "_bulk_effort_only_switch"),
                 ("chat_api/continue_turn.py", "continue_slot_turn"),
                 # A paused member's own Continue drains what queued for it only
                 # on an unreserved slot, as continue_slot_turn below refuses one.
@@ -253,14 +271,6 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # A peer's steer needs a running turn to cut into.
                 ("session_deliver.py", "_deliver_peer"),
                 ("session_control_parts/session_create.py", "create_session"),
-                # The roster verb. Reservation state, like `read_messages` beside
-                # it and for the same reason: it reports whether a session is
-                # working so a patrol knows whether to wait.
-                ("session_control_parts/session_status.py", "created_session_status"),
-                ("session_control_parts/session_status.py", "read_messages"),
-                # The summary verb reports liveness beside the digest for the
-                # same reason `read_messages` does.
-                ("session_control_parts/session_status.py", "read_summary"),
                 # The queue verb reports liveness beside the listing, for the
                 # same reason.
                 ("session_control_queue.py", "queue_target"),
@@ -274,12 +284,18 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("session_control_parts/model_switch.py", "land_model_pick_after_channel_turn"),
                 ("state_parts/session_events.py", "wire_session_release_listener"),
                 ("openai_compat.py", "api_completions"),
+                # A session the engine refused is retracted through
+                # _retract_failed_newborn, which leaves a reserved one alone.
+                ("crew_api_responses.py", "_run"),
                 # Idle-only teardown: the same pre-lock and in-lock probe via
                 # _switch_target_busy, so a reserved slot between stages is busy.
                 ("session_control_parts/turn_control.py", "reload_target"),
                 # The idle sweep never picks or pops a slot holding a reservation.
                 ("slot_retention.py", "_still_idle_check"),
                 ("slot_retention.py", "select_idle_slot_keys"),
+                # The idle window release leaves a slot a send has reserved alone:
+                # the turn it admits reads the window it would shorten.
+                ("slot_window_release.py", "release_idle_windows"),
                 ("state_parts/chat_slot.py", "_ChatSlot.enqueue_or_run_prompt"),
                 # A return brief must not start or publish after a send has
                 # reserved the slot, even before its model turn begins.
@@ -333,6 +349,21 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: both
             for site in {
+                # Status readers share the activity snapshot: admission and
+                # execution both keep a session working, and its `turn` kind
+                # reports the model-turn fact in their response.
+                ("session_control_parts/session_status.py", "created_session_status"),
+                ("session_control_parts/session_status.py", "read_messages"),
+                ("session_control_parts/session_status.py", "read_summary"),
+                # The same snapshot supplies the worker list, board and keyed
+                # work-ledger probes. Even a turn-only answer reads both facts
+                # while constructing that shared snapshot.
+                ("handlers/crew_workers.py", "api_crew_workers"),
+                ("handlers/work_ledger_board.py", "_build_board"),
+                ("handlers/work_ledger_read.py", "_slot_running"),
+                ("handlers/work_ledger_read.py", "_slot_pending"),
+                ("handlers/work_ledger_read.py", "_slot_turn_running"),
+                ("session_activity.py", "session_activity_for_key"),
                 # The side panel's steer into a Crew Mode worker: a RUNNING turn takes
                 # it as a steer, and only an unreserved slot has its queued text
                 # started now, the composer's own two questions.
@@ -366,5 +397,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_turn/queue_drain.py", "_start_next_queued_turn"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),
         ("openai_compat.py", "api_completions"),
+        # One request's turn, started as the dashboard send starts one.
+        ("crew_api_responses.py", "_run"),
         ("state_parts/chat_slot.py", "_ChatSlot.enqueue_or_run_prompt"),
     }

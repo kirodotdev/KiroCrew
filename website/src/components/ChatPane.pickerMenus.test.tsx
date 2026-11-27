@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { setTerminalEnabledFlag } from '../utils/terminalRegistry'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { createRef } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -55,6 +56,7 @@ function setup(overrides: Partial<Record<string, unknown>> = {}) {
     codexPairModels: false,
     defaultEffort: '',
     effortLevelsOverride: undefined,
+    activeSlotRunsHere: true,
     ...overrides,
   } as unknown as Models
   const actions = {
@@ -76,7 +78,8 @@ function setup(overrides: Partial<Record<string, unknown>> = {}) {
   return { models, actions, navigate, agentDD, modelDD, agentMenu, modelMenu }
 }
 
-afterEach(cleanup)
+// A test that turns the terminal on must not leave it on for the next one.
+afterEach(() => { cleanup(); setTerminalEnabledFlag(false) })
 
 describe('ChatPaneAgentMenu', () => {
   it('filters, picks an agent and closes', () => {
@@ -155,6 +158,41 @@ describe('ChatPaneModelMenu', () => {
     expect(toggle.getAttribute('aria-disabled')).toBe('true')
     expect(document.getElementById(toggle.getAttribute('aria-describedby') ?? '')?.textContent)
       .toBe(i18nT('components.fastModeToggle.unavailable', { reason }))
+  })
+
+  it("says kiro-cli's sign-in holds the list back, closes, and asks to run the sign-in", () => {
+    setTerminalEnabledFlag(true)
+    const { modelDD, modelMenu } = setup({ kiroCliSignedOut: true, paneRunsHere: true })
+    expect(within(modelMenu).getByText(i18nT('components.kiroCliSignInInTerminal.models_signed_out'))).toBeInTheDocument()
+    fireEvent.click(within(modelMenu).getByRole('button', { name: i18nT('components.kiroCliSignInInTerminal.sign_in') }))
+    expect(modelDD.setOpen).toHaveBeenCalledWith(false)
+    // The confirm is hosted outside the picker, so it survives the picker closing.
+    expect(screen.getByText('kiro-cli login')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['runs on another machine', false],
+    ['placement is not read yet', undefined],
+  ])('copies the sign-in command for a pane whose chat %s', (_label, paneRunsHere) => {
+    setTerminalEnabledFlag(true)
+    const { modelMenu } = setup({ kiroCliSignedOut: true, paneRunsHere })
+    expect(within(modelMenu).queryByRole('button', { name: i18nT('components.kiroCliSignInInTerminal.sign_in') })).toBeNull()
+    expect(within(modelMenu).getByRole('button', { name: i18nT('components.kiroCliSignInInTerminal.copy_sign_in') })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['remote', false],
+    ['unread', undefined],
+  ])('copies the sign-in command for a local pane when the active chat placement is %s', (_label, activeSlotRunsHere) => {
+    setTerminalEnabledFlag(true)
+    const { modelMenu } = setup({ kiroCliSignedOut: true, paneRunsHere: true, activeSlotRunsHere })
+    expect(within(modelMenu).getByRole('button', { name: i18nT('components.kiroCliSignInInTerminal.copy_sign_in') })).toBeInTheDocument()
+    expect(within(modelMenu).queryByRole('button', { name: i18nT('components.kiroCliSignInInTerminal.sign_in') })).toBeNull()
+  })
+
+  it('draws no sign-in row while the list is not held back', () => {
+    const { modelMenu } = setup()
+    expect(within(modelMenu).queryByTestId('kiro-cli-models-signed-out')).toBeNull()
   })
 
   it('draws nothing while closed', () => {

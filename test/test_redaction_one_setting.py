@@ -1291,11 +1291,20 @@ def _callee(call: ast.Call) -> str:
 
 @functools.lru_cache(maxsize=1)
 def _source_texts() -> dict[str, str]:
+    """Every ``src/`` module's text, read once for this file's tests (about 190 MiB)."""
     return {
         path.relative_to(_SRC).as_posix(): path.read_text(encoding="utf-8")
         for path in sorted(_SRC.rglob("*.py"))
         if "/tests/" not in path.as_posix() and not path.name.endswith("_test.py")
     }
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _release_source_texts():
+    """Drop the cached texts when this module ends: pytest keeps the module for the
+    session, so the cache would otherwise stay resident for the rest of the worker."""
+    yield
+    _source_texts.cache_clear()
 
 
 def _source_modules(*needles: str) -> dict[str, ast.Module]:

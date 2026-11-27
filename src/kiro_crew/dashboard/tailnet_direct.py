@@ -128,6 +128,8 @@ class SelfNode:
     dns_name: str = ""
     #: The host name the daemon reports for this node (``Self.HostName``).
     host_name: str = ""
+    #: The owning user's ``DisplayName`` from the status ``User`` map; display only.
+    display_name: str = ""
 
 
 def _user_id(raw: object) -> str:
@@ -237,7 +239,15 @@ def parse_status(data: object) -> SelfNode | None:
         user_id=user_id if login else "",
         dns_name=dns_name,
         host_name=_display(self_node.get("HostName")),
+        display_name=_self_display_name(data, user_id) if login else "",
     )
+
+
+def _self_display_name(data: dict, user_id: str) -> str:
+    """The ``DisplayName`` of user *user_id* in a status ``User`` map, or ``""``."""
+    users = data.get("User")
+    profile = users.get(user_id) if isinstance(users, dict) else None
+    return _display(profile.get("DisplayName")) if isinstance(profile, dict) else ""
 
 
 @dataclass(frozen=True)

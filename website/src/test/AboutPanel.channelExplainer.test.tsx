@@ -108,6 +108,14 @@ describe('AboutPanel channel explainer', () => {
     await screen.findByTestId('prerelease-report-note')
   })
 
+  it('spaces the report prompt off the Check for updates button above it', async () => {
+    // The button's wrapper carries only a top margin, so without one of its own
+    // the note's border touched the button's bottom edge (#38473).
+    mountWithUpdateApi({ ...SWITCHABLE, channel: 'insider', stampedChannel: 'insider' }, ok())
+    const note = await screen.findByTestId('prerelease-report-note')
+    expect(note.classList.contains('mt-3')).toBe(true)
+  })
+
   it('shows NO prompt for a stable build whose feed was switched to insider', async () => {
     // Mirror case: opting into insider does not make the stable build you are
     // still running "less tested than Stable".

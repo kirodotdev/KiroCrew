@@ -7,8 +7,21 @@ import asyncio
 import json
 from typing import TYPE_CHECKING, Literal
 
-from kiro_crew.dashboard.chat_utils import _tool_identity_fields, slack_mirror_is_paused
-from kiro_crew.dashboard.deny_override import deny_override_enabled, override_decision
+from kiro_crew.dashboard.chat_utils import (
+    HOST_DECLINE_CAUSE_META_KEY,
+    _tool_identity_fields,
+    slack_mirror_is_paused,
+)
+from kiro_crew.dashboard.deny_override import (
+    deny_key_note_label,
+    deny_override_enabled,
+    override_decision,
+)
+from kiro_crew.dashboard.slack_reconnect_wait import (
+    APPROVAL_NOTICE,
+    slack_reply_client,
+    wait_for_slack_reconnect,
+)
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_TIMEOUT,
@@ -23,7 +36,8 @@ from kiro_crew.dashboard.turn_dispatch import (
     format_approval_no_budget_card,
     format_approval_timeout_card,
 )
-from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, hook_tool_input
+from kiro_crew.safety_override import yolo_policy_permits
 from kiro_crew.security.readonly_bash import (
     command_invokes_git,
     is_read_only_bash,
@@ -31,6 +45,7 @@ from kiro_crew.security.readonly_bash import (
 )
 from kiro_crew.shared_crew.decisions import open_slot_approval, settle_slot_approval
 from kiro_crew.slack.handler import resolve_linked_approval
+from kiro_crew.tool_row_prefix import tool_row
 from kiro_crew.trust_patterns import (
     approval_command,
     approval_display_command,
@@ -154,7 +169,7 @@ async def _on_permission_prompt(
             # when steering is unavailable (that leaves exactly
             # today's behaviour). slot/state withheld for the same
             # reason: each cascaded tool already appends a visible
-            # 🚫 row, and the inject card's summary line is keyed on
+            # Refused: row, and the inject card's summary line is keyed on
             # causes this one is not.
             _batch_cascade_steered = await _steer_policy_notice(
                 client,
@@ -175,7 +190,12 @@ async def _on_permission_prompt(
         await _reject_attributed(
             client, event.request_id, attribution="exempt: user-originated cascade"
         )
-        slot.append("tool", f"🚫 {_title} (rejected)", "msg msg-tool", meta=_tool_meta(event))
+        slot.append(
+            "tool",
+            tool_row("refused", f"{_title} (rejected)"),
+            "msg msg-tool",
+            meta=_tool_meta(event),
+        )
         # Mark the permission as resolved so UI shows rejection
         perm_meta: dict[str, str] = {
             "request_id": str(event.request_id),
@@ -238,6 +258,18 @@ async def _on_permission_prompt(
     # optional there: a card missing them still renders its command.
     perm_meta["tool_kind"] = _redact_tool_field(event.tool_kind or "", limit=64)
     perm_meta.update(_tool_identity_fields(event))
+    # Imported here: this body runs on the chat runner module's globals.
+    from kiro_crew.dashboard.engine_subagent_cards import APPROVAL_TASK_MAX, approval_card_fields
+    from kiro_crew.security import redact_and_truncate
+
+    # Display only: a KAS engine sub-agent's task, or the sub-agent that asked.
+    # Model-written, so redacted before the cut, like every field of the card.
+    perm_meta.update(
+        {
+            key: redact_and_truncate(value, APPROVAL_TASK_MAX)
+            for key, value in approval_card_fields(turn, event).items()
+        }
+    )
     # A file grant is offered only for a path that names no link on this host,
     # read off the loop (it touches the file system); the trusted-pattern tier
     # checks the same before it honours one.
@@ -248,6 +280,11 @@ async def _on_permission_prompt(
         )
         if _grant_path:
             _path_scope_trusted = not await asyncio.to_thread(path_trust_unresolved, _grant_path)
+    # The chat's own browser call: its grant is the host of the page it acts on.
+    # Imported here: this body runs on the chat runner module's globals.
+    from kiro_crew import browser_host_trust
+
+    _browser_page = browser_host_trust.page_url_for(event, session_key, client, state)
     _trust_key = approval_command(
         event.tool_input or "",
         is_shell=event.is_shell,
@@ -255,7 +292,10 @@ async def _on_permission_prompt(
         mcp_server_name=event.mcp_server_name,
         raw_tool_params=event.raw_tool_params,
         path_scope_trusted=_path_scope_trusted,
+        browser_page_url=_browser_page,
     )
+    # Read before the card is answered: only a grant made by the answer is checked.
+    _site_granted_before = browser_host_trust.site_grant_covers(_trust_key, slot)
     _display_command = approval_display_command(
         event.tool_input or "",
         is_shell=event.is_shell,
@@ -263,6 +303,7 @@ async def _on_permission_prompt(
         mcp_server_name=event.mcp_server_name,
         raw_tool_params=event.raw_tool_params,
         path_scope_trusted=_path_scope_trusted,
+        browser_page_url=_browser_page,
     )
     _full = _extract_full_command(_display_command)
     _safe_full, _ = redact_exfiltration_urls(_full)
@@ -295,6 +336,9 @@ async def _on_permission_prompt(
         # them so two different pairs cannot share a durable grant.
         perm_meta["trust_command_key"] = _trust_key
         perm_meta["trust_command_grantable"] = "1"
+        if browser_host_trust.is_host_key(_trust_key):
+            # The card words the row as a site grant, read or act, not a command.
+            perm_meta["browser_trust_class"] = _trust_key.rsplit(":", 1)[1]
     # A broad per-slot Trust click is still a durable grant, so it
     # carries an explicit server proof: an alternate approval
     # surface must not offer it merely because it received a
@@ -340,6 +384,12 @@ async def _on_permission_prompt(
             # The card shows the refused command itself, redacted as the
             # label is, so the person reads what an allow would run.
             perm_meta["deny_override_command"] = _safe_full
+    from kiro_crew import web_ask_rule
+
+    if getattr(turn, "_web_ask", ""):
+        # An organisation's ``ask`` on this web call: a later trust grant's sweep
+        # of pending cards does not answer it (``web_ask_rule``).
+        perm_meta[web_ask_rule.CARD_META_KEY] = "1"
     # A decline known before the row exists is born into the row. Spec:
     # docs/system-specs/modules/app-notifications.md, "Sound events" (permission row).
     if tool_approval_timeout_secs() <= 0:
@@ -348,6 +398,28 @@ async def _on_permission_prompt(
         # Only a card someone can still answer gets the held notices.
         for _notice in _declined_grant_notices.values():
             slot.append("system", _notice, "msg msg-info")
+    if (
+        # A reconnect took the client this turn mirrors through: wait for it
+        # BEFORE the card's future exists, so a turn cancelled in the wait leaves
+        # no approval pending, and the card then posts through the client it
+        # publishes. A turn that started with no client has no live mirror
+        # (``turn._mirror_chan``) and neither waits nor is told. The post's own
+        # checks below run again after the wait.
+        "resolved" not in perm_meta
+        and _override_offer is None
+        and turn._mirror_chan
+        and turn._mirror_thread
+        and slot._slack_linked
+        and slot._slack_channel
+        and slot._slack_thread_ts
+        and not state.slack_client
+        and not slack_mirror_is_paused(state, session_key)
+    ):
+        await wait_for_slack_reconnect(state)
+        if not slack_mirror_is_paused(state, session_key):
+            slack_reply_client(
+                state, session_key, slot._slack_channel, turn=turn, notice=APPROVAL_NOTICE
+            )
     permission_row = slot.append(
         "permission",
         f"{_child_lf_warning}{_safe_title}" if _child_lf_warning else _safe_title,
@@ -411,6 +483,22 @@ async def _on_permission_prompt(
             # from the same helper); every other linked thread
             # keeps threading under ``_slack_thread_ts``.
             _approval_thread = code_channel_post_thread(slot._slack_channel, slot._slack_thread_ts)
+            # A Conductor thread's own conductor offers "Trust this thread", as
+            # its workers' cards do; the click's owner gates decide the grant.
+            from kiro_crew.slack.code_channels.thread_runtime import (
+                conductor_thread_of as _conductor_thread_of,
+            )
+
+            try:
+                _thread_trust = (
+                    _approval_thread is not None and _conductor_thread_of(slot) is not None
+                )
+            except Exception:
+                # Never let the offer cost the prompt its delivery.
+                _thread_trust = False
+            # Imported here: this body runs on the chat runner module's globals.
+            from kiro_crew.slack.turn_requester import turn_requester as _slack_turn_requester
+
             _slack_approval_ts = await post_linked_approval(
                 state.slack_client,
                 slot._slack_channel,
@@ -426,7 +514,22 @@ async def _on_permission_prompt(
                 mcp_identity_trusted=event.mcp_identity_trusted,
                 slot_key=slot.key,
                 future=fut,
-                channel_trust=_approval_thread is None,
+                channel_trust=_approval_thread is None or _thread_trust,
+                thread_trust=_thread_trust,
+                # The shared user whose message alone opened this turn may answer
+                # its own call too. A code channel's own session stays the owner's,
+                # and so does a child's call: a background child can outlive the
+                # turn that started it and ask under a later one. Only a backend
+                # that marks its children's calls can tell them apart
+                # (``child_calls_marked``, as ``deny_override`` requires).
+                requester=(
+                    _slack_turn_requester(slot)
+                    if _approval_thread is not None
+                    and getattr(event, "child_calls_marked", False) is True
+                    and not getattr(event, "sub_session_id", "")
+                    and not getattr(event, "native_child_call", False)
+                    else ""
+                ),
             )
             if _slack_approval_ts is None and not fut.done():
                 # Delivery failed — do not park for the whole
@@ -449,6 +552,7 @@ async def _on_permission_prompt(
                     "this Slack thread, so I auto-declined it. Please retry, or "
                     "approve from the dashboard.",
                     "msg msg-a",
+                    meta={HOST_DECLINE_CAUSE_META_KEY: DENY_CAUSE_APPROVAL_UNDELIVERABLE},
                 )
                 state.push_slots_update()
                 fut.set_result("rejected")
@@ -556,14 +660,8 @@ async def _on_permission_prompt(
     # resolves the future, and no decision is recorded until this try's
     # `finally`.
     #
-    # ABOVE the window computation on purpose, not just below it:
-    # `test_dashboard_approval_window.py` pins this branch's source
-    # shape by slicing a fixed-length window starting at that
-    # assignment, so anything inserted after it pushes the awaited
-    # call and both cards out of the window the test reads. For the
-    # same reason this comment does not quote the assignment itself:
-    # the test locates the window by searching for that text, and a
-    # second copy above it would move the window to the wrong place.
+    # The source pin on this branch is `test_refusal_inband_notice.py`'s: it
+    # anchors on the timeout card's call, not on the window assignment below.
     crew_log_emit.on_approval_requested(
         _crew_log_sid,
         _crew_log_turn_no,
@@ -579,6 +677,22 @@ async def _on_permission_prompt(
         since=_trace_asked,
     )
     _approval_window = min(state.approval_timeout_for(slot), tool_approval_timeout_secs())
+    # Whether turning YOLO on would have answered this prompt, for the timeout
+    # card's advice. Read before the wait from what is already in scope. Not when
+    # YOLO is already active, since the prompt still reached a person (the grant
+    # does not reach this chat, or skipped this call); not when policy does not
+    # permit YOLO, which then cannot be turned on; not for a deny-rules
+    # override card, which only the owner's own click approves (deny_override);
+    # not when no auto-approve answers this request (a card's turn, a held Bot
+    # limit or an organisation's web ``ask``: ``_no_auto_approve``); not for a child
+    # call the YOLO rung never takes (``child_unconditional_grant_eligible``).
+    _yolo_covers = not (
+        state.is_yolo_active()
+        or not yolo_policy_permits()
+        or _override_offer is not None
+        or turn._no_auto_approve
+        or not event.child_unconditional_grant_eligible
+    )
     _unattended_wait = slot.unattended
     _approval_card: str | None = None
     try:
@@ -631,7 +745,15 @@ async def _on_permission_prompt(
             _log_title,
             _approval_window,
         )
-        _approval_card = format_approval_timeout_card(_approval_window)
+        # Named as ``_note_override_used`` names it: redacted, then labelled.
+        _override_rule = (
+            deny_key_note_label(_redact_display_text(_override_offer.key))
+            if _override_offer is not None
+            else ""
+        )
+        _approval_card = format_approval_timeout_card(
+            _approval_window, yolo_covers=_yolo_covers, rule=_override_rule
+        )
         _host_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
         _host_deny_reason = (
             "the approval prompt went unanswered for " f"{max(1, round(_approval_window))}s"
@@ -706,7 +828,12 @@ async def _on_permission_prompt(
             try:
                 # Stays English: ``_approval_card`` is the approval formatter's
                 # own output (the tool and its decision), carried verbatim.
-                slot.append("error", _approval_card, "msg msg-err")
+                slot.append(
+                    "error",
+                    _approval_card,
+                    "msg msg-err",
+                    meta={HOST_DECLINE_CAUSE_META_KEY: _host_deny_cause},
+                )
             except Exception:
                 logger.debug("Failed to render approval card", exc_info=True)
         _owns_approval = slot.unregister_approval(str(event.request_id), fut)
@@ -841,6 +968,8 @@ async def _on_permission_prompt(
                 resolve_linked_approval(slot._slack_channel, _slack_approval_ts)
                 # A code-channel card its Trust answered says so in
                 # place; every other card goes once decided.
+                # A reconnect may have taken the client the card posted with.
+                await wait_for_slack_reconnect(state)
                 if state.slack_client and not keep_code_channel_card(
                     slot._slack_channel, _slack_approval_ts
                 ):
@@ -913,10 +1042,7 @@ async def _on_permission_prompt(
         # runs, so those calls fire them here.
         pre_hook_results: list[str] = []
         if not turn._pre_tool_hooks_fired:
-            try:
-                _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-            except Exception:
-                _parsed_input = None
+            _parsed_input = hook_tool_input(event.raw_tool_params, event.tool_input)
             try:
                 pre_hook_results = await _fire(
                     turn,
@@ -984,6 +1110,13 @@ async def _on_permission_prompt(
                 if _override_offer is not None
                 else _deny_waiver_kwargs(turn)
             )
+            # This click made the site grant (none covered the call when the card
+            # was drawn, one does now): the op route checks the tab is still on
+            # that host. A plain approval runs as it always has.
+            if not _site_granted_before and browser_host_trust.site_grant_covers(_trust_key, slot):
+                browser_host_trust.note_host_approval(
+                    session_key, _trust_key, event.raw_tool_params
+                )
             approval_sent = await client.approve_tool(event.request_id, **_floor_waivers)
             if approval_sent is False:
                 _audit_approve_refused(
@@ -996,7 +1129,12 @@ async def _on_permission_prompt(
                 # a call ran with a security rule stepped aside.
                 _note_override_used(slot, _override_offer)
             _approved_title = _redact_display_text(event.title)
-            slot.append("tool", f"✅ {_approved_title}", "msg msg-tool", meta=_tool_meta(event))
+            slot.append(
+                "tool",
+                tool_row("approved", _approved_title),
+                "msg msg-tool",
+                meta=_tool_meta(event),
+            )
             sel().log_tool_invocation(
                 session_key=session_key,
                 agent=slot.agent or "kirocrew",
@@ -1089,20 +1227,30 @@ async def _on_permission_prompt(
         # that steer's job, not this marker's.
         # The person's own words go with their own rejection only: a host
         # auto-decline carries none, and only a request that takes one gets it.
+        _sent_reason = (
+            _rejection_reason if event.takes_rejection_reason and not _host_deny_cause else ""
+        )
+        if _sent_reason:
+            # A reason is typed on the dashboard card, never by a linked Slack
+            # opener (a Slack click carries none): someone else's words now reach
+            # this turn, so its prompts go back to the owner alone.
+            from kiro_crew.slack.turn_requester import forget_turn_requester
+
+            forget_turn_requester(slot)
         await _reject_attributed(
             client,
             event.request_id,
             attribution="exempt: interactive user denial",
-            reason=(
-                _rejection_reason if event.takes_rejection_reason and not _host_deny_cause else ""
-            ),
+            reason=_sent_reason,
         )
         if _safety_reason:
-            _reject_label = f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"
+            _reject_label = tool_row(
+                "refused", f"{_safe_reject_title} (cancelled — {_safety_reason})"
+            )
         elif outcome == "rejected_once":
-            _reject_label = f"🚫 {_safe_reject_title} (rejected — this call only)"
+            _reject_label = tool_row("refused", f"{_safe_reject_title} (rejected — this call only)")
         else:
-            _reject_label = f"🚫 {_safe_reject_title} (rejected)"
+            _reject_label = tool_row("refused", f"{_safe_reject_title} (rejected)")
         slot.append("tool", _reject_label, "msg msg-tool")
         # NOTE: Do NOT append to _refusal_reasons here.
         # This is an interactive user denial — the user chose to reject

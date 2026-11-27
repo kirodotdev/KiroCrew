@@ -171,10 +171,10 @@ test("FAMILY_META separates display names from quit-by-name targets", () => {
   assert.equal(FAMILY_META.nightly.displayName, "Kiro Crew Nightly");
 });
 
-test("identity probe targets /api/health, never the /api/status liveness URL", () => {
-  // Regression pin: the shell's liveness HEALTH_URL is /api/status, whose
-  // payload has no `app` field. Probing it makes decideGatewayAction classify
-  // every gateway as "unidentified" and silently disables the takeover path.
+test("identity probe targets /api/health, never /api/status", () => {
+  // Regression pin: /api/status's payload has no `app` field. Probing it makes
+  // decideGatewayAction classify every gateway as "unidentified" and silently
+  // disables the takeover path.
   assert.equal(HEALTH_IDENTITY_PATH, "/api/health");
   assert.notEqual(HEALTH_IDENTITY_PATH, "/api/status");
 });

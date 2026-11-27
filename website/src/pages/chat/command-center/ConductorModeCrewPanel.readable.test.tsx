@@ -94,6 +94,23 @@ describe('Conductor mode Status on a long run', () => {
     expect(within(screen.getByTestId('conductor-mode-milestones-done')).getByText('2 done').closest('summary')?.textContent).toBe('2 done')
   })
 
+  it('moves an accepted milestone whose session works again out of the done fold, labelled only In progress', async () => {
+    // A comment on a doc the milestone made wakes its session after the accept.
+    api.crewBoard.mockResolvedValue({
+      conductor: { schema: 1, slot_key: 'root-1', goal: 'Ship it. Done when: merged.', round: 1, depth: 0, parent_item: null, created_at: '' },
+      conductor_alive: 'idle', items: [ITEM({ title: 'Woken again', alive: 'running' }), ITEM({ item_id: 'it_b', title: 'Still done' })], take_over_available: false,
+      run: { settled: '', open: 0, accepted: 2, not_done: 0, at_limit: false },
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={qc}><Provider store={createTestStore({ dashboard: { slots: [] } } as never)}><ConductorModeCrewPanel root="root-1" viewing="root-1" active /></Provider></QueryClientProvider>)
+    const title = await screen.findByText('Woken again')
+    const row = title.closest('[data-testid="conductor-mode-milestone"]')!
+    expect(row).toHaveAttribute('data-state', 'running')
+    expect(row.closest('[data-testid="conductor-mode-milestones-done"]')).toBeNull()
+    expect(row).toHaveTextContent('In progress')
+    expect(row.textContent).not.toContain('Merged.')
+  })
+
   it('counts running milestones in the Recap instead of repeating their titles', async () => {
     await renderPanel(GOAL)
     expect(screen.getByTestId('conductor-mode-recap')).toHaveTextContent(/^2 of 3 done; 1 running\.$/)

@@ -286,6 +286,8 @@ def setup_knowledge_routes(app: web.Application) -> None:
             effort_key="extraction_effort",
             fallback_effort=DEFAULT_EXTRACTION_EFFORT,
             config_pool_size_key="extraction_pool_size",
+            # On KAS the pool runs each chunk on the gateway's background runtime.
+            sessions=lambda: getattr(app["state"], "sessions", None),
         )
         embedder = _create_embedder(app)
         pipeline = IngestionPipeline(

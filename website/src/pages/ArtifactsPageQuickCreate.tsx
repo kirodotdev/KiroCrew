@@ -1,12 +1,16 @@
-/** The Artifacts page's quick-create row: a Doc tile, an icon with its name
- *  under it, for the common start, and a "more" trigger whose menu holds the
- *  other ways in (a new folder, importing a file). Each runs the action the
- *  page already owns; the side list's + also creates a folder.
+/** The Artifacts page's quick-create row: a Doc tile and a Canvas tile, each an
+ *  icon with its name under it, for the two ways to start from blank, and a
+ *  "more" trigger whose menu holds the other ways in (a new folder, importing a
+ *  file). Each runs the action the page already owns; the side list's + also
+ *  creates a folder.
  *
- *  One tile and one overflow trigger keep the row within two peer controls.
+ *  The tiles are a palette of document types, like FigJam's or Figma's new-file
+ *  row, so they read as one group of kinds rather than a row of peer actions;
+ *  everything that is not a kind stays behind the overflow trigger.
+ *
  *  Each `uiLocation` spread and label text sit on their own element: one id
  *  names one render site, and the index generator reads the label there. */
-import { FilePlus, FileUp, FolderPlus, Loader2, MoreHorizontal } from 'lucide-react'
+import { FilePlus, FileUp, FolderPlus, Loader2, MoreHorizontal, Shapes } from 'lucide-react'
 import { Btn } from '../components/ui'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import { uiLocation } from '../uiLocations/uiLocation'
@@ -17,9 +21,11 @@ const TILE = 'flex-col items-center gap-1 w-[76px] px-1 py-2 border-transparent 
 const ICON_BOX = 'w-10 h-10 rounded-lg border border-border bg-bg-elevated flex items-center justify-center text-accent'
 const LABEL = 'truncate min-w-0 max-w-full'
 
-export function ArtifactsQuickCreate({ onNewDoc, newDocBusy, onImport, importBusy, onNewFolder }: {
+export function ArtifactsQuickCreate({ onNewDoc, newDocBusy, onNewCanvas, newCanvasBusy, onImport, importBusy, onNewFolder }: {
   onNewDoc: () => void
   newDocBusy: boolean
+  onNewCanvas: () => void
+  newCanvasBusy: boolean
   onImport: () => void
   importBusy: boolean
   onNewFolder: () => void
@@ -40,6 +46,16 @@ export function ArtifactsQuickCreate({ onNewDoc, newDocBusy, onImport, importBus
       >
         <span className={ICON_BOX}>{newDocBusy ? <Loader2 size={18} className="animate-spin" /> : <FilePlus size={18} />}</span>
         <span className={LABEL}>{i18nT('pages.artifactsPage.quick_doc')}</span>
+      </Btn>
+      <Btn
+        onClick={onNewCanvas}
+        busy={newCanvasBusy}
+        title={i18nT('pages.artifactsPage.new_canvas')}
+        className={TILE}
+        data-testid="artifacts-quick-new-canvas"
+      >
+        <span className={ICON_BOX}>{newCanvasBusy ? <Loader2 size={18} className="animate-spin" /> : <Shapes size={18} />}</span>
+        <span className={LABEL}>{i18nT('pages.artifactsPage.quick_canvas')}</span>
       </Btn>
       <DropdownMenu guideScope="menu:artifacts.add-menu">
         <DropdownMenuTrigger asChild>

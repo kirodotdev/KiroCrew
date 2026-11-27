@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""A Bot's chat may keep at most ``max_workers`` of its own workers open.
+"""A Bot may keep at most ``max_workers`` sessions that run as it open.
 
 The owner sets the limit on the Bot's settings page (``PUT /api/agents/<name>``);
-0, the default, sets none. ``session_create`` refuses the next worker past it with
-``bot_worker_cap_reached`` and creates nothing. A closed worker frees its seat; a
-worker a restart brought back, or one still being created, takes one.
+0, the default, sets none. ``session_create`` refuses the next session past it with
+``bot_worker_cap_reached`` and creates nothing. A closed session frees its seat; a
+session a restart brought back, or one still being created, takes one.
 """
 
 from __future__ import annotations
@@ -262,3 +262,250 @@ def test_a_restart_read_never_uncounts_a_worker_counted_while_it_ran(
     monkeypatch.setattr(state_facade, "read_worker_execution", read_while_the_fork_counts_its_child)
     asyncio.run(count_restored_workers(state))
     assert crewmate_worker_member_id(child_key) == "pixel"
+
+
+def test_a_restart_read_never_charges_a_chat_made_again_under_its_key(
+    crewmate, monkeypatch  # noqa: F811
+):
+    """The owner remakes a restored Bot child's key as an ordinary chat mid-read.
+
+    The record read for the closed child must not charge the new chat to the Bot.
+    """
+    from kiro_crew.dashboard import state as state_facade
+    from kiro_crew.dashboard.state import count_restored_workers
+    from kiro_crew.dashboard.state_parts import bot_worker_cap
+    from kiro_crew.members import _slot_part
+
+    state, caller, execution = crewmate
+    child = state.get_or_create_slot("chat-restored-child", agent="kirocrew")
+    child._created_by = caller.key
+    child.memory_store = caller.memory_store
+    child_key = slot_history_key(child)
+    remade = []
+
+    def read_while_the_owner_remakes_the_key(session_key):
+        if session_key == child_key:
+            state._slots.pop(child.key)
+            remade.append(state.get_or_create_slot(child.key, agent="kirocrew"))
+        return execution
+
+    monkeypatch.setattr(state_facade, "read_worker_execution", read_while_the_owner_remakes_the_key)
+    asyncio.run(count_restored_workers(state))
+    assert remade and state._slots[child.key] is remade[0]
+    assert slot_history_key(remade[0]) == child_key
+    assert _slot_part(child_key) not in bot_worker_cap._BOT_SESSIONS
+    assert _slot_part(child_key) not in bot_worker_cap._RECORDS_READ
+    assert crewmate_worker_member_id(child_key) == ""
+
+
+# Every session a verb opens as the Bot takes a seat, on any template and at any
+# depth; the Bot's thread, a person's chat and a session with no member id do not.
+
+
+def _restart(state) -> None:
+    """What a restart leaves of the count: only the slots, none of the registries."""
+    from kiro_crew.dashboard.state_parts import bot_worker_cap
+
+    for key in list(state._slots):
+        forget_crewmate_worker_session(key)
+    bot_worker_cap._BOT_SESSIONS.clear()
+    bot_worker_cap._RECORDS_READ.clear()
+
+
+@pytest.fixture
+def other_template(monkeypatch):
+    """The stock leaf worker template, ``kirocrew-worker``, is configured."""
+    from kiro_crew.config import loader
+
+    monkeypatch.setattr(
+        loader,
+        "_MATERIALIZED_AGENTS",
+        frozenset({*loader._MATERIALIZED_AGENTS, "kirocrew-worker", "kirocrew"}),
+    )
+
+
+def _other_template(state, worker):
+    return _create(state, worker, agent="kirocrew-worker", agent_kind="template")["target"]
+
+
+def test_a_workers_session_on_another_template_is_refused_past_the_limit(
+    crewmate, other_template, tmp_path  # noqa: F811
+):
+    state, caller, _execution = crewmate
+    _set_cap(tmp_path, 1)
+    worker = state.get_slot(_create(state, caller)["target"])
+    before = set(state._slots)
+    with pytest.raises(SessionControlError) as err:
+        _other_template(state, worker)
+    assert err.value.code == "bot_worker_cap_reached"
+    assert err.value.status == 409
+    assert "1 sessions open" in str(err.value)
+    assert set(state._slots) == before
+
+
+def test_a_workers_session_as_its_own_bot_is_refused_past_the_limit(
+    crewmate, tmp_path  # noqa: F811
+):
+    """``agent=<its Bot>`` from a worker is a member selection carrying the Bot's id."""
+    state, caller, _execution = crewmate
+    _set_cap(tmp_path, 2)
+    worker = state.get_slot(_create(state, caller)["target"])
+    child = _create(state, worker, agent="pixel")["target"]
+    assert state.get_slot(child).agent == "pixel"
+    before = set(state._slots)
+    with pytest.raises(SessionControlError) as err:
+        _create(state, worker, agent="pixel")
+    assert err.value.code == "bot_worker_cap_reached"
+    assert set(state._slots) == before
+
+
+def test_a_session_such_a_child_opens_is_counted_too(
+    crewmate, other_template, tmp_path  # noqa: F811
+):
+    state, caller, _execution = crewmate
+    _set_cap(tmp_path, 3)
+    worker = state.get_slot(_create(state, caller)["target"])
+    child = state.get_slot(_other_template(state, worker))
+    _other_template(state, child)
+    with pytest.raises(SessionControlError) as err:
+        _create(state, caller)
+    assert err.value.code == "bot_worker_cap_reached"
+    assert "3 sessions open" in str(err.value)
+
+
+def test_a_restored_child_on_another_template_is_counted_from_its_saved_record(
+    crewmate, other_template, tmp_path  # noqa: F811
+):
+    state, caller, _execution = crewmate
+    _set_cap(tmp_path, 2)
+    worker = state.get_slot(_create(state, caller)["target"])
+    _other_template(state, worker)
+    _restart(state)
+    with pytest.raises(SessionControlError) as err:
+        _create(state, caller)
+    assert err.value.code == "bot_worker_cap_reached"
+    assert "2 sessions open" in str(err.value)
+
+
+def test_one_unreadable_restored_child_does_not_stop_the_others_counting(
+    crewmate, other_template, tmp_path, monkeypatch  # noqa: F811
+):
+    state, caller, _execution = crewmate
+    _set_cap(tmp_path, 3)
+    worker = state.get_slot(_create(state, caller)["target"])
+    child = state.get_slot(_other_template(state, worker))
+    broken = state.get_slot(_other_template(state, worker))
+    state._slots.pop(worker.key)
+    _set_cap(tmp_path, 2)
+    _restart(state)
+    _unreadable(monkeypatch, slot_history_key(broken))
+    # The thread's new worker and the readable child hold the two seats.
+    _create(state, caller)
+    with pytest.raises(SessionControlError) as err:
+        _create(state, caller)
+    assert err.value.code == "bot_worker_cap_reached"
+    assert child.key in state._slots and broken.key in state._slots
+
+
+def test_a_fork_one_below_the_limit_is_not_refused_by_its_own_child(
+    crewmate, tmp_path, monkeypatch  # noqa: F811
+):
+    """A restore pass running beside the fork counts the child during its bind."""
+    from kiro_crew.dashboard import chat_fork
+    from kiro_crew.members import note_crewmate_worker_session
+
+    state, caller, _execution = crewmate
+    _set_cap(tmp_path, 2)
+    first = _create(state, caller)["target"]
+    state.get_slot(first).messages.extend(
+        [{"role": "user", "content": "m0"}, {"role": "assistant", "content": "m1"}]
+    )
+    real_bind = chat_fork._bind_fork_execution
+    counted_during_bind = []
+
+    def bind_while_a_restore_pass_counts_the_child(identity, session_key, execution, **kwargs):
+        result = real_bind(identity, session_key, execution, **kwargs)
+        note_crewmate_worker_session(session_key, "pixel")
+        counted_during_bind.append(session_key)
+        return result
+
+    monkeypatch.setattr(
+        chat_fork, "_bind_fork_execution", bind_while_a_restore_pass_counts_the_child
+    )
+    forked = asyncio.run(
+        sc.fork_session(state, caller_session_key=slot_history_key(caller), source=first)
+    )
+    assert counted_during_bind
+    assert forked["target"] in state._slots
+    with pytest.raises(SessionControlError) as err:
+        _create(state, caller)
+    assert err.value.code == "bot_worker_cap_reached"
+
+
+def test_the_bots_thread_and_a_session_with_no_member_take_no_seat(
+    crewmate, tmp_path  # noqa: F811
+):
+    from kiro_crew.dashboard.state import count_restored_workers
+
+    state, caller, _execution = crewmate
+    _set_cap(tmp_path, 1)
+    plain = state.get_or_create_slot("chat-plain", agent="kirocrew")
+    plain._created_by = caller.key
+    plain.memory_store = caller.memory_store
+    asyncio.run(count_restored_workers(state))
+    # The one seat is still free: the thread and the plain session (no saved record
+    # carrying a member id) hold none.
+    _create(state, caller)
+    with pytest.raises(SessionControlError):
+        _create(state, caller)
+
+
+@pytest.mark.parametrize("creator", ["", "cron:nightly"], ids=["person", "script-cron"])
+def test_a_chat_no_verb_opened_takes_no_seat_on_the_bots_record(
+    crewmate, tmp_path, creator  # noqa: F811
+):
+    """A person's chat, or a script cron's (its ``cron:`` stamp), running as the Bot."""
+    from kiro_crew.dashboard.state import count_restored_workers
+    from kiro_crew.execution_context import bind_session_execution
+
+    state, caller, execution = crewmate
+    _set_cap(tmp_path, 1)
+    chat = state.get_or_create_slot("chat-not-a-verbs", agent="pixel")
+    chat._created_by = creator
+    chat.memory_store = caller.memory_store
+    bind_session_execution(slot_history_key(chat), execution)
+    asyncio.run(count_restored_workers(state))
+    _create(state, caller)
+    with pytest.raises(SessionControlError):
+        _create(state, caller)
+
+
+def test_a_counted_key_made_again_on_an_ordinary_template_frees_the_seat(
+    crewmate, other_template, tmp_path  # noqa: F811
+):
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes
+    from dashboard_owner_helpers import as_owner
+
+    state, caller, _execution = crewmate
+    _set_cap(tmp_path, 2)
+    worker = state.get_slot(_create(state, caller)["target"])
+    child = _other_template(state, worker)
+    with pytest.raises(SessionControlError):
+        _create(state, caller)
+
+    # A person's explicit selection records the new agent on the same key
+    # (``slot_guards._record_explicit_agent_selection``), as it does for a worker.
+    state._slots.pop(child)
+
+    async def remake():
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await client.post(
+                "/api/chat/slots",
+                json={"name": child, "agent": "kirocrew", "agent_kind": "template"},
+            )
+            assert response.status == 200, await response.text()
+
+    asyncio.run(remake())
+    assert state._slots[child].agent == "kirocrew"
+    _create(state, caller)

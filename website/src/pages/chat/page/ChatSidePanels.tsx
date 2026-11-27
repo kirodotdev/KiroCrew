@@ -1,25 +1,35 @@
 import type { MotionValue } from 'motion-dom'
-import { useCallback, useEffect, useRef, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
+import { Search } from 'lucide-react'
 import type { ChatPanelTrackpadSwipe } from './chatTrackpadSwipe'
 import type { ChatPin } from '../../../api/pins'
 import type { ChatNavigationData } from '../../../hooks/useChatNavigation'
 import type { SidePanelDock } from '../../../hooks/useSidePanelDock'
-import type { ChatMessage, ChatSlot } from '../../../types'
+import type { ChatSlot } from '../../../types'
 import type { PullRequestLink } from '../../../utils/pullRequestLinks'
 import { shouldMountSidePanel, isSidePanelHidden, SIDE_PANEL_DOCK_TRANSITION, type SidePanelDockMotion } from '../sidePanelMount'
-import { searchScopeIsLimited } from '../pagination'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
-import SearchBar from '../../../components/SearchBar'
-import SearchResultsList from '../../../components/SearchResultsList'
-import SidePanel from '../SidePanel'
-import DetailPanel from '../../../components/DetailPanel'
+import type { PreviewActions } from '../../../components/chatHistorySearch/ChatHistoryPreview'
+import SidePanel, { type SidePanelLeadingTab } from '../SidePanel'
+import { lazyRetry } from '../../../components/lazyRetry'
 import { i18nT } from '../../../i18n/t'
 import { coversPaneProps } from '../../../hooks/paneVisibility'
 import { useSidePanelHealth } from '../../../hooks/useSidePanelHealth'
+import { historySearchHostMarks } from '../../../hooks/useMessageSearch'
+import { CHAT_HISTORY_SEARCH_TAB_ID, useChatHistorySearchTab } from '../useChatHistorySearchTab'
 import { useAppDispatch } from '../../../store'
 import { closeActivityPanel } from '../../../store/chatSlice'
+
+// A chunk that fails to load shows its notice in the Search tab, with Try Again.
+// No hand-off: the chat composer beside the pane may hold an unsent draft.
+const ChatHistorySearch = lazyRetry(() => import('../../../components/chatHistorySearch/ChatHistorySearch'), {
+  layout: 'page',
+  title: () => i18nT('components.chatHistorySearch.load_failed'),
+  scope: 'chat-history-search',
+  askAgent: false,
+})
 
 interface ChatSidePanelsProps {
   mode?: string
@@ -27,9 +37,6 @@ interface ChatSidePanelsProps {
   connected: boolean
   isMobile: boolean
   activityOpen: boolean
-  cursorIsForActiveSlot: boolean
-  messages: ChatMessage[]
-  slotHasMore: boolean
   insertDashboardReply: (text: string) => void
   addSourceCommentToChat: (text: string) => void
   handleArtifactOpen: (slug: string) => Promise<void>
@@ -61,9 +68,10 @@ interface ChatSidePanelsProps {
   chatPinsLoading: boolean
   handleJumpToPin: (messageTs: string, mid?: string) => void
   /** Absent where this chat's composer cannot take it (a remote relay archive, Split View, a crew window): no Put in composer button. */
-  handlePutPinInComposer?: (messageTs: string, mid?: string) => void
+  handlePutPinInComposer?: (messageTs: string, mid?: string) => boolean
   handleUnpinById: (id: string) => void
-  jumpToSearchResult: (i: number) => void
+  /** Quote and fork for the messages the history search previews. */
+  historyActions: PreviewActions
   activeSlotTitle: string | undefined
   activitySlot: HTMLElement | null
   /** Look the shell's `#activity-bar-slot` up again (sessionsDrawer). */
@@ -79,7 +87,6 @@ interface ChatSidePanelsProps {
   sideOverlayX: MotionValue<number>
   panelFillWidth: number | undefined
   panelMaximized: boolean
-  panelReserve: number | undefined
   pinSummary: boolean
   trackpad: ChatPanelTrackpadSwipe
 }
@@ -94,13 +101,13 @@ const DESK_SLIDE_MOTION = {
 }
 
 /**
- * The panels beside the chat pane: the find pane, the inline side panel (phone overlay or embed width reveal), and the side panel portaled into the shell's activity column.
+ * The panels beside the chat pane: the inline side panel (phone overlay or embed width reveal), and the side panel portaled into the shell's activity column.
  */
 export default function ChatSidePanels({
-  mode, activeSlot, connected, isMobile, activityOpen, cursorIsForActiveSlot, messages, slotHasMore, insertDashboardReply, addSourceCommentToChat, handleArtifactOpen, handleFileOpen, handleFileSave,
+  mode, activeSlot, connected, isMobile, activityOpen, insertDashboardReply, addSourceCommentToChat, handleArtifactOpen, handleFileOpen, handleFileSave,
   handleOpenWorkingTreeDiff, hasBrowserTab, hasLiveAppTab, panelIssues, panelSources, dismissSource, reconcileIssueUrl, reconcileSourceUrl, search, selectedIssueUrl, selectedSourceUrl, selectIssueUrl,
   selectSourceUrl, tabsCtl, submitComments, currentSlot, handleAddToContext, sidePanelDock, sidePanelDockAnim, effectiveSidebarWidth, toggleAct, chatNav, chatPins, chatPinsLoading, handleJumpToPin, handlePutPinInComposer,
-  handleUnpinById, jumpToSearchResult, activeSlotTitle, activitySlot, refreshActivitySlot, embedded, chatPaneEl, hasTaskDashboard, sidebarOpen, sideOverlayPanelRef, sideOverlayPhase, sideOverlayX, panelFillWidth, panelMaximized, panelReserve,
+  handleUnpinById, historyActions, activeSlotTitle, activitySlot, refreshActivitySlot, embedded, chatPaneEl, hasTaskDashboard, sidebarOpen, sideOverlayPanelRef, sideOverlayPhase, sideOverlayX, panelFillWidth, panelMaximized,
   pinSummary, trackpad,
 }: ChatSidePanelsProps) {
   const { deskSlide, deskSpacerW, deskPanelWrapRef } = trackpad
@@ -116,13 +123,35 @@ export default function ChatSidePanels({
   // A panel that fills the chat column (a phone, or a narrow window) hides the
   // composer it just filled, so it closes; docked at the bottom it does not.
   const putPinInComposer = useCallback((messageTs: string, mid?: string) => {
-    handlePutPinInComposer?.(messageTs, mid)
+    const done = handlePutPinInComposer?.(messageTs, mid) ?? false
     if (panelFillWidth !== undefined && !(activitySlot && sidePanelDock === 'bottom')) dispatch(closeActivityPanel())
+    return done
   }, [handlePutPinInComposer, panelFillWidth, activitySlot, sidePanelDock, dispatch])
   const { retireSlide } = trackpad
+  const mountInput = { activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard }
+  const historyTab = useChatHistorySearchTab({ search, isMobile, activityOpen, tabsCtl })
+  const { close: closeSearch, focusNonce } = search
+  // The chat's history search as the panel's leading tab, only while it is
+  // open: in the docked panel, or the full-width overlay on a phone. Kept
+  // mounted, so a switch to another tab and back keeps the query and the
+  // preview; the body owns Escape only while it is in front.
+  const leadingTabs = useMemo<SidePanelLeadingTab[] | undefined>(() => (historyTab.tabOpen && activeSlot ? [{
+    id: CHAT_HISTORY_SEARCH_TAB_ID,
+    title: i18nT('components.chatHistorySearch.title'),
+    icon: <Search className="lucide-inline" aria-hidden="true" />,
+    keepMounted: true,
+    // A phone shows the search full screen with its own Cancel: no tab strip.
+    bare: isMobile,
+    onClose: closeSearch,
+    render: () => (
+      <div {...historySearchHostMarks(historyTab.onScreen)} className="h-full min-h-0 flex flex-col" data-testid="chat-history-search-tab">
+        <ChatHistorySearch key={activeSlot} slotKey={activeSlot} onClose={closeSearch} focusNonce={focusNonce} escapeOwner={false} {...historyActions} />
+      </div>
+    ),
+  }] : undefined), [historyTab.tabOpen, historyTab.onScreen, activeSlot, closeSearch, focusNonce, historyActions, isMobile])
   // The store says open, the panel must be on screen (useSidePanelHealth).
   useSidePanelHealth({
-    enabled: activityOpen && !isMobile && !embedded && !search.isOpen,
+    enabled: activityOpen && !isMobile && !embedded,
     activeSlot,
     dock: sidePanelDock,
     slot: activitySlot,
@@ -141,31 +170,6 @@ export default function ChatSidePanels({
   // (paneVisibility, #23564), and a bottom-docked panel leaves it on screen.
   return (
     <>
-      {search.isOpen && (
-          <DetailPanel
-            key="search-panel"
-            title={<SearchBar docked term={search.term} setTerm={search.setTerm} matches={search.matches} currentIdx={search.currentIdx} next={search.next} prev={search.prev} close={search.close} caseSensitive={search.caseSensitive} toggleCaseSensitive={search.toggleCaseSensitive} focusNonce={search.focusNonce} goTo={search.goTo} scopeLimited={searchScopeIsLimited({ slotHasMore, cursorIsForActiveSlot })} />}
-            onClose={search.close}
-            initialWidth={400}
-            minWidth={320}
-            reserveWidth={panelReserve}
-            storageKey="mc-search-width"
-            noPadding
-          >
-            {search.matches.length > 0 ? (
-              <SearchResultsList
-                matches={search.matches}
-                currentIdx={search.currentIdx}
-                messages={messages}
-                term={search.term}
-                caseSensitive={search.caseSensitive}
-                onJump={jumpToSearchResult}
-              />
-            ) : (
-              <div className="px-4 py-3 text-[13px] text-muted">{search.term ? i18nT('pages.chatPage.no_results') : i18nT('pages.chatPage.type_to_search_this_conversation')}</div>
-            )}
-          </DetailPanel>
-        )}
       <AnimatePresence initial={false}>
         {/* Inline side panel — mobile / embed frames where there's no actbar
             grid column. Desktop uses the actbar portal below.
@@ -181,9 +185,9 @@ export default function ChatSidePanels({
           // below) so its iframe — and the drawing inside it — survives the
           // close, exactly as the width-reveal branch always did.
           ? (sideOverlayPhase !== 'closed'
-              || (shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
-                  && isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }))) && !activitySlot
-          : shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && !activitySlot) && (
+              || (shouldMountSidePanel(mountInput)
+                  && isSidePanelHidden(mountInput))) && !activitySlot
+          : shouldMountSidePanel(mountInput) && !activitySlot) && (
           <motion.div
             key="side-panel-inline"
             data-testid="side-panel-inline"
@@ -193,9 +197,13 @@ export default function ChatSidePanels({
             exit={isMobile ? undefined : { width: 0 }}
             transition={isMobile ? undefined : { duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
             // Below the 42px app topbar, like the sessions drawer — the panel
-            // takes over the CONTENT area, not the shell chrome.
+            // takes over the CONTENT area, not the shell chrome. The history
+            // search in front is the one exception: it covers the topbar too,
+            // so only its own field and Cancel are at the top of the screen.
             className={isMobile
-              ? 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-[47] flex justify-end bg-bg'
+              ? historyTab.onScreen
+                ? 'fixed top-safe bottom-safe left-safe right-safe z-[60] flex justify-end bg-bg'
+                : 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-[47] flex justify-end bg-bg'
               : 'h-full overflow-hidden flex justify-end shrink-0'}
             // On a phone this is an opaque overlay over the whole content area,
             // so while OPEN the transcript under it is not on screen
@@ -212,12 +220,12 @@ export default function ChatSidePanels({
               ? (sideOverlayPhase === 'closed'
                   ? { display: 'none' } // keep-alive: mounted for the iframe, invisible
                   : { x: sideOverlayX })
-              : (isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) ? { display: 'none' } : undefined)}
+              : (isSidePanelHidden(mountInput) ? { display: 'none' } : undefined)}
           >
             <SidePanel
               tabsCtl={tabsCtl}
               slot={activeSlot || ''}
-              panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })}
+              panelHidden={isSidePanelHidden(mountInput)}
               onFileOpen={handleFileOpen}
               onArtifactOpen={handleArtifactOpen}
               onAddToContext={handleAddToContext} onComposerInsert={insertDashboardReply}
@@ -233,6 +241,8 @@ export default function ChatSidePanels({
               fillWidth={panelFillWidth}
               extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
               canDockBottom={false}
+              onOpenHistorySearch={activeSlot ? search.open : undefined}
+              leadingTabs={leadingTabs}
             />
           </motion.div>
         )}
@@ -246,7 +256,7 @@ export default function ChatSidePanels({
           the window edge — both sides move together instead of snapping. */}
       {activitySlot && createPortal(
         <AnimatePresence initial={false}>
-          {(shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) || deskSlide) && (
+          {(shouldMountSidePanel(mountInput) || deskSlide) && (
             <motion.div
               key="side-panel"
               ref={deskPanelWrapRef}
@@ -264,7 +274,7 @@ export default function ChatSidePanels({
                 // without repainting or re-laying out its content each frame.
                 ? 'h-full relative overflow-hidden flex [&>:first-child]:absolute [&>:first-child]:inset-y-0 [&>:first-child]:left-0 [&>:first-child]:will-change-transform [&>:first-child]:[contain:layout_paint]'
                 : sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}
-              style={!deskSlide && isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
+              style={!deskSlide && isSidePanelHidden(mountInput) ? { display: 'none' } : undefined}
               data-testid="side-panel-column"
               data-sliding={deskSlide ? 'true' : undefined}
               // A native Browser view (useNativeBrowser) is a layer over the
@@ -276,7 +286,7 @@ export default function ChatSidePanels({
               <SidePanel
                 tabsCtl={tabsCtl}
                 slot={activeSlot || ''}
-                panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && !deskSlide}
+                panelHidden={isSidePanelHidden(mountInput) && !deskSlide}
                 onFileOpen={handleFileOpen}
                 onArtifactOpen={handleArtifactOpen}
                 onAddToContext={handleAddToContext} onComposerInsert={insertDashboardReply}
@@ -291,6 +301,8 @@ export default function ChatSidePanels({
                 expanded={panelMaximized}
                 fillWidth={panelFillWidth}
                 extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
+                onOpenHistorySearch={activeSlot ? search.open : undefined}
+                leadingTabs={leadingTabs}
               />
               {/* After the panel, so the panel keeps its place and never remounts. */}
               {deskSlide && <motion.div data-testid="side-panel-swipe-spacer" className="h-full shrink-0" style={{ width: deskSpacerW }} />}

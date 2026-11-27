@@ -20,6 +20,7 @@ from apps_backend_coverage_helpers import _fake_proc
 
 import kiro_crew.apps.backend as bmod
 from kiro_crew.apps.backend import AppProcess
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 
 class TestStopSpawnedBackend:
@@ -57,6 +58,29 @@ class TestStopSpawnedBackend:
             (556, bmod.platform_compat.SIGTERM),
             (556, bmod.platform_compat.SIGKILL),
         ]
+
+    def test_a_refused_sigkill_is_reported_as_a_failed_stop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """EPERM from the group SIGKILL with the root still running: the audit row
+        names the failed kill and the stop reports failure, on the native platform."""
+
+        def _refuse(_pid: int, sig: int) -> None:
+            if sig == bmod.platform_compat.SIGKILL:
+                raise PermissionError("Operation not permitted")
+
+        monkeypatch.setattr(bmod.platform_compat, "kill_process_tree", _refuse)
+        audit = MagicMock()
+        monkeypatch.setattr(bmod, "sel", lambda: audit)
+        proc = _fake_proc(pid=UNALLOCATABLE_PID)
+        proc.wait_raises = True
+        with bmod._lock:
+            bmod._processes["stubborn"] = AppProcess(
+                app_name="stubborn", port=9100, pid=UNALLOCATABLE_PID, proc=proc
+            )
+        assert bmod.stop_app_backend("stubborn") is False
+        outcomes = [c.kwargs["outcome"] for c in audit.log_api_access.call_args_list]
+        assert outcomes == ["sigterm", "sigkill_failed"]
 
     def test_a_vanished_child_is_not_an_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _gone(_pid: int, _sig: int) -> None:

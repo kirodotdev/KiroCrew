@@ -8,13 +8,14 @@ import { act, render, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { createTestStore } from '../../../test/helpers'
+import { sseAutomation, sseWorkflowEvent } from '../../../store/chatSlice'
 import { sseSlotPatch } from '../../../store/dashboardSlice'
 import type { ChatSlot } from '../../../types'
 
 const api = vi.hoisted(() => ({ crewWorkers: vi.fn() }))
 vi.mock('../../../api/client', () => ({ api }))
 
-import { CREW_WORKERS_PUSH_COALESCE_MS, crewWorkersPushKey, useCrewWorkerSummary } from './CrewWorkerList'
+import { CREW_WORKERS_PUSH_COALESCE_MS, crewWorkersPushKey, crewWorkersRuntimePushKey, useCrewWorkerSummary } from './CrewWorkerList'
 
 const SLOTS = [
   { key: 'root', title: 'Lead', crew_mode_root: true },
@@ -50,6 +51,18 @@ describe('crewWorkersPushKey', () => {
     expect(crewWorkersPushKey(running, 'root')).not.toBe(base)
     expect(crewWorkersPushKey(work as ChatSlot[], 'root')).not.toBe(base)
     expect(crewWorkersPushKey(other, 'root')).toBe(base)
+  })
+
+  it('moves with crew workflows and automations, not another session\'s', () => {
+    const store = createTestStore({ dashboard: { slots: SLOTS } } as never)
+    const base = crewWorkersRuntimePushKey(store.getState(), 'root')
+    store.dispatch(sseWorkflowEvent({ run_id: 'wf-1', session_key: 'w1', type: 'run_started', data: { name: 'Review' } }))
+    const workflow = crewWorkersRuntimePushKey(store.getState(), 'root')
+    expect(workflow).not.toBe(base)
+    store.dispatch(sseWorkflowEvent({ run_id: 'wf-other', session_key: 'other', type: 'run_started', data: { name: 'Other' } }))
+    expect(crewWorkersRuntimePushKey(store.getState(), 'root')).toBe(workflow)
+    store.dispatch(sseAutomation({ kind: 'legacy_goal_loop', id: 'loop-1', slotKey: 'sub', message: '', idleSecs: 60, maxCycles: 0, cycleCount: 1, active: true, lastFireAt: 0, stoppedReason: '' }))
+    expect(crewWorkersRuntimePushKey(store.getState(), 'root')).not.toBe(workflow)
   })
 
   it("moves with a sub-conductor's crew_work, not with another crew's", () => {
@@ -89,6 +102,16 @@ describe('useCrewWorkerSummary push', () => {
     act(() => { store.dispatch(sseSlotPatch({ slots: [{ key: 'w1', parent: { slot: 'other', key: 'other' } }] })) })
     await settle()
     await waitFor(() => expect(api.crewWorkers).toHaveBeenCalledTimes(3))
+  })
+
+  it('re-reads once when a worker workflow starts', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const store = renderSummary()
+    await waitFor(() => expect(api.crewWorkers).toHaveBeenCalledTimes(1))
+
+    act(() => { store.dispatch(sseWorkflowEvent({ run_id: 'wf-1', session_key: 'w1', type: 'run_started', data: { name: 'Review' } })) })
+    await settle()
+    await waitFor(() => expect(api.crewWorkers).toHaveBeenCalledTimes(2))
   })
 
   it("re-reads once when a grandchild's report moves its sub-conductor's ledger mid-turn", async () => {

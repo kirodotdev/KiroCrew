@@ -1,4 +1,5 @@
 """Entity extraction using the LLM pool."""
+
 from __future__ import annotations
 
 import contextlib
@@ -40,14 +41,14 @@ def _source_label() -> str:
 
 
 def _is_harness_refusal(exc: BaseException) -> bool:
-    """Whether *exc* is the LTS pool's harness refusal (RFC D6).
+    """Whether *exc* is the LTS pool's harness refusal (RFC D6) or an unconfirmed spec.
 
     It is not an extraction failure to store past: no chunk can be extracted, so it
     reaches the ingest, which fails the job rather than commit empty metadata.
     """
-    from kiro_crew.knowledge.llm_pool import KnowledgeHarnessUnavailable
+    from kiro_crew.knowledge.llm_pool import KnowledgeHarnessUnavailable, KnowledgeSpecUnconfirmed
 
-    return isinstance(exc, KnowledgeHarnessUnavailable)
+    return isinstance(exc, (KnowledgeHarnessUnavailable, KnowledgeSpecUnconfirmed))
 
 
 def _fails_the_ingest(exc: BaseException) -> bool:

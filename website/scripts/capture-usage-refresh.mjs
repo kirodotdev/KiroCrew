@@ -412,7 +412,7 @@ for (const theme of ['light', 'dark']) {
     const pill = page.getByRole('button', { name: /no balance reading yet; open to refresh/ })
     await pill.waitFor({ state: 'visible', timeout: 15000 })
     if (!/—/.test((await pill.textContent()) || '')) fail(`${theme}: no-reading pill is not the dash`)
-    if ((await pill.getAttribute('title')) !== 'Kiro account & credits — no balance reading yet; open to refresh') fail(`${theme}: no-reading pill label is not the refresh hint`)
+    if ((await pill.evaluate(el => document.getElementById(el.getAttribute('aria-describedby') || '')?.textContent)) !== 'Kiro account & credits — no balance reading yet; open to refresh') fail(`${theme}: no-reading pill label is not the refresh hint`)
     if ((await page.getByRole('button', { name: /Kiro account & credits/ }).count()) !== 1) fail(`${theme}: more than one usage segment in the top bar`)
     if ((await page.getByRole('dialog').count()) !== 0) fail(`${theme}: a dialog is open before the pill was clicked`)
     await page.waitForTimeout(2500)

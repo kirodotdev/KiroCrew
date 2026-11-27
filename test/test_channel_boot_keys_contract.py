@@ -22,9 +22,8 @@ restart truth"):
   From the operator's seat it is hot: the settings page must NOT promise a gateway
   restart for it, or the panel trains people to restart for everything;
 * a ``restart=True`` channel field is one even a channel reconnect cannot adopt, so
-  the UI promises a PROCESS restart. The documented exceptions are the whole list:
-  ``slack.command`` (registered with Slack's app manifest) and ``whatsapp.db_path``
-  (the device store the ``neonize`` client opens once).
+  the UI promises a PROCESS restart. The documented exception is the whole list:
+  ``whatsapp.db_path`` (the device store the ``neonize`` client opens once).
 
 So the relationship pinned here is disjointness plus each side's well-formedness,
 per channel so a failure names the channel:
@@ -64,7 +63,6 @@ from kiro_crew.messaging.registry import ChannelDescriptor
 #: "``restart_required`` is answered from schema metadata": "The exceptions, and
 #: they are the whole list." A channel absent here has NO restart-marked field.
 GATEWAY_RESTART_LEAVES: dict[str, frozenset[str]] = {
-    "slack": frozenset({"slack.command"}),
     "whatsapp": frozenset({"whatsapp.db_path"}),
 }
 

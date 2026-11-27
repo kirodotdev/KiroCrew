@@ -21,11 +21,13 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_model_access_fallback_used``, ``_native_subagent_output``,
 ``_native_subagent_tracker``, ``_pending_steers``, ``_pending_subagent_failures``,
 ``_pending_synthesis``, ``_poisoned_reset_used``, ``_posttoken_retry_used``,
-``_prestream_exhausted_cycles``, ``_prev_turn_ctx_session``, ``_prev_turn_ctx_used``, ``_promise_only_retries``, ``_prompt_busy_retries``,
+``_prestream_exhausted_cycles``, ``_prev_turn_ctx_session``, ``_prev_turn_ctx_used``, ``_prev_turn_ended_at``, ``_promise_only_retries``, ``_prompt_busy_retries``,
 ``_refusal_client_pick_epoch``, ``_refusal_fallback_attempted``,
 ``_refusal_fallback_candidate``, ``_refusal_fallback_primary``,
 ``_refusal_fallback_session_key``, ``_refusal_pick_gen``,
-``_session_not_found_retry_used``, ``_stale_recovery_exhausted_emitted``,
+``_deferred_flush_dirty``, ``_deferred_flush_task``, ``_deferred_steer_delivered``, ``_deferred_steer_injected``,
+``_deferred_steer_ended_gen``, ``_deferred_steer_receipts``, ``_deferred_steers``,
+``_session_not_found_retry_used``,``_stale_recovery_exhausted_emitted``,
 ``_stale_recovery_retries``, ``_steer_act_now``, ``_steer_admissions``,
 ``_steer_attachment_meta``, ``_steer_audience_fence_holders``,
 ``_steer_audience_fences``, ``_steer_automation``, ``_steer_channel_origin``,
@@ -290,6 +292,7 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # turn, so the first turn after a restart is never flagged.
     self._prev_turn_ctx_used = 0
     self._prev_turn_ctx_session = ""
+    self._prev_turn_ended_at = 0.0  # monotonic clock reading of that turn's end; 0.0 unknown
     # One bounded synthetic continuation when a turn ended on a promise-only
     # final message (announced an immediate action, then yielded with no tool
     # call). Reset like the other per-turn retry budgets on a landed turn.
@@ -536,6 +539,16 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # the channel text. The peer path's per-token fences are not counted here.
     # Cleared with the fences at the turn's teardown.
     self._steer_audience_fence_holders = {}
+    # Peer steers that could not be injected at send time, retried at each tool
+    # boundary of the running turn (``dashboard.deferred_steer``), and the settled
+    # ones' receipts. The list is emptied by the turn's hand-off or a hard stop.
+    self._deferred_steers = []
+    self._deferred_steer_receipts = {}
+    self._deferred_steer_delivered = {}
+    self._deferred_steer_injected = {}
+    self._deferred_steer_ended_gen = -1
+    self._deferred_flush_task = None
+    self._deferred_flush_dirty = False
     # Validated attachment lists for a pending steer. Requeue moves them
     # to the queue entry; a consumption echo releases them after an accepted
     # steer has stamped its own row.

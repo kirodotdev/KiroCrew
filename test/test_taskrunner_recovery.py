@@ -419,8 +419,8 @@ class TestSaveProgress:
         assert progress.exists()
         content = progress.read_text(encoding="utf-8")
         assert "Step A" in content
-        assert "✅" in content
-        assert "❌" in content
+        assert "- Passed **Task" in content
+        assert "- Failed **Task" in content
         assert "boom" in content
         assert "(attempts: 2)" in content
 

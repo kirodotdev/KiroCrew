@@ -135,6 +135,55 @@ describe('turnHadPolicyBlock', () => {
     ]
     expect(turnHadPolicyBlock(rows, 2)).toBe(false)
   })
+
+  // The host's approval declines paint no tool-blocked row; the row telling the
+  // person about the decline carries the cause (`chat_utils.HOST_DECLINE_CAUSE_META_KEY`).
+  const HOST_DECLINE_KEY = 'host_decline_cause'
+  const HOST_DECLINE_CAUSES = ['approval_timeout', 'approval_no_budget', 'approval_undeliverable']
+
+  it.each(HOST_DECLINE_CAUSES)('finds a host %s decline earlier in the same turn', cause => {
+    const rows = [
+      msg('user', 'do it'),
+      msg('error', 'declined on your behalf', { [HOST_DECLINE_KEY]: cause }),
+      msg('assistant', 'x'),
+    ]
+    expect(turnHadPolicyBlock(rows, 2)).toBe(true)
+  })
+
+  it('finds a host decline carried on an assistant notice row', () => {
+    const rows = [
+      msg('user', 'do it'),
+      msg('assistant', 'could not post the approval', { [HOST_DECLINE_KEY]: 'approval_undeliverable' }),
+      msg('assistant', 'x'),
+    ]
+    expect(turnHadPolicyBlock(rows, 2)).toBe(true)
+  })
+
+  it('keeps the chip when the person also steered a turn with a host decline', () => {
+    const rows = [
+      msg('user', 'do it'),
+      msg('user', 'actually, also check X', { steer: true }),
+      msg('error', 'declined on your behalf', { [HOST_DECLINE_KEY]: 'approval_timeout' }),
+      msg('assistant', 'x'),
+    ]
+    expect(turnHadPolicyBlock(rows, 3)).toBe(false)
+  })
+
+  it('is false for an error row without the host decline key', () => {
+    const rows = [msg('user', 'do it'), msg('error', 'something failed', { mid: 'm-1' }), msg('assistant', 'x')]
+    expect(turnHadPolicyBlock(rows, 2)).toBe(false)
+  })
+
+  it('does not reach back into an earlier turn for a host decline', () => {
+    const rows = [
+      msg('user', 'first'),
+      msg('error', 'declined on your behalf', { [HOST_DECLINE_KEY]: 'approval_timeout' }),
+      msg('assistant', 'a'),
+      msg('user', 'second'),
+      msg('assistant', 'b'),
+    ]
+    expect(turnHadPolicyBlock(rows, 4)).toBe(false)
+  })
 })
 
 

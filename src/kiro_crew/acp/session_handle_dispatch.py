@@ -45,7 +45,6 @@ from kiro_crew.acp.client import (
     _COMPACTION_FAILED_TURN_BUDGET,
     _is_tool_interrupted_marker,
     _loggable_request_id,
-    _raise_acp_error,
     compaction_failure_detail,
     compaction_failure_is_transient,
     format_command_result,
@@ -64,6 +63,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
 )
 from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
+from kiro_crew.acp.session_handle_native_children import AUTO_REJECT_MISSING_SECURITY_CONTEXT
 from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
@@ -162,6 +162,12 @@ async def _dispatch_events(
     # to bound.
     last_own_data_ts = last_data_ts
     parked_at_own_data = parked_at_data
+    # Whether this turn has dequeued a frame attributable to this session
+    # (the test that moves last_own_data_ts; a keepalive touch is no frame).
+    # Before one, a model-wait DEAD reading is a prompt nothing has answered
+    # yet, not a finished turn whose frame was lost, so it gets the UNKNOWN
+    # window instead of the immediate probe.
+    own_frame_seen = False
     # When the tool branch last read the in-flight tool's subtree as
     # WORKING. The remote_flat narrowing measures its quiet stretch from the
     # later of this and the last own frame, so a remote call that moves bytes
@@ -645,12 +651,15 @@ async def _dispatch_events(
                     _flat_wait = evidence.startswith(
                         (EVIDENCE_ESTABLISHED_FLAT, EVIDENCE_PLATFORM_LIMITED)
                     )
-                    if verdict != VERDICT_DEAD:
+                    if verdict != VERDICT_DEAD or not own_frame_seen:
                         # UNKNOWN: probe only past the window. An established-
                         # but-flat backend connection is probably a non-streamed
                         # server-side think — probing it cancels + regenerates
                         # the think, so it gets the extended window. The hard
-                        # cap bounds any UNKNOWN deferral absolutely.
+                        # cap bounds any UNKNOWN deferral absolutely. A DEAD
+                        # reading before this turn's first own frame waits the
+                        # same window: the done-but-lost-frame wedge it stands
+                        # for needs a turn that has produced something.
                         window = wd.model_silent_probe_secs if _flat_wait else wd.stale_window_secs
                         if _stale_idle <= min(window, wd.tool_stall_hard_cap_secs):
                             continue
@@ -723,6 +732,7 @@ async def _dispatch_events(
                 # (a co-tenant's), and only the runtime knows which.
                 last_own_data_ts = last_data_ts
                 parked_at_own_data = parked_at_data
+                own_frame_seen = True
                 if (
                     req_id == AGENT_STARTED_REQUEST_ID
                     # A native child's frame is its own work: its tool calls
@@ -788,7 +798,11 @@ async def _dispatch_events(
                     # AcpPromptBusy when the backend reports a concurrent
                     # in-flight prompt. Advertised ids feed the entitlement
                     # discriminator (see _wait_for_response).
-                    _raise_acp_error(
+                    # Under KAS machine mode a refused credential is the host token's.
+                    from kiro_crew.agent_sdk.kas_machine import raise_turn_error
+
+                    raise_turn_error(
+                        self._runtime,
                         msg.error,
                         self._advertised_model_ids(),
                         backend=self._runtime.acp_backend,
@@ -967,7 +981,11 @@ async def _dispatch_events(
                 # refused whether or not this consumer opted into the child
                 # contract, and naming that reason in the audit is more use
                 # than naming the fidelity one for the same rejected call.
-                # A zero-tool spec refuses every request first, a child's too.
+                # A reused toolCallId whose arguments contradict the cached call
+                # is refused before all of them: neither side is the call to judge.
+                # A zero-tool spec then refuses every request, a child's too.
+                if await self._refuse_reused_call_id(_perm_event):
+                    continue
                 if await self._deny_zero_tools(_perm_event):
                     continue
                 if await self._deny_spec_disabled_tool(_perm_event):
@@ -1009,17 +1027,16 @@ async def _dispatch_events(
                         "without verifiable security context",
                         cause=DENY_CAUSE_SURFACE_POLICY,
                     )
+                    # Backend-controlled title: bound before redaction and
+                    # cap the display, consistent with the drain notice and
+                    # the [:4096] pre-redaction bounds.
+                    _shown = redact_text(str(_perm_event.title or "<unknown tool>")[:4096])[:120]
                     yield AcpEvent(
                         kind=EVENT_SUBAGENT_ACTIVITY,
                         sub_session_id=_perm_event.sub_session_id,
-                        # Backend-controlled title: bound before redaction
-                        # and cap the display, consistent with the drain
-                        # notice and the [:4096] pre-redaction bounds.
-                        text=(
-                            "⛔ permission auto-rejected (missing security "
-                            "context): "
-                            f"{redact_text(str(_perm_event.title or '<unknown tool>')[:4096])[:120]}"
-                        ),
+                        text=f"Blocked: permission auto-rejected (missing security context): {_shown}",
+                        title=_shown,
+                        auto_reject_reason=AUTO_REJECT_MISSING_SECURITY_CONTEXT,
                     )
                     continue
                 # Pending until approve_tool or reject_tool takes it: an ask
@@ -1203,6 +1220,7 @@ async def _dispatch_events(
                 # before surfacing it (parity with other text surfaces).
                 summary = redact_text(str(params.get("summary", "") or ""))
                 if status_type == "failed":
+                    summary = compaction_failure_detail(params)
                     if owns_frame:
                         # Arm the bounded post-failure wait (the budget check
                         # at the loop top) and carry the notification's own
@@ -1210,7 +1228,16 @@ async def _dispatch_events(
                         # "unknown error".
                         self._compaction_failed_at = time.monotonic()
                         self.last_compaction_transient = compaction_failure_is_transient(params)
-                    summary = compaction_failure_detail(params)
+                        # The record a notice the dashboard hides still leaves.
+                        logger.warning(
+                            "Compaction failed on session %s: %s",
+                            self._session_id,
+                            (
+                                summary
+                                if self._runtime.recording_allowed
+                                else "reason not logged outside persistent memory"
+                            ),
+                        )
                 yield AcpEvent(
                     kind=EVENT_COMPACTION_STATUS,
                     text=status_type,

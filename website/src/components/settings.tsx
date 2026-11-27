@@ -877,11 +877,14 @@ interface SettingsButtonGroupProps {
   disabled?: boolean
   /** Backend config key this button group writes. */
   configKey?: string
+  /** Stable highlight anchor (`data-setting-id`), as on `SettingsField`. Lets a
+   *  deep link wait for a group that mounts late. */
+  settingId?: string
 }
 
-export function SettingsButtonGroup({ label, description, hint, value, options, onChange, disabled, configKey }: SettingsButtonGroupProps) {
+export function SettingsButtonGroup({ label, description, hint, value, options, onChange, disabled, configKey, settingId }: SettingsButtonGroupProps) {
   return (
-    <SettingsField label={label} description={description} hint={hint} configKey={configKey} layout="inline-auto">
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey} settingId={settingId} layout="inline-auto">
       {/* Segmented control: a RECESSED track (`bg-accent`) holding a RAISED
           selected thumb (`bg-elevated` + border + shadow).
 

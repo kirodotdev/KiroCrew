@@ -39,6 +39,7 @@ import json
 import socket
 
 import pytest
+from closed_peer_helpers import real_peer_connects, refused_peer_connects  # noqa: F401
 from remote_crew_chaining_helpers import (
     VIA_ID,
     _fake_base_port,
@@ -49,6 +50,8 @@ from remote_crew_chaining_helpers import (
     _no_cookie_header,
     _relay_mint,
 )
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 # ── gateway identity ─────────────────────────────────────────────────────
 
@@ -836,6 +839,7 @@ class TestTheIdentityProbeCrossesARelayedChain:
         server = await asyncio.start_server(handle, "127.0.0.1", 0)
         return server, server.sockets[0].getsockname()[1]
 
+    @pytest.mark.usefixtures("real_peer_connects")
     def test_the_crews_id_comes_back_through_two_hops(self, tmp_path, monkeypatch):
         from aiohttp import web
 
@@ -1024,6 +1028,7 @@ class TestTheIdentityReplyIsReadThreeWays:
         assert asyncio.run(mgr._peer_identity(1)) == expected
         assert asyncio.run(mgr._peer_gateway_id(1)) == (expected or "")
 
+    @pytest.mark.usefixtures("real_peer_connects")
     def test_an_unreachable_port_is_no_answer(self, tmp_path, monkeypatch):
         _reg, mgr = _mgr(tmp_path, monkeypatch, real_identity=True)
         with socket.socket() as s:

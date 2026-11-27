@@ -271,9 +271,14 @@ describe('FeedbackPill', () => {
     fireEvent.pointerEnter(button, { pointerType: 'touch' })
     fireEvent.pointerDown(button, { pointerType: 'touch' })
     fireEvent.pointerUp(button, { pointerType: 'touch' })
+    // The touch release alone opens nothing: the warning comes from the replay.
+    expect(screen.queryByTestId('feedback-pill-request-feature-tip')).toBeNull()
     fireEvent.mouseEnter(button)
     fireEvent.mouseDown(button)
     fireEvent.focus(button)
+    // Open BEFORE the metered click, which is what #13342 asks of it.
+    expect(screen.getByTestId('feedback-pill-request-feature-tip')).toBeInTheDocument()
+    expect(onRequestFeature).not.toHaveBeenCalled()
     fireEvent.mouseUp(button)
     fireEvent.click(button)
     expect(screen.getByTestId('feedback-pill-request-feature-tip')).toBeInTheDocument()

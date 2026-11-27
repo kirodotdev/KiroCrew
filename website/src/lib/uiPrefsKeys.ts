@@ -106,6 +106,7 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // the user's next fresh origin. The rule this key is an instance of: a value
   // that GATES a safety confirmation must not be restorable from a file the agent
   // can write, however convenient re-acknowledging is.
+  // The machine owner's ack is also kept on the gateway's owner-only record (/api/chat/yolo-ack).
   'mc-agent-scene',
   'mc-kb-graph-physics',
   // Notification sound settings (enabled/volume/per-category presets, a timed mute) --
@@ -123,6 +124,17 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // (pages/chat/SpecHooksNotice.tsx). Written only by its Dismiss click,
   // through savePrefExplicitly. It hides a notice and gates nothing.
   'kirocrew:spec-hooks-run-nowhere-notice-dismissed',
+  // The folders whose "hook files in .kiro/hooks do not run" notice was
+  // dismissed, as a JSON array of marks (pages/chat/SpecHooksNotice.tsx).
+  // Written only by its Dismiss click, through savePrefExplicitly. It hides a
+  // notice and gates nothing.
+  'kirocrew:project-hook-files-notice-dismissed',
+  // "Don't show this notice again" on the confirm before conductor mode turns on
+  // mid-chat (pages/chat/page/crewModeMidChatConfirm.tsx). Written only on that
+  // dialog's Confirm, through savePrefExplicitly. Unlike 'mc-yolo-ack' it gates no
+  // permission: it skips a reminder before a switch the person starts themselves,
+  // and the switch grants the agent nothing.
+  'kirocrew:conductor-mode-midchat-confirm-dismissed',
   // Settings > Shortcuts, and the push-to-talk key on Settings > Voice. Each
   // key is written only by an explicit user action, on its settings page or in
   // the shortcuts reference modal. No hook writes a default on mount. The

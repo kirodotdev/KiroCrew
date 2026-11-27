@@ -232,6 +232,8 @@ describe('text-strong fallback', () => {
 })
 
 describe('constants', () => {
+  // Contract: palette and intensity names are the values Display settings saves,
+  // so renaming or dropping one breaks every saved choice.
   it('has 5 palette names', () => { expect(PALETTE_NAMES).toEqual(['trailhead', 'horizon', 'voyage', 'odyssey', 'categorical']) })
   it('has 5 intensity names', () => { expect(INTENSITY_NAMES).toHaveLength(5) })
   it('does not include removed palettes', () => {

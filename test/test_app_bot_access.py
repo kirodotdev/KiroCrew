@@ -453,14 +453,28 @@ async def test_a_busy_bot_gets_its_wakes_in_one_turn_at_its_next_turn_end(wake_w
 
 
 @pytest.mark.asyncio
+async def test_an_idle_bot_a_person_stopped_answers_queued_and_starts_nothing(wake_world):
+    state, slot, dispatched, _clock = wake_world
+    mate_thread_wakes.hold_after_stop(state, slot)
+    assert await app_bot_wake.request_wake(state, APP, SLUG, "a") == app_bot_wake.QUEUED
+    await _flushed(state, slot, "the flush to find the thread held")
+    assert dispatched == []
+    assert mate_thread_wakes.app_wakes(state) == {slot.key: {APP: ["a"]}}
+
+
+@pytest.mark.parametrize("how", ["closing", "stopped"])
+@pytest.mark.asyncio
 async def test_a_thread_that_starts_closing_during_the_grant_check_gets_no_wake(
-    wake_world, monkeypatch
+    wake_world, monkeypatch, how
 ):
     state, slot, dispatched, _clock = wake_world
     real_check = app_bot_wake.still_granted
 
     def _check_while_the_owner_closes(slug, wakes):
-        slot.is_closing = True
+        if how == "closing":
+            slot.is_closing = True
+        else:
+            mate_thread_wakes.hold_after_stop(state, slot)
         return real_check(slug, wakes)
 
     monkeypatch.setattr(app_bot_wake, "still_granted", _check_while_the_owner_closes)

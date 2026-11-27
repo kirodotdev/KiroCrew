@@ -24,6 +24,7 @@ from kiro_crew.snapshot_archive import _safe_name
 from kiro_crew.snapshot_components import (
     _CONFIG_SETTINGS_DOCUMENTS,
     _LOCKED_DOCUMENT_TREES,
+    _MERGE_NEVER_INSTALLS_FILES,
     _REPLACE_ONLY_COMPONENTS,
     _WHOLE_TREE_COMPONENTS,
     COMPONENTS,
@@ -32,6 +33,7 @@ from kiro_crew.snapshot_components import (
     UnsafeComponentRoot,
     _facade,
     _want,
+    component_trees,
     safe_tree_root,
 )
 from kiro_crew.snapshot_merge import (
@@ -206,7 +208,11 @@ def _do_merge(
                 continue
             if d.is_file() and filecmp.cmp(s, d, shallow=False):
                 continue  # the same bytes: nothing of the bundle's was left behind
-            if f == "config.local.json" and not d.is_file():
+            if f in COMPONENTS["config"].host_local:
+                # This host's own runtime state, never installed, even when missing here.
+                # Not a setting, so not reported as one kept (the old silent skip).
+                continue
+            if f in _MERGE_NEVER_INSTALLS_FILES and not d.is_file():
                 # Never installed by a merge: the overlay outranks config.json at load, so
                 # a bundle's copy dropped in raw would set every key it names -- sandbox,
                 # approval, channel tokens -- past the receiving install's own config.json
@@ -291,7 +297,9 @@ def _do_merge(
         print("  ✅ security")
 
     for comp in _WHOLE_TREE_COMPONENTS:
-        if not _want(components, comp):
+        # A component with no trees this run (`named-workspaces` in a bundle without it)
+        # has nothing to merge and reports nothing.
+        if not _want(components, comp) or not component_trees(comp):
             continue
         if comp in _REPLACE_ONLY_COMPONENTS:
             # Named, not passed over in silence, and BEFORE the tick below so a component
@@ -301,7 +309,7 @@ def _do_merge(
                 "the tree whole and keeps the previous one in the pre-restore backup."
             )
             continue
-        for dirname in COMPONENTS[comp].trees:
+        for dirname in component_trees(comp):
             sd = snap / dirname
             if dirname in _LOCKED_DOCUMENT_TREES:
                 if (snap / _LOCKED_DOCUMENT_TREES[dirname]).is_file():

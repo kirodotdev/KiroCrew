@@ -66,6 +66,12 @@ async def _drain_once(state, slot) -> None:
         assert await chat_runner._start_next_queued_turn(state, slot) is True
 
 
+def _sans_author(meta):
+    """*meta* without the server-stamped Shared Crew author, which every person's
+    send now carries (``shared_crew.attribution``); these tests pin the rest."""
+    return {k: v for k, v in (meta or {}).items() if k != "author"}
+
+
 def _user_rows(slot) -> list[dict]:
     return [m for m in slot.messages if m.get("role") == "user"]
 
@@ -312,7 +318,11 @@ class TestDrainedRow:
             if c.args and c.args[0] == "queue_pop"
         ]
         pop = next(p for p in pops if p.get("content") == _WIRE)
-        assert pop.get("meta") == {"files": [_PATH], "dirs": [_DIR]}
+        # The author stamp rides beside the lists (test_shared_crew_queue_pop_author).
+        assert {k: v for k, v in pop["meta"].items() if k != "author"} == {
+            "files": [_PATH],
+            "dirs": [_DIR],
+        }
 
     @pytest.mark.asyncio
     async def test_queue_pop_frame_without_attachments_has_no_meta_key(self, tmp_path, monkeypatch):
@@ -329,7 +339,8 @@ class TestDrainedRow:
             if c.args and c.args[0] == "queue_pop"
         ]
         pop = next(p for p in pops if p.get("content") == "plain text")
-        assert "meta" not in pop
+        # Only the author stamp, never an empty attachment list.
+        assert set(pop.get("meta") or {}) <= {"author"}
 
 
 class TestSteeredAttachments:
@@ -394,7 +405,7 @@ class TestSteeredAttachments:
             assert slot._steer_send_ids[_WIRE] == "s-cap-last"
             assert slot._steer_user_origin[_WIRE] is True
             assert _WIRE in slot._steer_admissions
-            assert slot._steer_attachment_meta[_WIRE] == {
+            assert _sans_author(slot._steer_attachment_meta[_WIRE]) == {
                 "files": [_PATH],
                 "dirs": [_DIR],
             }
@@ -422,7 +433,7 @@ class TestSteeredAttachments:
 
         steer.assert_awaited_once_with(_WIRE)
         assert slot._pending_steers[-1] == _WIRE
-        assert slot._steer_attachment_meta[_WIRE] == {
+        assert _sans_author(slot._steer_attachment_meta[_WIRE]) == {
             "files": [_PATH],
             "dirs": [_DIR],
         }
@@ -451,7 +462,7 @@ class TestSteeredAttachments:
         echo = next(
             c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "steer_push"
         )
-        assert echo["meta"] == {"files": [_PATH], "dirs": [_DIR]}
+        assert _sans_author(echo["meta"]) == {"files": [_PATH], "dirs": [_DIR]}
         from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
 
         _settle_consumed_steers(slot, f"<user_message>\n{_WIRE}\n</user_message>")
@@ -482,12 +493,15 @@ class TestSteeredAttachments:
             assert (await resp.json()).get("steered") is True
 
         assert slot._pending_steers == [_WIRE]
-        assert slot._steer_attachment_meta == {}
+        assert {k: _sans_author(v) for k, v in slot._steer_attachment_meta.items()} in (
+            {},
+            {_WIRE: {}},
+        )
         assert "files" not in _user_rows(slot)[-1].get("meta", {})
         echo = next(
             c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "steer_push"
         )
-        assert "meta" not in echo
+        assert _sans_author(echo.get("meta")) == {}
 
     @pytest.mark.asyncio
     async def test_unconsumed_steer_keeps_attachments_through_requeue_and_drain(

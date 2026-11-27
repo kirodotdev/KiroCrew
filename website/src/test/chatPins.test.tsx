@@ -840,6 +840,33 @@ describe('PinnedMessagesPanel', () => {
     expect(defaultProps.onJumpToMessage).not.toHaveBeenCalled()
   })
 
+  it('Put in composer says it took for two seconds, on the pressed pin only', () => {
+    vi.useFakeTimers()
+    try {
+      render(<PinnedMessagesPanel {...defaultProps} pins={[mockUserPin, { ...mockUserPin, id: 'pin-3', message_ts: 'other' }]} onPutInComposer={vi.fn(() => true)} />)
+      const [first, second] = screen.getAllByTestId('pin-entry')
+      fireEvent.click(within(first).getByRole('button', { name: 'put_in_composer' }))
+      expect(within(first).getByTestId('pin-put-done')).toHaveTextContent('put_in_composer_done')
+      expect(within(second).queryByTestId('pin-put-done')).toBeNull()
+      act(() => { vi.advanceTimersByTime(1999) })
+      expect(within(first).getByTestId('pin-put-done')).toBeInTheDocument()
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(within(first).queryByTestId('pin-put-done')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('Put in composer claims nothing while the pinned message is still paging in', () => {
+    // The host returns false when the fill is pending (an older page to load) or
+    // the message is gone: the composer is unchanged, so no "Added".
+    const onPutInComposer = vi.fn(() => false)
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockUserPin]} onPutInComposer={onPutInComposer} />)
+    fireEvent.click(screen.getByRole('button', { name: 'put_in_composer' }))
+    expect(onPutInComposer).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('pin-put-done')).toBeNull()
+  })
+
   it('renders no title row and no close button — the tab strip owns both', () => {
     // The panel is a side-panel TAB body. A header here would duplicate the tab
     // chip's label and add a second close affordance next to the chip's own, so

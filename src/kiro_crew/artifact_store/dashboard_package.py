@@ -882,14 +882,15 @@ def theme_stylesheet(raw: Any) -> str:
 def validate_package(raw: Any) -> dict[str, Any]:
     """Return the CANONICAL form of a dashboard package, or raise saying why not.
 
-    Canonical means: the five top-level keys in a fixed order, model fields and
+    Canonical means: the five top-level keys in a fixed order (and ``widgets``
+    when the package has any, :mod:`.dashboard_widgets`), model fields and
     theme tokens in sorted key order, each field holding only the keys its catalog
     entry names, and the view as its one page. Two packages that mean the same thing therefore
     serialize to the same bytes, which is what makes
     :func:`layout_changed` able to answer by comparison.
     """
     package = _an_object(raw, "package")
-    _check_keys(package, "package", ("kind", "bound_to", "model", "view", "theme"))
+    _check_keys(package, "package", ("kind", "bound_to", "model", "view", "theme", "widgets"))
     kind = package.get("kind")
     if kind != DASHBOARD_KIND:
         raise _refuse("kind", f"must be {DASHBOARD_KIND!r}, got {kind!r}")
@@ -904,13 +905,21 @@ def validate_package(raw: Any) -> dict[str, Any]:
     # MCP client can drop ``{"tokens": {}}`` before it reaches the gateway.
     raw_theme = package.get("theme")
     theme = _validate_theme({"tokens": {}} if raw_theme is None else raw_theme)
-    return {
+    out: dict[str, Any] = {
         "kind": DASHBOARD_KIND,
         "bound_to": bound_to,
         "model": model,
         "view": view,
         "theme": theme,
     }
+    if "widgets" in package:
+        from kiro_crew.artifact_store.dashboard_widgets import validate_widgets
+
+        # An empty list stores no key, so it canonicalizes to the package without one.
+        widgets = validate_widgets(package["widgets"], model["types"])
+        if widgets:
+            out["widgets"] = widgets
+    return out
 
 
 #: How a field's source is spelled for a reader: the fold and the dotted path it walks,
@@ -1057,17 +1066,21 @@ def canonical_package_content(content: str) -> str:
 
 
 def _layout_fingerprint(package: Mapping[str, Any]) -> str:
-    """sha256 over the canonical ``model`` + ``view`` + ``theme`` of a package.
+    """sha256 over the canonical ``model`` + ``view`` + ``theme`` (+ ``widgets``) of a package.
 
     ``bound_to`` is NOT in it, on purpose: a rebind moves the dashboard, it does
     not restyle it, and a version exists to let someone go back to a layout.
-    Values are not in it because they were never in the package.
+    Values are not in it because they were never in the package. ``widgets`` is
+    layout too, so a widgets-only edit is a new version; it is hashed only when
+    present, so a package without widgets keeps the fingerprint it always had.
     """
     layout = {
         "model": package.get("model"),
         "view": package.get("view"),
         "theme": package.get("theme"),
     }
+    if "widgets" in package:
+        layout["widgets"] = package["widgets"]
     blob = json.dumps(layout, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -1096,7 +1109,7 @@ def revert_package(stored_content: str, target_content: str) -> str:
     and a version from before a rebind carries the OLD binding, so a plain
     content restore would quietly hand this crewmate's page to whoever that
     stale binding names. The live binding therefore wins, and only
-    ``model`` / ``view`` / ``theme`` come back from the target.
+    ``model`` / ``view`` / ``theme`` / ``widgets`` come back from the target.
 
     Unparseable live content (nothing valid stored yet) falls back to the
     target's own binding: there is no live binding to preserve.

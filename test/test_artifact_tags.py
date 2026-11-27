@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from named_cases_helpers import named_cases
 
+from kiro_crew import default_ignorable
 from kiro_crew.artifact_store import rules
 from kiro_crew.artifacts import ArtifactStore, ArtifactValidationError, normalize_tag
 from kiro_crew.validation import (
@@ -165,16 +166,17 @@ class TestNormalizeTag:
         # newer (Python 3.13 ships 15.1) the table cannot be verified here, so the test
         # is skipped with the regeneration step in its reason rather than failed; CI's
         # 3.12 runners, where the versions match, are where the pin holds.
-        if unicodedata.unidata_version != rules._DEFAULT_IGNORABLE_UNICODE_VERSION:
+        version = default_ignorable.DEFAULT_IGNORABLE_UNICODE_VERSION
+        if unicodedata.unidata_version != version:
             pytest.skip(
-                f"rules._DEFAULT_IGNORABLE_RANGES is Default_Ignorable_Code_Point from Unicode "
-                f"{rules._DEFAULT_IGNORABLE_UNICODE_VERSION}, but this Python's unicodedata is "
+                f"default_ignorable.DEFAULT_IGNORABLE_RANGES is Default_Ignorable_Code_Point "
+                f"from Unicode {version}, but this Python's unicodedata is "
                 f"{unicodedata.unidata_version}: regenerate the ranges from that version's "
                 "DerivedCoreProperties.txt, re-pin the count in "
                 "test_the_invisible_table_is_the_published_property, and bump "
-                "rules._DEFAULT_IGNORABLE_UNICODE_VERSION"
+                "default_ignorable.DEFAULT_IGNORABLE_UNICODE_VERSION"
             )
-        assert unicodedata.unidata_version == rules._DEFAULT_IGNORABLE_UNICODE_VERSION
+        assert unicodedata.unidata_version == version
 
     @pytest.mark.parametrize(
         "tag",

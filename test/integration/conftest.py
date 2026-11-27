@@ -137,6 +137,10 @@ cross-home flake three tests later.
      every app manifest the boot's spawns read, keyed on the home's paths.
    * ``apps.manager_records._recorded_names_cache`` -- the apps folder's
      recorded entry names that a boot's listings reuse, keyed on its path.
+   * ``apps.routes_proxy`` app-secret cache and its invalidation counts -- the
+     secret the reverse proxy signs each app's requests with, keyed by app name
+     only. A later home with an app of the same name would have its requests
+     signed with the earlier home's secret, which its backend refuses.
    * ``config.loader`` materialized-agent snapshot (``_MATERIALIZED_AGENTS``,
      ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_SEEN``, ``_MATERIALIZED_COMPLETE``, ``_MATERIALIZED_MEMO``,
      ``_MATERIALIZED_AGENTS_READY``) -- the declared names, file-name map,
@@ -180,6 +184,10 @@ cross-home flake three tests later.
      sample (``DEFAULT_SAMPLE_SECS``) and ``debug_threads mode=now`` takes one
      on request, so whether a boot leaves entries depends on how long it ran;
      a fresh process has none.
+   * ``notifications.resource_pressure``'s published posture, its decline step
+     and the per-session growth marks -- the boot's notifier writes them from
+     live host memory and disk samples, so what a boot leaves depends on the
+     host's load; a fresh process has none.
    * ``platform.governance._CONFIRM_PATTERNS_MEMO`` -- the ``hooks.confirm_tools``
      patterns read from the home's config files, keyed on their fingerprint.
      Grant writers and gate checks fill it whenever no live snapshot is up,
@@ -211,6 +219,13 @@ cross-home flake three tests later.
      refresh that lands after a boot's snapshot would otherwise publish the
      previous home's apps into the next boot; the handle would keep the next
      boot from subscribing again once ``config.live`` dropped the subscription.
+   * ``notifications.resource_pressure._current_posture`` and ``_worsened``
+     -- the host posture the notifier last sampled and its latest step of
+     decline. Every sample replaces them with that moment's reading, so two
+     boots on one runner can leave different values; a fresh process has
+     neither, and the next boot's work-ledger probe must not read the last
+     boot's posture before its own first sample. The rootdir conftest resets
+     them per test; this resets them per boot.
 
 2. **Snapshot and restore** around the boot by ``booted_gateway``, on every
    exit: the SIGINT/SIGTERM handlers ``run()`` installs; the event loop's
@@ -311,10 +326,17 @@ from kiro_crew import (
     sandbox,
     shutdown_event,
     update_next_start,
+    vector_memory_member,
 )
 from kiro_crew.acp import client as acp_client
-from kiro_crew.agent_sdk import host_auth
-from kiro_crew.apps import credential_masks, hidden_sessions, manager_records
+from kiro_crew.agent_sdk import host_auth, kas_machine
+from kiro_crew.apps import (
+    credential_masks,
+    execution,
+    hidden_sessions,
+    manager_records,
+    routes_proxy,
+)
 from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV, load_adoption_pins
 from kiro_crew.config import live as config_live
 from kiro_crew.config import loader as config_loader
@@ -332,9 +354,11 @@ from kiro_crew.dashboard.handlers import updates as dashboard_updates
 from kiro_crew.diag import threads as diag_threads
 from kiro_crew.mcp_gateway import overlay_refresh
 from kiro_crew.metrics import inventory_gauges
+from kiro_crew.notifications import resource_pressure
 from kiro_crew.platform import bootstrap as platform_bootstrap
 from kiro_crew.platform import context as platform_context
 from kiro_crew.platform import governance
+from kiro_crew.relay_client import provider as relay_provider
 from kiro_crew.security import paths as security_paths
 from kiro_crew.testing import fake_acp_backend
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, finished
@@ -814,6 +838,8 @@ def _reset_home_bound_globals() -> None:
     token_auth._app_perms_denied.clear()
     revocation_gen._gen = None
     crash_guard._CRASH_LOG = None
+    # The machine token fence's config.json read, keyed on the home's file.
+    kas_machine._fence_config = None
     config_live.reset_for_tests()
     # The once-per-process boot ``.env`` record: a fresh boot in a different
     # home must not keep the prior home's credential map as its diff baseline,
@@ -835,6 +861,11 @@ def _reset_home_bound_globals() -> None:
     sandbox._SHIM_ARGV_CACHE.clear()
     credential_masks.clear_cache()
     manager_records._recorded_names_cache.clear()
+    with routes_proxy._app_secret_lock:
+        routes_proxy._app_secret_cache.clear()
+        routes_proxy._app_secret_generation.clear()
+    execution.invalidate_shipped_builtin_apps()
+    vector_memory_member._IDENTITY_CACHE.clear()
     # Under the refresh lock, so a refresh still publishing finishes first and
     # cannot write the old home's sets back after this clears them.
     with hidden_sessions._refresh_lock:
@@ -851,10 +882,23 @@ def _reset_home_bound_globals() -> None:
     config_loader._MATERIALIZED_AGENTS_READY = False
     governance._CONFIRM_PATTERNS_MEMO = None
     recall_pool._settings_cache = None
+    resource_pressure._current_posture = None
+    resource_pressure._worsened = None
+    # The kept-grant boot state (verdict, recorders, the chats prompt writer): a
+    # second boot reads its own home's records, as a fresh process would.
+    from kiro_crew import kept_grants, kept_yolo
+    from kiro_crew.dashboard import chat_trust_restart
+
+    kept_grants._reset_for_tests()
+    kept_yolo._reset_for_tests()
+    chat_trust_restart._reset_for_tests()
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
     update_next_start._differs_memo = None
+    # The ingress a boot publishes for the relay provider belongs to that
+    # boot's app; the next boot publishes its own.
+    relay_provider.publish_gateway_ingress(None)
     # Cleared in place, never rebound: the security facade re-exports
     # ``_path_resolve_degraded`` by identity, and the second-boot witness
     # compares each container's identity.
@@ -871,6 +915,12 @@ def _reset_home_bound_globals() -> None:
     inventory_gauges.reset_for_testing()
     with diag_threads._prev_lock:
         diag_threads._prev_reading.clear()
+    resource_pressure._current_posture = None
+    resource_pressure._worsened = None
+    # Cleared in place, never rebound: the second-boot witness compares each
+    # container's identity.
+    resource_pressure._worker_growth.clear()
+    resource_pressure._session_marks.clear()
     agent_mod._main_spec_unreadable = False
     agent_mod._main_spec_episode_revision = 0
     agent_mod._main_spec_skip_generation = None
@@ -913,6 +963,7 @@ def home_bound_globals_are_clear() -> bool:
         and token_auth._revoked_store_singleton is None
         and revocation_gen._gen is None
         and not token_auth._app_perms_cache
+        and not routes_proxy._app_secret_cache
         and crash_guard._CRASH_LOG is None
         and autonudge._INSTANCE is None
         and platform_context._ACTIVE is None

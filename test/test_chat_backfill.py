@@ -196,6 +196,24 @@ class TestBackfillSelection:
         assert "context compacted" not in body
 
     @pytest.mark.asyncio
+    async def test_a_stored_alternation_placeholder_is_not_posted(self, tmp_path):
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(
+            slot,
+            [
+                ("user", "real question"),
+                ("assistant", "real answer"),
+                ("user", "next question"),
+                ("assistant", "(No assistant response was recorded for the preceding turn.)"),
+            ],
+        )
+
+        body = "\n".join(await _drain(state, slot))
+        assert "real answer" in body and "next question" in body
+        assert "No assistant response was recorded" not in body
+
+    @pytest.mark.asyncio
     async def test_non_dict_meta_does_not_crash_selection(self, tmp_path):
         """``append``'s ``meta: dict | None`` is not enforced at runtime."""
         state = _state(tmp_path)
@@ -410,6 +428,29 @@ class TestBackfillFormatting:
         user_post = next(text for text in posted if "ping" in text)
         agent_post = next(text for text in posted if "pong" in text)
         assert user_post[0] != agent_post[0], "user and agent posts share an icon"
+
+    @pytest.mark.asyncio
+    async def test_a_prompts_attachments_are_named_not_their_paths(self, tmp_path):
+        """A replayed dashboard prompt names its pasted picture and dropped file
+        the way the live mirror echo does, never as markup naming a host path."""
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        image = "/home/u/.kiro/crew/uploads/67ec3421ee184a8db0c1d2e3f4a5b6c7_shot.png"
+        report = "/home/u/.kiro/crew/uploads/report.pdf"
+        slot.append(
+            "user",
+            f"![image]({image})\n\nwhy does this fail?\n[attached_file 1] {report}",
+            meta={"files": [report]},
+        )
+        slot.append("assistant", "pong")
+        slot.drain()
+
+        posted = await _drain(state, slot)
+        user_post = next(text for text in posted if "why does this fail?" in text)
+        assert "Image: shot.png" in user_post
+        assert "File: report.pdf" in user_post
+        assert "/home/" not in user_post
+        assert "](" not in user_post
 
 
 class TestBackfillOffWindowFirstTurn:

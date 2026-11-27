@@ -34,7 +34,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("help", "显示命令列表", aliases=("帮助",)),
 )
 
-_HELP_HEADER = "Kiro Crew — 微信"
+_HELP_HEADER = "🦞 Kiro Crew — 微信"
 _HELP_FOOTER = "直接发消息即可对话。较长的回复会分成多条消息。"
 
 

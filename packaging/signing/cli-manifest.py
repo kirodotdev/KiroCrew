@@ -28,10 +28,23 @@ ALGORITHM = "RSASSA_PKCS1_V1_5_SHA_256"
 CHANNELS = ("nightly", "insider", "stable", "lts")
 
 
-def wheel_filename(channel: str, version: str) -> str:
-    """The wheel a channel publishes: the LTS edition's own distribution on lts."""
+#: Platform wheels a release publishes beside the pure wheel, each with its own signed
+#: manifest (``scripts/kas_platform_wheel.py`` PLATFORM_TAGS; a pin test holds them equal).
+PLATFORM_WHEEL_TAGS = (
+    "manylinux_2_28_x86_64",
+    "manylinux_2_28_aarch64",
+    "macosx_11_0_arm64",
+    "macosx_11_0_x86_64",
+)
+
+
+def wheel_filename(channel: str, version: str, tag: str = "any") -> str:
+    """The wheel a channel publishes: the LTS edition's own distribution on lts.
+
+    *tag* is ``any`` for the pure wheel or one of :data:`PLATFORM_WHEEL_TAGS`.
+    """
     stem = "kirocrew_lts" if channel == "lts" else "kirocrew"
-    return f"{stem}-{version}-py3-none-any.whl"
+    return f"{stem}-{version}-py3-none-{tag}.whl"
 
 
 SIGNED_FIELDS = {
@@ -240,8 +253,12 @@ def _validate_signed_payload(payload: dict[str, Any]) -> dict[str, str]:
         if _release_core(floor) > _release_core(normalized["version"]):
             raise ManifestError("CLI manifest min_version exceeds the manifest version")
 
-    wheel_name = wheel_filename(normalized["channel"], normalized["version"])
     parsed = urlsplit(normalized["wheel_url"])
+    prefix = f"/cli/{normalized['channel']}/{normalized['version']}/"
+    names = {
+        wheel_filename(normalized["channel"], normalized["version"], tag)
+        for tag in ("any", *PLATFORM_WHEEL_TAGS)
+    }
     if (
         parsed.scheme != "https"
         or not parsed.hostname
@@ -249,9 +266,7 @@ def _validate_signed_payload(payload: dict[str, Any]) -> dict[str, str]:
         or parsed.password is not None
         or parsed.query
         or parsed.fragment
-        or not parsed.path.endswith(
-            f"/cli/{normalized['channel']}/{normalized['version']}/{wheel_name}"
-        )
+        or not any(parsed.path.endswith(prefix + name) for name in names)
     ):
         raise ManifestError("CLI manifest wheel URL is not a canonical HTTPS artifact URL")
     return normalized

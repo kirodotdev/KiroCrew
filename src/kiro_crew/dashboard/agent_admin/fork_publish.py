@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         _refresh_forked_templates,
         _require_owner,
         _reserved_binding_names,
+        _sidecar_unverifiable,
         _spec_path_is_safe,
         _spec_stem_on_disk,
         _StaleBinding,
@@ -129,8 +130,20 @@ async def api_agent_fork(request: web.Request) -> web.Response:
             )
 
         # Already this crew's own copy: nothing to fork. Idempotence keeps the
-        # frontend's fork-before-first-edit call safe to repeat.
-        fork = agent_state.get_fork_info(source_name)
+        # frontend's fork-before-first-edit call safe to repeat. Strict: an
+        # unreadable sidecar is not "never forked", and reading it as one would
+        # fork the crew's own copy again and rebind the crew to that new copy.
+        try:
+            fork = agent_state.get_fork_info(source_name, strict=True)
+        except Exception as exc:
+            err = _sidecar_unverifiable(source_name, exc)
+            return web.json_response(
+                {
+                    "error": _lineage_unverifiable_error(source_name, err),
+                    "code": "lineage_unverifiable",
+                },
+                status=409,
+            )
         if fork and fork["private_to"] == crew:
             return web.json_response({"ok": True, "template": source_name, "already_private": True})
 

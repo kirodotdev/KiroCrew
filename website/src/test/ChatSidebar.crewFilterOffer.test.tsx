@@ -245,7 +245,7 @@ describe('in a build without conductor mode (LTS)', () => {
     renderSidebar(WITH_CREW_MEMBER)
     await waitFor(() => expect(screen.queryByText('the crew member')).not.toBeNull())
     expect(screen.queryByText('the crew chat')).not.toBeNull()
-    expect(screen.queryByTestId('crew-eyebrow')).toBeNull()
+    expect(screen.queryByTestId('conductor-mode-title-mark')).toBeNull()
     expect(screen.queryByTestId('crew-ghost-badge')).toBeNull()
   })
 

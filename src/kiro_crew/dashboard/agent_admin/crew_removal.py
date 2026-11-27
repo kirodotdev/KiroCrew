@@ -110,8 +110,9 @@ def _reclaim_deleted_member_crew_log(name: str, cfg: KiroCrewConfig) -> None:
     """Remove the crew log of a member the roster does not hold. Never raises.
 
     The crew log is the last thing a deleted member leaves behind. Its config
-    record, its memory store, its avatar and its private template copy all go
-    with the delete; without this the log stays on disk for the life of the
+    record, its avatar and its private template copy all go with the delete
+    (its memory store is kept, for a new crewmate to start from through
+    ``member_memory_adopt``); without this the log stays on disk for the life of the
     installation, with no member to read it for and no other path that collects
     it -- the retention sweep ages SESSION logs from their close entry, and a
     member log has no close to age from.
@@ -528,6 +529,9 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                             f"memory store {store_name!r} ownership changed concurrently"
                         )
                     retired_store = store_name
+                    from kiro_crew.member_memory_adopt import stamp_former_owner
+
+                    stamp_former_owner(doc, entry, name)
                 # The PERSISTED binding at delete time, read inside the
                 # critical section: it is one half of the corroboration the
                 # private-copy cleanup below needs.

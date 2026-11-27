@@ -194,7 +194,9 @@ describe('the Invite dialog and its transports', () => {
     expect(screen.getByTestId('invite-transport-tailscale')).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByTestId('invite-form')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('invite-transport-ssm'))
-    expect(await screen.findByTestId('ssm-tab', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeVisible()
+    // The dialog fades in from opacity 0, so the tab is visible only once a frame has run.
+    const tab = await screen.findByTestId('ssm-tab', {}, { timeout: CHAIN_TIMEOUT_MS })
+    await waitFor(() => expect(tab).toBeVisible())
     expect(screen.getByTestId('invite-form')).not.toBeVisible()
   })
 

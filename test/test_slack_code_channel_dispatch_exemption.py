@@ -1546,7 +1546,7 @@ def test_a_torn_read_under_the_live_watcher_refuses(config_files, monkeypatch):
         cfg = ConfigWatch._load()
         local.write_text("{ torn", encoding="utf-8")  # the probe meets a transient tear
         try:
-            return cfg, cfg.to_dict(), ConfigWatch._document_is_torn()
+            return cfg, cfg.to_dict(), ConfigWatch._document_tear()
         finally:
             local.write_text(json.dumps({"slack": {"code_channel_dispatch": False}}))
 

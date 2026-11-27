@@ -29,7 +29,7 @@ import pytest
 from kiro_crew import _llama_lib_path, cli_doctor, loopback_http
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.doctor_checks import access, agents, install, services
+from kiro_crew.doctor_checks import access, agents, install, mcp, services
 from kiro_crew.platform import PlatformCompositionError
 from kiro_crew.service import live_target
 
@@ -63,6 +63,7 @@ _SECTIONS = (
     "_doctor_strict_identity",
     "_doctor_mcp_gateway_daemon",
     "_doctor_mcp_share_refused",
+    "_doctor_dropped_mcp_servers",
     "_doctor_unresolved_mcp_refs",
     "_doctor_backend_ability_cards",
     "_doctor_selected_backend_projection",
@@ -115,6 +116,7 @@ _FAMILY_ONLY = {
     "_doctor_signing_key": access,
     "_doctor_kiro_chat_delegate": services,
     "_doctor_service_launch": install,
+    "_doctor_dropped_mcp_servers": mcp,
 }
 
 _GATED_OFF = frozenset({"kirocrew-computer"})
@@ -167,6 +169,8 @@ class _Host:
         self.install()
 
     def install(self) -> None:
+        from kiro_crew.doctor_checks import confinement
+
         mp = self.mp
         for var in (
             "KIROCREW_PROJECT_DIR",
@@ -186,6 +190,8 @@ class _Host:
         mp.setattr(cli_doctor, "MIN_NODE_VERSION", (20, 0, 0))
         mp.setattr(KiroCrewConfig, "load", classmethod(lambda cls: self.cfg))
         mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg, **kw: dict(self.creds))
+        # A test run from an agent's shell is itself confined: pin the vantage.
+        mp.setattr(confinement, "_doctor_vantage_confined", lambda: False)
         mp.setattr(cli_doctor, "resolve_kiro_cli", lambda: self.kiro)
         mp.setattr(cli_doctor.shutil, "which", lambda name, **_kw: self.which.get(name))
         mp.setattr(cli_doctor.gateway_lock, "lock_holder", self._lock_holder)
@@ -433,6 +439,7 @@ Configuration
   <<_doctor_strict_identity>>
   <<_doctor_mcp_gateway_daemon>>
   <<_doctor_mcp_share_refused>>
+  <<_doctor_dropped_mcp_servers>>
   <<_doctor_unresolved_mcp_refs>>
   <<_doctor_backend_ability_cards>>
   <<_doctor_selected_backend_projection>>
@@ -731,6 +738,7 @@ Configuration
   <<_doctor_strict_identity>>
   <<_doctor_mcp_gateway_daemon>>
   <<_doctor_mcp_share_refused>>
+  <<_doctor_dropped_mcp_servers>>
   <<_doctor_unresolved_mcp_refs>>
   <<_doctor_backend_ability_cards>>
   <<_doctor_selected_backend_projection>>
@@ -1099,6 +1107,10 @@ Collecting diagnostics bundle (secrets are redacted)...
 """
 
 
+def _pin_bundle_alignment(monkeypatch) -> None:
+    monkeypatch.setattr(services, "_bundle_version_alignment", lambda: "aligned (1.2.3)")
+
+
 def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
     result = SimpleNamespace(
         zip_path=host.tmp / "diag.zip",
@@ -1106,7 +1118,13 @@ def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
         total_redactions=3,
         skipped=["gateway.log"],
     )
-    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda: result)
+    collected: list[dict] = []
+    _pin_bundle_alignment(monkeypatch)
+    monkeypatch.setattr(
+        cli_doctor.diagnostics,
+        "collect_bundle",
+        lambda **kwargs: collected.append(kwargs) or result,
+    )
     monkeypatch.setattr(
         cli_doctor.diagnostics, "terminal_issue_url", lambda r: "https://example.invalid/issues/new"
     )
@@ -1116,6 +1134,7 @@ def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
     assert out == _BUNDLE
     assert code is None
     assert host.calls == []
+    assert collected == [{"version_alignment": "aligned (1.2.3)", "outside_gateway": True}]
 
 
 def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
@@ -1124,7 +1143,8 @@ def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
     result = cli_doctor.diagnostics.BundleResult(
         zip_path=host.tmp / "diag.zip", filename="diag.zip"
     )
-    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda: result)
+    _pin_bundle_alignment(monkeypatch)
+    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda **_: result)
 
     def refuse_context():
         raise PlatformCompositionError("companion did not compose")
@@ -1142,9 +1162,10 @@ def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
 
 
 def test_bundle_mode_exits_one_when_the_bundle_cannot_be_written(host, capsys, monkeypatch) -> None:
-    def refuse():
+    def refuse(**_):
         raise OSError("disk full")
 
+    _pin_bundle_alignment(monkeypatch)
     monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", refuse)
 
     out, code = host.run(capsys, bundle=True)

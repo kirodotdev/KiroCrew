@@ -10,6 +10,10 @@ declare global {
     platform?: string
     isElectron?: boolean
     linuxFrameless?: boolean
+    /** This shell answers frameless-Linux application-menu IPC. Optional:
+     *  absent on a shell older than the feature, whose `menuItems` guard is
+     *  still Windows-only and returns `[]` for a Linux window. */
+    linuxAppMenu?: boolean
     getPathForFile?: (file: File) => string
     windowControl?: (action: string) => void
   }
@@ -19,6 +23,16 @@ declare global {
     usedHeapKB: number | null
     limitHeapKB: number | null
     externalKB: number | null
+  }
+
+  /** What the remote Crews loaded in this window cost (`remote-crew:usage`). */
+  interface RemoteCrewUsage {
+    /** Remote Crews loaded now, SSH and relay. */
+    panes: number
+    /** Of those, panes in the main window's own process: counted, not measured. */
+    sharedPanes: number
+    memoryMb: number
+    cpuPercent: number
   }
 
   interface ElectronMenuSeparator {
@@ -95,16 +109,25 @@ declare global {
      *  Chromium's gesture-scroll events (macOS only). Optional: absent in a
      *  browser and on an older shell. See lib/scrollTouch. */
     onScrollTouch?: (cb: (phase: unknown) => void) => () => void
+    /** macOS Natural scrolling: `true` on, `false` off, `null` not known yet
+     *  (macOS only). Optional: absent in a browser and on an older shell. See
+     *  lib/scrollTouch `shellNaturalScrolling`. */
+    getNaturalScrolling?: () => unknown
     /** `menuBarOverlap` is false when macOS placed the fullscreen window below
      *  the menu bar (a notched display), so no band needs keeping clear. */
-    onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean) => void) => () => void
+    onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean, pageRaised: boolean) => void) => () => void
     setBadgeCount: (count: number) => void
     reportMicDenied: () => void
     reportMemorySample: (sample: ElectronMemorySample) => void
     heapStatisticsKB: () => { usedHeapKB: number | null } | null
     getGlobalHotkey: () => Promise<ElectronGlobalHotkeyInfo>
+    /** Store and bind a recorded summon hotkey ("" turns it off); resolves what is bound afterwards.
+     *  Absent on a remote gateway window and an older shell, where the config file is the way to change it. */
+    setGlobalHotkey?: (accelerator: string) => Promise<ElectronGlobalHotkeyInfo>
     /** Evict the HTTP cache of one loopback pane origin; resolves to whether a purge ran. */
     clearPaneHttpCache?: (origin: string) => Promise<boolean>
+    /** Memory and CPU of the remote Crews loaded in this window. Absent on a remote gateway window and an older shell. */
+    remoteCrewUsage?: (origins: string[]) => Promise<RemoteCrewUsage>
     /** Copy the image drawn at a main-frame point (CSS pixels). Optional: absent on an older shell. */
     copyImageAt?: (x: number, y: number) => Promise<boolean>
   }
@@ -172,8 +195,20 @@ declare global {
     forwardPorts: (ports: number[]) => Promise<Record<string, 'up' | 'down'> | null>
   }
 
+  /** The count of new crashes, the newest one's time and, when the file log is
+   *  off, its cause code; never a path, file name, module name, exception code
+   *  or logs directory. */
+  interface CrashReportsSummary {
+    newCount: number
+    /** ISO 8601 UTC time of the newest new crash, or null when none parses.
+     *  Optional: absent on an older shell. */
+    lastCrashAt?: string | null
+    /** Why Chromium's file log is off this launch, as a cause code; absent when it is on. */
+    nativeLogOff?: 'disk_full' | 'no_access' | 'in_use' | 'unreadable' | 'other'
+  }
+
   interface CrashReportsAPI {
-    get: () => Promise<{ newCount: number }>
+    get: () => Promise<CrashReportsSummary>
     reveal: () => Promise<{ ok: boolean; error?: string }>
   }
 
@@ -206,6 +241,11 @@ declare global {
     available: () => Promise<boolean>
     /** The chosen absolute folder, or null when the user cancels; rejects when no dialog could be shown. */
     pick: () => Promise<string | null>
+  }
+
+  interface WakaTimeConnectAPI {
+    /** Opens this dashboard's WakaTime panel in the system browser; false when the OS hand-off failed. */
+    openInBrowser: () => Promise<boolean>
   }
 
   interface ZoomAPI {
@@ -381,6 +421,9 @@ declare global {
     /** A plain quit and relaunch with no update command of its own; an armed
      *  update is applied by the quit it triggers. Absent on an older shell. */
     relaunch?: () => Promise<UpdateResult>
+    /** Whether `relaunch` would be accepted from this window: false where the
+     *  shell's local-dashboard gate refuses it. Absent on an older shell. */
+    canRelaunch?: () => Promise<boolean>
     getInfo?: () => Promise<(UpdateInfo & { lastState?: UpdateState | null }) | undefined>
     setChannel?: (channel: string) => Promise<UpdateResult>
     setAutoDownload?: (enabled: boolean) => Promise<UpdateResult>
@@ -403,6 +446,7 @@ declare global {
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
     folderPickAPI?: FolderPickAPI
+    wakatimeConnectAPI?: WakaTimeConnectAPI
     zoomAPI?: ZoomAPI
     browserAPI?: BrowserAPI
     updateAPI?: UpdateAPI

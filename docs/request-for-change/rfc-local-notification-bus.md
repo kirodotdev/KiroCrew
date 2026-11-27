@@ -3,8 +3,8 @@ title: Local Notification Bus
 status: partial
 author: KiroCrew contributors
 created: 2026-07-10
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [185, 189, 273, 345, 399, 422]
 tracking-issues: [589]

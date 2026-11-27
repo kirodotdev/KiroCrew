@@ -80,6 +80,9 @@ _BYPASS_EXACT = {
     # without this entry every `kirocrew logout` is denied 403 by the middleware
     # before the handler (and its audit events) ever run.
     "/api/logout",
+    # `kirocrew logout --link`: the same caller and the same two checks, re-run by
+    # api_logout_link before it revokes anything.
+    "/api/logout/link",
     "/api/theme/boot",
     # Liveness/readiness probes (rec #6): orchestrators / load balancers carry
     # no auth cookie, so these must be reachable without a token. Each exposes
@@ -188,8 +191,22 @@ RELAY_VIEWER_TOKEN_PATH = "/api/relay-viewer/token"
 #: (it is not a session).
 CONNECTOR_CONNECT_PATH = "/api/connected-computers/connect"
 
+#: The four local authorization routes (``routes/local_authorization.py``): an app on
+#: this machine asks for a grant before it holds any credential. Each handler admits
+#: only a direct loopback request and gives nothing by itself: the owner answers the
+#: request through the Owner tier, and a code is redeemed only with the asking app's
+#: PKCE verifier. One method each; every other method stays behind the token gate.
+LOCAL_AUTH_METADATA_PATH = "/.well-known/oauth-authorization-server"
+LOCAL_AUTH_AUTHORIZE_PATH = "/oauth/authorize"
+LOCAL_AUTH_TOKEN_PATH = "/oauth/token"
+LOCAL_AUTH_REVOKE_PATH = "/oauth/revoke"
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+    LOCAL_AUTH_METADATA_PATH: frozenset({"GET"}),
+    LOCAL_AUTH_AUTHORIZE_PATH: frozenset({"GET"}),
+    LOCAL_AUTH_TOKEN_PATH: frozenset({"POST"}),
+    LOCAL_AUTH_REVOKE_PATH: frozenset({"POST"}),
     AGENT_HOOK_STATUS_PATH: frozenset({"GET"}),
     CREW_OAUTH_CALLBACK_PATH: frozenset({"GET"}),
     RELAY_VIEWER_TOKEN_PATH: frozenset({"POST"}),
@@ -513,6 +530,12 @@ def _deny(request: web.Request, reason: str, code: str = "") -> web.Response:
             request_id_for(request),
             headers,
         )
+    from kiro_crew.dashboard.headless import HEADLESS_KEY
+
+    if request.app.get(HEADLESS_KEY, False) is True:
+        return web.json_response(
+            {"error": reason, "code": code or "forbidden"}, status=403, headers=headers
+        )
     return web.Response(
         text=_403_HTML.format(reason=reason),
         status=403,
@@ -533,3 +556,18 @@ def _log_auth(request: web.Request, user_id: str, outcome: str, error: str) -> N
         )
     except Exception:
         logger.warning("Failed to log auth event to SEL", exc_info=True)
+
+
+def _log_query_token_refused(request: web.Request, user_id: str, reason: str) -> None:
+    """Record why a ``?token=`` was refused when the session cookie beside it authenticated.
+
+    That request still succeeds on the cookie, so without this row a link that did
+    not work looks exactly like one that did: the page loads signed in, and a link
+    whose exchange opens something (a Slack challenge window) silently opens nothing.
+    *reason* is the fixed refusal string from token validation; the token itself is
+    never logged.
+    """
+    _log_auth(request, user_id, "query_token_rejected", reason)
+    logger.info(
+        "dashboard link refused (%s); trying the session cookie on %s", reason, request.path
+    )

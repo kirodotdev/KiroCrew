@@ -3,8 +3,8 @@ title: App Session Controls — a composer seam for per-chat app state
 status: implemented
 author: omerrubi
 created: 2026-08-31
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: [7573]
 tracking-issues: []
@@ -182,6 +182,11 @@ export interface SessionControlContext {
   folderName?: string
   /** Working directory recorded for the session, when known. */
   cwd: string
+  /**
+   * The Bot whose own thread this chat is, by its display name, so a control
+   * can say who the user is talking to. Undefined in every other chat.
+   */
+  member?: { name: string }
 }
 ```
 

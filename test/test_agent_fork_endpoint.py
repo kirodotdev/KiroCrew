@@ -179,6 +179,70 @@ async def test_fork_idempotent_second_call(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fork_repeat_with_an_unreadable_sidecar_creates_nothing(tmp_path, monkeypatch):
+    """One failed sidecar read is not "never forked": the repeat fork of a crew's
+    own copy refuses 409 lineage_unverifiable, creates no second copy and keeps
+    the binding."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _write_template(agents_dir, "mytemplate")
+    _seed_config("c", "mytemplate")
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        first = await api_agent_fork(_fork_request("mytemplate", {"crew": "c"}))
+        assert first.status == 200
+        fail_one_sidecar_read(monkeypatch, "get_fork_info", "c")
+        second = await api_agent_fork(_fork_request("c", {"crew": "c"}))
+
+    assert second.status == 409
+    assert json.loads(second.text)["code"] == "lineage_unverifiable"
+    assert sorted(p.name for p in agents_dir.glob("*.json")) == ["c.json", "mytemplate.json"]
+    assert KiroCrewConfig.load().agents["c"].kiro_agent == "c"
+    # Read the sidecar file itself: the fault wrapper still wraps get_fork_info("c").
+    entry = json.loads(agent_state._state_path().read_text(encoding="utf-8"))["c"]
+    assert (entry["forked_from"], entry["private_to"]) == ("mytemplate", "c")
+
+
+@pytest.mark.asyncio
+async def test_fork_repeat_with_a_corrupt_sidecar_names_the_file(tmp_path):
+    """A sidecar that is not JSON refuses the repeat fork and names the file to restore."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _write_template(agents_dir, "mytemplate")
+    _seed_config("c", "mytemplate")
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        first = await api_agent_fork(_fork_request("mytemplate", {"crew": "c"}))
+        assert first.status == 200
+        agent_state._state_path().write_text("{not json", encoding="utf-8")
+        second = await api_agent_fork(_fork_request("c", {"crew": "c"}))
+
+    assert second.status == 409
+    body = json.loads(second.text)
+    assert body["code"] == "lineage_unverifiable"
+    assert agent_state._STATE_FILENAME in body["error"]
+    assert not (agents_dir / "c-2.json").exists()
+    assert KiroCrewConfig.load().agents["c"].kiro_agent == "c"
+
+
+@pytest.mark.asyncio
+async def test_fork_without_a_sidecar_still_forks(tmp_path):
+    """A missing sidecar is "never forked" under the strict read too."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _write_template(agents_dir, "mytemplate")
+    _seed_config("c", "mytemplate")
+    agent_state._state_path().unlink(missing_ok=True)
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        resp = await api_agent_fork(_fork_request("mytemplate", {"crew": "c"}))
+
+    assert resp.status == 200
+    assert json.loads(resp.text)["template"] == "c"
+    assert KiroCrewConfig.load().agents["c"].kiro_agent == "c"
+
+
+@pytest.mark.asyncio
 async def test_fork_unknown_template_404(tmp_path):
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()

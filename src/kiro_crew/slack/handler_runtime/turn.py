@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         _WORKING,
         CONTEXT_EVENT_COMPACTION,
         EVENT_COMPLETE,
+        EVENT_MODEL_FALLBACK,
         EVENT_PERMISSION_REQUEST,
         EVENT_TEXT_CHUNK,
         EVENT_THINKING_CHUNK,
@@ -90,6 +91,7 @@ if TYPE_CHECKING:
         context_template,
         continue_timed_out_calls,
         credential_give_up_text,
+        drop_echo,
         enter_turn,
         exit_turn,
         expire_slack_options,
@@ -112,6 +114,7 @@ if TYPE_CHECKING:
         session_stop_generation,
         session_store_for_turn,
         settle_turn,
+        shared_user_refused_for_session,
         slack_script_hooks,
         stop_reason_landed,
         turn_ceiling,
@@ -150,6 +153,7 @@ class _SlackTurn:
     had_voice_input: "bool"
     spool_text: "str | None"
     spool_attachments: "int"
+    spool_attachment_names: "tuple[str, ...]"
     _compaction_replay: "_CompactionReplay | None"
     start_priority: "StartPriority"
     user_meta: "dict[str, Any] | None"
@@ -167,6 +171,7 @@ class _SlackTurn:
     # session's channel link (``test_crew_log_class_recorder`` reads it as one).
     _acquired: "bool"
     _agent: "str | None"
+    spec_agent: "str | None"
     answer: "_AnswerStream"
     client: "LLMProvider | None"
     _had_error: "bool"
@@ -221,6 +226,7 @@ class _SlackTurn:
         had_voice_input: "bool",
         spool_text: "str | None",
         spool_attachments: "int",
+        spool_attachment_names: "tuple[str, ...]",
         _compaction_replay: "_CompactionReplay | None",
         start_priority: "StartPriority",
         user_meta: "dict[str, Any] | None" = None,
@@ -255,6 +261,7 @@ class _SlackTurn:
         self.had_voice_input = had_voice_input
         self.spool_text = spool_text
         self.spool_attachments = spool_attachments
+        self.spool_attachment_names = spool_attachment_names
         self._compaction_replay = _compaction_replay
         # Set by ``_run_turn``; none until a turn has run its hooks.
         self._hook_turn = None
@@ -635,6 +642,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 had_voice_input=had_voice_input,
                 spool_text=turn.spool_text,
                 spool_attachments=turn.spool_attachments,
+                spool_attachment_names=turn.spool_attachment_names,
                 _compaction_replay=replay,
                 start_priority=start_priority,
                 user_meta=turn.user_meta,
@@ -645,6 +653,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             # there); a waiter admitted now finds an idle session.
             sessions.close_replay_gap(session_key)
 
+    _delivery_pending = False
     try:
         task.start()
         while True:
@@ -670,7 +679,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                     continue
                 if candidate_key != session_key:
                     logger.info(
-                        "Slack thread %s linked to dashboard session %s — routing there",
+                        "🔗 Slack thread %s linked to dashboard session %s — routing there",
                         session_key,
                         candidate_key,
                     )
@@ -680,6 +689,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             if memory_error is not None:
                 raise memory_error
             break
+        # The owner may have linked this thread to a code channel's session since the
+        # linked-thread check ran: a shared user's turn never runs there.
+        if await shared_user_refused_for_session(user_id, session_key, reply_ts, channel):
+            await turn.clear_working_indicators()
+            return False
         # Re-resolve _agent against (possibly linked) session_key for the main
         # LLM path — linked dashboard sessions may carry a different thread agent.
         _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
@@ -687,10 +701,12 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # crew identity, workspace cwd) -- see slack/channel_crew.py. Same rule
         # as the messaging transport: only when the selected agent IS the
         # channel's binding (a thread value equal to it is that binding restored
-        # from the transcript header) and the session is Slack's own.
+        # from the transcript header) or the thread's own agent (``!bot``), and
+        # the session is Slack's own.
         _channel_crew = (
-            await asyncio.to_thread(resolve_channel_crew, channel_agent)
-            if channel_agent and _agent == channel_agent and is_slack_born(session_key)
+            await asyncio.to_thread(resolve_channel_crew, _agent)
+            if _agent in (_thread_agents.get(session_key), channel_agent)
+            and is_slack_born(session_key)
             else None
         )
         # The context builder takes the TEMPLATE the turn runs, never a record's
@@ -752,7 +768,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             # the cron conversation instead.
             sessions.set_slack_link(session_key, reply_ts, channel)
         logger.info(
-            "session state: key=%s is_new=%s resumed=%s",
+            "🔍 session state: key=%s is_new=%s resumed=%s",
             session_key,
             is_new,
             resumed,
@@ -918,9 +934,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
 
         # The permission ladder reads the routed conversation, its agent and this
         # turn's presentation off the turn (``_answer_permission_request``); none of
-        # them is rebound past this point.
+        # them is rebound past this point. Its spec hooks are the template's, so a
+        # channel bound to a Crew record is gated by the agent the record runs.
         turn.session_key = session_key
         turn._agent = _agent
+        turn.spec_agent = _context_agent
         turn.answer = answer
         turn.task = task
 
@@ -963,7 +981,10 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn (``acp.timed_out_continuation``): the same session
         # is told the call timed out, and its answer streams on into this reply.
-        async for event in continue_timed_out_calls(client.stream, full_message):
+        # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+        async for event in continue_timed_out_calls(
+            lambda prompt: drop_echo(client.stream(prompt)), full_message
+        ):
             if event.kind == EVENT_TEXT_CHUNK:
                 await answer.on_text(event)
 
@@ -971,11 +992,19 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 await answer.on_thinking(event)
 
             elif event.kind == EVENT_TOOL_CALL:
+                await answer.release_quoted_hold()
                 await _screen_tool_call(turn, event)
 
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                await answer.release_quoted_hold()
                 if await _answer_permission_request(turn, client, event):
                     break
+
+            elif event.kind == EVENT_MODEL_FALLBACK:
+                # The engine moved this turn onto another model. On a refusal hop
+                # the refused model's streamed text is dropped here; the delivery
+                # path prepends the fallback notice and overwrites the live copy.
+                await answer.on_model_fallback(event)
 
             elif event.kind == CONTEXT_EVENT_COMPACTION:
                 # The backend compacted the session on its own: the session-start
@@ -1003,6 +1032,8 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                         session_key,
                     )
                 break
+        # The turn's text ends here, with or without a complete event.
+        await answer.release_quoted_hold()
 
         if _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for %s", session_key)
@@ -1148,6 +1179,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                     exc_info=True,
                 )
         _body_completed = True
+        _delivery_pending = True
 
     except AcpTimeoutError as e:
         _had_error = True
@@ -1170,9 +1202,10 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 logger.debug(
                     "Failed to reset session %s after a timed-out turn", session_key, exc_info=True
                 )
+        _delivery_pending = True
     except AcpProcessDied:
         _had_error = True
-        answer.accumulated = answer.accumulated or "Error: Agent process died. Please try again."
+        answer.accumulated = answer.accumulated or "💀 Agent process died. Please try again."
         task.fail("process_died")
         # The circuit breaker counts a session's OWN consecutive failures, and
         # trips into a reset. A process this session was sharing dying is not
@@ -1231,6 +1264,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                     _shared_streak,
                 )
         Stats().inc_message_failed()
+        _delivery_pending = True
     except AcpPromptBusy as e:
         _had_error = True
         # Session is wedged mid-prompt — reset the provider so the next
@@ -1239,10 +1273,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             await sessions.reset(session_key)
         except Exception:
             logger.debug("Failed to reset session %s after prompt-busy", session_key, exc_info=True)
-        answer.accumulated = f"Error: {e}"
+        answer.accumulated = f"❌ {e}"
         task.fail(str(e))
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()
+        _delivery_pending = True
     except AcpError as e:
         _had_error = True
         # Only once this attempt holds a claim: the binding to reset is the one
@@ -1298,23 +1333,24 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             if _session_lost:
                 sessions.close_replay_gap(session_key)
             if _session_lost and (answer.accumulated or answer.task_counter):
-                answer.accumulated = SESSION_NOT_FOUND_NOT_REPLAYED_TEXT
+                answer.accumulated = f"⟳ {SESSION_NOT_FOUND_NOT_REPLAYED_TEXT}"
             elif _session_lost and acp_error_needs_fresh_credentials(e):
                 # A broken helper fails the fresh process too: a new thread
                 # would fail alike, so the provider's remedy is the message.
                 answer.accumulated = (
-                    f"Error: {credential_give_up_text(e)} Then send your message again."
+                    f"❌ {credential_give_up_text(e)} Then send your message again."
                 )
             elif _session_lost:
                 answer.accumulated = (
-                    f"Error: {SESSION_NOT_FOUND_GIVE_UP_TEXT} Send your message again, "
+                    f"❌ {SESSION_NOT_FOUND_GIVE_UP_TEXT} Send your message again, "
                     "or start a new thread if this keeps happening."
                 )
             else:
-                answer.accumulated = f"Error: {e}"
+                answer.accumulated = f"❌ {e}"
             task.fail(str(e))
             await sessions.record_failure(session_key)
             Stats().inc_message_failed()
+        _delivery_pending = True
     except (UnknownMemoryStore, EmbedAdmissionTimeout) as exc:
         _had_error = True
         if _acquired and isinstance(exc, EmbedAdmissionTimeout):
@@ -1334,13 +1370,15 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         answer.accumulated = redact_local_paths(redact(str(exc)))[0][:1000]
         task.fail("memory_unavailable")
         Stats().inc_message_failed()
+        _delivery_pending = True
     except Exception:
         _had_error = True
         logger.exception("Unexpected error handling message")
-        answer.accumulated = answer.accumulated or "Error: Something went wrong. Please try again."
+        answer.accumulated = answer.accumulated or "🔧 Something went wrong. Please try again."
         task.fail("unexpected")
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()
+        _delivery_pending = True
     finally:
         # A turn that consumed the post-compaction flag but never landed (an
         # error arm, a cancel) discarded the prompt carrying the re-injected
@@ -1371,6 +1409,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # A raise that left the body after the model completed (``_body_completed``
         # still False) is released now too: ``_deliver_answer`` never runs.
         _release_deferred = _acquired and _turn_completed_ok and _body_completed
+        # Handled failures still deliver an answer; returns and escaping exceptions do not.
+        if not _delivery_pending:
+            await answer.abandon()
         if _acquired and not _release_deferred:
             sessions.release(session_key)
             _acquired = False

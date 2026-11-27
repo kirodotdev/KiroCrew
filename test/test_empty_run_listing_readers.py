@@ -1,6 +1,7 @@
 """The PR Size approval handler and the Sensitive Change Review comment
 workflow read an empty `head_sha` run listing through the head's check-runs
-before they conclude that the run they re-run does not exist."""
+before they conclude that the run they re-run does not exist, and the comment
+workflow names the next step when that run is still running."""
 
 from __future__ import annotations
 
@@ -26,6 +27,9 @@ HEAD = "1234567890abcdef1234567890abcdef12345678"
 REPO = "example/repo"
 
 
+HEAD_REF = "feature/sensitive"
+
+
 def _run_step(tmp_path: Path, workflow: str, step: str, runs: dict, **env: str):
     """Run `step` of `workflow` against a stub gh whose run listings answer no
     runs while the head's check-runs name every run in `runs`. A run whose
@@ -44,7 +48,7 @@ def _run_step(tmp_path: Path, workflow: str, step: str, runs: dict, **env: str):
     for run_id, payload in runs.items():
         if payload is not None:
             (data / f"run-{run_id}.json").write_text(json.dumps(payload))
-    pull = {"head": {"sha": HEAD, "repo": {"full_name": REPO}}}
+    pull = {"head": {"sha": HEAD, "ref": HEAD_REF, "repo": {"full_name": REPO}}}
     (data / "pull.json").write_text(json.dumps(pull))
     _write_stub(
         stub_dir / "gh",
@@ -83,14 +87,22 @@ def _run_step(tmp_path: Path, workflow: str, step: str, runs: dict, **env: str):
     return result, read
 
 
-def _run(run_id: int, workflow: str, event: str, head_sha: str = HEAD) -> dict:
+def _run(
+    run_id: int,
+    workflow: str,
+    event: str,
+    head_sha: str = HEAD,
+    pull_requests: list | None = None,
+    head_branch: str = HEAD_REF,
+) -> dict:
     return {
         "id": run_id,
         "path": f".github/workflows/{workflow}",
         "event": event,
         "head_sha": head_sha,
+        "head_branch": head_branch,
         "status": "completed",
-        "pull_requests": [{"number": 7}],
+        "pull_requests": [{"number": 7}] if pull_requests is None else pull_requests,
     }
 
 
@@ -150,6 +162,54 @@ class TestSensitiveChangeReviewComment:
         assert result.returncode == 0, _proc_log(result)
         assert f"repos/{REPO}/actions/runs/400/rerun" in read("rerun.txt"), _proc_log(result)
         assert "No Sensitive Change Review run found" not in result.stdout
+
+    def test_a_run_with_empty_pull_requests_is_found_by_head_sha_and_branch(
+        self, tmp_path: Path
+    ) -> None:
+        # GitHub leaves `pull_requests` empty on pull_request_target runs. The
+        # same-repo PR head ref still names this PR's run; another branch's run
+        # at the same sha and a run of another workflow do not.
+        runs = {
+            400: _run(400, "sensitive-change-review.yml", "pull_request_target", pull_requests=[]),
+            410: _run(
+                410,
+                "sensitive-change-review.yml",
+                "pull_request_target",
+                pull_requests=[],
+                head_branch="other",
+            ),
+            420: _run(420, "pr-readiness.yml", "pull_request_target", pull_requests=[]),
+        }
+        result, read = self._rerun(tmp_path, runs)
+        assert result.returncode == 0, _proc_log(result)
+        assert f"repos/{REPO}/actions/runs/400/rerun" in read("rerun.txt"), _proc_log(result)
+
+    def test_an_empty_pull_requests_run_on_another_branch_is_not_found(
+        self, tmp_path: Path
+    ) -> None:
+        runs = {
+            410: _run(
+                410,
+                "sensitive-change-review.yml",
+                "pull_request_target",
+                pull_requests=[],
+                head_branch="other",
+            ),
+        }
+        result, read = self._rerun(tmp_path, runs)
+        assert result.returncode != 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+
+    def test_a_run_still_running_after_the_wait_names_the_job_re_run(self, tmp_path: Path) -> None:
+        # The run never reads back completed, so every poll is spent.
+        run = _run(400, "sensitive-change-review.yml", "pull_request_target")
+        run["status"] = "in_progress"
+        result, read = self._rerun(tmp_path, {400: run})
+        assert result.returncode == 1, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert (
+            "run 400 is still running; once it completes, re-run this job." in result.stdout
+        ), _proc_log(result)
 
     def test_a_named_run_that_cannot_be_read_is_a_read_failure(self, tmp_path: Path) -> None:
         result, read = self._rerun(tmp_path, {400: None})

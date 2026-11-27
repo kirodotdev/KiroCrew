@@ -70,6 +70,22 @@ describe('ChatInput typing lock', () => {
     expect(onSend).toHaveBeenCalled()
   })
 
+  it('wears the disabled look on the text column only while locked', async () => {
+    const lockedLook = ['bg-bg-hover', 'cursor-not-allowed', '[&_[data-composer-input]]:opacity-40']
+    const { rerender } = renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} isRunning onStop={vi.fn()} typingLock={LOCK} />)
+    await settle()
+    const column = screen.getByLabelText('Message input').parentElement as HTMLElement
+    for (const cls of lockedLook) expect(column).toHaveClass(cls)
+    // Only the editor dims, so a staged quote's buttons keep their look.
+    expect(column.className).not.toContain('[&>*]')
+    // The row that still works is outside the dimmed column.
+    expect(column).not.toContainElement(screen.getByTestId('composer-typing-lock'))
+    expect(column).not.toContainElement(screen.getByRole('button', { name: /stop/i }))
+    rerender(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} isRunning onStop={vi.fn()} typingLock={null} />)
+    const after = screen.getByLabelText('Message input').parentElement as HTMLElement
+    for (const cls of lockedLook) expect(after).not.toHaveClass(cls)
+  })
+
   it('keeps Stop for a running turn', async () => {
     const onStop = vi.fn()
     renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} isRunning onStop={onStop} typingLock={LOCK} />)
@@ -158,14 +174,16 @@ describe('ChatInput typing lock', () => {
     expect(onSteer.mock.calls.length + onSend.mock.calls.length).toBe(0)
   })
 
-  it('stops a running turn with Escape from the locked box', async () => {
+  it('does not stop a running turn with Escape from the locked box; Stop still does', async () => {
     const onStop = vi.fn()
     renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} isRunning onStop={onStop} typingLock={LOCK} />)
     await settle()
     const box = screen.getByLabelText('Message input')
-    box.focus()
+    act(() => box.focus())
     fireEvent.keyDown(box, { key: 'Escape' })
-    expect(onStop).toHaveBeenCalled()
+    expect(onStop).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /stop/i }))
+    expect(onStop).toHaveBeenCalledTimes(1)
   })
 
   it('steers a running turn with Enter from the locked box, and leaves the draft alone', async () => {

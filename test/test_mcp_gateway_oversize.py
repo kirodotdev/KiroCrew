@@ -224,6 +224,18 @@ class TestNonToolResultPassthrough:
 
         assert result == line
 
+    def test_an_image_beside_short_text_passes_through_and_leaves_no_copy(self, tmp_path):
+        """Nothing would be cut, so no sidecar copy of the image is written."""
+        content = [{"type": "text", "text": "saved"}, {"type": "image", "data": "x" * 300_000}]
+        msg = {"jsonrpc": "2.0", "id": "req-1", "result": {"content": content}}
+        line = json.dumps(msg, separators=(",", ":")).encode("utf-8") + b"\n"
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            result = maybe_spill_response(line, "server", 100_000)
+
+        assert result == line
+        assert not (tmp_path / "mcp_spill").exists()
+
     def test_notification_passes_through(self, tmp_path):
         """Notifications (no id, has method) pass through."""
         msg = {

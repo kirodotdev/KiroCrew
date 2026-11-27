@@ -83,7 +83,9 @@ def scenario_score(entry: object) -> float | None:
             if int(total) > 0:
                 return min(int(done) / int(total), 1.0)
     passed = entry.get("passed")
-    return (1.0 if passed else 0.0) if isinstance(passed, bool) else None
+    if not isinstance(passed, bool):
+        return None
+    return 1.0 if passed else 0.0
 
 
 def scores_by_name(doc: object) -> dict[str, float]:

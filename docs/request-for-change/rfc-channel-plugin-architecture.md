@@ -3,8 +3,8 @@ title: Channel Plugin Architecture — shared runtime, channels as app extension
 status: partial
 author: zezhexu
 created: 2026-07-28
-last-audited: 2026-10-05
-audited-at: f97eeefbe3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 689
 implementation-prs: [777, 1019, 1234]
 tracking-issues: []

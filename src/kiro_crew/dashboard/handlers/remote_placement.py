@@ -2,15 +2,18 @@
 
 RFC §2b option (C): the hub ranks crews from fresh headroom snapshots minus its
 reservations (open remote bindings plus creates in flight here, one estimate each),
-and the peer gate (wave 3) alone admits. ``crew_busy`` tries the next crew; any other
-refusal stops, since that create may have reached the peer. The rules are spelled
+and the peer gate (wave 3) alone admits. ``crew_busy`` tries the next crew, and so
+does a 409 ``duplicate_item`` (that crew already holds a worker for the item, so it
+made nothing; the reply names it under ``skipped``); any other refusal stops, since
+that create may have reached the peer. The rules are spelled
 out in ``docs/system-specs/modules/session-control.md`` ("Wave 5"). Reached only
 while ``work_ledger.remote_dispatch`` is on.
 
 An optional ``requires: {"tags": [...], "logins": [...]}`` filters crews before
 they are ranked: a crew qualifies only when its headroom lists every tag and
 reports ``valid`` for every login. When none qualifies the create is refused
-``crew_requirements_unmet`` naming what each crew lacked; there is no blind pick.
+``crew_requirements_unmet`` naming what each crew lacked and each connected crew
+whose version or headroom read failed; there is no blind pick.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+from kiro_crew.dashboard.handlers.remote_dispatch_routes import CrewCallError
 from kiro_crew.dashboard.remote_dispatch_headroom import (
     CPU_LOAD_THRESHOLD,
     NO_LOGINS_QUERY,
@@ -31,7 +35,7 @@ from kiro_crew.dashboard.remote_dispatch_headroom import (
     remote_dispatch_settings,
 )
 from kiro_crew.remote_dispatch import LOGIN_EXPIRED, LOGIN_UNKNOWN, LOGIN_VALID
-from kiro_crew.work_vocab import DISPATCH_TAG_RE, MAX_DISPATCH_TAGS
+from kiro_crew.work_vocab import MAX_DISPATCH_TAGS, is_dispatch_tag
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -47,8 +51,19 @@ REQUIRES_INVALID = "requires_invalid"
 #: The refusal when connected crews answered but none meets ``requires``.
 CREW_REQUIREMENTS_UNMET = "crew_requirements_unmet"
 
+#: A peer's 409 when it already holds a worker for the item: the store's
+#: ``CODE_DUPLICATE_ITEM``, spelled here because this module may not import the store
+#: (``test_work_ledger.py::test_only_the_phase_2_seams_import_the_module``; the
+#: ``remote_ingest`` family is on that allowlist, placement is not). Pinned equal by
+#: ``test_the_code_matches_the_store``.
+CODE_DUPLICATE_ITEM = "duplicate_item"
+
 #: :func:`_candidate`'s answer for a crew that meets ``requires`` but has no room.
 _NO_ROOM = "no_room"
+
+#: :func:`_candidate`'s answer for a connected crew whose version or headroom read
+#: failed, so whether it meets ``requires`` is unknown.
+_UNREAD = "unread"
 
 #: ``TunnelState.CONNECTED.value``.
 _CONNECTED = "connected"
@@ -118,12 +133,12 @@ def parse_requires(raw: object) -> Requires:
                 f"requires.{key} must be a list of at most {MAX_DISPATCH_TAGS}",
             )
         for name in names:
-            if not isinstance(name, str) or not DISPATCH_TAG_RE.fullmatch(name):
+            if not isinstance(name, str) or not is_dispatch_tag(name):
                 raise routes.CrewCallError(
                     400,
                     REQUIRES_INVALID,
-                    f"requires.{key} names must be 1-32 characters of a-z, 0-9, '_' or '-' "
-                    "with at least one letter",
+                    f"requires.{key} names must be 1-32 characters of a-z, 0-9, '_' or '-', "
+                    "starting with a letter or digit, with at least one letter",
                 )
             if key == "logins" and name not in tools:
                 raise routes.CrewCallError(
@@ -162,9 +177,10 @@ def _lacks(unmet: list[Unmet]) -> str:
     return "; ".join(f"{u.name} lacks {', '.join(u.missing)}" for u in unmet)
 
 
-def unmet_message(unmet: list[Unmet]) -> str:
-    """The ``crew_requirements_unmet`` prose: each crew and what it lacked."""
-    shown = _lacks(unmet)
+def unmet_message(unmet: list[Unmet], unread: tuple[str, ...] = ()) -> str:
+    """The ``crew_requirements_unmet`` prose: each crew and what it lacked, then
+    each connected crew in *unread* as ``<name> could not be checked``."""
+    shown = "; ".join([_lacks(unmet), *(f"{name} could not be checked" for name in unread)])
     return (
         f"no connected crew meets this item's requires ({shown}); it stays open and "
         "unbound. Sign in or tag a crew, or drop the requirement"
@@ -195,12 +211,26 @@ def _number(value: object) -> float | None:
     return number if math.isfinite(number) and number >= 0 else None
 
 
+class DuplicateItemError(CrewCallError):
+    """The peer answered 409 ``duplicate_item`` to a bound create: it already holds
+    a worker for the item (a create whose reply was lost) and made nothing for this
+    one. Raised by ``remote_ingest.create_bound``; placement tries the next crew."""
+
+    def __init__(self) -> None:
+        super().__init__(409, CODE_DUPLICATE_ITEM, "that crew already holds a worker for this item")
+
+
 def _connected(mgr: Any, instance_id: str) -> bool:
     try:
         status = mgr.status(instance_id)
     except Exception:  # noqa: BLE001 - a status read must not fail a placement
         return False
     return getattr(getattr(status, "state", None), "value", None) == _CONNECTED
+
+
+def _display_name(row: Any, instance_id: str) -> str:
+    """*row*'s name as a refusal shows it, its id when it has none."""
+    return str(getattr(row, "name", "") or instance_id)
 
 
 def _headroom_params(requires: Requires) -> dict[str, str]:
@@ -218,8 +248,10 @@ async def _candidate(
     requires: Requires = Requires(),
 ) -> Candidate | Unmet | str | None:
     """*row* as a :class:`Candidate`; :class:`Unmet` when its headroom lacks part of
-    *requires*; :data:`_NO_ROOM` when it meets *requires* but is short; ``None``
-    when it is not connected or its headroom cannot be read."""
+    *requires*; :data:`_NO_ROOM` when it meets *requires* but is short;
+    :data:`_UNREAD` when it is connected but its version or headroom read failed,
+    timed out or answered non-2xx or a non-object; ``None`` when it has no id or is
+    not connected."""
     from kiro_crew.dashboard.handlers import remote_dispatch_routes as routes
 
     instance_id = str(getattr(row, "id", "") or "")
@@ -236,16 +268,16 @@ async def _candidate(
         status, payload = await asyncio.wait_for(_probe(), PROBE_TIMEOUT_S)
     except routes.CrewCallError as exc:
         logger.info("placement skips crew %s (%s)", instance_id, exc.code)
-        return None
+        return _UNREAD
     except asyncio.TimeoutError:
         logger.info("placement skips crew %s (headroom read timed out)", instance_id)
-        return None
+        return _UNREAD
     except Exception:  # noqa: BLE001 - one crew's fault must not fail the placement
         logger.warning("placement skips crew %s (probe failed)", instance_id, exc_info=True)
-        return None
+        return _UNREAD
     if not 200 <= status < 300 or not isinstance(payload, dict):
-        return None
-    name = str(getattr(row, "name", "") or instance_id)
+        return _UNREAD
+    name = _display_name(row, instance_id)
     lacks = missing(requires, payload)
     if lacks:
         # Filtered before it is ranked: a crew without the capability is never
@@ -391,9 +423,16 @@ async def place(
     unmet = [c for c in found if isinstance(c, Unmet)]
     if unmet and not pool and _NO_ROOM not in found:
         # No crew that answered has the capability: name what each lacks, and
-        # never fall back to a crew without it.
-        raise routes.CrewCallError(503, CREW_REQUIREMENTS_UNMET, unmet_message(unmet))
+        # never fall back to a crew without it. A crew that could not be read is
+        # named too, so the person is not told to fix only the crews that were.
+        unread = tuple(
+            _display_name(r, str(getattr(r, "id", "") or ""))
+            for r, c in zip(rows, found)
+            if c == _UNREAD
+        )
+        raise routes.CrewCallError(503, CREW_REQUIREMENTS_UNMET, unmet_message(unmet, unread))
     busy: list[str] = []
+    duplicate: list[Candidate] = []
     stopped = False
     while pool:
         pick = await _reserve_best(state, pool, mem_gb, disk_gb)
@@ -408,14 +447,29 @@ async def place(
             busy.append(pick.name)
             pool = [c for c in pool if c.instance_id != pick.instance_id]
             continue
+        except DuplicateItemError:
+            # The crew already holds a worker for this item (a create whose reply
+            # was lost). It refused before making anything, so the next crew is
+            # tried; the orphan there is left alone.
+            duplicate.append(pick)
+            pool = [c for c in pool if c.instance_id != pick.instance_id]
+            continue
         finally:
             _release(state, pick.instance_id)
         if item.retired_bindings:
             # The new worker starts from the retired one's last pushed branch and
             # pushes a NEW one; the conductor names both in the seed.
             result["previous_branch"] = item.retired_bindings[-1].get("branch")
+        if duplicate:
+            result["skipped"] = [
+                {"crew": c.instance_id, "crew_name": c.name, "code": CODE_DUPLICATE_ITEM}
+                for c in duplicate
+            ]
         return result, pick.name
     tried = f" ({', '.join(busy)} answered crew_busy)" if busy else ""
+    if duplicate:
+        names = ", ".join(c.name for c in duplicate)
+        tried += f" ({names} answered {CODE_DUPLICATE_ITEM}: already holds a worker for it)"
     if unmet:
         tried += f"; {_lacks(unmet)}"
     if stopped:

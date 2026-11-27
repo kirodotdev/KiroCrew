@@ -51,7 +51,9 @@ logger = logging.getLogger(__name__)
 #: ``request_server`` operation name, in :data:`handlers.guide._USER_TURN_OPERATIONS`.
 OP_REQUEST_SERVER = "cards.request_server"
 
-_BODY_KEYS = frozenset({"server", "source", "registry_id", "reason"})
+_BODY_KEYS = frozenset(
+    {"server", "source", "registry_id", "reason", "action", "entry", "uses_chat_folder", "target"}
+)
 
 #: The opt-in managed sets an owner may mount on the default agent with no
 #: ``entry`` in the body, each with the ``mcp-*`` subcommand it runs. The gateway
@@ -123,27 +125,37 @@ def _caller_refusal(exc: GuideError) -> web.Response:
 # ── who is asking, and for which template ──
 
 
-def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]:
+#: The ``crewmate_caller`` refusal: a Bot asks for its servers with its own tool.
+_CREWMATE_REFUSAL = "a Bot asks for its worker's servers with request_capabilities"
+#: The same refusal to a Bot's own chat on Codex, where that tool reaches the chat only
+#: as the kirocrew-core stub's follower (providers spec, "Codex dashboard session mount").
+_CODEX_BOT_CHAT_REFUSAL = (
+    f"{_CREWMATE_REFUSAL}; on Codex a Bot's chat has that tool only while Share is on for "
+    "kirocrew-core, so if this chat lacks it, ask the user to turn on Share for "
+    "kirocrew-core under Customize > MCP Servers > Sharing > Per-server sharing (the row "
+    "then reads direct, which is enough), restart Kiro Crew if the page says to, then "
+    "start a new chat with this Bot; its tools can take one message to appear"
+)
+
+
+def _caller_template(state: Any, slot_key: str, sk: str, backend: str) -> tuple[str, str, str]:
     """``(template, code, message)``: the template the caller runs on, or why there is none.
 
-    Blocking (reads the session's execution record).
+    *backend* is the caller's (:func:`_caller_backend`). Blocking (reads the
+    session's execution record).
     """
     from kiro_crew import mate_worker, members
+    from kiro_crew.acp_backends import ACP_BACKEND_CODEX
     from kiro_crew.dashboard.chat_utils import slot_history_key
     from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
     from kiro_crew.execution_context import read_session_execution
 
     slot = state.get_slot(slot_key)
-    if (
-        is_crewmate_thread(slot)
-        or members.is_crewmate_worker_session(slot_key)
-        or members.is_crewmate_worker_session(sk)
-    ):
-        return (
-            "",
-            "crewmate_caller",
-            "a Bot asks for its worker's servers with request_capabilities",
-        )
+    worker = members.is_crewmate_worker_session(slot_key) or members.is_crewmate_worker_session(sk)
+    if worker or is_crewmate_thread(slot):
+        # A worker never mounts request_capabilities, so only the Bot's chat is told.
+        codex_chat = backend == ACP_BACKEND_CODEX and not worker
+        return "", "crewmate_caller", _CODEX_BOT_CHAT_REFUSAL if codex_chat else _CREWMATE_REFUSAL
     try:
         execution = read_session_execution(slot_history_key(slot))
     except Exception:  # noqa: BLE001 - an unreadable record names no template
@@ -157,11 +169,7 @@ def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]
             "this session runs on no agent template a server can be added to",
         )
     if mate_worker.is_mate_owned_agent(template):
-        return (
-            "",
-            "crewmate_caller",
-            "a Bot asks for its worker's servers with request_capabilities",
-        )
+        return "", "crewmate_caller", _CREWMATE_REFUSAL
     return template, "", ""
 
 
@@ -184,9 +192,9 @@ async def _caller_backend(state: Any, sk: str) -> str:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
         from kiro_crew.members import session_backend_pick
 
-        # A crewmate's own pin is checked first (H17); crewmate callers are refused
-        # before this, so a pin that cannot start reads as the default harness. A
-        # session created on a harness outranks the pin, as at allocation.
+        # A crewmate's own pin is checked first (H17); a pin that cannot start raises
+        # and reads as the default harness, so a crewmate caller keeps the plain
+        # refusal. A session created on a harness outranks the pin, as at allocation.
         pick = session_backend_pick(sk)
         backend = select_provider_backend(
             sk,
@@ -319,6 +327,20 @@ def template_declares(template: str, server: str) -> bool:
     return False
 
 
+def _users_own_server(name: str) -> bool:
+    """Whether a user's own MCP config file declares *name* and no app mints it. Blocking.
+
+    An app's ``<app>:<server>`` key lives only in the rendered spec the gateway
+    lookup reads first, and a template's copy would not follow the app's install.
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.mcp_discovery import _load_mcp_json_by_source
+
+    specs = [scope.get(name) for scope in _load_mcp_json_by_source().values()]
+    declared = any(isinstance(s, dict) and agent_mod._declares_server(s) for s in specs)
+    return declared and name not in agent_mod._app_owned_mcp_keys()
+
+
 # ── the default agent and the worker: a mount-only card ──
 
 #: Templates whose servers are the MCP page's: the default agent carries every
@@ -355,20 +377,34 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
         return _caller_refusal(exc)
     unknown = sorted(set(body) - _BODY_KEYS)
     if unknown:
-        # A command, url, template or session is never the caller's to give.
+        # A template or session is never the caller's to give, and a launch line
+        # only for a server on the MCP page (``entry``, shown in full on its card).
         _audit(sk, OP_REQUEST_SERVER, "denied", "unknown_field")
         return _deny(400, "invalid_body", f"unknown field '{unknown[0][:64]}'")
+    from kiro_crew.dashboard.handlers import request_server_page
+
+    if request_server_page.is_page_request(body):
+        # A server on the MCP page, added with its entry, changed or removed.
+        return await request_server_page.request_page_change(request, slot_key, sk, body)
+    if "entry" in body or "uses_chat_folder" in body:
+        # A gateway or registry server's entry is the gateway's to build.
+        _audit(sk, OP_REQUEST_SERVER, "denied", "unknown_field")
+        return _deny(400, "invalid_body", "entry is only for source 'custom'")
+    if "target" in body:
+        _audit(sk, OP_REQUEST_SERVER, "denied", "unknown_field")
+        return _deny(400, "invalid_body", "target is only for source 'custom'")
     state = request.app["state"]
-    template, code, message = await asyncio.to_thread(_caller_template, state, slot_key, sk)
+    backend = await _caller_backend(state, sk)
+    template, code, message = await asyncio.to_thread(
+        _caller_template, state, slot_key, sk, backend
+    )
     if not template:
         _audit(sk, OP_REQUEST_SERVER, "denied", code)
         return _deny(403 if code == "crewmate_caller" else 409, code, message)
     mount_only = template in MCP_PAGE_TEMPLATES
     if mount_only:
         template = MOUNT_ONLY_TEMPLATE
-    support = additions.addition_support(
-        template, await _caller_backend(state, sk), mount_only=mount_only
-    )
+    support = additions.addition_support(template, backend, mount_only=mount_only)
     if not support.supported:
         _audit(sk, OP_REQUEST_SERVER, "denied", "unsupported")
         return _deny(409, "unsupported", support.reason)
@@ -382,6 +418,14 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
     except CatalogAdditionError as exc:
         _audit(sk, OP_REQUEST_SERVER, "denied", exc.code)
         return _deny(400, exc.code, exc.message)
+    if ":" in name and not await asyncio.to_thread(_users_own_server, name):
+        _audit(sk, OP_REQUEST_SERVER, "denied", "app_server")
+        return _deny(
+            400,
+            "app_server",
+            f"{name} can't be added to an agent template: a name with ':' must be a server "
+            "the user's own MCP config declares, and an installed app's server is not",
+        )
     try:
         if transport is None:
             raise additions.AdditionError("entry_not_object")
@@ -598,6 +642,10 @@ async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
     if "entry" in body:
         entry = body["entry"]
         if masks_settings(entry):
+            if not isinstance(body["server"], str):
+                # The same answer ``add_addition`` gives a non-string name on the
+                # unmasked path; the config lookup below needs a string.
+                return _deny(400, "addition_refused", "server_invalid")
             # The card showed its env and header values masked; the values
             # recorded are this gateway's own, read now, never the body's.
             entry = await asyncio.to_thread(gateway_entry_behind, body["server"], entry)

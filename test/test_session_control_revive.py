@@ -276,6 +276,33 @@ def test_revive_may_not_refile_a_session_out_of_a_mate_home(tmp_path, monkeypatc
     assert key not in state._slots
 
 
+def test_a_refused_revive_filing_does_not_restore_a_folder_deleted_in_the_window(
+    tmp_path, monkeypatch
+):
+    """The rollback keeps the revived session's own folder only while it exists."""
+    state = _make_state(tmp_path)
+    _folder(state, "f0", "Home")
+    _folder(state, "f1", "Gamma")
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    peer.folder_id = "f0"
+    key = _archive(state, caller, peer)
+    refused: list[str] = []
+
+    async def _both_deleted(state_, folder_id, **_kw):
+        state_._folders[:] = []
+        refused.append(folder_id)
+        return False
+
+    monkeypatch.setattr(sc, "_unhide_folder", _both_deleted)
+
+    result = _revive(state, caller, key, folder_id="f1")
+
+    assert refused == ["f1"]
+    assert result["filed"] is False
+    assert state._slots[key].folder_id == ""
+
+
 def test_revive_without_a_folder_keeps_the_previous_placement(tmp_path):
     state = _make_state(tmp_path)
     _folder(state, "f1", "Gamma")
@@ -438,6 +465,45 @@ def test_fenced_caller_may_revive_only_what_it_created(tmp_path, monkeypatch):
     assert foreign_key not in state._slots
 
     assert _revive(state, caller, own_key, caller_fenced=True)["target"] == own_key
+
+
+def test_a_fenced_revive_across_workspaces_also_names_the_creator_fence(tmp_path):
+    """A workspace fix cannot clear the fence, so one refusal names both."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    key = _archived_with(state, caller, "chat-2", {"workspace": "other", "created_by": "chat-7"})
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key, caller_fenced=False)
+    assert exc.value.message == "target session belongs to a different workspace"
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key, caller_fenced=True)
+
+    assert exc.value.code == "workspace_mismatch"
+    assert exc.value.message == (
+        "target session belongs to a different workspace; "
+        "also, this session can only control sessions it created itself"
+    )
+    assert key not in state._slots
+
+
+def test_a_fenced_revive_of_a_live_session_across_workspaces_names_both_walls(tmp_path):
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    live = _slot(state, "chat-2", workspace="other")
+    live._created_by = "chat-7"
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, live.key, caller_fenced=False)
+    assert exc.value.message == "target session belongs to a different workspace"
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, live.key, caller_fenced=True)
+
+    assert exc.value.code == "workspace_mismatch"
+    assert "different workspace" in exc.value.message
+    assert "only control sessions it created itself" in exc.value.message
 
 
 def test_a_send_revive_keeps_the_fence_the_request_was_admitted_under(tmp_path, monkeypatch):
@@ -820,7 +886,13 @@ def test_revive_raises_every_target_side_code_authorize_target_raises():
         }
 
     assert target_side, "the regex found no refusal codes in authorize_target"
-    revive_codes = codes(sc.revive_session) | returned_codes(sc._archived_target_refusal)
+    # The archived predicate answers its ownership-fence half through
+    # ``_archived_fence_refusal``, so both are read.
+    revive_codes = (
+        codes(sc.revive_session)
+        | returned_codes(sc._archived_target_refusal)
+        | returned_codes(sc._archived_fence_refusal)
+    )
     assert target_side <= revive_codes, target_side - revive_codes
 
 

@@ -33,8 +33,8 @@ class TestTheParentIsToldTheServedModelIsUnverified:
     @pytest.mark.asyncio
     async def test_a_pinned_run_with_no_served_model_carries_the_note(self):
         (event,) = await self._deliver([self._info("a1", requested="gpt-6.1-sol", resolved="")])
-        assert "completed ✅" in event
-        assert f"⚠ Agent `a1` {_MARK}" in event
+        assert " completed\nTask:" in event
+        assert f"Warning: Agent `a1` {_MARK}" in event
 
     @pytest.mark.asyncio
     async def test_a_pinned_run_with_a_served_model_has_no_note(self):
@@ -65,7 +65,7 @@ class TestTheParentIsToldTheServedModelIsUnverified:
             ]
         )
         assert digest.count(_MARK) == 1
-        assert f"⚠ Agent `m0` {_MARK}" in digest
+        assert f"Warning: Agent `m0` {_MARK}" in digest
 
 
 class TestTheStatusToolsCarryIt:

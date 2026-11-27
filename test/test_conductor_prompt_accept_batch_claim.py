@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import work_ledger_helpers
+from skill_script_helpers import skill_text
 from work_ledger_helpers import CONDUCTOR, _new_item
 
 from kiro_crew import agent
@@ -36,7 +37,7 @@ def test_the_prompt_says_the_batch_leaves_a_placeholder_item_out() -> None:
 
 
 def test_the_skill_says_the_server_flags_the_omitted_item() -> None:
-    assert "acceptance_concrete: false" in GOAL_CONDUCTOR_SKILL.read_text(encoding="utf-8")
+    assert "acceptance_concrete: false" in skill_text(GOAL_CONDUCTOR_SKILL)
 
 
 def test_the_server_leaves_a_claimed_pr_with_a_placeholder_bar_out_of_the_batch() -> None:

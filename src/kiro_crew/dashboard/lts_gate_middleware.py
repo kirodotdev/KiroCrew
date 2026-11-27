@@ -86,6 +86,7 @@ ALLOWED_WHILE_CLOSED: dict[str, frozenset[str]] = {
     # dashboard session that refresh above could otherwise keep renewing.
     "/api/auth/logout": _POST,
     "/api/logout": _POST,
+    "/api/logout/link": _POST,
     # Local token mint the desktop app and CLI open the dashboard with; the
     # handler requires loopback plus the local secret.
     "/api/token/local": _GET,

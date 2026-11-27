@@ -9,6 +9,7 @@ import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
 from acp_client_helpers import _stop_stderr_drain  # noqa: F401 - re-exported
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp.client import (
     AcpClient,
@@ -1024,9 +1025,7 @@ class TestKasSummarizationFailureLogging:
 
     @staticmethod
     def _bare_handle():
-        from kiro_crew.acp.session_handle import AcpSessionHandle
-
-        handle = AcpSessionHandle.__new__(AcpSessionHandle)
+        handle = bare_session_handle(runtime=None)
         handle._compaction_failed_at = None
         handle.last_compaction_transient = False
         handle._session_id = "sess-test"

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import FolderSuggestionCard from '../pages/chat/FolderSuggestionCard'
@@ -126,7 +126,14 @@ describe('FolderSuggestionCard', () => {
     const { onAccept, onUndo, onDecline } = renderCard({ applied: true })
     // No question and no dropdown: the backend already filed it.
     expect(screen.queryByTestId('folder-suggestion-select')).toBeNull()
-    expect(screen.getByTestId('folder-suggestion-applied').title).toBe('projects › feature')
+    // The full path shows in the tip on focus, never in a native title.
+    const applied = screen.getByTestId('folder-suggestion-applied')
+    expect(applied).toHaveAttribute('title', '')
+    expect(applied).toHaveAttribute('tabindex', '0')
+    expect(applied).toHaveAccessibleDescription('projects › feature')
+    fireEvent.focus(applied)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('projects › feature')
+    fireEvent.blur(applied)
     await userEvent.click(screen.getByTestId('folder-suggestion-undo'))
     expect(onUndo).toHaveBeenCalledTimes(1)
     expect(onAccept).not.toHaveBeenCalled()

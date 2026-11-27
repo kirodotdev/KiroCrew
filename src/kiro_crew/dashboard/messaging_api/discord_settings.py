@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -75,6 +76,12 @@ async def _validate_discord_token(token: str) -> str | None:
 
 async def api_discord_config_get(request: web.Request) -> web.Response:
     """GET /api/discord/config — read Discord config + masked secret status."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "discord.config.read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_DISCORD_BOT_TOKEN,
         KiroCrewConfig,
@@ -89,6 +96,22 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
     token = creds.get(CRED_DISCORD_BOT_TOKEN, "") or cfg.discord.bot_token
     dc = cfg.discord
     state: DashboardState = request.app["state"]
+    # The bot's invite links, built from the application id READY gave the live
+    # client. Read off the transport the channel lifecycle keeps registered (it
+    # drops a closed or superseded start's, by identity), so the links name the
+    # running bot and none other. The id is remote input: build_install_url
+    # refuses anything but a snowflake. No secret in them.
+    from kiro_crew.discord.install_url import build_install_url
+
+    install_url = install_url_dm_only = ""
+    transport = (getattr(state, "channel_transports", None) or {}).get("discord")
+    app_id = str(getattr(getattr(transport, "client", None), "application_id", "") or "")
+    if app_id:
+        try:
+            install_url = build_install_url(app_id)
+            install_url_dm_only = build_install_url(app_id, dm_only=True)
+        except ValueError:
+            install_url = install_url_dm_only = ""
     return web.json_response(
         {
             # True only when the Gateway WebSocket transport actually started
@@ -110,8 +133,11 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
             "auto_thread": bool(dc.auto_thread),
             "reactions_enabled": bool(dc.reactions_enabled),
             "show_thinking": bool(dc.show_thinking),
+            "show_timing_footer": bool(dc.show_timing_footer),
             "soft_threshold_pct": int(dc.soft_threshold_pct),
             "session_folder": dc.session_folder,
+            "install_url": install_url,
+            "install_url_dm_only": install_url_dm_only,
         }
     )
 
@@ -119,9 +145,12 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
 async def api_discord_config_save(request: web.Request) -> web.Response:
     """PUT /api/discord/config — persist Discord secret (.env) + config (config.json).
 
-    Every Discord field is read once at gateway startup (token, enabled flag,
-    allowlist are consumed in the orchestrator's constructor), so any actual
-    change returns ``restart_required`` for the UI hint.
+    Every field applies without a gateway restart while the config watcher
+    runs: the allow-lists and render toggles live, a new token by reconnecting
+    the running client in place, the enable flag by restarting the channel.
+    ``restart_required`` says so, and ``reconnect_error`` carries what a
+    reconnect this save scheduled could not apply (a token Discord rejected,
+    server-thread intents it refused), never a token value.
 
     Serialized with every other config.json writer via the repository-wide
     ``_get_config_lock()`` (also used by the MCP, memory, and agent
@@ -136,7 +165,19 @@ async def api_discord_config_save(request: web.Request) -> web.Response:
         # A save is a config.json + credential transaction: a cancelled request
         # (client gone, gateway shutting down) must not abandon it between its
         # phases -- see ``run_to_completion``.
-        return await run_to_completion(_discord_config_save_locked(request))
+        resp = await run_to_completion(_discord_config_save_locked(request))
+    if resp.status != 200:
+        return resp
+    # Outside the config lock: a reconnect waits on Discord's handshake, and no
+    # other settings save should wait behind it.
+    from kiro_crew.discord.gateway import reconcile_for_save
+
+    error = await reconcile_for_save(request.app.get("state"))
+    if not error:
+        return resp
+    payload = json.loads(resp.body)  # type: ignore[arg-type]  # json_response holds bytes
+    payload["reconnect_error"] = error
+    return web.json_response(payload)
 
 
 async def _discord_config_save_locked(request: web.Request) -> web.Response:
@@ -311,16 +352,20 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
-    # Both render toggles are read per turn by the dispatcher, not at boot, so a
+    # The render toggles are read per turn by the dispatcher, not at boot, so a
     # change takes effect on the next message. `channel_restart_required` keeps
     # `restart_required` honest about that; promising a restart the user does not
     # need is how a settings page trains people to restart for everything.
-    for toggle in ("reactions_enabled", "show_thinking"):
+    # Each maps to its DiscordConfig default. A stored value compares as the
+    # loader reads it: absent or wrong-typed (a hand-edited null) is the default,
+    # so a save that differs from what GET showed is never dropped as unchanged.
+    render_toggles = {"reactions_enabled": True, "show_thinking": False, "show_timing_footer": True}
+    for toggle, default in render_toggles.items():
         if toggle in body:
             val = body.get(toggle)
             if not isinstance(val, bool):
                 return _deny(f"{toggle} must be a boolean")
-            if val != bool(dc_cfg.get(toggle, toggle == "reactions_enabled")):
+            if val != coerce_config_field(dc_cfg, toggle, bool, default):
                 staged[toggle] = val
                 applied.append(toggle)
 
@@ -423,9 +468,11 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
-    # The restart hint is answered from the schema: the token is hoisted from the
-    # environment at connect time, so a credential write still needs a restart;
-    # the config fields are applied by the watcher above.
+    # The restart hint is answered from the schema for the config fields. A
+    # token write is applied by the running config watcher too: it reconnects
+    # the live client with the new token (``discord.gateway.reconnect_discord``),
+    # or restarts the channel when the token is for another bot or was cleared.
+    # Only a gateway with no watcher running still needs a restart for it.
     # Answer only once the watcher has applied the write: a narrowed allow-list
     # is in force before the caller sees "saved", not one poll interval later.
     await _hot_apply_after_write()
@@ -433,8 +480,11 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         {
             "ok": True,
             "restart_required": channel_restart_required(
-                "discord", staged.keys(), env_updates=env_updates
+                "discord",
+                staged.keys(),
+                env_updates=None if live.watch().started else env_updates,
             ),
             "verify_warning": verify_warning,
+            "reconnect_error": "",
         }
     )

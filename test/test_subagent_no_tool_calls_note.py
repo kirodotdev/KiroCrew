@@ -244,7 +244,7 @@ class TestCompletionEventNote:
     async def test_a_lone_run_with_no_tool_call_carries_the_note_in_its_completion_event(self):
         (event,) = await self._deliver([self._info("a1", 0)])
         assert event.startswith("[Subagent completion event]")
-        assert event.rstrip().endswith(f"⚠ Agent `a1` {NO_TOOL_CALLS_NOTE}")
+        assert event.rstrip().endswith(f"Warning: Agent `a1` {NO_TOOL_CALLS_NOTE}")
 
     @pytest.mark.asyncio
     async def test_a_lone_run_that_called_tools_carries_no_note(self):
@@ -276,5 +276,5 @@ class TestCompletionEventNote:
         (digest,) = await self._deliver([self._info("m0", 0, **wave), self._info("m1", 2, **wave)])
         assert digest.startswith("[Subagent batch completion event]")
         assert digest.count(NO_TOOL_CALLS_NOTE) == 1
-        assert f"⚠ Agent `m0` {NO_TOOL_CALLS_NOTE}" in digest
+        assert f"Warning: Agent `m0` {NO_TOOL_CALLS_NOTE}" in digest
         assert "Agent `m1`" not in digest

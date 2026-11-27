@@ -364,6 +364,169 @@ async def test_confirm_installs_disabled_without_downloading_again(app_home: Pat
     assert _staged() == []
 
 
+def _with_account(app: web.Application, who: list[str]) -> web.Application:
+    async def _account() -> str:
+        return who[0]
+
+    app["market_account"] = _account
+    return app
+
+
+@pytest.mark.asyncio
+async def test_confirm_is_refused_when_the_account_changed_since_prepare(app_home: Path) -> None:
+    from kiro_crew.apps.manager import get_app
+
+    who = ["alice"]
+    async with TestClient(TestServer(_with_account(_make_app(_client()), who))) as http:
+        staging_id = (await _prepare(http))["stagingId"]
+        who[0] = "bob"
+        resp = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "market_account_changed"
+        again = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+        assert again.status == 404  # the staging is gone, not kept for a retry
+    assert get_app("ticket-digest") is None
+    assert _staged() == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_installs_when_the_account_is_the_same(app_home: Path) -> None:
+    async with TestClient(TestServer(_with_account(_make_app(_client()), ["alice"]))) as http:
+        staging_id = (await _prepare(http))["stagingId"]
+        resp = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+        assert resp.status == 201, await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_confirm_checks_account_and_store_while_holding_the_lifecycle_lock(
+    app_home: Path,
+) -> None:
+    """A sign-out while confirm waits for another install step must still refuse it."""
+    from kiro_crew.apps.manager import app_lifecycle_lock
+
+    held: list[tuple[str, bool]] = []
+
+    async def _account() -> str:
+        held.append(("account", app_lifecycle_lock("ticket-digest").locked()))
+        return "alice"
+
+    def _store() -> str:
+        held.append(("store", app_lifecycle_lock("ticket-digest").locked()))
+        return "store-a"
+
+    app = _make_app(_client())
+    app["market_account"] = _account
+    app["market_store"] = _store
+    async with TestClient(TestServer(app)) as http:
+        staging_id = (await _prepare(http, registry="store-a"))["stagingId"]
+        held.clear()
+        resp = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+        assert resp.status == 201, await resp.text()
+    assert held == [("store", True), ("account", True)]
+
+
+@pytest.mark.asyncio
+async def test_confirm_is_refused_when_no_account_is_known(app_home: Path) -> None:
+    """A status that names nobody, at prepare or at confirm, never confirms."""
+    for at_prepare, at_confirm in (("", ""), ("", "alice"), ("alice", "")):
+        who = [at_prepare]
+        async with TestClient(TestServer(_with_account(_make_app(_client()), who))) as http:
+            staging_id = (await _prepare(http))["stagingId"]
+            who[0] = at_confirm
+            resp = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+            assert resp.status == 409, (at_prepare, at_confirm)
+            assert (await resp.json())["code"] == "market_account_changed"
+    assert _staged() == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_store_status_answers_store_unavailable(app_home: Path) -> None:
+    """A status probe that fails is "store unavailable", never "account changed"."""
+    from kiro_crew.apps.manager import get_app
+    from kiro_crew.apps.marketplace_install import MarketInstallError
+
+    who = ["alice"]
+
+    async def _account() -> str:
+        if who[0] == "?":
+            raise MarketInstallError("market_unavailable", "Kiro Space could not be reached")
+        return who[0]
+
+    app = _make_app(_client())
+    app["market_account"] = _account
+    async with TestClient(TestServer(app)) as http:
+        staging_id = (await _prepare(http))["stagingId"]
+        who[0] = "?"
+        resp = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+        assert resp.status == 503
+        assert (await resp.json())["code"] == "market_unavailable"
+        again = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+        assert again.status == 404  # the staging is gone, as for any refused confirm
+        refused = await http.post(PREPARE, json={"ref": REF, "account": "alice"})
+        assert refused.status == 503
+        assert (await refused.json())["code"] == "market_unavailable"
+    assert get_app("ticket-digest") is None
+    assert _staged() == []
+
+
+@pytest.mark.asyncio
+async def test_prepare_is_refused_when_the_page_loaded_under_another_account(
+    app_home: Path,
+) -> None:
+    fake = _client()
+    async with TestClient(TestServer(_with_account(_make_app(fake), ["bob"]))) as http:
+        resp = await http.post(PREPARE, json={"ref": REF, "account": "alice"})
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "market_account_changed"
+        bad = await http.post(PREPARE, json={"ref": REF, "account": 7})
+        assert bad.status == 400
+        assert (await bad.json())["code"] == "market_account_invalid"
+        assert fake.calls == []  # nothing was fetched for a refused prepare
+        staging_id = (await _prepare(http, account="bob"))["stagingId"]
+        ok = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+        assert ok.status == 201, await ok.text()
+    assert _staged() == []
+
+
+def _with_store(app: web.Application, store: list[str]) -> web.Application:
+    app["market_store"] = lambda: store[0]
+    return app
+
+
+@pytest.mark.asyncio
+async def test_prepare_is_refused_when_the_page_shows_another_store(app_home: Path) -> None:
+    fake = _client()
+    async with TestClient(TestServer(_with_store(_make_app(fake), ["store-a"]))) as http:
+        resp = await http.post(PREPARE, json={"ref": REF, "registry": "store-b"})
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "market_registry_changed"
+        bad = await http.post(PREPARE, json={"ref": REF, "registry": 7})
+        assert bad.status == 400
+        assert (await bad.json())["code"] == "market_registry_invalid"
+        assert fake.calls == []  # nothing was fetched for a refused prepare
+        staging_id = (await _prepare(http, registry="store-a"))["stagingId"]
+        ok = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+        assert ok.status == 201, await ok.text()
+    assert _staged() == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_is_refused_when_the_store_changed_since_prepare(app_home: Path) -> None:
+    from kiro_crew.apps.manager import get_app
+
+    store = ["store-a"]
+    async with TestClient(TestServer(_with_store(_make_app(_client()), store))) as http:
+        staging_id = (await _prepare(http, registry="store-a"))["stagingId"]
+        store[0] = "store-b"
+        resp = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "market_registry_changed"
+        again = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
+        assert again.status == 404
+    assert get_app("ticket-digest") is None
+    assert _staged() == []
+
+
 @pytest.mark.asyncio
 async def test_confirm_is_single_use(app_home: Path) -> None:
     async with TestClient(TestServer(_make_app(_client()))) as http:

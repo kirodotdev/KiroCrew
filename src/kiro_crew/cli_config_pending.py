@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 from typing import NoReturn
 
@@ -49,23 +48,11 @@ def _list() -> None:
         else:
             print(f"{leaf} was changed outside Kiro Crew; the saved version stays in effect.")
             for row in entry["changes"]:
-                print(f"  {_row(row)}")
+                print(f"  {lp.change_line(row)}")
             if entry["truncated"]:
                 print("  (more changes not shown)")
             print(f"  Apply:   kirocrew config pending apply {leaf} {signature}")
         print(f"  Discard: kirocrew config pending discard {leaf} {signature}")
-
-
-def _row(row: dict) -> str:
-    """One changed key, JSON-quoted so a key or value the edit wrote cannot drive the terminal."""
-    line = f"{row['change']} {json.dumps('.'.join(row['path']))}"
-    if row.get("redacted"):
-        return f"{line} (value withheld)"
-    values = [json.dumps(row[side]) for side in ("before", "after") if side in row]
-    # The diff leaves out a side it cannot show; the other alone would misread the change.
-    if row["change"] == "changed" and len(values) < 2:
-        return line
-    return f"{line}: {' -> '.join(values)}" if values else line
 
 
 def _resolve(leaf: str, *, apply: bool, signature: str) -> None:
@@ -100,9 +87,9 @@ def _resolve(leaf: str, *, apply: bool, signature: str) -> None:
         _refuse(op, f"{leaf}=unwritable", f"{leaf} could not be written: {exc}", outcome="error")
     _audit(op, "ok", leaf)
     if not apply:
-        print(f"Done: Discarded the outside change to {leaf}; the saved version is back.")
+        print(f"✅ Discarded the outside change to {leaf}; the saved version is back.")
         return
-    print(f"Done: Applied the outside change to {leaf}.")
+    print(f"✅ Applied the outside change to {leaf}.")
     if restart:
         print("Restart the gateway for a running instance to pick it up.")
 
@@ -116,7 +103,7 @@ def _not_pending(leaf: str) -> str:
 
 def _refuse(op: str, resources: str, message: str, *, outcome: str = "denied") -> NoReturn:
     _audit(op, outcome, resources)
-    print(f"Error: {message}", file=sys.stderr)
+    print(f"❌ {message}", file=sys.stderr)
     sys.exit(1)
 
 

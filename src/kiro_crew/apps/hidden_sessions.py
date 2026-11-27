@@ -3,8 +3,9 @@
 A slot's ``mode`` is fixed when it is created, and the chat sidebar, the Sessions
 page and the recently-closed list show only plain (``""``) slots. An installed app
 that declares ``permissions.hiddenSessions: true`` may create a chat whose mode is
-its own app id: from its backend (an app-token request) or from its page (the
-owner's request naming the app as ``embed_app``). The Older-sessions list
+its own app id: from its backend (an app-token request, or
+``ctx.chat_slots.open(..., hidden=True)``) or from its page (the owner's request
+naming the app as ``embed_app``). The Older-sessions list
 (``GET /api/sessions?user_only=1``) leaves those chats out too while the app may
 hide them.
 

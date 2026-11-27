@@ -390,6 +390,25 @@ def _command_remediation(message: str, command: str) -> dict[str, str]:
     return {"kind": "command", "message": message, "command": command}
 
 
+#: Set to ``"1"`` by the test harness: its gateway imports the package from this
+#: checkout without being installed from it, so the checkout is no install root.
+NO_CHECKOUT_ROOT_ENV = "KIROCREW_UPDATE_NO_CHECKOUT_ROOT"
+
+
+def default_install_root() -> str:
+    """The root every update surface judges: the project dir, else the running checkout.
+
+    A gateway started outside its clone with no saved project dir has the
+    variable empty, and the checkout the package loads from is then the same
+    root ``kirocrew update`` resolves; a release install has none and stays ``""``.
+    :data:`NO_CHECKOUT_ROOT_ENV` withholds that fallback from a test-harness gateway.
+    """
+    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    if proj or os.environ.get(NO_CHECKOUT_ROOT_ENV) == "1":
+        return proj
+    return str(_source_checkout_root() or "")
+
+
 def derive_capability(
     *,
     install_root: str | None = None,
@@ -397,8 +416,8 @@ def derive_capability(
 ) -> UpdateCapability:
     """Derive the capability contract for this install.
 
-    *install_root* defaults to ``KIROCREW_PROJECT_DIR`` and *dist* to the value
-    stamped into the package tree at packaging time.
+    *install_root* defaults to :func:`default_install_root` and *dist* to the
+    value stamped into the package tree at packaging time.
 
     An externally managed stamp wins over a git working tree. A packaged app
     that happens to be pointed at a checkout is still updated by its own
@@ -412,7 +431,7 @@ def derive_capability(
     if dist is None:
         dist = distribution()
     if install_root is None:
-        install_root = os.environ.get("KIROCREW_PROJECT_DIR", "")
+        install_root = default_install_root()
 
     if dist in _ELECTRON_DISTRIBUTIONS:
         # ``can_apply`` answers for the process serving this contract, and that is
@@ -549,6 +568,16 @@ def bundled_by_desktop_app(dist: str | None = None) -> bool:
     return (baked_distribution() if dist is None else dist) in _ELECTRON_DISTRIBUTIONS
 
 
+def runs_in_container() -> bool:
+    """Is this gateway the one a container image ships?
+
+    The baked stamp again, like :func:`bundled_by_desktop_app`, and for the same
+    reason: ``managed_by`` reads ``command`` on a container too once a policy
+    provider owns updates, and is empty before the first check. No I/O.
+    """
+    return baked_distribution() in _CONTAINER_DISTRIBUTIONS
+
+
 def _installer_runs_here() -> bool:
     """The managed venv is cli.sh's, a POSIX install; the seam tests pin this."""
     return sys.platform != "win32"
@@ -601,19 +630,23 @@ def _wheel_route() -> tuple[str | None, str]:
     from kiro_crew.platform.update_layout import cdn_bases, cdn_bases_are_safe
     from kiro_crew.platform_compat import trusted_system_bin
 
+    # The pin first, as that preflight runs it: it refuses `kirocrew update` on
+    # every wheel install too, so no other reason may stand in for it.
+    if any(update_blocked_reason(base) for base in cdn_bases()):
+        return None, _SOURCE_PIN_REASON
     if not _installer_runs_here():
-        return None, "the managed venv is a POSIX install"
+        return None, "the install script's self-updating environment is macOS and Linux only"
     if not trusted_system_bin("openssl"):
         # The engine verifies the signed manifest with a trusted openssl and
         # refuses rather than fall back to a bare name, so a host with none
         # cannot install unattended at all.
         return None, "no trusted openssl outside PATH to verify the signed release"
     if not _runs_from_managed_venv():
-        return None, "only the managed venv updates itself unattended"
+        return None, (
+            "only the install script's own environment updates itself, not a pip or pipx install"
+        )
     if not cdn_bases_are_safe():
         return None, "the CDN base is not a safe HTTPS URL"
-    if any(update_blocked_reason(base) for base in cdn_bases()):
-        return None, _SOURCE_PIN_REASON
     return AUTO_ROUTE_WHEEL, ""
 
 
@@ -674,7 +707,7 @@ def auto_update_effect(
         return None
     else:
         if install_root is None:
-            install_root = os.environ.get("KIROCREW_PROJECT_DIR", "")
+            install_root = default_install_root()
         managed_by = derive_capability(install_root=install_root, dist=dist).managed_by
         if managed_by == MANAGED_BY_GIT:
             route, reason = _git_route(install_root)
@@ -743,4 +776,5 @@ __all__ = [
     "derive_capability",
     "is_git_worktree",
     "running_from_checkout",
+    "runs_in_container",
 ]

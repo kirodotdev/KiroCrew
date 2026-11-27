@@ -10,6 +10,9 @@ where the crew log says.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -178,6 +181,25 @@ def folded_skipped(board: str, item_id: str) -> int | None:
         return None
 
 
+#: The worker-owned fields a copy's digest covers (``remote_work_items_pull``).
+_DIGEST_FIELDS = ("status", "summary", "reason", "artifacts", "pr")
+
+
+def worker_digest(fields: Mapping[str, Any]) -> str:
+    """A short digest of a copy's worker-owned fields, for the batch cursor.
+
+    Two reports in one second with the same status and summary share a stamp and
+    an event id, so only this tells a changed reason, artifacts or pr apart. The
+    hub sends it over its own item; the peer compares it with its copy. A field
+    the hub stored redacted or cleaned digests differently, which only costs the
+    copy being sent again.
+    """
+    raw = json.dumps(
+        {name: fields.get(name) or None for name in _DIGEST_FIELDS}, sort_keys=True, default=str
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
 __all__ = [
     "CODE_FOLD_UNREADABLE",
     "FoldedPeer",
@@ -190,4 +212,5 @@ __all__ = [
     "report_events",
     "rolled",
     "whole_log",
+    "worker_digest",
 ]

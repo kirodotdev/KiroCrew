@@ -30,6 +30,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
 import { Btn, SendBtn } from '../../components/ui'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { useReturnInsertsNewline } from '../../hooks/useComposerSendMode'
 import { ApiError } from '../../api/apiError'
 import { threadQueryKey, threadsApi, threadsQueryKey, type ThreadReply } from '../../api/threads'
 import { fmtMessageTime } from '../chat/messageTime'
@@ -51,6 +52,12 @@ const mintReplyId = () => (globalThis.crypto?.randomUUID?.() ?? `${Date.now().to
 /** The user's bubble: the same surface as the crewmate's, every corner full —
  *  the user's messages never group (components/chat/crewmateBubbles). */
 const USER_BUBBLE = 'bg-card border border-border px-3.5 py-1.5 rounded-2xl max-w-[85%]'
+
+/** The crewmate's column beside its avatar: author line, then bubble. The
+ *  bubble spans the column it sits in, and this panel has no Content Width
+ *  clamp, so the column carries the thread's reading measure: 72ch at the
+ *  bubble's 13px. */
+const MATE_COLUMN = 'min-w-0 flex-1 flex flex-col items-start max-w-[72ch] text-[13px]'
 
 /** One small bubble. The crewmate's (`side="left"`) takes the main chat's
  *  corner rule for its place in the run; the user's is always a single. */
@@ -76,7 +83,7 @@ function AuthorLine({ name, ts, align }: { name: string; ts: string; align: 'lef
   )
 }
 
-function ReplyRow({ reply, pos, crewmateName, crewmateLabel, youLabel }: { reply: ThreadReply; pos: CrewmateRunPosition; crewmateName: string; crewmateLabel?: string; youLabel: string }) {
+function ReplyRow({ slot, reply, pos, crewmateName, crewmateLabel, youLabel }: { slot: string; reply: ThreadReply; pos: CrewmateRunPosition; crewmateName: string; crewmateLabel?: string; youLabel: string }) {
   if (reply.role === 'user') {
     return (
       <li className="flex flex-col items-end mt-3" data-testid="thread-reply" data-reply-from="user">
@@ -89,10 +96,10 @@ function ReplyRow({ reply, pos, crewmateName, crewmateLabel, youLabel }: { reply
   return (
     <li className={`flex gap-2 ${opens ? 'mt-3' : 'mt-1'}`} data-testid="thread-reply" data-reply-from="assistant" data-thread-run={pos}>
       <div className="shrink-0" style={{ width: AVATAR_PX }}>{opens && <CrewAvatar seed={crewmateName} size={AVATAR_PX} />}</div>
-      <div className="min-w-0 flex-1 flex flex-col items-start">
+      <div className={MATE_COLUMN}>
         {opens && <AuthorLine name={crewmateLabel || crewmateName} ts={reply.ts} align="left" />}
         <Bubble pos={pos} side="left">
-          <MessageErrorBoundary rawContent={reply.content}><MarkdownRenderer content={reply.content} softBreaks blockedLinks={reply.link_blocks} /></MessageErrorBoundary>
+          <MessageErrorBoundary rawContent={reply.content}><MarkdownRenderer content={reply.content} softBreaks blockedLinks={reply.link_blocks} redactions={reply.redactions} redactionSlot={slot} /></MessageErrorBoundary>
         </Bubble>
       </div>
     </li>
@@ -126,6 +133,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
     threadDrafts.set(slot, mid, text)
   }, [slot, mid])
   const ime = useImeGuard()
+  const returnInsertsNewline = useReturnInsertsNewline()
   const rootRef = useRef<HTMLDivElement>(null)
   const scrollerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -157,6 +165,17 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
       void qc.invalidateQueries({ queryKey: threadsQueryKey(slot) })
     },
   })
+
+  // The thread serves this gateway's own slot, so its bubbles draw lock tags and
+  // the Blocked link card's Allow on that slot. An Allow or Undo there changes
+  // how the gateway serves the thread's links, so read it again.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if ((e as CustomEvent).detail?.slot === slot) void qc.invalidateQueries({ queryKey: threadQueryKey(slot, mid) })
+    }
+    window.addEventListener('mc:redaction-hosts-changed', handler)
+    return () => window.removeEventListener('mc:redaction-hosts-changed', handler)
+  }, [qc, slot, mid])
 
   const storedReplies = detail.data?.replies
   const replies = useMemo(() => storedReplies ?? [], [storedReplies])
@@ -304,10 +323,10 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
           ) : (
             <div className="flex gap-2" data-testid="thread-parent">
               <div className="shrink-0" style={{ width: AVATAR_PX }}><CrewAvatar seed={crewmateName} size={AVATAR_PX} /></div>
-              <div className="min-w-0 flex-1 flex flex-col items-start">
+              <div className={MATE_COLUMN}>
                 <AuthorLine name={crewmateLabel || crewmateName} ts={parent.ts} align="left" />
                 <Bubble side="left" testId="thread-parent-bubble">
-                  <MessageErrorBoundary rawContent={parent.content}><MarkdownRenderer content={parent.content} softBreaks blockedLinks={parent.link_blocks} /></MessageErrorBoundary>
+                  <MessageErrorBoundary rawContent={parent.content}><MarkdownRenderer content={parent.content} softBreaks blockedLinks={parent.link_blocks} redactions={parent.redactions} redactionSlot={slot} /></MessageErrorBoundary>
                 </Bubble>
               </div>
             </div>
@@ -325,14 +344,14 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
         )}
         <ul className="list-none m-0 p-0" data-testid="thread-replies">
           {replies.map((r, i) => (
-            <ReplyRow key={r.id} reply={r} pos={positions[i] ?? 'single'} crewmateName={crewmateName} crewmateLabel={crewmateLabel} youLabel={youLabel} />
+            <ReplyRow key={r.id} slot={slot} reply={r} pos={positions[i] ?? 'single'} crewmateName={crewmateName} crewmateLabel={crewmateLabel} youLabel={youLabel} />
           ))}
           {live && !live.error && (
             // The reply as it streams in: one crewmate bubble that grows, then
             // gives way to the stored row the terminal frame refetches.
             <li className="flex gap-2 mt-3" data-testid="thread-reply-live" aria-live="polite">
               <div className="shrink-0" style={{ width: AVATAR_PX }}><CrewAvatar seed={crewmateName} size={AVATAR_PX} working="subtle" /></div>
-              <div className="min-w-0 flex-1 flex flex-col items-start">
+              <div className={MATE_COLUMN}>
                 <AuthorLine name={crewmateLabel || crewmateName} ts="" align="left" />
                 <Bubble side="left">
                   <MessageErrorBoundary rawContent={live.text}><MarkdownRenderer content={live.text} streaming softBreaks /></MessageErrorBoundary>
@@ -380,7 +399,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
             onChange={(e) => setDraft(e.target.value)}
             {...ime.bindComposition()}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) submit() }
+              if (e.key === 'Enter' && !e.shiftKey && !returnInsertsNewline) { if (ime.claimEnter(e)) submit() }
             }}
             className={/* focus-cue-ok: the cue is the composer card's focus-within border-accent, the same cue the main composer shell paints; a second ring on the textarea would double-paint one control. */ 'flex-1 min-w-0 resize-none bg-transparent text-[13px] leading-6 text-card-fg outline-hidden placeholder:text-muted'}
             placeholder={t(unreadable ? 'pages.chat.thread.reply_after_retry' : 'pages.chat.thread.reply_placeholder')}

@@ -17,6 +17,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from kiro_crew import pinned_fs
 from kiro_crew.config.loader import config_path
 from kiro_crew.context import ContextBuilder, _neutralize_structural_markers
 from kiro_crew.hooks import ContextRule, HookManager, HooksConfig
@@ -1003,6 +1004,62 @@ class TestContextBuilder:
         msg_full, _ = builder.build_message("hello", is_new_session=True, resumed=False)
         assert "lobsters" in msg_full
         assert "[SESSION RESUMED" not in msg_full
+
+    def _resume_builder(self, tmp_path):
+        from kiro_crew.learn import Lesson
+
+        lessons = LessonStore(base_dir=tmp_path)
+        lessons.save(
+            Lesson(
+                ts="2026-01-01T00:00:00Z",
+                rule="always end replies with the word ZEBRAFINCH",
+                category="knowledge",
+            )
+        )
+        return ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=lessons,
+        )
+
+    def test_resumed_session_re_sends_lessons(self, tmp_path):
+        """A compacted restored transcript may have lost the standing lessons,
+        so a slim resume re-sends them, as it re-sends the critical rules."""
+        msg, _ = self._resume_builder(tmp_path).build_message(
+            "hello", is_new_session=True, resumed=True, session_key="dashboard:s1"
+        )
+        assert "[SESSION RESUMED" in msg
+        assert "ZEBRAFINCH" in msg, "standing lessons must be re-sent on resume"
+        assert "lessons, skills) was injected" not in msg
+
+    @pytest.mark.skipif(
+        not pinned_fs.supports_pinned_tree_walk(),
+        reason="steering_dirs are refused where a directory cannot be opened relative to a descriptor",
+    )
+    def test_resumed_session_re_sends_folder_steering(self, tmp_path):
+        """A slim resume re-sends the folder steering, except to a scope that
+        withheld the project group."""
+        steer = tmp_path / "folder-steer"
+        steer.mkdir()
+        (steer / "rules.md").write_text("Folder rule: say OSPREYMARK first.\n")
+        builder = self._resume_builder(tmp_path)
+        msg, _ = builder.build_message(
+            "hello",
+            is_new_session=True,
+            resumed=True,
+            session_key="dashboard:s1",
+            steering_dirs=(str(steer),),
+        )
+        assert "OSPREYMARK" in msg, "folder steering must be re-sent on resume"
+        scoped, _ = builder.build_message(
+            "hello",
+            is_new_session=True,
+            resumed=True,
+            session_key="dashboard:s2",
+            steering_dirs=(str(steer),),
+            context_groups=frozenset({"lessons"}),
+        )
+        assert "OSPREYMARK" not in scoped
 
     def test_build_message_injects_folder_breadcrumb(self, tmp_path):
         builder = ContextBuilder(

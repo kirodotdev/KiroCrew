@@ -12,7 +12,9 @@ import { Download, X, Copy, Check } from 'lucide-react'
 
 import { api, ApiError } from '../api/client'
 import { WorkConfirmDeclined } from '../utils/workInFlight'
-import { useAppSelector } from '../store'
+import { useAppSelector, useAppStore } from '../store'
+import { sseStatus } from '../store/dashboardSlice'
+import type { StatusData } from '../types'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { updateAffordance } from '../utils/updateAffordance'
@@ -48,6 +50,11 @@ import { reportForError } from '../utils/errorReport'
  * Download consent stays with the user in every path: nothing downloads or
  * installs from merely showing this modal.
  */
+
+/** How long the primary button ignores clicks after an arm made here turns it
+ *  into "Restart to update", so the second click of a double click on "Update
+ *  when I restart" cannot restart the gateway. */
+const RESTART_GUARD_MS = 1_000
 
 function getUpdateApi(): UpdateAPI | undefined {
   return window.updateAPI
@@ -304,6 +311,10 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   const attemptRef = useRef(false)
   const [attemptActive, setAttemptActive] = useState(false)
   const sawLiveStepRef = useRef(false)
+  // Set by a click on "Update when I restart"; read by the restart guard below.
+  const armClickedRef = useRef(false)
+  // The status the store held when the arm was clicked; read when the arm answers.
+  const statusAtClickRef = useRef<StatusData | null>(null)
   const beginAttempt = () => {
     attemptRef.current = true
     sawLiveStepRef.current = false
@@ -315,6 +326,8 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
     setRestarting(false)
   }
 
+  // Read at the moment a Restart request fails, not from this render's closure.
+  const appStore = useAppStore()
   const gwApply = useMutation({
     // Update ARMS the update for the next start and restarts nothing; Restart goes
     // through the client's one work-in-flight confirmation (`api/client/updates.ts`).
@@ -325,22 +338,46 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
     // The attempt may already have ended on a terminal step that beat the
     // answer here; re-raising the restarting latch then would hide the
     // failure that just rendered. An armed update has nothing more to wait for.
-    onSuccess: (_data, kind) => {
-      if (kind === 'arm') endAttempt()
-      else if (attemptRef.current) setRestarting(true)
+    onSuccess: (data, kind) => {
+      if (kind === 'arm') {
+        endAttempt()
+        // The restart guard below engages even when a status push already
+        // reported the arm while the request was in flight: the answer can still
+        // land between the two clicks of a double click.
+        // The gateway writes the arm before it answers 202 {armed, version}, so
+        // record that answer in the status store now instead of waiting for the
+        // next status push (up to 5 s later). The store stays the one source of
+        // truth, and the next push overwrites it as usual. Only when no frame
+        // has replaced the status since the click: a frame that did is newer
+        // than this answer (it may already show the arm, or its cancel).
+        const answer = data as { armed?: boolean; version?: string } | undefined
+        const current = appStore.getState().dashboard.status
+        if (answer?.armed === true && answer.version && current && current === statusAtClickRef.current) {
+          appStore.dispatch(sseStatus({ ...current, update_armed_version: answer.version }))
+        }
+      } else if (attemptRef.current) setRestarting(true)
     },
     onError: (e: unknown, kind) => {
+      if (kind === 'arm') armClickedRef.current = false
       // The person declined the "work is running" confirmation: a quiet cancel.
       if (e instanceof WorkConfirmDeclined) {
         endAttempt()
         return
       }
       // A bare network failure is the gateway restarting out from under the
-      // POST (the success path) only for a Restart request. Arming restarts
+      // POST (the success path) only for a Restart request, and only once the
+      // dashboard socket has dropped too: the gateway answers the Restart
+      // before it restarts, so a failed request with the socket still connected
+      // means the gateway is up and no restart is coming. Arming restarts
       // nothing, so there a transport failure is a plain failure to surface;
       // a server rejection (ApiError) means no worker ran. Either way the
       // attempt is over, so Dismiss and retry come back.
-      if (e instanceof ApiError || kind === 'arm') {
+      // shortcut: a restart started elsewhere (another tab, Settings, the CLI)
+      // can exec while this request is in flight, and its rejection can land
+      // before the socket's close; the popup then shows "Update failed" during
+      // a real restart until the reconnect reloads this tab. Upgrade to a
+      // bounded re-check on the next disconnect if that window shows up.
+      if (e instanceof ApiError || kind === 'arm' || appStore.getState().dashboard.connected) {
         endAttempt()
         setApplyError(
           (e instanceof ApiError && e.message) || i18nT('components.updateFoundModal.update_failed'),
@@ -350,6 +387,24 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
       }
     },
   })
+
+  // When the primary button turns into "Restart to update" after an arm
+  // clicked here was answered, it ignores clicks for RESTART_GUARD_MS: the
+  // same button now restarts the gateway, and the second click of a double
+  // click on "Update when I restart" must not do that. A layout effect, so the
+  // button is never painted enabled in between.
+  const primaryIsRestart = candidate?.source === 'gateway' && candidate.affordance === 'restart'
+  const [restartGuard, setRestartGuard] = useState(false)
+  useLayoutEffect(() => {
+    if (!armClickedRef.current || gwApply.isPending || !primaryIsRestart) return
+    armClickedRef.current = false
+    setRestartGuard(true)
+  }, [primaryIsRestart, gwApply.isPending])
+  useEffect(() => {
+    if (!restartGuard) return
+    const t = setTimeout(() => setRestartGuard(false), RESTART_GUARD_MS)
+    return () => clearTimeout(t)
+  }, [restartGuard])
 
   // Take the armed update back: the next start applies nothing.
   const gwCancelArm = useMutation({ mutationFn: () => api.disarmUpdate() })
@@ -468,6 +523,8 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
     } else if (candidate.affordance === 'apply' || candidate.affordance === 'restart') {
       setApplyError('')
       beginAttempt()
+      armClickedRef.current = candidate.affordance === 'apply'
+      statusAtClickRef.current = appStore.getState().dashboard.status
       gwApply.mutate(candidate.affordance === 'restart' ? 'restart' : 'arm')
     }
   }
@@ -707,7 +764,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
                 type="button"
                 className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-50"
                 onClick={primary}
-                disabled={gwApply.isPending || restarting}
+                disabled={gwApply.isPending || restarting || (restartGuard && primaryIsRestart)}
               >
                 {candidate.source === 'desktop'
                   ? i18nT('components.updateFoundModal.download')

@@ -29,6 +29,18 @@ export const isWinElectron = isElectron && mc?.platform === 'win32'
 export const isLinuxFramelessElectron = isElectron && mc?.platform === 'linux' && !!mc?.linuxFrameless
 
 /**
+ * True when the INSTALLED shell serves the in-app application menu on a
+ * frameless Linux window. Separate from `isLinuxFramelessElectron`, which
+ * answers a different question: that flag describes the window (no frame, so
+ * reserve header space), this one describes the shell (its main process
+ * answers the menu's two seams). An older shell reports the first and not the
+ * second, so gating the menu on the window alone paints a trigger whose popups
+ * open empty. Absent on any shell older than the feature — see
+ * electron/preload.js.
+ */
+export const shellServesLinuxAppMenu = isElectron && !!mc?.linuxAppMenu
+
+/**
  * Width reserved on the right of the header for the injected Linux caption
  * controls (three 36px buttons — see #electron-linux-controls in
  * electron/main.js). Mirrors WIN_CAPTION_OVERLAY_WIDTH below; keep in sync
@@ -199,6 +211,26 @@ export async function pickFolderNatively(): Promise<NativeFolderPick> {
     return { status: 'failed' }
   }
 }
+
+/** How handing Connect with WakaTime to the system browser ended. */
+export type WakaTimeBrowserHandoff = 'opened' | 'unavailable' | 'failed'
+
+/**
+ * Hand Connect with WakaTime to the system browser, opening this dashboard's
+ * WakaTime panel there. Resolves 'opened' when the shell opened it,
+ * 'unavailable' with no bridge (a plain browser, the PWA, a remote-crew
+ * window), and 'failed' when the shell answers false or refuses; never throws.
+ */
+export async function openWakaTimeInBrowser(): Promise<WakaTimeBrowserHandoff> {
+  const api = window.wakatimeConnectAPI
+  if (typeof api?.openInBrowser !== 'function') return 'unavailable'
+  try {
+    return (await api.openInBrowser()) === true ? 'opened' : 'failed'
+  } catch {
+    return 'failed'
+  }
+}
+
 /**
  * Width reserved on the right for the Windows titleBarOverlay caption buttons
  * (minimize/maximize/close). The overlay is 138px wide at default DPI on

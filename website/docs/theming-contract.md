@@ -30,7 +30,7 @@ with the theme CSS custom properties or Tailwind classes mapped to them,
 <div className="bg-[var(--card)] text-[var(--card-fg)]" />
 ```
 
-The 60 CSS variables are the single source of truth for color. They are the
+The 61 CSS variables are the single source of truth for color. They are the
 customization surface a theme (built-in, custom, or installed) can set.
 
 **Fills are flat.** The brand system is flat: a new decorative gradient fill
@@ -42,7 +42,7 @@ bands under every social platform's re-encode. Functional gradients are not
 fills and are fine: `mask-image` scroll-edge fades, loading shimmer, and the
 streaming glow. So are the shipped gradient mechanisms — the appstore gradient
 art in `components/appstore/gradient.ts` (which reads as content, not chrome)
-and the session `'gradient'` color mode. So is the **crew gradient** (`.crew-grad`, `--aim` to `--info`) on conductor mode's own surfaces -- the CONDUCTOR MODE session row, the conductor mode filter chip, the composer chip, the Crew panel's crew cards -- which the maintainer decision `docs/decisions/2026-10-28-the-crew-gradient-marks-crew-mode-surfaces.md` admits as the one mark of a chat run by a crew; it is not a style for anything else. The UX review lane
+and the session `'gradient'` color mode. So is what remains of the **crew gradient** that the maintainer decision `docs/decisions/2026-10-28-the-crew-gradient-marks-crew-mode-surfaces.md` admits as the one mark of a chat run by a crew: a purple-to-blue (`--aim` to `--info`) TEXT gradient on conductor mode's welcome title (`.conductor-mode-title-text`) and on the pressed composer chip's label, plus the transient turn-on effect (`ConductorModeEffect`), all in `src/styles/crew-mode.css`. Conductor mode's fills are flat: the ghost badge (`.crew-grad`) is a solid `--aim` disc and the current crew card (`.crew-card`) a flat `--aim` tint. The gradient is not a style for anything else. The UX review lane
 (`.github/workflows/ux-review.yml` and its fork variant) applies this rule.
 Theme blocks in `src/styles/design-tokens.css` and `src/styles/theme-palettes.css` also set a few non-color properties that are
 deliberately NOT on the allowlist: the font tokens (`--font-body`, `--mono`)
@@ -90,7 +90,8 @@ the page is not a hover at all in this theme; hover states use `bg-bg-hover`.
 **Polarity-fixed variables are not roles.** A few `src/styles/liquid-glass.css` variables are read
 from `data-mode` (the polarity `useTheme` paints), not from the theme, and a pack
 cannot override them: `--glass-tint`, `--glass-band` (and its plain base
-`--glass-band-plain`),
+`--glass-band-plain`, the one glass token a pack MAY set in `variables.json`: its
+default stays polarity-fixed, and every other glass token stays pack-proof),
 `--glass-edge` and `--glass-hairline` — the fill, the top/bottom light bands, the
 side-line / in-pane-divider hairline, and the half-pixel dark sliver outside each
 lit band (none has a focus form: a pane looks the same whether or not a control
@@ -133,6 +134,9 @@ parity (a parity test guards drift), then define it in **every** built-in theme:
 - Frontend: `ALLOWED_CSS_VARS` in `src/hooks/themeCss.ts`
 - Backend: `_THEME_CSS_VARS_SET` (built from `_THEME_CSS_VARS`) in
   `src/kiro_crew/dashboard/theme_validate.py`
+
+`--glass-band-plain` is allowlisted but its default comes from `liquid-glass.css`'s
+two polarity lines, not from per-theme blocks.
 
 Never introduce a one-off literal instead of a variable.
 
@@ -202,11 +206,11 @@ about MCP apps. Do not copy the three-dep spelling into a new site.
 
 **Where each wash comes from is not symmetric, and follows the dashboard.**
 `--ok-subtle`, `--warn-subtle` and `--danger-subtle` are stored per theme and are
-read directly. `--info` has no stored companion in the 60 — `bg-info-subtle` is
+read directly. `--info` has no stored companion in the 61 — `bg-info-subtle` is
 derived in `src/tailwind-theme.css` as
 `color-mix(in srgb, var(--info) 12%, transparent)` — so `COLOR_TOKEN_MAP` derives
 `--color-background-info` the same way, from `INFO_WASH` of the resolved
-`--info`, rather than adding a 57th variable to the customization surface. One
+`--info`, rather than adding a 62nd variable to the customization surface. One
 wash, one definition: an app's info fill and the dashboard's own
 `bg-info-subtle` surfaces cannot drift into two visibly different washes of one
 hue, and `mcpAppTheme.test.ts` parses `src/tailwind-theme.css` to keep the two
@@ -219,7 +223,7 @@ cannot shrink.
 
 | Tier | Surface |
 |---|---|
-| **L0 Color** | the 60 CSS vars (dark + light) |
+| **L0 Color** | the 61 CSS vars (dark + light) |
 | **L1 Brand** | logo, favicon, welcome image, desktop splash art, wordmark, botName, fonts, code scheme, scoped `overrides.css` |
 | **L2 Experience** | sandboxed overlays, topbar, audio, persona |
 
@@ -231,7 +235,7 @@ allowlist.
 shell's own stacking context, strictly below the top bar (`OVERLAY_Z_MAX` in
 `src/lib/themeDecorLayer.ts`, derived from the header's z-indexes), whatever
 `zIndex` the manifest asks for — so a `fullscreen` overlay decorates the chat
-surface but never paints over the header's controls (#7377). The `topbar` asset
+surface but never paints over the header's controls. The `topbar` asset
 is the opposite by design: it is branding laid OVER the header strip and stays
 above it. The `body::before` / `body::after` idiom in `overrides.css` is not
 covered by this rule: it paints at the document root and therefore over the
@@ -547,6 +551,57 @@ the shell has rendered does not take effect until the next theme switch.
 Authoring a compiled (edition) theme end to end — CSS specificity against the
 core palette, module resolution, typechecking — is covered in
 [extension-seams § Authoring an edition](extension-seams.md#authoring-an-edition-the-build-pitfalls).
+
+## Adopted apps' utilities
+
+A former built-in that installs from its own repository
+([app-kit-platform § 33](../../docs/system-specs/modules/app-kit-platform.md#33-former-built-in-adoption))
+ships a UI bundle with no stylesheet. Its Tailwind classes resolve against this
+dashboard's compiled sheet, and that sheet holds only the utilities `src/index.css`
+finds in its `@source` scan of `src/`. While core still carries the app's wheel
+copy under `src/apps/<name>/`, the copy is what keeps those utilities compiled.
+Deleting it would drop every one that nothing else in core uses, and the adopted
+app would render unstyled on every host, including a host that runs a pin no
+later release can replace.
+
+`src/tailwind-adopted-app-classes.css` is the seam that keeps them. Each line is
+one `@source inline("<class>");`, and `index.css` imports the file in its
+Tailwind header, so the sheet emits every listed class whether or not any file
+under `src/` uses it. The file is generated: `npm run gen:adopted-app-classes`
+(`scripts/gen-adopted-app-classes.mjs`, networked) reads every row of
+`src/kiro_crew/apps/adoption-pins.json` and scans
+
+- the pinned tree's `ui/src/`, read out of the row's codeload archive once its
+  SHA-256 matches `archiveSha256`. This is the source of the bundle a host runs,
+  so it still answers after the copy is gone, and it covers an app whose copy
+  never lived under `src/apps/<name>/`;
+- the wheel copy under `src/apps/<name>/`, while one exists.
+
+Test files are skipped in both, and a candidate is kept only when Tailwind emits
+a rule for it, asked through the phantom-classes gate's oracle
+(`emittedClasses` in `scripts/check-phantom-classes.mjs`). Core names no app
+here: the pin table is the only input.
+
+- **Append-only.** A class stays once it is listed, even when no scan finds it
+  any more: the copy it came from may be gone, and a host may still run the pin
+  that uses it. The generator never removes a line; never remove one by hand.
+- **Regenerate when the pin table changes.** The file records the pin commits it
+  was generated against, so a pin PR runs `npm run gen:adopted-app-classes` and
+  commits the result.
+- **What it costs.** The sheet grows only by the listed classes nothing else in
+  `src/` uses; every other line compiles to a rule the sheet already holds.
+
+`src/test/adoptedAppClassSafelist.test.ts` fails when a pinned app's wheel copy
+uses a utility the list lacks, when the list drops a class the base branch held
+(read through `I18N_BASE_REF`, which the unit-test job sets), when the recorded
+commits differ from the pin table, when a listed class stops emitting a rule
+(a Tailwind upgrade that drops a utility an adopted bundle uses), or when
+`index.css` stops importing the file.
+
+Out of scope: CSS that is not a Tailwind utility, such as a stylesheet an app
+imports itself or a plain class a core partial defines. The long-term path for an
+adopted app's styling is a stylesheet the app ships with its bundle; this list
+keeps the existing pins styled until then.
 
 ## Checkers
 

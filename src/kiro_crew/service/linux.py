@@ -29,7 +29,7 @@ report on, because a health command that sees only the system unit reports a
 running user-scope gateway as ``inactive (dead)``.
 
 Sudo scope: this file escalates ``systemctl``, ``install``, ``mkdir``,
-``rm``, ``rmdir`` and ``test`` directly, and lends its privileged helpers
+``rm``, ``rmdir``, ``test`` and ``loginctl`` directly, and lends its privileged helpers
 to ``service/apparmor.py``, which adds ``apparmor_parser``, ``aa-exec``,
 and — inside ``aa-exec`` — ``setpriv`` plus a trusted system ``python3``.
 
@@ -467,8 +467,9 @@ def status() -> str:
     loaded unit of ours that lags this build's unit gets one more line under its
     headline per lag, naming it and the command that fixes it
     (:func:`_stale_unit_lines`): a ``RestartPreventExitStatus`` that does not name
-    :data:`LIVE_HOLDER_EXIT_CODE`, or a start-rate cap other than the unit's;
-    and one advisory line for a ``Restart=`` other than ``always``
+    :data:`LIVE_HOLDER_EXIT_CODE`, a start-rate cap other than the unit's, or
+    an ``ExecStart`` in the installer's venv after an update moved the stable
+    link; and one advisory line for a ``Restart=`` other than ``always``
     (:func:`_restart_policy_line`); nothing is rewritten.
 
     Status is queryable without sudo. We avoid sudo here so
@@ -479,10 +480,10 @@ def status() -> str:
     for user in (False, True):
         state = _unit_state(user=user)
         lines = [state.headline()]
-        lines += [f"  ⚠️  {line}" for line in _stale_unit_lines(state)]
+        lines += [f"  Warning: {line}" for line in _stale_unit_lines(state)]
         restart_line = _restart_policy_line(state)
         if restart_line:
-            lines.append(f"  ⚠️  {restart_line}")
+            lines.append(f"  Warning: {restart_line}")
         if state.installed:
             res = _systemctl(
                 "status", f"{SERVICE_NAME}.service", "--no-pager", sudo=False, user=user
@@ -528,7 +529,8 @@ def restart_policy_notes() -> list[str]:
 #
 #   ``linux_unit`` -- The unit and overrides paths, the service account, and render_unit.
 #   ``linux_systemctl`` -- Escalation, systemctl in either scope, one scope's unit state.
-#   ``linux_install`` -- service install: privileged writes, the SELinux refusal, AppArmor.
+#   ``linux_install`` -- service install: privileged writes, the SELinux refusal, AppArmor,
+#     linger.
 #   ``linux_uninstall`` -- service uninstall: which unit is ours, and its scope teardown.
 #
 # This module keeps the verbs that read and drive an installed unit: the user-scope
@@ -560,6 +562,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sudo_run_checked,
         _user_scope_remedy,
         _write_unit_via_sudo,
+        enable_service_account_linger,
         install,
         install_apparmor_profile,
         install_launcher_profile,
@@ -575,6 +578,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _UNIT_INTERVAL_SHOWN,
         _UP_STATES,
         ServiceInstallError,
+        _exec_start_line,
         _loaded_property,
         _loaded_restart_prevent,
         _loaded_start_limit,
@@ -651,6 +655,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.service.common import (  # noqa: F401
         kirocrew_bin,
+        service_attach_path,
         service_environment,
         systemctl_user_env,
         systemd_quote,

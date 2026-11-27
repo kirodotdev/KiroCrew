@@ -54,6 +54,7 @@ from kiro_crew.constants import (
     STEER_NOTICE_BOUND_SECS,
     TOOL_APPROVAL_TIMEOUT,
 )
+from kiro_crew.dashboard import chat_utils
 from kiro_crew.dashboard import turn_dispatch as td
 from kiro_crew.dashboard.state import REFUSAL_RECOVERY_PREFIX
 from kiro_crew.hook_runtime.script_hooks import ScriptHookResult
@@ -436,6 +437,8 @@ _DONE = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
 #: earlier default is adopted back to the current one), short enough that a
 #: prompt arming late in it has less than the configured window left.
 _CEILING = 3600
+#: ``chat_utils.HOST_DECLINE_CAUSE_META_KEY``'s value, pinned below.
+HOST_DECLINE_CAUSE_KEY = "host_decline_cause"
 
 
 def _prompt_turn(*before: Any, answers: dict[str, str] | None = None) -> TurnScript:
@@ -559,6 +562,35 @@ class TestTheRunnersApprovalWindow:
         assert record.notify_approval_stalled == []
         [steer] = _steers(record)
         assert "the turn had no budget left to host its approval prompt" in steer
+
+    def test_the_decline_cause_key_is_the_wire_literal_the_dashboard_reads(self) -> None:
+        # turnPolicyBlock.ts mirrors this literal; read off the module so the
+        # behaviour tests below fail on their assertions, not at import.
+        assert getattr(chat_utils, "HOST_DECLINE_CAUSE_META_KEY", None) == HOST_DECLINE_CAUSE_KEY
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("before", "cause"),
+        [((), DENY_CAUSE_APPROVAL_TIMEOUT), ((Wait(_CEILING - 5),), DENY_CAUSE_APPROVAL_NO_BUDGET)],
+        ids=["timeout", "no-budget"],
+    )
+    async def test_the_decline_card_carries_the_hosts_cause(
+        self, before: tuple[Any, ...], cause: str
+    ) -> None:
+        # The dashboard reads this to keep the reply's "Steered" chip off a turn
+        # the person did not steer: the host's own notice was steered into it.
+        record = await run_turn(
+            _prompt_turn(*before), config={"agent": {"chat_turn_timeout_secs": _CEILING}}
+        )
+        [card] = record.rows("error")
+        assert (card.get("meta") or {}).get(HOST_DECLINE_CAUSE_KEY) == cause
+
+    @pytest.mark.asyncio
+    async def test_an_answered_prompt_leaves_no_decline_cause(self) -> None:
+        record = await run_turn(_prompt_turn(answers={"req-1": APPROVED}))
+        assert not [
+            row for row in record.history_rows if HOST_DECLINE_CAUSE_KEY in (row.get("meta") or {})
+        ]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

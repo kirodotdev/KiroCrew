@@ -482,6 +482,28 @@ def test_worktree_run_git_scan_failure_reads_as_git_failure(repo: Path, monkeypa
     assert proc.returncode != 0 and "hook" in proc.stderr
 
 
+def test_code_channel_capped_git_carries_the_disable(
+    repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """The code channel's capped diff reader binds the scan itself, not through `_run_git`."""
+    from kiro_crew.slack.code_channels.workspace import git_ops
+
+    _plant(repo, tmp_path / "marker")
+    seen: list[list[str]] = []
+
+    def capture(argv, *a, **kw):
+        seen.append(list(argv))
+        if "diff" in argv:
+            raise RuntimeError("captured")
+        return list(argv), dict(os.environ), None
+
+    monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", capture)
+    with pytest.raises(git_ops.SandboxUnavailable):
+        git_ops.run_git_capped(["diff"], str(repo), cap=10)
+    real_call = next(a for a in seen if "diff" in a)
+    assert "hook.pwn.enabled=false" in real_call
+
+
 # ── update_governance ──
 
 

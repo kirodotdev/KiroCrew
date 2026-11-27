@@ -52,9 +52,9 @@ def switch_announcement(agent: str, warning: str = "") -> str:
     One wording for the composer's switch (the route's ``announce`` flag) and
     the in-turn command, so the main chat and a split pane read the same.
     """
-    text = f"🔄 Switched to agent: {agent}"
+    text = f"Switched to agent: {agent}"
     if warning:
-        text += f"\n\n⚠️ {warning}"
+        text += f"\n\nWarning: {warning}"
     return text
 
 
@@ -276,7 +276,7 @@ async def handle_channel_agent_command(
     else:
         target = agent_switch_target(f"/agent {word}") or ""
         if not target:
-            return f"❌ That is not an agent name. {channel_agent_usage(prefix)}"
+            return f"Error: That is not an agent name. {channel_agent_usage(prefix)}"
         try:
             names = await asyncio.to_thread(pickable_agent_names)
         except Exception:
@@ -284,7 +284,7 @@ async def handle_channel_agent_command(
             names = []
         if target not in names:
             return (
-                f"❌ No agent named `{target}` is available here. "
+                f"Error: No agent named `{target}` is available here. "
                 f"Send `{prefix}agent` for the list."
             )
     label = target or f"default ({configured})"
@@ -301,19 +301,19 @@ async def handle_channel_agent_command(
             # Named explicitly while only the pinned default runs it: keep it past
             # the next rotation. The key is unchanged, so no reseed.
             picks.set(route, target)
-        return f"ℹ️ Already using `{label}`."
+        return f"Note: Already using `{label}`."
     outcome = switch_channel_agent(
         picks, route, target, conv=conv, sessions=sessions, session_key=session_key
     )
     if outcome == "busy":
         again = f"{prefix}agent {target or 'default'}"
         return (
-            f"⏳ Still working on your last message. Send `{again}` again "
+            f"Still working on your last message. Send `{again}` again "
             f"once it finishes to switch to `{label}`."
         )
     if outcome == "fresh":
-        return f"✅ Agent set to `{label}`."
+        return f"Agent set to `{label}`."
     return (
-        f"✅ Agent set to `{label}`. This leaves the current conversation; "
+        f"Agent set to `{label}`. This leaves the current conversation; "
         f"switch back to return to it."
     )

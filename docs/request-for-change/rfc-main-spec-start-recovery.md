@@ -3,8 +3,8 @@ title: Rewrite a kept main-agent spec in place as soon as it reads again
 status: draft
 author: kirocrew agent session, directed by jeeshofone
 created: 2026-11-02
-last-audited: 2026-11-05
-audited-at: 664ae5bdae
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 28664
 implementation-prs: []
 tracking-issues: [18860]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Rewrite a kept main-agent spec in place as soon as it reads again
 
-Status: draft. Acceptance requested from a maintainer of agent spec projection and fork governance. Part of [#18860](https://github.com/kirodotdev/KiroCrew/issues/18860). Main-side references were read at `664ae5bdae`. References to the unreadable-spec mechanism were read on the current revision of [#27535](https://github.com/kirodotdev/KiroCrew/pull/27535), which is open and not on main. No code in this document can land before #27535 does.
+Status: draft. Acceptance requested from a maintainer of agent spec projection and fork governance. Part of [#18860](https://github.com/kirodotdev/KiroCrew/issues/18860). Main-side references were read at `664ae5bdae`. References to the unreadable-spec mechanism were read on a revision of [#27535](https://github.com/kirodotdev/KiroCrew/pull/27535), which merged on 2026-11-06 (`4883d3b5bf`). Nothing this document proposes (`recover_main_spec_episode`, `_shared_main_spec_rebuild`) is on main.
 
 Revised 2026-11-05 to the scope the maintainer signed on this PR after the decision on #27535: this document no longer admits or refuses any start.
 

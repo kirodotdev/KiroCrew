@@ -74,8 +74,8 @@ PHRASINGS = [
     ("开发者页面", "zh-CN", "settings.tab.developer"),
     ("connect my phone", "en", "shell.connect-phone"),
     ("连接手机", "zh-CN", "shell.connect-phone"),
-    ("kiro account balance", "en", "shell.kiro-account"),
-    ("账户余额", "zh-CN", "shell.kiro-account"),
+    ("kiro account balance", "en", "settings.tab.kiro-account"),
+    ("Kiro 账户", "zh-CN", "settings.tab.kiro-account"),
     ("report a bug", "en", "shell.report-problem"),
     ("报告问题", "zh-CN", "shell.report-problem"),
     ("focus mode", "en", "shell.focus-mode"),
@@ -143,14 +143,16 @@ def test_a_rail_row_is_the_desktop_rail_or_the_phone_menu(
     assert _req(phone) == ["mobile", "not_on_sessions_page", gate]
 
 
-def test_the_kiro_account_row_is_phone_menu_only() -> None:
-    loc = _loc("kiro account balance", "shell.kiro-account")
+def test_the_kiro_account_is_a_tab_of_account_and_settings() -> None:
+    # The phone's own Kiro Account row is gone: the account and its credits
+    # live on the Settings page's Kiro account tab at every width.
+    loc = _loc("kiro account balance", "settings.tab.kiro-account")
     (p,) = loc["placements"]
-    assert _path(p) == ["Open menu", "Kiro Account"]
-    assert p["entry"] == "menu"
-    assert _req(p) == ["mobile", "not_on_sessions_page", "kiro_account_entry"]
-    zh = _loc("账户余额", "shell.kiro-account", "zh-CN")
-    assert _path(zh["placements"][0]) == ["打开菜单", "Kiro 账户"]
+    assert _path(p) == ["Settings", "Kiro account"]
+    assert p["route"] == "/settings/kiro-account" and p["entry"] == "tab"
+    assert p["requires"] == []
+    zh = _loc("Kiro 账户", "settings.tab.kiro-account", "zh-CN")
+    assert _path(zh["placements"][0]) == ["设置", "Kiro 账户"]
 
 
 def test_report_problem_quotes_the_visible_link_text() -> None:

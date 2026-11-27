@@ -29,6 +29,7 @@ import { storeFocusedSlot } from '../../lib/storeFocusedSlot'
 import type { FrameData } from './frames'
 import type { ChatMessage } from '../../types'
 import { readRelay } from '../../pages/chat/sessionRelay'
+import { messageAuthor } from '../../api/sharedCrewUi'
 
 export interface ChatStreamDeps {
   dispatch: AppDispatch
@@ -209,9 +210,12 @@ export function useChatStream({ dispatch, queryClient, buffers, voice, reconnect
       // validated the way the transcript reads it, so the live row draws the
       // same incoming card a reload does.
       const steerRelay = readRelay(steerMeta && typeof steerMeta === 'object' ? (steerMeta as ChatMessage['meta']) : undefined)
+      // The server-named Shared Crew author, so a teammate's steer draws with
+      // their name on the start side live, as a reload does.
+      const steerAuthor = messageAuthor(steerMeta && typeof steerMeta === 'object' ? (steerMeta as Record<string, unknown>) : undefined)
       dispatch(appendSlotMessage({
         slot: (data as { slot?: string }).slot || store.getState().chat.activeSlot || '',
-        message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(steerRetract ? { steerRetract: true } : {}), ...(Array.isArray(steerFiles) ? { files: steerFiles } : {}), ...(Array.isArray(steerDirs) ? { dirs: steerDirs } : {}), ...(steerQuote ? { quote: steerQuote } : {}), ...(steerBanner ? { banner: steerBanner } : {}), ...(steerRelay ? { relay: steerRelay } : {}) }, ts: (data as { ts?: string }).ts },
+        message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(steerRetract ? { steerRetract: true } : {}), ...(Array.isArray(steerFiles) ? { files: steerFiles } : {}), ...(Array.isArray(steerDirs) ? { dirs: steerDirs } : {}), ...(steerQuote ? { quote: steerQuote } : {}), ...(steerBanner ? { banner: steerBanner } : {}), ...(steerRelay ? { relay: steerRelay } : {}), ...(steerAuthor ? { author: steerAuthor } : {}) }, ts: (data as { ts?: string }).ts },
       }))
       // Steering is the other way to type into a busy session, so it
       // settles the rank exactly like a queued send. The server appends a

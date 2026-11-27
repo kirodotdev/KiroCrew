@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 from redaction_structured_cases import github_classic
+from skills_helpers import _settled
 
 from kiro_crew import skill_trust
 from kiro_crew.config import paths
@@ -195,7 +196,9 @@ class TestVisibleRows:
         root = tmp_path / "skills"
         _skill(root, "app-one/kept")
         _skill(root, "app-two/hidden")
-        loader = opened(SkillsLoader(skills_path=root, install_builtins=False))
+        # Settled: a cold catalog answers [] once its 2 s budget runs out, which a
+        # loaded Windows runner can reach before these two skills are listed.
+        loader = _settled(opened(SkillsLoader(skills_path=root, install_builtins=False)))
         monkeypatch.setattr(loader, "_get_disabled_app_names", lambda: frozenset({"app-two"}))
         resolved = []
         real = loader._owning_app
@@ -206,6 +209,14 @@ class TestVisibleRows:
 
         monkeypatch.setattr(loader, "_owning_app", counting)
         return loader, resolved
+
+    def test_the_rows_are_listed_however_slow_the_first_walk(self, tmp_path, monkeypatch, opened):
+        from kiro_crew import skills as sk
+
+        # A walk that outlasts the cold budget, as on a loaded Windows runner.
+        monkeypatch.setattr(sk, "_COLD_CATALOG_WAIT_SECS", 0.0)
+        loader, _resolved = self._loader(tmp_path, monkeypatch, opened)
+        assert [name for name, _p, _w in loader._iter_visible()] == ["app-one/kept"]
 
     def test_the_same_catalog_is_filtered_once(self, tmp_path, monkeypatch, opened):
         loader, resolved = self._loader(tmp_path, monkeypatch, opened)

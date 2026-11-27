@@ -23,7 +23,8 @@ Modules, from the wire up:
 * :mod:`~kiro_crew.relay_client.provider` -- the ``TunnelProvider`` and the rule
   that selects it.
 
-It is off by default (``tunnel.relay_enabled``). The package imports nothing from
+It is off unless ``tunnel.relay_enabled`` asks for it (``remote_control.hosting``:
+on, or unset on a team Crew or a workload host). The package imports nothing from
 ``kiro_crew.tunnel``: the platform composition root imports it, and ``platform/``
 keeps zero imports of the tunnel package.
 """

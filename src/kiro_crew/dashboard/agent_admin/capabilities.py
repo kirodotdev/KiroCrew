@@ -156,7 +156,13 @@ async def api_capability_mcp_uninstall(request: web.Request) -> web.Response:
     # package uninstalled while the spec still mounts it.
     from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular: mcp imports agents
         _agent_home_not_owned,
+        _builtin_server_refusal,
     )
+
+    # Kiro Crew's own servers are never uninstalled.
+    builtin = await _builtin_server_refusal(server_id)
+    if builtin is not None:
+        return builtin
 
     not_owned = await asyncio.to_thread(_agent_home_not_owned, server_id)
     if not_owned is not None:

@@ -216,6 +216,7 @@ _SPLIT_HELPERS: dict[str, str] = {
     "_bang_stop": "commands",
     "_bang_thread_agent": "commands",
     "_bang_title": "commands",
+    "_bang_trust": "commands",
     "_bang_voice": "commands",
     "_bang_yolo": "commands",
     "_deliver_answer": "delivery",
@@ -238,13 +239,22 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: ``user_meta`` on ``maybe_route_linked_thread`` (the user row's meta a code
 #: channel passes), ``turn_context`` on it too (a pinned action answer's payload),
 #: ``interpret_commands`` on it too (an OPTIONS answer's label reaches the slot),
+#: ``had_voice_input`` on it too (the turn a Slack message starts speaks its answer),
 #: ``post_linked_approval``'s ``thread_ts`` widened to ``str | None`` (a code
 #: channel's own session posts its approval card top-level), its keyword-only
 #: ``mcp_server_name`` / ``tool_name`` / ``mcp_identity_trusted`` (the mirrored card
 #: names the trusted MCP server, as the native card does), its keyword-only
-#: ``slot_key`` / ``future`` (a click settles the slot and future that asked), and
-#: its ``channel_trust`` (a code channel's card adds "Trust this channel").
-_BASE_SHAPE_DIGEST = "bf10542b3308fe597a848771a94e29c97e3128464eb0da7fac163295698e8a6e"
+#: ``slot_key`` / ``future`` (a click settles the slot and future that asked),
+#: its ``channel_trust`` (a code channel's card adds "Trust this channel"),
+#: ``requester`` on ``_request_approval`` (the one shared Slack user who may answer),
+#: ``line_start`` on ``_filter_options_brackets`` (whether the text already sent
+#: ends a line, so a marker line is held from its start), and the keyword-only
+#: ``requester`` on ``post_linked_approval`` (the shared user whose message opened
+#: the linked slot's turn may answer its card), and the keyword-only
+#: ``thread_trust`` on ``post_linked_approval`` and ``_build_approval_blocks`` (a
+#: Conductor thread's conductor's card reads "Trust this thread"), and ``bot`` on
+#: ``_persist_channel_config`` (``!channel bot`` saves a channel's Bot).
+_BASE_SHAPE_DIGEST = "6745aaa7f3b8d7bb076f5ff28974625b434730bd1d29fbd9efa6d7e0753031a6"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

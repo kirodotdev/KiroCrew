@@ -319,6 +319,11 @@ export interface ChatSlot extends TurnIdentityFields {
    *  `model_withheld`: it describes the session, so it must not drive a
    *  write. */
   served_model?: string
+  /** The served model an engine promotion moved this slot's session onto for
+   *  the rest of it; `''`/absent when none. While `served_model` still equals
+   *  it, a slot with no pick of its own runs on it. DISPLAY only, like
+   *  `served_model`. */
+  engine_promoted_model?: string
   /** Remote-execution binding. `executor` is "local" for an ordinary session and
    *  "remote" for one whose turns run on a connected crew; `instance_id` names
    *  that crew. The backend ships BOTH on every slot so "runs locally" is a
@@ -328,6 +333,10 @@ export interface ChatSlot extends TurnIdentityFields {
    *  inside a request routed back through that instance. */
   executor?: 'local' | 'remote'
   instance_id?: string
+  /** A cron run's transcript (a sequence agent's or a stateless run's) reopened
+   *  from History with no session to save a reply to: read-only, like a relay
+   *  archive (`slotIsRemoteBound`). Absent from an older gateway. */
+  cron_run_read_only?: boolean
   /** The identity the sidebar renders this row under, resolved by the SERVER.
    *
    *  A purely local session is its own key. A remote-bound one — minted on a crew
@@ -363,7 +372,7 @@ export interface ChatSlot extends TurnIdentityFields {
   code_channel_pending?: boolean
   /** The crew's work-ledger summary (see `WorkAggregate`); null with no workers. */
   work_aggregate?: WorkAggregate | null
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; /** Place in the gateway's pinned order, or null when it has none. */ pin_rank?: number | null; /** Revision of the pinned order the rank belongs to. */ pin_rev?: number; /** Place in the gateway's manual order (sort "Manual"), or null when it has none. */ manual_rank?: number | null; /** Revision of the manual order the rank belongs to. */ manual_rev?: number; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; /** The Slack thread a Slack-born session lives in (not a mirror; slack_linked stays false). */ slack_origin_channel?: string; slack_origin_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; ciPending?: string; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue'; identity?: string }[]; source_links_total?: number
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; /** Place in the gateway's pinned order, or null when it has none. */ pin_rank?: number | null; /** Revision of the pinned order the rank belongs to. */ pin_rev?: number; /** Place in the gateway's manual order (sort "Manual"), or null when it has none. */ manual_rank?: number | null; /** Revision of the manual order the rank belongs to. */ manual_rev?: number; /** Newest read the gateway stores for this session (any device), or null when none is stored. */ last_read_ts?: string | null; /** The gateway read store's creation: no reply at or before it badges from a slot list, and it never clears a badge. Null until stored. */ read_epoch?: string | null; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; /** The Slack thread a Slack-born session lives in (not a mirror; slack_linked stays false). */ slack_origin_channel?: string; slack_origin_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; ciPending?: string; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue'; identity?: string }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
    * survey shows only on a "user" slot, so an imported Slack thread, a
@@ -398,6 +407,10 @@ export interface ChatSlot extends TurnIdentityFields {
    *  chat shows its pending approvals and question cards, and the mate's
    *  Sessions tab lists such rows. Absent elsewhere. */
   mate_root?: string
+  /** On a crewmate thread's own row: `dashboard.show_bot_sessions_in_list`
+   *  (`crew_mode.MATE_LISTED_FIELD`). True keeps the sessions it dispatched in the
+   *  person's session lists (`mateThreadsHidingSessions`). Absent elsewhere. */
+  bot_sessions_listed?: boolean
   /** True on a conversation that started in Slack while
    *  `slack.show_in_session_list` is off (`dashboard/slack_session_list.py`).
    *  The person's session lists leave it out unless it is the open session
@@ -431,6 +444,11 @@ export interface ChatSlot extends TurnIdentityFields {
    * for the user, a terminal error and a tool-approval prompt still surface.
    * Durable, like `pinned`. */
   muted?: boolean
+  /** The user-owned per-session PR and Issue chip switch, set from the session
+   * menu. When true the gateway sends this row no `source_links` (and
+   * `source_links_total` 0) and refreshes none of its chips' status. Durable,
+   * like `muted`. */
+  source_links_off?: boolean
   /** The session tree's parent edge for this slot, attached to every row by
    * `_attach_slot_parents`: `{slot, key}`, or null when this slot has no parent.
    * `slot` is the parent's own citation and `key` names the parent's row IN THIS
@@ -454,7 +472,7 @@ export interface ChatSlot extends TurnIdentityFields {
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
   // Board fields
-  has_options?: boolean; options_ts?: string; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; last_agent_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean
+  has_options?: boolean; options_ts?: string; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; last_agent_ts?: string; unread_ts?: string; unread_failed?: boolean; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean
   /** The sub-agent queued depth the gateway last published for this session —
    * the same value as its newest `subagent_queued` frame. Read only to
    * reconcile `chat.subagentQueued` on a `slots` push; absent from a
@@ -470,11 +488,20 @@ export interface ChatSlot extends TurnIdentityFields {
    * `waiting_for_input` (true of every finished turn, and therefore no signal)
    * and separate from `pending_approval` (a tool gate). */
   needs_input?: boolean
+  /** The session waits on the person through something only the full chat draws:
+   * a change card that can still be applied, a live guide offer, or a browser
+   * `ask` parked on the live card. `ChatEmbed` cannot show or answer these, so a
+   * host reading this sends the person to the session instead. Absent from an
+   * older gateway. */
+  needs_full_chat?: boolean
   /** The transcript shows the last turn ending without a reply (trailing error
    * row or unanswered user row) — the state behind the composer's Resume
    * button. Always false while `running`. Lets the sidebar stop rendering a
    * goal-loop session as actively working when it is actually stalled. */
   interrupted?: boolean
+  /** The interrupted turn ended on a sign-in error with nothing after it
+   * (`newest_error_is_sign_in`), so the sidebar row names the sign-in first. */
+  interrupted_by_sign_in?: boolean
   /** A loop wake is opening the running turn and its row is not in the
    * transcript yet (a structured monitor writes it only once the runner
    * accepts the turn). Only ever true while `running`; absent from an older
@@ -606,7 +633,7 @@ export interface SideSnapshot {
   last_run_id?: string
   /** A side turn is in flight, so a submit would steer or queue. */
   running?: boolean
-  messages?: Array<{ id: string; run_id?: string; role: 'user' | 'assistant'; content: string; ts: string; steer?: boolean; is_error?: boolean; link_blocks?: unknown }>
+  messages?: Array<{ id: string; run_id?: string; role: 'user' | 'assistant'; content: string; ts: string; steer?: boolean; is_error?: boolean; link_blocks?: unknown; redactions?: unknown }>
   /** `rev` counts the entry's edits, as the edit frame reports it, so a reader
    *  can tell which of two copies of the entry is newer. */
   queue?: Array<{ id: string; content: string; ts: string; rev?: number }>
@@ -618,8 +645,8 @@ export interface ChatMessage {
   rawText?: string
   /** Structured metadata for role-specific data (e.g. tool_input for permission messages). */
   meta?: Record<string, unknown>
-  /** Regenerated variants of an assistant message (most recent last). */
-  variants?: { content: string; ts?: string; link_blocks?: unknown; redactions?: unknown }[]
+  /** Regenerated variants of an assistant message (most recent last). `mid`: the id of the row the version was written as (absent on a version stored without one). */
+  variants?: { content: string; ts?: string; mid?: string; link_blocks?: unknown; redactions?: unknown }[]
   /** Which variant index is currently active. */
   variant_idx?: number
   /** Counter for consecutive identical tool message deduplication. */
@@ -699,7 +726,13 @@ export interface SubagentActivity {
   childSession?: string
   status: 'pending' | 'running' | 'tool' | 'done' | 'error' | 'stopped'
   streaming: string; lastTool: string
+  /** The agent's reasoning, from `subagent_thinking` frames, drawn above the
+   *  card's Output. Client-only and bounded, as the chat's own thinking is: no
+   *  snapshot or done frame carries it. */
+  thinking?: string
   startedAt: number; elapsed: number; credits?: number; error?: string
+  /** The finished run's dollar cost, from a harness that bills in dollars. */
+  costUsd?: number
   /** True when `startedAt` was ASSUMED rather than observed, which is the case
    *  for an entry minted by `upsertSlotSub` from an incremental frame: that frame
    *  carries no start time, so the entry records its arrival instant. The agent
@@ -746,6 +779,16 @@ export interface SubagentActivity {
    *  done-event result is stored here. Managed cards leave this unset and use
    *  the on-demand DiskLoader to keep Redux memory bounded. */
   result?: string
+  /** A sub-agent the KAS engine runs inside the chat's own turn (the gateway's
+   *  `engine: true` on its spawn/done/snapshot frames, set only for a chat with
+   *  the `kas_subagents` preview on). It has no run of its own: it cannot be
+   *  stopped or retried alone, and the engine reports no credits or model for
+   *  it. Every other `native:*` card leaves this unset. */
+  engine?: boolean
+  /** The turn an engine sub-agent belongs to: the gateway's random per-turn key
+   *  (`engine_turn` on its frames), so the chat draws one turn's sub-agents as one
+   *  batch card. */
+  engineTurn?: string
 }
 
 /** Where `clampToolOutput` (wire.ts in store/chat) removed the middle of a tool

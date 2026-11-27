@@ -10,6 +10,8 @@ temp-file cleanup in ``finally``.
 from __future__ import annotations
 
 import asyncio
+import threading
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -100,6 +102,27 @@ async def test_missing_app_directory_fails_without_spawning(monkeypatch, tmp_pat
     assert result["failed"] is True
     assert "app directory not found" in result["output"]
     assert "denied" not in result
+
+
+@pytest.mark.asyncio
+async def test_app_directory_check_runs_off_the_event_loop(monkeypatch, tmp_path) -> None:
+    app_root = tmp_path / "absent-app"
+    monkeypatch.setattr(lifecycle_scripts, "apps_dir", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle_scripts, "app_execution_denied", lambda *a, **k: None)
+    loop_thread = threading.current_thread()
+    seen: list[threading.Thread] = []
+    real_is_dir = Path.is_dir
+
+    def _recording_is_dir(self: Path) -> bool:
+        if self == app_root:
+            seen.append(threading.current_thread())
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", _recording_is_dir)
+    result = await lifecycle_scripts.run_lifecycle_script("absent-app", "echo hi")
+    assert result["failed"] is True
+    assert seen, "the app directory was never checked"
+    assert loop_thread not in seen, "the app directory check ran on the event loop thread"
 
 
 @pytest.mark.asyncio

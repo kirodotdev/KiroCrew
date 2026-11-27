@@ -67,6 +67,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "private_dir_ids": {},
         "readonly_dirs": [],
         "parent_pins": [],
+        "mask_parent_pins": [],
         "writable_dirs": [],
         "sensitive_files": [],
         "fail_closed_file_masks": [],
@@ -794,6 +795,7 @@ _CHILD_STAGES = (
     "verify_fail_closed_aliases",
     "mask_sensitive_files",
     "mask_ssh_keys",
+    "pin_mask_parents",
     "retire_stand_in_stage",
     "confirm_crew_home_aliases",
     "scrub_env",
@@ -839,6 +841,37 @@ class _SwappingLibc(RecordingLibc):
         os.rename(path, path + ".aside")
         os.mkdir(path)
         return 0
+
+
+def test_a_credential_masking_app_folder_is_bound_over_itself_recursively(
+    tmp_path: Path,
+) -> None:
+    """The same pin as a seal parent's, from its own list and its own (last) stage."""
+    app = tmp_path / "home" / ".kiro" / "crew" / "apps" / "demo"
+    app.mkdir(parents=True)
+    libc = RecordingLibc()
+    run = launch(
+        tmp_path,
+        payload(mask_parent_pins=[str(app), str(tmp_path / "absent")]),
+        libc=libc,
+    )
+    program.pin_seal_parents(run)
+    assert libc.calls == []
+    program.pin_mask_parents(run)
+    ((call,),) = [libc.calls]
+    assert (call.target_path, call.flags) == (str(app), _MS_BIND | _MS_REC)
+    assert call.source_id == call.target_id
+
+
+def test_an_app_folder_that_changes_while_it_is_pinned_refuses_the_spawn(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "home" / ".kiro" / "crew" / "apps" / "demo"
+    app.mkdir(parents=True)
+    run = launch(tmp_path, payload(mask_parent_pins=[str(app)]), libc=_SwappingLibc())
+    message = refusal(program.pin_mask_parents, run)
+    assert message is not None
+    assert "the folder of a credential-masking app could not be held in place" in message
 
 
 def test_a_seal_parent_that_changes_while_it_is_pinned_refuses_the_spawn(tmp_path: Path) -> None:

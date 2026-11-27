@@ -2,9 +2,11 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { createElement } from 'react'
 import { cleanup, render, waitFor, act, fireEvent, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { APP_FRAME_TAG } from '../appFrame/frameProtocol'
 import { claimableUrlHost as sharedUrlHost } from '../appFrame/hosts'
 import { FRAME_SANDBOX } from '../appFrame/sandboxFrame'
+import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import { fromFrame, installFrameWindows, postFrom, sentTo, type Sent } from '../test/LinkPreviewFramesTestUtils'
 import { OPEN_DEADLINE_MS } from './LinkOpenLayer'
 import { claimableUrlHost, forgetChoice, openerFor, rememberChoice, rememberedChoice, rememberedChoices, resolveLinkOpeners } from './linkOpenRegistry'
@@ -12,6 +14,12 @@ import { claimableUrlHost, forgetChoice, openerFor, rememberChoice, rememberedCh
 const listApps = vi.fn()
 vi.mock('../api/client', () => ({ api: { listApps: () => listApps() } }))
 const copyToClipboard = vi.fn(async (_text: string) => true)
+// Which app pages are popped out, and what the layer asked of them.
+const popouts = vi.hoisted(() => ({ out: new Set<string>(), focus: vi.fn(), navigate: vi.fn() }))
+vi.mock('../hooks/useAppPopouts', () => ({
+  useAppPopouts: () => ({ isPoppedOut: (route: string) => popouts.out.has(route), focus: popouts.focus }),
+}))
+vi.mock('../utils/appPopout', () => ({ navigatePopout: popouts.navigate }))
 vi.mock('../utils/clipboard', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/clipboard')>()),
   copyToClipboard: (text: string) => copyToClipboard(text),
@@ -37,7 +45,26 @@ const FULL_APP = {
 /** The same app after the owner withdrew the whole-URL grant. */
 const WITHDRAWN_APP = { ...FULL_APP, linkOpenGrant: { ...FULL_APP.linkOpenGrant, fullUrl: false } }
 
+/** The same app with a page entry: a click opens the app's own page. */
+const PAGE_APP = {
+  ...APP,
+  manifest: {
+    ui: { pages: [{ route: '/apps/tickets', label: 'Tickets' }] },
+    contributes: { linkOpen: [{ id: 'open', page: { param: 'url' }, hosts: APP.manifest.contributes.linkOpen[0].hosts }] },
+  },
+}
+
 let qc: QueryClient
+/** Whether the page on screen lets a navigation leave it. */
+let mayLeave = true
+let here = ''
+
+function Probe() {
+  const { pathname, search } = useLocation()
+  here = pathname + search
+  useRegisterNavigationLeaveGuard(() => mayLeave)
+  return null
+}
 
 /** Refetch the app list, which `listApps` now answers with `apps`. */
 async function refetchApps(apps: unknown[]) {
@@ -46,11 +73,14 @@ async function refetchApps(apps: unknown[]) {
   await act(async () => { await vi.advanceTimersByTimeAsync(0) })
 }
 
-async function mount() {
+async function mount(at = '/chat') {
   const mod = await import('./LinkOpenLayer')
   mod.setLinkOpenMintForTest(mint)
   qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(createElement(QueryClientProvider, { client: qc }, createElement(mod.default)))
+  render(createElement(MemoryRouter, { initialEntries: [at] },
+    createElement(NavigationLeaveGuardProvider, null,
+      createElement(Probe),
+      createElement(QueryClientProvider, { client: qc }, createElement(mod.default)))))
   await waitFor(() => expect(listApps).toHaveBeenCalled())
   await act(async () => { await vi.advanceTimersByTimeAsync(50) })
   return mod
@@ -102,6 +132,8 @@ beforeEach(() => {
   listApps.mockResolvedValue([APP])
   copyToClipboard.mockResolvedValue(true)
   opened = []
+  mayLeave = true
+  popouts.out.clear()
   vi.spyOn(window, 'open').mockImplementation((url?: string | URL) => { opened.push(String(url)); return null })
   window.localStorage.clear()
 })
@@ -111,6 +143,8 @@ afterEach(async () => {
   listApps.mockReset()
   mint.mockClear()
   copyToClipboard.mockReset()
+  popouts.focus.mockReset()
+  popouts.navigate.mockReset()
   // Unmount first: the dialogs are portalled into the body.
   cleanup()
   document.body.replaceChildren()
@@ -122,7 +156,7 @@ describe('linkOpen registry', () => {
   it('keeps only approved hosts and refuses public suffixes', () => {
     const [o] = resolveLinkOpeners([{ ...APP, linkOpenGrant: { hosts: ['tickets.example.com'] } }])
     expect([...o.exact]).toEqual(['tickets.example.com'])
-    expect(o.suffixes).toEqual([])
+    expect([...o.suffixes]).toEqual([])
     const refused = resolveLinkOpeners([{
       ...APP,
       linkOpenGrant: { hosts: ['co.uk', '.com', 'github.io'] },
@@ -443,5 +477,75 @@ describe('LinkOpenLayer: a held link follows the current grant', () => {
     await refetchApps([{ ...APP, linkOpenGrant: { ...APP.linkOpenGrant, hosts: ['.docs.example.com'] } }])
     await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(screen.queryByTestId('link-open-chooser')).toBeNull()
+  })
+})
+
+describe('LinkOpenLayer: a page entry opens the app\'s own page', () => {
+  const PAGE = '/apps/tickets?url=https%3A%2F%2Ftickets.example.com%2Ft%2FTK-1'
+
+  it('resolves to the page the rail opens, and an orphaned app or an entry with both gets no clicks', () => {
+    const [o] = resolveLinkOpeners([PAGE_APP])
+    expect(o.page).toEqual({ route: '/apps/tickets', param: 'url' })
+    expect(resolveLinkOpeners([{ ...PAGE_APP, orphaned: true }])).toEqual([])
+    const both = { ...PAGE_APP.manifest.contributes.linkOpen[0], entry: 'dist/open.mjs' }
+    expect(resolveLinkOpeners([{ ...PAGE_APP, manifest: { ...PAGE_APP.manifest, contributes: { linkOpen: [both] } } }])).toEqual([])
+  })
+
+  it('choosing the app navigates this window to its page with the stripped link: no dialog, frame or tab', async () => {
+    listApps.mockResolvedValue([PAGE_APP])
+    await mount()
+    expect(click(link())).toBe(true)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Tickets' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(here).toBe(PAGE)
+    expect(screen.queryByTestId('link-open-panel')).toBeNull()
+    expect(document.querySelector('iframe')).toBeNull()
+    expect(mint).not.toHaveBeenCalled()
+    expect(opened).toEqual([])
+  })
+
+  it('stays put when the page on screen will not be left', async () => {
+    listApps.mockResolvedValue([PAGE_APP])
+    rememberChoice('tickets:open', 'tickets.example.com', 'app')
+    await mount()
+    mayLeave = false
+    expect(click(link())).toBe(true)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(here).toBe('/chat')
+    expect(opened).toEqual([])
+  })
+
+  it("on an app's page, which cannot be asked to be left, the link stays ordinary", async () => {
+    listApps.mockResolvedValue([PAGE_APP])
+    rememberChoice('tickets:open', 'tickets.example.com', 'app')
+    await mount('/apps/notes')
+    expect(click(link())).toBe(false)
+    expect(here).toBe('/apps/notes')
+  })
+
+  it('a pop-out that closed while the question was open sends the choice to the browser', async () => {
+    listApps.mockResolvedValue([PAGE_APP])
+    popouts.out.add('/apps/tickets')
+    await mount('/apps/notes')
+    expect(click(link())).toBe(true)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    popouts.out.clear()
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Tickets' }))
+    expect(opened).toEqual(['https://tickets.example.com/t/TK-1?sig=secret#frag'])
+    expect(here).toBe('/apps/notes')
+  })
+
+  it('a popped-out page is sent the link and focused, and this window stays put', async () => {
+    listApps.mockResolvedValue([PAGE_APP])
+    rememberChoice('tickets:open', 'tickets.example.com', 'app')
+    popouts.out.add('/apps/tickets')
+    await mount()
+    expect(click(link())).toBe(true)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(popouts.navigate).toHaveBeenCalledWith('/apps/tickets', PAGE)
+    expect(popouts.focus).toHaveBeenCalledWith('/apps/tickets')
+    expect(here).toBe('/chat')
+    expect(screen.queryByTestId('link-open-panel')).toBeNull()
   })
 })

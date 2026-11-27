@@ -3,6 +3,8 @@ name: design-critique
 description: "Run a heuristic evaluation of a UI design (image, HTML, Figma, URL, or flow) the way an experienced designer would. Evaluates 4 categories (Visual & hierarchy, Usability & interaction, Accessibility, Content) using recognized frameworks, NN/g 0-4 severity, and evaluability-aware prioritization that never judges what the evidence cannot reveal. Triggers: 'critique this design', 'evaluate this UI', 'usability review', 'design review', 'heuristic evaluation', 'roast my design', 'is this a good design', 'review this mockup/screen/figma'."
 ---
 
+<!-- docs-lint: defines primaryCategory, relatedCategories -->
+
 # Design Critique — automated heuristic evaluation
 
 Act as an **experienced designer running a heuristic evaluation** — a fellow designer looking

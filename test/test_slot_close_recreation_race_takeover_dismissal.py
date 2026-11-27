@@ -436,18 +436,22 @@ async def test_an_unstamp_never_removes_a_newer_close_of_the_created_tab(tmp_pat
     later = ours + 5.0
     record = OwedUnstamp(NAME, key, ours, "our-close")
     # The created tab was legitimately closed AFTER our stamp would have landed.
-    log.update_metadata(key, {"closed": True, "closed_at": later, "closed_id": "their-close"})
+    await asyncio.to_thread(
+        log.update_metadata, key, {"closed": True, "closed_at": later, "closed_id": "their-close"}
+    )
     assert takeover_ordering.unstamp_superseded_marker(state, record) is True
     meta = log.get_metadata(key)
     assert meta.get("closed") is True and meta.get("closed_at") == later, "a newer close must stay"
     assert state._takeover_watches == {}
     # A stamp carrying no identity was not written by this path: kept, fail closed.
-    log.update_metadata(key, {"closed": True, "closed_at": ours})
+    await asyncio.to_thread(log.update_metadata, key, {"closed": True, "closed_at": ours})
     assert takeover_ordering.unstamp_superseded_marker(state, record) is True
     assert log.get_metadata(key).get("closed") is True, "an unidentified stamp is never ours"
     log.clear_closed(key)
     # Our own stamp, by contrast, comes off -- and a second un-stamp is a no-op.
-    log.update_metadata(key, {"closed": True, "closed_at": ours, "closed_id": "our-close"})
+    await asyncio.to_thread(
+        log.update_metadata, key, {"closed": True, "closed_at": ours, "closed_id": "our-close"}
+    )
     assert takeover_ordering.unstamp_superseded_marker(state, record) is True
     assert "closed" not in log.get_metadata(key)
     assert "closed_id" not in log.get_metadata(key)
@@ -516,7 +520,7 @@ async def test_an_unstamp_keeps_a_newer_close_stamped_on_the_same_clock_tick(tmp
 
 
 def test_the_after_commit_hook_does_no_io() -> None:
-    """``update_metadata_if`` documents its hook as I/O-free; the recheck only records a verdict."""
+    """``update_metadata_if`` documents its hook as I/O-free; the recheck only records state."""
     import ast
     import inspect
 
@@ -531,7 +535,10 @@ def test_the_after_commit_hook_does_no_io() -> None:
     ]
     assert len(hooks) == 1
     calls = {ast.unparse(node.func) for node in ast.walk(hooks[0]) if isinstance(node, ast.Call)}
-    assert calls == {"SlotRegistry.dismissal_still_owed"}, calls
+    assert calls == {
+        "SlotRegistry.dismissal_still_owed",
+        "dismissal.slot.note_close_recorded",
+    }, calls
 
 
 def test_the_dismissal_record_carries_the_closed_incarnation(tmp_path) -> None:

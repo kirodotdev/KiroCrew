@@ -9,6 +9,7 @@ non-holder's send with ``409 composer_locked``; a single operator never locks.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -179,7 +180,7 @@ def test_one_person_with_many_tabs_is_one_holder():
 
 def test_a_personal_crew_never_locks():
     clock = _Clock()
-    reg = TypingLeaseRegistry(idle_seconds=10, clock=clock, wall_clock=clock, owner_id="")
+    reg = TypingLeaseRegistry(idle_seconds=10, clock=clock, wall_clock=clock, owner_id=lambda: "")
     app = local_operator_principal("local-app")
     startup = local_operator_principal("local-startup")
     assert app.id != startup.id
@@ -189,6 +190,22 @@ def test_a_personal_crew_never_locks():
     assert reg.blocks("s1", app) is None
     assert set(reg.state("s1")["holder_ids"]) >= {app.id, startup.id}
     assert reg.sent("s1", startup).sessions == {"s1": END_SENT}
+
+
+def test_an_owner_configured_while_the_gateway_runs_is_still_the_holder():
+    # A reconnect sets the gateway's owner id after the lease exists; the
+    # operator's tab signed in after it holds a token minted for that id.
+    gateway = SimpleNamespace(owner_id="")
+    lease = typing_lease.typing_lease_for(gateway)
+    startup = local_operator_principal("local-startup")
+    lease.typed("s1", "ws:1", startup)
+    gateway.owner_id = "U0OWNER"
+    owner = local_operator_principal("U0OWNER")
+    assert owner.id in lease.state("s1")["holder_ids"]
+    assert typing_lease.refuse_if_locked(gateway, "s1", owner) is None
+    # Someone else is still refused.
+    refused = typing_lease.refuse_if_locked(gateway, "s1", BOB)
+    assert refused is not None and refused["holder"]["id"] == startup.id
 
 
 def test_unknown_and_system_principals_never_hold():

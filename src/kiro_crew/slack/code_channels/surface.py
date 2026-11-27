@@ -18,6 +18,8 @@ Three parts, each in its own module, wired here:
   (``code_channel_action``), each running the path its command or button runs.
 * :mod:`.comments` -- plan-canvas comments read back into the session.
 * :mod:`.views` -- the view tabs at Slack's five-tab cap.
+* :mod:`.tabs` -- the channel's own tabs: native pull-request tabs and the
+  interactive Workers tab; :mod:`.worker_stop` answers its Stop button.
 
 Everything here is inert while the code-channel gate
 (:func:`.binding.code_channels_on`) is shut: the hooks fire only for a bound
@@ -121,7 +123,7 @@ def caller_slot_key(state: Any, session_key: str) -> str:
 
 
 async def binding_for_slot(state: Any, slot_key: str) -> Binding | None:
-    """The code channel bound to *slot_key*, when that binding still names it.
+    """The code channel (or Conductor thread) bound to *slot_key*, when that binding still names it.
 
     A binding is the caller's only when its session key IS the slot AND the
     channel's Slack link still resolves to that slot: a channel whose session was
@@ -131,7 +133,13 @@ async def binding_for_slot(state: Any, slot_key: str) -> Binding | None:
         return None
     from kiro_crew.slack.code_channels.binding import bound_slot
 
-    for binding in await asyncio.to_thread(store().bindings):
+    current = store()
+    # A Conductor thread's binding is the same record, kept in its own table; an
+    # ended one is no conductor any more, so it is never the caller's.
+    candidates = await asyncio.to_thread(lambda: (*current.bindings(), *current.thread_bindings()))
+    for binding in candidates:
+        if binding.thread and binding.ended_at:
+            continue
         if binding.session_key != slot_key:
             continue
         slot = bound_slot(state, binding)
@@ -164,7 +172,16 @@ def unfence(channel_id: str) -> None:
 
 
 async def is_archived(binding: Binding) -> bool:
-    """Whether the channel is archived: fenced here, or stamped on the stored binding."""
+    """Whether the channel is archived: fenced here, or stamped on the stored binding.
+
+    A Conductor thread is never archived; the same word answers for a thread that
+    has ENDED (``ended_at`` on the stored binding), which is shown nothing more.
+    """
+    if getattr(binding, "thread", False) is True:
+        thread = await asyncio.to_thread(
+            store().get_thread_binding, binding.channel_id, binding.anchor_ts
+        )
+        return bool((thread or binding).ended_at)
     if binding.channel_id in _archived_here:
         return True
     current = await asyncio.to_thread(store().get_binding, binding.channel_id)
@@ -331,7 +348,10 @@ def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:
     worktree). ``_bind_channel`` (also reached by a new channel's creation)
     checks before it cuts the worktree and before it binds the session. The
     only writes outside both clients are a slash
-    command's fixed-text replies to its own invoker (``response_url``). A new
+    command's fixed-text replies to its own invoker (``response_url``) and the
+    Approval mode confirmation's fixed line that replaces the clicker's own private
+    message (``approval_picker._settle_confirm``, which asks the same ``channels``
+    policy first). A new
     handler belongs on this list; its test
     (``test_every_policy_gated_handler_checks_at_entry_and_at_its_commit_point``)
     holds the counts.
@@ -349,11 +369,13 @@ def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:
     a grant away: Normal is never held back at its commit, a Reject is.
     """
     from kiro_crew.slack.code_channels import (
+        actions,
         agent_picker,
         commands,
         routing,
         tools,
         worker_approvals,
+        worker_stop,
         wrapup,
     )
 
@@ -371,6 +393,11 @@ def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:
         (wrapup._post_wrap_up, 2),  # the wrap-up message (tool and /wrap-up fallback)
         (tools._run_tool, 1),  # every agent tool, incl. the context bar
         (commands.sync_commands, 2),  # the channel's command set, at turn start
+        # Every channel button's entry (the context bar's and the Workers tab's)
+        (actions.admit, 1),
+        # The Workers tab's Stop: its last await, then its synchronous final gate
+        (worker_stop._handle, 1),
+        (worker_stop._channel_still_admitted, 1),
     )
 
 
@@ -539,7 +566,9 @@ def channel_admits(cfg: Any, binding: Binding) -> bool:
 # ── The Stop fence ────────────────────────────────────────────────────────
 #
 # One fence for every Stop of a code channel (Slack's native Stop and ``!stop``
-# both go through ``routing._stop_bound``, which calls :func:`mark_stopped`).
+# both go through ``routing._stop_bound``, which calls :func:`mark_stopped`). A
+# Conductor thread's ``!stop`` (``thread_stop_gate.decide``) marks the thread's
+# room key instead, which its board's writes are fenced under.
 # A stop gets the next number of one process-wide sequence. A turn records the
 # sequence at its start, and a tool call or wrap-up records it when admitted
 # (:func:`admit`, a context variable that every await below it inherits). Work

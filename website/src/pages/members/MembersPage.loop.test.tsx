@@ -254,12 +254,24 @@ describe('MembersPage — on-watch loop indicator', () => {
   })
 })
 
-describe('MembersPage — a mate session breadcrumb lands on Sessions', () => {
+describe('MembersPage — an opener asks for a mate Profile card', () => {
   it('opens the named crewmate\'s Profile on Sessions, once', async () => {
     await renderPage({ pathname: '/members', search: '?member=beta', state: { openMateSessions: true } } as never)
     const card = await screen.findByTestId('crew-profile-panel')
     expect(card).toHaveAttribute('data-tab', 'sessions')
     expect(within(card).getByTestId('crew-profile-name')).toHaveTextContent('beta')
+  })
+
+  it('opens on the tab the opener names (the sidebar bot row menu asks for Profile)', async () => {
+    await renderPage({ pathname: '/members', search: '?member=beta', state: { openMateSessions: true, tab: 'profile', leaveGranted: true } } as never)
+    const card = await screen.findByTestId('crew-profile-panel')
+    expect(card).toHaveAttribute('data-tab', 'profile')
+    expect(within(card).getByTestId('crew-profile-name')).toHaveTextContent('beta')
+  })
+
+  it('falls back to Sessions for a tab the card does not have', async () => {
+    await renderPage({ pathname: '/members', search: '?member=beta', state: { openMateSessions: true, tab: 'nope' } } as never)
+    expect(await screen.findByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'sessions')
   })
 
   it('a plain member link leaves the Profile closed', async () => {

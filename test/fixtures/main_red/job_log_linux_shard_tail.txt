@@ -1,0 +1,13 @@
+2026-11-16T21:22:09.8422936Z 
+2026-11-16T21:22:09.8423147Z -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2026-11-16T21:22:09.8443308Z ##[error]test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response1] - Failed: DID NOT RAISE <class 'kiro_crew.acp.session_handle.AcpRuntimeError'>
+2026-11-16T21:22:09.8452036Z ##[error]test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response2] - Failed: DID NOT RAISE <class 'kiro_crew.acp.session_handle.AcpRuntimeError'>
+2026-11-16T21:22:09.8454959Z ##[error]test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response0] - Failed: DID NOT RAISE <class 'kiro_crew.acp.session_handle.AcpRuntimeError'>
+2026-11-16T21:22:09.8456404Z ================================ tests coverage ================================
+2026-11-16T21:22:12.0598425Z 63.90s call     test/test_slots_pass_work.py::test_one_dirty_row_serializes_at_most_ten_rows
+2026-11-16T21:22:12.0599152Z [36m[1m=========================== short test summary info ============================[0m
+2026-11-16T21:22:12.0600443Z [31mFAILED[0m test/test_kas_orchestrator_memory.py::[1mTestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response1][0m - Failed: DID NOT RAISE <class 'kiro_crew.acp.session_handle.AcpRuntimeError'>
+2026-11-16T21:22:12.0602277Z [31mFAILED[0m test/test_kas_orchestrator_memory.py::[1mTestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response2][0m - Failed: DID NOT RAISE <class 'kiro_crew.acp.session_handle.AcpRuntimeError'>
+2026-11-16T21:22:12.0604062Z [31mFAILED[0m test/test_kas_orchestrator_memory.py::[1mTestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response0][0m - Failed: DID NOT RAISE <class 'kiro_crew.acp.session_handle.AcpRuntimeError'>
+2026-11-16T21:22:12.0605439Z [31m= [31m[1m3 failed[0m, [32m38372 passed[0m, [33m1081 skipped[0m, [33m1 xfailed[0m, [33m4162 warnings[0m[31m in 1556.96s (0:25:56)[0m[31m =[0m
+2026-11-16T21:22:14.9782297Z ##[error]Process completed with exit code 1.

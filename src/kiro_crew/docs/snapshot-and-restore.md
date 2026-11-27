@@ -52,7 +52,7 @@ declares more than the free space where it extracts.
 |-----------|-------|
 | memory | `memory.db`, `memory_index.db`, `workspace/memory/`, `workspace/knowledge/`, `memory_stores/` |
 | crons | `crons.json` |
-| config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `project_dir`, `workspace_dir` |
+| config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `mcp.json` (the servers added on the MCP Servers page), `project_dir`, `workspace_dir` |
 | skills | `skills/` directory |
 | crew-teams | `crew-teams/teams.json` (the Bot team list) |
 | workspace | `workspace/`, `plan_memory/` directories |
@@ -60,6 +60,47 @@ declares more than the free space where it extracts.
 | security | `telemetry_salt` |
 | artifacts | `artifacts/` directory — `--mode replace` only (folder assignments not captured yet) |
 | uploads | `uploads/` directory — `--mode replace` only |
+| members | `members/` directory: each Bot's `briefing.md` and Dashboard tab — `--mode replace` only |
+| named-workspaces | named workspace folders at `workspace-<name>/` in the data home — **opt-in**: only when `--components` names it |
+| *(not included)* | a named workspace folder placed anywhere else (an absolute `dir`, or a relative one not named `workspace-<name>`) — copy by hand, see below |
+
+**Named workspace folders ride only when you ask.** A workspace made with `kirocrew
+workspace create <name>` keeps its files in `workspace-<name>/` under the data home. One
+folder can be gigabytes, so a default snapshot (and a nightly backup) leaves them out
+rather than risk the 4 GiB limit. Name the component to carry them, together with the
+rest of a complete snapshot:
+
+```bash
+kirocrew snapshot --components memory,crons,config,skills,crew-teams,workspace,notifications,security,artifacts,uploads,members,named-workspaces
+```
+
+It carries each workspace in `config.json` whose folder is `workspace-<name>/` directly
+under the data home. A folder there that is a link (kept on another disk) is left out and
+recorded in `MANIFEST.json` as skipped, as a linked `members/` is. A workspace placed
+anywhere else is not carried: `kirocrew snapshot` names each one it leaves out, with its
+path. The component carries every such folder or none, and a Bot's own workspace can be
+several GiB, so a run that names it may meet the 4 GiB limit; raise it with
+`--max-archive-gib` (see above). A git worktree's `.git` is a file that names an absolute
+path on the source machine, so a restored worktree folder does not work as a repository
+on the new host until you recreate the worktree there.
+The workspace entry itself rides in `config`. To move one, copy the folder to the
+same place on the new machine, for example:
+
+```bash
+rsync -a ~/my-projects/big-repo/ newhost:my-projects/big-repo/
+```
+
+A workspace whose folder sits inside a tree this snapshot carries (the default
+`workspace/`, unless `--components` leaves it out) is in the bundle and is not named.
+
+On restore, a bundle that carries `named-workspaces` restores the `workspace-<name>/`
+folders it holds, to the same place under this data home and nowhere else. Replace swaps
+each carried folder whole (the previous one is kept in the pre-restore backup) and leaves
+a live `workspace-<name>/` the bundle does not carry alone; merge adds the files a folder
+is missing. A bundle without the component, or one from before it existed, restores no
+such folder. The bundle's agent config inside those folders is held back exactly as for
+`workspace/` (below). The folders land under this data home whatever `workspace_dir`
+said on the source machine, and this install's `workspace_dir` is kept.
 
 No component carries chat history (`sessions/*.jsonl`, the dashboard's chats).
 Restoring `config` prints a warning that chats from the source machine will not
@@ -70,11 +111,27 @@ either, by `kirocrew snapshot` or by the dashboard export. The dashboard names
 the templates your crews use that the export leaves out, and on import names the
 ones this machine is missing.
 
+The servers you add on the MCP Servers page are kept in `mcp.json` in the data
+home, which rides in `config`. The dashboard export does not carry that file, and
+neither tool carries `~/.kiro/settings/mcp.json`, the MCP list Kiro CLI also reads.
+
 `memory` is self-contained: it names the markdown half of memory (preferences,
 projects, history) and the knowledge base explicitly, so `--components memory`
 restores your recall without also restoring every unrelated working file in
 `workspace/`. Selections may overlap — asking for both `memory` and `workspace`
 stages the shared paths once.
+
+Restoring `workspace`, `memory` (which installs `workspace/memory/` and
+`workspace/knowledge/`) or `named-workspaces` never installs the bundle's agent config
+found anywhere in the `workspace/` trees or the `workspace-<name>/` folders it installs,
+in Replace or Merge: `.claude/`, `.mcp.json`, `.kiro/`, `.codex/`, `.goose/`,
+`.goosehints`, `.opencode/`, `opencode.json(c)`, `.pi/` and `.mimocode/`, `mimocode.json(c)`.
+An agent session started in `workspace/` or one of its project folders reads them, and a
+bundle can come from someone else. Your own copies are kept, and the result names what was
+left out. Notes (`CLAUDE.md`, `AGENTS.md`) restore as usual, and the result names each one
+it installed so you can read it. The crewmate skills under `workspace/.kiro/skills` are
+held back the same way, so a restore onto a fresh home does not bring them back; copy them
+from the archive by hand after reading them.
 
 `artifacts` carries the artifact library — every report, log and generated file
 saved from a session. `uploads` carries the files handed to the product from your own
@@ -102,6 +159,34 @@ and keeps your previous one in the pre-restore backup directory.
 So `kirocrew restore --mode merge` says these two were skipped and imports the rest, and
 refuses outright if they are all you asked for. Merging a library artifact by artifact
 needs a rule for when two artifacts are the same artifact; that is follow-up work.
+
+`members` carries each Bot's own folder, `members/<id>/`: its `briefing.md`, its
+Dashboard tab under `dashboard/`, and whatever else the Bot keeps there, such as
+`drafts/`. A Bot that works in its own folder can make it large, and all of it counts
+toward the bundle's 4 GiB limit. The Bot itself rides in `config`, its memory in
+`memory` and its team in `crew-teams`. **Some Bot state does not ride:** its permanent
+rules and DM binding (`member-records/`) and its activity history (`crew-log/`) are in
+no component, and the folder's legacy `activity.jsonl` files are left out on purpose. A
+restored Bot keeps its briefing, dashboard, memory and team, and starts with no rules,
+no DM thread and an empty activity history. `members` is `--mode replace` only for the
+same reason as the library: a folder is named by the Bot's slug, two machines can give
+one slug to different Bots, and the files in a folder describe each other.
+
+Two consequences of a replace that carries `members`:
+
+- It swaps this machine's `members/` for the bundle's, so a legacy `activity.jsonl` this
+  machine had not yet folded into its activity history is gone from the live folder. Only
+  the pre-restore backup directory still holds it.
+- A Bot that still owed its first welcome on the source machine carries
+  `welcome_owed.json`, so it greets you on the restored machine as if it were new there.
+
+**A `members/` that is a link is not followed.** Kiro Crew supports keeping the Bot
+folders in a folder outside the data home through a link at `members/`; a link that
+leads to the data home, a folder above it or a folder inside it is refused. A snapshot records that link as skipped in
+its `MANIFEST.json` and still writes the rest of the bundle; copy the folder the link names
+by hand. The bundle counts as incomplete: `--strict` exits 3, and `--keep` keeps the last
+bundle that still holds the Bot folders. A restore whose bundle carries no `members/` leaves the link alone, and a replace
+that does carry one refuses before changing anything, rather than write through the link.
 
 `workspace/hygiene_data/` and `workspace/insert_facts*.py` are excluded: they are
 large and regenerable.
@@ -227,7 +312,7 @@ live state is this module's job, and it needs the gateway stopped (below).
 
 | Mode | Behavior |
 |------|----------|
-| `replace` | Overwrite the target with the snapshot, backing up any existing state first |
+| `replace` | Overwrite the target with the snapshot, backing up any existing state first, except `session_map.json` and `workspace_dir`: they name folders on the machine that made the snapshot, so this install's copy stays (see below) |
 | `merge` | Import new data without overwriting what is already there |
 
 There is no default mode. Name one with `--mode replace` or `--mode merge`.
@@ -261,11 +346,16 @@ component was being replaced.
   way is named (`↩️  config.json: kept the existing file; the bundle's copy was
   NOT merged into it ...`) and `✅ config` is printed only when no setting was
   left behind. Host state in the same component (`session_map.json`,
-  `project_dir`, `workspace_dir`) keeps this machine's copy silently. A bundle
+  `workspace_dir`) keeps this machine's copy silently in a merge. Neither mode
+  installs `session_map.json` or `workspace_dir` from the bundle, even where this
+  install has none, so a restore on the same machine does not bring back the
+  bundle's session resume bindings; a restore also never installs the archive's
+  `project_dir`. A replace says `↩  <file>: not restored` and keeps this install's
+  copy of each. A bundle
   `ui-prefs.json` or `notification_settings.json` that its own store would read
   as empty, or refuse, stops the restore before anything is installed. A replace
   always checks it; a merge checks it only where the destination lacks that file,
-  because only then would the merge install it. A restored `config.json`, `config.local.json` or `ui-prefs.json` is
+  because only then would the merge install it. A restored `config.json`, `config.local.json`, `ui-prefs.json` or `mcp.json` is
   installed owner-only, as its own writer creates it. A bundle's `config.local.json` is never installed by a merge, even
   where the receiving install has none: that overlay outranks `config.json`, so
   it is reported (`↩️  config.local.json: not applied ...`) instead. To take the
@@ -295,7 +385,11 @@ outranks `config.json`. The result names every settings file it kept, so a Merge
 that brought none of your settings back says so. To restore the archive's
 settings over this install's, choose Replace in the mode menu and import again:
 Replace installs all four files, saving the ones it replaces to
-`pre-restore-<timestamp>/` first. A settings file in the archive that is not
+`pre-restore-<timestamp>/` first. Replace also leaves `session_map.json` alone,
+and installs the archive's `workspace_dir` only when it is a plain folder under
+this home (not the home itself, the data home or a folder holding it, or a
+protected folder); otherwise this install's copy stays and the result names it.
+A settings file in the archive that is not
 usable is named in the result and never installed, in either mode.
 Memory, crons, workspace files and skills follow the never-overwrite rules
 above in both tools.
@@ -311,8 +405,23 @@ and prompt). Its tags, steering folders, and any app, crew member or channel
 it belonged to stay behind. A folder is not added where its parent already
 holds one of the same name, and one that would land inside a crew member's
 home goes to the top level. At most 500 folders are kept, and the import warns
-with how many folders it did not add. Installed apps and their data are not
-carried yet.
+with how many folders it did not add.
+
+Installed apps and their data are not carried. Once the download starts, the
+dashboard export names every app that is on and every app you installed
+yourself, so you can install it again or turn it back on on the other machine;
+an app's data stays on this one. A built-in app that is off is not named,
+because every install starts with it switched off, and its data, if it has
+any, is not carried either. A memory-only export names none.
+
+The archive lists the apps the export named. On the other machine, the import
+names each one that machine does not have, or has off though it was on where
+you exported, and installs none of them. An app that was off there and is
+installed here is not named. No app's data is in the archive, so an app that
+is already on here keeps only the data this machine has. The list holds at
+most 200 apps; the import says how many more the other machine had, which it
+could not check. An archive from an older version lists no apps, and its import
+names none.
 
 The dashboard export leaves out folders that tools rebuild inside your
 workspace folder (`node_modules`, `.venv`, `venv` and tool caches such as

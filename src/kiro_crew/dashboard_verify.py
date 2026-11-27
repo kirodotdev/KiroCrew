@@ -115,7 +115,10 @@ limit, and :attr:`Verification.image` holds it or the reason there is none. Only
 that loaded the page and was judged ``passed`` or ``failed`` carries a picture: a skipped,
 timed-out or crashed run drew nothing worth showing, and a page whose script stopped at a
 library the run could not fetch would be shown without that library. The picture is of
-whatever the run was handed: the record for a snapshot of the page in force.
+whatever the run was handed: the record for a snapshot of the page in force. Right after
+the picture the run reads the whole page's rendered text with the frame's own marks
+(:func:`kiro_crew.dashboard_page_image.read_text`) into :attr:`Verification.text`, on
+every run that loaded the page and did not crash, the CDN-library skip included.
 
 Result
 ------
@@ -154,6 +157,7 @@ from kiro_crew import (
     platform_compat,
 )
 from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
+from kiro_crew.platform.context import redact_via_context
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +379,8 @@ class Verification:
     #: The picture a ``capture=True`` run took, or why it has none; ``None`` when no
     #: picture was asked for or the run never got as far as one. Never on the wire.
     image: dashboard_page_image.PageImage | None = None
+    #: The page's rendered text a ``capture=True`` run read, or ``None``. Never on the wire.
+    text: dashboard_page_image.PageText | None = None
 
     def wire(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -708,28 +714,28 @@ class _Raw:
 
 
 def _clip(text: str) -> str:
-    text = " ".join(text.split())
+    """*text* on one line, redacted whole and then cut: a cut first can keep the start of
+    a secret too short for the redactor to know."""
+    text = redact_via_context(" ".join(text.split()))
     return text if len(text) <= MAX_MESSAGE_CHARS else text[: MAX_MESSAGE_CHARS - 1] + "\u2026"
+
+
+#: A URL and its query or fragment, which :func:`_without_queries` cuts off.
+_URL_AND_QUERY: Final[re.Pattern[str]] = re.compile(r"(https?://[^\s'\"?#]+)(?:[?#][^\s'\"]*)?")
 
 
 def _without_queries(text: str) -> str:
     """*text* with the query and fragment cut off every URL in it. A page that builds a
     URL out of its data would otherwise have that data echoed back in an error.
 
-    Quadratic in the length of *text* when it holds many ``http://`` and no query, so a
-    caller hands it a bounded text."""
-    return re.sub(r"(https?://[^\s'\"?#]+)[?#][^\s'\"]*", r"\1", text)
-
-
-#: How much of a page's message is scrubbed for URL queries. The page chooses the message
-#: and its length, and what the agent is shown is clipped to :data:`MAX_MESSAGE_CHARS`
-#: anyway, so the scrub looks at a bounded stretch and the work stays small.
-_SCRUB_CHARS: Final[int] = 2048
+    Callers run it before redacting, since a redaction placeholder ends a URL early.
+    Linear: a URL with no query also matches, so the search never restarts inside it."""
+    return _URL_AND_QUERY.sub(r"\1", text)
 
 
 def _message(text: str) -> str:
-    """Page-controlled *text* as the agent reads it: no URL query, one line, clipped."""
-    return _clip(_without_queries(" ".join(text.split())[:_SCRUB_CHARS]))
+    """Page-controlled *text* as the agent reads it: no URL query, one line, redacted, clipped."""
+    return _clip(_without_queries(text))
 
 
 def _first_frame(stack: Any) -> tuple[int | None, int | None, str]:
@@ -782,7 +788,11 @@ def _defined_by(name: str, url: str) -> bool:
     still reported. ``js`` is filler on its own but joins a neighbouring library word, so
     ``jsyaml`` for ``.../js-yaml`` and ``videojs`` for ``.../video.js@8``.
     """
-    every = re.sub(r"[^a-z0-9]+", " ", urlsplit(url).path.lower()).split()
+    try:
+        path = urlsplit(url).path
+    except ValueError:  # a redacted userinfo leaves brackets in the host
+        return False
+    every = re.sub(r"[^a-z0-9]+", " ", path.lower()).split()
     words = [word for word in every if word not in _URL_FILLER]
     words += [a + b for a, b in zip(words, words[1:])]
     words += [
@@ -817,12 +827,13 @@ class _Collector:
         self.crashed = False
         #: The picture of the settled page, when one was asked for and the page loaded.
         self.image: dashboard_page_image.PageImage | None = None
+        self.text: dashboard_page_image.PageText | None = None
         self._seen: set[tuple[str, str, int | None]] = set()
 
     def refuse(self, url: str, resource_type: str) -> None:
         """Note a request that was refused. The page chooses the URL, so how many are kept
-        and how long each is are bounded here."""
-        kept = url[:_MAX_URL_CHARS]
+        and how long each is are bounded here, once its query is cut and it is redacted."""
+        kept = redact_via_context(_without_queries(url))[:_MAX_URL_CHARS]
         if kept not in self.blocked:
             if len(self.blocked) < _MAX_BLOCKED_URLS:
                 self.blocked.append(kept)
@@ -913,7 +924,7 @@ class _Collector:
 
 
 def _short_url(url: str) -> str:
-    url = _without_queries(url)
+    """A refused URL as :meth:`_Collector.refuse` stored it (query cut, redacted), cut."""
     return url if len(url) <= 120 else url[:119] + "\u2026"
 
 
@@ -1141,6 +1152,7 @@ class _Run:
             # After the oversize count above, so the picture's own large reply is never
             # mistaken for a message the page made the browser send.
             collector.image = self._picture()
+            collector.text = self._read_text()
         return collector
 
     def _picture(self) -> dashboard_page_image.PageImage:
@@ -1164,6 +1176,17 @@ class _Run:
         finally:
             pipe.max_message_bytes = _MAX_MESSAGE_BYTES
         return dashboard_page_image.PageImage(reason=reason)
+
+    def _read_text(self) -> dashboard_page_image.PageText | None:
+        """The settled page's text, or ``None``: a failed read leaves the verdict alone."""
+        try:
+            return dashboard_page_image.read_text(
+                lambda params: self._pipe.call(
+                    "Runtime.evaluate", params, session=self._session, deadline=self._deadline
+                )
+            )
+        except (_TimedOut, _BrowserGone, _CdpError):
+            return None
 
 
 def _drive(
@@ -1286,6 +1309,7 @@ def _verdict(
     collector: _Collector, document: _Document, started: float, data: str = DATA_SYNTHETIC
 ) -> Verification:
     raws, missing = _split_missing_library(collector)
+    text = None if collector.crashed else collector.text
     errors = [
         PageError(raw.kind, raw.message, *document.locate(raw.line, raw.column)) for raw in raws
     ]
@@ -1327,6 +1351,7 @@ def _verdict(
                 notes=notes,
                 elapsed_ms=_ms_since(started),
                 data=data,
+                text=text,
             )
         notes += (
             f"Not listed above: {_undefined(missing)}, most likely because a script the page "
@@ -1343,6 +1368,7 @@ def _verdict(
         elapsed_ms=_ms_since(started),
         data=data,
         image=_image_to_keep(collector, missing),
+        text=text,
     )
 
 
@@ -1547,14 +1573,18 @@ def verify_page(
         if browser is None:
             return _skipped(
                 "no system-installed Chromium or Chrome was found on this machine (the gateway "
-                "runs only a browser that this account cannot modify)",
+                "runs only a browser that this account cannot modify, at one of: "
+                f"{', '.join(_SYSTEM_BROWSERS)}). To fix it, install Google Chrome or the "
+                "distribution's Chromium package system-wide, not as a snap",
                 started,
             )
         python = find_launcher_python()
         if python is None:
             return _skipped(
                 "no system-installed Python was found to start the browser (the gateway runs "
-                "only a Python that this account cannot modify)",
+                "only a Python that this account cannot modify, at one of: "
+                f"{', '.join(_SYSTEM_PYTHONS)}). To fix it, install the distribution's python3 "
+                "package system-wide",
                 started,
             )
         if not _SLOT.acquire(blocking=False):

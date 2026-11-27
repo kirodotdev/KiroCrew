@@ -15,6 +15,8 @@
  * can fall back to the integrated terminal.
  */
 
+import { apiTransport } from '../api/apiTransport'
+
 /** One allowlisted terminal app installed on this machine. */
 export interface ExternalTerminalApp {
   id: string
@@ -116,7 +118,7 @@ export async function openInExternalTerminal(projectDir: string): Promise<{ ok: 
   if (!api) return { ok: false, error: 'unavailable' }
   let grant: unknown
   try {
-    const res = await fetch('/api/terminal/external', {
+    const res = await apiTransport.request('/api/terminal/external', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cwd: projectDir }),

@@ -25,6 +25,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -262,28 +263,34 @@ def _clean_approval_state():
 # ──────────────────────────────────────────────────────────────────────
 # set_orch_cfg — voice_reply provider validation
 # ──────────────────────────────────────────────────────────────────────
-class _Cfg:
-    def __init__(self, voice_reply: dict):
-        self.raw = {"voice_reply": voice_reply}
+def _Cfg(voice_reply: dict, tmp_path, monkeypatch) -> object:
+    """Write *voice_reply* to a config.json the loader reads; return a config stand-in."""
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"voice_reply": voice_reply}))
+    monkeypatch.setattr(h, "config_path", lambda: path)
+    monkeypatch.setattr(h, "config_local_path", lambda: tmp_path / "config.local.json")
+    return object()
 
 
 class TestSetOrchCfgProviderValidation:
-    def test_unknown_provider_falls_back_to_local(self, monkeypatch, caplog):
+    def test_unknown_provider_falls_back_to_local(self, tmp_path, monkeypatch, caplog):
         # Flipped from a "polly" fallback: an unrecognised provider value must
         # not land on a PAID cloud service. Local costs nothing and degrades
         # visibly; a cloud fallback bills an account nobody chose.
         monkeypatch.setattr(h, "_vc", h._VoiceConfig())
         monkeypatch.setattr(h, "_orch_cfg", None, raising=False)
         with caplog.at_level("WARNING"):
-            h.set_orch_cfg(_Cfg({"enabled": True, "provider": "ploly"}))
+            h.set_orch_cfg(_Cfg({"enabled": True, "provider": "ploly"}, tmp_path, monkeypatch))
         assert h._vc.provider == voice_reply.DEFAULT_PROVIDER
         assert h._vc.provider != voice_reply.PROVIDER_POLLY
         assert "ploly" in caplog.text
 
-    def test_valid_provider_is_kept_and_enabled_implies_auto_reply(self, monkeypatch):
+    def test_valid_provider_is_kept_and_enabled_implies_auto_reply(self, tmp_path, monkeypatch):
         monkeypatch.setattr(h, "_vc", h._VoiceConfig())
         monkeypatch.setattr(h, "_orch_cfg", None, raising=False)
-        h.set_orch_cfg(_Cfg({"enabled": True, "provider": "polly", "voice_id": "Amy"}))
+        h.set_orch_cfg(
+            _Cfg({"enabled": True, "provider": "polly", "voice_id": "Amy"}, tmp_path, monkeypatch)
+        )
         assert h._vc.provider == "polly"
         assert h._vc.global_enabled is True
         # auto_reply_to_voice defaults to the value of `enabled`.
@@ -342,10 +349,10 @@ class TestCronListRendering:
             _at_job("soon", 30),
         ]
         out = await _handle_cron("cron list", jobs)
-        assert "next in 2d 3h" in out
-        assert "next in 5h 30m" in out
-        assert "next in 5m" in out
-        assert "next in <1m" in out
+        assert "⏭ in 2d 3h" in out
+        assert "⏭ in 5h 30m" in out
+        assert "⏭ in 5m" in out
+        assert "⏭ in <1m" in out
 
     @pytest.mark.asyncio
     async def test_last_status_markers_and_disabled_prefix(self):
@@ -362,11 +369,11 @@ class TestCronListRendering:
         ]
         out = await _handle_cron("cron list", jobs)
         lines = {line.split("`")[1]: line for line in out.splitlines() if "`" in line}
-        assert lines["okjob"].split(" | ")[2].endswith(" ok")
-        assert lines["badjob"].split(" | ")[2].endswith(" failed")
-        assert lines["offjob"].startswith("paused")
+        assert lines["okjob"].endswith(("✓", "m")) and " ✓" in lines["okjob"]
+        assert " ❌" in lines["badjob"]
+        assert lines["offjob"].startswith("⏸️")
         # A disabled job has no next run at all.
-        assert "| next " not in lines["offjob"]
+        assert "⏭" not in lines["offjob"]
 
     @pytest.mark.asyncio
     async def test_due_now_renders_now(self):
@@ -378,7 +385,7 @@ class TestCronListRendering:
             created_ts=1.0,
         )
         out = await _handle_cron("cron list", [job])
-        assert "next now" in out
+        assert "⏭ now" in out
 
     @pytest.mark.asyncio
     async def test_message_is_truncated_to_50_chars(self):
@@ -1130,11 +1137,15 @@ class TestCompactionReinjection:
 
 class TestToolHookVerdicts:
     @pytest.mark.asyncio
-    async def test_tool_call_deny_is_surfaced_as_unenforceable_warning(self):
+    async def test_tool_call_deny_is_surfaced_as_unenforceable_warning(self, monkeypatch):
         """EVENT_TOOL_CALL is informational — the tool is ALREADY running, so a
         hook deny warns instead of claiming it was blocked."""
         slack = MockSlackClient()
-        builder = _Builder(ToolHookResult(action=TOOL_DENY, reason="denylisted"))
+        verdict = ToolHookResult(action=TOOL_DENY, reason="denylisted")
+        verdict.tier = "deny-rules"
+        builder = _Builder(verdict)
+        audit = MagicMock()
+        monkeypatch.setattr(h, "sel", lambda: audit)
         provider = FakeProvider(
             [
                 AcpEvent(kind=EVENT_TOOL_CALL, title="rm -rf /tmp/x", tool_kind="execute"),
@@ -1155,6 +1166,9 @@ class TestToolHookVerdicts:
         assert "flagged by security" in text
         assert "cannot be stopped here" in text
         assert builder.hooks.tool_calls == ["rm -rf /tmp/x"]
+        rows = [c.kwargs for c in audit.log_tool_invocation.call_args_list]
+        (flagged,) = [r for r in rows if r["outcome"] == "flagged_unenforceable"]
+        assert flagged["metadata"] == {"rule_id": "deny-rules"}
 
     @pytest.mark.asyncio
     async def test_permission_request_hook_auto_approve(self):
@@ -1414,6 +1428,7 @@ class _Slot:
         meta=None,
         directive_user_origin,
         directive_channel_origin,
+        source_channels=(),
     ):
         assert directive_user_origin is True
         assert directive_channel_origin is True
@@ -1456,11 +1471,15 @@ class TestLinkedThreadRouting:
             _directive_channel_origin,
             _directive_source_channels,
             _commands_off,
+            _expansions_off,
+            _slack_voice,
         ):
             assert _directive_user_origin is True
             assert _directive_channel_origin is True
             assert _directive_source_channels == ("C1",)
             assert _commands_off is False
+            assert _expansions_off is False
+            assert _slack_voice is None
             ran.append(text)
 
         monkeypatch.setattr(chat_mod, "_run_chat", _fake_run_chat)

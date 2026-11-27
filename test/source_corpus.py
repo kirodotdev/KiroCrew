@@ -300,6 +300,7 @@ def _fallback_walk() -> list[Path]:
 
 
 @functools.lru_cache(maxsize=1)
+@untraced()
 def repo_files() -> tuple[Path, ...]:
     """Every file the checkout CONTAINS, enumerated the way git sees it.
 

@@ -18,10 +18,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
+from kiro_crew.dashboard.state_parts.injected_turns import (
+    SESSION_RESTARTED_NOTICE_PREFIX,
+    session_restarted_notice,
+)
 from kiro_crew.dashboard.state_parts.transcript_rows import _compaction_keep_record
+from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.messaging.link import (
     UNBIND_REASON_DASHBOARD_UNLINK,
     UNBIND_REASON_ENTRY_DELETED,
@@ -681,12 +687,23 @@ def _unbind_notice_title(self: DashboardState, key: str) -> str:
     return slot.display_title or key
 
 
+#: How long after its message a turn may still lack its session before the idle
+#: sweep's reset counts it as stalled. A healthy turn takes its session within
+#: seconds.
+_STALLED_TURN_SECS = 60
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def wire_session_recycle_callback(self: DashboardState) -> None:
     """Register the dashboard's recycle-notification callback.
 
     Fired when the watchdog recycles a session (e.g. RSS threshold). Posts a
-    notice into the slot so the user understands why their session reset. Also
-    subscribes the stuck-turn hook and the RSS hold, which post their own notices.
+    notice into the slot so the user understands why their session reset, and
+    queues a note for the agent's next prompt that its background work ended. Also
+    subscribes the stuck-turn hook, the RSS hold and the idle expiry, which post their own rows.
     """
 
     async def _on_recycled(key: str, *, reason: str) -> None:
@@ -726,6 +743,16 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
                     "msg msg-a",
                     meta={"kind": "compaction", "notice": "session_recycled"},
                 )
+                # The row reaches the person only. A natively resumed session
+                # replays the harness's own transcript, where a background
+                # command or sub-agent still reads as started, so the agent kept
+                # reporting it as running. The next prompt drains this queue.
+                # One note is enough until then, and the queue is only appended
+                # to: a channel turn's settle matches the notices it copied by
+                # position (``queue_drain.read_tab_notices``).
+                pending = slot._pending_subagent_failures
+                if not any(n.startswith(SESSION_RESTARTED_NOTICE_PREFIX) for n in pending):
+                    pending.append(session_restarted_notice(reason))
         except Exception:
             logging.getLogger("kiro_crew.dashboard.state").exception(
                 "Failed to append recycle notice to slot %s", slot_key
@@ -784,6 +811,53 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
             )
 
     self.sessions.on_stuck_turn = _on_stuck_turn
+
+    def _on_idle_expired(key: str) -> None:
+        """Mark the chat's newest message failed when its turn stalled before it took *key*.
+
+        The sweep reads a free turn semaphore and a stale clock as idle, so a turn
+        that persisted its message but stalled before it took the session is reset
+        like any idle one, and the tab would show the message with nothing after
+        it. Only the turn the runner is admitting onto *key* itself is judged: the
+        runner publishes ``_active_turn_session_key`` once a turn is past fair
+        admission and the background-turn permit, and clears it when the turn
+        ends, so a queued turn, a turn on another session or no turn carries a
+        different value. That turn is marked once its opener is older than
+        ``_STALLED_TURN_SECS``, so a message sent just before the sweep is not.
+        Sync like ``_on_stuck_turn``; the row is the one a turn that raised before
+        its main ``try`` gets, so the chat says the same thing for both, minus
+        ``meta.turn_failed``: this turn may still recover, and an OpenAI-compatible
+        reader must then report its reply.
+        """
+        from kiro_crew.dashboard.chat_runner import (
+            note_message_failed_before_start,
+            unanswered_turn_opener,
+        )
+        from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+        slot_key = dashboard_slot_key(key)
+        slot = self.get_slot(slot_key) if slot_key else None
+        if slot is None or getattr(slot, "_active_turn_session_key", "") != key:
+            return
+        opener = unanswered_turn_opener(slot)
+        if opener is None:
+            return
+        # The order every transcript reader uses: a naive stamp is local time.
+        unparsed, written = transcript_sort_key(str(opener.get("ts")))
+        age = _utc_now().timestamp() - written
+        if unparsed or age <= _STALLED_TURN_SECS:
+            return
+        logger.error(
+            "Idle sweep expired %s while its newest message had no reply for %.0fs",
+            key,
+            age,
+        )
+        try:
+            note_message_failed_before_start(slot, turn_failed=False)
+        except Exception:
+            logger.exception("Failed to append the unanswered-message row to slot %s", slot_key)
+
+    self.sessions.on_idle_expired = _on_idle_expired
 
     def _on_leftover_memory(key: str, message: str) -> None:
         """Tell whoever watches *key* that leftover processes hold its memory mid-turn.
@@ -854,3 +928,7 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
             )
 
     self.sessions.on_rss_hold = _on_rss_hold
+
+    from kiro_crew.dashboard.memory_guard_events import wire_memory_guard
+
+    wire_memory_guard(self)

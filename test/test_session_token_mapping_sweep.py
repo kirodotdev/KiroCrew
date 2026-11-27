@@ -76,6 +76,42 @@ def test_a_failing_prune_does_not_break_the_tick(caplog: pytest.LogCaptureFixtur
     assert own == ["session token mapping sweep failed: OSError"]
 
 
+def test_the_tick_prunes_at_most_once_per_prune_interval() -> None:
+    """The tick runs the prune on its first pass, then only once the interval has passed.
+
+    The prune stats every mapping, so running it on every tick is the cost being
+    bounded; the stamp is taken before the prune so a failing one is not retried
+    on every tick either.
+    """
+    from kiro_crew.session_cleanup import CleanupState, SessionCleanup
+    from kiro_crew.session_cleanup_token_sweep import SESSION_TOKEN_PRUNE_INTERVAL_SECS
+
+    interval = SESSION_TOKEN_PRUNE_INTERVAL_SECS
+    assert interval > SessionCleanup.MAX_TICK_INTERVAL_SECS
+    clock = [1000.0]
+    calls: list[float] = []
+
+    async def sweep() -> None:
+        calls.append(clock[0])
+
+    owner = SimpleNamespace(
+        state=CleanupState(watchdog=cast(Any, object())),
+        _deps=SimpleNamespace(monotonic=lambda: clock[0]),
+        _sweep_session_token_mappings=sweep,
+    )
+
+    def tick_at(now: float) -> None:
+        clock[0] = now
+        asyncio.run(SessionCleanup._maybe_sweep_session_token_mappings(cast(Any, owner)))
+
+    tick_at(1000.0)
+    tick_at(1000.0 + SessionCleanup.MAX_TICK_INTERVAL_SECS)
+    tick_at(1000.0 + interval - 1)
+    assert calls == [1000.0]
+    tick_at(1000.0 + interval)
+    assert calls == [1000.0, 1000.0 + interval]
+
+
 def test_the_prune_reads_age_and_unlinks_under_the_publication_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -30,9 +30,9 @@ Four rules hold for every call, in this order:
 only a peer slot that THIS caller created with ``session_create(crew=)`` on THAT
 crew, as recorded in gateway memory by :func:`_record_dispatch`. The record is not
 persisted: after a hub restart the conductor cannot drive the slot, and the person
-still can from the crew window. Wave 4 replaces this record with the work
-item's ``worker_session_key`` + ``worker_instance_id`` pair, which survives a
-restart.
+still can from the crew window. Wave 4 adds the work item's
+``worker_session_key`` + ``worker_instance_id`` pair as a second admission, which
+survives a restart.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew import session_ledger
-from kiro_crew.apps.version import known_version, versions_compatible
+from kiro_crew.apps.version import known_version, parse_version, versions_compatible
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import _registry
 from kiro_crew.dashboard.handlers_instances_peer import (
@@ -401,8 +401,23 @@ def _manager(state: "DashboardState") -> Any:
     return mgr
 
 
-async def check_version(mgr: Any, instance_id: str) -> None:
-    """Refuse a crew whose ``major.minor`` differs from this hub's (RFC §5)."""
+#: A peer reply that says the crew does not know the call: a crew on another
+#: release than this hub's, so the refusal names both versions (RFC §5).
+CREW_PEER_INCOMPATIBLE = "crew_peer_incompatible"
+#: The last version each crew reported, for :func:`incompatible_error`.
+_PEER_VERSIONS: dict[str, str] = {}
+#: ``(crew, version)`` pairs already warned about: one log line per pair, not per call.
+_SKEW_WARNED: set[tuple[str, str]] = set()
+
+
+async def check_version(mgr: Any, instance_id: str) -> str:
+    """Read the crew's version: it is ``""`` when unknown. A skew never refuses (RFC §5).
+
+    A ``major.minor`` that differs from this hub's logs one warning per crew and
+    version, and the call goes ahead: whether a route works is decided by calling
+    it, and a reply that shows the crew lacks it is :func:`incompatible_error`.
+    A crew that is down, or whose version cannot be read, is still refused.
+    """
     try:
         ok, payload = await mgr.peer_capability(instance_id, "/api/version")
     except Exception as exc:
@@ -416,13 +431,65 @@ async def check_version(mgr: Any, instance_id: str) -> None:
         raise CrewCallError(502, "crew_version_unknown", "could not read that crew's version")
     peer = payload.get("version") if isinstance(payload, dict) else ""
     peer = known_version(redact_peer_text(peer)[:64]) if isinstance(peer, str) else ""
-    if not versions_compatible(kiro_crew.__version__, peer):
-        raise CrewCallError(
-            409,
-            "crew_version_mismatch",
-            f"that crew runs {peer or 'an unknown version'}; this hub runs "
-            f"{kiro_crew.__version__} (major.minor must match)",
+    _PEER_VERSIONS[instance_id] = peer
+    if not versions_compatible(kiro_crew.__version__, peer) and (
+        (instance_id, peer) not in _SKEW_WARNED
+    ):
+        _SKEW_WARNED.add((instance_id, peer))
+        logger.warning(
+            "crew %s runs %s; this hub runs %s; calls go ahead, and a call that crew "
+            "does not know is refused as %s",
+            instance_id,
+            peer or "an unknown version",
+            kiro_crew.__version__,
+            CREW_PEER_INCOMPATIBLE,
         )
+    return peer
+
+
+def skewed_reply(status: int, payload: Any) -> bool:
+    """Whether a peer reply says the crew does not know the call.
+
+    Only a plain (non-JSON) ``404``: a route the crew does not serve (:func:`peer_call`
+    returns it with no body). A JSON ``404`` is the crew's own answer (no such
+    session), and a ``5xx`` is a fault, not a skew. No peer route the hub calls
+    refuses an unknown body field with a code of its own (slot create ignores one;
+    the ``work-item`` PATCH answers ``invalid_value`` naming the field), so a 400 is
+    left as the crew's refusal.
+    """
+    return status == 404 and payload is None
+
+
+#: The first release whose ``POST api/chat`` honours ``turn_origin: agent``.
+TURN_ORIGIN_SINCE = (0, 12, 0)
+
+
+def _ignores_turn_origin(peer: str) -> bool:
+    """Whether a crew at *peer* is KNOWN to drop the agent-origin mark on a send.
+
+    The one parameter an older crew silently ignores that crosses a safety line:
+    an agent turn read as person-sent gets the person's approval rights. This is
+    not a version gate: an unknown or unparseable version is not refused (it
+    only warns, in :func:`check_version`).
+    """
+    if not peer:
+        return False
+    try:
+        return parse_version(peer) < TURN_ORIGIN_SINCE
+    except ValueError:
+        return False
+
+
+def incompatible_error(instance_id: str, what: str) -> CrewCallError:
+    """The refusal for a call the crew does not know, naming both versions."""
+    peer = _PEER_VERSIONS.get(instance_id, "") or "an unknown version"
+    return CrewCallError(
+        502,
+        CREW_PEER_INCOMPATIBLE,
+        f"{what}: that crew runs {peer}, this hub runs {kiro_crew.__version__}, "
+        "and the crew does not know this call; check that crew's version and "
+        "upgrade the older side",
+    )
 
 
 async def peer_call(
@@ -492,8 +559,10 @@ async def peer_call(
         raise CrewCallError(502, "crew_reply_malformed", "that crew's reply is not JSON") from None
 
 
-def _peer_error(status: int, payload: Any, what: str) -> CrewCallError:
-    """A peer refusal as a hub refusal. The peer's text is already redacted."""
+def _peer_error(status: int, payload: Any, what: str, *, crew: str) -> CrewCallError:
+    """A peer refusal on *crew* as a hub refusal. The peer's text is already redacted."""
+    if skewed_reply(status, payload):
+        return incompatible_error(crew, what)
     msg = payload.get("error") if isinstance(payload, dict) else ""
     code = payload.get("code") if isinstance(payload, dict) else ""
     detail = f": {str(msg)[:300]}" if isinstance(msg, str) and msg else ""
@@ -565,7 +634,10 @@ def _fenced_target(state: "DashboardState", caller: str, instance_id: str, targe
         raise CrewCallError(
             403,
             "crew_target_not_dispatched",
-            "that crew session was not opened by this session with session_create(crew=)",
+            "this session holds no record of opening that crew session with "
+            "session_create(crew=) on that crew, and your work ledger shows no open item "
+            "bound to it there; a session_create(crew=) record lasts only until this "
+            "gateway restarts, so open a crew session you will keep driving with work_item=",
         )
     return slot
 
@@ -698,7 +770,9 @@ async def _create(
     else:
         status, payload = await peer_call(mgr, instance_id, "POST", "api/chat/slots", body=create)
         if not 200 <= status < 300:
-            raise _peer_error(status, payload, "could not create the crew session")
+            raise _peer_error(
+                status, payload, "could not create the crew session", crew=instance_id
+            )
         key = payload.get("key") if isinstance(payload, dict) else None
         if not _slot_ok(key):
             raise CrewCallError(
@@ -724,6 +798,11 @@ async def _create(
             # The latest decision did not reach the new worker; it holds the one
             # the create carried until the next decide.
             result["decision_error"] = payload["decision_error"]
+        # The bind's default-patrol outcome: that patrol's tick is what pulls this
+        # worker's reports, so the reply says whether one runs (RFC §2).
+        for name in ("patrol", "patrol_reason", "patrol_note"):
+            if isinstance(payload, dict) and isinstance(payload.get(name), str):
+                result[name] = payload[name]
     if fields["title"]:
         # The session exists from here on: a failed rename is reported beside its
         # key, never as a refusal that would hide a session the caller must close.
@@ -738,7 +817,9 @@ async def _create(
         except CrewCallError as exc:
             t_status, t_payload = 0, {"error": exc.message, "code": exc.code}
         if not 200 <= t_status < 300:
-            result["title_error"] = _peer_error(t_status, t_payload, "rename failed").message
+            result["title_error"] = _peer_error(
+                t_status, t_payload, "rename failed", crew=instance_id
+            ).message
             result["title"] = ""
     return result
 
@@ -761,52 +842,137 @@ async def _send(mgr: Any, instance_id: str, slot: str, body: dict[str, Any]) -> 
     }
     if steer:
         peer_body["steer"] = True
+    if _ignores_turn_origin(_PEER_VERSIONS.get(instance_id, "")):
+        # The one deliberate version floor: a crew that silently drops the
+        # agent-origin mark would run this turn with a person's rights.
+        raise incompatible_error(instance_id, "could not send to the crew session")
     status, payload = await peer_call(
         mgr, instance_id, "POST", "api/chat", params={"ws": "1"}, body=peer_body
     )
     if not 200 <= status < 300:
-        raise _peer_error(status, payload, "could not send to the crew session")
+        raise _peer_error(status, payload, "could not send to the crew session", crew=instance_id)
     # What the crew did, not what was asked: a steer it could not land is queued.
     steered = isinstance(payload, dict) and payload.get("steered") is True
     return {"target": slot, "crew": instance_id, "delivered": True, "steered": steered}
 
 
-async def _read(mgr: Any, instance_id: str, slot: str, limit: int) -> dict[str, Any]:
+def _int_field(payload: dict[str, Any], name: str) -> int | None:
+    value = payload.get(name)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+async def _read(
+    mgr: Any, instance_id: str, slot: str, limit: int, since: int | None = None
+) -> dict[str, Any]:
+    """Read a crew session's tail, or its rows from *since* on.
+
+    Positions are the peer's own: ``GET api/chat/slots/{s}?limit=L`` answers the
+    rows ``[next_before, total)`` of its collapsed wire rows, so row ``i`` of the
+    page sits at ``next_before + i``. The peer's ``from``/``since``/``digest``
+    cursor (``slot_detail_delta``) is not used: it needs a digest only the peer
+    can compute, and it always re-sends the page's last row. ``since=N`` is a
+    plain older-page read instead, ``before=N+L&limit=L``, which answers the rows
+    ``[N, N+L)`` (fewer at the end), so a since read is one peer GET like a tail
+    read. ``next_since`` stops before the first in-flight row (a streaming fold, a
+    pending approval): those rows are replaced when they land, and a cursor past
+    them would skip the finished reply, as the local read's cursor does.
+    """
+    from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES
+
+    params = {"limit": str(limit)}
+    if since is not None:
+        params["before"] = str(since + limit)
     status, payload = await peer_call(
-        mgr,
-        instance_id,
-        "GET",
-        f"api/chat/slots/{quote(slot, safe='')}",
-        params={"limit": str(limit)},
+        mgr, instance_id, "GET", f"api/chat/slots/{quote(slot, safe='')}", params=params
     )
     if not 200 <= status < 300:
-        raise _peer_error(status, payload, "could not read the crew session")
+        raise _peer_error(status, payload, "could not read the crew session", crew=instance_id)
     if not isinstance(payload, dict):
         raise CrewCallError(502, "crew_reply_malformed", "the crew's read reply is not an object")
     rows = payload.get("messages")
-    messages = []
-    for row in rows if isinstance(rows, list) else []:
+    rows = rows if isinstance(rows, list) else []
+    first, total = _int_field(payload, "next_before"), _int_field(payload, "total")
+    span = (first, total) if first is not None and total is not None and first <= total else None
+    if since is not None:
+        if span is None:
+            raise CrewCallError(
+                502, "crew_reply_malformed", "the crew's read reply carries no row positions"
+            )
+        first, total = span
+        if since > total:
+            # Same refusal as the local read: a rewind or regenerate shrank the
+            # transcript, so the held position points past its end.
+            raise CrewCallError(
+                409,
+                "cursor_unavailable",
+                "that crew session is shorter than your cursor (it was rewound or "
+                "regenerated); read without since to get the latest messages",
+            )
+        if first > since:
+            # shortcut: the crew cut its page by bytes (oldest rows first), so
+            # [since, first) did not fit; a smaller limit reaches them, and
+            # limit=1 always does (the newest row of a page is always sent).
+            raise CrewCallError(
+                409,
+                "crew_page_cut",
+                "the messages at your cursor are too large for one page; "
+                "read again with a smaller limit",
+            )
+    messages: list[dict[str, Any]] = []
+    cursor: int | None = None
+    for offset, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
         role = row.get("role")
+        role = role if isinstance(role, str) else ""
+        index = span[0] + offset if span is not None else None
+        if index is not None and since is not None and index < since:
+            continue
+        if role in _TRANSIENT_ROLES and cursor is None:
+            cursor = index
+        if since is not None and cursor is not None:
+            # A since read stops at the in-flight row: the next read starts there.
+            break
         content = row.get("content")
         if isinstance(content, list):
             content = "\n".join(
                 str(b.get("text", "")) for b in content if isinstance(b, dict) and b.get("text")
             )
-        messages.append(
-            {
-                "role": role if isinstance(role, str) else "",
-                "content": content if isinstance(content, str) else "",
-            }
-        )
-    return {
+        out: dict[str, Any] = {"role": role, "content": content if isinstance(content, str) else ""}
+        if index is not None:
+            out["index"] = index
+        messages.append(out)
+    if since is None:
+        messages = messages[-limit:]
+    result: dict[str, Any] = {
         "target": slot,
         "crew": instance_id,
         "title": payload.get("title") if isinstance(payload.get("title"), str) else "",
         "running": payload.get("running") is True,
-        "messages": messages[-limit:],
+        "messages": messages,
     }
+    if span is not None:
+        first, total = span
+        # A peer row that renders as nothing (an empty streaming fold) holds a
+        # position but is not sent, so the page is short of its span; positions
+        # after it then read low, which re-sends a row rather than skipping one.
+        end = first + len(rows) if since is None else min(since + limit, total, first + len(rows))
+        result["total"] = total
+        if cursor is not None:
+            result["streaming"] = True
+        if since is None and result["running"]:
+            # A tail read of a running session issues no cursor. An in-flight
+            # row can sit BEFORE the page: a segment cut deferred for an open
+            # construct keeps the chunk run in place while tool rows land after
+            # it, and the later cut deletes that run, so every row after it
+            # moves down one. No position this page sees is safe to resume
+            # from, so the caller reads the tail again. A since read can resume:
+            # its rows from since on are all on its page, and since itself came
+            # from an idle read or an earlier since read, so no in-flight row
+            # sits below it.
+            return result
+        result["next_since"] = cursor if cursor is not None else max(end, since or 0)
+    return result
 
 
 async def _stop(mgr: Any, instance_id: str, slot: str) -> dict[str, Any]:
@@ -814,7 +980,7 @@ async def _stop(mgr: Any, instance_id: str, slot: str) -> dict[str, Any]:
         mgr, instance_id, "POST", f"api/chat/slots/{quote(slot, safe='')}/stop", body={}
     )
     if not 200 <= status < 300:
-        raise _peer_error(status, payload, "could not stop the crew session")
+        raise _peer_error(status, payload, "could not stop the crew session", crew=instance_id)
     # The crew can decline: a slot that is compacting answers 200 with
     # ``compacting`` and keeps running, so the receipt says what happened.
     compacting = isinstance(payload, dict) and payload.get("compacting") is True
@@ -852,11 +1018,23 @@ async def _close(
     if status == 404:
         # Already gone on the crew: nothing left to drive, so the record goes too.
         await _forget_locked(state, caller, instance_id, slot)
-        raise _peer_error(status, payload, "could not close the crew session")
+        raise _peer_error(status, payload, "could not close the crew session", crew=instance_id)
     if not 200 <= status < 300:
-        raise _peer_error(status, payload, "could not close the crew session")
+        raise _peer_error(status, payload, "could not close the crew session", crew=instance_id)
     await _forget_locked(state, caller, instance_id, slot)
     return {"target": slot, "crew": instance_id, "closed": True}
+
+
+def _read_since(raw: object) -> int | None:
+    if raw in (None, ""):
+        return None
+    try:
+        since = int(str(raw))
+    except ValueError:
+        raise CrewCallError(400, "invalid_pagination", "since must be an integer") from None
+    if since < 0:
+        raise CrewCallError(400, "invalid_since", "since must be >= 0")
+    return since
 
 
 def _read_limit(raw: object) -> int:
@@ -897,7 +1075,7 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
         )
     state: DashboardState = request.app["state"]
     crew_ref = clean_crew_ref(body.get("crew"))
-    slot, limit, name = "", 20, ""
+    slot, limit, since, name = "", 20, None, ""
     try:
         caller = await authorize_remote_dispatch(request, verb)
         if verb == "create" and not has_crew(body):
@@ -914,12 +1092,7 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
         mgr = _manager(state)
         if verb == "read":
             limit = _read_limit(body.get("limit"))
-            if body.get("since") not in (None, ""):
-                raise CrewCallError(
-                    400,
-                    "crew_field_unsupported",
-                    "session_read_message with crew= does not take since",
-                )
+            since = _read_since(body.get("since"))
         board = session_ledger.ledger_key(declared)
         if verb != "create":
             slot = await _fenced_target_or_item(
@@ -941,7 +1114,7 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
         elif verb == "send":
             result = await _send(mgr, instance_id, slot, body)
         elif verb == "read":
-            result = await _read(mgr, instance_id, slot, limit)
+            result = await _read(mgr, instance_id, slot, limit, since)
         elif verb == "stop":
             result = await _stop(mgr, instance_id, slot)
         elif verb == "close":

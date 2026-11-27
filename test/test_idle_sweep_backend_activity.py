@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from session_handle_helpers import bare_session_handle
 from test_update_provider import _UNALLOCATABLE_PID
 
 from kiro_crew.acp import runtime as acp_runtime
@@ -263,7 +264,7 @@ class TestIdleSweep:
         provider = AcpProvider.__new__(AcpProvider)
         runtime = AcpRuntime(work_dir=".")
         runtime._session_activity_at["owner"] = 123.0
-        handle = AcpSessionHandle.__new__(AcpSessionHandle)
+        handle = bare_session_handle()
         handle._runtime = runtime
         handle._session_id = "owner"
         transport = AcpSessionProvider.__new__(AcpSessionProvider)

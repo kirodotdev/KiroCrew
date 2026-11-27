@@ -3,8 +3,8 @@ title: A conductor sends to and closes its own children, and reports on its own 
 status: implemented
 author: kirocrew-worker, directed by iamwhatever
 created: 2026-11-08
-last-audited: 2026-11-08
-audited-at: e48fe0ec03
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: 33043
 implementation-prs: [33373]
 tracking-issues: []
@@ -17,7 +17,9 @@ superseded-by: []
 Status: implemented by
 [#33373](https://github.com/kirodotdev/KiroCrew/pull/33373), after acceptance in
 [#33417](https://github.com/kirodotdev/KiroCrew/pull/33417), as proposed:
-default on (Q1) and the four-step fallback's seed unprompted (Q2). It moves a trust
+default on (Q1) and the four-step fallback's seed unprompted (Q2):
+`_conductor_own_child_call` in `src/kiro_crew/dashboard/chat_turn/tool_approval.py`
+behind `agent.conductor_own_child_verbs` (checked at `fc89562d69`). It moves a trust
 boundary, so it is RFC-first under
 [CONTRIBUTING.md](../../CONTRIBUTING.md#pull-request-workflow). **The security
 trade-off in section 6 is the repository owner's (iamwhatever) and the security
@@ -185,9 +187,16 @@ can still approve by hand.
 A permission request is auto-approved when all of these hold, and prompts
 otherwise:
 
-1. The calling slot's agent is `kirocrew-conductor` or `kirocrew-team-lead`.
-   Other conductor agents (`kirocrew-ledger-conductor`, pipeline, security,
-   folder) keep prompting until named.
+1. The calling slot's agent is `kirocrew-conductor` or `kirocrew-team-lead`,
+   or the calling slot is a Bot's conducting worker
+   (`mate_worker_conducts.holds_conducting_kit`: the Bot's own worker, created by
+   the Bot's thread, whose running session took the session-control mount at its
+   start, which the Bot's owner-set `worker_conducts` switch decides at that
+   start; [rfc-bot-workers-conduct](rfc-bot-workers-conduct.md) §5.2, §5.3). A
+   conducting worker is admitted by that kit, never by its template's name, so an
+   unmarked `kirocrew-mate-worker` keeps prompting. Other conductor agents
+   (`kirocrew-ledger-conductor`, pipeline, security, folder) keep prompting
+   until named.
 2. The tool is `session_send` or `session_close` on `kirocrew-dashboard`.
 3. The request carries a verified `kirocrew-dashboard` identity and verified
    raw arguments, and is not a subagent's call (the same checks

@@ -1,21 +1,22 @@
-import { memo, useState, useRef, useEffect, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react'
-import { ReactReduxContext } from 'react-redux'
-import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../../lib/crewSeed'
-import { AppSenderByline, MessageByline, OtherSenderBubble } from './shared-crew/MessageByline'
+import { memo, useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
+import { parseSessionSeed } from '../../lib/crewSeed'
+import { MessageByline, OtherSenderBubble, SpeakerHeading, useSeedSender } from './shared-crew/MessageByline'
 import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
 import { readRelay } from './sessionRelay'
 import { pasteBlocksOf, unseededUserText } from './userMessageText'
 import SenderAvatar from './SenderAvatar'
 import { motion } from 'framer-motion'
 import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, ChevronRight, type LucideIcon } from 'lucide-react'
+import { useDoneFlash } from '../../hooks/useDoneFlash'
+import QuotedMark, { QUOTED_BTN_CLS } from './QuotedMark'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
-import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
+import { useSearchHighlight, useCurrentOcc, useRevealMatch } from '../../hooks/SearchHighlightContext'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
+import { useReturnInsertsNewline } from '../../hooks/useComposerSendMode'
 import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHighlight'
-import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { containedSelectionRange } from '../../utils/selectionContainment'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
 
@@ -27,6 +28,7 @@ import { Btn } from '../../components/ui'
 import SteerDecisionLine from './SteerDecisionLine'
 import EditSkillPicker, { type EditFieldBinding, type EditSkillPickerTarget } from './EditSkillPicker'
 import QuoteCard from './QuoteCard'
+import { QuoteJumpCtx } from '../../components/markdown/contexts'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { NO_ACTIONS, useMessageActionsFor } from '../../messageActions/MessageActionMenuItems'
 import { prependQuote, quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../../chat-core/composer/messageQuote'
@@ -35,6 +37,7 @@ import { readSteerRecord } from './decisionRecord'
 import { useRowDisclosure } from './rowDisclosure'
 import { revealComposer } from './composerFocus'
 import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../hooks/useSteerRetract'
+import { useChatSetting } from '../../hooks/useChatSetting'
 // Steer bubbles play a one-shot entrance (slide-in + ring pulse) when they land.
 // The chat transcript is virtualized, so a row can remount when scrolled away and
 // back; without this guard the entrance would replay every time. Module-level set
@@ -172,6 +175,10 @@ interface UserMessageProps {
   /** Scroll to the message this row quotes (`meta.quote`). Absent, the card is
    *  drawn but is not a control. */
   onJumpToQuote?: (quote: MessageQuote) => void
+  /** The jump from a `>` quote in this message back to the reply it was
+   *  selected from (sent at `fromTs`), or null when no reply holds its words.
+   *  Absent, the quotes draw no jump control. */
+  onJumpToQuotedText?: (quoted: string, fromTs: string) => (() => void) | null
   /** Take this steer back before the running turn reads it, by its row `mid`.
    *  The controls are drawn only on a pending steer whose row says it can be taken
    *  back (`meta.steerRetract`), which the gateway stamps where the harness can. */
@@ -184,10 +191,14 @@ interface UserMessageProps {
   steerActionRequestFailed?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, editSkillPicker, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, continuesRun, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp: timestampProp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, editSkillPicker, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, continuesRun, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onJumpToQuotedText, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // Settings -> Chat -> Show Timestamps, read here so every surface that draws
+  // this bubble follows it, as AssistantMessage does.
+  const timestamp = useChatSetting('showTimestamps') ? timestampProp : undefined
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
+  const returnInsertsNewline = useReturnInsertsNewline()
   const [draft, setDraft] = useState(content)
   // Outcome of the last Copy / Copy-link press, shown on the icon for 1.5s.
   // `failed` is the refused clipboard write (permission, insecure context):
@@ -417,6 +428,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const userRef = useRef<HTMLDivElement>(null)
   const { term, caseSensitive } = useSearchHighlight()
   const currentOcc = useCurrentOcc()
+  const revealMatch = useRevealMatch()
 
   // Search matches the full message, so a banner row opens its body for the
   // active match; the label and toggle are skipped when counting occurrences.
@@ -428,14 +440,15 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     const el = userRef.current
     if (!el) return
     applySearchHighlights(el, term, caseSensitive, currentOcc)
-    // Converge-center the exact occurrence (see scrollCurrentMatchIntoView).
+    // Converge-center the exact occurrence when a find action asked for it,
+    // once per action (see useRevealMatch and scrollCurrentMatchIntoView).
     // Cancel on re-run/unmount so rapid navigation doesn't accumulate loops.
-    const cancelScroll = currentOcc >= 0 ? scrollCurrentMatchIntoView(el) : undefined
+    const cancelScroll = revealMatch(el)
     // The ranges live on a page-wide CSS.highlights entry (see domHighlight):
     // withdraw this bubble's on unmount so a virtualized row that scrolls away
     // is not kept alive through them.
     return () => { cancelScroll?.(); clearSearchHighlights(el) }
-  }, [term, caseSensitive, currentOcc, content, rowBanner, bannerExpanded])
+  }, [term, caseSensitive, currentOcc, content, rowBanner, bannerExpanded, revealMatch])
 
   /** Native select+copy from a sent bubble gives the literal chip label
    *  ("Paste #1 · 5 lines") — worthless on the other end. Intercept the
@@ -539,6 +552,21 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
 
   // Read before any early return: a hook.
   const userRoleActions = useMessageActionsFor('user')
+  const quoteJumpFor = useMemo(
+    () => (onJumpToQuotedText && messageTs ? (quoted: string) => onJumpToQuotedText(quoted, messageTs) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a new messageIndex means earlier rows loaded, so the memo'd quotes must look for their reply again
+    [onJumpToQuotedText, messageTs, messageIndex],
+  )
+  // Every branch's row sits under the same `OtherSenderBubble`, so a steer
+  // settling into its note or a bubble opening its editor keeps the one row
+  // element. `other` decides the row's side (see the last return).
+  const sideOf = (draw: (other: boolean) => ReactNode) => (
+    <OtherSenderBubble meta={meta} slotKey={slotKey}>{draw}</OtherSenderBubble>
+  )
+  // Quote's done state. The quote lands in the composer, which can sit far
+  // from this row (a search preview beside the chat), so the row says it took
+  // for a moment. Above the early returns: it is a hook.
+  const [quoted, flashQuoted] = useDoneFlash()
   if (retractedAction) {
     const settleAnimated = !mountedRetracted && !reducedMotion
     // The meta field is free text from the transcript; anything unknown reads as
@@ -571,7 +599,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           {retractedLabel}
         </Btn>
       )
-    return (
+    return sideOf(() => (
       <div data-role="user" data-steer-settle={settleAnimated ? 'animated' : 'static'} className="flex flex-col items-end max-w-full">
         {settleAnimated && !collapseDone && (
           <motion.div
@@ -597,7 +625,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           {note}
         </motion.div>
       </div>
-    )
+    ))
   }
 
   if (editing) {
@@ -621,18 +649,26 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           // still consumed instead of inserting a newline into the draft.
           // An open `$` menu takes Enter and Escape first (its document
           // capture listener), so a pick never sends and never cancels.
-          if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) submit() }
+          if (e.key === 'Enter' && !e.shiftKey && !returnInsertsNewline) { if (ime.claimEnter(e)) submit() }
           if (e.key === 'Escape') { ime.reset(); cancel() }
         }}
       />
     )
-    return (
+    return sideOf(() => (
       // `data-message-editing`: usePinnedPrompt reads this off the row it is about
       // to hide and refuses to pin it. The stand-in state hides the whole row and
       // the card copies only a bubble, so an edit opened before the row reached
       // the fold would otherwise continue inside an invisible textarea, with its
       // Send out of reach. The editor stays visible; the banner is simply absent.
       <div data-role="user" data-message-editing="" className="group/msg flex flex-col items-end max-w-full">
+        {/* Offscreen heading: the transcript is a flat run of bubbles, so a
+            screen reader arriving mid-conversation has nothing to navigate by
+            and no cue to who is speaking — the right/left alignment that says
+            it visually is announced as nothing. A heading per message makes the
+            turns the page's heading outline, which is how the H key steps
+            through a conversation. Offscreen because the visual design already
+            carries the speaker. */}
+        <SpeakerHeading meta={meta} slotKey={slotKey} relayedFrom={seed || relay ? (senderTitle || seedFrom || undefined) : undefined} />
         {/* `edit-grow` is a CSS grid auto-sizer: a hidden ::after mirror (fed by
             data-replicated-value) drives the grid track so the textarea grows
             with its own content — width AND height — exactly like the read-only
@@ -661,7 +697,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           </button>
         </div>
       </div>
-    )
+    ))
   }
 
   // Collapsed pastes expanded: the text this bubble stands for, which is what
@@ -687,7 +723,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // refused) as well as rejecting — both are a copy that did not happen.
     copyToClipboard(shownContent).then(ok => flash(ok ? 'ok' : 'failed'), () => flash('failed'))
   }
-  const quoteShown = () => onQuoteMessage?.(quotableContent)
+  const quoteShown = () => { onQuoteMessage?.(quotableContent); flashQuoted(true) }
   const copyLink = () => {
     if (!messageTs || !slotKey) return
     // Same error surface as Copy: a refused write is reported under the row,
@@ -816,16 +852,24 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // The right-click menu wraps the bubble only when Quote is offered (the
   // menu's reason to exist) on a pointer device; otherwise `MessageContextMenu`
   // renders the bubble bare.
-  const bubbleWithMenu = (
-    <OtherSenderBubble meta={meta} slotKey={slotKey}>
-      {other => <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble(other)}</MessageContextMenu>}
-    </OtherSenderBubble>
+  const bubbleWithMenu = (other: boolean) => (
+    <QuoteJumpCtx.Provider value={quoteJumpFor}>
+      <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble(other)}</MessageContextMenu>
+    </QuoteJumpCtx.Provider>
   )
 
-  return (
+  // The row's side follows its sender (`OtherSenderBubble`, the byline's own
+  // rule): the viewer's own message on the end side, someone else's on the
+  // start side with the agent's replies, its byline, actions and timestamp
+  // with it. `data-user-side` lets the transcript's row wrappers, which align
+  // every user row to the end, follow (`has-[[data-user-side=start]]`). A chat
+  // only one person writes to never sets it.
+  return sideOf(other => (
     // Every box between the content column and the bubble is a fit-content flex
     // item, so a percentage cap only bites once ALL of them carry one.
-    <div data-role="user" className="group/msg flex flex-col items-end max-w-full">
+    <div data-role="user" data-user-side={other ? 'start' : undefined} className={`group/msg flex flex-col ${other ? 'items-start' : 'items-end'} max-w-full`}>
+      {/* Offscreen heading — see the editing branch above for why. */}
+      <SpeakerHeading meta={meta} slotKey={slotKey} relayedFrom={seed || relay ? (senderTitle || seedFrom || undefined) : undefined} />
       {/* User-typed line breaks (Shift+Enter) are preserved at the markdown
           level, NOT via container `white-space: pre-wrap`. renderUserContentCb
           renders user content through MarkdownRenderer with `softBreaks`, which
@@ -842,8 +886,9 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           <div className="inline-flex items-center gap-1 text-[12px] leading-5 font-semibold text-accent mb-1 pr-1">
             <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steered_into_the_running_turn')}
           </div>
-          {/* WHICH app sent it, when one did: a steered answer is still not the owner's typing. */}
-          <AppSenderByline meta={meta} />
+          {/* WHICH app sent it, or WHO on a Shared Crew: a steered answer is still
+              not the owner's typing, and a teammate's steer is their message too. */}
+          <MessageByline meta={meta} slotKey={slotKey} continuesRun={continuesRun} />
           {/* WHO chose this, when the sender did not. Below the badge that says
               what happened, because the badge is the outcome and this is the
               decision behind it. */}
@@ -862,7 +907,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.32, ease: 'easeOut' }}
           >
-            {bubbleWithMenu}
+            {bubbleWithMenu(other)}
             {playSteer && (
               <motion.div
                 aria-hidden="true"
@@ -990,7 +1035,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
               arm wraps its bubble in an animated box, and a line inside that box
               would slide in with it as though it were part of the message. */}
           {steerDecision && <SteerDecisionLine record={steerDecision} ownMessage={steerOwnMessage} />}
-          {bubbleWithMenu}
+          {bubbleWithMenu(other)}
         </>
       )}
       {/* Where the pointer cannot hover the footer is always visible and its
@@ -1017,14 +1062,15 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
         {quoteInRow && (
           <button
             onClick={quoteShown}
-            className="text-muted hover:text-text p-0.5 rounded transition-colors"
+            className={`inline-flex items-center gap-1 text-muted hover:text-text p-0.5 rounded transition-colors ${quoted ? QUOTED_BTN_CLS : ''}`}
             data-testid="quote-message"
             title={i18nT('pages.chat.userMessage.quote_message')}
             aria-label={i18nT('pages.chat.userMessage.quote_message')}
           >
-            <Quote size={14} />
+            {quoted ? <QuotedMark /> : <Quote size={14} />}
           </button>
         )}
+        {quoted && !quoteInRow && <span className="inline-flex items-center gap-1 p-0.5" data-testid="quote-done"><QuotedMark /></span>}
         <button
           onClick={copyMessage}
           className="text-muted hover:text-text p-0.5 rounded transition-colors"
@@ -1151,27 +1197,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
         className="mt-1 [@media(hover:none)]:[&_button]:min-h-10 [@media(hover:none)]:[&_button]:min-w-10"
       />
     </div>
-  )
+  ))
 })
 
 export default UserMessage
-
-const noopSubscribe = () => () => {}
-
-/**
- * Who a delivered message is from, by role (`seedSenderKey`), SUBSCRIBED to the
- * store when one is mounted, so a bubble drawn before the slots frame arrives is
- * relabelled when it does. Without a store the label is generic.
- */
-function useSeedSender(sender: string | undefined, slotKey: string | undefined): string {
-  const redux = useContext(ReactReduxContext)
-  const subscribe = redux ? redux.store.subscribe : noopSubscribe
-  const role = useSyncExternalStore<SeedSender | ''>(subscribe, () => {
-    if (!sender) return ''
-    const rows = ((redux?.store.getState() as { dashboard?: { slots?: SeedRow[] } } | undefined)?.dashboard?.slots) ?? []
-    return seedSender(rows, sender, slotKey)
-  })
-  if (role === 'conductor') return i18nT('pages.chat.userMessage.seed_from_conductor')
-  if (role === 'worker') return i18nT('pages.chat.userMessage.seed_from_worker')
-  return role ? i18nT('pages.chat.userMessage.seed_from_session') : ''
-}

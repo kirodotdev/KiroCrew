@@ -32,7 +32,7 @@ import {
   DialogTitle,
 } from '../../components/ui/dialog'
 import ErrorNotice from '../../components/ErrorNotice'
-import { fmtList } from '../../i18n/format'
+import { fmtList, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import {
   type CurrentLaunch,
@@ -40,6 +40,7 @@ import {
   type GatewayStatus,
   launchIsApprovable,
   launchPreviewErrorKey,
+  notApprovableKey,
   readLaunchPreviews,
   stubErrorKey,
   type McpView,
@@ -63,7 +64,9 @@ import {
   ServerDetailsBody,
   serverNameId,
   SHARE_BUTTON_CLASS,
+  ServerName,
   ShareAction,
+  TrustChangesChoice,
 } from './McpManagementLaunchReview'
 import { AssessmentView } from './McpManagementAssessment'
 import { CwdQuestionDialog } from './McpManagementCwdQuestion'
@@ -231,13 +234,12 @@ export function McpManagement({
 
   const [confirmSharing, setConfirmSharing] = useState(false)
 
-  const setSharing = useMutation({
-    mutationFn: (enabled: boolean) => api.mcpGatewayEnable(enabled),
-    // Enabling can persist and still leave sharing unreachable; `ping_ok` says so.
-    onSuccess: (res, enabled) => {
+  // Turning sharing ON always goes through the confirm and `turnOn`.
+  const turnOff = useMutation({
+    mutationFn: () => api.mcpGatewayEnable(false),
+    onSuccess: () => {
       invalidate()
       void qc.invalidateQueries({ queryKey: ['mcpGatewayFootprint'] })
-      if (enabled && !res.ping_ok) setError(i18nT('pages.mcpManagement.sharing_not_live'))
     },
     onError: () => {
       invalidate()
@@ -265,10 +267,22 @@ export function McpManagement({
     if (reads.every(r => r.status === 'fulfilled') && fresh && !fresh.enabled) setConfirmSharing(true)
   }
 
+  // The Sharing row's "Always trust changes to this server". Unchecked, the
+  // share stays and the next changed launch asks again; ticked again, the
+  // server trusts changes while its current launch stays approved.
+  const setTrust = useMutation({
+    mutationFn: ({ name, trusted }: { name: string; trusted: boolean }): Promise<unknown> =>
+      trusted ? api.mcpGatewayTrustChanges(name) : api.mcpGatewayStopTrustingChanges(name),
+    onSettled: () => invalidate(),
+    onError: (err, { name }) => setError(i18nT(stubErrorKey(err), { name })),
+  })
+
   const setStub = useMutation({
     // `refused` is the stored refusal's own `expected_launch` behind the press.
-    mutationFn: ({ name, stub, expectedLaunch, cwdUse }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string; cwdUse?: McpCwdUse }) =>
-      cwdUse ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse) : api.mcpGatewaySetStub(name, stub, expectedLaunch),
+    mutationFn: ({ name, stub, expectedLaunch, cwdUse, trustChanges }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string; cwdUse?: McpCwdUse; trustChanges?: boolean }) =>
+      trustChanges
+        ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse, true)
+        : cwdUse ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse) : api.mcpGatewaySetStub(name, stub, expectedLaunch),
     onSuccess: async (res, vars) => {
       invalidate()
       dropCurrentLaunch(vars.name)
@@ -315,7 +329,7 @@ export function McpManagement({
   const [cwdAsk, setCwdAsk] = useState<{
     name: string
     routed: boolean
-    approve?: { expectedLaunch: string; refused?: string }
+    approve?: { expectedLaunch: string; refused?: string; trustChanges?: boolean }
   } | null>(null)
   const answerCwd = useMutation({
     mutationFn: ({ name, answer, routed }: { name: string; answer: McpCwdUse; routed: boolean }) =>
@@ -460,7 +474,7 @@ export function McpManagement({
       const skippedNames: string[] = []
       const failed: string[] = []
       let shared = 0
-      let restart = false
+      let restart = res.restart_required === true
       let inEffect: string[] | undefined
       for (const { name, expected } of auto) {
         try {
@@ -478,7 +492,9 @@ export function McpManagement({
     onSuccess: r => {
       invalidate()
       void qc.invalidateQueries({ queryKey: ['mcpGatewayFootprint'] })
-      if (!r.pingOk) setError(i18nT('pages.mcpManagement.sharing_not_live'))
+      // A server marked since the last start is shared from the next one, so
+      // sharing that waits for that restart gets the restart notice, not an error.
+      if (!r.pingOk && !r.restart) setError(i18nT('pages.mcpManagement.sharing_not_live'))
       if (r.skippedNames.length > 0) {
         setNotice(i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(r.skippedNames, { style: 'narrow' }) }))
       }
@@ -494,7 +510,7 @@ export function McpManagement({
   })
 
   const busy =
-    setStub.isPending || setSharing.isPending || previewLaunch.isPending || turnOn.isPending || answerCwd.isPending
+    setStub.isPending || turnOff.isPending || previewLaunch.isPending || turnOn.isPending || answerCwd.isPending
 
   // "Reload <m> chats": the dashboard's own per-chat reload, one chat at a
   // time, after a confirm. A busy chat is refused by the gateway and skipped.
@@ -704,19 +720,24 @@ export function McpManagement({
   // and the refusal comes back as the error line the dialog shows in that
   // block; a moved-past refusal instead brings the launch the block then
   // shows, with an error above it asking for its approval.
-  const approveFromReview = async (name: string, expectedLaunch: string, refused?: string): Promise<ReviewAnswer> => {
+  const approveFromReview = async (name: string, expectedLaunch: string, refused?: string, trustChanges = false): Promise<ReviewAnswer> => {
     const server = servers.find(s => s.name === name)
     if (server && needsCwdAnswer(server)) {
       // The approval needs the working-folder answer first: ask it, and send
       // the approval with a "No".
       closeReview()
-      setCwdAsk({ name, routed: true, approve: { expectedLaunch, refused } })
+      setCwdAsk({ name, routed: true, approve: { expectedLaunch, refused, trustChanges } })
       return null
     }
     try {
-      const res = await api.mcpGatewaySetStub(name, true, expectedLaunch)
+      const res = trustChanges
+        ? await api.mcpGatewaySetStub(name, true, expectedLaunch, false, undefined, true)
+        : await api.mcpGatewaySetStub(name, true, expectedLaunch)
       dropCurrentLaunch(name)
       if (res && res.restart_required) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
+      // An approval only clears the refusal; with sharing off nothing is shared
+      // yet, so ask to turn it on, as the table's share action does.
+      if (supported && res?.sharing_on !== true && !status?.enabled) void askToTurnOnSharing()
       return null
     } catch (err) {
       if (keepCurrentLaunch(name, refused, err)) {
@@ -884,7 +905,7 @@ export function McpManagement({
               // other "why" lives in the row's Details.
               const hint =
                 refusal && !launchIsApprovable(refusal)
-                  ? i18nT('pages.mcpManagement.approval_not_approvable_here')
+                  ? i18nT(notApprovableKey(refusal), { cap: fmtNumber(refusal.launch_cap ?? NaN) })
                   : null
               // A paused, approvable row draws two buttons. Below md they get a
               // full-width line under the name: in the `auto` track their width
@@ -900,12 +921,16 @@ export function McpManagement({
                 <Fragment key={s.name}>
                   <tr className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 border-t border-[var(--border)] px-3 py-3 md:table-row md:px-0 md:py-0">
                     <td className="col-start-1 row-start-1 min-w-0 p-0 align-top md:table-cell md:px-4 md:py-3">
-                      <span
-                        id={serverNameId(s.name)}
-                        className="block break-words font-mono text-[13px] text-[var(--text)] [overflow-wrap:anywhere]"
-                      >
-                        {s.name}
-                      </span>
+                      <ServerName id={serverNameId(s.name)} name={s.name} />
+                      <TrustChangesChoice
+                        server={s}
+                        approved={!waiting}
+                        busy={busy || setTrust.isPending}
+                        onTrustChange={trusted => {
+                          setError(null)
+                          setTrust.mutate({ name: s.name, trusted })
+                        }}
+                      />
                       <DetailsToggle
                         server={s}
                         open={detailsOpen}
@@ -1123,6 +1148,7 @@ export function McpManagement({
 
       <SharingHero
         on={!!status?.enabled}
+        stateKnown={!statusQ.isLoading}
         switchDisabled={
           busy || prepareSharing.isPending || turnOn.isPending || statusQ.isLoading
           || (!status?.enabled && !canEnableSharing)
@@ -1135,7 +1161,7 @@ export function McpManagement({
           // asks first, naming every server it shares. Turning it OFF only ever
           // narrows, and keeps every per-server choice for the next ON.
           if (!status?.enabled) prepareSharing.mutate()
-          else setSharing.mutate(false)
+          else turnOff.mutate()
         }}
         footprint={footprintQ.data}
         footprintFailed={footprintQ.isError}
@@ -1171,7 +1197,7 @@ export function McpManagement({
               </TabsTrigger>
               <TabsTrigger value="sharing">
                 <Share2 size={14} />
-                <span>{i18nT('pages.mcpPage.view_sharing')}</span>
+                <span {...uiLocation('mcp.sharing-view')}>{i18nT('pages.mcpPage.view_sharing')}</span>
               </TabsTrigger>
             </TabsList>
           </div>
@@ -1192,7 +1218,7 @@ export function McpManagement({
         skipped={sharePlan?.skipped ?? []}
         failed={sharePlan?.failed ?? []}
         unsupported={contraryMarked}
-        busy={setSharing.isPending || setStub.isPending || turnOn.isPending}
+        busy={turnOff.isPending || setStub.isPending || turnOn.isPending}
         // A stale or failed list must not be what the press confirms.
         ready={!statusQ.isFetching && !serversQ.isFetching && !statusQ.isError && !serversQ.isError}
         onCancel={() => {

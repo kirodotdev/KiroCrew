@@ -2,7 +2,8 @@
  * SourcesPopover — the gear affordance on the Apps page header.
  *
  * Houses the store's supply-side controls, out of the shopper flow: external
- * registry management (add/remove/sync) and the
+ * registry management (add/remove/sync), the Kiro Space stores the build
+ * offers (MarketRegistryManager, absent when it offers none), and the
  * developer Install-from-Path escape hatch. Controlled open state so the
  * rail's "Add source" button can open it programmatically.
  */
@@ -14,6 +15,7 @@ import { recordEvent } from '../../rum'
 import { Btn, Input, IconButton } from '../ui'
 import { Popover, PopoverTrigger, PopoverContent } from '../ui/popover'
 import RegistryManager from '../RegistryManager'
+import MarketRegistryManager from './MarketRegistryManager'
 import { backendRefusedNotice } from './backendRefused'
 
 import { i18nT } from '../../i18n/t'
@@ -69,6 +71,7 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
       </PopoverTrigger>
       <PopoverContent align="end" className="w-[480px] max-w-[92vw] max-h-[70vh] overflow-y-auto">
         <RegistryManager bare />
+        <MarketRegistryManager />
         <div className="border-t border-border mt-4 pt-4">
           <div className="text-sm font-semibold tracking-tight text-text-strong mb-2 flex items-center gap-2">
             {i18nT('components.appstore.sourcesPopover.install_from_path')}

@@ -75,20 +75,20 @@ describe('the Customize rail badge for waiting MCP shares', () => {
     expect(screen.getByRole('status', { name: '2 servers waiting for approval' })).toBeInTheDocument()
   })
 
-  // The expanded pill's `title` shows the label ALONE, and its aria-label puts
-  // the count in front, so the label must read right both ways. A label that
+  // The expanded pill's `title` shows the label ALONE, and its aria-label is a
+  // plural string with the count inside, so both must read right. A label that
   // opens with a counter word (件, 个, 개) reads wrong in the title.
   it.each([
-    ['zh-CN', '等待批准的服务器'],
-    ['ja', '承認待ちのサーバー'],
-    ['ko', '승인 대기 중인 서버'],
-    ['ru', 'серверы, ожидающие одобрения'],
-  ])('says what it counts in %s, with and without the number', async (lang, label) => {
+    ['zh-CN', '等待批准的服务器', '2 个服务器等待批准'],
+    ['ja', '承認待ちのサーバー', '承認待ちのサーバー 2 件'],
+    ['ko', '승인 대기 중인 서버', '승인 대기 중인 서버 2개'],
+    ['ru', 'серверы, ожидающие одобрения', '2 сервера ожидают одобрения'],
+  ])('says what it counts in %s, with and without the number', async (lang, label, name) => {
     const previous = i18next.language
     onTestFinished(() => i18next.changeLanguage(previous))
     await i18next.changeLanguage(lang)
     renderWithProviders(<NavBadge navId="capabilities" collapsed={false} appBadges={{ capabilities: 2 }} />)
-    const pill = screen.getByLabelText(`2 ${label}`)
+    const pill = screen.getByLabelText(name)
     expect(pill).toHaveAttribute('title', label)
   })
 

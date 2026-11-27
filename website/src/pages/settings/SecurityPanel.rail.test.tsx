@@ -162,7 +162,7 @@ describe('SecurityPanel — inspector rail', () => {
     renderWithProviders(<SecurityPanel />, { route: '/?section=posture', store })
 
     const row = screen.getByRole('option', { name: /YOLO \(auto-approve\)/ })
-    expect(row).toHaveTextContent('Until restart')
+    expect(row).toHaveTextContent('Until you stop Kiro Crew')
     // The label appears once, not twice.
     expect(row.textContent!.match(/YOLO \(auto-approve\)/g)).toHaveLength(1)
   })

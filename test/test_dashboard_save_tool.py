@@ -828,8 +828,9 @@ def test_the_tool_is_on_the_panel_server_and_takes_no_target():
 
     tool = next(t for t in mcp_panel._tool_definitions() if t["name"] == "dashboard_save")
     props = tool["inputSchema"]["properties"]
-    assert set(props) == {"model", "view", "theme"}
-    # Theme is optional: an MCP client can drop an empty object before it arrives.
+    assert set(props) == {"model", "view", "theme", "widgets"}
+    # Theme and widgets are optional: an MCP client can drop an empty object before
+    # it arrives, and a save without widgets keeps the stored ones.
     assert sorted(tool["inputSchema"]["required"]) == ["model", "view"]
     assert not (set(props) & {"bound_to", "session", "session_key", "slot", "target", "kind"})
 
@@ -1819,6 +1820,8 @@ def test_only_a_save_of_a_written_page_can_start_a_check():
         "dashboard/handlers/member_dashboard_fields.py",
         "dashboard_page_image.py",
         "dashboard_verify.py",
+        # names the module only as a row of its redaction allowlist
+        "security_posture.py",
     ]
     # a mirror facade: its code is in the owners it lists
     tree = ast.parse(

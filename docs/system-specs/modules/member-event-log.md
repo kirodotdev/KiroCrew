@@ -111,7 +111,7 @@ outstanding still returns immediately.
 
 ## 3. Event vocabulary
 
-`kiro_crew.eventlog.types` is the closed vocabulary; `MemberLog.append()` rejects any other type.
+`kiro_crew.eventlog.types` is the built-in vocabulary; `MemberLog.append()` rejects any other type except a contributed `<app>/<action>` whose namespace is not one of the reserved `member`, `activity`, `slot` and `patrol`.
 
 | event | data | appended by |
 |---|---|---|
@@ -256,7 +256,7 @@ leak operator-supplied text through a key. Two keys whose redaction collides mer
 which requires both to have carried a credential, so what is lost is already-redacted
 content.
 
-Two WebSocket frames, both `{type, data}` like every other broadcast and both classified owner-only in `ws_event_scope` (`MEMBER_LOG_EVENTS`). Owner-only here means the owner's dashboard socket alone, not every dashboard user: `WebSocketHub._ws_client_allowed` also refuses them to a non-owner dashboard session (a Telegram, Teams or Webex allowlist link), audited `owner_only`, and `ws.py` sends the `members_subscribed` baseline only on an owner connect. The REST reads that carry the same data, `GET /api/members`, `GET /api/members/{slug}/projections` and `GET /api/members/{slug}/activity`, apply the same boundary: after the app-caller guard and before any config or log read, `require_owner_dashboard_request` answers a non-owner 403 `owner_only`, and a granted read leaves an `allowed` SEL record (`members.list.read`, `members.projections.read`, `members.activity.read`), as the briefing and rules reads do. A Shared Crew teammate passes the owner gate (`shared_crew.teammate_access`), so they read the owner's roster and reach every Bot route, and their dashboard socket is an owner socket that gets these frames and the baseline; a relay teammate's granted read is filed under their relay label (`resources="relay_teammate"`, `members_access._audit_owner_read`). Thread opens seed the Bot's configured approval mode for either caller, and unset modes use `MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE` (trust). A teammate creates, edits, exports and deletes Bots, reads and writes their rules, goals and briefing, and stages, keeps or discards a Dashboard page, as the owner does. The Bots page hides Import from file for a teammate, and words a thread open's `owner_only` refusal as who may chat rather than as a failure:
+Two WebSocket frames, both `{type, data}` like every other broadcast and both classified owner-only in `ws_event_scope` (`MEMBER_LOG_EVENTS`). Owner-only here means the owner's dashboard socket alone, not every dashboard user: `WebSocketHub._ws_client_allowed` also refuses them to a non-owner dashboard session (a Telegram, Teams or Webex allowlist link), audited `owner_only`, and `ws.py` sends the `members_subscribed` baseline only on an owner connect. The REST reads that carry the same data, `GET /api/members`, `GET /api/members/{slug}/projections` and `GET /api/members/{slug}/activity`, apply the same boundary: after the app-caller guard and before any config or log read, `require_owner_dashboard_request` answers a non-owner 403 `owner_only`, and a granted read leaves an `allowed` SEL record (`members.list.read`, `members.projections.read`, `members.activity.read`), as the briefing and rules reads do. A Shared Crew teammate passes the owner gate (`shared_crew.teammate_access`), so they read the owner's roster and reach every Bot route, and their dashboard socket is an owner socket that gets these frames and the baseline; a relay teammate's granted read is filed under their relay label (`resources="relay_teammate"`, `members_access._audit_owner_read`). Thread opens seed the Bot's configured approval mode for either caller, and unset modes use `MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE` (trust). A teammate creates, edits, exports and deletes Bots, reads and writes their rules, goals and briefing, and stages, keeps or discards a Dashboard page, as the owner does. The Bots page hides Import from file for a teammate (and with it the Profile card's Make a copy, which lands through the import card), and words a thread open's `owner_only` refusal as who may chat rather than as a failure:
 
 | frame | data | client rule |
 |---|---|---|
@@ -591,8 +591,10 @@ member logs, median of thirty appends, six rounds:
 | 19,930 | 334.7 ms | 6.2 ms |
 
 What still parses the whole log: the first load of a member in a process, a reload
-after the file changed under the instance, the first fold of a member after boot, and
-`append_if` (the closer path, once per ended patrol). Not seen by the proof, or by a
+after the file changed under the instance, and the first fold of a member after boot.
+A closer (`append_if`) takes the same proof as `append`, and the gap fold before any
+write reads the events the instance holds, since every caller has just loaded,
+refreshed or appended. Not seen by the proof, or by a
 read: an older record rewritten in place to the same length within the clock tick of
 the load stamp. On Windows the stat's change time is the file's creation time, so a
 same-length rewrite whose modification time is put back is not seen there either.

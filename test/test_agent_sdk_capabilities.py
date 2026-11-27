@@ -75,6 +75,7 @@ CAPABILITY_FIELDS = (
     "provider_seam",
     "model_id_namespace",
     "resolves_model_from_advertised_list",
+    "takes_model_per_session",
     "effort_via_config_option",
     "effort_via_slash_command",
     "compacts_inline",
@@ -88,6 +89,20 @@ CAPABILITY_FIELDS = (
     "honors_remote_mcp_oauth",
     "native_workflows",
     "refines_tool_call_titles",
+    "permission_requests_name_child",
+    "writes_crew_readable_transcript",
+    "honors_chat_steering_off",
+    "crew_sends_persona_prompt",
+    "loads_steering_natively",
+    "keeps_prompt_on_unlanded_turn",
+    "ends_turn_on_permission_reject",
+    "names_crew_tools_by_fused_name",
+    "model_auto_switches_in_place",
+    "harness_loads_agent_context",
+    "reports_mcp_sign_in_suspects",
+    "crew_merges_user_hook_files",
+    "keeps_session_across_compaction",
+    "inherits_kiro_default_resources",
 )
 
 
@@ -337,27 +352,23 @@ def test_codex_still_needs_its_read_only_mode() -> None:
     assert permission_config_for(ACP_BACKEND_CODEX) == ("mode", "read-only")
 
 
-def test_known_membership_is_explicit() -> None:
-    """``ACP_BACKENDS_KNOWN`` names every accepted id.
+def test_known_membership_is_exactly_the_declared_backend_ids() -> None:
+    """``ACP_BACKENDS_KNOWN`` names every declared ``ACP_BACKEND_<NAME>`` id and nothing else.
 
     Membership is the gate on the ``acp_backend`` kwarg, so a widened set means
-    provider construction accepts a value it must reject. Antigravity is the one
-    deliberate addition after the capability move.
+    provider construction accepts a value it must reject. The ids are read off the
+    module's ``ACP_BACKEND_<NAME>`` constants, so a new harness declared there and
+    added to the set needs no edit here, while a stray literal (the stored ``"kiro"``
+    spelling, a typo) or a declared id left out of the set fails.
     """
-    assert sorted(sdk_backends.ACP_BACKENDS_KNOWN) == [
-        "",
-        "antigravity",
-        "claude",
-        "codex",
-        "copilot",
-        "deepseek",
-        "goose",
-        "kas",
-        "mimocode",
-        "opencode",
-        "pi",
-        "strands",
-    ]
+    declared = {
+        value
+        for name, value in vars(sdk_backends).items()
+        if re.fullmatch(r"ACP_BACKEND_[A-Z0-9]+", name) and isinstance(value, str)
+    }
+    assert declared, "no ACP_BACKEND_<NAME> constant was found"
+    assert sdk_backends.ACP_BACKENDS_KNOWN == declared
+    assert sdk_backends.STORED_BACKEND_KIRO not in sdk_backends.ACP_BACKENDS_KNOWN
 
 
 #: Every capability field for every known id, plus an unknown one.

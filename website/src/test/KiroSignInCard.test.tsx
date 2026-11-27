@@ -7,6 +7,10 @@ import { SETTINGS_MANUAL } from '../components/commandPalette/settingsManual'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../components/KiroAccountModal'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { api, type KasLoginStatus } from '../api/client'
+import { ApiError } from '../api/apiError'
+import { RELAY_VIEWER_CREWS_KEY } from '../hooks/useRelayViewerCrews'
+import { KAS_LOGIN_STATUS_KEY } from '../hooks/useKasLogin'
+import { parseKiroUsagePayload } from '../api/kiroUsage'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -15,6 +19,8 @@ vi.mock('../api/client', async importOriginal => {
     api: {
       ...mod.api,
       kasLoginStatus: vi.fn(),
+      // Stubbed so no test races a real config request (see beforeEach).
+      kirocrewConfig: vi.fn(),
       // No kiro-cli sign-in beside the card's own: the card says nothing extra.
       kasLoginSources: vi.fn().mockResolvedValue({
         active: 'none',
@@ -34,6 +40,9 @@ vi.mock('../api/client', async importOriginal => {
       kasLoginPoll: vi.fn().mockResolvedValue({ status: 'pending' }),
       kasLoginBeginLoopback: vi.fn(),
       kasLoginCancel: vi.fn().mockResolvedValue({ ok: true }),
+      // A landed sign-in asks for a fresh credit reading. Refused by default, so a
+      // test that does not care keeps the plain re-read fallback and no network.
+      sessionsUsageRefresh: vi.fn().mockRejectedValue(new Error('no refresh in this test')),
     },
   }
 })
@@ -42,6 +51,7 @@ const kasLoginStatus = vi.mocked(api.kasLoginStatus)
 // #36156: the saved config with KAS as the main harness, and a usage reading naming an account.
 const ON_KAS = { agent: { acp_backend: 'kas' } }
 const ADA = { used: 1, limit: 10, bonusCredits: [], email: 'ada@example.com' }
+const kirocrewConfig = vi.mocked(api.kirocrewConfig)
 const kasLoginLogout = vi.mocked(api.kasLoginLogout)
 const kasLoginBeginDevice = vi.mocked(api.kasLoginBeginDevice)
 
@@ -69,9 +79,16 @@ const SIGNED_IN: KasLoginStatus = {
   usable: true,
 }
 
+/** Waits for the sign-in choices the signed-out card shows in place. */
+async function openSignIn() {
+  await screen.findByTestId('kiro-sign-in-inline')
+}
+
 describe('KiroSignInCard', () => {
   beforeEach(() => {
     kasLoginStatus.mockReset()
+    kirocrewConfig.mockReset()
+    kirocrewConfig.mockResolvedValue(ON_KAS as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     kasLoginLogout.mockClear()
     kasLoginBeginDevice.mockClear()
   })
@@ -85,9 +102,7 @@ describe('KiroSignInCard', () => {
     // quasi; URLSearchParams decodes it back to `key:kiro-sign-in` on read.
     expect(KIRO_SIGN_IN_PATH).toBe('/settings/kiro-account?highlight=key%3Akiro-sign-in')
     expect(new URL(KIRO_SIGN_IN_PATH, 'http://x').searchParams.get('highlight')).toBe(`key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}`)
-    // Search finds it by "sign out" / "switch account" (its own entry), never as
-    // the card title, which would advertise signing in as a step.
-    expect(SETTINGS_MANUAL.some(e => e.labelKey === 'pages.developer.kiroSignInCard.title')).toBe(false)
+    // Search finds it by "sign out" / "switch account" (its own entry).
     expect(SETTINGS_MANUAL.find(e => e.id === 'kiro-account.kiro-sign-in')?.tab).toBe('kiro-account')
   })
 
@@ -149,6 +164,7 @@ describe('KiroSignInCard', () => {
 
   it('names no account when the main harness is kiro-cli, whose login the usage reading then names (#36156)', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kiro' } } as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     const { queryClient } = renderWithProviders(<KiroSignInCard />)
     act(() => {
       queryClient.setQueryData(['kirocrewConfig'], { agent: { acp_backend: 'kiro' } })
@@ -164,36 +180,72 @@ describe('KiroSignInCard', () => {
     renderWithProviders(<KiroSignInCard />)
     expect(screen.getByTestId('kiro-sign-in-pending')).toBeInTheDocument()
     const card = screen.getByTestId('kiro-sign-in-card')
-    expect(card).toHaveTextContent('Kiro sign-in')
+    // Neither header until the status says which state this is.
+    expect(screen.queryByTestId('kiro-sign-in-hero')).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-summary')).toBeNull()
     // The anchor useSettingHighlight's direct lookup rings for KIRO_SIGN_IN_PATH.
     expect(card).toHaveAttribute('data-setting-key', KIRO_SIGN_IN_HIGHLIGHT_ANCHOR)
   })
 
-  it('signed out: renders the embedded chooser with the intro sentence, not a full-screen gate', async () => {
+  it('not the owner: says whose sign-in it is, with no error, no Check again and no sign-in choices', async () => {
+    const message = 'Only the dashboard owner can manage Kiro sign-in.'
+    const refusal = () => new ApiError(403, message, JSON.stringify({ error: message, code: 'owner_only' }))
+    kasLoginStatus.mockRejectedValue(refusal())
+    vi.mocked(api.kasLoginSources).mockRejectedValueOnce(refusal())
+    renderWithProviders(<KiroSignInCard />)
+    expect(await screen.findByTestId('kas-login-owner-only')).toHaveTextContent(message)
+    // Settled, not a remount loop: one read, and the line stays in place of the spinner.
+    for (let i = 0; i < 5; i += 1) await act(async () => { await Promise.resolve() })
+    expect(kasLoginStatus).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('kiro-sign-in-pending')).toBeNull()
+    expect(screen.getByTestId('kas-login-owner-only')).toBeInTheDocument()
+    expect(screen.queryByTestId('kas-login-status-error')).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-sources-error')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-inline')).toBeNull()
+  })
+
+  it('signed out: the card shows the shared sign-in choices in place, with no Sign in button or dialog', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_OUT)
     renderWithProviders(<KiroSignInCard />)
-    const intro = await screen.findByTestId('kas-login-card-intro')
-    // The card sits under a switch that also lists Kiro CLI, so the one sentence
-    // must name the backend this identity is for and say the other's login is
-    // untouched -- otherwise "this account" and the Kiro CLI option read alike.
-    expect(intro).toHaveTextContent('Kiro Agent')
-    expect(intro).toHaveTextContent('Kiro CLI keeps its own kiro-cli login')
-    expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
+    const inline = await screen.findByTestId('kiro-sign-in-inline')
+    expect(screen.queryByTestId('kiro-sign-in-open')).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-dialog')).toBeNull()
+    expect(within(inline).getByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Continue with GitHub' })).toBeInTheDocument()
-    // Embedded chrome: a region, no scrim/main and no page headline.
+    // Card chrome, the dialog's own content: a region, no scrim/main and no page headline.
     expect(screen.getByTestId('kas-login-embedded')).toBeInTheDocument()
     expect(screen.queryByRole('main')).toBeNull()
     expect(screen.queryByRole('heading', { level: 1 })).toBeNull()
     expect(screen.queryByTestId('kiro-sign-in-summary')).toBeNull()
+    // The page's own header: the ghost, "Sign in to Kiro" and one line.
+    const hero = screen.getByTestId('kiro-sign-in-hero')
+    expect(within(hero).getByTestId('looking-ghost')).toBeInTheDocument()
+    expect(within(hero).getByRole('heading', { name: 'Sign in to Kiro' })).toBeInTheDocument()
+    expect(hero).toHaveTextContent('Your agents run on your Kiro account.')
   })
 
-  it('signed out: picking a provider starts the device flow inside the card', async () => {
+  it('signed out: picking a provider shows the device code in the card, and "Use another way" returns to the choices', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_OUT)
     renderWithProviders(<KiroSignInCard />)
+    await openSignIn()
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
     expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
     expect(kasLoginBeginDevice).toHaveBeenCalledWith('github', undefined)
+    expect(within(screen.getByTestId('kiro-sign-in-inline')).getByTestId('kas-login-user-code')).toBeInTheDocument()
+    expect(screen.queryByTestId('kiro-sign-in-dialog')).toBeNull()
     expect(screen.queryByRole('main')).toBeNull()
+    // The page header names the step, so the shared code screen leaves out its own heading.
+    const hero = screen.getByTestId('kiro-sign-in-hero')
+    expect(within(hero).getByRole('heading', { name: 'Finish in your browser' })).toBeInTheDocument()
+    expect(hero).toHaveTextContent('Open the page, then check it shows this code.')
+    expect(screen.queryByTestId('kas-login-code-heading')).toBeNull()
+    expect(screen.getAllByRole('heading', { name: 'Finish in your browser' })).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Copy link' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy code' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Use another way' }))
+    expect(await screen.findByRole('button', { name: 'Continue with GitHub' })).toBeInTheDocument()
+    expect(within(screen.getByTestId('kiro-sign-in-hero')).getByRole('heading', { name: 'Sign in to Kiro' })).toBeInTheDocument()
   })
 
   it('signed in: shows a token-free summary with sign-out, and sign-out calls the API with the slot', async () => {
@@ -209,11 +261,13 @@ describe('KiroSignInCard', () => {
     const reset = vi.spyOn(queryClient, 'resetQueries')
     const summary = await screen.findByTestId('kiro-sign-in-summary')
     expect(summary).toHaveAttribute('data-lapsed', 'false')
-    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent('Signed in with Google')
-    expect(screen.getByTestId('kiro-sign-in-expiry')).toHaveTextContent('Access token expires')
-    // Never a credential, under any name.
-    expect(summary.textContent).not.toMatch(/token:|at-|rt-/)
-    expect(screen.queryByTestId('kas-login-card-intro')).toBeNull()
+    expect(screen.getByTestId('kiro-sign-in-provider')).toHaveTextContent('Signed in with Google')
+    // Never a credential, under any name, and no token lifetime either.
+    expect(summary.textContent).not.toMatch(/token:|at-|rt-|expires/i)
+    expect(screen.queryByTestId('kiro-sign-in-inline')).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-hero')).toBeNull()
+    // Sign out is a plain button beside Switch account, not a red one.
+    expect(screen.getByTestId('kiro-sign-in-logout').className).not.toMatch(/danger|bg-err|text-err/)
 
     // From here the gateway answers "signed out": set before the press so the
     // refetch the sign-out triggers cannot race the mock swap.
@@ -228,56 +282,160 @@ describe('KiroSignInCard', () => {
     expect(queryClient.getQueryData(['kiro-usage'])).toBeUndefined()
     // The Team Crews list was the signed-out account's: it is not shown as online any longer.
     expect(queryClient.getQueryData(['relay-viewer', 'crews'])).toBeUndefined()
-    // The status re-read now says signed out, which unmounts the summary; the
-    // "applies to processes started from now on" note lives on the card, so
-    // it is still there beside the chooser the user now sees.
-    expect(await screen.findByTestId('kas-login-card-intro')).toBeInTheDocument()
-    expect(screen.getByTestId('kiro-sign-in-takes-effect')).toBeInTheDocument()
+    // The status re-read now says signed out: the summary gives way to the
+    // signed-out header and the sign-in choices.
+    expect(await screen.findByTestId('kiro-sign-in-inline')).toBeInTheDocument()
+    expect(screen.getByTestId('kiro-sign-in-hero')).toBeInTheDocument()
   })
 
-  it('signed in without a refresh token: does not promise an automatic renewal', async () => {
-    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, has_refresh_token: false })
-    renderWithProviders(<KiroSignInCard />)
-    const summary = await screen.findByTestId('kiro-sign-in-summary')
-    expect(summary).toHaveAttribute('data-lapsed', 'false')
-    expect(summary).toHaveTextContent('cannot renew itself')
-    expect(summary).not.toHaveTextContent('renewed automatically')
+  it('signed in on KAS before the reading arrives: gray placeholders for the avatar and name, with the actions right away', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    act(() => { queryClient.setQueryData(['kirocrewConfig'], ON_KAS) })
+    await screen.findByTestId('kiro-sign-in-summary')
+    expect(screen.getByTestId('kiro-account-avatar-placeholder')).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Loading account' })).toBeInTheDocument()
+    expect(screen.getByTestId('kiro-sign-in-provider')).toHaveTextContent('Signed in with Google')
+    expect(screen.getByRole('button', { name: 'Switch account' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
+    // The reading lands: initials and the name replace the placeholders.
+    act(() => { queryClient.setQueryData(['kiro-usage'], { ...ADA, email: 'grace@example.com' }) })
+    await waitFor(() => expect(screen.getByTestId('kiro-sign-in-account')).toHaveTextContent('grace@example.com'))
+    expect(screen.queryByTestId('kiro-account-avatar-placeholder')).toBeNull()
+    expect(screen.queryByRole('img', { name: 'Loading account' })).toBeNull()
+    localStorage.removeItem('kirocrew:account-email-hidden')
   })
 
-  it('lapsed (issuer refused the refresh): says the sign-in expired and offers sign in again, not a silent fallback', async () => {
-    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, expired: true, refresh_rejected: true })
+  it('signed in on KAS, a cold-cache reading then a failed poll: the name placeholder settles to the provider title', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    const usage = vi.spyOn(api, 'sessionsUsage')
+      .mockResolvedValueOnce({ usage: {} } as Awaited<ReturnType<typeof api.sessionsUsage>>)
+      .mockRejectedValueOnce(new Error('usage_read_failed'))
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    act(() => { queryClient.setQueryData(['kirocrewConfig'], ON_KAS) })
+    // The top bar's poll, as it fetches: same key and the same parse.
+    const poll = () => queryClient
+      .fetchQuery({ queryKey: ['kiro-usage'], queryFn: () => api.sessionsUsage().then(parseKiroUsagePayload), retry: false, staleTime: 0 })
+      .catch(() => {})
+    await act(async () => { await poll() })
+    expect(queryClient.getQueryData(['kiro-usage'])).toBeNull()
+    expect(await screen.findByTestId('kiro-account-name-placeholder')).toBeInTheDocument()
+    await act(async () => { await poll() })
+    await waitFor(() => expect(screen.queryByTestId('kiro-account-name-placeholder')).toBeNull())
+    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent('Signed in with Google')
+    expect(screen.queryByTestId('kiro-account-avatar-placeholder')).toBeNull()
+    // The next poll is in flight: the failure still stands, so no placeholder.
+    act(() => {
+      void queryClient
+        .fetchQuery({ queryKey: ['kiro-usage'], queryFn: () => new Promise<never>(() => {}), retry: false, staleTime: 0 })
+        .catch(() => {})
+    })
+    await waitFor(() => expect(queryClient.getQueryState(['kiro-usage'])?.fetchStatus).toBe('fetching'))
+    expect(screen.queryByTestId('kiro-account-name-placeholder')).toBeNull()
+    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent('Signed in with Google')
+    usage.mockRestore()
+  })
+
+  // Every lapsed cause says the same two lines and no reason line: signing in
+  // again is the one fix whichever way the sign-in lapsed.
+  it.each([
+    ['issuer refused the refresh', { expired: true, refresh_rejected: true }],
+    ['refused, access token still live', { refresh_rejected: true }],
+    ['expired, nothing to renew it', { expired: true, has_refresh_token: false, usable: false }],
+  ])('lapsed (%s): says only "Sign-in expired." and how to resume, with sign in again', async (_label, lapse) => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, ...lapse })
     renderWithProviders(<KiroSignInCard />)
     const summary = await screen.findByTestId('kiro-sign-in-summary')
     expect(summary).toHaveAttribute('data-lapsed', 'true')
-    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent('Sign-in expired')
-    expect(screen.getByTestId('kiro-sign-in-expiry')).toHaveTextContent('Kiro refused to renew this sign-in.')
-    expect(summary).toHaveTextContent('nothing falls back to a kiro-cli login on its own')
+    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent(/^Sign-in expired\.$/)
+    // The body waits for the (stubbed, KAS) config read.
+    await waitFor(() => expect(summary).toHaveTextContent('Sign in again to resume sessions and agent work.'))
     expect(screen.getByRole('button', { name: 'Sign in again' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Switch account' })).toBeNull()
   })
 
-  it('lapsed (expired, nothing to renew it): the spawn predicate drives the state', async () => {
-    kasLoginStatus.mockResolvedValue({
-      ...SIGNED_IN,
-      expired: true,
-      has_refresh_token: false,
-      usable: false,
-    })
+  it.each([
+    ['nothing runs on KAS: only the account features stop', { agent: { acp_backend: 'kiro' } }, 'Sign in again to use features that need your Kiro account.'],
+    ['agents run on KAS: sessions and agent work stop', ON_KAS, 'Sign in again to resume sessions and agent work.'],
+  ])('lapsed, %s', async (_label, cfg, body) => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, expired: true, has_refresh_token: false, usable: false })
+    kirocrewConfig.mockResolvedValue(cfg as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     renderWithProviders(<KiroSignInCard />)
-    expect(await screen.findByTestId('kiro-sign-in-summary')).toHaveAttribute('data-lapsed', 'true')
-    expect(screen.getByTestId('kiro-sign-in-expiry')).toHaveTextContent('nothing to renew it with')
+    const summary = await screen.findByTestId('kiro-sign-in-summary')
+    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent(/^Sign-in expired\.$/)
+    await waitFor(() => expect(summary).toHaveTextContent(body))
   })
 
-  it('sign in again opens the chooser over the stored identity and can be backed out of', async () => {
+  it('lapsed, config read failed: says so instead of guessing what stopped', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, expired: true, has_refresh_token: false, usable: false })
+    kirocrewConfig.mockRejectedValue(new Error('config_read_failed'))
+    renderWithProviders(<KiroSignInCard />)
+    const summary = await screen.findByTestId('kiro-sign-in-summary')
+    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent(/^Sign-in expired\.$/)
+    expect(await screen.findByTestId('kiro-sign-in-config-error', {}, { timeout: 10_000 })).toHaveTextContent('Could not read the dashboard settings')
+    expect(summary).not.toHaveTextContent(/resume sessions|features that need/)
+    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeInTheDocument()
+  })
+
+  it('lapsed, config read failed: the notice stays while a refetch is in flight', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, expired: true, has_refresh_token: false, usable: false })
+    kirocrewConfig.mockRejectedValue(new Error('config_read_failed'))
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    expect(await screen.findByTestId('kiro-sign-in-config-error', {}, { timeout: 10_000 })).toBeInTheDocument()
+    // A retry of a data-less errored read clears its error while in flight.
+    kirocrewConfig.mockReturnValue(new Promise<never>(() => {}))
+    act(() => { void queryClient.refetchQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(queryClient.getQueryState(['kirocrewConfig'])?.fetchStatus).toBe('fetching'))
+    expect(screen.getByTestId('kiro-sign-in-config-error')).toBeInTheDocument()
+  })
+
+  it('signed in, config read failed with nothing cached: no name placeholder', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    kirocrewConfig.mockRejectedValue(new Error('config_read_failed'))
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    await screen.findByTestId('kiro-sign-in-summary')
+    await waitFor(() => expect(queryClient.getQueryState(['kirocrewConfig'])?.status).toBe('error'), { timeout: 10_000 })
+    await waitFor(() => expect(screen.queryByTestId('kiro-account-name-placeholder')).toBeNull())
+    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent('Signed in with Google')
+  })
+
+  it('a live sign-in whose access token lapsed but renews on next use reads as signed in', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, expired: true })
+    renderWithProviders(<KiroSignInCard />)
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toHaveAttribute('data-lapsed', 'false')
+    expect(screen.queryByRole('button', { name: 'Sign in again' })).toBeNull()
+  })
+
+  it.each([
+    ['says it cannot renew itself when it has no refresh token', false],
+    ['adds no expiry note when it can renew itself', true],
+  ])('a live sign-in %s', async (_label, hasRefresh) => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, has_refresh_token: hasRefresh })
+    renderWithProviders(<KiroSignInCard />)
+    const summary = await screen.findByTestId('kiro-sign-in-summary')
+    const note = within(summary).queryByTestId('kiro-sign-in-no-refresh')
+    const expiry = within(summary).queryByTestId('kiro-sign-in-expiry')
+    if (hasRefresh) {
+      expect(note).toBeNull()
+      expect(expiry).toBeNull()
+    } else {
+      expect(note).toHaveTextContent('This sign-in has no refresh token')
+      expect(expiry).toHaveTextContent('Access token expires')
+    }
+  })
+
+  it('sign in again opens the dialog over the stored identity, and closing it backs out', async () => {
     kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, refresh_rejected: true })
     renderWithProviders(<KiroSignInCard />)
     fireEvent.click(await screen.findByRole('button', { name: 'Sign in again' }))
     expect(await screen.findByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
     // The stored credential is untouched while the chooser is up: no logout call.
     expect(kasLoginLogout).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByTestId('kiro-sign-in-keep-current'))
-    expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Continue with Google' })).toBeNull()
+    fireEvent.keyDown(screen.getByTestId('kiro-sign-in-dialog'), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('kiro-sign-in-dialog')).toBeNull())
+    expect(screen.getByTestId('kiro-sign-in-summary')).toBeInTheDocument()
+    expect(kasLoginLogout).not.toHaveBeenCalled()
   })
 
   it('switching account names the slot being replaced, so the gateway can retire it once the new sign-in lands', async () => {
@@ -292,19 +450,15 @@ describe('KiroSignInCard', () => {
     expect(kasLoginLogout).not.toHaveBeenCalled()
   })
 
-  it('keep-current is disabled while a begin is in flight, so a cancel cannot race the poll that persists the switch', async () => {
-    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, identity: 'identity_center', provider: 'Enterprise' })
-    // A begin that never settles: the window in which "keep current" must not act.
-    kasLoginBeginDevice.mockReturnValueOnce(new Promise(() => {}))
-    renderWithProviders(<KiroSignInCard />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Switch account' }))
-    const keep = (await screen.findByTestId('kiro-sign-in-keep-current')) as HTMLButtonElement
-    expect(keep.disabled).toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: 'Continue with GitHub' }))
-    await waitFor(() => expect(keep.disabled).toBe(true))
-    fireEvent.click(keep)
-    // Still on the chooser over the stored identity: the cancel did not fire.
-    expect(screen.queryByTestId('kiro-sign-in-summary')).toBeNull()
+  it('leaving the card with a sign-in pending cancels it, so no unwatched login lands later', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    vi.mocked(api.kasLoginCancel).mockClear()
+    const { unmount } = renderWithProviders(<KiroSignInCard />)
+    await openSignIn()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await screen.findByTestId('kas-login-user-code')
+    unmount()
+    await waitFor(() => expect(api.kasLoginCancel).toHaveBeenCalledWith('login-1'))
   })
 
   it('a switch whose previous slot could not be removed is reported, not swallowed', async () => {
@@ -335,13 +489,81 @@ describe('KiroSignInCard', () => {
     queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'account-a-model' }])
     queryClient.setQueryData(['kiro-usage'], ADA)
     const reset = vi.spyOn(queryClient, 'resetQueries')
+    await openSignIn()
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
     await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
     expect(queryClient.getQueryData(['available-models', 'acp'])).toBeUndefined()
     expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
     // The previous account's usage reading names it: dropped, not shown until the next poll (#36156).
-    expect(queryClient.getQueryData(['kiro-usage'])).toBeUndefined()
+    await waitFor(() => expect(queryClient.getQueryData(['kiro-usage'])).toBeNull())
     vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('an authorized sign-in puts a fresh reading in the top bar and re-reads the Team Crews list at once', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
+    vi.mocked(api.sessionsUsageRefresh).mockClear()
+    // The gateway's own refresh answers with the new account's plan; its cached
+    // GET would still have said "sign in" until the bar's next 30 s poll.
+    vi.mocked(api.sessionsUsageRefresh).mockResolvedValueOnce({
+      usage: { available: true, credits_used: 3, credits_plan: 50, email: 'grace@example.com' },
+    } as Awaited<ReturnType<typeof api.sessionsUsageRefresh>>)
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    queryClient.setQueryData(['kiro-usage'], 'signin-required')
+    const reset = vi.spyOn(queryClient, 'resetQueries')
+    await openSignIn()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await waitFor(() => expect(api.sessionsUsageRefresh).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(queryClient.getQueryData(['kiro-usage'])).toMatchObject({ used: 3, limit: 50, email: 'grace@example.com' }),
+    )
+    expect(reset).toHaveBeenCalledWith({ queryKey: RELAY_VIEWER_CREWS_KEY })
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('a top-bar usage poll still in flight when the sign-in lands cannot put the previous reading back', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
+    vi.mocked(api.sessionsUsageRefresh).mockClear()
+    vi.mocked(api.sessionsUsageRefresh).mockResolvedValueOnce({
+      usage: { available: true, credits_used: 3, credits_plan: 50, email: 'grace@example.com' },
+    } as Awaited<ReturnType<typeof api.sessionsUsageRefresh>>)
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    // The bar's GET left before the sign-in and answers for the previous account
+    // only after the refresh has published the new one.
+    let answerStalePoll: (state: typeof ADA) => void = () => {}
+    void queryClient
+      .fetchQuery({ queryKey: ['kiro-usage'], queryFn: () => new Promise<typeof ADA>(r => { answerStalePoll = r }) })
+      .catch(() => {})
+    await openSignIn()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await waitFor(() =>
+      expect(queryClient.getQueryData(['kiro-usage'])).toMatchObject({ email: 'grace@example.com' }),
+    )
+    await act(async () => { answerStalePoll(ADA) })
+    expect(queryClient.getQueryData(['kiro-usage'])).toMatchObject({ used: 3, limit: 50, email: 'grace@example.com' })
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('a status refetch in flight under a cancel cannot overwrite the fresh signed-in answer', async () => {
+    // The poll never answers 'authorized': only the cancel's own read sees the sign-in.
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    await openSignIn()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    const cancel = await screen.findByRole('button', { name: 'Use another way' })
+    // A status refetch that left before the token landed, still unanswered.
+    let answerStaleStatus: (s: KasLoginStatus) => void = () => {}
+    void queryClient
+      .fetchQuery({ queryKey: KAS_LOGIN_STATUS_KEY, queryFn: () => new Promise<KasLoginStatus>(r => { answerStaleStatus = r }) })
+      .catch(() => {})
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    fireEvent.click(cancel)
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
+    await act(async () => { answerStaleStatus(SIGNED_OUT) })
+    expect(queryClient.getQueryData(KAS_LOGIN_STATUS_KEY)).toMatchObject({ authenticated: true })
+    expect(screen.getByTestId('kiro-sign-in-summary')).toBeInTheDocument()
   })
 
   it('a cancel that finds the sign-in already landed drops the previous account\'s model list too', async () => {
@@ -356,8 +578,9 @@ describe('KiroSignInCard', () => {
     const { queryClient } = renderWithProviders(<KiroSignInCard />)
     queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'account-a-model' }])
     const reset = vi.spyOn(queryClient, 'resetQueries')
+    await openSignIn()
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
-    const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
+    const cancel = await screen.findByRole('button', { name: 'Use another way' })
     expect(reset).not.toHaveBeenCalledWith({ queryKey: ['available-models'] })
     kasLoginStatus.mockResolvedValue(SIGNED_IN)
     fireEvent.click(cancel)
@@ -368,10 +591,29 @@ describe('KiroSignInCard', () => {
     expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
   })
 
+  it('a status read that sees the sign-in before the poll does keeps the flow, so the landed sign-in still drops the old model list', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'account-a-model' }])
+    const reset = vi.spyOn(queryClient, 'resetQueries')
+    await openSignIn()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await screen.findByTestId('kas-login-user-code')
+    // The card's own status poll lands before the flow's poll says authorized.
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    await act(async () => { await queryClient.refetchQueries({ queryKey: KAS_LOGIN_STATUS_KEY }) })
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
+    // The flow is still mounted: it settles the dropped login and finds it landed.
+    await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
+    expect(queryClient.getQueryData(['available-models', 'acp'])).toBeUndefined()
+  })
+
   it('the embedded chrome hands failures to the agent where the gate cannot', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_OUT)
     kasLoginBeginDevice.mockRejectedValueOnce(new Error('auth service unreachable'))
     renderWithProviders(<KiroSignInCard />)
+    await openSignIn()
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
     const notice = await screen.findByTestId('kas-login-begin-error')
     expect(notice).toHaveTextContent('auth service unreachable')
@@ -392,6 +634,8 @@ describe('KiroSignInCard closes relay Crew windows', () => {
 
   beforeEach(() => {
     kasLoginStatus.mockReset()
+    kirocrewConfig.mockReset()
+    kirocrewConfig.mockResolvedValue(ON_KAS as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     kasLoginLogout.mockClear()
     kasLoginBeginDevice.mockClear()
     closeAll.mockClear()
@@ -431,7 +675,7 @@ describe('KiroSignInCard closes relay Crew windows', () => {
       await screen.findByTestId('kiro-sign-in-summary')
       kasLoginStatus.mockResolvedValue(SIGNED_OUT)
       fireEvent.click(screen.getByTestId('kiro-sign-in-logout'))
-      expect(await screen.findByTestId('kas-login-card-intro')).toBeInTheDocument()
+      expect(await screen.findByTestId('kiro-sign-in-inline')).toBeInTheDocument()
       unmount()
     }
   })
@@ -479,8 +723,9 @@ describe('KiroSignInCard closes relay Crew windows', () => {
   it('a first sign-in that lands under a cancel closes nothing', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_OUT)
     renderWithProviders(<KiroSignInCard />)
+    await openSignIn()
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
-    const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
+    const cancel = await screen.findByRole('button', { name: 'Use another way' })
     kasLoginStatus.mockResolvedValue(SIGNED_IN)
     const reads = kasLoginStatus.mock.calls.length
     fireEvent.click(cancel)
@@ -496,6 +741,7 @@ describe('KiroSignInCard closes relay Crew windows', () => {
     vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
     const { queryClient } = renderWithProviders(<KiroSignInCard />)
     const reset = vi.spyOn(queryClient, 'resetQueries')
+    await openSignIn()
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
     // The authorized effect ran (it drops the model list), and closed nothing.
     await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))

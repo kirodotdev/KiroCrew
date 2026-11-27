@@ -115,6 +115,7 @@ const TURN_ROWS: ChatMessage[] = [
   row("error", "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.", {"notice": "crew_name_undispatchable"}),
   row("error", "This code channel's worktree is not ready, so the message was not run. Send it again in a moment.", {"notice": "code_channel_worktree_not_ready"}),
   row("error", "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.", {"notice": "remote_crew_read_only"}),
+  row("error", "This cron run's transcript can be read here but not replied to. Start a new chat to follow up on it.", {"notice": "cron_run_read_only"}),
   row("error", "⚠️ Archiving this tab failed after its running turn was cancelled. The tab was kept, but that turn did not finish -- re-send to continue.", {"notice": "archive_failed_turn_cancelled"}),
 ]
 

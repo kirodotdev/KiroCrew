@@ -946,6 +946,24 @@ class TestMovingTheTabAtTheSave:
         state.push_slots_update.assert_called_once_with()
 
     @pytest.mark.asyncio
+    async def test_a_refused_write_does_not_restore_a_folder_deleted_in_the_window(
+        self, monkeypatch
+    ) -> None:
+        import kiro_crew.dashboard.chat_persistence as persistence
+
+        state = _make_state(folders=(FOLDER, OTHER_FOLDER))
+        slot = await self._filed_tab(state, _job(chat_folder_id=FOLDER))
+
+        async def _prior_folder_deleted_then_refused(*_a, **_kw):
+            state._folders[:] = [f for f in state._folders if f["id"] != FOLDER]
+            return False
+
+        monkeypatch.setattr(persistence, "save_slot_off_loop", _prior_folder_deleted_then_refused)
+
+        await move_cron_job_tab(state, _job(chat_folder_id=OTHER_FOLDER), FOLDER, OTHER_FOLDER)
+        assert slot.folder_id == ""
+
+    @pytest.mark.asyncio
     async def test_a_raising_write_restores_the_prior_folder(self, monkeypatch) -> None:
         import kiro_crew.dashboard.chat_persistence as persistence
 

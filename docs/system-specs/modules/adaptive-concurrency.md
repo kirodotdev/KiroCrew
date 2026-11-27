@@ -14,14 +14,12 @@ spawn floor (`agent.spawn_min_memory_gb`, [subagent.md](subagent.md) *Memory
 guard*), never by this cap. Nothing is ever killed to fit a smaller cap: both
 actuators shrink naturally as in-flight work finishes.
 
-**Why the execution cap does not read memory or loop lag.** It used to: it
-started at `min(user_max, 4)`, halved on 250 ms of gateway loop lag alone or on
-memory at the critical line, and paused dispatch at 0 under severe pressure, on
-top of an auto ceiling that was itself sized from host memory. Every one of
-those is a COUNT bound sitting under the per-start memory floor, so one chat's
-wave held the slots (or the halved cap) another chat's subagents waited for
-while memory was still free -- the "more than two chats with subagents throttle
-each other" report. The floor already prices each start at what it will settle
+**Why the execution cap does not read memory or loop lag.** A cap that started
+low, halved on gateway loop lag alone or on memory at the critical line, or paused
+dispatch at 0 under severe pressure would be a COUNT bound sitting under the
+per-start memory floor, so one chat's wave would hold the slots another chat's
+subagents wait for while memory is still free, and chats with subagents would
+throttle each other. The floor already prices each start at what it will settle
 at and queues the ones that would not leave it free, so a count moved by the
 same memory only stalls work early; and the gateway's loop lag says nothing
 about whether a subagent's own process is healthy. What the floor cannot see --

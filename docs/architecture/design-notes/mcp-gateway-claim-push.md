@@ -103,8 +103,11 @@ Push (new): gateway rekey() ─────────────────�
 
 The recaller poll is retained for claim-frame loss and gatewayd restarts
 (a restart empties `_CONN_INDEX`; stubs reconnect and re-register, and a
-still-key-less register restarts the poll). Its 180 s deadline is replaced by
-unbounded polling with interval backoff (1.5 s → 30 s cap), so it can never
+still-key-less register restarts the poll). Only a stub whose register carries
+no `stub_session_token` runs it: gatewayd refuses every recaller on a
+token-carrying connection, which claim-push alone names. The poll's 180 s
+deadline is replaced by unbounded polling with interval backoff
+(1.5 s → 30 s cap), so it can never
 permanently strand a connection while costing a long-idle pool stub one
 identity probe per 30 s.
 

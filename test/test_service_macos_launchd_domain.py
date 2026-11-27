@@ -13,6 +13,7 @@ import subprocess
 from unittest.mock import patch
 
 import pytest
+from service_helpers import _posix_installer_path  # noqa: F401 -- an autouse fixture, found by name
 
 from kiro_crew.service import controller
 from kiro_crew.service import macos as svc_macos

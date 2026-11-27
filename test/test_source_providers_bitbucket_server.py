@@ -650,6 +650,186 @@ async def test_a_review_the_comment_cap_drops_marks_discussions_partial(
     assert payload["partialSections"] == ["review discussions"]
 
 
+def _activity(activity_id: int, action: str, day: int, name: str, display: str) -> dict:
+    return {
+        "id": activity_id,
+        "action": action,
+        "createdDate": _ms(day),
+        "user": {"name": name, "displayName": display},
+    }
+
+
+# The live Bitbucket Data Center 9.4.26 answer for an approval that was then
+# withdrawn, newest first as the instance lists it; only the dates are added.
+_LIVE = [
+    _activity(323, "UNAPPROVED", 5, "ee-operator", "EE Operator"),
+    _activity(321, "UPDATED", 3, "ee-operator", "EE Operator"),
+    _activity(322, "APPROVED", 2, "ee-operator", "EE Operator"),
+    _activity(320, "OPENED", 1, "ee-crew-alpha", "EE Crew Alpha"),
+]
+# Added: a "needs work" by another account with the same display name, so only
+# the account name tells whose verdict was withdrawn.
+_WITHDRAWN = [_LIVE[0], _activity(900, "REVIEWED", 4, "ee-other", "EE Operator"), *_LIVE[1:]]
+_COMMENT = {
+    "id": 911,
+    "action": "COMMENTED",
+    "createdDate": _ms(3),
+    "comment": {"id": 31, "text": "Needs a test", "author": {"displayName": "EE Operator"}},
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        pytest.param(_LIVE, [], id="live"),
+        pytest.param(_WITHDRAWN, [("900", "review", "CHANGES_REQUESTED")], id="withdrawn"),
+        pytest.param(
+            [_activity(901, "APPROVED", 6, "ee-operator", "EE Operator"), *_WITHDRAWN],
+            [("900", "review", "CHANGES_REQUESTED"), ("901", "review", "APPROVED")],
+            id="re-approved",
+        ),
+        pytest.param(
+            [
+                _activity(912, "UNAPPROVED", 4, "ee-operator", "EE Operator"),
+                _COMMENT,
+                _activity(910, "REVIEWED", 2, "ee-operator", "EE Operator"),
+            ],
+            [("31", "comment", "")],
+            id="needs-work-withdrawn",
+        ),
+    ],
+)
+async def test_a_withdrawn_approval_no_longer_reads_as_approved(
+    config_file, instance, vault, values, expected
+) -> None:
+    instance.routes[f"{PR_API}/activities?limit=100"] = (
+        200,
+        {"isLastPage": True, "values": values},
+    )
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/api/source/pull-request", json={"url": PR_URL})
+        payload = await resp.json()
+    assert resp.status == 200
+    assert [(row["id"], row["kind"], row["state"]) for row in payload["comments"]] == expected
+
+
+def _member(name: str, display: str, status: str) -> dict:
+    return {"user": {"name": name, "displayName": display}, "status": status}
+
+
+# Clearing "needs work" writes no activity: the stream keeps the REVIEWED entry
+# and only the pull request's own reviewer or participant status says UNAPPROVED.
+_NEEDS_WORK = [
+    _activity(931, "REVIEWED", 3, "ee-operator", "EE Operator"),
+    _activity(930, "REVIEWED", 2, "ee-other", "EE Operator"),
+]
+_OPERATOR = {"name": "ee-operator", "displayName": "EE Operator"}
+# Comments by the cleared reviewer themself, one general and one inline.
+_OWN_COMMENT = {
+    "id": 951,
+    "action": "COMMENTED",
+    "createdDate": _ms(4),
+    "comment": {"id": 41, "text": "Fixed, thanks", "author": _OPERATOR},
+}
+_OWN_INLINE = {
+    "id": 952,
+    "action": "COMMENTED",
+    "createdDate": _ms(5),
+    "comment": {"id": 42, "text": "Nit here", "author": _OPERATOR},
+    "commentAnchor": {"path": "src/cache.py", "line": 1},
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("members", "values", "expected"),
+    [
+        pytest.param(
+            {"reviewers": [_member("ee-operator", "EE Operator", "UNAPPROVED")]},
+            _NEEDS_WORK,
+            [("930", "review", "CHANGES_REQUESTED")],
+            id="cleared-reviewer",
+        ),
+        pytest.param(
+            {"participants": [_member("ee-operator", "EE Operator", "UNAPPROVED")]},
+            _NEEDS_WORK,
+            [("930", "review", "CHANGES_REQUESTED")],
+            id="cleared-participant",
+        ),
+        pytest.param(
+            {
+                "reviewers": [
+                    _member("ee-operator", "EE Operator", "NEEDS_WORK"),
+                    _member("ee-other", "EE Operator", "NEEDS_WORK"),
+                ]
+            },
+            _NEEDS_WORK,
+            [("930", "review", "CHANGES_REQUESTED"), ("931", "review", "CHANGES_REQUESTED")],
+            id="still-needs-work",
+        ),
+        pytest.param(
+            {"reviewers": [_member("ee-operator", "EE Operator", "NEEDS_WORK")]},
+            [
+                _activity(941, "REVIEWED", 3, "ee-operator", "EE Operator"),
+                _activity(940, "APPROVED", 2, "ee-operator", "EE Operator"),
+            ],
+            [("940", "review", "APPROVED"), ("941", "review", "CHANGES_REQUESTED")],
+            id="approved-then-needs-work-keeps-history",
+        ),
+        pytest.param(
+            {"reviewers": [_member("ee-operator", "EE Operator", "UNAPPROVED")]},
+            [_OWN_INLINE, _OWN_COMMENT, _COMMENT, *_NEEDS_WORK],
+            [
+                ("930", "review", "CHANGES_REQUESTED"),
+                ("31", "comment", ""),
+                ("41", "comment", ""),
+                ("42", "inline", ""),
+            ],
+            id="comments-kept",
+        ),
+        pytest.param(
+            {
+                "reviewers": [
+                    {
+                        "user": {"slug": "ee-operator", "displayName": "EE Operator"},
+                        "status": "UNAPPROVED",
+                    }
+                ]
+            },
+            [
+                {**_NEEDS_WORK[0], "user": {"slug": "ee-operator", "displayName": "EE Operator"}},
+                _NEEDS_WORK[1],
+            ],
+            [("930", "review", "CHANGES_REQUESTED")],
+            id="cleared-by-slug",
+        ),
+        pytest.param(
+            {
+                "reviewers": [_member("ee-operator", "EE Operator", "NEEDS_WORK")],
+                "participants": [_member("ee-operator", "EE Operator", "UNAPPROVED")],
+            },
+            _NEEDS_WORK,
+            [("930", "review", "CHANGES_REQUESTED"), ("931", "review", "CHANGES_REQUESTED")],
+            id="another-status-keeps-the-verdict",
+        ),
+    ],
+)
+async def test_a_cleared_needs_work_no_longer_reads_as_changes_requested(
+    config_file, instance, vault, members, values, expected
+) -> None:
+    instance.routes[PR_API] = (200, {**PR_DOC, **members})
+    instance.routes[f"{PR_API}/activities?limit=100"] = (
+        200,
+        {"isLastPage": True, "values": values},
+    )
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/api/source/pull-request", json={"url": PR_URL})
+        payload = await resp.json()
+    assert resp.status == 200
+    assert [(row["id"], row["kind"], row["state"]) for row in payload["comments"]] == expected
+
+
 @pytest.mark.asyncio
 async def test_the_checks_tab_reads_the_head_commit_builds(config_file, instance, vault) -> None:
     async with TestClient(TestServer(_app())) as client:

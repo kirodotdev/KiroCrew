@@ -45,13 +45,16 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.cron_board import (  # noqa: F401
         _FOLDER_ID_SHAPE,
+        _LIST_TEXT_PREVIEW,
         _cron_folders_lock,
         _get_cron_folders_lock,
         _job_snapshot,
+        _jobs_response,
         api_cron_folders,
         api_cron_folders_create,
         api_cron_folders_delete,
         api_cron_folders_update,
+        api_cron_get,
         api_crons,
         create_or_adopt_cron_folder,
         logger,
@@ -69,6 +72,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_BATCH_DELETE,
         _MAX_CRON_BODY_BYTES,
         _T,
+        _channel_target_kwargs,
         _ChatFolderGone,
         _coerce_bool_flag,
         _invalid_new_chat_per_run,
@@ -92,11 +96,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.cron_lesson_supersede import (  # noqa: F401
         _CONTRADICTION_MODEL,
+        _CONTRADICTION_NOTICE_CAP,
+        _CONTRADICTION_NOTICES,
+        _CONTRADICTION_NOTICES_DROPPED,
         _CONTRADICTION_PROMPT,
         _CONTRADICTION_TIMEOUT,
         _classify_contradiction,
+        _record_contradiction_notice,
         _resolve_and_supersede,
         _resolve_contradictions,
+        _take_contradiction_notices,
     )
     from kiro_crew.dashboard.handlers.cron_lessons import (  # noqa: F401
         _LESSON_EMBED_DEADLINE_SECS,
@@ -121,6 +130,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _HISTORY_PAGE_MAX,
         _ack_job,
         _history_page,
+        _run_target_missing,
         api_cron_ack,
         api_cron_cancel,
         api_cron_history,
@@ -197,6 +207,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         _restore_dismissed_source_links,
     )
     from kiro_crew.dashboard.cron_inject import (  # noqa: F401
+        apply_cron_source_links_off,
         apply_cron_turn_timeout,
         chat_folder_exists,
         chat_folder_move_refuses_store,
@@ -205,6 +216,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         inject_cron_result_to_dashboard,
         move_cron_job_tab,
         prefetch_cron_dismissed,
+        read_cron_tab_rows,
         restore_cron_turn_timeout,
         stored_cron_folder,
     )
@@ -227,8 +239,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         _probe_persisted_session,
         _redact_memory_field,
         guard_owner_surface_routes,
+        owner_surface_guard,
         read_bounded_json,
         require_owner_dashboard_request,
+        require_owner_for_dashboard_caller,
         resolve_lesson_memory_store,
     )
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
@@ -237,10 +251,16 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
         app_holds_gateway_key,
     )
+    from kiro_crew.dashboard.slot_persistence.metadata_values import (  # noqa: F401
+        _mark_source_links_off_unread,
+    )
     from kiro_crew.dashboard.state import (  # noqa: F401
         DashboardState,
         SlotOrigin,
         note_crew_log_class,
+    )
+    from kiro_crew.dashboard.token_auth_callers import (  # noqa: F401
+        effective_request_app,
     )
     from kiro_crew.executors import (  # noqa: F401
         discovery_executor,

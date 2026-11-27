@@ -9,7 +9,7 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_abandoned_steering``, ``_goose_active_run_id``,
-``_goose_steers``, ``_steering_answers``,
+``_goose_steers``, ``_held_steers_unanswered``, ``_steering_answers``,
 ``_steering_cancel_tasks``, ``_steering_settled``, ``_steers_accepted``,
 ``_steers_proven``, ``_turn_steering_denied``.
 
@@ -50,6 +50,7 @@ from kiro_crew.acp.types import (
     steering_outcome,
     wrap_user_message,
 )
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER, steer_params
 from kiro_crew.tracing import steps as trace_steps
 
 if TYPE_CHECKING:
@@ -66,7 +67,7 @@ logger = logging.getLogger("kiro_crew.acp.session_handle")
 _STEERING_SETTLE_SECS = 5.0
 
 
-async def steer(self: AcpSessionHandle, message: str) -> bool:
+async def steer(self: AcpSessionHandle, message: str, *, origin: str = STEER_ORIGIN_USER) -> bool:
     """Inject a mid-turn steer into the running turn.
 
     Two transports. kiro-cli takes its ``_session/steer`` ext-method
@@ -81,6 +82,9 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
     turn's clean terminal, and a steer never reported consumed is queued by
     the caller. Returns False for an empty message or no active session on
     either transport.
+
+    *origin* says who wrote the text (``STEER_ORIGIN_*``); only kiro's
+    ``_session/steer`` carries it, and only when it is not the user's.
     """
     text = (message or "").strip()
     if not text or not self._session_id:
@@ -115,8 +119,7 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
         return sent
     wrapped = wrap_user_message(text)
     await self._runtime.send_request(
-        "_session/steer",
-        {"sessionId": self._session_id, "message": wrapped},
+        "_session/steer", steer_params(self._session_id, wrapped, origin)
     )
     batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     # Stamped HERE, at the innermost write, because this is the one point
@@ -292,6 +295,14 @@ async def _steer_via_steering_request(
         self._steering_settled.pop(entry[0][0], None)
 
     batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
+    # Registered before the write, as on ``AcpClient``: a turn that ends while
+    # the write is in flight finds the text in ``held_steers_possibly_delivered``.
+    # It leaves once delivery is known: written and refused, never written, or
+    # accepted while the turn runs.
+    unresolved = getattr(self, "_held_steers_unanswered", None)
+    if unresolved is None:
+        unresolved = self._held_steers_unanswered = set()
+    unresolved.add(text)
     params: dict[str, Any] = {"sessionId": session_id, "prompt": [{"type": "text", "text": text}]}
     if idle_prompt_required:
         params["_meta"] = {"steering": {"idleBehavior": "promptRequired"}}
@@ -318,6 +329,7 @@ async def _steer_via_steering_request(
             # still read: not "not written". Raised so the caller requeues
             # the steer as possibly delivered instead of as fresh text.
             raise
+        unresolved.discard(text)
         logger.debug("steering request not written for %s: %s", session_id, type(exc).__name__)
         return False
 
@@ -413,12 +425,14 @@ async def _steer_via_steering_request(
         )
     if not answer.done():
         # The turn ended first, or the answer outlasted the bound the caller's
-        # own request can wait: the caller queues the text.
+        # own request can wait: the caller queues the text, and the text stays
+        # in ``held_steers_possibly_delivered`` (a late ``injected`` may run it).
         _abandon()
         return False
     if answer.cancelled() or answer.exception() is not None:
         # An error answer: an adapter build without the method answers -32601.
         _unregister()
+        unresolved.discard(text)
         # The class only: the error text is the adapter's, and a log line is not
         # the place to carry whatever it chose to put there.
         logger.info(
@@ -428,6 +442,10 @@ async def _steer_via_steering_request(
         )
         return False
     outcome = steering_outcome(answer.result())
+    if outcome != STEERING_INJECTED or not (turn_done.is_set() or self._prompt_starts != aimed_at):
+        # Delivery is known: refused, or accepted into the running turn. An
+        # ``injected`` after its turn ended stays unresolved: codex took the text.
+        unresolved.discard(text)
     if outcome == STEERING_STARTED_NEW_TURN:
         _unregister()
         _cancel_unowned_turn()
@@ -437,7 +455,8 @@ async def _steer_via_steering_request(
         return False
     if turn_done.is_set() or self._prompt_starts != aimed_at:
         # Answered, but its turn is already over: nothing will report it
-        # consumed, so the caller queues the text.
+        # consumed. The text stays in ``held_steers_possibly_delivered``, so a
+        # caller that must not run it twice keeps it delivered.
         _unregister()
         return False
     # ``injected``: accepted. The entry stays registered for this turn's

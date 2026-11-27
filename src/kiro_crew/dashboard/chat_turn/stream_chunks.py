@@ -9,8 +9,8 @@ import time
 from dataclasses import replace as _event_with_text
 from typing import TYPE_CHECKING
 
-from kiro_crew.dashboard.alternation_echo import could_be_echo, echo_prefix_len, is_echo
 from kiro_crew.dashboard.chat_utils import chunk_generation, open_construct_at_end
+from kiro_crew.messaging.alternation_echo import could_be_echo, echo_prefix_len, is_echo
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -181,6 +181,8 @@ async def _on_text_chunk(
         turn._compaction_text_offset = _compaction_text_offset
     if not event.control_notice and safe_chunk.strip():
         slot._turn_wrote_text = True
+        # A model answered after a refusal hop: its dropped text is not put back.
+        turn._refused_segment = None
     turn.append_assistant_text(safe_chunk)
     if event.control_notice:
         # A backend control notice that arrived as assistant text

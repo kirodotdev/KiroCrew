@@ -4,7 +4,8 @@ import { renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, type QueryClientProviderProps } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { AppDispatch } from '../store'
+import { store, type AppDispatch } from '../store'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import type { ResizeInfo } from '../utils/resizeImage'
 
 // `handleOpenCrewTab` is the ONE host reveal the Crew Mode dispatch-notice
@@ -12,10 +13,10 @@ import type { ResizeInfo } from '../utils/resizeImage'
 // alike. It reuses the shared `openCrewSession` reveal — switch to the card's
 // slot so the opened panel is THAT chat's (split view never moves activeSlot
 // with pane focus), select Workers, open the dock, keepPanel=true because the
-// button is a deliberate "open" — and adds the one thing openCrewSession does
-// not: closing the find pane (which keeps the dock unmounted while open). These
-// mock openCrewSession + the search controller and assert handleOpenCrewTab
-// drives exactly that single path.
+// button is a deliberate "open". An open history search keeps its Search tab
+// behind the revealed one, so the reveal never closes it. These mock
+// openCrewSession + the search controller and assert handleOpenCrewTab drives
+// exactly that single path.
 
 const closeSearch = vi.hoisted(() => vi.fn())
 const openCrewSession = vi.hoisted(() => vi.fn())
@@ -36,8 +37,14 @@ vi.mock('../hooks/usePanelTabs', () => ({
   useAnyLiveAppTab: () => false,
   usePanelTabs: () => ({ tabs: [], openView: vi.fn(), openFolder: vi.fn(), openDiff: vi.fn() }),
 }))
+const openFileTabMock = vi.hoisted(() => vi.fn())
+// The host's `onOpened`, as the document actions would call it once a tab opened.
+const docHooks = vi.hoisted(() => ({ onOpened: undefined as undefined | ((slot?: string | null) => void) }))
 vi.mock('../hooks/usePanelDocumentActions', () => ({
-  usePanelDocumentActions: () => ({ openFile: vi.fn(), openArtifact: vi.fn(), saveFile: vi.fn() }),
+  usePanelDocumentActions: (o: { onOpened?: (slot?: string | null) => void }) => {
+    docHooks.onOpened = o.onOpened
+    return { openFile: openFileTabMock, openArtifact: vi.fn(), saveFile: vi.fn() }
+  },
 }))
 vi.mock('../hooks/useTheme', () => ({ useTheme: () => ({ colorTheme: null }) }))
 vi.mock('../hooks/useScreenSnip', () => ({
@@ -56,7 +63,7 @@ vi.mock('../utils/composerSendHolds', () => ({
   registerComposerUpload: vi.fn(),
   releaseComposerSend: vi.fn(),
   unregisterComposerUpload: vi.fn(),
-  useComposerUploadCount: () => 0,
+  useComposerUploads: () => [],
 }))
 // The single shared reveal `handleOpenCrewTab` reuses — mock it so the test
 // asserts delegation rather than re-spelling switchSlot+openPanelView+open.
@@ -116,7 +123,7 @@ function useController(activeSlot: string | null) {
 describe('handleOpenCrewTab (Crew Mode dispatch-notice reveal)', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('reveals via the shared openCrewSession (keepPanel) and closes Find', () => {
+  it('reveals via the shared openCrewSession (keepPanel) and leaves the search open', () => {
     const { result } = renderHook(() => useController('conductor-1'), { wrapper })
     result.current.handleOpenCrewTab('conductor-1')
 
@@ -124,9 +131,8 @@ describe('handleOpenCrewTab (Crew Mode dispatch-notice reveal)', () => {
     // with keepPanel=true because the button is a deliberate open.
     expect(openCrewSession).toHaveBeenCalledTimes(1)
     expect(openCrewSession).toHaveBeenCalledWith(dispatch, 'conductor-1', true)
-    // And the one thing openCrewSession does not do: close Find, else the dock
-    // stays unmounted (shouldMountSidePanel) while search is open.
-    expect(closeSearch).toHaveBeenCalledTimes(1)
+    // The Search tab stays behind the Crew tab until the person closes it.
+    expect(closeSearch).not.toHaveBeenCalled()
   })
 
   it('in a split pane (card slot ≠ activeSlot) reveals the CARD slot, not the active one', () => {
@@ -136,14 +142,14 @@ describe('handleOpenCrewTab (Crew Mode dispatch-notice reveal)', () => {
     // openCrewSession switches to the card's slot first, so the panel it opens
     // belongs to the card's chat, not the active pane's.
     expect(openCrewSession).toHaveBeenCalledWith(dispatch, 'conductor-1', true)
-    expect(closeSearch).toHaveBeenCalledTimes(1)
+    expect(closeSearch).not.toHaveBeenCalled()
   })
 })
 
 // The folder twin of handleFileOpen's split-pane override (#9921, #35014),
 // pinned here because this file already builds the controller.
 describe('handleFolderOpen (split-pane slot override)', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => { vi.clearAllMocks(); store.dispatch(sseConnected()) })
 
   it('stamps the folder tab with the pane slot it is given and switches the panel to that chat', () => {
     // The panel is bound to activeSlot, so without the switch the folder tab
@@ -159,7 +165,44 @@ describe('handleFolderOpen (split-pane slot override)', () => {
     expect(switchCall).not.toBe(-1)
     // Held first, then switched (the order `openCrewSession` uses).
     expect(openFolder.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(dispatch).mock.invocationCallOrder[switchCall])
-    expect(closeSearch).toHaveBeenCalledTimes(1)
+    expect(closeSearch).not.toHaveBeenCalled()
+  })
+
+  it('a file opened from a split pane switches the panel to that pane\'s chat and opens held', () => {
+    // A file chip or a diff's Open button in split pane B: the tab lands in
+    // B's strip, so the panel must show B, or the click seems to do nothing.
+    const { result } = renderHook(() => useController('active-chat'), { wrapper })
+    void result.current.handleFileOpen('/repo/a.md', { slot: 'pane-chat', line: 3 })
+    expect(openFileTabMock).toHaveBeenCalledWith('/repo/a.md', { slot: 'pane-chat', line: 3, hold: true })
+    // No switch until the tab is open: a failed read must not blank the pane.
+    expect(switchSlot).not.toHaveBeenCalled()
+    docHooks.onOpened?.('pane-chat')
+    expect(switchSlot).toHaveBeenCalledTimes(1)
+    expect(switchSlot).toHaveBeenCalledWith({ key: 'pane-chat', announceOnMissing: true, gesture: true })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'test/switchSlot', payload: { key: 'pane-chat', announceOnMissing: true, gesture: true } })
+  })
+
+  it('a pane file that opens from cache while offline does not switch the panel', () => {
+    // Offline the switch's fetch is rejected and blanks the pane, so a read
+    // served from the query cache must not trigger it. The dock still opens.
+    store.dispatch(sseDisconnected(null))
+    const { result } = renderHook(() => useController('active-chat'), { wrapper })
+    void result.current.handleFileOpen('/repo/a.md', { slot: 'pane-chat' })
+    docHooks.onOpened?.('pane-chat')
+    expect(switchSlot).not.toHaveBeenCalled()
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: expect.stringContaining('openActivityPanel') }))
+  })
+
+  it('a file opened for the chat the panel already shows does not switch', () => {
+    const { result } = renderHook(() => useController('active-chat'), { wrapper })
+    void result.current.handleFileOpen('/repo/a.md', { slot: 'active-chat' })
+    void result.current.handleFileOpen('/repo/b.md')
+    expect(openFileTabMock).toHaveBeenNthCalledWith(1, '/repo/a.md', { slot: 'active-chat' })
+    expect(openFileTabMock).toHaveBeenNthCalledWith(2, '/repo/b.md', undefined)
+    docHooks.onOpened?.('active-chat')
+    docHooks.onOpened?.(null)
+    docHooks.onOpened?.()
+    expect(switchSlot).not.toHaveBeenCalled()
   })
 
   it('without an override stamps the active slot', () => {

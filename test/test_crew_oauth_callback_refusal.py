@@ -219,7 +219,7 @@ def test_the_shared_loopback_answers_a_refusal_with_its_fixed_page(monkeypatch, 
 
     with caplog.at_level(logging.DEBUG):
         text, code = asyncio.run(_run())
-    assert (text, code) == (PAGE, "callback_access_denied")
+    assert (text, code) == (crew_oauth_dcr._PAGE.format(PAGE), "callback_access_denied")
     assert PROBE not in _emitted(caplog)
 
 
@@ -251,3 +251,77 @@ def test_an_iss_urlsplit_refuses_is_a_mismatch_not_a_logged_traceback(iss, caplo
     with caplog.at_level(logging.DEBUG):
         assert asyncio.run(_run()) == "issuer_mismatch"
     assert "TEXT" not in _emitted(caplog) and "vendor-text" not in _emitted(caplog)
+
+
+# RFC 9207 ``iss`` for the pre-registered providers. The values are the
+# ``issuer`` each vendor publishes in its public OAuth/OIDC metadata.
+_PREREGISTERED_ISSUERS = {
+    "google-drive": "https://accounts.google.com",
+    "gmail": "https://accounts.google.com",
+}
+
+
+def _pre_registered(slug: str) -> crew_oauth.SignIn:
+    sign_in = crew_oauth.SignIn(slug)
+    sign_in._state = "s" * 43
+    return sign_in
+
+
+@pytest.mark.parametrize("slug", sorted(_PREREGISTERED_ISSUERS))
+def test_a_pre_registered_callback_from_another_issuer_is_refused(slug):
+    async def _run():
+        sign_in = _pre_registered(slug)
+        resp = await _answer(
+            sign_in, {"state": sign_in._state, "code": "c", "iss": "https://evil.example"}
+        )
+        assert resp.status == 400 and "evil" not in resp.text
+        with pytest.raises(CrewOAuthError) as err:
+            await sign_in._done
+        return err.value.code
+
+    assert asyncio.run(_run()) == "issuer_mismatch"
+
+
+@pytest.mark.parametrize("slug", sorted(_PREREGISTERED_ISSUERS))
+def test_a_pre_registered_callback_with_no_iss_is_refused(slug):
+    async def _run():
+        sign_in = _pre_registered(slug)
+        resp = await _answer(sign_in, {"state": sign_in._state, "code": "c"})
+        assert resp.status == 400
+        with pytest.raises(CrewOAuthError) as err:
+            await sign_in._done
+        return err.value.code
+
+    assert asyncio.run(_run()) == "issuer_mismatch"
+
+
+@pytest.mark.parametrize("slug", sorted(_PREREGISTERED_ISSUERS))
+def test_a_pre_registered_callback_from_its_own_issuer_succeeds(slug, monkeypatch):
+    # No finish() runs here, so 0 answers the tab at once instead of after the page wait.
+    monkeypatch.setattr(crew_oauth, "_CALLBACK_PAGE_WAIT_SECS", 0)
+
+    async def _run():
+        sign_in = _pre_registered(slug)
+        query = {"state": sign_in._state, "code": "the-code", "iss": _PREREGISTERED_ISSUERS[slug]}
+        resp = await _answer(sign_in, query)
+        assert resp.status == 200
+        return await sign_in._done
+
+    assert asyncio.run(_run()) == "the-code"
+
+
+@pytest.mark.parametrize("slug", ["github", "asana", "slack"])
+def test_a_provider_with_no_verified_issuer_keeps_today_s_behaviour(slug, monkeypatch):
+    assert "issuer" not in crew_oauth._ENDPOINTS[slug]
+    # No finish() runs here, so 0 answers the tab at once instead of after the page wait.
+    monkeypatch.setattr(crew_oauth, "_CALLBACK_PAGE_WAIT_SECS", 0)
+
+    async def _run():
+        sign_in = _pre_registered(slug)
+        resp = await _answer(
+            sign_in, {"state": sign_in._state, "code": "c", "iss": "https://anything.example"}
+        )
+        assert resp.status == 200
+        return await sign_in._done
+
+    assert asyncio.run(_run()) == "c"

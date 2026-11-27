@@ -36,8 +36,10 @@ commit message) wrapped in the workflow's own UNTRUSTED framing block.
 This script NEVER calls a model. It only assembles inputs and prints where they
 landed; the skill dispatches the reviewers with them.
 
-Nothing is written inside the worktree: the staging tree lives under the system
-temp dir and every relative path the workflows use (`.review-base-rules/...`,
+Nothing is written inside the worktree: the briefs and the staging tree live
+under ``$KIROCREW_SCRATCH`` when it names a directory (the reviewer subagents
+cannot read a Kiro Crew process's own ``$TMPDIR``), else under the system temp
+dir, and every relative path the workflows use (`.review-base-rules/...`,
 `.review-prompts/...`, `.review-candidates.md`) is rewritten in the extracted
 text to its absolute staged twin. A local review therefore cannot dirty the tree
 that Phase 3 is about to push.
@@ -1703,6 +1705,20 @@ def stale_copy_hint(worktree: str, base_sha: str, base_ref: str) -> Optional[lis
     ]
 
 
+def _default_run_dir(prefix: str) -> str:
+    """Create a fresh, private directory for one run's briefs or staged inputs.
+
+    The reviewers that read these files are subagents. In a Kiro Crew session
+    ``$TMPDIR`` is private to each process, so a brief under it is invisible to
+    them; ``$KIROCREW_SCRATCH`` is the directory they share with this one.
+    Outside such a session the system temp dir is used.
+    """
+    scratch = os.environ.get("KIROCREW_SCRATCH", "")
+    if scratch and os.path.isdir(scratch):
+        return tempfile.mkdtemp(prefix=prefix, dir=os.path.abspath(scratch))
+    return tempfile.mkdtemp(prefix=prefix)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Assemble local pre-push reviewer briefs from CI's own review workflows."
@@ -1730,11 +1746,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.out_dir:
         out_dir = os.path.abspath(args.out_dir)
     else:
-        out_dir = tempfile.mkdtemp(prefix="local-review-out-")
+        out_dir = _default_run_dir("local-review-out-")
     if args.stage_dir:
         stage_dir = os.path.abspath(args.stage_dir)
     else:
-        stage_dir = tempfile.mkdtemp(prefix="local-review-stage-")
+        stage_dir = _default_run_dir("local-review-stage-")
 
     resolved: dict[str, str] = {}
     try:

@@ -1011,9 +1011,11 @@ export default function AgentImportFlow({
             </p>
             {/* The pressed one spins while it runs: every button on this step
                 waits for it, so the spinner is the only sign it is working. */}
+            {/* The stock Btn is transparent, so on the warn tint it has no edge until hovered. */}
             <div className="mt-3 flex flex-wrap gap-2">
               <Btn
                 type="button"
+                className="border-border-strong bg-bg-elevated"
                 disabled={isBusy}
                 aria-busy={resolving === 'rename'}
                 onClick={() => { setStrategy('rename'); applyMutation.mutate('rename') }}
@@ -1023,6 +1025,7 @@ export default function AgentImportFlow({
               </Btn>
               <Btn
                 type="button"
+                className="border-border-strong bg-bg-elevated"
                 disabled={isBusy}
                 aria-busy={resolving === 'overwrite'}
                 onClick={() => { setStrategy('overwrite'); applyMutation.mutate('overwrite') }}

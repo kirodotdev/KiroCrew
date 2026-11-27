@@ -16,12 +16,13 @@ from __future__ import annotations
 import asyncio
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
+from overload_fakes import mock_ctx, mock_sessions, settle_depth_emits
 
-from kiro_crew import mcp_dashboard
+from kiro_crew import ledger_wake, mcp_dashboard
 from kiro_crew.crew_log import emit
 from kiro_crew.crew_log import session_tree_projection as stp
 from kiro_crew.crew_log.session_tree import OpenedRecord
@@ -30,6 +31,9 @@ from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
 from kiro_crew.mcp_tools.table import Caller, ToolContext
+from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -147,6 +151,103 @@ class TestLiveness:
         _busy(_child(state, "chat-2", caller))
         row = _rows(_status(state, caller))["chat-2"]
         assert row["status"] == "working" and row["running"] is True
+        assert row["activity"] == ["turn"]
+
+    def test_turn_admission_is_not_reported_as_a_running_turn(self, tmp_path):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        child = _child(state, "chat-2", caller)
+        child._turn_admission_reserved = True
+        row = _rows(_status(state, caller))["chat-2"]
+        assert row["status"] == "working"
+        assert row["running"] is True
+        assert row["activity"] == ["admission"]
+
+    def test_an_idle_session_with_running_subagents_is_working(self, tmp_path):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        child = _child(state, "chat-2", caller)
+        child_key = _key(child)
+        state.subagents = SimpleNamespace(
+            running_agents_for=lambda key: [{"id": "sa-1"}] if key == child_key else [],
+            has_in_memory_pending_work_for=lambda _key: False,
+            published_queued_depths=lambda: {},
+        )
+        row = _rows(_status(state, caller))["chat-2"]
+        assert row["status"] == "working"
+        assert row["running"] is True
+        assert row["activity"] == ["subagents"]
+
+    def test_an_idle_session_with_queued_subagents_is_queued(self, tmp_path):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        child = _child(state, "chat-2", caller)
+        child_key = _key(child)
+        state.subagents = SimpleNamespace(
+            running_agents_for=lambda _key: [],
+            has_in_memory_pending_work_for=lambda _key: False,
+            published_queued_depths=lambda: {child_key: 2},
+        )
+        row = _rows(_status(state, caller))["chat-2"]
+        assert row["status"] == "queued"
+        assert row["running"] is False
+        assert row["activity"] == ["subagents_queued"]
+
+    def test_an_unreadable_background_probe_is_named_unknown(self, tmp_path):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _child(state, "chat-2", caller)
+
+        def unreadable(_key):
+            raise RuntimeError("unreadable")
+
+        state.subagents = SimpleNamespace(running_agents_for=unreadable)
+        row = _rows(_status(state, caller))["chat-2"]
+        assert row["status"] == "working"
+        assert row["running"] is True
+        assert row["activity"] == ["unknown"]
+
+    def test_an_idle_session_with_a_running_workflow_is_working(self, tmp_path):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        child = _child(state, "chat-2", caller)
+        child_key = _key(child)
+        state.workflow_service = SimpleNamespace(
+            registry=SimpleNamespace(has_pending_work_for=lambda key: key == child_key)
+        )
+        row = _rows(_status(state, caller))["chat-2"]
+        assert row["status"] == "working"
+        assert row["running"] is True
+        assert row["activity"] == ["workflow"]
+
+    @pytest.mark.parametrize(
+        ("field", "kind"),
+        [
+            ("_preparing_count", "preparing"),
+            ("_compacting", "compaction"),
+            ("_pending_synthesis", "synthesis"),
+        ],
+    )
+    def test_background_session_work_is_named(self, tmp_path, field, kind):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        child = _child(state, "chat-2", caller)
+        setattr(child, field, 1 if field == "_preparing_count" else True)
+        row = _rows(_status(state, caller))["chat-2"]
+        assert row["status"] == "working"
+        assert row["running"] is True
+        assert row["activity"] == [kind]
+
+    def test_an_active_automation_is_named_between_checks(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _child(state, "chat-2", caller)
+        monkeypatch.setattr(ledger_wake, "worker_looping", lambda _svc, key: key == "chat-2")
+        row = _rows(_status(state, caller))["chat-2"]
+        assert row["status"] == "idle"
+        assert row["running"] is False
+        assert row["looping"] is True
+        assert row["activity"] == ["automation"]
 
     def test_an_idle_session_with_messages_waiting_is_queued(self, tmp_path):
         """Distinct from `idle` because a steer would land on nothing, and distinct
@@ -190,6 +291,196 @@ class TestLiveness:
         caller._created_by = caller.key
         _child(state, "chat-2", caller)
         assert caller.key not in _rows(_status(state, caller))
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
+@pytest.mark.parametrize(
+    "span",
+    [
+        "outer",
+        "evicted-outer",
+        "report",
+        "queued",
+        "queued-report",
+        "followup",
+        "remote-cleanup",
+        "remote-cleanup-cancel",
+        "late-cleanup",
+        "approval",
+    ],
+)
+async def test_session_activity_tracks_real_subagent_producers(tmp_path, monkeypatch, span):
+    """The run, report and watcher producers own execution beyond ``info.done``."""
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.context_management import evict_completed_agents
+
+    cfg = KiroCrewConfig()
+    cfg.agent.task_queue_enabled = False
+    monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "open_store_off_loop", False)
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    child = _child(state, "chat-2", caller)
+    parent = _key(child)
+    manager = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx())
+    state.subagents = manager
+    gap, release_gap = asyncio.Event(), asyncio.Event()
+    reporting, release_report = asyncio.Event(), asyncio.Event()
+    watching, release_watcher = asyncio.Event(), asyncio.Event()
+    cleaning, release_cleanup = asyncio.Event(), asyncio.Event()
+    approving, release_approval = asyncio.Event(), asyncio.Event()
+
+    async def inner(info, _key):
+        info.done = True
+
+    async def cap_result(_info):
+        gap.set()
+        await await_until(release_gap, what="the outer run's finalization release")
+
+    async def report_terminal(_info, **_kwargs):
+        reporting.set()
+        await await_until(release_report, what="the terminal report's delivery release")
+        return True
+
+    async def deliver_followups(_info):
+        watching.set()
+        await await_until(release_watcher, what="the follow-up watcher's dispatch release")
+
+    async def forget_environment(_key):
+        cleaning.set()
+        await await_until(release_cleanup, what="the remote environment cleanup release")
+
+    await_report = manager._await_report
+
+    async def late_cleanup(report):
+        await await_report(report)
+        cleaning.set()
+        await await_until(release_cleanup, what="the post-report cleanup release")
+
+    async def approve(*_args):
+        approving.set()
+        await await_until(release_approval, what="the spawn approval decision")
+        return True
+
+    monkeypatch.setattr(manager, "_run_inner", inner)
+    monkeypatch.setattr(
+        type(manager._run_events),
+        "_cap_unclaimed_result_impl",
+        lambda _self, info: cap_result(info),
+    )
+    monkeypatch.setattr(manager, "_report_terminal", report_terminal)
+    monkeypatch.setattr(manager, "_deliver_followups", deliver_followups)
+    monkeypatch.setattr(manager, "_record_cost", lambda _info: None)
+    monkeypatch.setattr(manager, "_drain_queue", lambda: None)
+    # No native process exists in this producer fixture.
+    monkeypatch.setattr(manager, "_teardown_run_session", AsyncMock())
+    info = SubagentInfo(id="activity-run", task="t", parent_session_key=parent)
+    if span.startswith("remote-cleanup"):
+        info._remote_workspace = True
+        monkeypatch.setattr(
+            "kiro_crew.coder.session_launch.forget_subagent_environment", forget_environment
+        )
+    if span == "late-cleanup":
+        monkeypatch.setattr(manager, "_await_report", late_cleanup)
+    outer = None
+    try:
+        if span not in {"queued", "followup"}:
+            manager._agents[info.id] = info
+            if span == "approval":
+                monkeypatch.setattr(manager, "_on_spawn_approval", approve)
+                monkeypatch.setattr(
+                    manager, "_admit_released_start", AsyncMock(return_value="admitted")
+                )
+                monkeypatch.setattr(manager, "_log_spawned", lambda _info: None)
+                outer = asyncio.create_task(manager._spawn_with_approval(info))
+            else:
+                outer = asyncio.create_task(manager._run(info))
+            manager._tasks[info.id] = outer
+            if span == "approval":
+                await await_until(approving, what="the spawn approval to park")
+                assert manager.running_agents_for(parent)[0]["awaitingSpawnApproval"] is True
+                assert manager.has_current_execution_for(parent) is False
+                assert not manager._run_task_owners
+                row = _rows(
+                    await sc.created_session_status(state, caller_session_key=_key(caller))
+                )[child.key]
+                assert row["activity"] == [] and row["running"] is False
+                assert row["status"] == "idle"
+                release_approval.set()
+            await await_until(gap, what="the inner done-to-outer finalization gap")
+            assert info.done and manager.running_agents_for(parent) == []
+            if span == "evicted-outer":
+                assert evict_completed_agents(manager._agents, max_retained=0) == 1
+                assert info.id not in manager._agents
+                assert not manager.has_unfinished_report_for(parent)
+                assert not manager.has_in_memory_pending_work_for(parent)
+                assert not manager.has_in_memory_pending_work_for(parent, exclude_id=info.id)
+            if span in {"report", "queued-report"} or "cleanup" in span:
+                if "cleanup" in span:
+                    release_report.set()
+                release_gap.set()
+                await await_until(reporting, what="the terminal report to start")
+                assert info.id not in manager._tasks
+                assert evict_completed_agents(manager._agents, max_retained=0) == 1
+                if "cleanup" in span:
+                    await await_until(cleaning, what="the outer run's remaining cleanup")
+                    await await_until(
+                        asyncio.gather(*manager._report_tasks), what="the report to settle"
+                    )
+                    assert not manager.has_unfinished_report_for(parent)
+                    assert not outer.done()
+                else:
+                    assert manager.has_unfinished_report_for(parent)
+        if span == "followup":
+            info.done = True
+            manager._arm_followup_watcher(info)
+            await await_until(watching, what="the follow-up watcher to start")
+            assert info.id not in manager._agents
+        if span in {"queued", "queued-report"}:
+            manager._running_count = manager.max_concurrent
+            queued = await manager.spawn_async("queued work", parent_session_key=parent)
+            assert queued is not None and queued.queued
+            await settle_depth_emits(manager)
+            assert manager.published_queued_depths().get(parent) == 1
+
+        row = _rows(await sc.created_session_status(state, caller_session_key=_key(caller)))[
+            child.key
+        ]
+        expected = ["subagents"] if span != "queued" else []
+        if span in {"queued", "queued-report"}:
+            expected.append("subagents_queued")
+        assert row["activity"] == expected
+        assert row["status"] == ("queued" if span == "queued" else "working")
+        assert row["running"] is (span != "queued")
+        read = sc.read_messages(state, caller_session_key=_key(caller), target=child.key)
+        summary = await sc.read_summary(state, caller_session_key=_key(caller), target=child.key)
+        for response in (read, summary):
+            assert response["activity"] == expected
+            assert response["running"] is row["running"]
+        assert manager.has_current_execution_for("dashboard_other") is False
+    finally:
+        manager._shutting_down = True
+        release_gap.set()
+        release_report.set()
+        release_watcher.set()
+        release_approval.set()
+        if span == "remote-cleanup-cancel" and outer is not None:
+            outer.cancel()
+        release_cleanup.set()
+        if outer is not None:
+            await await_until(
+                asyncio.gather(outer, return_exceptions=True),
+                what="the outer run to settle in cleanup",
+            )
+        await await_until(
+            asyncio.create_task(manager.cancel_all()), what="the activity producers to drain"
+        )
+        manager.close()
+    assert not manager.has_current_execution_for(parent)
+    assert not manager._run_task_owners
+    if span == "remote-cleanup-cancel":
+        assert outer is not None and outer.cancelled()
 
 
 # ── What the crew log contributes ────────────────────────────────────────────

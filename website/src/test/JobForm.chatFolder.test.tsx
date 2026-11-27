@@ -175,7 +175,7 @@ describe('the chat-folder picker', () => {
     expect(picker).toBeEnabled()
 
     await userEvent.click(screen.getByLabelText('Hide in chat'))
-    expect(await screen.findByText(/Turn off/)).toBeVisible()
+    expect(await screen.findByText(/nothing to file/)).toBeVisible()
     expect(screen.getByLabelText('Chat folder')).toBeDisabled()
   })
 

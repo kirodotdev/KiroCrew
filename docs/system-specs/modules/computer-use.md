@@ -257,7 +257,7 @@ sessions are genuinely separate — in the 1:1 shim topology. On a POOLED backen
 process serves many sessions, so the pid separates only what the injected caller
 block does not already name: co-tenants gatewayd CAN name get real per-session keys,
 and the ones it cannot are separated by the **per-connection nonce** gatewayd injects
-alongside the caller block (`_meta."kirocrew.tenant".nonce`, #5322). The nonce is
+alongside the caller block (`_meta."kirocrew.tenant".nonce`). The nonce is
 gateway-minted and stripped on every inbound frame like the caller block, so a stub
 cannot choose to share a peer's namespace; it carries no session key, so
 `CallerContext.from_meta` still finds no identity and nothing is laundered into
@@ -288,9 +288,9 @@ claim: on the AF_UNIX leg `token_auth._verify_unix_peer` resolves the peer pid's
 `session_pid_<pid>` ancestry and denies `403 peer_session_mismatch` when the recovered
 key differs from the declared one, which is the same-uid impersonation case that check
 exists to close. A placeholder names no session, so it can never equal a recovered key,
-and declaring it made every Computer Use call from a dashboard-launched kiro-cli fail
-with a bare `Error: Forbidden` on macOS, where the ancestry file always resolves
-(#9841; `kirocrew computer apps` worked because the CLI never takes that leg). The
+and declaring it would make every Computer Use call from a dashboard-launched kiro-cli
+fail with a bare `Error: Forbidden` on macOS, where the ancestry file always resolves
+(`kirocrew computer apps` is not affected because the CLI never takes that leg). The
 shim therefore decides by the key's own prefix (`mcp_computer._declares_identity`):
 a strictly-resolved key is declared in the header and kernel-verified as before; an
 `unresolved:` key is carried in the body only, and the request has no `X-Session-Key`,
@@ -433,13 +433,14 @@ ring trim orders by name. If descriptor adoption or the write fails, each writer
 removes its invocation-owned partial frame before degrading; it never sweeps a
 neighbouring capture owned by another call or process.
 
-**`computer_list_apps` only omits an app it cannot name.** It used to carry a
-per-app governance filter (`gate.app_is_disclosable` against the `computer_use.apps`
-/ `.app_names` axes) because it is the one verb that names every application and
-resolves no target, so `require_computer_use` could not see them. With those axes
-gone the function survives as a shape check: an app with neither a bundle id nor a
-display name is dropped because there is nothing to show. Terminals and password
-managers now appear in the list like everything else.
+**`computer_list_apps` omits only what the target policy refuses and what it cannot
+name.** `policy.check_app` drops Kiro Crew, any window titled Kiro Crew, and the apps
+the operator's `extra_denied_apps` and `allowed_apps` exclude. There is no per-app
+governance axis, so `gate.app_is_disclosable` is a shape check: an app with neither a
+bundle id nor a display name is dropped because there is nothing to show. Terminals
+and password managers appear in the list like everything else. Every listing ends
+with `UNLISTED_APPS_NOTE`, so neither a short list nor an empty one reads as every
+app that is open; the note names no hidden app and counts none.
 
 ### Result shape: text only, by construction
 
@@ -450,9 +451,10 @@ Exactly what `validation.build_tool_response` emits:
 ```
 
 Text only, capped at `MAX_RESPONSE_LEN`. **There is no `isError` field and no
-image block** — an image block is not expressible on this transport, so
-"tree-first, relay the screenshot as a path" is a property of the transport
-rather than a policy someone can regress. An error is the literal string
+image block** — `build_tool_response` adds an image block only to an answer that
+is a `validation.TextWithImage`, and no computer-use handler returns one (the one
+producer is the browser `screenshot` op with `inline: true`), so "tree-first,
+relay the screenshot as a path" holds for every computer-use result. An error is the literal string
 `"Error: …"`; `mcp_shared.call_tool_with_logging` classifies that prefix as SEL
 `outcome="failed"`, so the prefix is load-bearing.
 
@@ -522,7 +524,12 @@ forms (`is_sensitive_bash_command`, including `cat`, `>`, `tee`, and
 Mechanics:
 
 - Every read fails soft to `{}` → **DISABLED**. Absent, unreadable, truncated or
-  hand-mangled must never mean "enabled".
+  hand-mangled must never mean "enabled". One leading UTF-8 byte-order mark is not
+  content (`user_json.loads_user_json`, as for `denied_commands.json`). A file that
+  is present but unusable logs one WARNING per file version naming
+  `computer_use.json` and the error type, never its contents, and
+  `kirocrew computer doctor` lists the same sentence under errors from one read
+  (`enable_state.load_state_for_report`).
 - `is_enabled()` is strict identity against `True`: a hand-edited
   `"enabled": "false"` (a truthy string) or `"enabled": 1` does not enable
   desktop control.
@@ -530,7 +537,9 @@ Mechanics:
   ([rfc-crew-lts-edition](../../request-for-change/rfc-crew-lts-edition.md)
   appendix row "Desktop control"; `enable_state.locked_by_policy`, policy layer
   only, fail-closed). When the policy keeps it off, `is_enabled()` answers `False`,
-  the config GET carries `locked_by_policy: true`, and a PUT with `enabled: true`
+  the config GET carries `locked_by_policy: true` (plus `locked_by_edition: true`
+  when no policy term can turn the key on, `enable_state.locked_by_edition`, so the
+  page names the edition instead of a policy), and a PUT with `enabled: true`
   answers 409 `locked_by_policy`. An LTS build is off until a policy turns
   the key on (D3: the baseline row is off). An `oss` build with no policy naming
   the key is unchanged. Nothing finer (apps, actions, approval) is governed.
@@ -559,10 +568,12 @@ models is the point.
 | `POST /api/computer-use/invoke` | loopback + `X-Internal-Secret` | the stdio shim ONLY |
 | `POST /api/computer-use/frame` | loopback + `X-Internal-Secret` | this gateway's own capture thread ONLY |
 
-`invoke` is in `server._STRICT_INTERNAL_API_PATHS` — no cookie fall-through, and
-non-loopback is denied outright. It is the entry point to accessibility reads and
-input synthesis, so it is the one route where a cookie fall-through would be a
-genuinely new attack path rather than a convenience. It is registered in
+`invoke` is in `server._STRICT_INTERNAL_API_PATHS`, and non-loopback is denied
+outright. A loopback request with no `X-Internal-Secret` falls through to cookie
+auth, where a dashboard session must be the owner's or a teammate's
+(`require_owner_dashboard_request`; any other session gets 403 `owner_only`) and
+an app token stays under its own scope (`token_auth.token_auth_middleware`). It is
+the entry point to accessibility reads and input synthesis. It is registered in
 `_register_mcp_routes` so the headless `--slack-only` server exposes it too (kiro-cli
 spawns the shim on both entrypoints). The config pair is deliberately NOT in that
 set: it is browser-called, like the browser-config pair.
@@ -637,12 +648,8 @@ notification push; the two machine routes are covered instead by their
 `request["internal_auth"]` assertion, which an app token can never satisfy.
 
 **There is no `409` and no `read_only` field**, because there is no ceiling: no
-`computer_use*` row exists in `SCOPE_CATALOG`. An earlier revision of this spec (and
-of the handler's own docstring and a 16-line comment) described a `409` for a widening
-request under a forbidding ceiling and a `forbidden`-only `read_only` the panel would
-key `disabled` on. Both belonged to the governance model that was removed by product
-decision, and the prose outlived the code — there is no `status=409` in the module at
-all. Do not re-document either without re-implementing it.
+`computer_use*` row exists in `SCOPE_CATALOG`, and there is no `status=409` in the
+module at all. Do not document either without implementing it.
 
 On `PUT`, a corrupt keystone or `config.json` is `500` and is left byte-identical
 rather than clobbered (`StateCorruptError`, the `ConfigCorruptError` precedent). Every mutation
@@ -794,6 +801,15 @@ then verifies what came back:
    `C:\Program Files` → "Access is denied"), which is what makes the prefix test
    meaningful in both directions.
 
+   The refusal names the half that failed (`_protection_refusal`). Only a target
+   outside every root, or one whose path cannot be resolved, is told it is outside the
+   protected install directories. One inside a root whose directory this user can
+   write, or whose file this user can replace, or where either could not be verified,
+   names that directory or file instead, as the macOS refusal does. A gateway running
+   with administrator rights can write every root, so every application inside one gets
+   the second text there, where the first would send the user after a reinstall that
+   cannot help.
+
    **The root LIST is read from `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion`, never
    from `os.environ`**, and that is the single most load-bearing line in the module. An
    earlier draft read `%ProgramFiles%`, which is an ordinary environment variable — so
@@ -879,7 +895,7 @@ place. A target has to fail both questions to be trusted:
 immediate parent.** Write access to any single level is enough to substitute the code that
 runs: an agent owning an intermediate `C:\Program Files\Vendor` renames its `App` child aside
 and recreates it with its own binary inside, and a parent-only probe then reports the leaf it
-just created as unwritable. `_any_directory_is_writable` walks from the executable's directory
+just created as unwritable. `_first_writable_directory` walks from the executable's directory
 up to and including the root and stops there — everything above is off the caller's path by
 construction, since the prefix test already placed the target inside it. `launch_macos`'
 `_writable_component` does the same for a bundle's four levels (three under a stock
@@ -1313,7 +1329,9 @@ answers "where is this app's caret", including for a background app. Identity is
 compared with `CFEqual`, never pointer equality: `AXFocusedUIElement` is a
 Copy-Rule read returning a fresh reference to a node the walk reaches under a
 different one, so an address comparison would answer "not focused" for every element
-and the marker would silently never appear.
+and the marker would silently never appear. The selection is flattened and clipped
+to `text_limit` with `render._clip` when it is read, so `Snapshot.selected_text`
+never holds more than the caller asked for, whoever consumes it.
 
 **Alternate child collections** (`AXRows`, `AXVisibleChildren`, merged with
 `AXChildren`). `AXChildren` alone is not the whole tree: a table, outline or list
@@ -1489,7 +1507,7 @@ type-check `CFGetTypeID(v)` against `CFStringGetTypeID()`/`CFArrayGetTypeID()`
 **before** using a value — a wrong-type read is another segfault, not an
 exception.
 
-**2. Electron/Chromium apps need an explicit opt-in.** Chrome returned
+**2. Electron apps need an explicit opt-in.** A cold-started Chrome once returned
 `kAXErrorCannotComplete = -25204` for every attribute read. Setting
 `AXManualAccessibility = kCFBooleanTrue` on the app element and waiting ~2s
 unlocked **1431 nodes in 0.07s**. Without this, Slack, VS Code, Obsidian and
@@ -1499,10 +1517,32 @@ create the app element, immediately
 mandatory, because ctypes releases the GIL around the C call and a genuinely hung
 target app would otherwise park the worker thread indefinitely — read
 `AXWindows`, and on `-25204` set the opt-in, poll for up to
-`ELECTRON_OPT_IN_WAIT_SECS` in 0.25s steps, retry **once**, then raise naming the
+`ELECTRON_OPT_IN_WAIT_SECS` in 0.25s steps, retry **once** (the largest walk is kept,
+but a secure field that any walk saw still sets `has_secure`), then raise naming the
 raw AX code so a support thread is diagnosable. The first `computer_get_state`
 on an Electron app is inherently slow; the skill says so, so a model does not
 read it as a hang.
+
+Chromium browsers need a second attribute. On macOS 14+ a client that just reads
+from Chrome gets the browser's tabs, toolbar and bookmarks with no page in the tree.
+That window is far above the stub threshold, so the `AXManualAccessibility` retry
+never runs. Chrome's own `accessibilitySetValue:forAttribute:` handles
+`AXEnhancedUserInterface`, so for a bundle id in `CHROMIUM_BROWSER_BUNDLE_IDS` a
+walk with no `AXWebArea` sets `AXEnhancedUserInterface`, waits out Chrome's 2s
+debounce, and re-walks for up to `CHROMIUM_OPT_IN_WAIT_SECS`. If the page never
+appears, the browser-UI walk stands. Once the write is accepted or a page appears,
+the opt-in never runs again for that browser process (pid plus start time), so a window that has no page (Task
+Manager, picture-in-picture) does not pay the wait on every snapshot and every
+pre-action fingerprint walk. A refused write that shows no page is retried after
+`CHROMIUM_OPT_IN_RETRY_SECS`, and a walk cut short by its time budget does not trigger
+the opt-in. Chrome keeps the mode on until the attribute is set back
+to false or VoiceOver toggles, so only the first snapshot after an accepted opt-in
+pays the wait; after a VoiceOver toggle the page stays out until the browser restarts.
+Nothing sets it back to false: once opted in, that Chrome process stays in enhanced
+accessibility mode for the rest of its life, as it would with a screen reader running.
+The cost is Chrome's, not Computer Use's: every renderer in that process builds and
+updates its accessibility tree on each page change, which uses more CPU and memory
+and can slow heavy pages, until the browser quits.
 
 **3. `pgrep` is the wrong way to resolve an app to a pid.**
 `pgrep -n "Google Chrome"` returned 47492 — a short-lived helper that vanished
@@ -1574,38 +1614,35 @@ redaction that missed would be worse than none.
 
 **Every walk cutoff sets a flag, and the capture gate treats "unknown" as
 "present".** `MAX_CHILDREN_PER_NODE = 512` bounds one pathological container (a
-table with 100k rows) before the global node budget notices — but it used to drop
-the tail *silently*, so `saw_secure` reflected only the first 512 children while
-`truncated` stayed False. The walk then reported itself complete and non-secure and
-`capture_snapshot_image` had nothing to refuse on, leaving a password field as child
-513 with the whole window's pixels capturable (reviewer finding). A capped read now
-sets `truncated`, which already means "there is more of this tree than you were
+table with 100k rows) before the global node budget notices. Dropping the tail
+silently would leave `saw_secure` reflecting only the first 512 children with
+`truncated` False, so `capture_snapshot_image` would have nothing to refuse on and a
+password field at child 513 would leave the whole window's pixels capturable. A
+capped read therefore sets `truncated`, which already means "there is more of this tree than you were
 shown". Detected as `len(children) >= limit` rather than by re-reading the array for
 a real count (that would reintroduce the cost the cap exists to avoid), so a node
 with exactly the cap many children is treated as truncated too — a false positive
 costs one suppressed screenshot, a false negative is the disclosure.
 
 **And that suppression ANNOUNCES itself** (`TRUNCATED_WINDOW_NOTE`, emitted by
-`render._render_image_note`). It did not: the renderer special-cased only
-`has_secure` and returned `""` for every other empty `image_path`, so a truncated
-walk produced no image and no reason. Truncation is the NORMAL state for a
-Chromium/Electron window at the shipped 1200-node default (Chrome measured 1475
-nodes), so `screenshot: true` on Chrome, Slack or VS Code silently returned nothing
-— the retry loop `SECURE_WINDOW_NOTE` and `OBS_SUPPRESSED_NOTE` exist to prevent.
+`render._render_image_note`). Truncation is the NORMAL state for a Chromium/Electron
+window at the shipped 1200-node default (Chrome measured 1475 nodes), so without the
+note `screenshot: true` on Chrome, Slack or VS Code would silently return nothing —
+the retry loop `SECURE_WINDOW_NOTE` and `OBS_SUPPRESSED_NOTE` exist to prevent.
 The note names the remedy (raise `max_tree_nodes` / `max_tree_depth`), because
 unlike the secure case this one is fixable by the caller, and it is checked AFTER
 `has_secure` so a window that is both keeps the more specific reason. The shipped
-`FakeComputerUseBackend` mirrors the refusal too — it previously attached pixels to
-a truncated walk, so deleting the production branch left the suite green.
+`FakeComputerUseBackend` mirrors the refusal too, so deleting the production branch
+turns the suite red.
 
 **It fires only when an image was actually REQUESTED** (`walk_budget.want_image`;
 `None` — an unstamped, backend-built snapshot — still announces, since there the
 request is unknown and a spurious note is cheaper than a silent omission). Without
-that condition the fix inverts into the same defect: every mutating action's refresh
+that condition the note inverts into the same defect: every mutating action's refresh
 walk forces `want_image=False` by design, so a successful click on a browser window
-came back announcing the suppression of an image nobody asked for and telling the
+would come back announcing the suppression of an image nobody asked for and telling the
 model to "re-run with a higher `max_tree_nodes`" — an argument mutating tools do not
-accept (reviewer finding on the first version of this fix). Both directions are
+accept. Both directions are
 pinned by `test_computer_use_snapshot.py::TestASuppressedScreenshotAlwaysSaysSoWhy`,
 including one case through the real `dispatch_tool` path, because neither is visible
 to a `render_tree` unit test on its own.
@@ -2449,6 +2486,14 @@ Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
 `electron/test/external-scheme.test.js`) because the failure mode is a silent
 dead button that only reproduces in a packaged build.
 
+The window the handler creates for such a same-origin `blob:` loads it through
+the dashboard's navigation guard (`createNavigationGuard`, attached on `did-create-window` in
+`window-lifecycle.js`), which admits only `http:` and `https:`. So a window
+opened on a `blob:` URL gets the guard with `allowOwnBlob`, which also admits a
+`blob:` the app origin minted; every other window, the dashboard's own
+included, refuses every `blob:` navigation. `window-lifecycle.test.js` pins
+both.
+
 Editor links that name a file get a fourth verdict, `confirm`:
 `vscode://file/<path>`, `vscode://file/<drive>:/<path>` (a Windows drive letter,
 local files only) and `vscode://vscode-remote/ssh-remote+<host>/<path>`
@@ -2456,8 +2501,12 @@ local files only) and `vscode://vscode-remote/ssh-remote+<host>/<path>`
 native dialog with the full URL and hands it to the OS only if the user picks
 Open, one dialog at a time. Its "Don't ask again" box skips the dialog for
 later links to the same editor and machine (one SSH host, or local files) until
-the app quits; the choice is held in memory only. `isEditorLink` checks the raw string, requires the
-host to pass `HOSTNAME_RE`, and refuses a `..` segment after decoding. Every
+the app quits; the choice is held in memory only. A local link whose decoded
+path starts with two slashes and has no drive letter
+(`vscode://file//<host>/<share>/<path>`) names a share on another machine, so it
+is remembered for that one path and no other choice covers it. `isEditorLink`
+checks the raw string, requires the host to pass `HOSTNAME_RE`, and refuses a
+`..` segment after decoding. Every
 other editor URL, such as an extension URI handler
 (`vscode://<extension-id>/…`), stays `block`.
 
@@ -2473,7 +2522,7 @@ subparsers (the parent CLI forwards `REMAINDER`). Full command reference in
 |---|---|---|
 | `doctor [--json]` | platform support + enable state + the advisory TCC probe, and with the feature on, whether the configured chat backend loads the tools | no: it *reports* the enable, and returns no desktop content |
 | `apps` | the on-screen application list | **yes** — see below |
-| `call <tool> [k=v …]` / `call --calls '[…]'` | run one tool, or a sequence in ONE process | **yes**, and everything else too |
+| `call <tool> [k=v …]` / `call --calls '[…]'` / `call --calls-file <path>` | run one tool, or a sequence in ONE process | **yes**, and everything else too |
 
 `apps` is gated, and used not to be. The original reasoning — "this is the operator
 running a diagnostic in their own terminal, and the enable exists to stop the
@@ -2534,7 +2583,9 @@ relative to the `computer_get_state` that produced them, and that mapping lives 
 a per-process `SnapshotIndex` with a 90s TTL. Two separate `kirocrew computer call`
 invocations therefore cannot share indices at all — the second refuses with "no
 state for …". `--calls '[{"tool": …, "args": {…}}, …]'` exists so a
-snapshot-then-act sequence is reproducible from one command line. It runs
+snapshot-then-act sequence is reproducible from one command line;
+`--calls-file <path>` (`-` for standard input) reads the same array from a file, for
+a Windows shell that strips the JSON's inner quotes. It runs
 sequentially and does **not** abort at the first error: a reproduction is more
 useful whole, since "step 2 was refused and step 3 then hit a stale index" is the
 actual story. `--json` emits `[{tool, text}, …]`; the exit code is non-zero if any
@@ -2655,21 +2706,20 @@ ONLY one, and the consequences should be stated rather than discovered:
 
   Accepted false positive, stated rather than discovered: any window whose title
   merely contains "kiro crew" is refused — an editor with this repo open, a browser
-  reading this PR. The failure directions are not symmetric. Refusing an unrelated
+  reading its source. The failure directions are not symmetric. Refusing an unrelated
   window is visible and recoverable (the refusal names the target); failing to refuse
   our own dashboard silently hands the agent its own security settings. A title is
   also the only signal available: the driver reads no page URL, and `AXURL` is not
   bound anywhere in the package;
 * an agent that can write `~/.kiro/agents/*.json` can stop kiro-cli sending
   permission requests, so the interactive prompt is not a guarantee either. That is
-  a pre-existing gap affecting every capability, hardening deferred to its own PR;
+  a gap affecting every capability, not hardened here;
 * **typing into a terminal window reaches a shell without passing the command deny
   floor.** The `BUILTIN_DENIED_RULES` table's rules are matched against a `bash` tool call's
   command string; a `computer_type_text` into Terminal.app is not one, so
-  `security.py` sees none of it. The terminal denylist entry that used to cover this
-  was removed with the rest of the per-app model (it was incomplete by construction —
-  an IDE's embedded terminal never matched it — and it blocked legitimate use on the
-  operator's own machine). The sensitive-text scan still inspects what is typed, but
+  `security.py` sees none of it. There is no per-app terminal denylist entry: one
+  is incomplete by construction (an IDE's embedded terminal never matches it) and
+  blocks legitimate use on the operator's own machine. The sensitive-text scan still inspects what is typed, but
   it is a credential/secret filter, not the command floor. Stated here because it is
   the sharpest edge of the one-opt-in posture.
 
@@ -2690,7 +2740,7 @@ computer use.
   leaked real paths, window titles and bundle ids in live probes, and a document
   path inside an `AXTitle` is not a credential so redaction will not catch it.
   `window_titles`, `file_paths` and `element_values` are **not** separately
-  governable — the `observations` scope was removed, `apply_observation_ceiling` is
+  governable — there is no `observations` scope, `apply_observation_ceiling` is
   a pass-through and `permitted_observation_channels` returns every channel — so
   there is no `computer_use.apps` (or any other) row left to narrow. A deployment
   that needs a real bound on what the tree may disclose should not enable the
@@ -2779,7 +2829,7 @@ computer use.
 | `computer_use/macos_ffi_ax.py` | Accessibility reads, actions and settable writes, with the messaging timeout and the Create Rule |
 | `computer_use/macos_ffi_window.py` | The CoreGraphics window list, `executable_path`, in-process window capture and the JPEG size check |
 | `computer_use/apps_macos.py` | Window-list app enumeration + pid resolution (never `pgrep`). Bundle `Info.plist` reads honour `security.is_sensitive_path`, so a bundle planted under a protected directory resolves to "identity unknown" rather than being opened |
-| `computer_use/snapshot_macos.py` | Iterative AX walk, `AXManualAccessibility` retry, secure detection |
+| `computer_use/snapshot_macos.py` | Iterative AX walk, `AXManualAccessibility` and Chromium `AXEnhancedUserInterface` retries, secure detection |
 | `computer_use/capture_macos.py` | In-process capture + ImageIO encode + `0o700` persistence + ring trim |
 | `computer_use/screencast.py` | Live-view (PiP) relay: `frame_scope`, the three suppressions, `build_frame_payload`, the loopback POST |
 | `computer_use/cursor_motion.py` | Cursor Motion PATH MODEL — pure geometry (Bezier + arc + progress spring), plus `drag_points` for a multi-point drag. No ctypes, no AppKit, no config |

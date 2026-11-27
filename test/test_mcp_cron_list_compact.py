@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 
+from kiro_crew import cron_inflight
 from kiro_crew.cron import CronService
 from kiro_crew.mcp_cron import _call_tool_inner, _validate_args
 from kiro_crew.validation import ValidationError
@@ -121,8 +122,24 @@ class TestCronListCompact:
         svc._save()
         out = _call_tool_inner("cron_list", {})
         assert "err=BOOM" in out
-        assert "…" in out
+        assert " ... " in out
         assert "Q" * 400 not in out
+
+    def test_compact_last_error_keeps_the_refusal_rule_at_its_end(self, home):
+        """A gate refusal names its rule last, after a long command title."""
+        svc = CronService(base_dir=home)
+        job = svc.add_job(name="refused", message="hi", every_secs=300)
+        job.last_status = "error"
+        job.last_error = (
+            "1 of 3 tool call(s) blocked by the security gate: "
+            + "echo step && " * 40
+            + "tail-step (Blocked: matches rule zebra)"
+        )
+        svc._save()
+        out = _call_tool_inner("cron_list", {})
+        err_line = next(line for line in out.splitlines() if "err=" in line)
+        assert "err=1 of 3 tool call(s) blocked" in err_line
+        assert err_line.endswith("tail-step (Blocked: matches rule zebra)")
 
     def test_compact_includes_result_for_script_jobs(self, home):
         """Script/command jobs surface non-trivial last_result in compact."""
@@ -181,6 +198,15 @@ class TestCronListCompact:
                 f"credential prefix of length {prefix_len} leaked into output"
             )
 
+    def test_a_job_with_a_live_run_marker_is_listed_as_running(self, home):
+        svc = CronService(base_dir=home)
+        busy = svc.add_job(name="busy", message="slow turn", every_secs=3600)
+        svc.add_job(name="idle", message="quiet", every_secs=3600)
+        cron_inflight.write_marker(home, busy.id, "busy", 1_700_000_000.0, run="r1")
+        lines = _call_tool_inner("cron_list", {}).splitlines()
+        assert "• busy active [agent] [running since 22:13 UTC]" in lines
+        assert "• idle active [agent]" in lines
+
 
 # ── Verbose (legacy regression guard) ──
 
@@ -202,8 +228,8 @@ class TestCronListVerbose:
 
         assert out.startswith("2 cron job(s): 2 active, 0 paused\n")
         # Legacy bullet/arrow + [kind] tag preserved.
-        assert "• alpha (✅ active) [agent]" in out
-        assert "• beta (✅ active) [agent]" in out
+        assert "• alpha (active) [agent]" in out
+        assert "• beta (active) [agent]" in out
         assert "  → line one\nline two" in out
         assert "  → single line" in out
 
@@ -214,7 +240,7 @@ class TestCronListVerbose:
         job.last_error = "boom!"
         svc._save()
         out = _call_tool_inner("cron_list", {"verbose": True})
-        assert "⚠️ last error: boom!" in out
+        assert "Warning: last error: boom!" in out
 
     def test_verbose_includes_last_result_line(self, home):
         svc = CronService(base_dir=home)

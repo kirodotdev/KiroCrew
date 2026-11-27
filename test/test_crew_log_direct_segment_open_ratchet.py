@@ -57,6 +57,8 @@ SEGMENT_OPENERS: "dict[str, dict[str, str]]" = {
         "_iter_entries_located": "the framer under iter_from, get and page; callers pinned below",
         "_read_header_line": "one header line; bounded",
         "_read_first_entry_seq": "first entry, to check a segment's name inside iter_from",
+        "_holds": "counted itself (read_budget 'span'): re-frames only the records a "
+        "pass just folded, once, before that pass's savepoint write",
         "_offset_below": "a seq bisect under get, page and a rendering iter_from; "
         "~log2(size) bounded probes, the walk after it is counted there",
     },

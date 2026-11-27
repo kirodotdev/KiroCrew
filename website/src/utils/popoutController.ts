@@ -27,7 +27,8 @@ import type { ChatLaunchOptions } from '../app-sdk'
 import { i18nT } from '../i18n/t'
 import { withBase } from '../lib/basePath'
 import { isElectron } from '../lib/electron'
-import { isDesktopAppPane } from '../lib/hostRelay'
+import { crewPopoutUrl } from '../lib/crewPopout'
+import { getCrewPopoutHub, HOST_CLOSE_POPOUT, isDesktopAppPane, postToHost } from '../lib/hostRelay'
 
 /** Heartbeat cadence (ms) for the main window's liveness ping. */
 export const HEARTBEAT_MS = 5_000
@@ -101,6 +102,8 @@ export type PopoutMsg =
   | { t: 'pong'; id: string }
   | { t: 'focus'; id: string }
   | { t: 'bring-back'; id: string }
+  // Main → the popout for `id`: show `path` (the feature's `onNavigate` decides how).
+  | { t: 'navigate'; id: string; path: string }
   // Navigation-intent handshake (popout → main). Two-phase claim so that with
   // several main dashboard tabs open, exactly ONE performs the navigation:
   // the popout broadcasts a request, every main offers, the popout picks the
@@ -189,8 +192,13 @@ export interface PopoutController {
    * deep link to the gone entity would only report it missing.
    */
   closeSelf(): void
-  /** Register THIS window as the live popout for `id` (responder role). Returns cleanup. */
-  registerPopout(id: string): () => void
+  /**
+   * Register THIS window as the live popout for `id` (responder role). Returns
+   * cleanup. `onNavigate` receives the path of each {@link navigatePopout} for `id`.
+   */
+  registerPopout(id: string, onNavigate?: (path: string) => void): () => void
+  /** Ask the popout window for `id` to show `path` (its `onNavigate`); focus is separate. */
+  navigatePopout(id: string, path: string): void
   /**
    * From inside a popout: forward a navigation intent to a main dashboard
    * window (claim handshake picks exactly one). When no main claims it within
@@ -227,6 +235,8 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
   let mainSubscribers = 0
   /** Non-null when THIS window is itself a popout (drives the responder role). */
   let selfId: string | null = null
+  /** The popout's `registerPopout` navigate handler. */
+  let selfNavigate: ((path: string) => void) | null = null
   /** Handles for popouts THIS window opened — lets us focus/close them directly. */
   const handles = new Map<string, Window | null>()
   /**
@@ -307,6 +317,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
         return
       }
       if (msg.t === 'bring-back' && msg.id === selfId) { returnSelfToMain(); return }
+      if (msg.t === 'navigate' && msg.id === selfId) { selfNavigate?.(msg.path); return }
     } else if (msg.t === 'bring-back') {
       opts.onBringBackObserved?.(msg.id)
       return
@@ -408,14 +419,22 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
     const top = Math.round(availTop + Math.max(0, ((sc?.availHeight ?? 900) - h) / 2))
     const features = `popup=yes,width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
     // A crew's pane in the desktop app runs on the crew's tunnel port, so the
-    // window-open handler would hand this URL, without its token, to the
-    // system browser and return no window. Refuse before that happens.
+    // window-open handler would hand its own URL, without its token, to the
+    // system browser. Open the hub's page that frames it instead; it does not
+    // get the pane's clipboard-image or notification relays. A hub that has not
+    // advertised that page (an older release, or no host model yet) has nowhere
+    // to open it.
+    let url = buildUrl(id, title)
     if (isDesktopAppPane()) {
-      logWarn(`popout ${id} not opened — a crew pane in the desktop app cannot open its own window`)
-      tellUser(i18nT('utils.popoutController.crew_pane_cannot_pop_out_in_desktop_app'))
-      return
+      const hub = getCrewPopoutHub()
+      if (hub === null) {
+        logWarn(`popout ${id} not opened — this desktop app crew pane's hub has not advertised a pop-out framing page`)
+        tellUser(i18nT('utils.popoutController.crew_pane_cannot_pop_out_in_desktop_app'))
+        return
+      }
+      url = crewPopoutUrl(hub, url)
     }
-    const win = window.open(buildUrl(id, title), windowName(id), features)
+    const win = window.open(url, windowName(id), features)
     if (!win) {
       // The window was refused. Don't optimistically mark open — and don't fail
       // silently: tell the user why nothing happened and leave an
@@ -489,6 +508,8 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
   }
 
   function leaveSelf(keepEntity: boolean): void {
+    // Framed by a desktop hub's pop-out window: that window is the hub's to close.
+    if (isDesktopAppPane() && postToHost({ type: HOST_CLOSE_POPOUT, v: 1 })) return
     const id = selfId
     try { window.opener?.focus() } catch (e) { logDebug('opener focus vetoed', e) }
     try { window.close() } catch (e) { logDebug('self close vetoed', e) }
@@ -500,9 +521,10 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
     }
   }
 
-  function registerPopout(id: string): () => void {
+  function registerPopout(id: string, onNavigate?: (path: string) => void): () => void {
     ensureChannel()
     selfId = id
+    selfNavigate = onNavigate ?? null
     post({ t: 'open', id })
     const announceClose = () => post({ t: 'close', id })
     window.addEventListener('beforeunload', announceClose)
@@ -511,8 +533,12 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
       window.removeEventListener('beforeunload', announceClose)
       window.removeEventListener('pagehide', announceClose)
       announceClose()
-      if (selfId === id) selfId = null
+      if (selfId === id) { selfId = null; selfNavigate = null }
     }
+  }
+
+  function navigatePopout(id: string, path: string): void {
+    post({ t: 'navigate', id, path })
   }
 
   /** Unguessable-enough id for the claim handshake (no security role — just collision avoidance). */
@@ -605,6 +631,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
     stopHeartbeat()
     mainSubscribers = 0
     selfId = null
+    selfNavigate = null
     handles.clear()
     navigate = (url: string) => window.location.assign(withBase(url))
     windowOpen = (url: string, target: string) => { window.open(url, target) }
@@ -615,7 +642,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
 
   return {
     subscribe, getSnapshot, openPopout, focusPopout, bringBack,
-    isSelfPopout, returnSelfToMain, closeSelf, registerPopout,
+    isSelfPopout, returnSelfToMain, closeSelf, registerPopout, navigatePopout,
     forwardToMain, setNavIntentHandler,
     __setNavigateForTests, __setWindowOpenForTests, __resetForTests,
   }

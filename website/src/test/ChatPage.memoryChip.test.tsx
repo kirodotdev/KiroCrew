@@ -74,6 +74,7 @@ import { __resetComposerSendHoldsForTests, isComposerSendHeld, takeComposerArriv
 // same reason the app does. (The miss degrades safely to the surface-free
 // sentence, which is what the unregistered-surface case below asserts.)
 import '../surfaces/builtins'
+import { clickOptimizeAsync } from './optimizeRow'
 
 beforeEach(() => {
   // runMemorySwitch records each hand-over; a chain left by an earlier test
@@ -241,7 +242,7 @@ describe('memory chip above the composer', () => {
       const store = await renderWith({ messages: [] })
       const composer = () => screen.getAllByRole('textbox').at(-1)! as HTMLTextAreaElement
       fireEvent.change(composer(), { target: { value: 'rough prompt' } })
-      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' })) })
+      await clickOptimizeAsync()
 
       // While the optimize runs the chip is inert: a switch now would carry
       // 'rough prompt' and send the rewrite to the session it deletes.
@@ -613,6 +614,60 @@ describe('memory chip above the composer', () => {
     expect(deleteChatSlot).not.toHaveBeenCalled()
     expect(takeComposerArrivals('slot-a')).toEqual(['/uploads/after-unmount.png'])
     expect(takeComposerArrivals('slot-b')).toEqual([])
+  })
+
+  /** Start an upload in slot-a, pick Incognito, and fail the upload while
+   *  slot-b's history load is held. Returns the release for that load. */
+  async function failUploadWhileSwitchLoads(detailAnswer: () => Promise<unknown>) {
+    localStorage.clear()
+    __resetComposerSendHoldsForTests()
+    deleteChatSlot.mockClear()
+    createChatSlot.mockResolvedValueOnce({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' })
+    let failUpload: () => void = () => {}
+    vi.mocked(api.uploadFiles).mockImplementationOnce(() => new Promise(r => {
+      failUpload = () => r({ paths: [], error: 'disk full' } as never)
+    }))
+    const store = await renderWith({ messages: [] })
+    let releaseDetail: () => void = () => {}
+    vi.mocked(api.chatSlotDetail).mockImplementationOnce(() => new Promise((resolve, reject) => {
+      releaseDetail = () => { detailAnswer().then(resolve, reject) }
+    }))
+
+    await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'lost.png', { type: 'image/png' })) })
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
+    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Incognito').closest('button')!)
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
+
+    // The upload fails while slot-b is on screen but the switch has not committed:
+    // the failure is slot-a's, so slot-b shows nothing.
+    await act(async () => { failUpload() })
+    await waitFor(() => expect(isComposerSendHeld('slot-a')).toBe(false), SWITCH_CHAIN_WAIT)
+    expect(screen.queryByTestId('upload-error')).not.toBeInTheDocument()
+    return { store, releaseDetail }
+  }
+
+  it('shows an upload failure from the switch window in the old session when the switch fails', async () => {
+    const { store, releaseDetail } = await failUploadWhileSwitchLoads(
+      () => Promise.reject(Object.assign(new Error('replacement unreachable'), { status: 404 })),
+    )
+    await act(async () => { releaseDetail() })
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-a'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(screen.getByTestId('upload-error')).toHaveTextContent('disk full'), SWITCH_CHAIN_WAIT)
+    expect(screen.getByTestId('action-error')).toHaveTextContent('replacement unreachable')
+    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a', undefined)
+  })
+
+  it('moves an upload failure from the switch window into the replacement when the switch commits', async () => {
+    const { store, releaseDetail } = await failUploadWhileSwitchLoads(
+      async () => ({ messages: [], running: false, has_more: false, total: 0 }),
+    )
+    await act(async () => { releaseDetail() })
+
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a', undefined), SWITCH_CHAIN_WAIT)
+    expect(store.getState().chat.activeSlot).toBe('slot-b')
+    await waitFor(() => expect(screen.getByTestId('upload-error')).toHaveTextContent('disk full'), SWITCH_CHAIN_WAIT)
   })
 
   it('holds Send in the replacement while an upload from the old session is still running', async () => {

@@ -246,14 +246,11 @@ class _TelemetryState(NamedTuple):
     # also have been turned on explicitly. True when unresolvable, the disclosure
     # direction.
     export_permitted: bool = True
-    # Turning recording on would also export somewhere the privacy notice does
-    # not name, so the config route refuses that write (409). The built-in Kiro
+    # Turning recording on would also export to an operator destination, so the
+    # config route refuses that write (409). The built-in Kiro
     # destination does not count (``kiro_export.egress_needs_written_opt_in``).
     # True when unresolvable, the refusal direction.
     enable_refused: bool = True
-    # Off only by a written false older builds put in every new config
-    # (``kiro_export.off_offer_due``). False when unreadable: no offer.
-    off_offer: bool = False
 
 
 def _telemetry_cfg() -> _TelemetryState:
@@ -277,7 +274,6 @@ def _telemetry_cfg() -> _TelemetryState:
     retention_days = 0
     export_permitted = True
     enable_refused = True
-    off_offer = False
     directory = config_dir() / "metrics"
     try:
         full_cfg = KiroCrewConfig.load()
@@ -285,7 +281,6 @@ def _telemetry_cfg() -> _TelemetryState:
         # An unparseable config file holds consent as unknown: no recorder is
         # built, but a live one keeps running. Report what this process records.
         held = _held_consent(full_cfg, bool(cfg.enabled))
-        off_offer = kiro_export.off_offer_due(full_cfg)
         live_recording, live_exporting = live_recorder_state()
         enabled = live_recording if held is None else bool(held)
         retention_days = max(0, int(getattr(cfg, "retention_days", 0) or 0))
@@ -354,7 +349,6 @@ def _telemetry_cfg() -> _TelemetryState:
         destinations,
         export_permitted,
         enable_refused,
-        off_offer,
     )
 
 
@@ -1898,21 +1892,19 @@ async def api_beacon_status(request: web.Request) -> web.Response:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
         enabled = cfg.telemetry.beacon_enabled
         endpoint = cfg.telemetry.beacon_endpoint
-        acked = cfg.dashboard.privacy_acked
         overlay_override = await asyncio.to_thread(_telemetry_overlay_pins, "beacon_enabled")
     except Exception:
         # A diagnostic must never 500: an unreadable config is exactly when the
         # user wants to see this panel. Fail toward "off" so the UI never claims
         # telemetry is on when we cannot prove it.
         logger.debug("beacon config load failed; reporting disabled", exc_info=True)
-        enabled, endpoint, acked = False, "", False
+        enabled, endpoint = False, ""
 
     info = await asyncio.to_thread(
         beacon.status,
         endpoint,
         enabled=enabled,
         app_version=__version__,
-        acked=acked,
     )
     return web.json_response(
         {
@@ -1988,9 +1980,6 @@ async def api_collection_status(request: web.Request) -> web.Response:
             "export_permitted": state.export_permitted,
             # Whether the switch's ENABLE direction is refused (409) here.
             "enable_refused": state.enable_refused,
-            # Off only by a written false older builds put in every new config:
-            # the Privacy chapter's off form offers Turn on once.
-            "off_offer": state.off_offer,
             "otlp_destinations": [dict(row) for row in state.otlp_destinations],
             "metrics_dir": str(state.directory),
         }

@@ -25,7 +25,6 @@ from kiro_crew.crew_log.projection_work import (
     _work_text,
 )
 from kiro_crew.crew_log.schema import Entry
-from kiro_crew.work_vocab import waits_on_person
 
 # workstreams -- every board this slot reaches, each task costed by its own worker
 # --------------------------------------------------------------------------- #
@@ -251,12 +250,15 @@ def _workstreams_new_item(item_id: str) -> dict[str, Any]:
         "worker_session_key": None,
         "round": 0,
         "status": None,
-        # The last report's `reason` and whether a conductor `decide` or a person's
-        # `steer` came after that report: the two facts `work_vocab.waits_on_person`
-        # needs, so this fold's `needs_you` counts what the Board and sidebar count.
-        # Internal: neither is emitted on a task row.
+        # `asked` is whether the conductor's `ask` record came after the last report
+        # (`work_vocab.ask_is_current`, in log order), and `answered` whether a
+        # conductor `decide` or a person's `steer` came after the newer of that
+        # report and that record: with the two, this fold's `needs_you` counts what
+        # the Board and sidebar count (`awaits_person`). `reason` is the last
+        # report's. Internal: none is emitted on a task row.
         "reason": None,
         "answered": False,
+        "asked": False,
         "summary": "",
         "pr": None,
         # WHEN THIS TASK LAST PRODUCED ANYTHING, so a reader can tell a worker that is
@@ -505,6 +507,15 @@ def _workstreams_work(state: dict[str, Any], entry: Entry) -> None:
             item["answered"] = _workstreams_decided_after(
                 data.get("decided_at"), data.get("last_report_at")
             )
+            # The same stamp test for the conductor's ask record: one written at or
+            # after the newest report relays that report's question.
+            ask = data.get("ask")
+            item["asked"] = isinstance(ask, dict) and _workstreams_decided_after(
+                ask.get("written_at"), data.get("last_report_at")
+            )
+            # A `decide` clears the record, so one still held was written after it.
+            if item["asked"]:
+                item["answered"] = False
     _workstreams_event(state, board["id"], item, entry)
     # The span's open end, before either party's field copy: it depends on no field
     # and must be set by whichever entry got here first, whoever wrote it.
@@ -525,10 +536,16 @@ def _workstreams_work(state: dict[str, Any], entry: Entry) -> None:
             # previous report does not answer this one.
             item["reason"] = _work_field("reason", data.get("reason"))
             item["answered"] = False
+            item["asked"] = False
         return
     if action in ("decide", "steer"):
         # In log order, so the newest report's answer is one folded after it.
         item["answered"] = True
+    elif action == "ask":
+        # The conductor asked the person about this item: the record waits for its
+        # own answer, whatever answered the report before it.
+        item["asked"] = True
+        item["answered"] = False
     fields = _WORK_CONDUCTOR_FIELDS.get(action, ())
     for name in fields:
         if name not in data or name not in item:
@@ -873,13 +890,11 @@ def _workstreams_render(state: dict[str, Any]) -> dict[str, Any]:
             # OPEN items only. A worker's last report outlives the conductor's close,
             # so a closed item can still carry the `question` or `blocked` it was
             # closed over, and counting it asks the person about finished work. Then
-            # the Board's own rule (`work_vocab.waits_on_person`): a report naming a
-            # person, not answered by a later `decide` or `steer`. The fold has no live
-            # session state, so `running` stays False: a worker mid-turn still counts
-            # here, where the Board drops it until its turn ends.
-            waits = item["state"] == "open" and waits_on_person(
-                item["status"], item.get("reason"), answered=bool(item.get("answered"))
-            )
+            # the Board's own rule (`awaits_person`): the conductor's `ask` record,
+            # with no report after it and no `decide` or `steer` answering it. The
+            # fold has no live session state: a worker mid-turn still counts here,
+            # where the Board drops it until its turn ends.
+            waits = item["state"] == "open" and bool(item.get("asked")) and not item.get("answered")
             if waits:
                 needs_you += 1
             tasks.append(

@@ -149,12 +149,14 @@ _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n]+")
 # reports such as "the subagent is still working" or "the monitor will continue"
 # that really can outlive this turn. A first-person claim that the main agent is
 # running or checking one remains foreground work and is intentionally matched.
+# "I am running on <host>" / "as <user>" says where the agent runs, not that work
+# continues, so ``running`` followed by on/as/under/inside/within is not a claim.
 _UNFINISHED_PROGRESS_RE = re.compile(
     r"(?:^|[.!?\n]\s*)(?P<claim>(?:next[,:]?\s+)?"
     r"(?:"
     r"(?:i(?:'|’)?m|i\s+am)\s+(?:still\s+)?"
     r"(?:continuing\s+(?:with|to)|proceeding\s+(?:with|to)|working\s+(?:on|through)"
-    r"|running\b|checking\b|validating\b|testing\b|building\b|reviewing\b"
+    r"|running\b(?!\s+(?:on|as|under|inside|within)\b)|checking\b|validating\b|testing\b|building\b|reviewing\b"
     r"|preparing\b|investigating\b)"
     r"|i(?:'|’)?ll\s+(?:keep|continue)\s+"
     r"(?:working|running|checking|validating|testing|building|reviewing|preparing|investigating)\b"

@@ -23,6 +23,7 @@ import asyncio
 
 import pytest
 from acp_runtime_helpers import _drain, _feed, _make_runtime, _start_reader, _stop_reader
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import session_handle_mcp
 from kiro_crew.acp.mcp_session_report import McpSessionReport
@@ -113,7 +114,7 @@ def _connecting_status() -> JsonRpcMessage:
 
 
 def _handle(*frames: JsonRpcMessage) -> AcpSessionHandle:
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     handle._session_id = _SID
     handle._mcp_report = McpSessionReport()
     handle._mcp_report.begin_session([])

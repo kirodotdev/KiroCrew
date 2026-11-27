@@ -69,9 +69,8 @@ are composition shells mirroring the meetings app (`MeetingsPage`/`MeetingView`/
   `UIToolInvocation<T>`. `ToolViewFrame` renders the state scaffold (skeleton / running /
   result / error) and delegates the `output-available` body to the specific component.
 - **Schema contract:** each component publishes a **Zod** schema for the tool output it renders.
-  **Dependency note:** `zod` is NOT currently a `website/package.json` dependency — this kit
-  adds it (a new runtime dep, ~12KB gzipped min, tree-shakeable), alongside the acknowledged
-  `recharts` and `maplibre-gl` optional peers. `defineToolView(schema, InlineComponent,
+  **Dependency note:** `zod` is already a `website/package.json` dependency, so the kit adds
+  no new runtime dep for it; `recharts` and `maplibre-gl` stay acknowledged optional peers. `defineToolView(schema, InlineComponent,
   PreviewComponent?)` co-locates schema + renderers and yields a typed entry. `z.infer<schema>`
   is the component's output prop type — a drift between the tool's output and the renderer is a
   compile error.
@@ -154,4 +153,4 @@ strict without blocking app-specific fields.
 - Screenshot Evidence gate — gallery route makes capture cheap; SHA-pinned screenshots in PR.
 - jscpd 0% — kit consolidates clones; kit components must not copy from each other.
 - catalogParity — all new `i18nT()` keys land in every locale file.
-- PR Hygiene — single squashed commit per PR.
+- PR Hygiene — Conventional Commits title and the template's sections.

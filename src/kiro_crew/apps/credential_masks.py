@@ -30,12 +30,14 @@ level 8, and an older host refuses a manifest carrying one (its grammar has no `
 ending), so it never runs the app with the directory unmasked.
 
 **Wherever the data is.** The app lifecycle moves ``data/`` aside to
-``apps/.<name>-data-tmp/`` while an install or update replaces the app's files, and a
-default uninstall removes the manifest and keeps the data. So each entry is masked at
-both locations, and the declaration is also kept in a record beside the app directory,
+``apps/.<name>-data-tmp/`` while an install over kept data or a keep-data uninstall
+replaces the app's files (an update leaves it in place), and a default uninstall removes
+the manifest and keeps the data. So each entry is masked at both locations, and the
+declaration is also kept in a record beside the app directory,
 ``apps/.<name>-credential-masks.json``, which :func:`remember_declaration` refreshes
-whenever the gateway records the installed app and before an update or uninstall moves
-the data. The record is read with the manifests and only ever adds masks, so a data
+whenever the gateway records the installed app and before an update removes the manifest
+or an uninstall moves the data. The record is read with the manifests and only ever adds
+masks, so a data
 directory with no manifest beside it stays masked, and only a manifest that reads
 cleanly rewrites or removes it.
 
@@ -47,11 +49,13 @@ artifacts included: the shipped built-ins' as static rows
 former built-in's included, from a listing the gate takes within a deadline and reuses
 for at most a second (:func:`tool_gate_crew_leaves`,
 ``security.paths_targets._app_credential_mask_rows``). A recorded install, update or
-uninstall retires that listing at once (:func:`declarations_generation`). Where an
-installed declaration cannot be known the gate fails closed over the app's own data: an
+uninstall retires that listing at once (:func:`declarations_generation`). Where a
+declaration cannot be known the gate fails closed over the app's own data: an
 ``app.json`` or record that is there but does not read cleanly fences the app's whole
 data directory and what is beneath it, never a file beside it, and an ``apps/`` that
-cannot be listed fences ``apps/``.
+cannot be listed fences ``apps/``. The listing reads the shipped manifests again too,
+so a built-in whose ``app.json`` did not read at import still fences
+(:func:`tool_gate_home_rows`).
 
 **Tightening only.** A declaration can add masks and never remove one: no seal reads
 it, the tool gate reads it only as more refusals, and the one carve-out that reads it
@@ -68,13 +72,17 @@ Where the declarations are read, per spawn and cached on each manifest's identit
 every shipped built-in package's ``app.json``, every installed app's
 ``<data home>/apps/<name>/app.json`` and every retained record. A manifest that is
 absent, unreadable, not JSON or nested past the parser's depth declares nothing; an invalid entry is dropped and logged once, and the install
-validation refuses it (``AppManifest.validate``).
+validation refuses it (``AppManifest.validate``). A read that fails is not cached, so the
+next ask reads the file again.
 
-The installed tree is sandbox-writable, so a masked leaf is only as strong as the
-manifest that declares it: an agent that rewrites an installed app's ``app.json``
-drops that app's masks from the next spawn, as it could rewrite the app's code. The
-mask stops an agent that reads files; it does not make an installed app's tree
-tamper-proof. Sealing the tree is the operator's decision, not this seam's.
+The agent's file tools may not write a manifest or record that holds a fence
+(:func:`tool_gate_declarations`, on the write gate only), and every installed app's
+``app.json`` is also sealed read-only in the agent's sandbox
+(:mod:`kiro_crew.app_manifest_files`). The rest of the installed tree is still
+sandbox-writable: an agent shell that rewrites a retained record drops the fence it
+holds on data left behind, as it could rewrite the app's code. The mask stops an agent
+that reads files; it does not make an installed app's tree tamper-proof. Sealing the
+rest of the tree is the operator's decision, not this seam's.
 
 **One engine, two declarations.** ``agentReadOnlyDirs``
 (:mod:`kiro_crew.apps.agent_readonly_dirs`) is read by the same functions with its own
@@ -89,11 +97,13 @@ Process state only (a cache of parsed manifests); no per-caller data.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import re
 import stat
+import sys
 import threading
 from pathlib import Path
 from typing import NamedTuple
@@ -127,6 +137,12 @@ STAGED_DATA_SUFFIX = "-data-tmp"
 RECORD_SUFFIX = "-credential-masks.json"
 #: A manifest larger than this declares nothing (no shipped manifest comes close).
 _MAX_MANIFEST_BYTES = 1024 * 1024
+#: The pin table's loader, its file (which ships beside this module) and that file's
+#: harness override: ``builtin_adoption_pins`` (``_PINS_PATH``, ``HARNESS_PINS_ENV``),
+#: read raw here only by :func:`pin_table_may_freeze`. A test pins the two equal.
+_PIN_LOADER = "kiro_crew.apps.builtin_adoption_pins"
+_PIN_TABLE = Path(__file__).resolve().parent / "adoption-pins.json"
+_HARNESS_PIN_TABLE_ENV = "KIROCREW_HARNESS_ADOPTION_PINS"
 
 _APP_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _FORBIDDEN_CHARS_RE = re.compile(r"[\x00-\x1f\x7f\\:\ud800-\udfff]")
@@ -281,8 +297,16 @@ def _record_app_name(filename: str, kind: DeclarationKind) -> str | None:
 def _load_json(path: Path) -> object:
     """*path*'s parsed JSON, or ``None`` when it cannot be read or parsed."""
     try:
+        return _read_json(path)
+    except OSError:
+        return None
+
+
+def _read_json(path: Path) -> object:
+    """*path*'s parsed JSON, or ``None`` when it cannot be parsed; raises ``OSError`` unread."""
+    try:
         return loads_user_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
+    except (ValueError, RecursionError):
         # RecursionError: a body nested past the parser's depth, well under the size cap.
         return None
 
@@ -318,7 +342,7 @@ def _read_entries(
     """*path*'s admissible entries when its ``name`` is *expected_name*, else ``()``.
 
     Cached on the file's identity, so a spawn re-parses only a manifest that changed.
-    Never raises: a manifest this cannot read declares nothing.
+    Never raises: a manifest this cannot read declares nothing, and is read again next time.
     """
     return _read_declaration(path, expected_name, kind)[0]
 
@@ -352,7 +376,11 @@ def _read_declaration(
         return hit[1], hit[2]
     entries: tuple[str, ...] = ()
     clean = False
-    data = _load_json(path)
+    try:
+        data = _read_json(path)
+    except OSError:
+        # Not cached: a file another process holds open for a moment reads on the next ask.
+        return (), False
     if isinstance(data, dict) and data.get("name") == expected_name:
         declared = data.get(kind.key)
         errors = declaration_errors(declared, kind=kind)
@@ -371,18 +399,111 @@ def _read_declaration(
     return entries, clean
 
 
+@functools.cache
+def _builtins_root() -> Path:
+    """The shipped ``builtins/`` directory, resolved once: this module does not move."""
+    return Path(__file__).resolve().parent / "builtins"
+
+
+@functools.cache
+def _builtin_manifest_path(root: Path, package: str) -> Path:
+    """``<root>/<package>/app.json``, built and parsed once per directory and package.
+
+    Every sandboxed spawn asks for the declared masks several times, and building
+    and formatting these paths would otherwise be most of what each ask costs.
+    :func:`_builtin_manifests` lists the directory and every manifest is stat'ed
+    on each ask, so a package or a manifest that changes is read as it is on disk.
+    """
+    path = root / package / "app.json"
+    str(path)  # pathlib parses lazily; parse here so the cached path never parses again
+    return path
+
+
 def _builtin_manifests() -> list[tuple[str, Path]]:
     """``(installed name, app.json)`` for every shipped built-in package."""
-    root = Path(__file__).resolve().parent / "builtins"
+    root = _builtins_root()
     try:
         packages = sorted(entry.name for entry in os.scandir(root) if entry.is_dir())
     except OSError:
         return []
     return [
-        (package.replace("_", "-"), root / package / "app.json")
+        (package.replace("_", "-"), _builtin_manifest_path(root, package))
         for package in packages
         if not package.startswith(("_", "."))
     ]
+
+
+def builtin_package_entries(
+    package_root: Path, kind: DeclarationKind = CREDENTIAL_MASKS
+) -> tuple[str, ...]:
+    """The entries the built-in leg reads from the package directory *package_root*.
+
+    Its ``app.json`` under the name the directory spells, ``_`` as ``-``, exactly as
+    :func:`declared_masks` reads a package :func:`_builtin_manifests` lists: what a pin
+    row freezes from a wheel copy a release deletes
+    (``builtin_adoption_baseline.freeze_deleted_copy``).
+    """
+    name = package_root.name.replace("_", "-")
+    if package_root.name.startswith(("_", ".")) or not _APP_NAME_RE.fullmatch(name):
+        return ()
+    return _read_entries(package_root / "app.json", name, kind)
+
+
+def pin_table_may_freeze(key: str) -> bool:
+    """Whether a pin row could carry a deleted copy's frozen limit input under *key*.
+
+    The readers of a frozen input that run before every stdio MCP server lists its
+    tools (this module's built-in leg, which the ``security`` import reads for its
+    static rows, and the ``agentTools`` deny universe) would otherwise load the pin
+    table's loader in each of those processes while no row froze such an input. So the
+    table's file is read raw first, as ``adoption_pin.py`` writes it with ``json.dumps``:
+    a key its text never names is in no row, and only a table that names it is loaded
+    and validated, which then decides. Once this process has the loader (the gateway's
+    adoption, a test that repoints the table) it decides at once.
+    """
+    if _PIN_LOADER in sys.modules:
+        return True
+    return _pin_table_names(os.environ.get(_HARNESS_PIN_TABLE_ENV) or str(_PIN_TABLE), key)
+
+
+@functools.lru_cache(maxsize=32)
+def _pin_table_names(path: str, key: str) -> bool:
+    """Whether the pin table at *path* holds the JSON key *key*; it ships immutable."""
+    try:
+        return json.dumps(key) in Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        # The loader reads such a table as empty, so it froze nothing either.
+        return False
+
+
+def _frozen_builtin_declarations(kind: DeclarationKind) -> list[tuple[str, tuple[str, ...]]]:
+    """``(name, entries)`` a pin row froze for a pinned built-in whose package has no manifest.
+
+    The built-in leg of an app whose wheel copy a release deleted: what that copy's
+    manifest gave :func:`builtin_package_entries` (the row's ``deletedCopy``, under the
+    manifest key), so its masks and seals stay as the last shipped copy left them
+    (app-kit-platform.md § 33, row 9). A package whose ``app.json`` is there is read
+    from it, and a frozen value beside it is never read. The ``security`` import reads
+    this for its static rows, so the table is loaded only when it can freeze this
+    declaration (:func:`pin_table_may_freeze`), and it never raises: a failure is logged
+    and freezes nothing, which leaves the installed leg, as with no frozen value.
+    """
+    if not pin_table_may_freeze(kind.key):
+        return []
+    try:
+        from kiro_crew.apps.builtin_adoption_pins import frozen_limit_input, load_adoption_pins
+
+        root = _builtins_root()
+        found: list[tuple[str, tuple[str, ...]]] = []
+        for name, pin in sorted(load_adoption_pins().items()):
+            frozen = frozen_limit_input(pin, kind.key)
+            if not frozen or os.path.lexists(_builtin_manifest_path(root, name.replace("-", "_"))):
+                continue
+            found.append((name, valid_entries(frozen, kind=kind)))
+        return found
+    except Exception:
+        logger.warning("could not read the frozen built-in %s", kind.key, exc_info=True)
+        return []
 
 
 def _installed_manifests(
@@ -424,17 +545,36 @@ def declared_masks(
 
     Only apps that declare at least one entry appear. A built-in and an installed tree
     under the same name contribute the union, since both masks protect the same
-    directory. *builtin* and *installed* choose which manifests are read.
+    directory. *builtin* and *installed* choose which manifests are read; the built-in
+    leg holds, for a pinned app whose wheel copy is deleted, the declaration its pin row
+    froze (:func:`_frozen_builtin_declarations`).
     """
-    sources = [
-        *(_builtin_manifests() if builtin else ()),
-        *(_installed_manifests(kind) if installed else ()),
+    return _declared_masks(builtin=builtin, frozen=builtin, installed=installed, kind=kind)
+
+
+def _declared_masks(
+    *, builtin: bool, frozen: bool, installed: bool, kind: DeclarationKind
+) -> dict[str, tuple[str, ...]]:
+    """:func:`declared_masks`, with the frozen part of the built-in leg chosen on its own.
+
+    In declaration order: the shipped packages, a deleted copy's frozen declaration in
+    its place, then the installed trees and records.
+    """
+    declarations = [
+        *(
+            (name, _read_entries(path, name, kind))
+            for name, path in (_builtin_manifests() if builtin else ())
+            if _APP_NAME_RE.fullmatch(name)
+        ),
+        *(_frozen_builtin_declarations(kind) if frozen else ()),
+        *(
+            (name, _read_entries(path, name, kind))
+            for name, path in (_installed_manifests(kind) if installed else ())
+            if _APP_NAME_RE.fullmatch(name)
+        ),
     ]
     out: dict[str, dict[str, None]] = {}
-    for name, path in sources:
-        if not _APP_NAME_RE.fullmatch(name):
-            continue
-        entries = _read_entries(path, name, kind)
+    for name, entries in declarations:
         if entries:
             out.setdefault(name, {}).update(dict.fromkeys(entries))
     return {name: tuple(entries) for name, entries in sorted(out.items())}
@@ -453,7 +593,9 @@ def declared_crew_leaves(
     tools refuse a built-in's credential file as they refuse a core one, and no core row
     has to name the app. The shipped manifests are part of the installed product, so
     that set is fixed for the process; an installed app's manifest changes with each
-    install, so the gate lists those separately (:func:`tool_gate_crew_leaves`).
+    install, so the gate lists those separately (:func:`tool_gate_crew_leaves`), and
+    reads the shipped ones again there in case one did not read at import
+    (:func:`tool_gate_home_rows`).
     """
     return tuple(
         sorted(
@@ -485,19 +627,22 @@ def declared_crew_leaves_for(
 
     *builtin* reads the shipped package's manifest, otherwise the installed tree's: the
     caller names the code it runs, so a backend gets back what its own manifest declared.
+    A deleted copy's frozen declaration is not read: no code of that copy runs.
     """
-    masks = declared_masks(builtin=builtin, installed=not builtin, kind=kind)
+    masks = _declared_masks(builtin=builtin, frozen=False, installed=not builtin, kind=kind)
     return tuple(crew_leaf(app, entry) for entry in masks.get(app, ()))
 
 
 def declared_crew_dir_leaves_for(app: str, *, builtin: bool) -> frozenset[str]:
     """The directory entries among :func:`declared_crew_leaves_for`, from the same source."""
-    masks = declared_masks(builtin=builtin, installed=not builtin)
+    masks = _declared_masks(
+        builtin=builtin, frozen=False, installed=not builtin, kind=CREDENTIAL_MASKS
+    )
     return frozenset(crew_leaf(app, e) for e in masks.get(app, ()) if is_directory_entry(e))
 
 
 class ToolGateLeaves(NamedTuple):
-    """What the agent tool gate fences for the INSTALLED apps' masks (:func:`tool_gate_crew_leaves`)."""
+    """What the agent tool gate fences for the apps' masks it lists (:func:`tool_gate_crew_leaves`)."""
 
     #: The declared leaves: each fenced with everything beneath it, and the ``.tmp`` /
     #: ``.lock`` publish artifacts in its own directory, as a core crew-home secret leaf is.
@@ -508,14 +653,18 @@ class ToolGateLeaves(NamedTuple):
     unreadable: tuple[str, ...]
 
 
-def tool_gate_crew_leaves() -> ToolGateLeaves:
+def tool_gate_crew_leaves(kind: DeclarationKind = CREDENTIAL_MASKS) -> ToolGateLeaves:
     """The crew-home leaves the agent tool gate adds for the INSTALLED apps' masks.
+
+    *kind* picks the declaration read, ``credentialMasks`` by default; the
+    ``agentReadOnlyDirs`` write fence reads its own key the same way.
 
     Every installed tree's and retained record's ``credentialMasks`` (an adopted former
     built-in is one of them), each at both places its app's data can be, as
     :func:`declared_crew_leaves` gives them. The shipped built-ins' declarations are
-    static rows of the gate (``security.paths_lists._CREW_SECRET_LEAVES``); a built-in's
-    record repeats them here, and the gate leaves out a row it already holds
+    static rows of the gate (``security.paths_lists._CREW_SECRET_LEAVES``), which
+    :func:`tool_gate_home_rows` reads again; a built-in's record repeats them here, and the
+    gate leaves out a row it already holds
     (``security.paths_targets._list_app_credential_mask_rows``).
 
     Fails closed where the declaration cannot be known, only ever over the app's own
@@ -526,27 +675,54 @@ def tool_gate_crew_leaves() -> ToolGateLeaves:
     here can name a path outside ``apps/<name>/data/`` or the lifecycle's move-aside of
     it, nor a publish artifact outside them, so the gate gains refusals and loses none.
     """
+    return tool_gate_declarations(kind)[0]
+
+
+def tool_gate_declarations(
+    kind: DeclarationKind = CREDENTIAL_MASKS,
+) -> tuple[ToolGateLeaves, tuple[str, ...]]:
+    """:func:`tool_gate_crew_leaves`, and the files those fences come from, in one listing.
+
+    The second item is every installed manifest and retained record that declares an
+    entry or does not read cleanly, as a crew-home leaf (``apps/<name>/app.json``,
+    ``apps/.<name><record suffix>``). Only the WRITE gate takes it, never the read gate:
+    rewriting one of these files is how the fence it holds would be dropped
+    (``agent_readonly_dirs.write_protected_home_paths``).
+    """
     try:
-        sources = _installed_manifests(CREDENTIAL_MASKS, strict=True)
+        sources = _installed_manifests(kind, strict=True)
     except Exception:
         logger.warning(
             "could not list the installed apps for their %s; the tool gate fences %s/",
-            MANIFEST_KEY,
+            kind.key,
             APPS_LEAF,
             exc_info=True,
         )
-        return ToolGateLeaves((), (APPS_LEAF,))
+        return ToolGateLeaves((), (APPS_LEAF,)), ()
+    return _gate_declarations(sources, kind)
+
+
+def _gate_declarations(
+    sources: list[tuple[str, Path]], kind: DeclarationKind
+) -> tuple[ToolGateLeaves, tuple[str, ...]]:
+    """:func:`tool_gate_declarations` over *sources*, ``(name, manifest or record)`` pairs."""
     declared: set[str] = set()
     unreadable: set[str] = set()
+    fencing: set[str] = set()
     for name, path in sources:
-        entries, clean = _read_declaration(path, name)
+        entries, clean = _read_declaration(path, name, kind)
         if not clean:
             unreadable.add(f"{APPS_LEAF}/{name}/{DATA_LEAF}")
             unreadable.add(f"{APPS_LEAF}/.{name}{STAGED_DATA_SUFFIX}")
+        if entries or not clean:
+            # A record is ``apps/.<name>...``; a manifest is ``apps/<name>/app.json``.
+            parent = "" if path.name.startswith(".") else f"{name}/"
+            fencing.add(f"{APPS_LEAF}/{parent}{path.name}")
         for entry in entries:
             declared.add(crew_leaf(name, entry))
             declared.add(staged_crew_leaf(name, entry))
-    return ToolGateLeaves(tuple(sorted(declared)), tuple(sorted(unreadable)))
+    leaves = ToolGateLeaves(tuple(sorted(declared)), tuple(sorted(unreadable)))
+    return leaves, tuple(sorted(fencing))
 
 
 def tool_gate_home_rows() -> ToolGateLeaves:
@@ -554,6 +730,12 @@ def tool_gate_home_rows() -> ToolGateLeaves:
 
     The shape of a ``_SENSITIVE_HOME_DIRS`` row, so the gate anchors and re-anchors them
     (``KIROCREW_HOME``) exactly as it does a core row.
+
+    The shipped built-ins' manifests are read here too, the same way. Their static rows
+    come from one read at import, so a manifest that did not read then (another process
+    held it open) would leave its rows out for the process's life; read again, it fences
+    its app's whole data directory while it does not read cleanly, and its declared rows
+    once it does. The gate leaves out the rows its static lists already hold.
     """
     # Imported at call time, so loading this module never loads the security package.
     from kiro_crew.security.paths_lists import _CREW_HOME_PREFIXES
@@ -561,8 +743,12 @@ def tool_gate_home_rows() -> ToolGateLeaves:
     def rows(leaves: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(f"{prefix}/{leaf}" for leaf in leaves for prefix in _CREW_HOME_PREFIXES)
 
-    leaves = tool_gate_crew_leaves()
-    return ToolGateLeaves(rows(leaves.declared), rows(leaves.unreadable))
+    installed = tool_gate_crew_leaves()
+    shipped = _gate_declarations(_builtin_manifests(), CREDENTIAL_MASKS)[0]
+    return ToolGateLeaves(
+        rows((*installed.declared, *shipped.declared)),
+        rows((*installed.unreadable, *shipped.unreadable)),
+    )
 
 
 def declarations_generation() -> int:
@@ -573,8 +759,8 @@ def declarations_generation() -> int:
 def remember_declaration(app: str, *, kind: DeclarationKind = CREDENTIAL_MASKS) -> None:
     """Make *app*'s retained record match its installed ``app.json``.
 
-    Called by the gateway whenever it records the installed app and before an update or
-    uninstall moves the app's data, so the masks outlive the manifest beside the data.
+    Called by the gateway whenever it records the installed app and before an update removes
+    the manifest or an uninstall moves the app's data, so the masks outlive the manifest.
     Only a manifest that reads cleanly (:func:`_clean_declaration`) changes the record: one
     declaring nothing removes it. A missing, unreadable, unparseable, misnamed or invalid
     ``app.json`` (a built-in's record, a tree mid-copy, a hand edit) leaves the record as

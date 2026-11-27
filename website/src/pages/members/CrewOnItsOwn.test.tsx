@@ -101,6 +101,16 @@ describe('CrewOnItsOwn', () => {
     expect(within(stopped).getByTestId('crew-patrol-facts')).toHaveTextContent('7 日の時間制限に達しました')
   })
 
+  it.each([
+    [86400, 'Hit its time limit of 1 day'],
+    [2 * 86400 + 3 * 3600, 'Hit its time limit of 2 days 3 hr'],
+    [3600, 'Hit its time limit of 1 hr'],
+    [4 * 3600, 'Hit its time limit of 4 hr'],
+  ])('a %ss time limit reads as the amount after the noun (#36711)', (maxRuntimeSecs, phrase) => {
+    const { row } = setup({ loop: { ...LOOP, active: false, stoppedReason: 'runtime_budget', nextDueAt: 0, maxRuntimeSecs } })
+    expect(within(row).getByTestId('crew-patrol-facts')).toHaveTextContent(`${phrase} · 3 tasks still open`)
+  })
+
   it('shows none of the budget bookkeeping the Profile readout used to, and leaks no prompt or path', () => {
     const { row } = setup()
     const text = row.textContent ?? ''
@@ -123,7 +133,7 @@ describe('CrewOnItsOwn', () => {
   })
 
   it.each([
-    ['runtime_budget', 'Hit its 7 days time limit'],
+    ['runtime_budget', 'Hit its time limit of 7 days'],
     ['cycle_cap', 'Hit its check limit'],
     ['manual', 'You paused it'],
     ['user_stop', 'You paused it'],

@@ -16,7 +16,12 @@ from redaction_structured_cases import (
 
 from kiro_crew.security.redaction_structured import TAG, TableError, build_table, redact
 from kiro_crew.security.redaction_structured.table import ROWS, TABLE
-from kiro_crew.testing.synthetic_credentials import ALNUM, aws_secret, synth
+from kiro_crew.testing.synthetic_credentials import (
+    ALNUM,
+    aws_secret,
+    github_classic,
+    synth,
+)
 
 LABELLED = next(r for r in TABLE.known_keys if r.id == "labelled.secret")
 
@@ -32,13 +37,13 @@ _LISTED = """PASSWORD DB_PASSWORD DATABASE_PASSWORD POSTGRES_PASSWORD MYSQL_PASS
 ADMIN_PASSWORD SMTP_PASSWORD MYSQL_PWD PASSWD SECRET SECRET_KEY CLIENT_SECRET APP_SECRET
 JWT_SECRET API_SECRET API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY ACCESS_TOKEN REFRESH_TOKEN
 AUTH_TOKEN GITHUB_TOKEN GH_TOKEN NPM_TOKEN SLACK_BOT_TOKEN SENTRY_AUTH_TOKEN TWILIO_AUTH_TOKEN
-PGPASSWORD AUTHORIZATION_TOKEN""".split()
+PGPASSWORD AUTHORIZATION_TOKEN TOKEN""".split()
 #: Known gaps: credential names the row does not list. An opaque value after one stays
 #: visible; a value of a published format is still masked by its format row.
 _UNLISTED = """EMAIL_PASSWORD LDAP_PASSWORD RABBITMQ_PASSWORD KEYSTORE_PASSWORD DB_PASS SMTP_PASS
 SESSION_SECRET COOKIE_SECRET WEBHOOK_SECRET SIGNING_SECRET SENDGRID_API_KEY STRIPE_SECRET_KEY
 ACCESS_KEY STORAGE_ACCESS_KEY PRIVATE_KEY API_TOKEN BEARER_TOKEN GITLAB_TOKEN DB_CREDENTIALS
-BASIC_AUTH TOKEN""".split()
+BASIC_AUTH""".split()
 
 
 def test_the_row_lists_the_names_these_tests_read() -> None:
@@ -285,6 +290,119 @@ def test_the_loader_refuses_a_name_shape() -> None:
     netrc = dict(next(r for r in ROWS if r["id"] == "netrc.password"))
     with pytest.raises(TableError, match="reads no names"):
         build_table([{**netrc, "names": ["password"]}])
+
+
+# ── Short values, a short curl password ──
+
+
+@pytest.mark.parametrize("name", ["password", "secret"])
+def test_a_short_value_after_a_listed_name_is_masked(name: str) -> None:
+    assert redact(f"{name}=FAKEpw1")[0] == f"{name}={TAG}"
+
+
+def test_a_four_character_curl_user_password_is_masked() -> None:
+    assert redact("curl -u u:Zx9a http://h/")[0] == f"curl -u u:{TAG} http://h/"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "token count=5",
+        "password=x1",
+        "tokenizer=fast",
+        "token=words like this",
+    ],
+)
+def test_ordinary_text_is_not_masked(text: str) -> None:
+    assert redact(text)[0] == text
+
+
+def test_a_short_token_value_is_masked() -> None:
+    assert redact("token=FAKEpw1")[0] == f"token={TAG}"
+
+
+@pytest.mark.parametrize("name", ["password", "token"])
+def test_a_short_elided_example_stays(name: str) -> None:
+    assert redact(f"{name}=sk-...")[0] == f"{name}=sk-..."
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
+@pytest.mark.parametrize("name", ["password", "secret"])
+@pytest.mark.parametrize("head", ["hunter2", "Ab3xY9q", "Zq81Lm"])
+def test_a_short_real_looking_value_cut_by_an_ellipsis_is_masked(
+    name: str, head: str, ellipsis: str
+) -> None:
+    assert redact(f"{name}={head}{ellipsis}")[0] == f"{name}={TAG}"
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
+@pytest.mark.parametrize("name", ["password", "secret"])
+@pytest.mark.parametrize("head", ["lemon", "abc12", "a.b.c"])
+def test_a_very_short_value_cut_by_an_ellipsis_is_masked(
+    name: str, head: str, ellipsis: str
+) -> None:
+    assert redact(f"{name}={head}{ellipsis}")[0] == f"{name}={TAG}"
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
+@pytest.mark.parametrize("name", ["password", "secret"])
+@pytest.mark.parametrize(
+    "head",
+    [
+        "lemon-",
+        "lemon_",
+        "lemon=",
+        "Ab3xY9-",
+        "sk-ant-lemon",  # a vendor stub, then a word
+        "sk-proj-lemon",
+        "sk--lemon",  # a doubled separator after the stub
+    ],
+)
+def test_a_short_word_and_separator_cut_by_an_ellipsis_is_masked(
+    name: str, head: str, ellipsis: str
+) -> None:
+    assert redact(f"{name}={head}{ellipsis}")[0] == f"{name}={TAG}"
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
+@pytest.mark.parametrize("name", ["password", "secret"])
+def test_an_empty_head_before_an_ellipsis_stays(name: str, ellipsis: str) -> None:
+    text = f"{name}={ellipsis}"
+    assert redact(text)[0] == text
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
+@pytest.mark.parametrize(
+    "stub",
+    ["sk-", "sk-ant-", "sk-proj-", "ghp_", "hf_", "npm_", "AKIA", "github_pat_", "AROA"],
+)
+def test_a_vendor_prefix_stub_stays(stub: str, ellipsis: str) -> None:
+    text = f"password={stub}{ellipsis}"
+    assert redact(text)[0] == text
+
+
+def test_the_elided_stub_set_is_read_from_the_prefix_table() -> None:
+    from kiro_crew.security.redaction_structured.known_key import (
+        _ELIDED_STUB_SEPARATORS,
+        _ELIDED_VENDOR_PREFIXES,
+    )
+
+    expected = set()
+    for row in ROWS:
+        for prefix in row.get("prefixes", ()):
+            if len(prefix) < 3:
+                continue
+            if prefix.endswith(tuple(_ELIDED_STUB_SEPARATORS)):
+                prefix = prefix[:-1]
+            expected.add(prefix.lower())
+    assert expected
+    assert _ELIDED_VENDOR_PREFIXES == expected
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
+def test_a_long_token_cut_by_an_ellipsis_is_masked(ellipsis: str) -> None:
+    cut = github_classic()[:20] + ellipsis
+    assert redact(f"token={cut}")[0] == f"token={TAG}"
 
 
 def _repeat(unit: str) -> object:

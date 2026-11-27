@@ -9,6 +9,7 @@ import type { ComposerControl } from '../composerControl'
 import { terminalCommand } from '../../hooks/useTerminalCommand'
 import type { ChatInputProps } from './props'
 import { useComposerOptimizeBeforeSend, useComposerShowOptimizePrompt } from '../../hooks/useComposerOptimizeBeforeSend'
+import { apiTransport } from '../../api/apiTransport'
 
 /* "Optimize prompt": the request, its slot binding, and the undoable
    write-back. The result is never sent; it lands in the draft of the slot
@@ -127,7 +128,7 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
         signal?: AbortSignal
       },
     ) => {
-      const resp = await fetch('/api/optimizer/optimize', {
+      const resp = await apiTransport.request('/api/optimizer/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-session-key': 'dashboard:ui' },
         credentials: 'same-origin',

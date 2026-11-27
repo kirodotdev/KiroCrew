@@ -106,6 +106,17 @@ def _still_the_stored_binding(binding: Binding) -> bool:
     """
     from kiro_crew.slack.code_channels.store import store
 
+    if getattr(binding, "thread", False) is True:
+        # A Conductor thread is found by channel AND anchor (a channel holds many);
+        # an ended one is not the thread's binding for any write.
+        thread = store().get_thread_binding(binding.channel_id, binding.anchor_ts)
+        return (
+            thread is not None
+            and thread.thread
+            and not thread.ended_at
+            and thread.session_key == binding.session_key
+            and thread.team_id == binding.team_id
+        )
     current = store().get_binding(binding.channel_id)
     return (
         current is not None
@@ -180,12 +191,14 @@ def scope_refusal(state: Any, binding: Binding) -> str:
         from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
             AUDIENCE_UNREAD_REFUSAL,
             SESSION_MAP_BUSY_REFUSAL,
+            THREAD_PRIVACY_UNREAD_REFUSAL,
         )
 
         why = _publish_refusal(state, binding)
     except Exception:
         return SCOPE_CONFIRMED
-    if why in (SESSION_MAP_BUSY_REFUSAL, AUDIENCE_UNREAD_REFUSAL):
+    # A Conductor thread's private room not freshly read is the same "in a moment".
+    if why in (SESSION_MAP_BUSY_REFUSAL, AUDIENCE_UNREAD_REFUSAL, THREAD_PRIVACY_UNREAD_REFUSAL):
         return SCOPE_PASSING
     return SCOPE_CONFIRMED
 
@@ -271,10 +284,12 @@ def approval_activity(state: Any, worker_key: str) -> model.Activity:
 def worker_live(state: Any, worker_key: str) -> tuple[str, str]:
     """``(word, approval kind)`` for a worker's session; the kind only while one is pending.
 
-    The word is :mod:`.model`'s ``LIVE_*``. Running and gone are the conductor
-    wake gate's own resolvers (``ledger_wake.worker_running`` /
-    ``worker_closed``), so the board and the gate cannot disagree about a worker;
-    a pending approval is the session-status verb's answer.
+    The word is :mod:`.model`'s ``LIVE_*``. Gone is the conductor wake gate's own
+    ``ledger_wake.worker_closed``. Running is ``ledger_wake.worker_running``, a
+    model turn in flight only: narrower than the gate's injected predicate, which
+    also counts sub-agents, workflows and other session-owned work, so a worker
+    the gate holds back from a stall can still read idle or queued here. A
+    pending approval is the session-status verb's answer.
     """
     if not worker_key:
         return model.LIVE_UNBOUND, ""
@@ -413,6 +428,7 @@ def project(
     tool_of: Callable[[str], str] | None = None,
     activity_of: Callable[[str], model.Activity] | None = None,
     approval_of: Callable[[str], model.Activity] | None = None,
+    stopped_of: Callable[[str], Any] | None = None,
 ) -> model.BoardSnapshot:
     """The published snapshot: EVERY ledger item reduced to a :class:`~.model.WorkerRow`.
 
@@ -437,20 +453,28 @@ def project(
         worker = str(item.worker_session_key or "")
         live = live_of(worker)
         item_state = str(item.state or "open")
-        state = model.row_state(
-            item_state=item_state,
-            status=item.status,
-            reason=item.reason,
-            live=live,
-            verdict=getattr(item, "verdict", None),
-            handed_back=_handed_back(item),
-        )
+        facts = {
+            "item_state": item_state,
+            "status": item.status,
+            "reason": item.reason,
+            "live": live,
+            "verdict": getattr(item, "verdict", None),
+            "handed_back": _handed_back(item),
+        }
+        # The store seam's mark: the conductor's ``ask`` record still stands.
+        state = model.row_state(**facts, asked=getattr(item, "asks_person", False) is True)
         artifacts = item.artifacts if isinstance(item.artifacts, dict) else {}
         branch = str(artifacts.get("branch") or "").strip()
         waiting_on = ""
         approval_tool = ""
         if state == model.WAITING_ON_YOU:
-            waiting_on = "approval" if live == model.LIVE_APPROVAL else "report"
+            if live == model.LIVE_APPROVAL:
+                waiting_on = "approval"
+            else:
+                # ``ask`` only when the record alone holds the row: a report that
+                # names a person keeps its own wording and its page.
+                reported = model.row_state(**facts) == model.WAITING_ON_YOU
+                waiting_on = "report" if reported else "ask"
         if waiting_on == "approval" and tool_of is not None:
             approval_tool = model.approval_words(tool_of(worker))
         step, turn_started_at, approval_key = "", "", ""
@@ -464,6 +488,7 @@ def project(
             approval_key = model.approval_key(asked.approval_id)
         elif state == model.IDLE and item.status == "progress" and item.summary:
             step = model.safe_line(str(item.summary), first_line=True)
+        stop = stopped_of(worker) if stopped_of is not None and worker else None
         rows.append(
             model.WorkerRow(
                 item_id=str(item.item_id),
@@ -486,6 +511,8 @@ def project(
                 turn_started_at=turn_started_at,
                 approval_key=approval_key,
                 pr_number=pr if type(pr := getattr(item, "pr", None)) is int and pr > 0 else 0,
+                stopped_by=str(getattr(stop, "user", "") or ""),
+                stopped_at=str(getattr(stop, "at", "") or ""),
             )
         )
     goal = model.safe_line(
@@ -528,6 +555,8 @@ async def read_board(state: Any, binding: Binding) -> model.BoardSnapshot | None
     # The scrub's first host-name read is a reverse DNS lookup: warm its cache
     # off the event loop, since ``project`` runs inline.
     await asyncio.to_thread(model._host_names)
+    from kiro_crew.slack.code_channels.board import stops
+
     return project(
         record,
         list(items),
@@ -535,4 +564,5 @@ async def read_board(state: Any, binding: Binding) -> model.BoardSnapshot | None
         tool_of=lambda key: live(key)[1],
         activity_of=lambda key: worker_activity(state, key),
         approval_of=lambda key: approval_activity(state, key),
+        stopped_of=lambda key: stops.current(state, key),
     )

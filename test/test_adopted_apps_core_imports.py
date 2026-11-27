@@ -3,7 +3,10 @@
 An adopted host runs the app's own repository at its pin, against this core, and the
 wheel copy is that repository's twin (PR Hygiene holds them equal). So a ``kiro_crew``
 name the copy imports that the core lacks is a name the adopted app cannot import
-either, and the app breaks on that host.
+either, and the app breaks on that host. A pin row can outlive its wheel copy (the
+copy is deleted, the row kept); such an app has no twin here to read, so only the
+pinned apps the wheel still ships are checked. Which copies may be deleted is held by
+``test_builtin_adoption_pins.test_no_wheel_copy_a_security_limit_reads_is_deleted``.
 """
 
 from __future__ import annotations
@@ -13,9 +16,9 @@ import importlib
 from pathlib import Path
 
 import pytest
+from wheel_copy_limit_sources import shipped_pin_names, wheel_copy_ships
 
 import kiro_crew.apps.builtins as builtins_pkg
-from kiro_crew.apps.builtin_adoption_pins import adoption_pin_names
 
 _BUILTINS = Path(builtins_pkg.__file__).resolve().parent
 
@@ -58,11 +61,9 @@ def _resolves(module: str, name: str | None) -> bool:
     return True
 
 
-@pytest.mark.parametrize("app", sorted(adoption_pin_names()))
+@pytest.mark.parametrize("app", sorted(filter(wheel_copy_ships, shipped_pin_names())))
 def test_an_adopted_app_finds_every_core_name_it_imports(app: str) -> None:
-    root = _BUILTINS / app.replace("-", "_")
-    assert root.is_dir(), f"{app} has a pin but no wheel copy under {_BUILTINS}"
-    imports = _core_imports(root)
+    imports = _core_imports(_BUILTINS / app.replace("-", "_"))
     assert imports, f"{app} imports nothing from the core, so this check reads nothing"
     missing = [
         f"{site} {module}:{name}" for module, name, site in imports if not _resolves(module, name)

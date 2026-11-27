@@ -13,7 +13,6 @@
     {"id": "lockdown-before-publish", "cmd": ["{py}", "scripts/check_lockdown_before_publish.py"], "ci": {"file": "ci.yml", "text": "scripts/check_lockdown_before_publish.py"}},
     {"id": "metrics-schema-history", "cmd": ["{py}", "scripts/check_metrics_schema_history.py"], "self_test": true, "base_env": "METRICS_SCHEMA_BASE", "ci": {"file": "ci.yml", "text": "scripts/check_metrics_schema_history.py"}},
     {"id": "comment-history", "cmd": ["{py}", "scripts/check_comment_history.py"], "self_test": true, "base_env": "COMMENT_HISTORY_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_comment_history.py"}},
-    {"id": "backend-emoji", "cmd": ["{py}", "scripts/check_backend_emoji.py"], "self_test": true, "base_env": "BACKEND_EMOJI_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_backend_emoji.py"}},
     {"id": "brand-name", "cmd": ["{py}", "scripts/check_brand_name.py"], "self_test": true, "base_env": "BRAND_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_brand_name.py"}},
     {"id": "harness-parity", "cmd": ["{py}", "scripts/check_harness_parity.py"], "self_test": true, "base_env": "HARNESS_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_harness_parity.py"}},
     {"id": "feature-map", "cmd": ["{py}", "scripts/check_feature_map.py"], "self_test": true, "base_env": "FEATURE_MAP_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_feature_map.py"}},

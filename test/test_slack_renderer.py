@@ -9,9 +9,11 @@ Block Kit approve/deny buttons and the interactive approval await/resolve.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from redaction_structured_cases import github_classic
+from slack_handler_helpers import hide_slack_timing_footer
 
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -26,6 +28,7 @@ from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.slack.client import RealSlackClient
 from kiro_crew.slack.renderer import (
     _STATUS_WORKING,
+    _THINKING,
     TOOL_APPROVE_ACTION_PREFIX,
     TOOL_DENY_ACTION_PREFIX,
     TOOL_TRUST_ACTION_PREFIX,
@@ -82,7 +85,7 @@ class _RecSlack:
         self.calls.append(("set_thread_status", {"status": status}))
 
     async def post_blocks(self, channel, blocks, text, thread_ts=None, **kw):
-        self.calls.append(("post_blocks", {"blocks": blocks}))
+        self.calls.append(("post_blocks", {"blocks": blocks, "text": text}))
         return self._ts()
 
     def approval_token(self):
@@ -917,7 +920,7 @@ class TestStreamMachinery:
         # chat.update (update_message), never append_stream.
         assert "update_message" in methods, methods
         assert "append_stream" not in methods, methods
-        assert "post_message" in methods, methods  # the _THINKING placeholder
+        assert any(m == "post_blocks" and kw["text"] == _THINKING for m, kw in rec.calls), rec.calls
 
     def test_no_stream_keeps_the_text_before_a_tool_call_in_the_reply(self):
         """The fallback has no plan block to hold narration, so the text before
@@ -945,7 +948,7 @@ class TestToolTimerAndWait:
     def test_elapsed_appended_to_completed_task_title(self):
         rec = _RecSlack()
         # Clock reads: turn_start, tool1(start timer @1000), tool2(elapsed=2s,
-        # completes tool1), on_done. Tool1 ran 2s -> "· 2.0s" in its title.
+        # completes tool1), on_done. Tool1 ran 2s -> "⏱ 2.0s" in its title.
         clock = _FakeClock([1000.0, 1000.0, 1002.0, 1002.0])
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
         provider = _Provider(
@@ -959,7 +962,7 @@ class TestToolTimerAndWait:
         completes = [
             kw["title"] for m, kw in rec.calls if m == "append_task" and kw["status"] == "complete"
         ]
-        assert any(t.endswith(" · 2.0s") for t in completes), completes
+        assert any("⏱" in t for t in completes), completes
         assert renderer._tool_timer_task is None  # timer cancelled on done
 
     def test_wait_tool_finalizes_stream(self):
@@ -1331,7 +1334,8 @@ class TestAppendTaskRaiseIsSwallowed:
         final_texts = [
             str(kw.get("final_text") or kw.get("text") or "")
             for m, kw in rec.calls
-            if m in ("stop_stream", "post_message", "update_message", "append_stream")
+            if m
+            in ("stop_stream", "post_message", "post_blocks", "update_message", "append_stream")
         ]
         joined = " ".join(final_texts)
         assert "The answer is 42" in joined, rec.calls
@@ -1360,7 +1364,8 @@ class TestRendererPresentationGuards:
         return " ".join(
             str(kw.get("final_text") or kw.get("text") or "")
             for m, kw in rec.calls
-            if m in ("stop_stream", "post_message", "update_message", "append_stream")
+            if m
+            in ("stop_stream", "post_message", "post_blocks", "update_message", "append_stream")
         )
 
     def test_raising_set_thread_status_does_not_escape(self):
@@ -1445,16 +1450,16 @@ class TestRendererPresentationGuards:
                 self.start_raises += 1
                 raise RuntimeError("fatal_error: chat.startStream")
 
-            async def post_message(self, channel, text, thread_ts=None, **kw):
+            async def post_blocks(self, channel, blocks, text, thread_ts=None, **kw):
                 if "Thinking" in text:
                     raise RuntimeError("channel_not_found: chat.postMessage")
-                return await super().post_message(channel, text, thread_ts=thread_ts, **kw)
+                return await super().post_blocks(channel, blocks, text, thread_ts=thread_ts, **kw)
 
         rec = RaisingStartSlack()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
         asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
         assert rec.start_raises >= 1, rec.calls
-        posts = [str(kw.get("text") or "") for m, kw in rec.calls if m == "post_message"]
+        posts = [str(kw.get("text") or "") for m, kw in rec.calls if m == "post_blocks"]
         assert any("The answer is 42" in p for p in posts), rec.calls
         assert "Something went wrong" not in self._joined(rec), rec.calls
 
@@ -1470,6 +1475,9 @@ class TestRendererPresentationGuards:
                 raise RuntimeError("fatal_error: chat.startStream")
 
             async def post_message(self, channel, text, thread_ts=None, **kw):
+                raise RuntimeError("channel_not_found: chat.postMessage")
+
+            async def post_blocks(self, channel, blocks, text, thread_ts=None, **kw):
                 raise RuntimeError("channel_not_found: chat.postMessage")
 
         rec = TotalFailureSlack()
@@ -1603,6 +1611,72 @@ class TestOptionsFooterCancellationDefersFinalize:
         asyncio.run(scenario())
 
 
+class TestTimingFooterSetting:
+    """``slack.show_timing_footer`` decides whether the transport turn shows its
+    "Finished in" line, in the stream's seal or as a post of its own. Off, a footer
+    carrying choices still posts them -- and is still recorded for the
+    strike-through -- and an empty footer posts nothing."""
+
+    @staticmethod
+    def _end_turn(accumulated: str):
+        rec = _RecSlack()
+        texts: list[str] = []
+        record = rec.post_blocks
+
+        async def _post_blocks(channel, blocks, text, thread_ts=None, **kw):
+            texts.append(text)
+            return await record(channel, blocks, text, thread_ts, **kw)
+
+        rec.post_blocks = _post_blocks  # type: ignore[assignment]
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        renderer._accumulated = accumulated
+        asyncio.run(renderer.on_done())
+        footers = [kw["blocks"] for name, kw in rec.calls if name == "post_blocks"]
+        return footers, texts, renderer
+
+    def test_by_default_the_seal_carries_the_footer_as_it_always_has(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        renderer._accumulated = "the answer is 42"
+        asyncio.run(renderer.on_done())
+        (stop,) = [kw for m, kw in rec.calls if m == "stop_stream"]
+        assert stop == {
+            "final_text": "the answer is 42",
+            "blocks": [
+                {"type": "context", "elements": [{"type": "mrkdwn", "text": "Finished in 0s"}]}
+            ],
+        }
+        assert "post_blocks" not in [m for m, _ in rec.calls], "the seal already carries it"
+
+    def test_off_seals_a_streamed_answer_without_the_timing_line(self, monkeypatch, tmp_path):
+        hide_slack_timing_footer(monkeypatch, tmp_path)
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="the answer is 42"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        (stop,) = [kw for m, kw in rec.calls if m == "stop_stream"]
+        assert stop == {"final_text": "the answer is 42", "blocks": None}
+        assert "post_blocks" not in [m for m, _ in rec.calls], "an empty footer must not post"
+        assert renderer.turn_finalized is True
+
+    def test_off_still_posts_the_choices_without_the_timing_line(self, monkeypatch, tmp_path):
+        hide_slack_timing_footer(monkeypatch, tmp_path)
+        footers, texts, renderer = self._end_turn("pick one\n[OPTIONS: alpha | beta]")
+        assert len(footers) == 1, "the choices ride only in the footer, so it must post"
+        assert [b["type"] for b in footers[0]] == ["actions"]
+        assert "Finished in" not in json.dumps(footers[0])
+        assert texts == ["Options"], "the notification text must not read 'Finished in'"
+        posted = renderer.posted_options
+        assert posted is not None and posted.choices == ("alpha", "beta")
+        assert posted.text == "Options" and list(posted.blocks) == footers[0]
+        assert renderer.turn_finalized is True
+
+
 class TestTransportRedactionNotice:
     """The DEFAULT Slack path posts a redaction notice below a rewritten answer.
 
@@ -1678,15 +1752,14 @@ class TestTransportRedactionNotice:
 
 class TestPerCallToolOutcomeCards:
     """Each tool call's card is finalized against its own terminal outcome,
-    so a failed/cancelled/refused call reads as itself instead of every card
-    reading "complete"."""
+    so a failed/cancelled/refused call names that outcome in its details."""
 
     def _run(self, rec, events):
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
         provider = _Provider(events)
         asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
 
-    def test_failed_tool_result_marks_card_error_not_complete(self):
+    def test_failed_tool_result_names_the_outcome_without_an_error_card(self):
         rec = _RecSlack()
         self._run(
             rec,
@@ -1703,10 +1776,10 @@ class TestPerCallToolOutcomeCards:
             ],
         )
         cards = [kw for m, kw in rec.calls if m == "append_task"]
-        # The call's card finalizes as "error" (Slack's non-✓ terminal status),
-        # naming the outcome — not a blanket "complete".
+        # The card closes "complete" with the outcome in its details: an "error"
+        # task turns Slack's whole plan header red ("Something went wrong").
         assert cards[0]["status"] == "in_progress"
-        assert cards[1]["status"] == "error"
+        assert cards[1]["status"] == "complete"
         assert cards[1]["details"] == "\nfailed"  # below the step's own details
 
     def test_succeeded_tool_result_keeps_complete(self):
@@ -1743,7 +1816,7 @@ class TestPerCallToolOutcomeCards:
                 ],
             )
             closed = [kw for m, kw in rec.calls if m == "append_task"][1]
-            assert closed["status"] == "error"
+            assert closed["status"] == "complete"
             assert closed["details"] == "\n" + status, status
 
     def test_no_result_event_keeps_complete(self):
@@ -1775,17 +1848,17 @@ class TestPerCallToolOutcomeCards:
             ],
         )
         cards = [kw for m, kw in rec.calls if m == "append_task"]
-        # a opens; a closes complete when b opens; b closes error at done.
+        # a opens; a closes complete when b opens; b closes at done, refused.
         assert cards[0]["status"] == "in_progress"  # a opens
         assert cards[1]["status"] == "complete"  # a succeeded
         assert cards[2]["status"] == "in_progress"  # b opens
-        assert cards[3]["status"] == "error"  # b refused
+        assert cards[3]["status"] == "complete"  # b refused, outcome in details
         assert cards[3]["details"] == "\nrefused"
 
     def test_out_of_order_result_updates_an_already_closed_card(self):
         # Parallel tool use: A opens, B opens (closing A's card as the uniform
-        # model does), THEN A's failure lands — A's card is re-emitted as error
-        # rather than left on the ✓ it was closed with.
+        # model does), THEN A's failure lands — A's card is re-emitted with it
+        # rather than left with no outcome.
         rec = _RecSlack()
         self._run(
             rec,
@@ -1800,12 +1873,12 @@ class TestPerCallToolOutcomeCards:
         )
         cards = [kw for m, kw in rec.calls if m == "append_task"]
         # a opens; a closed complete when b opened; a's late failure re-emits a
-        # as error; b closed complete at done.
+        # with the outcome; b closed complete at done.
         assert cards[0]["status"] == "in_progress"  # a opens
         assert cards[1]["status"] == "complete"  # a closed when b opened
         assert cards[2]["status"] == "in_progress"  # b opens
-        # a's late failure re-emits its card as error (same tool_1 task_id).
-        error_cards = [c for c in cards if c["status"] == "error"]
-        assert error_cards and error_cards[0]["details"] == "\nfailed"
+        # a's late failure re-emits its card with the outcome (same task_id).
+        assert [c for c in cards if c.get("details") == "\nfailed"]
         # b still closes complete.
         assert cards[-1]["status"] == "complete"
+        assert not [c for c in cards if c["status"] == "error"]

@@ -45,10 +45,10 @@ read the agent does not already have (``list_sessions`` in ``kirocrew-core`` is
 always available and already returns every session's title and key), they cannot
 delete a conversation or a folder that holds anything, and the worst outcome is
 a sidebar the user has to tidy. Contrast the keystone leaves in ``security.py``
-(``computer_use.json``, ``browser-mode-enabled``, the Ops Mission Control mode):
-each grants reach OUTSIDE Kiro Crew — desktop input synthesis, the operator's
-logged-in browser, writes against production incident tooling — or is the
-security floor itself, and each is therefore stored where the agent cannot write.
+(``computer_use.json``, the Ops Mission Control mode): each grants reach OUTSIDE
+Kiro Crew — desktop input synthesis, writes against production incident tooling —
+or is the security floor itself, and each is therefore stored where the agent
+cannot write.
 
 The rule that follows, and the reason the tool set is ratcheted in
 ``test_mcp_dashboard_registration.py``: a capability whose blast radius DOES
@@ -763,6 +763,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _WORK_RECORD_ROUTE,
     GENERATE_TITLE_TIMEOUT_SECS,
     SESSION_STATUS_READ_TIMEOUT_SECS,
+    _activity_suffix,
     _closed_at_display,
     _create_refusal_remedy,
     _create_session,
@@ -935,6 +936,12 @@ ADVERTISE_CALLER_IDENTITY = True
 
 def run_mcp_server() -> None:
     """Run the MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
+    # An enforced harness hands this server a one-time pickup in place of the secret
+    # it withholds (``agent_ipc_client``); redeem it before the first request, as
+    # ``kirocrew-core`` does, since listing the tools already reads the tool policy.
+    from kiro_crew.agent_ipc_client import redeem_server_pickup
+
+    redeem_server_pickup()
     run_mcp_stdio_loop(
         SERVER_NAME,
         SERVER_VERSION,

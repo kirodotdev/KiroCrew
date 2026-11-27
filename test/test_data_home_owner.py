@@ -186,6 +186,63 @@ def test_the_gateway_is_quiet_when_this_account_owns_the_home(caplog, tmp_path):
     assert caplog.text == ""
 
 
+def _start_gateway(monkeypatch, found: data_home_owner.DataHomeAccess) -> object:
+    """Run ``kirocrew gateway`` with *found* as the ownership check; its exit code."""
+    from kiro_crew import cli
+
+    monkeypatch.setattr(data_home_owner, "check_data_home", lambda home: found)
+    monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "gateway"])
+    monkeypatch.setattr(
+        cli.platform_compat, "limit_malloc_arenas", cli.platform_compat.MallocArenaCap
+    )
+    # The gateway path arms faulthandler on the real stderr descriptor.
+    monkeypatch.setattr(cli.faulthandler, "enable", lambda: None)
+    monkeypatch.setattr(cli.asyncio, "run", lambda *a, **k: pytest.fail("the gateway ran"))
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    return excinfo.value.code
+
+
+def test_a_refused_gateway_lock_names_who_owns_the_files(monkeypatch, capsys, tmp_path):
+    from unittest.mock import MagicMock
+
+    from kiro_crew import cli
+    from kiro_crew.gateway_lock import LockFileError
+
+    lock = tmp_path / "gateway.lock"
+    lock_cls = MagicMock()
+    lock_cls.return_value.acquire.side_effect = LockFileError(
+        tmp_path, f"could not open {lock}: Permission denied"
+    )
+    monkeypatch.setattr(cli, "GatewayLock", lock_cls)
+    found = _found(tmp_path)
+    assert _start_gateway(monkeypatch, found) == 1
+    err = capsys.readouterr().err
+    assert found.explain() in err
+    assert err.index(f"could not open {lock}") < err.index(found.explain())
+
+
+@pytest.mark.parametrize("owner", ["root", ""], ids=["another account", "this account"])
+def test_a_home_that_cannot_hold_files_names_who_owns_it(monkeypatch, capsys, tmp_path, owner):
+    from kiro_crew import cli
+
+    monkeypatch.setattr(
+        cli.platform_compat,
+        "probe_file_persistence",
+        lambda directory: f"cannot create files in {directory}: Permission denied",
+    )
+    monkeypatch.setattr(cli, "maybe_reexec", lambda argv: pytest.fail("reached maybe_reexec"))
+    found = _found(tmp_path, owner)
+    assert _start_gateway(monkeypatch, found) == 1
+    err = capsys.readouterr().err
+    if owner:
+        assert found.explain() in err
+        assert err.index("❌ Cannot persist state: ") < err.index(found.explain())
+    else:
+        # This account's own read-only home: the refusal line already names the cause.
+        assert found.explain() not in err
+
+
 def test_doctor_reports_the_files_owner_and_docs(monkeypatch, capsys, tmp_path):
     from kiro_crew.doctor_checks import install
 
@@ -197,6 +254,96 @@ def test_doctor_reports_the_files_owner_and_docs(monkeypatch, capsys, tmp_path):
     assert str(tmp_path / "config.json") in out
     assert "Stop running it as root" in out and data_home_owner.HELP_URL in out
     assert "chown" not in out
+    assert issues == [f"data home files belong to root; see {data_home_owner.HELP_URL}"]
+
+
+def _main_fail_row(tmp_path: Path, whose: str) -> str:
+    """The owner row exactly as main prints it for ``_found(tmp_path)``."""
+    return (
+        f"  owner:       ❌ some files {whose}, so Kiro Crew can't read them:\n"
+        f"               {tmp_path / 'config.json'}\n"
+        "               Kiro Crew was probably started as root once (for example with sudo).\n"
+        "               Stop running it as root, then give the files back to your account:\n"
+        f"               {data_home_owner.HELP_URL}\n"
+    )
+
+
+_UNUSABLE = "can't be used by this account"
+
+
+def _run_row(monkeypatch, capsys, tmp_path, owner: str, confined) -> tuple[str, list[str]]:
+    from kiro_crew.doctor_checks import confinement, install
+
+    monkeypatch.setattr(data_home_owner, "check_data_home", lambda home: _found(tmp_path, owner))
+    monkeypatch.setattr(confinement, "_doctor_vantage_confined", confined)
+    issues: list[str] = []
+    install._doctor_data_home_owner(issues)
+    return capsys.readouterr().out, issues
+
+
+def test_doctor_in_a_confined_shell_skips_entries_this_account_owns(monkeypatch, capsys, tmp_path):
+    from kiro_crew.doctor_checks import render
+
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    out, issues = _run_row(monkeypatch, capsys, tmp_path, "", lambda: False)
+    assert out == _main_fail_row(tmp_path, _UNUSABLE)
+    assert issues == [f"data home files {_UNUSABLE}; see {data_home_owner.HELP_URL}"]
+
+    out, issues = _run_row(monkeypatch, capsys, tmp_path, "", lambda: True)
+    assert issues == []
+    shown = render._safe_display(str(tmp_path / "config.json"))
+    assert f"  owner:       ⏭  skipped — {shown} is not readable from this shell\n" in out
+    assert "your own terminal" in out and "started as root" not in out
+
+
+def test_doctor_in_a_confined_shell_fails_an_entry_whose_owner_cannot_be_read(
+    monkeypatch, capsys, tmp_path
+):
+    flagged = tmp_path / "config.json"
+    flagged.write_text("{}", encoding="utf-8")
+    real_lstat = Path.lstat
+
+    def _refused(self: Path) -> os.stat_result:
+        if self == flagged:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", _refused)
+    out, issues = _run_row(monkeypatch, capsys, tmp_path, "", lambda: True)
+    assert out == _main_fail_row(tmp_path, _UNUSABLE)
+    assert issues == [f"data home files {_UNUSABLE}; see {data_home_owner.HELP_URL}"]
+
+
+def test_doctor_fails_as_before_when_the_confinement_probe_raises(monkeypatch, capsys, tmp_path):
+    def _broken() -> bool:
+        raise RuntimeError("probe broke")
+
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    out, issues = _run_row(monkeypatch, capsys, tmp_path, "", _broken)
+    assert out == _main_fail_row(tmp_path, _UNUSABLE)
+    assert len(issues) == 1
+
+
+def test_doctor_fails_as_before_on_a_platform_without_uids(monkeypatch, capsys, tmp_path):
+    from kiro_crew import platform_compat
+
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(platform_compat, "effective_uid", lambda: None)
+    out, issues = _run_row(monkeypatch, capsys, tmp_path, "", lambda: True)
+    assert out == _main_fail_row(tmp_path, _UNUSABLE)
+    assert len(issues) == 1
+
+
+def test_doctor_in_a_confined_shell_still_fails_files_another_account_owns(
+    monkeypatch, capsys, tmp_path
+):
+    from kiro_crew import platform_compat
+
+    # The file exists and lstats, so the verdict comes from the uid comparison.
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(platform_compat, "effective_uid", lambda: os.geteuid() + 1)
+    out, issues = _run_row(monkeypatch, capsys, tmp_path, "root", lambda: True)
+    assert out == _main_fail_row(tmp_path, "belong to root")
     assert issues == [f"data home files belong to root; see {data_home_owner.HELP_URL}"]
 
 

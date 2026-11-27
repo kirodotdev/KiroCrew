@@ -6,6 +6,7 @@ import logging as _logging
 from typing import TYPE_CHECKING, Any
 
 from .._component import ManagerComponent
+from . import pump_parent_end as _pump_parent_end
 from .types import MIN_RECHECK_DELAY_SECS, ClaimPoint
 
 _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
@@ -226,16 +227,26 @@ class _PumpMixin(ManagerComponent):
         """Retry one held generation before the pump considers queued rows."""
         retained = self._manager._retained_claims
         try:
-            agent_id, entry = next(iter(retained.items()))
+            agent_id = next(iter(retained))
         except StopIteration:
             return
-        retained.pop(agent_id, None)
+        # Read before the entry is taken, so a cancel during the read leaves the
+        # claim retained. The teardown mark that also says the parent ended ages
+        # out, and a retry can come after it has.
+        parent_end_recorded = await self._parent_end_recorded(agent_id)
+        entry = retained.pop(agent_id, None)
+        if entry is None:
+            # A stop settled the claim while the record was read.
+            if retained:
+                self._schedule_retained_claim_retry()
+            return
         point, generation, reenter, stop_params = entry
         result = await self.claim_and_start(
             point,
             reenter,
             stop_params=stop_params,
             retained_generation=generation,
+            parent_end_recorded=parent_end_recorded,
         )
         if result is not None and not result.done and result.id in self._manager._agents:
             await self.taskq_child_registered_async(result)
@@ -451,6 +462,15 @@ class _PumpMixin(ManagerComponent):
                 str(params.get("parent_session_key") or ""),
                 params.get("_parent_project_dirs"),
             )
+            from kiro_crew.mate_held_rules import held_spawn_limits
+
+            # The parent Bot's held sub-agent limits, read off the loop the same way.
+            parent = str(params.get("parent_session_key") or "")
+            # The live agent, else the one the row was accepted under.
+            agent = self._manager._sessions.get_agent(parent) or str(
+                params.get("_parent_live_agent") or ""
+            )
+            held = tuple(await asyncio.to_thread(held_spawn_limits, parent, agent))
             # Neither the queued entry nor the durable row carries a policy
             # (``queue_params`` never stores one, ``taskq_build_record`` drops
             # the key); the filter keeps a params dict that somehow holds one
@@ -474,6 +494,7 @@ class _PumpMixin(ManagerComponent):
             # same flags (``_spawn_after_memory_read``).
             reentry: dict[str, Any] = dict(
                 _parent_spawn_policy=policy,
+                _parent_held_spawn=held,
                 _agent_check=agent_check,
                 _from_queue=True,
                 _stop_before_claim=store is not None,
@@ -528,6 +549,7 @@ class _PumpMixin(ManagerComponent):
             lambda claimed: self._manager.spawn(
                 **spawn_params,
                 _parent_spawn_policy=policy,
+                _parent_held_spawn=held,
                 _agent_check=agent_check,
                 _from_queue=True,
                 _claimed=claimed,
@@ -546,6 +568,7 @@ class _PumpMixin(ManagerComponent):
         *,
         stop_params: "Mapping[str, Any] | None" = None,
         retained_generation: int | None = None,
+        parent_end_recorded: bool = False,
     ) -> "SubagentInfo | None":
         """Claim a reserved row, take its start in the store, then register it.
 
@@ -610,15 +633,17 @@ class _PumpMixin(ManagerComponent):
                     # claim retained across an outage). The row is not ours
                     # to start, and the store is not asked.
                     claimed = (generation, False, self.CLAIM_REFUSED)
-                elif self._parent_ended(point.agent_id):
+                elif parent_end_recorded or self._parent_ended(point.agent_id):
                     # The parent conversation ended while the claim was in
-                    # flight. Its teardown leaves a claimed row to this claimer,
+                    # flight, or a retained claim's run folder records that it
+                    # did. Its teardown leaves a claimed row to this claimer,
                     # so this claimer is the one that ends it.
                     if not await self._cancel_torn_down_claim(store, point.agent_id, generation):
                         self._retain_claim(point, generation, reenter, stop_params)
                         claim_retained = True
                         if retained_generation is None:
                             result = reenter((generation, False, self.CLAIM_RETAINED))
+                        await self._record_parent_end(point, generation)
                         return result
                     claimed = (generation, False, self.CLAIM_REFUSED)
                 else:
@@ -702,6 +727,7 @@ class _PumpMixin(ManagerComponent):
                             claim_retained = True
                             if retained_generation is None:
                                 result = reenter((generation, False, self.CLAIM_RETAINED))
+                            await self._record_parent_end(point, generation)
                             return result
                         claimed = (generation, False, self.CLAIM_REFUSED)
             # No await between a taken start and registration: nothing can
@@ -936,63 +962,11 @@ class _PumpMixin(ManagerComponent):
         waiting = self._manager._agents.get(agent_id)
         return waiting is not None and bool(waiting.done or waiting.user_stopped or waiting.reaped)
 
-    def _parent_ended(self, agent_id: str) -> bool:
-        """Whether a parent-end teardown has marked *agent_id*.
-
-        The teardown marks every id it selects before its first await and then
-        refuses to cancel a row that is claimed but not started, leaving it to
-        the claimer. This is the claimer's half: a marked row is not started.
-        """
-        return agent_id in getattr(self._manager, "_teardown_cancelled_ids", ())
-
-    async def _cancel_torn_down_claim(
-        self, store: "_taskq.TaskStore", agent_id: str, generation: int
-    ) -> bool:
-        """Cancel the claimed row of an ended parent under the claim's generation.
-
-        ``store.cancel`` keeps the generation fence, so a row that moved under
-        another owner is left alone. Returns False only when the store could not
-        be reached. The caller then retains the claim: left ``admitted`` or
-        ``starting``, the boot reconcile would requeue or recover the row and
-        start it, because the teardown mark does not survive a restart. The
-        retained-claim retry re-reads the mark and cancels again.
-        """
-        import asyncio as _asyncio
-
-        from kiro_crew import taskq as _taskq
-
-        # Shielded and awaited to its answer, like the claim and the start write:
-        # a claimer cancelled here must not leave a taken start nothing ends.
-        job = _asyncio.ensure_future(
-            store.run(
-                store.cancel,
-                agent_id,
-                reason="parent_end",
-                only_from=frozenset({_taskq.ADMITTED, _taskq.STARTING}),
-                generation=generation,
-            )
-        )
-        try:
-            await _asyncio.shield(job)
-        except _asyncio.CancelledError:
-            try:
-                await job
-            except _taskq.TaskStoreUnavailable:
-                _glue_logger.warning(
-                    "taskq: cancelled parent-end cancel of %s failed", agent_id, exc_info=True
-                )
-            raise
-        except _taskq.TaskStoreUnavailable:
-            _glue_logger.warning(
-                "taskq: cancelling the claimed row of %s after its parent ended failed; "
-                "retaining generation %d",
-                agent_id,
-                generation,
-                exc_info=True,
-            )
-            return False
-        _glue_logger.info("taskq: %s not started -- its parent conversation ended", agent_id)
-        return True
+    # The claimer's half of a parent-end teardown: ``pump_parent_end``.
+    _parent_ended = _pump_parent_end._parent_ended
+    _parent_end_recorded = _pump_parent_end._parent_end_recorded
+    _record_parent_end = _pump_parent_end._record_parent_end
+    _cancel_torn_down_claim = _pump_parent_end._cancel_torn_down_claim
 
     def release_reservation(self, agent_id: str) -> None:
         """Give back the slot a ``ClaimPoint`` reserved for a row that did not start."""
@@ -1268,7 +1242,9 @@ class _PumpMixin(ManagerComponent):
             except RuntimeError:
                 pass
 
-    async def _spawn_with_approval_impl(self, info: SubagentInfo) -> None:
+    async def _spawn_with_approval_impl(
+        self, info: SubagentInfo, held: tuple[str, ...] = ()
+    ) -> None:
         """Request approval before starting the subagent.
 
         If approval is denied the subagent is marked as done with an
@@ -1283,6 +1259,8 @@ class _PumpMixin(ManagerComponent):
 
         Args:
             info (SubagentInfo): The subagent metadata.
+            held (tuple[str, ...]): The parent Bot's held ``subagent`` limits the
+                gate found; under them only a person may answer the prompt.
         """
         assert self._manager._on_spawn_approval is not None
         request_id: str = f"spawn:{info.id}"
@@ -1353,10 +1331,17 @@ class _PumpMixin(ManagerComponent):
                 _trace_approval = trace_steps.approval_opened(
                     request_id, subagent_id=info.id, spawn=True
                 )
+                # Imported here: this body runs on ``kiro_crew.subagent``'s globals.
+                from contextlib import nullcontext
+
+                from kiro_crew import mate_held_rules
+
                 try:
-                    answer = await self._manager._on_spawn_approval(
-                        request_id, f"spawn_run({task_preview})", info.parent_session_key
-                    )
+                    # The prompt alone is marked held, never the run it starts.
+                    with mate_held_rules.held_call(list(held)) if held else nullcontext():
+                        answer = await self._manager._on_spawn_approval(
+                            request_id, f"spawn_run({task_preview})", info.parent_session_key
+                        )
                 finally:
                     info._awaiting_approval = False
                 if isinstance(answer, HostSpawnDecision):

@@ -23,7 +23,6 @@ if TYPE_CHECKING:
         _ACTION_APPROVE,
         _ACTION_REJECT,
         _ACTION_TRUST,
-        _IDENTITY_NAME_MAX,
         _SLACK_SECTION_TEXT_LIMIT,
         _TRUNCATION_MARKER,
         LLMEvent,
@@ -38,6 +37,7 @@ if TYPE_CHECKING:
         escape_mrkdwn,
         is_allowed_user,
         logger,
+        mcp_identity_line,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
@@ -47,12 +47,26 @@ if TYPE_CHECKING:
 
 
 class _PendingApproval:
-    __slots__ = ("provider", "request_id", "session_key", "future")
+    """A native tool-approval prompt awaiting its click.
 
-    def __init__(self, provider: LLMProvider, request_id: str | int, session_key: str = "") -> None:
+    ``requester`` is the Slack user whose turn asked; a shared user may answer only
+    a prompt whose requester they are, Trust included (empty: only the owner may
+    answer it).
+    """
+
+    __slots__ = ("provider", "request_id", "session_key", "future", "requester")
+
+    def __init__(
+        self,
+        provider: LLMProvider,
+        request_id: str | int,
+        session_key: str = "",
+        requester: str = "",
+    ) -> None:
         self.provider = provider
         self.request_id = request_id
         self.session_key = session_key
+        self.requester = requester
         self.future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
 
 
@@ -79,9 +93,14 @@ class _LinkedApproval:
     :func:`_linked_trust_grantable`). It defaults to False so an entry built
     without it -- and therefore every path that never established the proof --
     cannot grant Trust.
+
+    ``requester`` is the shared user whose Slack message opened the turn that asked
+    (:mod:`kiro_crew.slack.turn_requester`); they may answer this prompt too, Trust
+    included (still only where ``trust_grantable`` holds). Empty: only the owner may
+    answer it.
     """
 
-    __slots__ = ("request_id", "session_key", "trust_grantable", "slot_key", "future")
+    __slots__ = ("request_id", "session_key", "trust_grantable", "slot_key", "future", "requester")
 
     def __init__(
         self,
@@ -90,12 +109,14 @@ class _LinkedApproval:
         trust_grantable: bool = False,
         slot_key: str = "",
         future: asyncio.Future[str] | None = None,
+        requester: str = "",
     ) -> None:
         self.request_id = request_id
         self.session_key = session_key
         self.trust_grantable = trust_grantable
         self.slot_key = slot_key
         self.future = future
+        self.requester = requester
 
 
 class _LinkedApprovalEvent:
@@ -261,6 +282,8 @@ async def post_linked_approval(
     slot_key: str = "",
     future: asyncio.Future[str] | None = None,
     channel_trust: bool = False,
+    thread_trust: bool = False,
+    requester: str = "",
 ) -> str | None:
     """Mirror a dashboard tool-approval prompt into a linked Slack thread.
 
@@ -268,14 +291,16 @@ async def post_linked_approval(
     :class:`_LinkedApproval` keyed by ``channel:ts`` so a button click resolves
     the dashboard slot's approval future (see :func:`handle_interaction`).
     *slot_key* and *future* are the slot that asked and the future it parked on:
-    the click settles that future and no other.
+    the click settles that future and no other. *requester* is the shared user who
+    may answer it besides the owner (``""``: the owner alone).
     ``thread_ts=None`` posts top-level: a Slack Code channel's own session
     replies in the channel itself, so its prompts go there too.
 
     ``channel_trust`` (a Slack Code channel's own session) adds a secondary
     "Trust this channel" button, answered by
     :mod:`kiro_crew.slack.code_channels.approval_picker` with that module's
-    owner gates; this function grants nothing for it.
+    owner gates; this function grants nothing for it. With ``thread_trust`` too
+    (a Conductor thread's conductor) the button reads "Trust this thread".
 
     Returns the Slack message ts on success, or ``None`` if the post failed.
     The caller (``_on_permission_prompt`` in chat_turn/permission_prompt.py) treats ``None``
@@ -316,13 +341,20 @@ async def post_linked_approval(
         tool_name=tool_name,
         mcp_identity_trusted=mcp_identity_trusted,
     )
-    trust_grantable = channel.startswith("D") and _linked_trust_grantable(session_key, request_id)
+    # A Conductor thread's card (even in a DM) offers the thread's own Trust, which
+    # reaches its workers, never the per-session one.
+    trust_grantable = (
+        not thread_trust
+        and channel.startswith("D")
+        and _linked_trust_grantable(session_key, request_id)
+    )
     # _build_approval_blocks is typed for AcpEvent but only reads the
     # attributes the shim provides.
     blocks = _build_approval_blocks(
         event,  # type: ignore[arg-type]
         is_dm=trust_grantable,
         channel_trust=channel_trust and not trust_grantable,
+        thread_trust=thread_trust,
     )
     try:
         approval_ts = await slack.post_blocks(
@@ -337,7 +369,7 @@ async def post_linked_approval(
         )
         return None
     _linked_approvals[f"{channel}:{approval_ts}"] = _LinkedApproval(
-        request_id, session_key, trust_grantable, slot_key, future
+        request_id, session_key, trust_grantable, slot_key, future, requester
     )
     return approval_ts
 
@@ -350,24 +382,21 @@ def resolve_linked_approval(channel: str, approval_ts: str) -> None:
 def mcp_identity_text(server: str, tool: str) -> str:
     """The mrkdwn line naming the MCP server and tool a card asks about, or ``""``.
 
-    Both names are the trusted ``_meta.kiro`` identity (:func:`trusted_mcp_identity`),
-    not the title: ``email_send`` on a card does not say which server sends the mail,
-    and the model chooses the title. Scrubbed like every other string the card posts,
-    then bounded and escaped, so a name cannot carry a ``<!channel>``. Every Slack
-    approval card draws its identity line here, the transport card too.
+    The channel-neutral :func:`kiro_crew.messaging.renderer.mcp_identity_line` with
+    Slack's styling: each name bold and mrkdwn-escaped after the shared scrub and
+    bound, so a name cannot carry a ``<!channel>``. Every Slack approval card draws
+    its identity line here, the transport card too.
     """
-    if not server.strip():
-        return ""
-    shown: list[str] = []
-    for name in (server.strip(), tool.strip() or "unnamed tool"):
-        name, _ = redact_exfiltration_urls(name)
-        name, _ = redact_credentials(name)
-        shown.append(escape_mrkdwn(name[:_IDENTITY_NAME_MAX]))
-    return f"MCP tool: *{shown[0]}* / *{shown[1]}*"
+    return mcp_identity_line(server, tool, lambda name: f"*{escape_mrkdwn(name)}*")
 
 
 def _build_approval_blocks(
-    event: LLMEvent, is_dm: bool = True, source: str = "", *, channel_trust: bool = False
+    event: LLMEvent,
+    is_dm: bool = True,
+    source: str = "",
+    *,
+    channel_trust: bool = False,
+    thread_trust: bool = False,
 ) -> list[dict]:
     """Build Block Kit blocks for tool approval prompt.
 
@@ -380,6 +409,8 @@ def _build_approval_blocks(
         channel_trust: A Slack Code channel's own session: adds a secondary
             "Trust this channel" button between Approve and Reject (Approve
             stays the one primary button).
+        thread_trust: With *channel_trust*, a Conductor thread's conductor: the
+            button reads "Trust this thread" and its dialog names the thread.
 
     Shows the full command text (from tool_input) in a code block so users
     can see exactly what will run before approving.  Falls back to the
@@ -422,16 +453,21 @@ def _build_approval_blocks(
             TRUST_CALL_ACTION_ID,
             TRUST_CALL_CONFIRM,
             TRUST_CALL_LABEL,
+            TRUST_THREAD_CONFIRM,
+            TRUST_THREAD_LABEL,
         )
 
         buttons.append(
             {
                 "type": "button",
-                "text": {"type": "plain_text", "text": TRUST_CALL_LABEL},
+                "text": {
+                    "type": "plain_text",
+                    "text": TRUST_THREAD_LABEL if thread_trust else TRUST_CALL_LABEL,
+                },
                 "action_id": TRUST_CALL_ACTION_ID,
                 "value": req_value,
-                # It reaches the whole channel and its running workers: ask first.
-                "confirm": TRUST_CALL_CONFIRM,
+                # It reaches the whole room and its running workers: ask first.
+                "confirm": TRUST_THREAD_CONFIRM if thread_trust else TRUST_CALL_CONFIRM,
             },
         )
     buttons.append(
@@ -456,7 +492,7 @@ def _build_approval_blocks(
         # must not carry <!channel>/<@U…> entities into it.
         return escape_mrkdwn(text) if channel_trust else text
 
-    footer = f"{tag}*{_esc(title_safe)}*"
+    footer = f":lock: {tag}*{_esc(title_safe)}*"
     if event.tool_purpose:
         purpose, _ = redact_exfiltration_urls(event.tool_purpose)
         purpose, _ = redact_credentials(purpose)
@@ -469,7 +505,7 @@ def _build_approval_blocks(
         blocks.append(
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*{tag}Tool approval requested:*"},
+                "text": {"type": "mrkdwn", "text": f"🔐 *{tag}Tool approval requested:*"},
             },
         )
         # Security: scan for exfiltration URLs and credentials before posting
@@ -518,7 +554,7 @@ def _build_approval_blocks(
                 # The command is on the card already: the lock line keeps only
                 # the purpose, and goes when there is none. Any other title (an
                 # UNVERIFIED warning above all) stays.
-                footer = f"{tag}{_esc(purpose)}" if event.tool_purpose else ""
+                footer = f":lock: {tag}{_esc(purpose)}" if event.tool_purpose else ""
 
     blocks.append({"type": "actions", "elements": buttons})
     # A code channel's card drops an empty lock line; the identity line stays.
@@ -626,11 +662,12 @@ async def _grant_late_trust(
 
     Replicates handle_message's session-key derivation (the thread, then a linked
     dashboard session's override), and grants only to an allowed user who owns the
-    thread. Returns ``_ACTION_TRUST`` on a grant and ``None`` on every refusal, each
+    thread: a shared user's Trust needs the live prompt their turn posted, so their
+    late click is refused before this. Returns ``_ACTION_TRUST`` on a grant and ``None`` on every refusal, each
     audited.
     """
     if not is_allowed_user(user_id):
-        logger.warning("Rejecting late trust click from non-allowed user %s", user_id)
+        logger.warning("Rejecting late trust click from non-owner %s", user_id)
         sel().log_api_access(
             caller=user_id,
             operation="slack.interactive.trust_late",

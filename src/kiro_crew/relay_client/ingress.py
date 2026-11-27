@@ -23,20 +23,43 @@ the handover credential never leaves the loopback listener; each hand-off gets i
 own connection, never reused; and the path is sent exactly as the relay named it.
 A body is held to the length its head declared (``HttpStream``), so the web server
 reads exactly that request and nothing after it.
+
+Before the caller is stamped, a frame that carries the person's Kiro access token
+has it checked (:mod:`kiro_crew.relay_client.access_token`): the stamp then names
+the token's verified ``sub``, and a token that fails any check refuses the request
+(:class:`IngressForbidden`). A frame with no token is still handed over as the relay
+named it, counted in :attr:`LoopbackIngress.tokenless_frames` with a rate-limited
+warning, until the relay sends the token on every frame.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, AsyncIterator, Optional, Protocol, Sequence, Tuple, Union
+import time
+from dataclasses import dataclass, field
+from typing import (
+    TYPE_CHECKING,
+    AsyncIterator,
+    Callable,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import aiohttp
 import yarl
 from aiohttp.abc import AbstractStreamWriter
 from aiohttp.payload import AsyncIterablePayload
 from multidict import CIMultiDict
+
+from kiro_crew.relay_client.access_token import (
+    AccessScope,
+    AccessTokenRefused,
+    AccessTokenVerifier,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.kiro_relay.ingress import RelayIngress as GatewayRelayIngress
@@ -70,6 +93,9 @@ _RESPONSE_FRAMING = frozenset({"connection", "keep-alive", "transfer-encoding", 
 #: server being unreachable, so the viewer hears it at once rather than waiting
 #: out the relay's own timeout. A refused WebSocket upgrade is caught before this.
 _HANDOFF_FAILURES = (aiohttp.ClientError, asyncio.TimeoutError, OSError)
+#: The shortest gap between two warnings about frames with no access token, or
+#: between two about refused tokens: either can arrive on every request.
+TOKEN_WARNING_INTERVAL_SECONDS = 600.0
 
 
 def _unreachable(exc: BaseException) -> str:
@@ -94,6 +120,9 @@ class RelayedRequest:
     #: when it sent none. Never logged.
     user_email: str = ""
     user_name: str = ""
+    #: The person's Kiro access token from the relay's message, or ``None`` when it
+    #: sent none. Checked before the caller is stamped; never logged.
+    access_token: Optional[str] = field(default=None, repr=False)
     #: True when the body is under request-body credit: the ingress then asks for
     #: each next piece only once every earlier byte has left this process for the
     #: web server, because asking is what gives credit back (``HttpStream``).
@@ -111,6 +140,7 @@ class RelayedWebSocket:
     user: str
     user_email: str = ""
     user_name: str = ""
+    access_token: Optional[str] = field(default=None, repr=False)
 
 
 class IngressUnreachable(Exception):
@@ -119,6 +149,10 @@ class IngressUnreachable(Exception):
 
 class IngressUnavailable(Exception):
     """The dashboard's relay ingress will not take a hand-off: it is off or unbound."""
+
+
+class IngressForbidden(IngressUnavailable):
+    """The relay's message carried an access token that does not admit the request."""
 
 
 class IngressRefused(Exception):
@@ -158,10 +192,15 @@ class IngressWebSocket(Protocol):
 class CrewIngress(Protocol):
     """How the relay client reaches the Crew's web server."""
 
-    def bind_host(self, *, crew_kind: str, owner_user_id: str) -> None:
+    def bind_host(
+        self, *, crew_kind: str, owner_user_id: str, access_scope: Optional[AccessScope] = None
+    ) -> None:
         """Start honouring hand-offs for the host connection the lease describes.
 
-        Raises :class:`IngressUnavailable` when the gateway will not honour them.
+        *access_scope* is what a valid access token for this Crew names, read from
+        its host token; ``None`` when the host token names none, so every frame that
+        carries a token is refused. Raises :class:`IngressUnavailable` when the
+        gateway will not honour hand-offs.
         """
         ...
 
@@ -330,6 +369,8 @@ class LoopbackIngress:
         *,
         gateway: "GatewayRelayIngress",
         max_ws_message_bytes: int,
+        verifier: Optional[AccessTokenVerifier] = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if not 0 < port < 65536:
             raise ValueError(f"not a TCP port: {port!r}")
@@ -343,8 +384,19 @@ class LoopbackIngress:
         self._gateway = gateway
         self._max_ws_message_bytes = max_ws_message_bytes
         self._session: Optional[aiohttp.ClientSession] = None
+        self._verifier = verifier or AccessTokenVerifier()
+        self._monotonic = monotonic
+        self._scope: Optional[AccessScope] = None
+        #: Frames handed over with no access token, since this ingress was built.
+        self.tokenless_frames = 0
+        #: Frames refused because their access token did not verify.
+        self.refused_tokens = 0
+        self._tokenless_warned: Optional[float] = None
+        self._refused_warned: Optional[float] = None
 
-    def bind_host(self, *, crew_kind: str, owner_user_id: str) -> None:
+    def bind_host(
+        self, *, crew_kind: str, owner_user_id: str, access_scope: Optional[AccessScope] = None
+    ) -> None:
         from kiro_crew.dashboard.kiro_relay.caller import CrewKind, HostBinding
         from kiro_crew.dashboard.kiro_relay.ingress import RelayIngressError
 
@@ -353,9 +405,60 @@ class LoopbackIngress:
             self._gateway.bind_host(binding)
         except (RelayIngressError, ValueError) as exc:
             raise IngressUnavailable(str(exc)) from exc
+        self._scope = access_scope
 
     def unbind_host(self) -> None:
+        self._scope = None
         self._gateway.unbind_host()
+
+    def _due(self, last: Optional[float]) -> bool:
+        return last is None or self._monotonic() - last >= TOKEN_WARNING_INTERVAL_SECONDS
+
+    async def _verified_user(self, user: str, token: Optional[str], path: str) -> str:
+        """The user to stamp: the token's verified ``sub``, or *user* for a frame with none.
+
+        Raises :class:`IngressForbidden` for a token that fails any check.
+        """
+        if token is None:
+            self.tokenless_frames += 1
+            if self._due(self._tokenless_warned):
+                self._tokenless_warned = self._monotonic()
+                logger.warning(
+                    "relay_access_check=absent frames=%d: the relay named the caller "
+                    "with nothing to check; handed over as named until it sends proof",
+                    self.tokenless_frames,
+                )
+            return user
+        scope = self._scope
+        try:
+            if scope is None:
+                raise AccessTokenRefused("no_scope")
+            return await self._verifier.verify(token, scope=scope, user=user)
+        except AccessTokenRefused as exc:
+            self._refuse_token(exc.code, user, path)
+            raise IngressForbidden(str(exc)) from None
+
+    def _refuse_token(self, code: str, user: str, path: str) -> None:
+        self.refused_tokens += 1
+        if self._due(self._refused_warned):
+            self._refused_warned = self._monotonic()
+            logger.warning(
+                "relay_access_check=refused reason=%s refused=%d", code, self.refused_tokens
+            )
+        try:
+            from kiro_crew.sel import sel
+
+            sel().log_api_access(
+                caller=f"relay:{user}",
+                forwarded=True,
+                operation="relay_ingress",
+                outcome="denied",
+                source="kiro_relay",
+                resources=path,
+                error=f"relay_token_{code}",
+            )
+        except Exception:
+            logger.debug("relay access token refusal audit failed", exc_info=True)
 
     def _stamped(
         self,
@@ -421,8 +524,9 @@ class LoopbackIngress:
     async def open_http(
         self, request: RelayedRequest, body: Optional[AsyncIterator[bytes]]
     ) -> IngressResponse:
+        user = await self._verified_user(request.user, request.access_token, request.path)
         headers = self._stamped(
-            request.headers, request.user, email=request.user_email, name=request.user_name
+            request.headers, user, email=request.user_email, name=request.user_name
         )
         data: Union[None, AsyncIterator[bytes], _FlushedBody] = body
         if body is not None and request.credited_body:
@@ -440,8 +544,9 @@ class LoopbackIngress:
         return _LoopbackResponse(response)
 
     async def open_websocket(self, request: RelayedWebSocket) -> IngressWebSocket:
+        user = await self._verified_user(request.user, request.access_token, request.path)
         headers = self._stamped(
-            request.headers, request.user, email=request.user_email, name=request.user_name
+            request.headers, user, email=request.user_email, name=request.user_name
         )
         try:
             ws = await self._client().ws_connect(

@@ -47,6 +47,8 @@ export const CREW_GROUP_TONE: Record<CrewWorkerGroup, string> = {
 /** The slot-row fields the grouping reads. */
 export interface CrewWorkerRowLike {
   running?: boolean
+  /** Work still owned by this session after its own turn ended. */
+  subagents_running?: boolean
   pending_approval?: boolean
   needs_input?: boolean
   messages?: number
@@ -59,7 +61,7 @@ export interface CrewWorkerRowLike {
 export function crewWorkerGroupOfRow(row: CrewWorkerRowLike): CrewWorkerGroup {
   if (row.pending_approval) return 'approval'
   if (row.needs_input) return 'with_conductor'
-  if (row.running) return 'working'
+  if (row.running || row.subagents_running) return 'working'
   return 'waiting'
 }
 
@@ -94,7 +96,7 @@ function liveWorkerRow(s: LiveCrewWorkerRow, root: string): CrewWorker {
     key: s.key,
     title: s.title || '',
     agent: s.agent || '',
-    status: s.pending_approval ? 'needs_approval' : s.needs_input ? 'asking' : s.running ? 'working' : 'idle',
+    status: s.pending_approval ? 'needs_approval' : s.needs_input ? 'asking' : s.running || s.subagents_running ? 'working' : 'idle',
     group: crewWorkerGroupOfRow(s),
     // The settled turn stamp, not `last_ts`: a row's `last_ts` can be a whole
     // turn old (mid-turn bumps live in the store's overlay).

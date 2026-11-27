@@ -14,6 +14,8 @@ the frontend table and every wording against the LEGACY pattern it maps to.
 
 from __future__ import annotations
 
+import pytest
+
 from kiro_crew.dashboard import gateway_notice as gn
 from kiro_crew.testing.wait import default_timeout
 
@@ -256,3 +258,80 @@ def test_stay_english_rows_are_not_tokenized() -> None:
         _legacy_token_of("Clip can't run here: its agent runs only on the KAS or Kiro backend.")
         is None
     )
+
+
+# --- The ACP handle's auto-rejected sub-agent permission notice, appended by
+# --- native_cards before the sub-agent's card exists. Red on main: the handler
+# --- ignored the reason there, so the row had no token. The event is built as a
+# --- namespace (the handler reads attributes only) and the reason and token are
+# --- their wire values, so the parent commit fails on the assertions.
+def _untracked_subagent_turn(slot: _Slot):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        slot=slot, _native_tc_card={}, _native_tracker={}, _native_child_tc=set()
+    )
+
+
+def _activity(text: str, reason: str = "", title: str = ""):
+    from types import SimpleNamespace
+
+    from kiro_crew.acp.types import EVENT_SUBAGENT_ACTIVITY
+
+    return SimpleNamespace(
+        kind=EVENT_SUBAGENT_ACTIVITY,
+        sub_session_id="child-a",
+        tool_call_id="",
+        text=text,
+        title=title,
+        auto_reject_reason=reason,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "phrase", "token"),
+    [
+        ("stranded_between_turns", "stranded between turns", "permission_auto_rejected_stranded"),
+        (
+            "missing_security_context",
+            "missing security context",
+            "permission_auto_rejected_no_security_context",
+        ),
+    ],
+)
+async def test_auto_rejected_permission_notice_carries_its_token(reason, phrase, token) -> None:
+    import asyncio
+
+    from kiro_crew.dashboard.chat_turn.native_cards import _on_subagent_activity
+
+    slot = _Slot()
+    text = f"Blocked: permission auto-rejected ({phrase}): Running: sha256sum x"
+    event = _activity(text, reason, "Running: sha256sum x")
+    await asyncio.wait_for(
+        _on_subagent_activity(_untracked_subagent_turn(slot), event),
+        timeout=default_timeout(),
+    )
+    (row,) = slot.appended
+    assert row["role"] == "notice"
+    assert row["content"] == text
+    assert _notice(row) == token
+    assert _args(row) == {"tool": "Running: sha256sum x"}
+
+
+@pytest.mark.asyncio
+async def test_reasonless_rejection_notice_stays_tokenless() -> None:
+    import asyncio
+
+    from kiro_crew.dashboard.chat_turn.native_cards import _on_subagent_activity
+
+    slot = _Slot()
+    await asyncio.wait_for(
+        _on_subagent_activity(
+            _untracked_subagent_turn(slot), _activity("Blocked: some other refusal")
+        ),
+        timeout=default_timeout(),
+    )
+    (row,) = slot.appended
+    assert row["content"] == "Blocked: some other refusal"
+    assert row["meta"] is None

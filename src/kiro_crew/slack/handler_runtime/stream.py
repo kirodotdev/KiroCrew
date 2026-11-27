@@ -30,25 +30,36 @@ if TYPE_CHECKING:
         _THINKING,
         _THINKING_PLACEHOLDER,
         ACTIVATION_REVIEW,
+        CONTINUES_BELOW,
         DELIVERY_DEBT_NOTICE,
+        LINE_BREAKS,
+        MARKER_WRAPPERS,
         OPTIONS_RE_LINE,
         SLACK_MSG_LIMIT,
         TRUNCATION_NOTICE,
         LLMEvent,
+        QuotedDirectiveFilter,
         SlackClientOps,
         StreamRedactor,
         _convert_tables,
         _SteeringMarkerFilter,
+        could_be_echo,
+        echo_prefix_len,
         ends_plain_sentence,
         is_control_tag_tail,
+        is_echo,
         is_wait_identity,
         logger,
+        message_landed_since,
+        messages_noted,
         redact,
         redact_credentials,
         redact_exfiltration_urls,
         relocate_glued_tail_marker,
         seal_stream,
         split_message,
+        stream_clock,
+        stream_due_for_renewal,
         strip_control_comments,
         strip_thinking_tags,
     )
@@ -85,13 +96,17 @@ def _comment_hold_is_protocol(hold: str) -> bool:
     return len(hold) <= _COMMENT_HOLD_MAX and is_control_tag_tail(hold)
 
 
-def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -> tuple[str, str]:
+def _filter_options_brackets(
+    text: str, bracket_hold: str, stream_buffer: str, line_start: bool = True
+) -> tuple[str, str]:
     """Filter ``[OPTIONS: ...]`` tags and control-tag comments from streaming
     text character-by-character.
 
     Returns the updated *(bracket_hold, stream_buffer)* tuple. The hold is one
-    string and its first character says what it holds: ``[`` opens the OPTIONS
-    bracket-hold, a line-leading ``<`` opens the comment hold.
+    string and its first character says what it holds: a line-leading ``<``
+    opens the comment hold, anything else the OPTIONS hold. *line_start* says
+    whether the text already sent ends a line, which an empty buffer cannot
+    show; it is read only while the buffer is empty.
 
     Slack streams by APPENDING and appended text is final (``chat.stopStream``
     does not replace it), so a control tag can only be kept off the stream by
@@ -110,7 +125,9 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
     as the diverging byte arrives -- and that byte is then processed on its
     own, so a ``[`` that ends a hold still opens the bracket-hold.
     """
-    # A ``[`` is held only while it can still spell an OPTIONS head; once it
+    # A hold that opens at its line's start keeps the whole line, so the line
+    # grammar sees it as delivery does (``_settle_marker_line``). Mid-line, a
+    # ``[`` is held only while it can still spell an OPTIONS head; once it
     # cannot, it is ordinary text and is released at once. A head ends at the
     # closer that balances it; one still open at its line's end, or at the end of
     # the turn, is decided by the line grammar (``OPTIONS_RE_LINE``).
@@ -124,7 +141,17 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
             # that proved it falls through to be judged on its own.
             stream_buffer += bracket_hold
             bracket_hold = ""
-        if bracket_hold:
+        at_line_start = stream_buffer[-1] in LINE_BREAKS if stream_buffer else line_start
+        if bracket_hold and at_line_start:
+            released = _settle_marker_line(bracket_hold, ch)
+            if released is None:
+                bracket_hold += ch
+                continue
+            # Decided: send what the line grammar leaves, and judge the byte that
+            # decided it on its own.
+            stream_buffer += released
+            bracket_hold = ""
+        elif bracket_hold:
             bracket_hold += ch
             if not bracket_hold.startswith(head):
                 if head.startswith(bracket_hold):
@@ -141,15 +168,16 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
                     stream_buffer += bracket_hold
                 bracket_hold = ""
                 continue
-            elif ch == "\n":
+            elif ch in LINE_BREAKS:
                 # A head still open at its line's end: the line grammar decides it,
                 # dropping a marker it accepts (a lookalike closer) and releasing
                 # every other byte; then the break is judged on its own.
-                stream_buffer += _settle_options_head(stream_buffer, bracket_hold[:-1])
+                stream_buffer += OPTIONS_RE_LINE.sub("", bracket_hold[:-1])
                 bracket_hold = ""
             else:
                 continue
-        if ch == "[":
+        at_line_start = stream_buffer[-1] in LINE_BREAKS if stream_buffer else line_start
+        if ch == "[" or (at_line_start and _could_open_marker_line(ch)):
             bracket_hold = ch
         elif ch == "<" and _at_tag_line_start(stream_buffer):
             bracket_hold = ch
@@ -158,38 +186,59 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
     return bracket_hold, stream_buffer
 
 
-def _settle_options_head(stream_buffer: str, head: str) -> str:
-    """What to send for *head*, an OPTIONS head that ended its line unbalanced.
+def _could_open_marker_line(line: str) -> bool:
+    """Whether *line*, read from its start, can still open a marker line:
+    indentation, at most three wrapper characters, then a prefix of the head."""
+    body = line.lstrip(" \t")
+    rest = body.lstrip(MARKER_WRAPPERS)
+    return len(body) - len(rest) <= 3 and "[OPTIONS:".startswith(rest)
 
-    The line grammar decides, as delivery does: a marker it accepts is dropped
-    and every other byte is released. The head is judged first on its own, then
-    with the part of its line already in *stream_buffer*, because a leading
-    wrapper (``**[OPTIONS: …】**``) is only accepted together with that wrapper.
 
-    shortcut: the line's start is gone when the buffer was flushed mid-line (the
-    same limit as :func:`_at_tag_line_start`), and the wrapper itself has already
-    gone out; upgrade to a stream that keeps its current line to close both.
+def _settle_marker_line(hold: str, ch: str) -> str | None:
+    """Feed *ch* to *hold*, a hold that opened at its line's start.
+
+    Returns ``None`` while the line is undecided (the caller adds *ch* to the
+    hold), else the text to send for *hold*; *ch* is then judged on its own.
+
+    Once the line holds the head it is held to its end, where an accepted
+    marker is dropped with its wrapper. A glued line (prose right after the
+    closer) is a marker only when it ends the reply (``relocate_glued_tail_marker``),
+    so it stays held while only whitespace and a control-tag tail, which delivery
+    strips first, follow it; the end of the turn or a ``wait`` settles it
+    (``_resolve_options_hold``).
     """
-    cleaned = OPTIONS_RE_LINE.sub("", head)
-    if cleaned != head:
+    if ch.isspace() and (hold[-1] in LINE_BREAKS or (ch not in LINE_BREAKS and hold[-1].isspace())):
+        # A whitespace run decides nothing inside a line; past a glued line, no whitespace does.
+        return None
+    if "[OPTIONS:" not in hold:
+        return None if _could_open_marker_line(hold + ch) else hold
+    end = min((i for i in map(hold.find, LINE_BREAKS) if i >= 0), default=-1)
+    if end >= 0:
+        # Past the end of a glued line: only whitespace and a control-tag tail may follow it.
+        tail = (hold[end + 1 :] + ch).lstrip()
+        return None if not tail or _comment_hold_is_protocol(tail) else hold
+    if ch not in LINE_BREAKS:
+        return None
+    cleaned = OPTIONS_RE_LINE.sub("", hold)
+    if cleaned != hold:
         return cleaned
-    line = stream_buffer[stream_buffer.rfind("\n") + 1 :]
-    if line and OPTIONS_RE_LINE.search(line + head) is not None:
-        return ""
-    return head
+    return None if relocate_glued_tail_marker(hold) != hold else hold
 
 
-def _resolve_options_hold(bracket_hold: str, stream_buffer: str = "") -> tuple[str, str]:
-    """Settle a ``[`` hold when the stream ENDS; returns *(hold, release)*.
+def _resolve_options_hold(bracket_hold: str) -> tuple[str, str]:
+    """Settle an OPTIONS hold when the message ENDS; returns *(hold, release)*.
 
-    A ``[`` hold left at the end is a head that never balanced, or a bare head
-    prefix. It is the reply's last line, so the shared grammar decides it the way
-    delivery does (:func:`_settle_options_head`, with a glued tail moved above
-    the marker first). A comment hold is not this function's.
+    The hold is the reply's last line (or that line's tail) with any control-tag
+    tail after it, a head that never balanced, or a bare head prefix, so the
+    shared grammar decides it the way delivery does: a control-tag tail is
+    dropped and a glued tail is moved above its marker first, then an accepted
+    marker is dropped and every other byte is sent. A comment hold is not this
+    function's.
     """
-    if not bracket_hold or bracket_hold[0] != "[":
+    if not bracket_hold or bracket_hold[0] == "<":
         return bracket_hold, ""
-    return "", _settle_options_head(stream_buffer, relocate_glued_tail_marker(bracket_hold))
+    line = strip_control_comments(bracket_hold)
+    return "", OPTIONS_RE_LINE.sub("", relocate_glued_tail_marker(line))
 
 
 def _resolve_comment_hold(bracket_hold: str, accumulated: str) -> tuple[str, str]:
@@ -201,8 +250,8 @@ def _resolve_comment_hold(bracket_hold: str, accumulated: str) -> tuple[str, str
     the held tail IS the control tag and is dropped; when it removes nothing
     (an unterminated fence swallows the tail, a tag prefix that never
     completed, a body over the bound) the span is content and is released for
-    one last append. A ``[`` hold is not this function's: it keeps the
-    bracket-hold's own end-of-turn outcome.
+    one last append. An OPTIONS hold is not this function's: it keeps the
+    OPTIONS hold's own end-of-turn outcome.
     """
     if not bracket_hold or bracket_hold[0] != "<":
         return bracket_hold, ""
@@ -247,8 +296,24 @@ async def _safe_final_update(
     best-effort regardless (a dropped tail is a truncated answer, not a missing
     one), matching the streaming path's overflow handling.
     """
+    await _final_update_landed(
+        slack, channel, ts, text, thread_ts, raise_on_primary_failure=raise_on_primary_failure
+    )
+
+
+async def _final_update_landed(
+    slack: SlackClientOps,
+    channel: str,
+    ts: str,
+    text: str,
+    thread_ts: str | None = None,
+    *,
+    raise_on_primary_failure: bool = False,
+) -> bool:
+    """``_safe_final_update``, reporting whether every part of *text* landed."""
     text, _ = redact_exfiltration_urls(text)
     parts = split_message(text)
+    complete = True
     # First part updates the existing streaming message
     try:
         await slack.update_message(channel, ts, parts[0])
@@ -256,12 +321,15 @@ async def _safe_final_update(
         logger.debug("Failed to update message %s", ts, exc_info=True)
         if raise_on_primary_failure:
             raise
+        complete = False
     # Overflow parts posted as follow-up messages in the same thread
     for part in parts[1:]:
         try:
             await slack.post_message(channel, part, thread_ts)
         except Exception:
             logger.debug("Failed to post continuation message", exc_info=True)
+            complete = False
+    return complete
 
 
 def _ts_before(ts: str) -> str | None:
@@ -359,12 +427,23 @@ class _AnswerStream:
         self.channel_activation = channel_activation
         self.use_slack_stream = False
         self.stream_ts: str | None = None
+        # ``stream_clock()`` reading when the live stream was opened; 0 when none is open. Slack
+        # ends a stream 10 minutes after it starts (``stream_window``).
+        self.stream_started_at = 0.0
+        # ``messages_noted()`` count when the live stream was opened; None when none
+        # is open. A message recorded after it sits below the stream.
+        self.stream_messages_noted: int | None = None
+        self.text_since_step = False
+        self.renewal: asyncio.Task | None = None  # the ``renew_if_due`` in flight, if any
         self.rotated_ts: list[str] = []  # stream messages ``rotate`` replaced, oldest first
-        self.thinking_ts: str | None = None  # Thinking placeholder, posted above the answer
+        self.thinking_ts: str | None = None  # 💭 reasoning placeholder, posted above the answer
         self.show_thinking = show_thinking
         # kiro-cli's [STEERING steer-…] ack is protocol: held across chunks and
         # dropped before it reaches Slack, ahead of redaction as TurnDriver does.
         self.steer_filter = _SteeringMarkerFilter()
+        # A line that only quotes a directive tool's marker is dropped the same way;
+        # ``release_quoted_hold`` hands on the line it holds when the text breaks off.
+        self.quoted_filter = QuotedDirectiveFilter()
         self.had_redaction = False  # True when per-chunk redaction modified a streamed chunk
         self.delivered = False  # True once ANY real-text append is confirmed on the stream
         # Delivery debt: real answer text Slack refused for good — the append failed
@@ -390,6 +469,11 @@ class _AnswerStream:
         # dropped when the final copy replaces the message.
         self.redactor = StreamRedactor()
         self.accumulated = ""
+        # The turn's first text, held while it could still be the backend's
+        # alternation placeholder (``messaging.alternation_echo``): the model repeats
+        # it at the start of a turn after one that ended on a tool result. ``None``
+        # once the answer's text has started.
+        self.echo_held: str | None = ""
         self.carried = ""  # the held run carried across a ``wait`` (see ``take_carried``)
         # The message a run held at a ``wait`` ended, and that run. The first text
         # sent after the wait puts the run back on that message (see ``_give_back``).
@@ -401,15 +485,28 @@ class _AnswerStream:
         self.stream_buffer = (
             ""  # unsent chunks for streaming API (buffered between rate-limited appends)
         )
-        self.bracket_hold = ""  # text held back from '[' until ']' to filter [OPTIONS: ...]
+        self.bracket_hold = ""  # held back while it may be an [OPTIONS:] marker or a control tag
+        # Whether the text already sent ends a line, so the hold knows where the
+        # next byte lands once the buffer is empty (see ``_filter_options_brackets``).
+        self.line_start = True
         self.last_edit = 0.0
         self.task_counter = 0  # incrementing task ID for task cards
         self.active_task_id = ""  # current in-progress task
         self.active_task_title = ""  # display title (purpose or tool name)
+        self.active_task_has_details = False  # opened with the tool name as details
         self.tool_start_time = 0.0  # monotonic time when current tool started
         self.tool_timer_task: asyncio.Task | None = None  # periodic elapsed-time updater
         self.status_dirty = False  # True when status needs reset to base on next text chunk
         self.tool_gap = False
+        # A V2 refusal fallback dropped the refused model's streamed text this
+        # turn (``on_model_fallback``). It forces the final seal to OVERWRITE the
+        # visible copy, because the refused text was already appended to the live
+        # stream and only the redaction-overwrite path rewrites it.
+        self.refused_drop = False
+        # The last refused text dropped above, kept so a refusal the fallback did
+        # NOT recover from still shows the provider's own words rather than an
+        # empty reply (``_deliver_answer`` restores it when nothing answered).
+        self.last_refused = ""
 
     async def rotate(self) -> str | None:
         """Stop the dead stream and start a fresh one. Returns new ts or None.
@@ -419,7 +516,7 @@ class _AnswerStream:
         transport that does not would send the exception up into the streaming
         loop, where the typed ``except`` arms are all ``kiro_crew.acp.client``
         errors — it reaches the generic ``except Exception`` catch-all, renders
-        the terminal "Error: Something went wrong" message, and records a session
+        the terminal "🔧 Something went wrong" message, and records a session
         failure on a turn that is still live. A failed rotation is the existing,
         handled outcome (``new_ts`` None → demote to chat.update), so map a
         raise onto it.
@@ -432,6 +529,9 @@ class _AnswerStream:
                     "Slack stop_stream failed during rotation — abandoning old stream",
                     exc_info=True,
                 )
+        # Read before the request: a message that lands while Slack opens the
+        # stream is below it.
+        noted = messages_noted()
         try:
             new_ts = await self.slack.start_stream(
                 self.channel,
@@ -447,8 +547,12 @@ class _AnswerStream:
             if self.stream_ts:
                 self.rotated_ts.append(self.stream_ts)
             self.stream_ts = new_ts
+            self.stream_started_at = stream_clock()
+            self.stream_messages_noted = noted
             logger.info("Stream rotated: new ts=%s", new_ts)
         else:
+            self.stream_started_at = 0.0
+            self.stream_messages_noted = None
             self.use_slack_stream = False
             logger.warning("Stream rotation failed — falling back to chat.update")
         return new_ts
@@ -538,6 +642,8 @@ class _AnswerStream:
 
     async def _deliver(self, safe: str) -> bool:
         """Put already-redacted text on the stream, rotating once on a refusal."""
+        self.text_since_step = True
+        await self.renew_if_due()
         assert self.stream_ts is not None
         if self.move_back is not None:
             ts, run = self.move_back
@@ -667,7 +773,7 @@ class _AnswerStream:
                 )
 
     async def append_task(self, task_id: str, title: str, status: str, details: str = "") -> bool:
-        """Append task card to stream. Never rotates — see below.
+        """Append task card to stream. Never rotates on a refusal — see below.
 
         A task card is progress decoration: the tool's name, its state, and the
         elapsed-time refresh ``_tool_elapsed_updater`` fires every 30s for as
@@ -681,6 +787,7 @@ class _AnswerStream:
         later. Skipping the card costs nothing: no answer text is withheld, and
         ``append`` still rotates when there is real text to deliver and
         the stream refuses it, which is the moment a rotation is worth its price.
+        An old stream is still renewed first (``renew_if_due``), before Slack ends it.
         """
         if not self.stream_ts:
             return False
@@ -693,10 +800,15 @@ class _AnswerStream:
         # typed ``except`` arms of the turn loop in ``_run_turn`` are all
         # ``kiro_crew.acp.client`` errors, so it reaches the generic
         # ``except Exception`` catch-all, which
-        # renders the terminal "Error: Something went wrong" message and records a
+        # renders the terminal "🔧 Something went wrong" message and records a
         # session failure — on a turn that is still live and will finish. The
         # card is decorative (no answer text is withheld), so swallow the failure
         # here, logging the traceback at WARNING for diagnosis.
+        # A closing card stays on the message that showed its step; the next
+        # running one is what goes below a newer message.
+        await self.renew_if_due(step=status == "in_progress")
+        if not self.stream_ts:
+            return False
         try:
             return await self.slack.append_task(
                 self.channel, self.stream_ts, task_id, title, status, details=details
@@ -704,6 +816,73 @@ class _AnswerStream:
         except Exception:
             logger.warning("Slack append_task failed — skipping progress card", exc_info=True)
             return False
+
+    async def renew_if_due(self, *, step: bool = False) -> None:
+        """Move to a fresh stream before Slack's 10-minute limit closes this one.
+
+        Slack would close it itself and mark the running step's card as an error
+        on a turn that is still going (``stream_window``). The running step is
+        closed on the old message with a "continues below" title and opened
+        again on the new one, so the reader sees it go on rather than fail. Not
+        once the final copy is taken (``finishing``): the seal owns the stream
+        from there.
+
+        A caller drawing a running step (``step``) also moves once a person's
+        message has landed in the thread below this stream, so the steps go on
+        under that message. Text never moves for one: an answer already being
+        written stays in one piece above it.
+
+        One renewal at a time: a caller that comes while one is under way waits
+        for it, ``finish`` included, so its card or text lands on the new
+        message and a second rotation does not leave an empty message behind.
+        Shielded, because the 30 s card refresh that usually starts it is
+        cancelled when its tool ends, and the next caller would otherwise stop
+        and close the old message a second time. Best-effort: MUST NOT raise, as
+        ``rotate``.
+        """
+        renewal = self.renewal
+        if renewal is None or renewal.done():
+            if (
+                self.finishing
+                or not self.use_slack_stream
+                or not self.stream_ts
+                or not (
+                    stream_due_for_renewal(self.stream_started_at, stream_clock())
+                    or (
+                        step
+                        # The elapsed refresh outlives its tool; it must not split a reply.
+                        and not self.text_since_step
+                        and message_landed_since(
+                            self.channel, self.reply_ts, self.stream_messages_noted
+                        )
+                    )
+                )
+            ):
+                return
+            renewal = self.renewal = asyncio.ensure_future(self._renew())
+        await asyncio.shield(renewal)
+
+    async def _renew(self) -> None:
+        """Close the running step on the old message, rotate, open it on the new one."""
+        assert self.stream_ts is not None
+        old_ts = self.stream_ts
+        task_id, title = self.active_task_id, self.active_task_title
+        if task_id:
+            try:
+                await self.slack.append_task(
+                    self.channel, old_ts, task_id, title + CONTINUES_BELOW, "complete"
+                )
+            except Exception:
+                logger.warning("Slack append_task failed closing a renewed stream", exc_info=True)
+        logger.info("Renewing the Slack stream: its age, or a newer message below it")
+        if await self.rotate() and task_id:
+            assert self.stream_ts is not None
+            try:
+                await self.slack.append_task(
+                    self.channel, self.stream_ts, task_id, title, "in_progress"
+                )
+            except Exception:
+                logger.warning("Slack append_task failed on a renewed stream", exc_info=True)
 
     async def _tool_elapsed_updater(self) -> None:
         """Periodically update the active task card with elapsed time (every 30s)."""
@@ -715,10 +894,10 @@ class _AnswerStream:
                 time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
                 # Elapsed goes in the TITLE (Slack replaces title on same
                 # task_id) — NOT details, which Slack APPENDS, causing the
-                # "30s 1m 0s 1m 30s" accumulation bug.
+                # "⏱ 30s ⏱ 1m 0s ⏱ 1m 30s" accumulation bug.
                 await self.append_task(
                     self.active_task_id,
-                    f"{self.active_task_title} · {time_str}",
+                    f"{self.active_task_title}  ⏱ {time_str}",
                     "in_progress",
                 )
 
@@ -734,6 +913,17 @@ class _AnswerStream:
             self.tool_timer_task.cancel()
         self.tool_timer_task = None
 
+    async def abandon(self) -> None:
+        """Stop background writes when the turn exits without delivering its answer."""
+        self.finishing = True
+        self.cancel_tool_timer()
+        renewal = self.renewal
+        if renewal is not None:
+            renewal.cancel()
+            # ``wait`` never raises the renewal's own outcome, so only this task's
+            # cancellation can leave here.
+            await asyncio.wait([renewal])
+
     def tool_elapsed_str(self) -> str:
         """Return formatted elapsed time for the current tool, or empty string."""
         if not self.tool_start_time:
@@ -743,8 +933,8 @@ class _AnswerStream:
             return ""
         mins, secs = divmod(elapsed, 60)
         if mins:
-            return f"{int(mins)}m {secs:.1f}s"
-        return f"{secs:.1f}s"
+            return f"⏱ {int(mins)}m {secs:.1f}s"
+        return f"⏱ {secs:.1f}s"
 
     async def ensure_started(self) -> None:
         """Lazy-start the stream on first event. Falls back to chat.update."""
@@ -755,7 +945,7 @@ class _AnswerStream:
             self.stream_ts = _REVIEW_PLACEHOLDER_TS
             self.use_slack_stream = False
             return
-        # Reserve the Thinking slot ABOVE the answer *before* the response
+        # Reserve the 💭 reasoning slot ABOVE the answer *before* the response
         # message is created. This must run regardless of which
         # event arrived first: if a text/tool event precedes the first
         # reasoning chunk, posting the placeholder here is the only way to keep
@@ -776,6 +966,7 @@ class _AnswerStream:
         # from the first TEXT_CHUNK or TOOL_CALL event. A raise is the same
         # event as a None return — streaming is unavailable — so map it onto
         # the existing demotion path below.
+        noted = messages_noted()  # before the request, as in ``rotate``
         try:
             self.stream_ts = await self.slack.start_stream(
                 self.channel,
@@ -787,6 +978,8 @@ class _AnswerStream:
             logger.warning("Slack start_stream failed — demoting to chat.update", exc_info=True)
             self.stream_ts = None
         self.use_slack_stream = self.stream_ts is not None
+        self.stream_started_at = stream_clock() if self.use_slack_stream else 0.0
+        self.stream_messages_noted = noted if self.use_slack_stream else None
         if not self.use_slack_stream:
             # ``SlackClient.start_stream`` swallows its own errors and returns
             # None, but the ``chat.update`` fallback below goes through the base
@@ -794,7 +987,7 @@ class _AnswerStream:
             # A raise here escapes the streaming loop while the ACP turn is still
             # live and reaches the turn loop's generic ``except Exception`` catch-all in
             # ``_run_turn`` (the typed arms are all ``kiro_crew.acp.client`` errors),
-            # rendering the terminal "Error: Something went wrong" message on a run
+            # rendering the terminal "🔧 Something went wrong" message on a run
             # that is still succeeding. Keep it best-effort. On failure leave
             # ``stream_ts`` as ``None``: there is no placeholder to update, and
             # every downstream reader treats falsy as "no placeholder"
@@ -817,27 +1010,65 @@ class _AnswerStream:
         if self.stream_buffer:
             self.stream_buffer, _ = strip_thinking_tags(self.stream_buffer, strip_whitespace=False)
             await self.append(self.stream_buffer)
+            if self.stream_buffer:
+                self.line_start = self.stream_buffer[-1] in LINE_BREAKS
             self.stream_buffer = ""
 
     async def on_text(self, event: LLMEvent) -> None:
         """Project one answer chunk: redact it, hold back what may be a trailer, and edit
         the message at most once per ``_EDIT_INTERVAL``."""
-        self.take_carried()
-        event.text = "".join(
-            payload for kind, payload in self.steer_filter.feed(event.text) if kind == "text"
+        text = self.quoted_filter.feed(
+            "".join(
+                payload for kind, payload in self.steer_filter.feed(event.text) if kind == "text"
+            )
         )
+        await self._hold_opening(text)
+
+    async def release_quoted_hold(self) -> None:
+        """Project what the text holds back, before a tool call, an approval prompt or
+        the turn's end breaks it off, so it is never lost: the line the quoted-marker
+        filter holds, then the turn's held opening unless it is the whole alternation
+        placeholder, which is dropped."""
+        held = self.quoted_filter.flush()
+        if held:
+            await self._hold_opening(held)
+        opening = self.echo_held
+        if not opening:
+            return
+        if is_echo(opening):
+            self.echo_held = ""
+            return
+        self.echo_held = None
+        await self._project_text(opening)
+
+    async def _hold_opening(self, text: str) -> None:
+        """Hold the turn's first text while it could still be the alternation placeholder;
+        project the rest."""
+        if self.echo_held is not None:
+            held = self.echo_held + text
+            if could_be_echo(held):
+                self.echo_held = held
+                return
+            self.echo_held = None
+            # The placeholder, then the model's own words after it.
+            cut = echo_prefix_len(held)
+            text = held[cut:].lstrip() if cut else held
+        await self._project_text(text)
+
+    async def _project_text(self, text: str) -> None:
+        self.take_carried()
         if self.tool_gap and self.accumulated and self.accumulated[-1:] not in ("\n", " "):
-            first = event.text[:1]
+            first = text[:1]
             if first and first not in ("\n", " "):
-                event.text = "\n\n" + event.text
-        event.text, _exfil_w = redact_exfiltration_urls(event.text)
-        event.text, _cred_w = redact_credentials(event.text)
+                text = "\n\n" + text
+        text, _exfil_w = redact_exfiltration_urls(text)
+        text, _cred_w = redact_credentials(text)
         if _exfil_w or _cred_w:
             self.had_redaction = True
 
-        if event.text:
+        if text:
             self.tool_gap = False
-        self.accumulated += event.text
+        self.accumulated += text
 
         if self.status_dirty and self.use_slack_stream:
             # Best-effort: MUST NOT raise. The thread
@@ -853,17 +1084,18 @@ class _AnswerStream:
                 )
             self.status_dirty = False
 
-        # ── Bracket hold-back: filter [OPTIONS: ...] from stream ──
-        # When inside a bracket, accumulate into bracket_hold.
-        # On ']', release if not OPTIONS, suppress if it is.
+        # Open the stream first: it decides ``use_slack_stream``, so the turn's
+        # first chunk is filtered like every later one.
+        await self.ensure_started()
+
+        # ── Hold-back: filter [OPTIONS: ...] and control tags from the stream ──
+        # See ``_filter_options_brackets`` for what is held and when it is decided.
         if self.use_slack_stream:
             self.bracket_hold, self.stream_buffer = _filter_options_brackets(
-                event.text, self.bracket_hold, self.stream_buffer
+                text, self.bracket_hold, self.stream_buffer, self.line_start
             )
         else:
-            self.stream_buffer += event.text
-
-        await self.ensure_started()
+            self.stream_buffer += text
 
         now = time.monotonic()
         if now - self.last_edit >= _EDIT_INTERVAL:
@@ -881,9 +1113,9 @@ class _AnswerStream:
             self.last_edit = now
 
     async def on_thinking(self, event: LLMEvent) -> None:
-        """Accumulate a reasoning chunk and claim the Thinking slot above the answer."""
+        """Accumulate a reasoning chunk and claim the 💭 slot above the answer."""
         self.thinking_accumulated += event.text
-        # Claim the Thinking slot as soon as reasoning starts so it appears
+        # Claim the 💭 slot as soon as reasoning starts so it appears
         # promptly during a long thinking phase (early feedback). This
         # is an optimization for the common reasoning-first case; the
         # ordering guarantee itself lives in ensure_started,
@@ -910,7 +1142,11 @@ class _AnswerStream:
         tool_name, _ = redact_credentials(tool_name)
         tool_kind = event.tool_kind or ""
         tool_detail = event.tool_purpose or tool_kind
-        tool_status = f"\nTool: `{tool_name}`\n"
+        tool_status = f"\n🫆 `{tool_name}`\n"
+        # Keyed on the tool's programmatic identity when the transport
+        # sent one (same rule as SlackRenderer); the title compare is the
+        # fallback for a frame without ``_meta.kiro``.
+        _is_wait = is_wait_identity(event.tool_name) if event.tool_name else tool_name == "wait"
         await self.ensure_started()
         if self.use_slack_stream:
             # Best-effort: MUST NOT raise. Decoration
@@ -927,6 +1163,14 @@ class _AnswerStream:
                 )
             self.status_dirty = True
         if self.use_slack_stream:
+            if _is_wait:
+                # A wait ends this message, so an open OPTIONS hold is its tail:
+                # settle it by the grammar the end of the turn uses, before the
+                # card, instead of carrying it to the next message. A marker
+                # dropped here makes no buttons: delivery reads only the text
+                # after the last wait.
+                self.bracket_hold, _released = _resolve_options_hold(self.bracket_hold)
+                self.stream_buffer += _released
             # Flush any buffered text before the tool status
             await self.flush()
             await self.release_at_boundary()
@@ -936,19 +1180,27 @@ class _AnswerStream:
                 _elapsed = self.tool_elapsed_str()
                 self.cancel_tool_timer()
                 _ct = (
-                    f"{self.active_task_title} · {_elapsed}" if _elapsed else self.active_task_title
+                    f"{self.active_task_title}  {_elapsed}" if _elapsed else self.active_task_title
                 )
                 await self.append_task(self.active_task_id, _ct, "complete")
+                self.active_task_id = ""
+            # Renewed before the new step is named, so a renewal never carries a
+            # step the old message did not show. A review channel draws no steps,
+            # so a newer message moves nothing there.
+            self.text_since_step = False
+            await self.renew_if_due(step=self.channel_activation != ACTIVATION_REVIEW)
             self.task_counter += 1
             self.active_task_id = f"tool_{self.task_counter}"
             self.active_task_title = event.tool_purpose or tool_name
             self.active_task_title, _ = redact_exfiltration_urls(self.active_task_title)
             self.active_task_title, _ = redact_credentials(self.active_task_title)
+            _details = tool_name if tool_detail else ""
+            self.active_task_has_details = bool(_details)
             await self.append_task(
                 self.active_task_id,
                 title=self.active_task_title,
                 status="in_progress",
-                details=tool_name if tool_detail else "",
+                details=_details,
             )
             self.start_tool_timer()
         else:
@@ -968,16 +1220,12 @@ class _AnswerStream:
         # streaming message now so Slack doesn't show an error.
         # ensure_started() will open a new message when
         # the next text chunk arrives after wait returns.
-        # Keyed on the tool's programmatic identity when the transport
-        # sent one (same rule as SlackRenderer); the title compare is the
-        # fallback for a frame without ``_meta.kiro``.
-        _is_wait = is_wait_identity(event.tool_name) if event.tool_name else tool_name == "wait"
         if _is_wait and self.use_slack_stream and self.stream_ts:
             if self.active_task_id:
                 _elapsed = self.tool_elapsed_str()
                 self.cancel_tool_timer()
                 _ct = (
-                    f"{self.active_task_title} · {_elapsed}" if _elapsed else self.active_task_title
+                    f"{self.active_task_title}  {_elapsed}" if _elapsed else self.active_task_title
                 )
                 await self.append_task(self.active_task_id, _ct, "complete")
                 self.active_task_id = ""
@@ -1018,6 +1266,7 @@ class _AnswerStream:
                     exc_info=True,
                 )
             self.stream_ts = None
+            self.line_start = True  # the text after the wait opens a new message
             # The text after the wait is a new answer, so it owns no earlier message.
             self.rotated_ts = []
             self.given_back = ""
@@ -1081,21 +1330,85 @@ class _AnswerStream:
             logger.debug("agent session resume after approval failed", exc_info=True)
 
     async def on_tool_rejected(self) -> None:
-        """Close the running tool's card as failed, or note the rejection inline."""
+        """Close the running tool's card as rejected, or note the rejection inline.
+
+        The card closes ``complete`` with ``rejected`` in its details, never
+        ``error``: one ``error`` task makes Slack title the whole plan
+        "Something went wrong" while the turn keeps running. Slack adds details
+        to what the card shows, so after the tool name it starts its own line.
+        """
         if self.use_slack_stream and self.active_task_id:
             self.cancel_tool_timer()
             assert self.stream_ts is not None
-            await self.append_task(self.active_task_id, self.active_task_title, "error")
+            details = "\nrejected" if self.active_task_has_details else "rejected"
+            await self.append_task(
+                self.active_task_id, self.active_task_title, "complete", details=details
+            )
             self.active_task_id = ""
         if not self.use_slack_stream:
-            self.accumulated += "\n_Tool use rejected._"
+            self.accumulated += "\n🚫 _Tool use rejected._"
+
+    async def on_model_fallback(self, event: LLMEvent) -> None:
+        """Drop the refused model's streamed text when a V2 refusal hop supersedes it.
+
+        On a content-filter refusal the engine streams the refused model's canned
+        explanation as ordinary ``agent_message_chunk`` text, THEN a
+        ``model_fallback`` hop (``cause: refused``, ``promoted: false``), then the
+        fallback model's real answer (see
+        ``test/fixtures/acp_frames/kiro/refusal-fallback-live.jsonl``). Everything
+        streamed before the hop is the refused model's words, not the turn's
+        answer: this discards it so only the fallback's reply remains, and arms
+        the seal to rewrite the live message, since the refused text was already
+        appended to it. The PROMOTION notice (``promoted: true``) and a
+        throttle/capacity hop (``cause`` other than ``refused``) move nothing
+        visible and are left alone -- a mid-answer throttle hop keeps its partial.
+
+        Best-effort: MUST NOT raise. A raise here would escape into the turn
+        loop's generic ``except Exception`` catch-all and fake a terminal error
+        on a turn that is still answering.
+        """
+        try:
+            notice = event.model_fallback
+            if notice is None or notice.promoted or notice.cause != "refused":
+                return
+            # Keep the refused text in case the fallback never answers, so a
+            # still-refused turn shows the provider's words, not an empty reply.
+            # Only when there is some: a second refused hop or a decline before
+            # any new text must not blank the FIRST refusal's words.
+            if self.accumulated.strip():
+                self.last_refused = self.accumulated
+            self.refused_drop = True
+            # Discard every content-bearing buffer so the fallback's answer opens
+            # a fresh segment. The live-channel state (``stream_ts``,
+            # ``use_slack_stream``, ``delivered``) is untouched: the seal's
+            # overwrite, forced by ``refused_drop``, replaces the refused text on
+            # the single live message in the common case (no rotation, no wait).
+            self.accumulated = ""
+            self.stream_buffer = ""
+            self.bracket_hold = ""
+            self.echo_held = ""  # re-arm the alternation-placeholder hold
+            self.carried = ""
+            # A run held at a ``wait`` boundary, and a for-good delivery loss, are
+            # both refused text here, not answer: drop them so ``_give_back``
+            # cannot put the refused run back on an earlier message and the debt
+            # notice does not claim answer text was lost.
+            self.move_back = None
+            self.debt = False
+            self.line_start = True
+            self.tool_gap = False
+            self.redactor.reset()
+        except Exception:  # noqa: BLE001 — refusal drop is best-effort visibility
+            logger.warning(
+                "Slack on_model_fallback failed — leaving the reply intact", exc_info=True
+            )
 
     async def finish(self, untrimmed: str) -> None:
         """Complete the last task card and send what the stream still holds.
 
-        A ``[`` hold is settled by the marker grammar: an accepted marker is
-        dropped and anything else is sent; a comment hold is settled against the
-        whole reply and released when it is content.
+        An OPTIONS hold is settled by the marker grammar: an accepted marker and a
+        control-tag tail held after it are dropped and anything else is sent; a
+        comment hold is settled against the whole reply and released when it is
+        content.
         """
         # Mark last task complete
         self.finishing = True
@@ -1103,11 +1416,11 @@ class _AnswerStream:
         if self.active_task_id:
             _elapsed = self.tool_elapsed_str()
             self.cancel_tool_timer()
-            _ct = f"{self.active_task_title} · {_elapsed}" if _elapsed else self.active_task_title
+            _ct = f"{self.active_task_title}  {_elapsed}" if _elapsed else self.active_task_title
             await self.append_task(self.active_task_id, _ct, "complete")
         self.bracket_hold, _released = _resolve_comment_hold(self.bracket_hold, untrimmed)
         self.stream_buffer += _released
-        self.bracket_hold, _released = _resolve_options_hold(self.bracket_hold, self.stream_buffer)
+        self.bracket_hold, _released = _resolve_options_hold(self.bracket_hold)
         self.stream_buffer += _released
         if self.stream_buffer:
             self.stream_buffer, _ = strip_thinking_tags(self.stream_buffer, strip_whitespace=False)
@@ -1169,7 +1482,7 @@ class _AnswerStream:
         if _demoted:
             # The answer's last text is on no message yet, so this update is what
             # delivers it: a failed send raises and the turn books a failure.
-            await _safe_final_update(
+            complete = await _final_update_landed(
                 self.slack,
                 self.channel,
                 self.stream_ts,
@@ -1177,17 +1490,29 @@ class _AnswerStream:
                 self.reply_ts,
                 raise_on_primary_failure=True,
             )
+            if complete and _redact_overwrite:
+                await self._redact_rotated()
             self.delivered = True
             return False
         # Redaction overwrite is decoration on an already-delivered stream:
         # it corrects the visible copy, it does not deliver the answer.
         if _redact_overwrite:
             fallback_text = _convert_tables(clean_text) if clean_text else _NO_RESPONSE
-            await _safe_final_update(
+            complete = await _final_update_landed(
                 self.slack,
                 self.channel,
                 self.stream_ts,
                 fallback_text or _NO_RESPONSE,
                 self.reply_ts,
             )
+            if complete:
+                await self._redact_rotated()
         return _folded
+
+    async def _redact_rotated(self) -> None:
+        """Replace old copies only after the whole redacted answer has landed."""
+        for ts in self.rotated_ts:
+            try:
+                await self.slack.update_message(self.channel, ts, CONTINUES_BELOW.strip())
+            except Exception:
+                logger.warning("Failed to redact rotated message %s", ts, exc_info=True)

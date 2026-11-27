@@ -378,6 +378,42 @@ class TestTheSiloPredicateIsPositive:
         with pytest.raises(UnknownMemoryStore):
             resolve_store_path(_ACME)
 
+    def test_an_untrusted_windows_share_is_never_resolved(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Windows, resolving a UNC path opens SMB to its host.
+
+        Only this module's ``os`` view says ``nt``: the global ``os.name`` would make
+        pathlib build Windows paths on a POSIX host. The spy answers a UNC resolve with
+        the path itself, so a red Windows run makes no network call either.
+        """
+        import os
+        import types
+
+        from kiro_crew import memory_stores
+        from kiro_crew.hooks import is_unc_shape
+
+        real_resolve = Path.resolve
+        unc_resolved: list[str] = []
+
+        def spy(self: Path, strict: bool = False) -> Path:
+            if is_unc_shape(str(self)):
+                unc_resolved.append(str(self))
+                return self
+            return real_resolve(self, strict)
+
+        monkeypatch.setattr(memory_stores, "os", types.SimpleNamespace(name="nt", path=os.path))
+        monkeypatch.setattr(Path, "resolve", spy)
+
+        assert named_store_of_db(Path("//evil-host/share/ws") / MEMORY_DB_FILE) == ""
+        assert unc_resolved == []
+
+        # The healthy side: a data home reached through a share spells its stores the
+        # way the resolved root does, and those are still resolved and named.
+        share_root = Path("//nas/sync/crew") / "memory_stores"
+        monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: share_root)
+        assert named_store_of_db(share_root / _FINANCE / MEMORY_DB_FILE) == _FINANCE
+
 
 # ── 2. The regression test ────────────────────────────────────────────────────
 

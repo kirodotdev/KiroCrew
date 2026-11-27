@@ -36,6 +36,7 @@ class FakeBrowser:
     def __init__(self, tmp_path: Path) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.page: dict[str, Any] = {
+            "selectorBlocked": False,
             "askedValues": 0,
             "passwordBoxes": 0,
             "secretValues": 0,
@@ -120,6 +121,7 @@ def test_walker_source_is_one_iife_the_ops_call_methods_on() -> None:
         "resolve",
         "focus",
         "activeField",
+        "paste",
         "selectOption",
         "textPresent",
         "stamp",
@@ -138,6 +140,34 @@ def test_every_page_side_call_goes_through_the_walker(fake: FakeBrowser) -> None
     # Only the console hook and the navigation stamp are read in the page's own world.
     (page_expr,) = [kw["expression"] for h, kw in fake.calls if h == "js"]
     assert page_expr == ops.WALKER_SOURCE + ".consoleMessages(0)"
+
+
+@pytest.mark.parametrize("frame_refs", [False, True])
+def test_page_frame_refs_are_optional(fake: FakeBrowser, frame_refs: bool) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    frames = SimpleNamespace(
+        url_for_ref=AsyncMock(return_value="https://example.com/"),
+        call=AsyncMock(return_value={"ok": True, "frame": True}),
+    )
+    fake.page["recipeTarget"] = lambda selector: {"ok": True, "selector": selector}
+    ctx = fake.ctx()
+    ctx.frames = lambda: frames
+    if frame_refs:
+        assert run(ops._page(ctx, "recipeTarget", "f1e1")) == {"ok": True, "frame": True}
+        frames.call.assert_awaited_once_with(1, "recipeTarget", "e1")
+        assert fake.calls == []
+    else:
+        assert run(ops._page(ctx, "recipeTarget", "f1e1", frame_refs=False)) == {
+            "ok": True,
+            "selector": "f1e1",
+        }
+        frames.call.assert_not_called()
+        frames.url_for_ref.assert_not_called()
+        assert fake.calls == [
+            ("js_isolated", {"expression": ops.WALKER_SOURCE + '.recipeTarget("f1e1")'})
+        ]
 
 
 # --- dispatch ------------------------------------------------------------------
@@ -459,7 +489,7 @@ def test_click_validation(fake: FakeBrowser) -> None:
         == "bad_button"
     )
     assert (
-        run(ops.run_op("click", {"x": 1, "y": 1, "clicks": 3}, fake.ctx()))["code"] == "bad_clicks"
+        run(ops.run_op("click", {"x": 1, "y": 1, "clicks": 4}, fake.ctx()))["code"] == "bad_clicks"
     )
     fake.page["resolve"] = {"ok": False, "code": "ref_stale"}
     out = run(ops.run_op("click", {"ref": "e9"}, fake.ctx()))
@@ -624,6 +654,152 @@ def test_type_steps_stopped_by_an_open_dialog_name_the_step(fake: FakeBrowser) -
     assert out["code"] == "dialog_open" and out["step"] == 2
     assert out["error"].startswith("step 2 (counting from 0; the steps before it ran): ")
     assert "confirm" in out["error"] and "Leave?" in out["error"]
+
+
+_TABLE = "<table><tr><td>a</td><td>b</td></tr></table>"
+
+
+@pytest.mark.parametrize("handled", [True, False])
+def test_paste_hands_html_and_text_to_the_page_and_types_only_what_it_left(
+    fake: FakeBrowser, handled: bool
+) -> None:
+    """The page's editor gets both formats on one paste event; a page that did not
+    take it (nothing cancelled the event) gets the plain text typed, as ``type`` would."""
+    seen: list[list[Any]] = []
+    fake.page["focus"] = {"ok": True, "focused": True, "activeTag": "div"}
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "div"}
+    fake.page["paste"] = lambda *a: seen.append(list(a)) or {"ok": True, "handled": handled}
+    out = run(ops.run_op("paste", {"ref": "e1", "html": _TABLE, "text": "a\tb"}, fake.ctx()))
+    assert out == {"ok": True, "ref": "e1", "chars": 3, "handled": handled}
+    assert seen == [["e1", _TABLE, "a\tb"]]
+    typed = [kw for h, kw in fake.calls if h == "type_text"]
+    assert typed == ([] if handled else [{"text": "a\tb"}])
+    assert fake.steps[-1] == "Paste into e1"
+
+
+@pytest.mark.parametrize(
+    ("moved", "code"), [({"password": True}, "password_field"), ({"asked": True}, "asked_field")]
+)
+def test_paste_types_nothing_where_the_page_handler_moved_focus(
+    fake: FakeBrowser, moved: dict[str, Any], code: str
+) -> None:
+    field = {"focused": True, "password": False, "tag": "div"}
+    fake.page["activeField"] = lambda: dict(field)
+    fake.page["paste"] = lambda *_a: field.update(moved) or {"ok": True, "handled": False}
+    out = run(ops.run_op("paste", {"html": _TABLE, "text": "a\tb"}, fake.ctx()))
+    assert out["ok"] is False and out["code"] == code
+    assert "type_text" not in fake.helper_names()
+
+
+def test_paste_types_its_fallback_only_into_the_ref_it_was_given(fake: FakeBrowser) -> None:
+    """A page handler that moved focus off ``ref`` gets no text: the ref is focused
+    again before typing, and one that will not keep focus is refused."""
+    answers = iter(
+        [{"ok": True, "focused": True}, {"ok": True, "focused": False, "activeTag": "input"}]
+    )
+    fake.page["focus"] = lambda *_a: next(answers)
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "div"}
+    fake.page["paste"] = {"ok": True, "handled": False}
+    out = run(ops.run_op("paste", {"ref": "e1", "html": _TABLE, "text": "a\tb"}, fake.ctx()))
+    assert out["ok"] is False and out["code"] == "not_focusable"
+    assert fake.page_methods().count("focus") == 2
+    assert "type_text" not in fake.helper_names()
+
+
+@pytest.mark.parametrize(
+    ("page", "args", "code"),
+    [
+        ({"focus": {"ok": False, "code": "password_field"}}, {"ref": "e2"}, "password_field"),
+        ({"focus": {"ok": False, "code": "asked_field"}}, {"ref": "e2"}, "asked_field"),
+        ({"activeField": {"focused": True, "password": True}}, {}, "password_field"),
+        ({"activeField": {"focused": True, "asked": True}}, {}, "asked_field"),
+        ({"activeField": {"focused": True, "unreadable": True}}, {}, "focus_in_frame"),
+        ({"activeField": {"focused": False}}, {}, "no_focus"),
+        ({"paste": {"ok": False, "code": "focus_in_frame"}}, {}, "focus_in_frame"),
+        ({}, {"text": 5}, "bad_text"),
+        ({}, {"html": ["<b>x</b>"]}, "bad_html"),
+        ({}, {"html": "x" * (ops.TEXT_CAP + 1)}, "bad_html"),
+    ],
+)
+def test_paste_is_refused_where_type_is(
+    fake: FakeBrowser, page: dict[str, Any], args: dict[str, Any], code: str
+) -> None:
+    fake.page.update({"activeField": {"focused": True, "password": False, "tag": "div"}})
+    fake.page.update(page)
+    args = {"text": "hunter2", "html": "<b>hunter2</b>", **args}
+    out = run(ops.run_op("paste", args, fake.ctx()))
+    assert out["ok"] is False and out["code"] == code
+    assert "type_text" not in fake.helper_names() and fake.steps == []
+    if "paste" not in page:
+        assert "paste" not in fake.page_methods(), "nothing reaches the page"
+
+
+_DAEMON_LINE_BYTES = 64 * 1024  # Harness's request line: asyncio's StreamReader limit
+#: About the size of the comment-stripped walker on the daemon's line, so the paste
+#: boundary below does not move with every walker change.
+_STRIPPED_WALKER = "(() => {" + "x" * 50_000 + "})()"
+
+
+def test_type_splits_a_long_text_so_each_daemon_line_fits(fake: FakeBrowser) -> None:
+    """20,000 non-ASCII characters JSON-escape to 120 KB: typed in several pieces."""
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "textarea"}
+    text = "漢" * ops.TEXT_CAP
+    out = run(ops.run_op("type", {"text": text}, fake.ctx()))
+    assert out["ok"] is True and out["chars"] == ops.TEXT_CAP
+    typed = [kw["text"] for h, kw in fake.calls if h == "type_text"]
+    assert len(typed) > 1 and "".join(typed) == text
+    for chunk in typed:
+        line = json.dumps({"method": "Input.insertText", "params": {"text": chunk}})
+        assert len(line) < _DAEMON_LINE_BYTES
+
+
+def _harness_line(expression: str) -> bytes:
+    """The request line Harness writes for one isolated-world evaluate of *expression*."""
+    params = {"expression": expression, "contextId": 2**31 - 1, "returnByValue": True}
+    request = {"id": 2**31 - 1, "method": "Runtime.evaluate", "params": params}
+    return (json.dumps({**request, "session_id": "S" * 64}) + "\n").encode()
+
+
+@pytest.mark.parametrize("unit", ["x", '"', "漢"], ids=["ascii", "quote", "cjk"])
+def test_paste_takes_what_fits_the_daemon_line_and_refuses_one_more(
+    fake: FakeBrowser, monkeypatch: pytest.MonkeyPatch, unit: str
+) -> None:
+    from kiro_crew.browser_harness import daemon_line
+
+    monkeypatch.setattr(ops, "WALKER_SOURCE", _STRIPPED_WALKER)
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "div"}
+    fake.page["paste"] = {"ok": True, "handled": True}
+
+    def walker_call(text: str) -> str:
+        return f'{_STRIPPED_WALKER}.paste(null, "", {json.dumps(text)})'
+
+    # The longest text of *unit* whose whole walker call fits, beside the envelope.
+    room = daemon_line.DAEMON_LINE_BYTES - daemon_line.ENVELOPE_BYTES
+    most = (room - daemon_line.wire_bytes(walker_call(""))) // daemon_line.wire_bytes(
+        json.dumps(unit)[1:-1]
+    )
+    assert daemon_line.expression_fits(walker_call(unit * most))
+    assert len(_harness_line(walker_call(unit * most))) <= _DAEMON_LINE_BYTES
+    assert run(ops.run_op("paste", {"text": unit * most}, fake.ctx()))["ok"] is True
+    fake.calls.clear()
+    out = run(ops.run_op("paste", {"text": unit * (most + 1)}, fake.ctx()))
+    assert out["ok"] is False and out["code"] == "bad_text"
+    assert "paste" not in fake.page_methods(), "nothing reaches the page"
+    assert "type_text" not in fake.helper_names()
+
+
+def test_type_judges_the_field_again_before_each_later_piece(fake: FakeBrowser) -> None:
+    """A page that moves focus to a password box while one piece lands gets no more text."""
+    field = {"focused": True, "password": False, "tag": "textarea"}
+    fake.page["activeField"] = lambda: dict(field)
+    fake.helpers["type_text"] = lambda **_kw: field.update(password=True)
+    text = "漢" * ops.TEXT_CAP
+    out = run(ops.run_op("type", {"text": text, "submit": True}, fake.ctx()))
+    assert out["ok"] is False and out["code"] == "password_field"
+    (typed,) = [kw["text"] for h, kw in fake.calls if h == "type_text"]
+    assert out["chars_typed"] == len(typed) < len(text)
+    assert f"the first {len(typed)} of {len(text)} characters were typed" in out["error"]
+    assert "press_key" not in fake.helper_names()
 
 
 def test_press_key_named_single_and_modifiers(fake: FakeBrowser) -> None:
@@ -805,7 +981,7 @@ def test_tabs_new_opens_a_web_url_or_blank(fake: FakeBrowser) -> None:
         run(ops.run_op("tabs", {"action": "new", "url": "file:///x"}, fake.ctx()))["code"]
         == "bad_url"
     )
-    assert run(ops.run_op("tabs", {"action": "close"}, fake.ctx()))["code"] == "bad_action"
+    assert run(ops.run_op("tabs", {"action": "move"}, fake.ctx()))["code"] == "bad_action"
 
 
 # --- availability -------------------------------------------------------------
@@ -976,6 +1152,30 @@ def test_link_to_private_page_is_refused_before_the_card_follows(fake) -> None:
     tab = {"url": "https://example.com/"}
     fake.helpers["current_tab"] = lambda: dict(tab)
     fake.helpers["click"] = lambda **_kw: tab.update(url="http://169.254.169.254/latest")
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+    out = run(ops.run_op("click", {"x": 1, "y": 2}, ctx))
+    assert out["code"] == "redirect_refused"
+    assert fake.calls[-1] == ("goto", {"url": "about:blank"})
+
+
+def test_a_tab_with_no_document_yet_is_left_to_load(fake) -> None:
+    """A popup reports url "" until its first page commits: sending it to about:blank
+    would cancel the navigation its opener started."""
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    fake.helpers["current_tab"] = {"url": ""}
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+    out = run(ops.run_op("click", {"x": 1, "y": 2}, ctx))
+    assert out["ok"] is True, out
+    assert ("goto", {"url": "about:blank"}) not in fake.calls
+
+
+@pytest.mark.parametrize("tab", ["not-a-dict", {}, {"url": None}])
+def test_a_malformed_current_tab_is_still_refused(fake, tab) -> None:
+    """Only an exact "" url is left to load: the gate stays closed on anything else."""
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    fake.helpers["current_tab"] = tab
     ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
     out = run(ops.run_op("click", {"x": 1, "y": 2}, ctx))
     assert out["code"] == "redirect_refused"

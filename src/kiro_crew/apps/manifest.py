@@ -83,7 +83,6 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
     _MAX_LINK_OPEN_HOSTS,
-    _MAX_LINK_PREVIEW_HOSTS,
     _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
@@ -200,10 +199,19 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _l10n_quoted,
     _sidebar_order,
     bot_grant_entries,
-    clamp_lifecycle_timeout,
     lifecycle_timeout_error,
-    lifecycle_timeout_seconds,
     logger,
+)
+from kiro_crew.apps.manifest_session_create import (  # noqa: F401
+    _SESSION_CREATE_KEYS,
+    MAX_SESSION_CREATE_ENDPOINT,
+    MAX_SESSION_CREATE_ID,
+    MAX_SESSION_CREATE_ITEMS_PER_APP,
+    MAX_SESSION_CREATE_LABEL,
+    SESSION_CREATE_ID_RE,
+    SessionCreateItem,
+    SessionCreateItemsConfig,
+    _session_create_len,
 )
 from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
@@ -221,6 +229,7 @@ from kiro_crew.user_json import loads_user_json
 #   ``manifest_containment`` -- app-root path containment and contributed-agent containment
 #   ``manifest_sections`` -- the typed ``app.json`` blocks other than ``contributes``
 #   ``manifest_contributes`` -- the ``contributes`` block and its caps
+#   ``manifest_session_create`` -- the ``contributes.sessionCreateItems`` rows
 
 
 # Expected JSON type per CronEntry field that from_dict type-gates; turns a
@@ -274,8 +283,10 @@ def cron_permission_error(manifest: AppManifest) -> str:
 #:   verbs ``uninstall`` (whose ``uninstall/preview`` child is covered by the segment),
 #:   ``update``, ``enable``, ``disable``, ``open``, ``dev``, ``migrate-cleanup``,
 #:   ``bot-grants``
+#: * ``apps/routes_kiro.py`` -- ``kiro``
 #: * ``dashboard/routes/system.py`` -- ``token``
 #: * ``apps/job_routes.py`` -- ``_jobs``
+#: * ``apps/sel_routes.py`` -- ``_sel``
 #:
 #: A NEW core route mounted under ``/api/apps/{name}/`` MUST be added here in the same
 #: commit, or an app can claim it; ``test_file_menu_items.py`` scans those sources and
@@ -285,12 +296,15 @@ def cron_permission_error(manifest: AppManifest) -> str:
 CORE_APP_ROUTE_SEGMENTS = frozenset(
     {
         "_jobs",
+        "_sel",
         "bot-grants",
+        "browser-sites",
         "config",
         "dev",
         "disable",
         "enable",
         "frames",
+        "kiro",
         "manifest",
         "migrate-cleanup",
         "open",
@@ -635,6 +649,19 @@ class AppManifest:
         if refusal:
             report_path(refusal, f"ui.entry {refusal}: {self.ui.entry!r}")
 
+        if self.ui.startup:
+            refusal = path_refusal(self.ui.startup)
+            if refusal:
+                report_path(refusal, f"ui.startup {refusal}: {self.ui.startup!r}")
+            # The same rule admission applies on every read: a plain script path the
+            # browser cannot normalize out of ui/. Local import: startup_modules
+            # imports the app records module, which imports this one.
+            from kiro_crew.apps.startup_modules import entry_refusal
+
+            startup_refusal = entry_refusal(self.ui.startup)
+            if startup_refusal:
+                errors.append(f"ui.startup refused: {startup_refusal}")
+
         refusal = path_refusal(self.backend.entryPoint)
         if refusal:
             report_path(refusal, f"backend.entryPoint {refusal}: {self.backend.entryPoint!r}")
@@ -664,9 +691,15 @@ class AppManifest:
                     refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
                 )
         for link_open in self.contributes.linkOpen:
-            refusal = path_refusal(link_open.entry)
+            refusal = path_refusal(link_open.entry) if link_open.entry else ""
             if refusal:
                 report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
+            # The link opens on the app's own page, so there must be one (AppHost
+            # mounts ``ui.entry``; without it the page is a placeholder).
+            if link_open.page_param and not (self.ui.entry and self.ui.pages):
+                errors.append(
+                    f"contributes.linkOpen[{link_open.id}]: page needs ui.entry and ui.pages"
+                )
         # A composer-action entry is imported by the same frame bootstrap.
         for composer in self.contributes.composerActions:
             refusal = path_refusal(composer.entry)
@@ -693,14 +726,7 @@ class AppManifest:
 
         # UI overlay validation
         errors.extend(self.ui.frame_source_errors())
-        # Deferred: browser_sites stays off an MCP server's pre-list import budget.
-        from kiro_crew.apps.browser_sites import browser_site_errors  # noqa: PLC0415
-
-        errors.extend(
-            ["permissions.browserSites must be an array of strings"]
-            if self.permissions.bad_browser_sites
-            else browser_site_errors(self.permissions.browserSites)
-        )
+        errors.extend(self.permissions.list_errors())
         seen_overlay_ids: set[str] = set()
         for overlay in self.ui.overlays:
             if not overlay.id:
@@ -892,6 +918,15 @@ class AppManifest:
                     f"or /apps/{self.name}/api/ "
                     "(no traversal, no other app's namespace, no core route)"
                 )
+        # Same check for a Sessions New row, kept to the in-gateway namespace
+        # (`/api/apps/<app>/`), the one shape the row's contract documents.
+        for row in self.contributes.sessionCreateItems.items:
+            if not app_endpoint_allowed(self.name, row.endpoint):
+                errors.append(
+                    f"contributes.sessionCreateItems[{row.id}]: endpoint {row.endpoint!r} "
+                    f"must route under /api/apps/{self.name}/ "
+                    "(no traversal, no other app's namespace, no core route)"
+                )
 
         return errors
 
@@ -950,6 +985,8 @@ class AppManifest:
             or self.contributes.linkOpen
             or self.contributes.composerActions
             or self.contributes.selectionActions
+            # A Sessions New row's `endpoint` decides which project a new session opens on.
+            or self.contributes.sessionCreateItems.items
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -1552,13 +1589,10 @@ def requirements_in_tree(app_root: Path, req_file: Path) -> tuple[Path, Path] | 
     """The strictly-resolved ``(app_root, requirements.txt)`` pair when *req_file*
     is one the runtime will read, else ``None``.
 
-    The provisioner's own acceptance rule for the file, spelled once: the entry
-    must strictly resolve (a dangling link is ``None``) to a regular file (a
-    directory is ``None``) inside the strictly-resolved app root (a link that
-    escapes it is ``None``), no larger than :data:`REQUIREMENTS_TXT_MAX_BYTES`
-    (an oversized file is ``None``; the provisioner's bounded read refuses it).
-    ``requirements.txt -> requirements/prod.txt`` is legitimate layout and
-    resolves.
+    The provisioner's acceptance rule for the file, spelled once in :func:`requirements_verdict`
+    with the cause of each refusal: the entry must strictly resolve to a regular file inside the
+    strictly-resolved app root, no larger than :data:`REQUIREMENTS_TXT_MAX_BYTES`. A link such as
+    ``requirements.txt -> requirements/prod.txt`` that stays inside the root resolves.
 
     Three callers, one rule. ``backend_runtime/provisioning.py``'s provisioning read and its
     activation gate use it as the fast refusal before their descriptor-pinned,
@@ -1568,29 +1602,38 @@ def requirements_in_tree(app_root: Path, req_file: Path) -> tuple[Path, Path] | 
     gate uses it to predict what those two will do, so it never waives a file the
     provisioner would refuse. ``None`` on any resolution error, so no caller catches here.
     """
+    return requirements_verdict(app_root, req_file)[0]
+
+
+def requirements_verdict(app_root: Path, req_file: Path) -> tuple[tuple[Path, Path] | None, str]:
+    """The rule itself: ``(pair, "")`` on accept, else ``(None, cause)`` naming no path."""
+    cause = "the app directory could not be resolved"
     try:
         root_resolved = app_root.resolve(strict=True)
+        cause = "it is missing, a dangling symlink or a symlink loop"
         target = req_file.resolve(strict=True)
-        if not target.is_file() or not target.is_relative_to(root_resolved):
-            return None
+        cause = "it could not be read"
+        if not target.is_file():
+            return None, "it is not a regular file"
+        if not target.is_relative_to(root_resolved):
+            return None, "it resolves outside the app directory (only in-tree links are followed)"
         if target.stat().st_size > REQUIREMENTS_TXT_MAX_BYTES:
-            return None
-    except (OSError, RuntimeError):
-        # RuntimeError: a symlink loop, which Path.resolve raises as such before
-        # Python 3.13 (ELOOP, an OSError, from then on). Either way "not a file
-        # the runtime will read", never an exception for a caller to turn into a
-        # 500.
-        return None
-    return root_resolved, target
+            return None, f"it is larger than the {REQUIREMENTS_TXT_MAX_BYTES}-byte size cap"
+    except (OSError, RuntimeError):  # RuntimeError: a symlink loop before Python 3.13
+        return None, cause
+    return (root_resolved, target), ""
 
 
-#: Cron helpers served as attributes of this module on first access, so
+#: Helpers served as attributes of this module on first access, so
 #: ``kiro_crew.apps.manifest.<name>`` is the object its home module holds. The
-#: cron service is heavy and the stdio MCP servers read manifests at start-up.
+#: cron service is heavy and the stdio MCP servers read manifests at start-up; the
+#: lifecycle-timeout bound runs only when a script is about to run.
 _LAZY_CRON_NAMES: dict[str, str] = {
     "is_valid_skip_date": "kiro_crew.cron",
     "is_valid_timezone": "kiro_crew.cron",
     "validate_create_timeouts": "kiro_crew.cron_service.fields",
+    "clamp_lifecycle_timeout": "kiro_crew.apps.manifest_lifecycle_timeouts",
+    "lifecycle_timeout_seconds": "kiro_crew.apps.manifest_lifecycle_timeouts",
 }
 
 

@@ -30,12 +30,62 @@ from kiro_crew.slack.events_queue import _configured_approval_mode
 from kiro_crew.slack.handler import (
     handle_interaction,
     handle_message,
+    is_allowed_user,
     is_owner,
+    is_shared_listed,
+    is_shared_user,
+    shared_user_refused_for_session,
 )
 from kiro_crew.slack.interactions_context import _orch, register_view_handler
+from kiro_crew.slack.shared_access import SHARED_OWNER_ONLY_TEXT, shared_command_refused
 from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger("kiro_crew.slack.interactions")
+
+#: What a person whose Approve / Reject / Trust press changed nothing is told,
+#: privately, so the card never looks like a dead button. ``{owner}`` is
+#: ``surface.owner_name()``; an ephemeral mention notifies nobody.
+APPROVAL_OWNER_ONLY_TEXT = (
+    "Only {owner} can answer this approval. Ask them to answer it here or in the dashboard."
+)
+#: The same, when the prompt came from a shared user's own turn: they may answer it,
+#: Trust included.
+APPROVAL_OWNER_OR_ASKER_TEXT = (
+    "Only {owner} or <@{asker}>, whose message asked for it, can answer this approval."
+)
+APPROVAL_NOT_WAITING_TEXT = (
+    "This approval isn't waiting for an answer any more, so nothing changed."
+)
+
+
+def _refused_press_text(key: str) -> str:
+    """Why a press ``handle_interaction`` answered with ``None`` changed nothing.
+
+    Read after the refusal: a prompt still registered under *key* was live and
+    refused to this clicker (the owner's press on a live prompt always resolves
+    it, and so does its requester's Approve, Trust or Reject); one that is gone was
+    already answered, timed out or never belonged to this gateway process.
+    """
+    from kiro_crew.slack import handler
+    from kiro_crew.slack.turn_requester import live_card_requester
+
+    linked = handler._linked_approvals.get(key)
+    entry = linked or handler._pending_approvals.get(key)
+    if entry is None:
+        return APPROVAL_NOT_WAITING_TEXT
+    asker = live_card_requester(linked) if linked is not None else getattr(entry, "requester", "")
+    return _owner_only_text(asker)
+
+
+def _owner_only_text(asker: str = "") -> str:
+    """The refusal for a live approval card: who may answer it, Trust included."""
+    from kiro_crew.config.sections_slack import is_slack_user_id
+    from kiro_crew.slack.code_channels.surface import owner_name
+
+    # Only a well-formed member id becomes a mention, so it cannot inject markup.
+    if isinstance(asker, str) and is_slack_user_id(asker):
+        return APPROVAL_OWNER_OR_ASKER_TEXT.format(owner=owner_name(), asker=asker)
+    return APPROVAL_OWNER_ONLY_TEXT.format(owner=owner_name())
 
 
 async def _handle_tool_approval(
@@ -83,13 +133,26 @@ async def _handle_tool_approval(
     )
 
     # Replace buttons with outcome label — only when an action was processed.
-    # When effective_action is None (unauthorized user or already resolved),
-    # preserve buttons so the authorized owner can still click.
-    if _orch and _orch.slack and effective_action:
+    # When effective_action is None (a refused clicker, or an approval that is
+    # not waiting for an answer), preserve buttons so the authorized owner can still click, and tell
+    # the clicker privately why nothing happened.
+    if effective_action is None:
+        if _orch and _orch.slack and user_id:
+            try:
+                await _orch.slack.post_ephemeral(
+                    channel,
+                    user_id,
+                    _refused_press_text(f"{channel}:{msg_ts}"),
+                    thread_ts=thread_ts or None,
+                )
+            except Exception:
+                logger.debug("Failed to send the refused-approval notice", exc_info=True)
+        return
+    if _orch and _orch.slack:
         label = {
-            "approve_tool": "Approved",
-            "trust_tool": "Trusted",
-            "reject_tool": "Rejected",
+            "approve_tool": "✅ Approved",
+            "trust_tool": "🤝 Trusted",
+            "reject_tool": "🚫 Rejected",
         }.get(effective_action, "")
         if label:
             try:
@@ -104,7 +167,7 @@ async def _handle_tool_approval(
 
 # Shown when a non-authorized user clicks a review-mode button.
 _REVIEW_AUTH_DENIED_MSG = (
-    "Warning: Only the bot owner or the user who requested this draft can act on it."
+    "⚠️ Only the bot owner or the user who requested this draft can act on it."
 )
 
 
@@ -147,8 +210,15 @@ def _parse_draft_key(meta: str) -> tuple[str, str, str] | None:
 
 
 def _can_act_on_review_draft(caller: str, requester: str) -> bool:
-    """Authorize a review-mode action: bot owner OR the requester who triggered the draft."""
-    return bool(caller) and (caller == requester or is_owner(caller))
+    """Authorize a review-mode action: bot owner OR the requester who triggered the draft.
+
+    The requester must still be admitted (``is_allowed_user``): a shared user removed
+    while their draft's modal was open posts nothing.
+    """
+    return bool(caller) and (
+        is_owner(caller)
+        or (caller == requester and (is_allowed_user(caller) or is_shared_user(caller)))
+    )
 
 
 # Draft-key suffix _post_review_draft adds for a channel-level (unthreaded) card.
@@ -383,10 +453,15 @@ async def _handle_review_edit_submit(payload: dict) -> None:
         logger.info("slack review-edit submit dropped: channel refused by policy")
         return
 
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_here
     from kiro_crew.slack.handler import _review_drafts_get, _review_drafts_pop
 
     _, requester = _review_drafts_get(draft_key)
-    if not _can_act_on_review_draft(caller, requester):
+    # A code channel is the owner's (slack.shared_access): the modal may have opened
+    # before Slack Code went on, so a shared user's edit is not posted there.
+    if not _can_act_on_review_draft(caller, requester) or (
+        is_shared_listed(caller) and await shared_user_refused_here(_orch.slack, channel)
+    ):
         sel().log_api_access(
             caller=caller,
             operation="slack.review_edit_submit",
@@ -482,6 +557,19 @@ async def _handle_review_revise(payload: dict, action: dict) -> None:
     )
 
 
+def _revision_destination(thread_ts: str) -> str:
+    """The session a revision in *thread_ts* runs in: its linked slot, else its owner."""
+    from kiro_crew.slack.handler import get_dashboard_state
+
+    state = get_dashboard_state()
+    slot = state.get_linked_slot(thread_ts) if hasattr(state, "get_linked_slot") else None
+    if slot is not None:
+        return str(getattr(slot, "key", "") or "")
+    sessions = getattr(state, "sessions", None) or getattr(_orch, "sessions", None)
+    owner = sessions.get_session_for_thread(thread_ts) if sessions is not None else None
+    return owner if isinstance(owner, str) else ""
+
+
 async def _handle_review_revise_submit(payload: dict) -> None:
     """Take revision feedback, send to LLM with draft context, post new ephemeral draft."""
     if not _orch or not _orch.slack:
@@ -507,7 +595,20 @@ async def _handle_review_revise_submit(payload: dict) -> None:
     from kiro_crew.slack.handler import _review_drafts_get, _review_drafts_pop
 
     _, requester = _review_drafts_get(draft_key)
-    if not _can_act_on_review_draft(caller, requester):
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_here
+
+    # Before the pop, as the edit submit: a refused revision keeps the draft. The
+    # revision runs in the thread's session, which may be a code channel's; one
+    # relinked while it is judged is refused too (the draft is kept).
+    _dest = _revision_destination(thread_ts)
+    if not _can_act_on_review_draft(caller, requester) or (
+        is_shared_listed(caller)
+        and (
+            await shared_user_refused_here(_orch.slack, channel)
+            or await shared_user_refused_for_session(caller, _dest, thread_ts, channel)
+            or _revision_destination(thread_ts) != _dest
+        )
+    ):
         sel().log_api_access(
             caller=caller,
             operation="slack.review_revise_submit",
@@ -521,6 +622,23 @@ async def _handle_review_revise_submit(payload: dict) -> None:
         values.get("mc_review_revise_block", {}).get("mc_review_revise_input", {}).get("value", "")
     )
     if not feedback:
+        return
+    # A shared user's feedback is what they typed, judged before the draft is
+    # consumed; the draft in the synthesized prompt is the model's, never a command.
+    if is_shared_listed(caller) and shared_command_refused(caller, feedback):
+        sel().log_api_access(
+            caller=caller,
+            operation="slack.review_revise_submit",
+            outcome="denied",
+            source="slack",
+            error="shared user command",
+        )
+        try:
+            await _orch.slack.post_ephemeral(
+                channel, caller, SHARED_OWNER_ONLY_TEXT, thread_ts=thread_ts
+            )
+        except Exception:
+            logger.debug("review revise: refusal notice failed", exc_info=True)
         return
 
     draft, _requester = _review_drafts_pop(draft_key)
@@ -566,6 +684,7 @@ async def _handle_review_revise_submit(payload: dict) -> None:
                 task_runner=_orch.task_runner,
                 channel_activation=ACTIVATION_REVIEW,
                 start_priority=StartPriority.FOREGROUND,
+                spool_text=feedback if is_shared_listed(caller) else None,
             )
             logger.info("Review revision requested by %s in %s", caller, channel)
         except Exception:

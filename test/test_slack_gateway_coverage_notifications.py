@@ -546,7 +546,7 @@ class TestHeartbeatSlackParts:
     def test_caption_is_prepended(self):
         parts = gw._heartbeat_slack_parts("Nightly sweep", "all clear")
         assert parts
-        assert parts[0].startswith("*Nightly sweep*")
+        assert parts[0].startswith("💓 *Nightly sweep*")
         assert "all clear" in parts[0]
 
     def test_long_result_is_split_instead_of_dropped(self):

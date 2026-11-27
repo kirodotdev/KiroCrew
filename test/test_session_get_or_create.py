@@ -7,6 +7,7 @@ is being torn down.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 import types
@@ -1291,6 +1292,58 @@ class TestGetOrCreatePoolClaim:
         assert providers["k-shared"].startup_notice is None
         assert seen["k-subagent"] == str(old_tree)
         assert providers["k-subagent"].startup_notice is None
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("windows", "sandbox"), [(True, "auto"), (False, "off")], ids=["windows", "sandbox-off"]
+    )
+    async def test_a_given_scratch_cwd_the_sweep_removed_is_skipped_with_a_notice(
+        self, cfg, tmp_path, caplog, windows, sandbox
+    ):
+        """A chat's scratch project that is gone starts in the default folder, even unmasked.
+
+        Native Windows and an off sandbox mask no scratch tree, so an existing one is
+        kept, but the scratch sweep removes (or quarantines) a dead tree. A start handed
+        that missing folder drops it with the notice instead of passing it to the provider.
+        """
+        from kiro_crew.session_allocation_parts.get_or_create import HIDDEN_SCRATCH_CWD_NOTICE
+
+        root = tmp_path / "scratch"
+        kept = root / "runtime-live" / "checkout"
+        kept.mkdir(parents=True)
+        swept = root / "runtime-old" / "checkout"
+        seen: dict[str, object] = {}
+        providers: dict[str, object] = {}
+        base = _mock_provider_factory()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            seen[session_key] = kwargs.get("cwd")
+            provider = base(session_key, agent, channel_id, **kwargs)
+            provider.startup_notice = None
+            providers[session_key] = provider
+            return provider
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        with (
+            patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
+            patch("kiro_crew.sandbox_tiers.configured_sandbox_mode", return_value=sandbox),
+            patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
+            patch("kiro_crew.platform_compat.IS_WINDOWS", windows),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.session"),
+        ):
+            await mgr.get_or_create("k-swept", cwd=str(swept), fallback_hidden_cwd=True)
+            mgr.release("k-swept")
+            await mgr.get_or_create("k-kept", cwd=str(kept), fallback_hidden_cwd=True)
+            mgr.release("k-kept")
+        assert not seen["k-swept"]
+        notice = providers["k-swept"].startup_notice
+        assert notice[0] == HIDDEN_SCRATCH_CWD_NOTICE
+        assert str(swept) in notice[1]
+        skipped = [r.getMessage() for r in caplog.records if "not starting in" in r.getMessage()]
+        assert len(skipped) == 1 and str(swept) in skipped[0]
+        assert seen["k-kept"] == str(kept)
+        assert providers["k-kept"].startup_notice is None
         await mgr.close_all()
 
 

@@ -57,6 +57,7 @@ FACADE_NAMES = frozenset(
         "Enum",
         "ExitStack",
         "MANIFEST_VERSION",
+        "SKIP_LINKED_TREE_ROOT",
         "MEMBER_BACKUPS_DIR_NAME",
         "MEMORY_STORES_DIR_NAME",
         "ManifestUnreadable",
@@ -92,6 +93,7 @@ FACADE_NAMES = frozenset(
         "_FIRST_VERSION_WITH_NAMED_STORES",
         "_HOST_LOCAL_PATHS",
         "_JSON_OBJECT_LISTS",
+        "_LINKABLE_TREE_ROOTS",
         "_LOCKED_DOCUMENT_TREES",
         "_MAX_ARCHIVE_BYTES",
         "_MAX_ARCHIVE_MEMBERS",
@@ -145,6 +147,7 @@ FACADE_NAMES = frozenset(
         "_merge_named_stores",
         "_merge_notifications",
         "_never_ships",
+        "_may_hold_host_local",
         "_notification_key",
         "_print_manifest",
         "_read_cron_store_once",
@@ -159,6 +162,7 @@ FACADE_NAMES = frozenset(
         "_refuse_unsound_required_capture",
         "_rejection_recording_filter",
         "_remove_locked_document",
+        "_report_named_workspaces_left_out",
         "_report_redacted_bundle",
         "_report_redaction",
         "_report_skip",
@@ -428,7 +432,13 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.mark.parametrize(
     ("extra", "root_prefix", "components", "members"),
     [
-        ([], "kirocrew-snapshot-", list(snap.COMPONENTS), _COMPLETE_MEMBERS),
+        (
+            [],
+            "kirocrew-snapshot-",
+            # Every component but the opt-in `named-workspaces`.
+            [c for c in snap.COMPONENTS if c != "named-workspaces"],
+            _COMPLETE_MEMBERS,
+        ),
         (
             ["--components", "memory,crons"],
             "kirocrew-partial-",

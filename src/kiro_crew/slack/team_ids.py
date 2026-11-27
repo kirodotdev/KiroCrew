@@ -46,10 +46,10 @@ def use_channel_team_store(store: Mapping[str, str]) -> None:
 
 def slack_team_id_for(channel_id: str | None) -> str:
     """The home workspace of a Slack *channel_id*, or ``""`` when unknown / not Slack."""
-    if _store is None or not (isinstance(channel_id, str) and _CHANNEL_ID_RE.match(channel_id)):
+    if _store is None or not (isinstance(channel_id, str) and _CHANNEL_ID_RE.fullmatch(channel_id)):
         return ""
     team = _store.get(channel_id, "")
-    return team if isinstance(team, str) and _TEAM_ID_RE.match(team) else ""
+    return team if isinstance(team, str) and _TEAM_ID_RE.fullmatch(team) else ""
 
 
 def apply_slack_team_env(env: MutableMapping[str, str], channel_id: str | None) -> None:

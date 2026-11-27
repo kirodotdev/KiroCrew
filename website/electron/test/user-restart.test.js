@@ -124,6 +124,14 @@ test("a page on another origin is not carried into the reconnect", async () => {
   assert.ok(h.events.includes(`connect:${BACKEND}:`));
 });
 
+test("a same-origin page with a //host path still reconnects", async () => {
+  // The supervisor's entryUrl sends this path to the gateway root.
+  const h = harness({ window: fakeWindow(`${BACKEND}//evil/x`) });
+  h.owner.restartGateway(h.window);
+  await flush();
+  assert.ok(h.events.includes(`connect:${BACKEND}://evil/x`));
+});
+
 test("a failed stop still reconnects instead of leaving the splash up", async () => {
   const h = harness({ failures: { stop: new Error("boom") } });
   h.owner.restartGateway(h.window);

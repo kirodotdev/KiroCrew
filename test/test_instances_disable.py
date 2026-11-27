@@ -16,10 +16,13 @@ import json
 from pathlib import Path
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 
 from kiro_crew.dashboard import handlers_instances as handlers
 from kiro_crew.instances.registry import Instance, InstanceDisabledError, InstancesRegistry
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState, TunnelStatus
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 
 class _Tunnel:

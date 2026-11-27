@@ -422,7 +422,7 @@ async def _update_message(request: web.Request) -> web.Response:
             {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
         )
     channel = channel.strip()
-    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel):
         return web.json_response(
             {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
         )
@@ -523,8 +523,10 @@ async def _update_message(request: web.Request) -> web.Response:
         deny_reason = f"channel {channel} is not the owner's DM"
         deny_code = "not_owner_dm"
     else:
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         denied = not is_tracked_channel(channel)
-        deny_reason = f"channel {channel} not in tracked channels"
+        deny_reason = untracked_channel_error(channel)
         deny_code = "channel_not_tracked"
     if denied:
         _sel().log_tool_invocation(
@@ -981,7 +983,7 @@ async def _deliver_send_message_fallback(
     channel_text = text
     if target_session and job_name:
         safe_name = redact(job_name)
-        title = f"⏰ {safe_name}"
+        title = f"{safe_name}"
         text += "\n\n_(session closed — delivered as notification)_"
     # Only an attested, non-app caller's key names the publishing crewmate
     # (``attributable_session_key``); a bare TCP or app-token header does not.

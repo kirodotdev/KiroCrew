@@ -33,9 +33,9 @@ export const UI_CONDITIONS = {
   pointer_on_session_row: 'the pointer or keyboard focus is on a session row of this machine that is not being renamed (the control is drawn on that row)',
   // Shell and notifications
   terminal_enabled: 'the terminal is turned on in Settings',
+  not_macos: 'the dashboard is open on Windows or Linux, not on a Mac (where Cmd+C and Cmd+V already copy and paste)',
   topbar_search_shown: 'the Show search in the top bar setting is on (Settings → Display → View)',
   phone_connect_available: 'pairing a phone is available on this machine',
-  kiro_account_entry: 'the menu offers a Kiro account row (always when this installation runs on Kiro; with another backend, only once an account usage reading has arrived)',
   has_notifications: 'at least one notification is listed',
   has_unread_notifications: 'at least one notification is unread',
   notification_selected: 'a notification is open in the detail panel (select it in the list)',
@@ -84,6 +84,9 @@ export const UI_CONDITIONS = {
   open_app_syncable: 'the open app is a regular installed app with no newer version waiting; Sync reloads its installed files and does not install a new release',
   open_app_update_available: 'the open app is a regular installed app and a newer version is waiting (Update stands where Sync otherwise is)',
   open_app_removable: 'the open app is a regular installed app (not a built-in or independently managed one) that is not locked against removal',
+  open_app_disabled: 'the open app is a regular installed app (not a built-in or independently managed one) and is turned off (Disable stands in this place while it is on)',
+  open_app_builtin_disabled: 'the open app is a built-in app that ships with this dashboard and is turned off (some, such as AWS Control, start off)',
+  open_app_self_managed_disabled: 'the open app is an independently managed app and is turned off',
   // Schedule
   job_not_running: 'the open job is not running now (while it runs, Cancel Run stands in this place)',
   // Shell
@@ -93,6 +96,7 @@ export const UI_CONDITIONS = {
   // Added with the demand-gap batch (each checked against its render site).
   // Composer
   voice_input_supported: 'this browser can record from a microphone (the mic button is not drawn otherwise)',
+  project_aws_profile_shown: "the open session has a project folder and its project picker is open (press the folder button under the message box); the AWS profile row is drawn only when the AWS Control app has a registered profile or a folder is already bound in aws.project_profiles (profiles that are only in the computer's AWS config are not listed); to add one, turn on the AWS Control app, then AWS Control → Add accounts → Register selected",
   // Schedule
   job_enabled: 'the open job is active (not paused)',
   job_paused: 'the open job is paused',
@@ -105,6 +109,8 @@ export const UI_CONDITIONS = {
   terminal_not_popped_out: 'the terminal is docked in the dashboard, not popped out to its own window',
   terminal_docked_bottom: 'the terminal panel sits below the chat (the default)',
   terminal_docked_right: 'the terminal panel sits to the right of the chat, side by side with it',
+  // Customize > MCP Servers: the approval card above both views
+  mcp_launch_awaiting_approval: "an MCP server's launch waits for approval (it was listed in a config file by hand, or its command changed), so the page shows a card naming it",
 } as const
 
 export type UiConditionId = keyof typeof UI_CONDITIONS
@@ -124,6 +130,7 @@ export const UI_REVEAL_STATES = {
   crewmate_chat_open_phone: 'a Bot chat fills the phone screen, so the roster is behind it',
   crewmate_profile_closed: "the Bot's profile card is closed (pressing the Bot's name in the chat header opens it)",
   crewmate_profile_tab_closed: "the Bot's profile card is on another tab (the card opens on Sessions; its Profile tab is the last one on the rail)",
+  crewmate_profile_sessions_tab_closed: "the Bot's profile card is on another tab (its Sessions tab is the first one on the rail)",
   crewmate_settings_closed: "the Bot's Settings page is closed (the Settings row on its profile card's Profile tab opens it)",
   crewmate_panel_closed: "the Bot's side panel is closed (the Dashboard & files button in the chat header opens it)",
 } as const
@@ -153,6 +160,7 @@ export const UI_REVEAL_SCOPES = {
   'members.roster-phone': 'crewmate_chat_open_phone',
   'members.profile': 'crewmate_profile_closed',
   'members.profile-tab': 'crewmate_profile_tab_closed',
+  'members.sessions-tab': 'crewmate_profile_sessions_tab_closed',
   'members.settings': 'crewmate_settings_closed',
   'members.panel': 'crewmate_panel_closed',
 } as const satisfies Record<string, UiRevealState>
@@ -256,6 +264,7 @@ export const UI_CONDITION_OPPOSITES = [
   ['session_open', 'no_active_session'],
   ['response_running', 'no_response_running'],
   ['job_running', 'job_not_running'],
+  ['open_app_enabled', 'open_app_disabled'],
   ['job_enabled', 'job_paused'],
   ['sessions_board_view', 'sessions_list_view'],
   ['mouse_input', 'touch_input'],

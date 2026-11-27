@@ -31,6 +31,24 @@ beforeEach(() => {
 afterEach(() => { act(() => { vi.runAllTimers() }); vi.useRealTimers() })
 
 describe('AssistantMessage', () => {
+  it('opens with an offscreen speaker heading so the reply is a transcript landmark', () => {
+    // The transcript's only structure for a screen reader: bubble alignment is
+    // announced as nothing, so without this the reader cannot tell who is
+    // speaking or step between turns with the H key.
+    render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} />)
+    const heading = screen.getByRole('heading', { name: 'Kiro Crew' })
+    expect(heading.tagName).toBe('H2')
+    expect(heading.className).toContain('sr-only')
+  })
+
+  it("names the host's speaker in the heading when one is given", () => {
+    // A crewmate's chat wraps the reply in a group named for the crewmate; the
+    // heading inside must not contradict it with the product name.
+    render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} speakerName="Radar" />)
+    expect(screen.getByRole('heading', { name: 'Radar' }).className).toContain('sr-only')
+    expect(screen.queryByRole('heading', { name: 'Kiro Crew' })).toBeNull()
+  })
+
   it('renders markdown content', () => {
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} />)
     expect(screen.getByTestId('md')).toHaveTextContent('Hello world')
@@ -1388,6 +1406,18 @@ describe('turn stats footer (elapsed time + credits)', () => {
     // The marker trails the elapsed time after the footer's own separator, and
     // leaves the billed amount where it was.
     expect(screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()).toMatch(/^2\.50 credits ·\s*1m 24s\s*·\s*Cache rebuilt$/)
+  })
+
+  it('words an inferred rebuild as likely and says it is an estimate', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5, cache: 'likely' }} />)
+    const chip = screen.getByTestId('turn-cache-likely')
+    expect(chip).toHaveTextContent('Cache likely rebuilt')
+    expect(screen.queryByTestId('turn-cache-rewrite')).not.toBeInTheDocument()
+    const tip = within(chip).getByRole('button', { name: 'More information' })
+    expect(tip.getAttribute('title')).toMatch(/probably stored again/)
+    expect(tip.getAttribute('title')).toMatch(/estimate/)
+    expect(chip.className).not.toMatch(/\bborder\b|\brounded-full\b/)
+    expect(screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()).toMatch(/^2\.50 credits ·\s*1m 24s\s*·\s*Cache likely rebuilt$/)
   })
 
   it('draws no cache chip when the key is absent or holds another value', () => {

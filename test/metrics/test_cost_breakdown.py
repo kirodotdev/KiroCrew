@@ -471,6 +471,7 @@ class TestSpendUnit:
         out = usage_mod.cost_breakdown(7)
         assert out.get("unit") == "credits"
         assert out.get("credits") == 0.0
+        assert out.get("turns") == 1
 
     def test_credits_before_a_harness_switch_do_not_hold_the_window_at_zero(self, store):
         """The window before may predate a switch to a dollar-billed harness."""
@@ -482,6 +483,23 @@ class TestSpendUnit:
         assert out.get("unit") == "usd"
         assert out.get("credits") == pytest.approx(0.25)
         assert out.get("prior_credits") == 0.0
+        assert out.get("prior_turns") == 0
+
+    def test_dollar_turns_before_a_harness_switch_are_not_counted_as_free_credit_turns(
+        self, store
+    ):
+        """The reverse switch: free-looking turns would dilute the prior per-turn figure."""
+        store([
+            _dollar_row(slot="chat-1-1700000000", cost=0.40, age_days=10),
+            _dollar_row(slot="chat-1-1700000000", cost=0.05, age_days=9),
+            _row(slot="chat-3-1700000000", credits=4.0, age_days=8),
+            _row(slot="chat-2-1700000000", credits=5.0),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "credits"
+        assert out.get("prior_turns") == 1
+        assert out.get("prior_credits") == 4.0
+        assert out.get("prior_per_turn") == 4.0
 
     def test_a_subagent_credit_row_does_not_decide_the_unit(self, store):
         """A subagent row is left out of every figure, so it cannot pick the unit."""
@@ -512,3 +530,60 @@ def test_one_claude_code_model_is_one_row_across_its_id_migration(store):
     store(rows)
     out = usage_mod.cost_breakdown(7)
     assert [(r.get("name"), r.get("credits")) for r in out.get("by_model", [])] == [(canon, 2.0)]
+
+
+class TestSpendByPurpose:
+    """The Spend tab's Purpose split: people's turns, helper calls, automation."""
+
+    def test_credits_split_into_turn_helper_automation(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=10.0),
+            _row(slot="chat-1-1700000000", credits=2.0, surface="bg:auto_title"),
+            _row(slot="_hb", credits=3.0, surface="heartbeat"),
+            _row(slot="", credits=1.0),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        by = {r["name"]: r["credits"] for r in out["by_purpose"]}
+        assert by == {"turn": 10.0, "helper": 2.0, "automation": 3.0, "unknown": 1.0}
+        assert sum(by.values()) == out["credits"]
+
+    def test_a_wrongly_stamped_historical_surface_cannot_move_a_row(self, store):
+        """Only the ``bg:`` prefix is read from ``surface``; the session key
+        decides everything else, as it does for the channel."""
+        store([
+            _row(slot="telegram_555", credits=4.0, surface="dashboard"),
+            _row(slot="cron:default:nightly", credits=5.0, surface="dashboard"),
+            _row(slot="chat-1-1700000000", credits=6.0, surface="cron"),
+        ])
+        by = {r["name"]: r["credits"] for r in usage_mod.cost_breakdown(7)["by_purpose"]}
+        assert by == {"turn": 10.0, "automation": 5.0}
+
+    def test_a_subagent_row_reaches_no_purpose(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=10.0),
+            _row(slot="subagent:0000abcd", credits=5.0, surface="bg:auto_title"),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert [r["name"] for r in out["by_purpose"]] == ["turn"]
+        assert sum(r["credits"] for r in out["by_purpose"]) == out["credits"]
+
+    def test_a_purpose_row_carries_the_period_delta(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=2.0, surface="bg:auto_title"),
+            _row(slot="chat-1-1700000000", credits=8.0, surface="bg:auto_title", age_days=9.0),
+            _row(slot="chat-1-1700000000", credits=5.0),
+        ])
+        by = {r["name"]: r for r in usage_mod.cost_breakdown(7)["by_purpose"]}
+        assert by["helper"]["delta_pct"] == -75.0
+        assert by["turn"]["delta_pct"] is None
+
+    def test_the_dollar_view_carries_by_purpose(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=12.5),
+            _dollar_row(slot="chat-2-1700000000", cost=0.5),
+            {**_dollar_row(slot="_hb", cost=0.25), "surface": "heartbeat"},
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert [r["name"] for r in out["by_purpose"]] == ["turn"]
+        usd = {r["name"]: r["credits"] for r in out["usd"]["by_purpose"]}
+        assert usd == {"turn": 0.5, "automation": 0.25}

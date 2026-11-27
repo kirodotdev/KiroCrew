@@ -160,20 +160,29 @@ def _vet_command_governance(command: str) -> str | None:
     The cron command executes via ``sh -c`` outside the ACP hook flow, so the
     host gate's governance check (hooks.on_tool_call) never runs on it.  We
     evaluate it here against the ``cron`` surface so an enterprise command deny
-    or a per-cron profile's command scope still applies.  Best-effort: any
-    governance error returns None (the always-on guards in the caller stand).
+    or a per-cron profile's command scope still applies.  The whole command is
+    judged as passed, and under ``command_chains: each`` each command of its chain
+    too (``governance.command_chain_refusal``), split after line continuations are
+    folded, which is what ``sh`` runs, so authoring and fire time split it alike.
+    One ceiling and one profile answer both.  Best-effort: any governance error
+    returns None (the always-on guards in the caller stand).
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
     try:
-        from kiro_crew.platform.governance_profiles import governance_permits
+        from kiro_crew.platform.context import current_context as _current_context
+        from kiro_crew.platform.governance import command_chain_refusal, resolve
+        from kiro_crew.platform.governance_profiles import resolve_active_scope
 
-        # log_warning=False: stdio kirocrew-cron server (see _vet_cron_capability_
-        # governance) — suppress the degrade WARNING, keep the file-backed SEL.
-        decision = governance_permits(
-            "commands", command, session_key="cron:_vet", log_warning=False
-        )
-        if not getattr(decision, "permitted", True):
+        ceiling = getattr(_current_context(), "governance", None)
+        profile = resolve_active_scope("cron:_vet")
+        if ceiling is None and profile is None:
+            return None
+        decision = resolve(ceiling, profile, "commands", command)
+        if decision.permitted:
+            folded = _fold_line_continuations(command)
+            decision = command_chain_refusal(ceiling, profile, folded) or decision
+        if not decision.permitted:
             return "Error: cron command blocked by governance policy: " + redact(
                 getattr(decision, "reason", "")
             )
@@ -208,11 +217,11 @@ def _command_cron_platform_refusal() -> str | None:
     # Imported here: a module-scope import would surface both names on the
     # mcp_cron facade, whose served-name inventory is pinned.
     from kiro_crew import platform_compat
-    from kiro_crew.cron_script import _no_command_shell_message
+    from kiro_crew.cron_script import _no_command_shell_message, _strip_error_lead
 
     if not platform_compat.IS_WINDOWS:
         return None
-    return "Error: " + _no_command_shell_message().removeprefix("❌ ")
+    return "Error: " + _strip_error_lead(_no_command_shell_message())
 
 
 def _vet_shell_command(command: str, *, governance_checked: bool = False) -> str | None:

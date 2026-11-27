@@ -243,7 +243,9 @@ class WhatsAppDispatcher:
         )
         if pending_for(session_key, inbound.conversation_id) is None:
             return ""
-        return deliver_verdict(session_key, verdict, inbound.conversation_id)
+        return deliver_verdict(
+            session_key, verdict, inbound.conversation_id, sessions=self.sessions
+        )
 
     async def _handle_command(self, inbound: InboundMessage, command: str) -> None:
         """Run one command. Reply strings come from the command table's module,
@@ -259,7 +261,7 @@ class WhatsAppDispatcher:
             )
             message = NEW_SESSION_TEXT
             if not saved:
-                message += "\nWarning: The new conversation could not be saved for restart."
+                message += "\n⚠️ The new conversation could not be saved for restart."
             await self._say(scope, message)
         elif command == "compact":
             # Clear the nudge flag first, so the soft-threshold nudge can fire

@@ -116,6 +116,8 @@ def orch(monkeypatch: pytest.MonkeyPatch, http: _Http, drafts: Any, gate: AsyncM
     o = _make_orch()
     monkeypatch.setattr(ix, "_orch", o)
     monkeypatch.setattr(ix, "is_owner", lambda uid: uid == OWNER)
+    # A requester is someone the bot still admits (the owner or a shared user).
+    monkeypatch.setattr(ix, "is_allowed_user", lambda uid: bool(uid))
     return o
 
 
@@ -263,7 +265,11 @@ class TestNativeToolApproval:
         await ix._handle_tool_approval(payload, "trust_tool", "D1", "m1", "U1")
         assert prompt.future.result() == sh._OUTCOME_APPROVED
         assert "slack:th1" in sh._trusted_sessions
-        assert _rows(sel_log) == [("slack.interactive.approval", "allowed")]
+        # The grant has its own row naming who turned Trust on (newest first).
+        assert _rows(sel_log) == [
+            ("slack.interactive.approval", "allowed"),
+            ("slack.interactive.trust", "allowed"),
+        ]
         interaction.assert_awaited_once_with(
             "D1",
             "m1",
@@ -273,7 +279,7 @@ class TestNativeToolApproval:
             slack=orch.slack,
             sessions=orch.sessions,
         )
-        orch.slack.update_message.assert_awaited_once_with("D1", "m1", text="Trusted")
+        orch.slack.update_message.assert_awaited_once_with("D1", "m1", text="🤝 Trusted")
 
     @pytest.mark.asyncio
     async def test_approve_on_a_denied_channel_is_dropped(
@@ -309,7 +315,7 @@ class TestNativeToolApproval:
         assert _rows(sel_log) == [("slack.interactive.approval", "denied")]
         gate.assert_not_awaited()
         interaction.assert_awaited_once()
-        orch.slack.update_message.assert_awaited_once_with("C1", "m1", text="Rejected")
+        orch.slack.update_message.assert_awaited_once_with("C1", "m1", text="🚫 Rejected")
 
     @pytest.mark.asyncio
     async def test_an_unprocessed_press_keeps_the_buttons(
@@ -344,7 +350,7 @@ class TestNativeToolApproval:
         assert prompt.future.result() == sh._OUTCOME_APPROVED
         assert _rows(sel_log) == [("slack.interactive.approval", "allowed")]
         interaction.assert_awaited_once()
-        orch.slack.update_message.assert_awaited_once_with("C1", "m1", text="Approved")
+        orch.slack.update_message.assert_awaited_once_with("C1", "m1", text="✅ Approved")
 
 
 # ---------------------------------------------------------------------------

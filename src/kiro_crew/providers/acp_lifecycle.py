@@ -22,7 +22,7 @@ import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncContextManager
+from typing import TYPE_CHECKING, Any, AsyncContextManager
 
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpClient
 from kiro_crew.acp.types import METHOD_SESSION_DELETE
@@ -96,6 +96,7 @@ async def start(self: AcpProvider) -> None:
     # shared with sibling threads and processes, and an acquire on the loop
     # thread makes one attempt and never waits, so a brief overlap would refuse
     # the write.
+    await self._clear_default_overlay_entry()
     await self._recover_effort_overlay()
     # Re-apply the overlay on every (re)start to cover resume / model swap.
     # (no-op for claude backend — that path applies effort live below.)
@@ -149,34 +150,122 @@ async def start(self: AcpProvider) -> None:
 
 async def shutdown(self: AcpProvider) -> None:
     session_id = self.session_id
+    inner = getattr(self, "_client", None)
+    # Read before the inner shutdown resets it: whether a process is held now.
+    held = isinstance(inner, AcpClient) and getattr(inner, "_process", None) is not None
+    raised = True
     try:
-        if self.memory_mode != "persistent" and session_id and self.is_pi_backend:
-            await _delete_pi_session(self._client, session_id)
-    finally:
         try:
-            await self._client.shutdown()
+            # Only pi or goose itself can remove its record, so the harness is asked to.
+            if (
+                self.memory_mode != "persistent"
+                and session_id
+                and (self.is_pi_backend or self.is_goose_backend)
+            ):
+                await _delete_harness_session(self._client, session_id)
         finally:
             try:
-                if self.memory_mode != "persistent" and session_id:
-                    await self.cleanup_session(session_id)
+                await self._client.shutdown()
             finally:
-                # A cancel delivered during the transcript delete must not skip the reclaim.
-                if self._disposable_work_dir:
-                    await self._reclaim_work_dir()
+                try:
+                    if self.is_kas_backend:
+                        # The ``_client.shutdown()`` above already ended a non-persistent
+                        # session with ``_kiro/session/delete`` (the handle's ``destroy``),
+                        # so a second delete would only leave a ``released_sessions``
+                        # entry for a record the engine does not hold.
+                        pass
+                    elif self.memory_mode != "persistent" and session_id:
+                        await self.cleanup_session(session_id)
+                finally:
+                    # A cancel delivered during the transcript delete must not skip the
+                    # reclaim.
+                    if self._disposable_work_dir:
+                        await self._reclaim_work_dir()
+        raised = False
+    finally:
+        try:
+            _settle_shutdown_confirmation(self, inner, session_id, raised=raised, held=held)
+        except Exception:  # noqa: BLE001 - never mask the shutdown's own outcome
+            logger.warning(
+                "AcpProvider.shutdown: recording the close verdict failed", exc_info=True
+            )
 
 
-async def _delete_pi_session(client: AcpClient, session_id: str) -> None:
-    """Ask pi to delete its record of a disposable session, while it still runs.
+def _settle_shutdown_confirmation(
+    provider: AcpProvider,
+    inner: Any,
+    session_id: str | None,
+    *,
+    raised: bool,
+    held: bool,
+) -> None:
+    """Record whether this shutdown is a confirmed close, on every exit of it.
+
+    ``discard_conversation`` (teardown.py) reads ``_kas_shutdown_unconfirmed`` from
+    ``session.provider``, which IS this outer ``AcpProvider``. One rule decides:
+
+    - a shutdown that raised is unconfirmed, and the exception still propagates;
+    - an AcpClient that never launched a process (a refused preflight or adapter
+      version) and held none adds nothing: nothing it started can still run. A
+      start that failed after its runtime launched has already kept that runtime
+      as this provider's unconfirmed close (``acp_runtime_start``), which stays;
+    - otherwise the AcpClient host is judged like an owned runtime
+      (``teardown_confirmed`` on the verdict ``_reset_state`` wrote): confirmed only
+      with its whole tree confirmed dead. Its retry handle re-checks the PIDs that
+      outlived the kill, which ``_reset_state`` writes in the client shutdown's own
+      ``finally``, so a kill that raised has written them too;
+    - a shared-runtime inner provider forwards its own unconfirmed state.
+    """
+    if isinstance(inner, AcpClient):
+        from kiro_crew.acp.session_provider_shared import (
+            TreeSurvivors,
+            note_unconfirmed_teardown,
+            teardown_confirmed,
+        )
+
+        never_started = (
+            getattr(inner, "_spawned", True) is False
+            and not held
+            and not getattr(inner, "_unreaped_pids", ())
+        )
+        if not raised and (never_started or teardown_confirmed(inner, session_id, killed=True)):
+            return
+        pids = tuple(getattr(inner, "_unreaped_pids", ()) or ())
+        note_unconfirmed_teardown(
+            provider,
+            TreeSurvivors(pids, getattr(inner, "_windows_cleanup_receipt", None)),
+            session_id,
+            session_key=getattr(inner, "_session_key", None),
+        )
+        return
+    if inner is not None and getattr(inner, "_kas_shutdown_unconfirmed", False):
+        provider._kas_shutdown_unconfirmed = True
+        provider._kas_unconfirmed_runtime = getattr(inner, "_kas_unconfirmed_runtime", None)
+        provider._kas_unconfirmed_session_id = getattr(inner, "_kas_unconfirmed_session_id", None)
+    elif raised and inner is not None:
+        from kiro_crew.acp.session_provider_shared import note_unconfirmed_teardown
+
+        note_unconfirmed_teardown(
+            provider,
+            getattr(inner, "_runtime", None),
+            session_id,
+            session_key=getattr(inner, "_session_key", None),
+        )
+
+
+async def _delete_harness_session(client: AcpClient, session_id: str) -> None:
+    """Ask pi or goose to delete its record of a disposable session, while it runs.
 
     pi writes the session to a JSONL file whose folder its own settings choose, and
-    pi-acp keeps a map from the id to that file. pi-acp's ``session/delete`` removes
-    both, so pi's own answer is used rather than a second guess at its paths. Sent
-    only when the handshake advertised ``sessionCapabilities.delete`` and the
-    process is alive. The answer is awaited for ``_TERMINATE_TIMEOUT``, also while
-    the gateway shuts down; a failure is logged and the shutdown goes on.
+    pi-acp keeps a map from the id to that file; goose keeps the session in its own
+    session store. Each one's ``session/delete`` removes its record, so the harness's
+    own answer is used rather than a second guess at its paths. Sent only when the
+    handshake advertised ``sessionCapabilities.delete`` and the process is alive.
+    The answer is awaited for ``_TERMINATE_TIMEOUT``, also while the gateway shuts
+    down; a failure is logged and the shutdown goes on.
 
-    shortcut: a pi process that died before the shutdown keeps the file, since
-    nothing is left to ask. Upgrade by reading pi-acp's session map from disk.
+    shortcut: a process that died before the shutdown keeps its record, since
+    nothing is left to ask. Upgrade by reading the harness's store from disk.
     """
     from kiro_crew.acp.runtime import _TERMINATE_TIMEOUT
 
@@ -186,16 +275,16 @@ async def _delete_pi_session(client: AcpClient, session_id: str) -> None:
         capabilities.get("sessionCapabilities") if isinstance(capabilities, dict) else None
     )
     if not isinstance(session_caps, dict) or not isinstance(session_caps.get("delete"), dict):
-        logger.warning("pi session cleanup: the adapter offers no session/delete")
+        logger.warning("session cleanup: the adapter offers no session/delete")
         return
     if not client._is_process_alive():
-        logger.warning("pi session cleanup: the process ended before the delete")
+        logger.warning("session cleanup: the process ended before the delete")
         return
     try:
         req_id = await client._send_request(METHOD_SESSION_DELETE, {"sessionId": session_id})
         await _await_answer(client, req_id, _TERMINATE_TIMEOUT)
     except Exception:
-        logger.warning("pi session cleanup: session/delete failed", exc_info=True)
+        logger.warning("session cleanup: session/delete failed", exc_info=True)
 
 
 async def _await_answer(client: AcpClient, req_id: int, timeout: float) -> None:
@@ -212,9 +301,9 @@ async def _await_answer(client: AcpClient, req_id: int, timeout: float) -> None:
             msg = await client._read_message(timeout=min(remaining, 1.0), check_cancel=False)
             if msg is not None and msg.is_response_for(req_id):
                 if msg.error:
-                    logger.warning("pi session cleanup: session/delete was refused")
+                    logger.warning("session cleanup: session/delete was refused")
                 return
-        logger.warning("pi session cleanup: session/delete got no answer in time")
+        logger.warning("session cleanup: session/delete got no answer in time")
     finally:
         client._release_stdout()
 
@@ -296,11 +385,21 @@ async def cleanup_session(self: AcpProvider, session_id: str) -> None:
     child ran with, the client's or runtime's ``extra_env`` over the gateway's
     (``agent_sdk.codex_transcripts``). An OpenCode session's is its rows in
     OpenCode's SQLite store, found the same way (``agent_sdk.opencode_transcripts``).
-    Each is deleted off the loop, to completion even when cancelled. A pi session's
-    record went before its process ended (``_delete_pi_session``).
+    Each is deleted off the loop, to completion even when cancelled. A pi or goose
+    session's record went before its process ended (``_delete_harness_session``). A
+    KAS session's record is in the engine's own store, so the call goes to the
+    ``AcpSessionProvider`` the runtime start put in ``_client``; its
+    ``delete_native_record`` sends ``_kiro/session/delete``, or schedules it in
+    ``released_sessions`` when this provider's runtime is already shut down.
     """
     if not session_id:
         return
+    if self.is_kas_backend:
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        if isinstance(self._client, AcpSessionProvider):
+            await self._client.cleanup_session(session_id)
+            return
     if self.is_claude_backend:
         work_dir = str(getattr(self._client, "_work_dir", "") or "")
         await drained_to_thread(delete_claude_session_files, session_id, work_dir)

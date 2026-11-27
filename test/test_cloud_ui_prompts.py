@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import io
 import os
+import threading
 from collections.abc import Iterable
 
 import pytest
@@ -117,10 +118,10 @@ class TestNumberedPicker:
         assert asked == ["  ? Choose 1-3 [2]: "]
         assert capsys.readouterr().out == (
             "  Size\n"
-            "    ○ Small\n"
+            "    ( ) Small\n"
             "       2 vCPU\n"
-            "    ◉ Medium (recommended)\n"
-            "    ○ Large\n"
+            "    (*) Medium (recommended)\n"
+            "    ( ) Large\n"
             "       8 vCPU\n"
         )
 
@@ -130,8 +131,8 @@ class TestNumberedPicker:
         assert ui.choose("Size", OPTIONS) == 2
         assert len(asked) == 4
         out = capsys.readouterr().out
-        assert out.count("⚠ Enter a number.\n") == 1
-        assert out.count("⚠ Enter a number between 1 and 3.\n") == 2
+        assert out.count("Warning: Enter a number.\n") == 1
+        assert out.count("Warning: Enter a number between 1 and 3.\n") == 2
 
     def test_eof_takes_the_recommended_option(self, monkeypatch) -> None:
         _answers(monkeypatch, [EOFError])
@@ -149,7 +150,7 @@ class TestNumberedPicker:
         assert ui.choose("Size", OPTIONS, default_index=1) == 1
         assert len(asked) == 1
         out = capsys.readouterr().out
-        assert out.endswith(f"⚠ {bad!r} is not a choice; using 2 (Medium).\n")
+        assert out.endswith(f"Warning: {bad!r} is not a choice; using 2 (Medium).\n")
         assert "Enter a number" not in out
 
     def test_a_good_piped_answer_is_taken(self, monkeypatch) -> None:
@@ -247,10 +248,10 @@ class TestKeysAndLines:
         assert lines == [
             "  Size",
             "    Use ↑/↓ and Enter, or press 1-3.",
-            "    ◉ Small (recommended)",
+            "    (*) Small (recommended)",
             "       2 vCPU",
-            "    ○ Medium",
-            "    ○ Large",
+            "    ( ) Medium",
+            "    ( ) Large",
             "       8 vCPU",
         ]
 
@@ -279,7 +280,7 @@ class TestOutput:
         ui.fail("f")
         ui.detail("d")
         ui.note("n")
-        assert capsys.readouterr().out == "  → i\n  ✓ o\n  ⚠ w\n  ✗ f\n    d\n  n\n"
+        assert capsys.readouterr().out == "  → i\n  OK o\n  Warning: w\n  Error: f\n    d\n  n\n"
 
 
 class TestSpinner:
@@ -302,4 +303,67 @@ class TestSpinner:
         out = buf.getvalue()
         assert "→" not in out  # never falls back to the plain-text line
         # The last write clears the spinner line.
-        assert out.endswith("\r" + " " * (len("Waiting") + 6) + "\r")
+        assert out.endswith("\033[2K\r")
+
+    @pytest.mark.parametrize(
+        ("columns", "line"),
+        [("80", "Deleting the stack 1:15 elapsed"), ("37", "Deleting the stack")],
+        ids=["fits", "too-narrow"],
+    )
+    def test_on_a_tty_a_wait_past_thirty_seconds_shows_the_elapsed_time_when_it_fits(
+        self, monkeypatch, columns: str, line: str
+    ) -> None:
+        monkeypatch.setattr(ui, "_ENABLE_COLOR", True)
+        monkeypatch.setenv("COLUMNS", columns)
+        clock = iter([0.0])  # the spinner's start, then 75 s later for every redraw
+        monkeypatch.setattr(ui, "_now", lambda: next(clock, 75.0))
+        drawn = threading.Event()
+
+        class _Terminal(io.StringIO):
+            def write(self, s: str) -> int:
+                if "Deleting the stack" in s:
+                    drawn.set()
+                return super().write(s)
+
+        buf = _Terminal()
+        monkeypatch.setattr(ui.sys, "stdout", buf)
+        with ui.Spinner("Deleting the stack") as spinner:
+            assert drawn.wait(timeout=10)
+        assert spinner._thread is not None
+        spinner._thread.join(timeout=10)
+        assert not spinner._thread.is_alive()
+        out = buf.getvalue()
+        assert f"  ⠋ {line}" in out.split("\033[2K\r")
+        assert out.endswith("\033[2K\r")
+
+    def test_on_a_tty_a_redraw_that_drops_the_clock_erases_the_longer_line_it_replaces(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(ui, "_ENABLE_COLOR", True)
+        # At 38 columns the 9:59 line passes the fit check and the 10:00 line does not.
+        monkeypatch.setenv("COLUMNS", "38")
+        clock = iter([0.0, 599.0])  # the start, the first redraw, then 600 s for every later one
+        monkeypatch.setattr(ui, "_now", lambda: next(clock, 600.0))
+        shorter = threading.Event()
+        writes: list[str] = []
+
+        class _Terminal(io.StringIO):
+            def write(self, s: str) -> int:
+                writes.append(s)
+                if "Deleting the stack" in s and "elapsed" not in s:
+                    shorter.set()
+                return super().write(s)
+
+        monkeypatch.setattr(ui.sys, "stdout", _Terminal())
+        with ui.Spinner("Deleting the stack") as spinner:
+            assert shorter.wait(timeout=10)
+        assert spinner._thread is not None
+        spinner._thread.join(timeout=10)
+        assert not spinner._thread.is_alive()
+        # Each redraw first erases the whole row, so no "9:59 elapsed" tail survives it.
+        assert writes[:2] == [
+            "\033[2K\r  ⠋ Deleting the stack 9:59 elapsed",
+            "\033[2K\r  ⠙ Deleting the stack",
+        ]
+        # The final clear erases the whole row, not just the width of the last line.
+        assert writes[-1] == "\033[2K\r"

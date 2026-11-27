@@ -144,7 +144,7 @@ class TestRenderer:
             ]
         )
         await TurnDriver(provider, _renderer(client), approval_mode="auto").run("hi")
-        assert client.sent == ["✅ Context compacted."]
+        assert client.sent == ["Context compacted."]
         assert "OBJECTIVE" not in "".join(client.sent)
         assert "user guidance" not in "".join(client.sent)
 
@@ -211,10 +211,10 @@ class TestProgressiveOutput:
         await r.on_text_chunk("the answer")
         await r.on_done()
 
-        assert client.sent == ["Running fs_read…"], "exactly one message is posted"
+        assert client.sent == ["🔧 fs_read…"], "exactly one message is posted"
         assert (
             client.updates[-1][1] == "the answer"
-        ), "the answer must EDIT the progress bubble, not leave 'Running …' stranded above it"
+        ), "the answer must EDIT the progress bubble, not leave '🔧 …' stranded above it"
 
     @pytest.mark.asyncio
     async def test_a_chips_only_answer_settles_the_progress_message(self) -> None:
@@ -234,11 +234,11 @@ class TestProgressiveOutput:
         await r.on_text_chunk("[OPTIONS: yes | no]")
         await r.on_done()
 
-        assert client.sent == ["Running fs_read…"]
+        assert client.sent == ["🔧 fs_read…"]
         assert len(client.cards) == 1, "the chips still go out as their own card"
         assert client.updates == [
-            ("mid-1", "Done")
-        ], "with no text to take it over, the 'Running …' bubble must still be settled"
+            ("mid-1", "✅ Done")
+        ], "with no text to take it over, the '🔧 …' bubble must still be settled"
 
     @pytest.mark.asyncio
     async def test_an_answer_after_an_approval_card_lands_below_the_card(self) -> None:
@@ -277,9 +277,9 @@ class TestProgressiveOutput:
             decider.discard_reservations()
 
         assert log == [
-            ("post", "Running execute_bash…"),
+            ("post", "🔧 execute_bash…"),
             ("post", "card"),
-            ("edit mid-1", "Done"),
+            ("edit mid-1", "✅ Done"),
             ("post", "Here is the result."),
         ], "the answer must arrive below the card, not inside the bubble above it"
 

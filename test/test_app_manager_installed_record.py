@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -539,6 +540,53 @@ class TestEnabledStateTellsUnreadableFromNotInstalled:
 
         assert app_enabled_state("shape-probe") is True
 
+    @staticmethod
+    def _link_record_to(app_home, target: Path, *, enabled: bool) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"name": "shape-probe", "enabled": enabled}), encoding="utf-8")
+        app_root = app_home / "apps" / "shape-probe"
+        app_root.mkdir(parents=True)
+        (app_root / "installed.json").symlink_to(target)
+
+    def test_a_link_into_a_protected_location_is_unknown_and_not_read(
+        self, app_home, tmp_path, monkeypatch
+    ):
+        """The record is screened as the owner lookup screens it: a refusal is None."""
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self._link_record_to(app_home, home / ".aws" / "installed.json", enabled=True)
+
+        def no_read(self, *args, **kwargs):
+            raise AssertionError(f"read {self} past the screen")
+
+        monkeypatch.setattr(Path, "read_text", no_read)
+
+        assert app_enabled_state("shape-probe") is None
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_a_link_to_an_ordinary_file_still_reports_its_flag(
+        self, app_home, tmp_path, monkeypatch, enabled
+    ):
+        """The control: the screen refuses protected targets only, not every link."""
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self._link_record_to(app_home, home / "elsewhere" / "installed.json", enabled=enabled)
+
+        assert app_enabled_state("shape-probe") is enabled
+
+    def test_a_regular_record_reads_beside_an_unlistable_apps_entry(self, app_home):
+        """A looped apps entry fences the whole apps folder; a regular record still reads."""
+        app_root = app_home / "apps" / "shape-probe"
+        app_root.mkdir(parents=True)
+        (app_root / "installed.json").write_text(
+            '{"name": "shape-probe", "enabled": true}', encoding="utf-8"
+        )
+        (app_home / "apps" / "loop").symlink_to(app_home / "apps" / "loop")
+
+        assert app_enabled_state("shape-probe") is True
+
 
 class TestEnabledReadsStrictly:
     """Only a JSON boolean ``true`` (or a missing key) reads as enabled.
@@ -661,9 +709,13 @@ class TestListingReusesTheWalk:
 
         walks: list[str] = []
         real = manager_records.os.scandir
+        # manager_records.os is the shared os module, so other callers' one-time
+        # scans of the apps folder (credential masks, orphaned built-ins, the
+        # grants import) reach this patch too; only the listing's own walk counts.
+        listing_walk = manager_records._recorded_app_names.__code__
 
         def counting(path=".", *args, **kwargs):
-            if not isinstance(path, int) and os.fspath(path) == os.fspath(app_home / "apps"):
+            if sys._getframe(1).f_code is listing_walk:
                 walks.append(os.fspath(path))
             return real(path, *args, **kwargs)
 
@@ -682,6 +734,18 @@ class TestListingReusesTheWalk:
 
         assert first == second == ["real-app"]
         assert len(walks) == 1
+
+    def test_a_changed_folder_is_walked_again(self, app_home, monkeypatch):
+        self._record(app_home, "real-app")
+        self._settle(app_home)
+        walks = self._count_walks(monkeypatch, app_home)
+
+        assert [r["name"] for r in list_apps()] == ["real-app"]
+        (app_home / "apps" / "stray" / "data").mkdir(parents=True)
+        self._settle(app_home, ns=self._SETTLED_NS + 1_000_000_000)
+        assert [r["name"] for r in list_apps()] == ["real-app"]
+
+        assert walks == [os.fspath(app_home / "apps")] * 2
 
     def test_an_in_place_record_edit_is_seen(self, app_home):
         self._record(app_home, "real-app", version="1.0.0")
@@ -714,9 +778,12 @@ class TestListingReusesTheWalk:
         clock = ManualClock(start=self._SETTLED_NS / 1e9 + 2)  # inside the 3 s window
         clock.install(monkeypatch, manager_records)
         real_scandir = manager_records.os.scandir
+        # manager_records.os is the shared os module: only the listing's own walk
+        # moves the clock, not another caller's scan of the apps folder.
+        listing_walk = manager_records._recorded_app_names.__code__
 
         def slow_walk(path=".", *args, **kwargs):
-            if not isinstance(path, int) and os.fspath(path) == os.fspath(apps_root):
+            if sys._getframe(1).f_code is listing_walk:
                 clock.advance(5)  # the walk ends past the window
             return real_scandir(path, *args, **kwargs)
 

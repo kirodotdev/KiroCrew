@@ -3,6 +3,7 @@ import { render, screen, act, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { Terminal } from '@xterm/xterm'
 import TerminalCompletion from '../components/TerminalCompletion'
+import { setTerminalCtrlCopyPaste, __resetTerminalFontStore } from '../hooks/useTerminalFont'
 
 /* A minimal xterm stand-in: TerminalCompletion only reads the cursor's screen
  * row, subscribes to cursor/linefeed/render events, registers two OSC handlers
@@ -17,6 +18,7 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
   let row = line
   let wrapped = false
   let hasSel = false
+  let clears = 0
   /** Cell widths, sparse: anything unset is an ordinary single-width cell. */
   const widths = new Map<number, number>()
   /** Cell strings, sparse: anything unset is one code unit wide. */
@@ -48,6 +50,12 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
   const textarea = document.createElement('textarea')
   element.appendChild(textarea)
   let opened = opts.openTerminal !== false
+  const dataCbs: ((data: string) => void)[] = []
+  /** What was typed into xterm through `term.input`. */
+  const inputs: string[] = []
+  /** Keydowns dispatched on the textarea; xterm hands each one to the key handler. */
+  const textareaKeys: [string, number][] = []
+  textarea.addEventListener('keydown', (e) => { textareaKeys.push([e.key, e.keyCode]); keyHandler(e) })
 
   const term = {
     cols: 100,
@@ -68,16 +76,34 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
       return { dispose: () => { renderCbs.splice(renderCbs.indexOf(cb), 1) } }
     },
     attachCustomKeyEventHandler: (h: (e: KeyboardEvent) => boolean) => { keyHandler = h },
+    onData: (cb: (data: string) => void) => {
+      dataCbs.push(cb)
+      return { dispose: () => { dataCbs.splice(dataCbs.indexOf(cb), 1) } }
+    },
+    input: (data: string) => { inputs.push(data); dataCbs.forEach(cb => cb(data)) },
     hasSelection: () => hasSel,
+    clearSelection: () => { hasSel = false },
+    clear: () => {
+      clears += 1
+      buf.baseY = 0
+      buf.cursorY = 0
+    },
   }
   return {
     term: term as unknown as Terminal,
+    /** How many times `term.clear()` (Terminal: Clear) has run. */
+    clears: () => clears,
     /** Give (or clear) an active selection, the way a mouse drag does for real. */
     setSelection: (v: boolean) => { hasSel = v },
     /** Rewrite the cursor's screen row (what the shell's echo does for real). */
     setLine: (next: string) => { row = next },
     /** Move the fake cursor (the shell's own echo does this for real). */
     setCursor: (x: number) => { buf.cursorX = x },
+    /** Place the cursor on an absolute scrollback row. */
+    setBufferPosition: (baseY: number, cursorY: number) => {
+      buf.baseY = baseY
+      buf.cursorY = cursorY
+    },
     /** Switch screens the way vim/less/htop do on start-up. */
     setBufferType: (t: 'normal' | 'alternate') => { buf.type = t },
     /** Mark the cursor row as the continuation of a longer logical line. */
@@ -92,14 +118,30 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
     lineFeed: () => feedCbs.forEach(cb => cb()),
     /** Finish an IME composition on the terminal's textarea. */
     compositionEnd: () => textarea.dispatchEvent(new CompositionEvent('compositionend')),
+    /** Text the browser inserts into the textarea outside a composition. */
+    insertText: (data: string) =>
+      textarea.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data })),
+    /** xterm sending data to the shell. */
+    emit: (data: string) => dataCbs.forEach(cb => cb(data)),
+    inputs,
+    textareaKeys,
     /** Deliver a keydown the way xterm does. Events MUST be cancelable: the
      *  component reserves a key by cancelling the DOM event (returning false
      *  alone does not stop the browser default), so a non-cancelable event
      *  would make `defaultPrevented` silently untestable. */
-    key: (init: KeyboardEventInit) => {
+    key: (init: KeyboardEventInit, xtermCancels = false) => {
       const e = new KeyboardEvent('keydown', { cancelable: true, ...init })
       const handled = keyHandler(e)
+      // xterm cancels Enter, Tab and Escape (and a scroll key) after the handler, sent or not.
+      if (handled && xtermCancels) e.preventDefault()
       return { passedThrough: handled, prevented: e.defaultPrevented }
+    },
+    /** `key`, also reporting whether propagation was stopped (`cancelBubble`
+     *  reads the DOM's stop-propagation flag). */
+    keyStopped: (init: KeyboardEventInit) => {
+      const e = new KeyboardEvent('keydown', { cancelable: true, ...init })
+      keyHandler(e)
+      return e.cancelBubble
     },
     osc,
   }
@@ -108,8 +150,10 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
 const PROMPT = '~/work » '
 
 let sent: string[] = []
+let dropped: string[] = []
 vi.mock('../utils/terminalRegistry', () => ({
   sendRawToTerminalSession: (_id: string, data: string) => { sent.push(data); return true },
+  dropTerminalDataForThisKey: (id: string) => { dropped.push(id) },
 }))
 
 // The find/fullscreen chord is platform-gated (Cmd on macOS, Ctrl elsewhere).
@@ -176,6 +220,7 @@ function pick(h: { key: (init: KeyboardEventInit) => { passedThrough: boolean; p
 
 beforeEach(() => {
   sent = []
+  dropped = []
   vi.useFakeTimers()
 })
 
@@ -634,6 +679,67 @@ describe('TerminalCompletion', () => {
     })
   })
 
+  describe('Ctrl+C / Ctrl+V copy and paste setting', () => {
+    let execCommand: ReturnType<typeof vi.fn>
+    beforeEach(() => {
+      execCommand = vi.fn(() => true)
+      document.execCommand = execCommand as unknown as typeof document.execCommand
+    })
+    afterEach(() => {
+      delete (document as { execCommand?: unknown }).execCommand
+      __resetTerminalFontStore()
+    })
+
+    function mount(on: boolean) {
+      setTerminalCtrlCopyPaste(on)
+      const line = `${PROMPT}cd zzz`
+      const h = makeTerm(line, line.length)
+      renderCompletion(h.term)
+      return h
+    }
+
+    it('on, with a selection: Ctrl+C copies, clears the selection and is consumed', () => {
+      const h = mount(true)
+      h.setSelection(true)
+      const r = h.key({ key: 'c', code: 'KeyC', ctrlKey: true })
+      expect(execCommand).toHaveBeenCalledExactlyOnceWith('copy')
+      expect(r).toEqual({ passedThrough: false, prevented: true })
+      // The selection is gone, so the next Ctrl+C is the shell interrupt again.
+      expect(h.key({ key: 'c', code: 'KeyC', ctrlKey: true })).toEqual({ passedThrough: true, prevented: false })
+      expect(execCommand).toHaveBeenCalledTimes(1)
+    })
+
+    it('on, with no selection: Ctrl+C passes through as the interrupt', () => {
+      const h = mount(true)
+      expect(h.key({ key: 'c', code: 'KeyC', ctrlKey: true })).toEqual({ passedThrough: true, prevented: false })
+      expect(execCommand).not.toHaveBeenCalled()
+    })
+
+    it('on: Ctrl+V is kept from xterm but not cancelled, so the browser pastes', () => {
+      const h = mount(true)
+      expect(h.key({ key: 'v', code: 'KeyV', ctrlKey: true })).toEqual({ passedThrough: false, prevented: false })
+    })
+
+    it('on: matches the letter typed, with the physical key only for a non-Latin layout', () => {
+      const h = mount(true)
+      h.setSelection(true)
+      // Dvorak: the physical C position types `j`, so Ctrl+J stays the shell's.
+      expect(h.key({ key: 'j', code: 'KeyC', ctrlKey: true }).passedThrough).toBe(true)
+      expect(execCommand).not.toHaveBeenCalled()
+      // Cyrillic: `с` is not a Latin letter, so the physical C position copies.
+      expect(h.key({ key: 'с', code: 'KeyC', ctrlKey: true }).passedThrough).toBe(false)
+      expect(execCommand).toHaveBeenCalledExactlyOnceWith('copy')
+    })
+
+    it('off: Ctrl+C with a selection and Ctrl+V both reach xterm unchanged', () => {
+      const h = mount(false)
+      h.setSelection(true)
+      expect(h.key({ key: 'c', code: 'KeyC', ctrlKey: true })).toEqual({ passedThrough: true, prevented: false })
+      expect(h.key({ key: 'v', code: 'KeyV', ctrlKey: true })).toEqual({ passedThrough: true, prevented: false })
+      expect(execCommand).not.toHaveBeenCalled()
+    })
+  })
+
   describe('suppression', () => {
     /** A row the trigger should refuse; returns the mock so callers assert on it. */
     async function attempt(
@@ -919,6 +1025,67 @@ describe('TerminalCompletion', () => {
       // Browsers that report the commit key as keyCode 229 instead.
       expect(h.key({ key: 'Process', keyCode: 229 }).passedThrough).toBe(true)
       expect(sent).toEqual([])
+    })
+
+    // A dead key (AltGr/Option+N for a tilde) composes, and Firefox reports the key that ends
+    // it with its own keyCode: xterm sends the text so far from that keydown, then the commit.
+    it('drops what xterm sends for the key that ends a dead-key composition', () => {
+      const h = makeTerm(PROMPT, PROMPT.length)
+      renderCompletion(h.term)
+      h.key({ key: 'Dead', code: 'KeyN' })
+      const end = h.key({ key: ' ', code: 'Space', keyCode: 32, isComposing: true })
+      // xterm still handles the key, so its own state moves on as before.
+      expect(end).toEqual({ passedThrough: true, prevented: false })
+      expect(dropped).toEqual(['s1'])
+      // The next ordinary key, and the keys of an IME composition, are left alone.
+      h.key({ key: 'n', keyCode: 78 })
+      h.key({ key: 'i', keyCode: 73, isComposing: true })
+      expect(dropped).toEqual(['s1'])
+    })
+
+    // When Space ends the composition, xterm 5.5 keeps its dead-key state and sends nothing for
+    // the next Enter, Backspace or arrow; given the same key again, it sends it.
+    it('hands xterm the key again when nothing reached it after a dead-key composition', () => {
+      const h = makeTerm(PROMPT, PROMPT.length)
+      renderCompletion(h.term)
+      h.key({ key: 'Dead', code: 'KeyN' })
+      h.key({ key: ' ', code: 'Space', keyCode: 32, isComposing: true })
+      h.key({ key: 'b', code: 'KeyB', keyCode: 66 })
+      h.key({ key: 'PageUp', code: 'PageUp', keyCode: 33, shiftKey: true }, true)
+      // A key followed by another before its check runs is not sent after that one.
+      h.key({ key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 })
+      h.key({ key: 'Enter', code: 'Enter', keyCode: 13 }, true)
+      vi.advanceTimersByTime(1)
+      // Only the Enter, once: a printable key reaches xterm by its keypress, Shift+PageUp scrolls.
+      expect(h.textareaKeys).toEqual([['Enter', 13]])
+      // A key xterm sent something for ends it.
+      h.key({ key: 'Backspace', code: 'Backspace', keyCode: 8 })
+      h.emit('\x7f')
+      vi.advanceTimersByTime(1)
+      h.key({ key: 'Enter', code: 'Enter', keyCode: 13 }, true)
+      vi.advanceTimersByTime(1)
+      expect(h.textareaKeys).toEqual([['Enter', 13]])
+    })
+
+    // Without an input method, Firefox commits the character as an `insertText` after
+    // `compositionend`, and xterm's own read on `compositionend` can find nothing yet.
+    it('forwards a dead key\'s character that lands after the composition ends', () => {
+      const h = makeTerm(PROMPT, PROMPT.length)
+      renderCompletion(h.term)
+      h.key({ key: 'Dead', code: 'KeyN' })
+      h.key({ key: 'a', code: 'KeyA', keyCode: 65, isComposing: true })
+      h.compositionEnd()
+      h.insertText('\u00e3')
+      vi.advanceTimersByTime(1)
+      expect(h.inputs).toEqual(['\u00e3'])
+      // When xterm's read found it, it is not sent again.
+      h.key({ key: 'Dead', code: 'KeyN' })
+      h.key({ key: ' ', code: 'Space', keyCode: 32, isComposing: true })
+      h.compositionEnd()
+      h.emit('~')
+      h.insertText('~')
+      vi.advanceTimersByTime(1)
+      expect(h.inputs).toEqual(['\u00e3'])
     })
 
     it('passes through the Enter that ends composition', async () => {
@@ -1340,5 +1507,129 @@ describe('TerminalCompletion — find/fullscreen chords, non-macOS (#10176/#9906
     expect(h.key({ key: 'f', code: 'KeyF', metaKey: true, ctrlKey: true }).passedThrough).toBe(true)
     expect(onOpenSearch).not.toHaveBeenCalled()
     expect(onToggleFullscreen).not.toHaveBeenCalled()
+  })
+})
+
+/* The user's "Clear terminal" chord (Settings → Shortcuts). It is answered by
+ * this handler alone, so these tests pin the three things that make sharing ⌘K
+ * with Search Everywhere work: the terminal clears, the keystroke stops here
+ * (no shell byte, no bubbling to the window-level palette listener), and an
+ * unbound or disabled chord is left exactly as before. */
+describe('TerminalCompletion — Clear terminal chord', () => {
+  const bindClear = (chord: Record<string, unknown> | null) =>
+    localStorage.setItem('mc-panel-toggle-shortcuts', JSON.stringify({ 'terminal-clear': chord }))
+
+  beforeEach(() => { platformMock.isMac = true })
+  afterEach(() => {
+    platformMock.isMac = false
+    localStorage.clear()
+  })
+
+  it('leaves ⌘K alone while Clear terminal is unbound (the default)', () => {
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.clears()).toBe(0)
+    expect(r.passedThrough).toBe(true)
+    expect(r.prevented).toBe(false)
+  })
+
+  it('clears on the bound chord and stops the keystroke at the terminal', () => {
+    bindClear({ key: 'k', mod: true })
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.clears()).toBe(1)
+    // Not sent to the shell, and not bubbled to the window-level Search
+    // Everywhere listener that also answers ⌘K.
+    expect(r.passedThrough).toBe(false)
+    expect(r.prevented).toBe(true)
+    expect(h.keyStopped({ key: 'k', code: 'KeyK', metaKey: true })).toBe(true)
+    expect(h.clears()).toBe(2)
+  })
+
+  it('does not reopen completion when a pending listing resolves after clear', async () => {
+    bindClear({ key: 'k', mod: true })
+    let release!: () => void
+    const fetchMock = vi.fn(() => new Promise(resolve => {
+      release = () => resolve({
+        ok: true,
+        json: async () => ({
+          entries: [{ name: 'docs', dir: true }],
+          prefix: 'doc',
+          dir: '/work',
+          truncated: false,
+        }),
+      })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const line = `${PROMPT}cd doc`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+
+    await act(async () => { h.moveCursor(); await vi.advanceTimersByTimeAsync(100) })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await act(async () => { h.key({ key: 'k', code: 'KeyK', metaKey: true }) })
+    await act(async () => {
+      release()
+      for (let i = 0; i < 3; i += 1) await vi.advanceTimersByTimeAsync(1)
+    })
+
+    expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
+    expect(h.key({ key: 'ArrowDown' })).toEqual({ passedThrough: true, prevented: false })
+    expect(h.key({ key: 'Tab' })).toEqual({ passedThrough: true, prevented: false })
+  })
+
+  it('keeps the OSC prompt boundary after clearing a high scrollback row', async () => {
+    bindClear({ key: 'k', mod: true })
+    const exotic = 'diwm@host ~/work ⟩⟩ '
+    const h = makeTerm(exotic, exotic.length)
+    h.setBufferPosition(70, 3)
+    const fetchMock = mockComplete([{ name: 'docs', dir: true }], 'doc')
+    vi.stubGlobal('fetch', fetchMock)
+    renderCompletion(h.term)
+    expect(h.osc[133]('B')).toBe(true)
+
+    h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.term.buffer.active.baseY).toBe(0)
+    expect(h.term.buffer.active.cursorY).toBe(0)
+    const line = `${exotic}cd doc`
+    h.setLine(line)
+    h.setCursor(line.length)
+    await trigger(h)
+
+    expect(screen.getByTestId('terminal-completion')).toHaveAttribute('data-mode', 'path')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      session_id: 's1', token: 'doc', folders_only: true,
+    })
+  })
+
+  it('does not clear on the opposite primary modifier (Ctrl+K on a Mac is the shell\'s kill-line)', () => {
+    bindClear({ key: 'k', mod: true })
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', ctrlKey: true })
+    expect(h.clears()).toBe(0)
+    expect(r.passedThrough).toBe(true)
+  })
+
+  it('honours the global "Enable shortcuts" toggle', () => {
+    bindClear({ key: 'k', mod: true })
+    localStorage.setItem('mc-keyboard-shortcuts', '0')
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.clears()).toBe(0)
+    expect(r.passedThrough).toBe(true)
+  })
+
+  it('picks up a binding recorded after mount, with no remount', () => {
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    expect(h.key({ key: 'p', code: 'KeyP', metaKey: true, shiftKey: true }).passedThrough).toBe(true)
+    bindClear({ key: 'p', mod: true, shift: true })
+    const r = h.key({ key: 'p', code: 'KeyP', metaKey: true, shiftKey: true })
+    expect(h.clears()).toBe(1)
+    expect(r.prevented).toBe(true)
   })
 })

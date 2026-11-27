@@ -113,3 +113,24 @@ def test_usage_switched_off_is_not_a_failure():
     view = people.people_view(ALICE, [])
     assert view["usage_available"] is False
     assert view["usage_off"] is True
+
+
+def test_a_teammate_reads_the_owner_row_by_the_owners_one_name(monkeypatch):
+    """A session the owner started keeps the label stamped then (the machine name);
+    every reader gets `owner_name`, so the owner and their relay row count once."""
+    from dataclasses import replace
+
+    from kiro_crew.shared_crew import owner
+    from kiro_crew.shared_crew.contracts import DisplaySnapshot
+
+    monkeypatch.setattr(owner, "owner_name", lambda **_: "owner@example.com")
+    stamped = local_operator_principal("local-app")
+    stamped = replace(stamped, display=DisplaySnapshot(name="linux-e2e", login=""))
+    view = people.people_view(ALICE, [_row(stamped)])
+    (row,) = [r for r in view["people"] if r["is_owner"]]
+    assert row["principal"]["display"]["name"] == "owner@example.com"
+    assert all(
+        r["principal"]["display"]["name"] != "owner@example.com"
+        for r in view["people"]
+        if not r["is_owner"]
+    )

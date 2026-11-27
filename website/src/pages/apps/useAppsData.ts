@@ -357,6 +357,7 @@ function normalizeRegistryFetchFailures(value: unknown): RegistryFetchFailure[] 
       name: s.name,
       cause: typeof s.cause === 'string' ? s.cause : undefined,
       host: typeof s.host === 'string' && s.host ? s.host : undefined,
+      repo: typeof s.repo === 'string' && s.repo ? s.repo : undefined,
       cached: s.cached === true,
     }]
   })

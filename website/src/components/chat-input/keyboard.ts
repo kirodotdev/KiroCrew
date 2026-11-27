@@ -12,7 +12,7 @@ import type { usePromptHistory } from './draftHistory'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import type { MentionKeyMods } from './props'
-import type { StopTurnOnEscape } from './stopKey'
+import type { ComposerEscapeKey } from './optimizeEscape'
 import { applyTextareaListBreak, isAndroid, writeTextareaEdit } from './listContinuation'
 import { listIndentEdit } from '../composerListIndent'
 
@@ -74,7 +74,10 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
     if (!control) return
     prevAutoFocusKeyRef.current = autoFocusKey
     if (activeElementIsEditable()) return
-    control.focus()
+    // The composer sits in its dock on screen, so there is nothing to scroll
+    // to; without `preventScroll` the browser lays out the whole page to find
+    // out, inside the commit that opens a session.
+    control.focus({ preventScroll: true })
   }, [autoFocusKey, disabled, isMobile, composerControl, lexicalControlRevision])
 
   // Global "/" shortcut to focus chat input (like GitHub, YouTube, Slack).
@@ -108,7 +111,7 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
 
-export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape }: {
+export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, escapeKey }: {
   rawPasteRef: React.MutableRefObject<boolean>
   handleUndoKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
   endUndoBurst: () => void
@@ -131,15 +134,10 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   valueRef: React.MutableRefObject<string>
   inputRef: React.RefObject<HTMLTextAreaElement>
   pasteBlocksRef: React.RefObject<PasteBlock[]>
-  /** A bare Escape with the prompt box focused: stop the running turn on this
-   *  slot (soft cancel; a second Escape after the arm window force-kills, via
-   *  the same onStop protocol the Stop button runs). Returns true when it
-   *  claimed the key, so the handler stops before Escape reaches undo/Tab/
-   *  history. The caller owns precedence: it returns false when a picker,
-   *  dictation, an approval, a dialog, IME composition or voice read-back
-   *  owns Escape, or when
-   *  no turn is running (issue #22315). */
-  stopTurnOnEscape?: StopTurnOnEscape
+  /** A bare Escape with the prompt box focused: cancel an in-flight optimize
+   *  (optimizeEscape.ts). Returns true when it claimed the key, so the handler
+   *  stops before Escape reaches undo/Tab/history. Escape never stops a turn. */
+  escapeKey?: ComposerEscapeKey
 }) {
   // Set by a bare Escape and spent by the next key: Esc then Tab always moves
   // focus, so a draft made only of list lines is never a keyboard trap.
@@ -150,13 +148,9 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     if (!MODIFIER_KEYS.has(e.key)) {
       escapedRef.current = e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
     }
-    // Escape stops the running turn on this slot (issue #22315). Runs before
-    // undo/Tab/history so it owns a bare Escape when a turn is running, but the
-    // callback yields when a picker, dictation, an approval, a dialog or IME
-    // composition owns Escape first (see useComposerStopKey; `ime` supplies the
-    // textarea's composition verdict), so dictation-
-    // discard and picker-close keep Escape exactly as they do today.
-    if (e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && stopTurnOnEscape?.(e, { native: e.nativeEvent, composing: ime.isComposing(e) })) return
+    // A bare Escape cancels an in-flight optimize; the gate yields when a
+    // picker, dictation, an approval, a dialog or IME composition owns Escape.
+    if (e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && escapeKey?.(e, { native: e.nativeEvent, composing: ime.isComposing(e) })) return
     // Cmd/Ctrl+Shift+V (or Cmd+Option+Shift+V on macOS) → next paste inserts
     // full text inline (no chip collapse).
     // Self-clearing: any other keydown resets the flag so it only ever affects
@@ -171,9 +165,10 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // Tab / Shift+Tab on a list line indents or outdents that line, and over a
     // selection of several lines every list line in it (composerListIndent).
     // Everything else keeps Tab's focus move, as does a Tab straight after
-    // Escape, and an open suggestion menu owns Tab even when it has no rows.
+    // Escape or in a read-only composer, and an open suggestion menu owns Tab
+    // even when it has no rows.
     if (e.key === 'Tab' && !escaped && !e.metaKey && !e.ctrlKey && !e.altKey &&
-      !optimizingRef.current && !anyPickerOpenRef.current) {
+      !optimizingRef.current && !e.currentTarget.readOnly && !anyPickerOpenRef.current) {
       const ta = e.currentTarget
       const edit = listIndentEdit(valueRef.current, ta.selectionStart ?? 0, ta.selectionEnd ?? 0, e.shiftKey)
       if (edit) {
@@ -199,10 +194,10 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // leaves a half-reference whose chip then silently unstages (#14675). Runs
     // in the same slot as the paste-token atom, before Enter/history, so the
     // mention never reaches the default one-character edit. Skipped while the
-    // optimizer runs: the textarea is readOnly then, so a Backspace next to a
-    // mention must not unstage its chip and make the optimizer discard its
+    // textarea is readOnly (optimizing, disabled): a Backspace next to a
+    // mention must not unstage its chip, nor make the optimizer discard its
     // result on the now-shorter draft (crew-pr-reviewer).
-    if (onMentionKey && !ime.isComposing(e) && !optimizingRef.current) {
+    if (onMentionKey && !ime.isComposing(e) && !optimizingRef.current && !e.currentTarget.readOnly) {
       const ta = e.currentTarget
       const mods = { meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey }
       const edit = onMentionKey(valueRef.current, ta.selectionStart ?? 0, ta.selectionEnd ?? 0, e.key, mods)
@@ -316,7 +311,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
     ) return
     promptHistory.recall(e, { sentMessages, current: valueRef.current, blocks: pasteBlocksRef.current ?? [], onChange, onBlocksChange: onPasteBlocksChange, inputRef })
-  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape])
+  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, escapeKey])
 }
 
 /** The `beforeinput` inputTypes the mention value-change seam handles: a

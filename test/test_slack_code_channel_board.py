@@ -15,6 +15,7 @@ import dataclasses
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field, replace
@@ -23,6 +24,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from push_guard_helpers import _fixture_git_env
 from slack_sdk.errors import SlackApiError
 
 from kiro_crew.dashboard.handlers import worktree as wt
@@ -53,6 +55,11 @@ def _passthrough_spawn(argv, mode="standard", **kw):
 def _no_sandbox(_floor_monkeypatch):
     _floor_monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
     _floor_monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", _passthrough_spawn)
+    # These tests prove the board, not hook handling: the hook scan starts three gits
+    # before every git read. Both names that bind it are stubbed (`wt` for `_run_git`,
+    # `git_ops` for the capped diff reader); test_git_config_hooks.py covers both.
+    _floor_monkeypatch.setattr(wt, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
+    _floor_monkeypatch.setattr(git_ops, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
 
 
 class _LiveConfig:
@@ -197,7 +204,7 @@ def test_aggregate_line_and_overall_state():
         _row("it_00000004", model.WAITING_ON_YOU),
         _row("it_00000005", model.DONE),
     ]
-    assert model.aggregate_line(rows) == "3 working · 1 waiting on you · 1 of 5 done"
+    assert model.aggregate_line(rows) == "1 needs you · 3 working · 1 of 5 done"
     assert model.overall_state(rows) == model.OVERALL_NEEDS_YOU
     assert model.aggregate_line([_row(state=model.WORKING)]) == "1 working · 0 of 1 done"
     assert model.aggregate_line([_row(state=model.CLOSED)]) == "1 closed · 0 of 1 done"
@@ -332,6 +339,10 @@ def test_read_board_projects_only_the_published_set_with_liveness():
         "pr_state",
         "pr_ci",
         "pr_checks",
+        # Who stopped the worker from the Workers tab, and when (model's
+        # published set; cleared by the worker's next turn).
+        "stopped_by",
+        "stopped_at",
     }
 
 
@@ -468,13 +479,14 @@ def test_board_blocks_show_header_rows_and_links():
     context, plan = blocks
     assert context["elements"][0]["text"].startswith("Work board · updated 10:00 UTC · <https://")
     assert "Open the lead session in the dashboard" in context["elements"][0]["text"]
-    assert plan["type"] == "plan" and plan["title"] == "1 working · 1 waiting on you · 0 of 2 done"
-    first, second = plan["tasks"]
-    assert first["task_id"] == "it_00000001" and first["title"] == "Fix login"
+    assert plan["type"] == "plan" and plan["title"] == "1 needs you · 1 working · 0 of 2 done"
+    # Most urgent first: the row that needs the owner leads the working one.
+    second, first = plan["tasks"]
+    assert first["task_id"] == "it_00000001" and first["title"] == "Working: Fix login"
     # Working keeps the spinner; the row waiting on the person gets the empty circle.
     assert first["status"] == "in_progress" and second["status"] == "pending"
     assert "output" not in first and "sources" not in first  # no PR on the board
-    assert second["title"] == "Waiting on you: Pick an icon"
+    assert second["title"] == "Needs you: Pick an icon"
     waiting = second["details"]["elements"][0]["elements"]
     # The row that needs the owner links to where they act on it; the others don't.
     waiting_row = _snapshot().rows[1]
@@ -487,7 +499,7 @@ def test_board_blocks_show_header_rows_and_links():
     working = first["details"]["elements"][0]["elements"]
     assert not any(e.get("type") == "link" for e in working)
     assert render.fallback_text(_snapshot()) == (
-        "Work board: 1 working · 1 waiting on you · 0 of 2 done"
+        "Work board: 1 needs you · 1 working · 0 of 2 done"
     )
     # No custom emoji anywhere: Slack's own status marks are the only ones.
     assert not re.search(r":[a-z_]+:", json.dumps(blocks))
@@ -708,23 +720,42 @@ def test_publisher_respects_policy_archive_and_stop(slack, monkeypatch):
 # ── workspace integration: debounce, combined diff, bar, PRs ────────────────
 
 
-@pytest.fixture
-def repo(tmp_path) -> Path:
-    remote = tmp_path / "remote.git"
-    _git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
-    root = tmp_path / "proj"
+@pytest.fixture(scope="module")
+def _repo_template(tmp_path_factory) -> Path:
+    """A bare ``remote.git`` and a clone ``proj`` on ``main``, built once per module.
+
+    It runs before the per-test git floor applies, so its git calls use the scrubbed
+    fixture env: no host config, templates, hooks or maintenance reach it.
+    """
+    base = tmp_path_factory.mktemp("board-repo")
+    env = _fixture_git_env()
+
+    def git(*args: str, cwd: Path) -> None:
+        subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
+
+    remote = base / "remote.git"
+    git("init", "-q", "--bare", "-b", "main", str(remote), cwd=base)
+    root = base / "proj"
     root.mkdir()
-    _git("init", "-q", "-b", "main", cwd=root)
+    git("init", "-q", "-b", "main", cwd=root)
     for key, value in (("user.email", "t@example.com"), ("user.name", "T"), ("gc.auto", "0")):
-        _git("config", key, value, cwd=root)
+        git("config", key, value, cwd=root)
     (root / "README.md").write_text("hello\n")
-    _git("add", ".", cwd=root)
-    _git("commit", "-q", "-m", "init", cwd=root)
-    _git("remote", "add", "origin", "https://github.com/acme/widgets.git", cwd=root)
-    _git("push", "-q", str(remote), "main:main", cwd=root)
-    _git("fetch", "-q", str(remote), "+refs/heads/*:refs/remotes/origin/*", cwd=root)
-    _git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
-    return root
+    git("add", ".", cwd=root)
+    git("commit", "-q", "-m", "init", cwd=root)
+    git("remote", "add", "origin", "https://github.com/acme/widgets.git", cwd=root)
+    git("push", "-q", str(remote), "main:main", cwd=root)
+    git("fetch", "-q", str(remote), "+refs/heads/*:refs/remotes/origin/*", cwd=root)
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
+    return base
+
+
+@pytest.fixture
+def repo(tmp_path, _repo_template) -> Path:
+    """A private copy of :func:`_repo_template` under *tmp_path*; returns the clone."""
+    for name in ("remote.git", "proj"):
+        shutil.copytree(_repo_template / name, tmp_path / name, symlinks=True)
+    return tmp_path / "proj"
 
 
 @dataclass
@@ -1077,7 +1108,8 @@ def test_totals_count_every_item_and_open_rows_are_always_shown():
     snap = model.BoardSnapshot(rows=tuple(rows))
     assert snap.total == 26 and snap.done == 25 and snap.overall == model.OVERALL_NEEDS_YOU
     assert len(snap.shown) == model.MAX_SHOWN and snap.omitted == 6
-    assert snap.shown[-1].title == "Late question"
+    # The open row is always among the shown ones, and leads them.
+    assert snap.shown[0].title == "Late question"
     rows_look = render.board_blocks(snap, _link, look="rows")
     assert "+6 more items" in str(rows_look[-1])
     # The plan shows every row up to Slack's 50 tasks.
@@ -1383,8 +1415,8 @@ def test_a_pending_approval_row_says_what_it_asks_and_counts_as_waiting_on_you(m
     first, second = snap.rows
     assert first.state == model.WAITING_ON_YOU and first.approval_tool == "a command"
     assert second.approval_tool == ""  # no approval pending: nothing on the row
-    assert "*Waiting on you:* approve" in render.row_text(first, _link)
-    assert "1 waiting on you" in snap.aggregate and "1 working" in snap.aggregate
+    assert "*Needs you:* approve" in render.row_text(first, _link)
+    assert "1 needs you" in snap.aggregate and "1 working" in snap.aggregate
     assert render.needs_you_text(first, "U1", _link).count("approve a command") == 1
 
 
@@ -1441,7 +1473,7 @@ def test_the_approval_phrase_is_a_closed_vocabulary(monkeypatch, kind, words):
 def test_an_approval_of_an_unknown_kind_still_reads_as_waiting_on_you(monkeypatch):
     snap = _approval_board(monkeypatch, "rm -rf / <!here>")
     assert snap.rows[0].approval_tool == ""
-    assert model.row_label(snap.rows[0]) == "waiting on you: approve a tool"
+    assert model.row_label(snap.rows[0]) == "needs you: approve a tool"
 
 
 # ── first-dispatch edges ────────────────────────────────────────────────────

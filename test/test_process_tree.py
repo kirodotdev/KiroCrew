@@ -200,7 +200,8 @@ class TestDirectChildren:
     def _posix(self, _floor_monkeypatch):
         """Every case here takes a POSIX branch, so Windows runners pin it too."""
         _floor_monkeypatch.setattr(
-            "kiro_crew.acp.client.platform_compat", SimpleNamespace(IS_WINDOWS=False)
+            "kiro_crew.acp.client.platform_compat",
+            SimpleNamespace(IS_WINDOWS=False, trusted_system_bin=lambda name: f"/usr/bin/{name}"),
         )
 
     def test_proc_children_parsed(self, monkeypatch):
@@ -273,7 +274,7 @@ class TestDirectChildren:
         ):
             mock_sys.platform = "linux"
             assert _direct_children(100) == [4242]
-        assert sub.check_output.call_args[0][0][:2] == ["pgrep", "-P"]
+        assert sub.check_output.call_args[0][0][:2] == ["/usr/bin/pgrep", "-P"]
 
     def test_a_task_vanishing_mid_walk_keeps_the_children_already_read(self, monkeypatch):
         """A task that exits mid-scan costs neither the children read nor a pgrep."""

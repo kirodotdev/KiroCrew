@@ -18,6 +18,7 @@ from kiro_crew.constants import (
     SUBAGENT_COMPLETION_META_KEY,
     SUBAGENT_COMPLETION_PREFIX,
 )
+from kiro_crew.messaging.alternation_echo import is_stored_echo_row
 from kiro_crew.preview_text import drop_format_chars
 
 SESSION_RELOAD_KIND = "session_reload"
@@ -115,7 +116,7 @@ def session_reload_failed_notice(error: BaseException) -> str:
 
     detail = redact_and_truncate(str(error), _SESSION_RELOAD_ERROR_MAX_CHARS)
     return (
-        "⚠️ The reloaded agent did not start. The next message starts it again. "
+        "Warning: The reloaded agent did not start. The next message starts it again. "
         f"Last error: {detail or type(error).__name__}"
     )
 
@@ -158,10 +159,15 @@ _SUBAGENT_AGENT_HEADER_RE = re.compile(r"^Agent `[^`\n]+`(?: \([^)\n]*\))?([^\n]
 #: The card refuses a per-agent header with no outcome glyph beside the id
 #: ("degrade to normal rendering rather than guessing an outcome"), so a user who
 #: pastes `[Subagent completion event]\nAgent \`demo\`` back into the chat is
-#: drawn -- and must be quoted here too. Same glyph set as the frontend.
-_SUBAGENT_OUTCOME_GLYPH_RE = re.compile("[✅❌⏹⚠]")
+#: drawn -- and must be quoted here too. Same glyph set as the frontend: the
+#: glyphs are what saved history carries, the leading outcome word what current
+#: gateways write.
+_SUBAGENT_OUTCOME_GLYPH_RE = re.compile("[\u2705\u274c\u23f9\u26a0]")  # emoji-ok: old saved lead
+_SUBAGENT_OUTCOME_WORD_RE = re.compile(r"^\s*(?:completed|failed|stopped|interrupted)\b")
 _SUBAGENT_WAVE_RE = re.compile(
-    r"^Batch results \d+/\d+ — wave finished: \d+ ✅ · \d+ ❌ · \d+ ⏹ of \d+ agents\.", re.M
+    r"^Batch results \d+/\d+ — wave finished: \d+ (?:\u2705|completed) · \d+ (?:\u274c|failed)"
+    r" · \d+ (?:\u23f9|stopped) of \d+ agents\.",
+    re.M,
 )
 _SUBAGENT_CHUNK_RE = re.compile(
     r"^Batch results \d+/\d+ — \d+ of \d+ delivered, \d+ still running\.", re.M
@@ -198,14 +204,19 @@ def is_subagent_completion_row(content: object, meta: object) -> bool:
     if batch:
         return bool(_SUBAGENT_WAVE_RE.search(head) or _SUBAGENT_CHUNK_RE.search(head))
     header = _SUBAGENT_AGENT_HEADER_RE.search(head)
-    return header is not None and _SUBAGENT_OUTCOME_GLYPH_RE.search(header.group(1)) is not None
+    if header is None:
+        return False
+    status = header.group(1)
+    return bool(
+        _SUBAGENT_OUTCOME_GLYPH_RE.search(status) or _SUBAGENT_OUTCOME_WORD_RE.match(status)
+    )
 
 
 #: Roles whose text is something a person or the agent SAID to the other.
 SPEECH_ROLES: frozenset[str] = frozenset({"user", "assistant"})
 
 
-def is_speech_row(role: object, content: object, meta: object) -> bool:
+def is_speech_row(role: object, content: object, meta: object, *, variants: object = None) -> bool:
     """True for a row that is speech: a user or assistant row with visible text
     that is neither a system notice, nor a sub-agent completion envelope, nor
     -- under the assistant role only -- a well-formed workflow-completion
@@ -218,6 +229,9 @@ def is_speech_row(role: object, content: object, meta: object) -> bool:
     roster preview reads it so the row beside the chat quotes what the chat
     shows -- a compaction summary or a workflow envelope would otherwise
     overwrite the last thing the member said while the chat hides it.
+
+    *variants* are the row's own: a placeholder an older Regenerate kept with
+    variants stays speech, as the chat draws it.
     """
     if role not in SPEECH_ROLES:
         return False
@@ -225,7 +239,17 @@ def is_speech_row(role: object, content: object, meta: object) -> bool:
         return False
     # The say-nothing reply a quiet patrol ends on is a bare U+200B: format
     # characters only, truthy as a string, invisible on screen. Not speech.
-    if not (isinstance(content, str) and drop_format_chars(content).strip()):
+    # Nor is a reply that is only kiro-cli's [STEERING steer-…] ack: the chat
+    # strips it and draws no Steered chip there.
+    if not isinstance(content, str):
+        return False
+    from kiro_crew.messaging.driver import strip_steering_markers
+
+    visible = strip_steering_markers(content) if role == "assistant" else content
+    if not drop_format_chars(visible).strip():
+        return False
+    # The backend's alternation placeholder, which the chat sends as the say-nothing reply.
+    if is_stored_echo_row({"role": role, "content": content, "meta": meta, "variants": variants}):
         return False
     if is_subagent_completion_row(content, meta):
         return False

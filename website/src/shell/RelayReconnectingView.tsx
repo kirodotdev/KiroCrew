@@ -33,6 +33,8 @@ export function RelayReconnectingView({ cover }: { cover: OfflineCover }) {
       role={host ? undefined : 'status'}
       aria-live={host ? undefined : 'polite'}
       data-testid={host ? 'host-offline' : 'relay-reconnecting'}
+      // Up, it is outside <main>, so a relay Crew tab's native pane would paint over it.
+      data-relay-pane-overlay={cover ? '' : undefined}
       className={cover ? 'absolute inset-0 z-40 flex items-center justify-center bg-bg px-6 text-center' : 'sr-only'}
     >
       {cover && (

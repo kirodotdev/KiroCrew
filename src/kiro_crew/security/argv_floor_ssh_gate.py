@@ -11,15 +11,13 @@ here for the same reason.
 
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the glob
-characters from ``argv_floor_hosts``, below it, and nothing else from the argv floor; it
-reads the ANSI-C quote decoder from ``shell_normalizer``.
+characters and their matcher from ``argv_floor_hosts``, below it, and nothing else from the
+argv floor; it reads the ANSI-C quote decoder from ``shell_normalizer``.
 """
 
 from __future__ import annotations
 
-import fnmatch
-
-from .argv_floor_hosts import _GLOB_CHARS
+from .argv_floor_hosts import _GLOB_CHARS, _glob_matches
 from .shell_normalizer import _decode_shell_quoted_literals
 
 _SSH_FAMILY_VERBS: frozenset[str] = frozenset({"ssh", "scp", "sftp", "rsync"})
@@ -110,7 +108,7 @@ def _glob_can_name_ssh_verb(probe: str) -> bool:
             continue
         base = word.rsplit("/", 1)[-1]
         for verb in _SSH_FAMILY_VERBS:
-            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
+            if _glob_matches(verb, base) or _glob_matches(verb + ".exe", base):
                 return True
     return False
 

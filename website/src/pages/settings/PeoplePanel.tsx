@@ -1,83 +1,30 @@
-/** Settings > People: who this Crew has seen, kept apart from any authoritative
- *  assigned-user directory, each row labelled with where its evidence came from
- *  and, when the Crew can tell, how much work that person has active and queued.
+/** Settings > People: how people reach this Crew, and who has.
  *
- *  Access to a Crew is decided by the network and the sign-in in front of it.
- *  The in-Crew control is the owner's one Invite… entry
- *  (`InviteEntry` in `TailscaleInvites.tsx`), which shares this machine through
- *  Tailscale and admits the login that accepted. Tailscale access rules decide
- *  direct-link access, and people are managed (and removed) in Tailscale.
- *  Each section keeps a heading and at most one short line.
- *  There is no role or admin control, and no
- *  management URL is ever taken from a peer or from config. An enterprise Crew
- *  points to its console only when its capabilities say one is configured.
+ *  Top to bottom: the connection sources (`PeopleSources.tsx`), one card per
+ *  source and all of them at once, read from the mode route's `sources`; then
+ *  the one People list (`PeopleCrew.tsx`), each row with the chip of the source
+ *  it came in through, and invites nobody has used yet; then, for the owner, a
+ *  collapsed Advanced section (`PeopleAdvanced.tsx`).
  *
- *  The surface follows the Crew's mode (`GET /api/shared-crew/mode`), and the
- *  modes never mix (`PeopleModes.tsx`): a personal Crew shows the setup empty
- *  state (`SharedAccessSetup`); a network Crew shows the connect card and the
- *  People list (`PeopleCrew.tsx`); a Console Crew shows read-only Team Access
- *  and its Console link only; an invalid team setup shows an error, never the
- *  personal surface. The owner of a personal or network Crew also gets a
- *  collapsed Advanced section (`PeopleAdvanced.tsx`). */
+ *  Access to a Crew is decided by each source and the sign-in in front of it.
+ *  The in-Crew controls are the owner's invite buttons on the Tailscale and AWS
+ *  SSM cards; a teammate sees them locked. There is no role or admin control,
+ *  and no management URL is ever taken from a peer or from config: an
+ *  organization Console is linked only when the server validated its URL.
+ *
+ *  An invalid team setup shows an error, never the sources (`PeopleModes.tsx`).
+ *  A Crew that cannot say who people are shows why instead of the list. */
 import { Users } from 'lucide-react'
-import { SettingsCard, SettingsSection } from '../../components/settings'
-import { Badge, Btn, ContentSkeleton, EmptyState } from '../../components/ui'
+import { Btn, ContentSkeleton, EmptyState } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
-import { capabilityUsable, membershipPointer, principalInitials, principalName, sharedAccessConfigured, type PeopleRow, type PeopleSource } from '../../api/sharedCrewUi'
-import { SharedAccessSetup } from './SharedAccessSetup'
-import { ConsoleAccess, TeamConfigInvalid } from './PeopleModes'
+import { capabilityUsable, membershipPointer, sharedAccessConfigured } from '../../api/sharedCrewUi'
+import { TeamConfigInvalid } from './PeopleModes'
 import { PeopleAdvanced } from './PeopleAdvanced'
-import { PeopleList, PersonalWaiting, ShareHero, useCanInvite, useOwnerRead } from './PeopleCrew'
-import { InviteEntry } from './TailscaleInvites'
-import { avatarUrl } from '../../api/sharedCrewInvites'
-import { effectiveMode } from '../../api/sharedCrewMode'
+import { PeopleList, PersonalWaiting, useOwnerRead } from './PeopleCrew'
+import { PeopleSources } from './PeopleSources'
+import { connectionSources, effectiveMode, rowSourceFallback } from '../../api/sharedCrewMode'
 import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople, useViewerIsNotOwner } from '../../hooks/sharedCrew/useSharedCrew'
-import { fmtDateTime, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-
-function sourceLabel(source: PeopleSource): string {
-  switch (source) {
-    case 'directory': return i18nT('sharedCrew.source_directory')
-    case 'session_creator': return i18nT('sharedCrew.source_session_creator')
-    default: return i18nT('sharedCrew.source_observed')
-  }
-}
-
-function PersonRow({ row, usageAvailable }: { row: PeopleRow; usageAvailable: boolean }) {
-  const name = row.member?.alias || principalName(row.principal) || i18nT('sharedCrew.unattributed')
-  const login = row.principal.display.login
-  return (
-    <li className="flex items-start gap-3 py-2 min-w-0" data-testid={`person-${row.principal.id}`}>
-      {row.member?.avatar_id ? (
-        <img src={avatarUrl(row.member.avatar_id)} alt="" className="w-8 h-8 rounded-full object-cover shrink-0" data-testid="person-avatar" />
-      ) : (
-        <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-bg-hover text-text text-[12px] font-semibold shrink-0" aria-hidden>
-          {principalInitials(row.principal)}
-        </span>
-      )}
-      <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-        <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          <span className="text-sm font-medium text-text-strong truncate max-w-full" title={name}>{name}</span>
-          {row.is_viewer && <Badge variant="muted">{i18nT('sharedCrew.you')}</Badge>}
-          {row.principal.kind === 'machine' && <Badge variant="muted">{i18nT('sharedCrew.kind_machine')}</Badge>}
-          {row.sources.map(s => <Badge key={s} variant="aim">{sourceLabel(s)}</Badge>)}
-        </div>
-        {login && login !== name && <span className="text-[12px] text-muted truncate" title={login}>{login}</span>}
-        <span className="text-[12px] text-muted">
-          {row.last_seen_at ? i18nT('sharedCrew.last_seen', { when: fmtDateTime(row.last_seen_at * 1000) }) : null}
-          {(row.sessions_created ?? 0) > 0 && (
-            <>{row.last_seen_at ? <span aria-hidden>{'\u00A0·\u00A0'}</span> : null}{i18nT('sharedCrew.sessions_created', { n: fmtNumber(row.sessions_created ?? 0) })}</>
-          )}
-        </span>
-        {usageAvailable && row.usage && (
-          <span className="text-[12px] text-muted" data-testid="person-usage">
-            {i18nT('sharedCrew.usage_line', { active: fmtNumber(row.usage.active), queued: fmtNumber(row.usage.queued) })}
-          </span>
-        )}
-      </div>
-    </li>
-  )
-}
 
 export function PeoplePanel() {
   const caps = useSharedCrewCapabilities()
@@ -115,54 +62,41 @@ function PeopleContent({ capabilities, data, modeData }: {
   modeData: ReturnType<typeof useSharedCrewMode>['data']
 }) {
   const pointer = membershipPointer(capabilities.membership_link)
-  const canInvite = useCanInvite()
   const ownerRead = useOwnerRead()
   const { notOwner } = useViewerIsNotOwner()
+  const rows = data?.people ?? []
   // Someone other than the viewer already connected: sharing works, whatever the
   // setup paths say (Tailscale Serve set up by hand, for one).
-  const othersSeen = (data?.people ?? []).some(row => !row.is_viewer)
+  const othersSeen = rows.some(row => !row.is_viewer)
   const mode = effectiveMode(modeData, { teamPath: sharedAccessConfigured(capabilities), othersSeen })
   if (mode === 'invalid' && modeData) return <TeamConfigInvalid mode={modeData} />
-  if (mode === 'personal') {
-    return (
-      <div className="flex flex-col gap-4" data-testid="people-personal">
-        <SharedAccessSetup capabilities={capabilities} />
-        <InviteEntry />
-        <PersonalWaiting />
-        {ownerRead && <PeopleAdvanced />}
-      </div>
-    )
-  }
-  if (mode === 'console' && modeData) {
-    const rows = data?.people ?? []
-    return (
-      <div className="flex flex-col gap-4" data-testid="people-console">
-        <SettingsSection title={i18nT('sharedCrew.team_access_title')}>
-          <SettingsCard>
-            <p className="text-[13px] text-muted">{i18nT('sharedCrew.team_access_note')}</p>
-            {rows.length === 0 ? (
-              <p className="text-[13px] text-muted pt-2">{i18nT('sharedCrew.team_access_empty')}</p>
-            ) : (
-              <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('sharedCrew.team_access_title')}>
-                {rows.map(row => <PersonRow key={row.principal.id} row={row} usageAvailable={!!data?.usage_available} />)}
-              </ul>
-            )}
-            <div className="pt-2"><ConsoleAccess mode={modeData} /></div>
-          </SettingsCard>
-        </SettingsSection>
-      </div>
-    )
-  }
-  const attributionReason = capabilities.reasons?.attribution
-  const adapters = modeData?.adapters ?? capabilities.setup_paths ?? {}
-  const rows = data?.people ?? []
   const viewerOwns = ownerRead || rows.some(row => row.is_viewer && row.is_owner)
-  const hero = <ShareHero direct={capabilities.tailnet_direct} tailscale={adapters.tailscale} people={rows} canInvite={canInvite} viewerOwns={!notOwner} />
+  const sourceList = connectionSources(modeData, capabilities, data ? rows : null)
+  const sources = (
+    <PeopleSources
+      sources={sourceList}
+      capabilities={capabilities}
+      mode={modeData}
+      teammate={notOwner}
+    />
+  )
+  const attributionReason = capabilities.reasons?.attribution
   if (!data || !capabilityUsable(capabilities.attribution)) {
+    // Alone on this machine there is nobody to name yet: the sources and any
+    // unused invite are the whole page.
+    if (mode === 'personal') {
+      return (
+        <div className="flex flex-col gap-4" data-testid="people-personal">
+          {sources}
+          <PersonalWaiting />
+          {ownerRead && <PeopleAdvanced />}
+        </div>
+      )
+    }
     const unnamed = attributionReason === 'platform_unprovable' || attributionReason === 'daemon_same_user'
     return (
       <div className="flex flex-col gap-4" data-testid="people-network-unattributed">
-        {hero}
+        {sources}
         <EmptyState
           icon={<Users size={20} />}
           title={i18nT(unnamed ? 'sharedCrew.people_unnamed_title' : 'sharedCrew.people_unavailable_title')}
@@ -179,11 +113,12 @@ function PeopleContent({ capabilities, data, modeData }: {
   }
   const usageAvailable = !!data.usage_available
   return (
-    <div className="flex flex-col gap-4" data-testid="people-panel">
-      {hero}
+    <div className="flex flex-col gap-4" data-testid={mode === 'personal' ? 'people-personal' : 'people-panel'}>
+      {sources}
       <PeopleList
         people={data.people}
         usageAvailable={usageAvailable}
+        fallbackSource={rowSourceFallback(sourceList)}
         notes={[
           !usageAvailable && !data.usage_off && i18nT('sharedCrew.usage_unavailable'),
           attributionReason === 'daemon_not_found' && i18nT('sharedCrew.people_daemon_not_found'),

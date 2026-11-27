@@ -2,7 +2,8 @@
 
 ``_resolve_gateway_args`` turns the parsed ``gateway`` arguments into the ``_gateway()``
 keyword arguments (the ``--test-mode`` bundle, the ``--port`` check and the
-``--approval yolo`` rail); ``_install_child_watcher`` replaces the thread-per-child asyncio
+``--approval yolo`` rail); ``_isolate_test_mode_kiro_home`` gives a ``--test-mode`` gateway
+on its own data home its own Kiro home; ``_install_child_watcher`` replaces the thread-per-child asyncio
 watcher; ``_diagnostic_port`` and ``_diagnostic_bind_address`` name the port and address a
 refused gateway lock reports; ``_refuse_unpersistable_data_home`` stops a start whose data home
 cannot hold files.
@@ -24,7 +25,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.config.paths import _default_home, _legacy_home, config_dir, peek_data_home
+from kiro_crew.config.paths import config_dir, peek_data_home
 
 # The facade's logger, by name: records from here carry ``kiro_crew.cli``.
 logger = logging.getLogger("kiro_crew.cli")
@@ -154,6 +155,37 @@ def _install_child_watcher() -> None:
         return
 
 
+def _isolate_test_mode_kiro_home(args: argparse.Namespace) -> Path | None:
+    """Give a ``--test-mode`` gateway on its own data home its own Kiro home too.
+
+    ``KIROCREW_HOME`` moves only the data home: ``config.paths.kiro_home()`` still
+    names the real ``~/.kiro``, so the Bots a test gateway creates landed in the
+    real ``~/.kiro/mates/agents`` and its owner record. Here ``KIRO_HOME`` is set to
+    ``<data home>/kiro``, the value a pod gets (``pod.runtime.build_pod_env``),
+    before anything resolves it. Left alone: a run without ``--test-mode``, one
+    whose ``KIRO_HOME`` is already set, and one whose data home is unset or is a
+    main gateway home (that test run shares the real Kiro home on purpose).
+    Returns the Kiro home it set, else ``None``.
+    """
+    if not getattr(args, "test_mode", False) or os.environ.get("KIRO_HOME"):
+        return None
+    from kiro_crew.config.paths import _valid_override_home
+
+    try:
+        data_home = _valid_override_home()
+    except OSError:
+        return None
+    if data_home is None:
+        return None
+    from kiro_crew.seed import _protected_homes
+
+    if data_home in _protected_homes():
+        return None
+    kiro_home = data_home / "kiro"
+    os.environ["KIRO_HOME"] = str(kiro_home)
+    return kiro_home
+
+
 def _resolve_gateway_args(args: argparse.Namespace) -> dict:
     """Resolve the kwargs for `_gateway()` from parsed CLI args.
 
@@ -162,6 +194,13 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
     violation, prints a message to stderr and calls `sys.exit(2)`.
     Returned dict is safe to splat directly into `_gateway()`.
     """
+    if getattr(args, "headless", False) and getattr(args, "slack_only", False):
+        print(
+            "👻 --headless cannot be combined with --slack-only. Drop one of these flags.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     port = getattr(args, "port", None)
     json_ready = getattr(args, "json_ready", False)
     approval = getattr(args, "approval", None)
@@ -189,13 +228,13 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
                 port_int = int(port)
             except ValueError:
                 print(
-                    f"Error: --port must be an integer or 'auto', got {port!r}.",
+                    f"👻 --port must be an integer or 'auto', got {port!r}.",
                     file=sys.stderr,
                 )
                 sys.exit(2)
             if not 1 <= port_int <= 65535:
                 print(
-                    f"Error: --port {port_int} out of range (1..65535).",
+                    f"👻 --port {port_int} out of range (1..65535).",
                     file=sys.stderr,
                 )
                 sys.exit(2)
@@ -205,7 +244,7 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
         home_env = os.environ.get("KIROCREW_HOME", "")
         if not home_env:
             print(
-                "Error: --approval yolo refused: KIROCREW_HOME must be explicitly set "
+                "👻 --approval yolo refused: KIROCREW_HOME must be explicitly set "
                 "to an isolated path (not the default ~/.kiro/crew).",
                 file=sys.stderr,
             )
@@ -218,23 +257,20 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
             # reject the legacy ~/.kirocrew too, not just ~/.kiro/crew: on an
             # unmigrated or downgraded install the legacy home still holds the LIVE
             # data, so KIROCREW_HOME=~/.kirocrew would otherwise enable unrestricted
-            # tool approval against the real gateway home. Mirrors seed.py's
-            # _protected_homes().
-            protected_homes: set[Path] = set()
-            for home in (_default_home(), _legacy_home()):
-                try:
-                    protected_homes.add(home.resolve())
-                except OSError:
-                    protected_homes.add(home)
+            # tool approval against the real gateway home. seed.py's
+            # _protected_homes() is that set.
+            from kiro_crew.seed import _protected_homes
+
+            protected_homes = _protected_homes()
         except OSError as exc:
             print(
-                f"Error: --approval yolo refused: failed to resolve KIROCREW_HOME: {exc}",
+                f"👻 --approval yolo refused: failed to resolve KIROCREW_HOME: {exc}",
                 file=sys.stderr,
             )
             sys.exit(2)
         if home_resolved in protected_homes:
             print(
-                "Error: --approval yolo refused: KIROCREW_HOME resolves to a main "
+                "👻 --approval yolo refused: KIROCREW_HOME resolves to a main "
                 f"gateway home ({home_resolved}). Set KIROCREW_HOME to an isolated "
                 "path before re-running.",
                 file=sys.stderr,
@@ -243,8 +279,15 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
 
     return {
         "no_dashboard": getattr(args, "slack_only", False),
+        "headless": bool(getattr(args, "headless", False)),
         "no_crons": getattr(args, "no_crons", False),
-        "no_tunnel": getattr(args, "no_tunnel", False),
+        # --test-mode and --seed start a test or dev gateway: it must never publish a
+        # tunnel or register with the Kiro relay, whatever its config or sign-in.
+        "no_tunnel": bool(
+            getattr(args, "no_tunnel", False)
+            or test_mode
+            or getattr(args, "seed", None) is not None
+        ),
         "no_open": no_open,
         "port_override": port,
         "json_ready": json_ready,
@@ -306,15 +349,19 @@ def _diagnostic_bind_address() -> str | None:
 
 
 def _refuse_unpersistable_data_home() -> None:
-    """Exit 1 with one line when the data home cannot hold files.
+    """Exit 1 with the reason when the data home cannot hold files.
 
-    ``config_dir()``, not the probe's own mkdir, creates a missing home, so it is
-    owner-only from the start.
+    Files another account owns are named on the line after it (a home a root run
+    created is the usual cause). ``config_dir()``, not the probe's own mkdir,
+    creates a missing home, so it is owner-only from the start.
     """
     try:
         error = platform_compat.probe_file_persistence(config_dir())
     except OSError as exc:
         error = f"cannot create files in {peek_data_home()}: {exc}"
     if error is not None:
-        print(f"Error: Cannot persist state: {error}", file=sys.stderr)
+        print(f"❌ Cannot persist state: {error}", file=sys.stderr)
+        from kiro_crew.data_home_owner import print_if_data_home_not_owned
+
+        print_if_data_home_not_owned(peek_data_home())
         raise SystemExit(1)

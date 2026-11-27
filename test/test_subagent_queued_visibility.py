@@ -463,30 +463,139 @@ async def test_an_unreadable_store_makes_the_listing_partial() -> None:
     assert listing.partial is True and listing.runs == ()
 
 
+@pytest.mark.asyncio
 @pytest.mark.usefixtures("close_subagent_managers")
-def test_in_memory_pending_work_is_the_arms_whole_view() -> None:
-    """The arm's in-memory terms, on the real manager: a window entry, another
-    child whose task is still live (its report waits on teardown), a live
-    follow-up watcher -- and never the asking child's own task."""
+async def test_in_memory_pending_work_is_the_arms_whole_view(monkeypatch) -> None:
+    """Queue entries and actual outer tasks count, except the asking run's task."""
     from kiro_crew.subagent import SubagentInfo
 
-    loop = asyncio.new_event_loop()
+    cfg = KiroCrewConfig()
+    cfg.agent.task_queue_enabled = False
+    monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
+    mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx())
+    parent = "dash:arm"
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def inner(info, _key):
+        info.done = True
+
+    async def cap_result(_info):
+        entered.set()
+        await await_until(release, what="the outer run's finalization release")
+
+    monkeypatch.setattr(mgr, "_run_inner", inner)
+    monkeypatch.setattr(
+        type(mgr._run_events), "_cap_unclaimed_result_impl", lambda _self, info: cap_result(info)
+    )
+    monkeypatch.setattr(mgr, "_teardown_run_session", AsyncMock())
+    monkeypatch.setattr(mgr, "_record_cost", lambda _info: None)
+    monkeypatch.setattr(mgr, "_drain_queue", lambda: None)
+    outer = None
     try:
-        mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx())
-        parent = "dash:arm"
         assert mgr.has_in_memory_pending_work_for(parent) is False
+        assert mgr.has_current_execution_for(parent) is False
         mgr._queue.append({"parent_session_key": parent, "_preassigned_id": "w1"})
         assert mgr.has_in_memory_pending_work_for(parent) is True
+        assert mgr.has_current_execution_for(parent) is False
         mgr._queue.clear()
 
         me = SubagentInfo(id="me", task="t", parent_session_key=parent)
-        me.done = True
         mgr._agents[me.id] = me
-        mgr._tasks[me.id] = loop.create_future()
+        outer = asyncio.create_task(mgr._run(me))
+        mgr._tasks[me.id] = outer
+        completed_view = []
+
+        def observe_completion(task):
+            completed_view.append(
+                (task in mgr._run_task_owners, mgr.has_current_execution_for(parent))
+            )
+
+        # Registered before _run adds its callback, so the owner is still filed.
+        outer.add_done_callback(observe_completion)
+        await await_until(entered, what="the inner done-to-report gap")
         assert mgr.has_in_memory_pending_work_for(parent, exclude_id="me") is False
         assert mgr.has_in_memory_pending_work_for(parent) is True
+        assert mgr.has_current_execution_for(parent) is True
+        assert mgr.has_current_execution_for("dash:other") is False
+        # The actual task remains authoritative after both discovery indices vanish.
+        mgr._agents.pop(me.id)
+        mgr._tasks.pop(me.id)
+        assert mgr.has_current_execution_for(parent) is True
+        assert mgr.has_in_memory_pending_work_for(parent) is False
+        assert mgr.has_in_memory_pending_work_for(parent, exclude_id="me") is False
+        release.set()
+        await await_until(outer, what="the outer run to finish")
+        assert mgr.has_current_execution_for(parent) is False
+        assert completed_view == [(True, False)]
+        assert not mgr._run_task_owners
     finally:
-        loop.close()
+        mgr._shutting_down = True
+        release.set()
+        if outer is not None:
+            await await_until(
+                asyncio.gather(outer, return_exceptions=True), what="the outer run to drain"
+            )
+        await await_until(
+            asyncio.create_task(mgr.cancel_all()), what="the manager's reports to drain"
+        )
+        mgr.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("close_subagent_managers")
+async def test_outer_tasks_with_the_same_run_id_keep_independent_owners(monkeypatch) -> None:
+    from kiro_crew.subagent import SubagentInfo
+
+    cfg = KiroCrewConfig()
+    cfg.agent.task_queue_enabled = False
+    monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
+    mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx())
+    entered = {name: asyncio.Event() for name in ("first", "next")}
+    release = {name: asyncio.Event() for name in entered}
+
+    async def inner(info, _key):
+        info.done = True
+
+    async def cap_result(info):
+        entered[info.task].set()
+        await await_until(release[info.task], what=f"the {info.task} outer task's release")
+
+    monkeypatch.setattr(mgr, "_run_inner", inner)
+    monkeypatch.setattr(
+        type(mgr._run_events), "_cap_unclaimed_result_impl", lambda _self, info: cap_result(info)
+    )
+    monkeypatch.setattr(mgr, "_claim_finalize", lambda _info: False)
+    monkeypatch.setattr(mgr, "_teardown_run_session", AsyncMock())
+    monkeypatch.setattr(mgr, "_drain_queue", lambda: None)
+    mgr._running_count = 2
+    tasks = {
+        name: asyncio.create_task(
+            mgr._run(SubagentInfo(id="same-id", task=name, parent_session_key=f"dash:{name}"))
+        )
+        for name in entered
+    }
+    try:
+        for event in entered.values():
+            await await_until(event, what="both outer tasks to register")
+        assert mgr.has_current_execution_for("dash:first")
+        assert mgr.has_current_execution_for("dash:next")
+        assert not mgr.has_in_memory_pending_work_for("dash:next", exclude_id="same-id")
+        release["first"].set()
+        await await_until(tasks["first"], what="the first outer task to finish")
+        assert not mgr.has_current_execution_for("dash:first")
+        assert mgr.has_current_execution_for("dash:next")
+        assert set(mgr._run_task_owners) == {tasks["next"]}
+    finally:
+        mgr._shutting_down = True
+        for event in release.values():
+            event.set()
+        await await_until(
+            asyncio.gather(*tasks.values(), return_exceptions=True),
+            what="both outer tasks to drain",
+        )
+        mgr.close()
+    assert not mgr._run_task_owners
+    assert not mgr.has_current_execution_for("dash:next")
 
 
 @pytest.mark.usefixtures("close_subagent_managers")
@@ -511,9 +620,13 @@ def test_an_unfinished_report_is_owed_after_its_run_task_ends() -> None:
         assert mgr.has_in_memory_pending_work_for(parent) is False
         assert mgr.has_unfinished_report_for(parent) is True
         assert mgr.has_unfinished_report_for("dash:other") is False
+        mgr._agents.pop(child.id)
+        assert mgr.has_current_execution_for(parent) is True
+        assert mgr.has_current_execution_for("dash:other") is False
 
         report.set_result(None)
         assert mgr.has_unfinished_report_for(parent) is False
+        assert mgr.has_current_execution_for(parent) is False
     finally:
         mgr._report_owners.clear()
         loop.close()
@@ -813,6 +926,7 @@ def test_no_child_probe_spells_a_slots_session_key_by_hand() -> None:
         "queued_count_or_none_async",
         "has_pending_work_for",
         "has_pending_work_for_async",
+        "has_current_execution_for",
         "has_in_memory_pending_work_for",
         "has_unfinished_report_for",
     }

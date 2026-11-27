@@ -74,6 +74,9 @@ class ClaudeSharedSession(ClaudeAcpClient):
         self._shared_close: Callable[[], Awaitable[None]] | None = None
         # Set by :meth:`adopt_allowlist_spec`; the envelope is refused until then.
         self._spec_allowlists_adopted = False
+        # The built-in held-limit asks :meth:`prepare` reads; ``session_meta`` adds the
+        # array's ``mcp__<server>`` asks to them on each start.
+        self._claude_held_builtin_asks: tuple[str, ...] = ()
 
     async def prepare(self, argv: list[str]) -> None:
         """Write this session's seed and side-session deny rules, before its request.
@@ -93,6 +96,12 @@ class ClaudeSharedSession(ClaudeAcpClient):
         )
         await self._seed_session_settings()
         await self._prepare_claude_side_read_denies()
+        # The held-limit asks of the Bot behind this session, read off the loop like
+        # the per-session client's. The array is not known yet, so this is the
+        # built-in part; ``ClaudeHarness.session_meta`` adds the ``mcp__<server>``
+        # asks for the array the start sends.
+        await self._prepare_claude_held_asks()
+        self._claude_held_builtin_asks = tuple(self._claude_held_asks)
         excludes_local, inline_settings = self._local_settings_exclusion()
         self._session_mcp_excludes_local = excludes_local
         self._session_mcp_inline_settings = inline_settings

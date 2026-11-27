@@ -526,7 +526,7 @@ test("a stale bundled gateway warns and continues without requesting a restart",
   assert.doesNotMatch(state.dialogs[0].detail, /[“”]/);
   assert.deepEqual(state.dialogs[0].buttons, ["Continue with existing gateway", "Quit"]);
   assert.deepEqual(state.requests, [
-    "http://localhost:5476/api/status",
+    "http://localhost:5476/api/live",
     "http://localhost:5476/api/health",
     "http://localhost:5476/api/ready",
   ]);
@@ -658,7 +658,7 @@ test("Stop and restart on a previous-version orphan runs the port stop, then sta
   const state = managedStaleHarness({ choose: "Stop and restart" });
   assert.equal(await state.supervisor.start(), true);
   assert.equal(state.stops.length, 1, "the CLI stop ran once");
-  assert.deepStrictEqual(state.stops[0].args, ["stop", "--port", "5476"],
+  assert.deepStrictEqual(state.stops[0].args, ["stop", "--port", "5476", "--keeps-grants"],
     "the command the dialog names; --expect-pid needs a pidfd macOS lacks");
   assert.equal(state.stops[0].options.env.KIROCREW_HOME, "/virtual/kirocrew-home");
   assert.equal(state.stops[0].options.env.KIROCREW_PORT, undefined);
@@ -719,7 +719,7 @@ test("an orphaned gateway of the other release family is offered a stop, not a q
   assert.match(state.dialogs[0].detail, /quitting Kiro Crew Nightly would not stop it/);
   assert.match(state.dialogs[0].detail, /kirocrew stop --port 5476/);
   assert.equal(state.stops.length, 1);
-  assert.deepStrictEqual(state.stops[0].args, ["stop", "--port", "5476"]);
+  assert.deepStrictEqual(state.stops[0].args, ["stop", "--port", "5476", "--keeps-grants"]);
   assert.equal(state.spawnCalls.length, 1);
 });
 
@@ -855,11 +855,12 @@ test("no stale warning when the port belongs to a configured remote crew", async
 });
 
 // A gateway this app found already serving and adopted, as it is when a desktop
-// update relaunches over a gateway it did not spawn. `command` is what ps reports
-// for the listener; under /virtual/resources/backend-dist it runs from this
-// app's own bundle. `shutdownStatus` is what POST /api/shutdown answers. When
-// the gateway accepts the stop it releases the port and exits; `rebindPid`
-// models a service manager starting it again from the same files.
+// update relaunches over a gateway it did not spawn. `command` is what ps (on
+// Windows, PowerShell, with netstat naming the listener) reports for it;
+// under /virtual/resources/backend-dist it runs from this app's own bundle.
+// `shutdownStatus` is what POST /api/shutdown answers. When the gateway
+// accepts the stop it releases the port and exits; `rebindPid` models a
+// service manager starting it again from the same files.
 function adoptedGatewayHarness({
   command = "/virtual/resources/backend-dist/bin/python -m kiro_crew gateway",
   gatewayVersion = "0.7.0",
@@ -966,6 +967,9 @@ function adoptedGatewayHarness({
         callback(null, "n/virtual/kirocrew-home/gateway.lock\n", "");
       } else if (file.endsWith("lsof")) {
         callback(null, listenerProbe(), "");
+      } else if (file.endsWith("netstat.exe")) {
+        const rows = listenerProbe().split("\n").filter(Boolean);
+        callback(null, rows.map((pid) => `  TCP    127.0.0.1:5476    0.0.0.0:0    LISTENING    ${pid}\r\n`).join(""), "");
       } else if (args.includes("ppid=")) {
         callback(null, String(parentPid), "");
       } else {
@@ -1063,6 +1067,28 @@ test("an adopted bundled gateway its service manager starts again fails the upda
 
   assert.equal(state.shutdowns.length, 1);
   assert.deepStrictEqual(state.listenPids, [456], "the restarted gateway runs from the same files");
+});
+
+test("on Windows the update stop asks an adopted gateway from this app's bundle to stop, and refuses while it runs", async () => {
+  const executable = "/virtual/resources/backend-dist/kirocrew-backend/python.exe";
+  const { supervisor, state } = adoptedGatewayHarness({
+    platform: "win32",
+    command: `"${executable}" ${executable} -m kiro_crew gateway --no-open --port 5476`,
+    shutdownStatus: 403,
+  });
+  assert.equal(await supervisor.start(), true);
+  assert.equal(state.dialogs.length, 0, "the launch's stale check still cannot tell on Windows");
+
+  await assert.rejects(supervisor.stopForUpdate(), {
+    code: "gateway-still-running",
+    stopCommand: "kirocrew stop --port 5476",
+  });
+
+  assert.deepStrictEqual(state.shutdowns, [
+    { method: "POST", path: "/api/shutdown", secret: "boot-secret" },
+  ]);
+  assert.deepStrictEqual(state.signals, [], "Windows has no pid-pinned stop");
+  assert.deepStrictEqual(state.listenPids, [123], "the gateway is left running");
 });
 
 test("an adopted gateway from another install is left alone by the update stop", async () => {
@@ -1226,4 +1252,48 @@ test("with the local gateway on, an unanswered crew port opens no unrequested fo
   assert.strictEqual(await supervisor.start(), false);
   assert.strictEqual(tunnelCalls.length, 0);
   assert.strictEqual(spawnCalls.length, 0, "and no gateway is bound over the crew's port");
+});
+
+test("the connect poll and the post-handoff liveness probe ask the unauthenticated /api/live", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const http = switchableHttp({ status: 200 });
+  const timers = fakeTimers();
+  const webContents = {
+    isDestroyed: () => false,
+    loadFile() {},
+    loadURL() {},
+    // No splash fade in this harness: the boot-ready send fails, so the fade ends at once.
+    send(channel) { if (channel === "boot-ready") throw new Error("no renderer"); },
+    session: { fetch: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }) },
+  };
+  const mainWindow = {
+    isDestroyed: () => false,
+    isMinimized: () => false,
+    isVisible: () => true,
+    show() {},
+    focus() {},
+    restore() {},
+    webContents,
+  };
+  const { supervisor } = harness({
+    mainWindow,
+    timers,
+    httpMod: http,
+    store: remoteCrewStore(5476, { host: "clouddesk", binPath: "/opt/kc/bin/kirocrew" }),
+    execFileFn: (_file, _args, _options, callback) => callback(null, "http://localhost:5476/?token=abc\n", ""),
+  });
+
+  await supervisor.connect(mainWindow);
+  const connectRequests = [...http.requests];
+  const liveness = timers.intervals.find((timer) => timer.ms === 10_000);
+  assert.ok(liveness, "the handoff started the liveness monitor");
+  liveness.fn();
+  await flush();
+
+  assert.ok(connectRequests.length >= 1, "the connect poll probed the gateway");
+  assert.ok(
+    connectRequests.every((url) => url === "http://localhost:5476/api/live"),
+    connectRequests.join("\n"),
+  );
+  assert.deepStrictEqual(http.requests.slice(connectRequests.length), ["http://localhost:5476/api/live"]);
 });

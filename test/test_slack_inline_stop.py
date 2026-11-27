@@ -97,8 +97,8 @@ class TestSessionTaskCard:
     @pytest.mark.parametrize(
         ("status", "emoji"),
         [
-            pytest.param("active", "(active)", id="test_active_status_emoji"),
-            pytest.param("paused", "(paused)", id="test_paused_status_emoji"),
+            pytest.param("active", "🟢", id="test_active_status_emoji"),
+            pytest.param("paused", "⏸️", id="test_paused_status_emoji"),
         ],
     )
     def test_status_emoji(self, status, emoji):
@@ -212,9 +212,9 @@ class TestHandleInlineStop:
             await interactions._handle_inline_stop(payload, action, "C1", "msg_ts", "U_OWNER")
 
         # Immediate feedback: "Stopping..."
-        mock_orch.slack.update_message.assert_any_call("C1", "msg_ts", text="_Stopping…_")
+        mock_orch.slack.update_message.assert_any_call("C1", "msg_ts", text="⏹ _Stopping…_")
         # on_soft callback: "Execution stopped."
-        mock_orch.slack.update_message.assert_any_call("C1", "msg_ts", text="Execution stopped.")
+        mock_orch.slack.update_message.assert_any_call("C1", "msg_ts", text="⏹ Execution stopped.")
         # SEL tool invocation logged
         mock_sel.return_value.log_tool_invocation.assert_called_once()
         assert _rows(audit) == [
@@ -242,7 +242,7 @@ class TestHandleInlineStop:
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
 
         mock_orch.slack.update_message.assert_any_call(
-            "C1", "ts1", text="Execution stopped — session reset."
+            "C1", "ts1", text="⛔ Execution stopped — session reset."
         )
         assert _rows(audit) == [
             ("slack.inline_stop", "U_OWNER", "allowed"),
@@ -711,3 +711,27 @@ async def test_a_mid_turn_link_ends_with_the_turns_final_answer(
         *([("user", question)] if question else []),
         *answer,
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outside_code_channel", [True, False])
+async def test_a_shared_user_stops_their_turn_outside_a_code_channel_only(
+    setup_interactions, mock_orch, outside_code_channel: bool
+) -> None:
+    """slack.shared_access: an admitted shared user's Stop works, except in a code channel."""
+    interactions = setup_interactions
+    mock_orch.sessions.stop_turn = AsyncMock(return_value="soft")
+    with (
+        patch("kiro_crew.slack.interactions.is_allowed_user", return_value=True),
+        patch(
+            "kiro_crew.slack.interactions_sessions._outside_code_channel",
+            AsyncMock(return_value=outside_code_channel),
+        ),
+        patch("kiro_crew.slack.interactions.sel") as mock_sel,
+    ):
+        mock_sel.return_value.log_api_access = MagicMock()
+        mock_sel.return_value.log_tool_invocation = MagicMock()
+        await interactions._handle_inline_stop(
+            {"user": {"id": "U_SHARED"}}, {"value": "sess-k"}, "C1", "ts1", "U_SHARED"
+        )
+    assert mock_orch.sessions.stop_turn.await_count == (1 if outside_code_channel else 0)

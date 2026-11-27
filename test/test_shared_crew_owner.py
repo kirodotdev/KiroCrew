@@ -1,4 +1,4 @@
-"""The owner's label is this machine's name; the owner's ids never change."""
+"""The owner's one label (``owner.owner_name``) and its sources; the owner's ids never change."""
 
 from __future__ import annotations
 
@@ -170,3 +170,123 @@ def test_an_event_loop_thread_never_starts_the_lookup(monkeypatch):
     assert calls == []
     assert owner.machine_name() == "Studio"
     assert calls == ["scutil"]
+
+
+# -- owner_name: the one label, first non-empty source wins ------------------ #
+
+
+def test_owner_name_falls_through_email_then_tailscale_then_the_machine(monkeypatch):
+    monkeypatch.setattr(owner, "machine_name", lambda **_kw: "Studio")
+    # 4. Nothing else known: this machine's name.
+    assert owner.owner_name() == "Studio"
+    # 3. The owner's Tailscale login, then their Tailscale display name over it.
+    access_set.set_owner("boss@example.com", "7")
+    assert owner.owner_name() == "boss@example.com"
+    owner.set_tailnet_display_name("Bo Boss")
+    assert owner.owner_name() == "Bo Boss"
+    # 2. The signed-in Kiro account's e-mail wins over every Tailscale name.
+    owner.set_login_email("bo@kiro.example")
+    assert owner.owner_name() == "bo@kiro.example"
+    # A reading that names no account drops back to the next source.
+    owner.set_login_email(None)
+    assert owner.owner_name() == "Bo Boss"
+
+
+@pytest.mark.parametrize("raw", ["", "  ", "not-an-email", "a@b", 42, None, "x\n@y.example"])
+def test_only_an_email_is_kept_as_the_login_label(raw):
+    owner.set_login_email(raw)
+    assert owner.login_email() == ""
+
+
+def test_the_owner_principal_and_its_local_subjects_carry_owner_name(monkeypatch):
+    monkeypatch.setattr(owner, "machine_name", lambda **_kw: "Studio")
+    owner.set_login_email(" bo@kiro.example ")
+    assert owner.owner_principal().display.name == "bo@kiro.example"
+    assert local_operator_principal("local-startup").display.name == "bo@kiro.example"
+    # The label never moves an id.
+    assert local_operator_principal("local-startup").id in owner.owner_principal_ids()
+
+
+@pytest.mark.asyncio
+async def test_warming_reads_the_signed_in_identity_once(monkeypatch):
+    from kiro_crew.dashboard.handlers import sessions
+
+    async def identity():
+        return {"email": "bo@kiro.example", "account_type": "IdC"}
+
+    monkeypatch.setattr(sessions, "fetch_local_identity", identity)
+    await owner.warm_login_email()
+    assert owner.login_email() == "bo@kiro.example"
+
+
+@pytest.mark.asyncio
+async def test_warming_keeps_a_usage_reading_that_landed_first(monkeypatch):
+    from kiro_crew.dashboard.handlers import sessions
+
+    async def identity():
+        return {"email": "old@kiro.example"}
+
+    monkeypatch.setattr(sessions, "fetch_local_identity", identity)
+    owner.set_login_email("new@kiro.example")
+    await owner.warm_login_email()
+    assert owner.login_email() == "new@kiro.example"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [None, RuntimeError("whoami broke")], ids=["unknown", "raises"])
+async def test_warming_an_unknown_identity_leaves_the_label_to_the_next_source(monkeypatch, answer):
+    from kiro_crew.dashboard.handlers import sessions
+
+    async def identity():
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(sessions, "fetch_local_identity", identity)
+    await owner.warm_login_email()
+    assert owner.login_email() == ""
+    # Still unset, so a later reading or warm-up may fill it.
+    owner.set_login_email("bo@kiro.example")
+    assert owner.login_email() == "bo@kiro.example"
+
+
+def test_every_published_usage_reading_moves_the_label_with_the_account(monkeypatch):
+    from kiro_crew.dashboard.handlers import sessions
+
+    # The published cache is module state: put it back after the test.
+    for name in ("_usage_cache", "_usage_cache_ts", "_usage_cache_vault_fp"):
+        monkeypatch.setattr(sessions, name, getattr(sessions, name))
+    monkeypatch.setattr(sessions, "_usage_cache_user_id", sessions._usage_cache_user_id)
+    monkeypatch.setattr(sessions, "_vault_signin_marker", sessions._vault_signin_marker)
+    sessions._publish_usage({"credits_plan": 1000, "email": "a@kiro.example"})
+    assert owner.login_email() == "a@kiro.example"
+    sessions._publish_usage({"credits_plan": 1000, "email": "b@kiro.example"})
+    assert owner.login_email() == "b@kiro.example"
+    # An unavailable marker names no account.
+    sessions._publish_usage({"available": False})
+    assert owner.login_email() == ""
+
+
+def test_the_status_self_user_display_name_is_read_for_the_owner():
+    from kiro_crew.dashboard.tailnet_direct import parse_status
+
+    status = {
+        "BackendState": "Running",
+        "Self": {"TailscaleIPs": ["100.64.0.1"], "UserID": 11, "HostName": "studio"},
+        "User": {"11": {"LoginName": "boss@example.com", "DisplayName": "Bo Boss"}},
+    }
+    node = parse_status(status)
+    assert node is not None and node.display_name == "Bo Boss"
+    status["User"]["11"].pop("DisplayName")
+    assert parse_status(status).display_name == ""
+
+
+def test_learning_the_owner_from_the_daemon_records_their_tailscale_name(monkeypatch):
+    from kiro_crew.dashboard import tailnet_direct_listener as listener
+    from kiro_crew.dashboard.tailnet_direct import SelfNode
+
+    monkeypatch.setattr(owner, "machine_name", lambda **_kw: "Studio")
+    monkeypatch.setattr(access_set, "set_owner", lambda *_a: None)
+    node = SelfNode(addresses=(), login="boss@example.com", user_id="7", display_name="Bo Boss")
+    listener._publish_owner(node)
+    assert owner.owner_name() == "Bo Boss"

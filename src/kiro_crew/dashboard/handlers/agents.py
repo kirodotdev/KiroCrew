@@ -42,11 +42,12 @@ from aiohttp import BodyPartReader, web  # noqa: F401
 
 from kiro_crew import agent_state  # noqa: F401
 from kiro_crew import crew_teams as teams_mod  # noqa: F401
-from kiro_crew import model_registry, model_scope
+from kiro_crew import model_registry, model_scope, workload_identity
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
@@ -341,6 +342,7 @@ from kiro_crew.dashboard.handlers.agents_session_commands import (
 from kiro_crew.dashboard.handlers.models_kas_bundle import (
     api_models_kas_bundle,
     api_models_kas_crew_relay,
+    api_models_kas_workload,
 )
 from kiro_crew.dashboard.handlers.source_providers import owner_view_for_request  # noqa: F401
 from kiro_crew.dashboard.kas_local_commands import local_harness_menu
@@ -490,9 +492,13 @@ def _supply_live_enum(entry: dict) -> None:
 
 async def api_config_schema(request: web.Request) -> web.Response:
     """GET /api/config/schema — return config schema entries."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
     from kiro_crew.dashboard.handlers.config_all_settings import attach_descriptor
     from kiro_crew.edition_locks import LOCKED_BY_POLICY, config_path_locked
 
+    denied = await require_owner_for_dashboard_caller(request, "config.schema")
+    if denied is not None:
+        return denied
     entries = SCHEMA_REGISTRY
 
     # Filter by tags (comma-separated, intersection)
@@ -872,15 +878,12 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
                     "description": "Configured default",
                 },
             )
-    # Enrich every row with a context_window via the central authority so the CC
-    # dropdown carries the same field the kiro branch does (the frontend picker
-    # + tooltip read it uniformly). None -> reference (never a silent 200k).
+    # A row carries only the window a source backs: the dashboard learns a row's
+    # window as the model's real one, so the 1M budget reference would read as fact.
     for entry in merged:
-        if "context_window" not in entry:
-            name = entry.get("model_name", "")
-            entry["context_window"] = (
-                model_registry.model_window(name) or model_registry.REFERENCE_WINDOW_TOKENS
-            )
+        window = model_registry.model_window(entry.get("model_name", ""))
+        if window and "context_window" not in entry:
+            entry["context_window"] = window
     return merged
 
 
@@ -924,11 +927,10 @@ def _advertised_backend_models(
         rows.insert(
             1, {"model_name": default, "display_name": default, "description": "Configured default"}
         )
-    for entry in rows:
-        entry["context_window"] = (
-            model_registry.model_window(entry["model_name"])
-            or model_registry.REFERENCE_WINDOW_TOKENS
-        )
+    for entry in rows:  # only a source's window, as in ``_cc_models``
+        window = model_registry.model_window(entry["model_name"])
+        if window:
+            entry["context_window"] = window
     return rows
 
 
@@ -1150,6 +1152,10 @@ async def _fetch_kiro_catalog() -> list[dict]:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=_LIST_MODELS_BACKGROUND_TIMEOUT_SECS
             )
+        except asyncio.CancelledError:
+            # A gateway shutdown must not leave the call running with no owner.
+            await kill_and_reap(proc)
+            raise
         except asyncio.TimeoutError:
             # The whole group, while the supervisor still leads it: killing
             # only the leader would leave the command and its helpers running.
@@ -1392,8 +1398,11 @@ async def api_models(request: web.Request) -> web.Response:
     # backend, which is why it is not a capability-set branch like the one above.
     if bundle_route:
         return await api_models_kas_bundle(request)
+    # No kiro-cli sign-in on a workload-identity host: the engine's own list, as above.
+    if backend == ACP_BACKEND_KAS and workload_identity.active():
+        return await api_models_kas_workload(request)
     # kiro-cli opens a browser login for ANY subcommand run signed out, and the
-    # frontend polls here every 8s while degraded, so no spawn below may run unless
+    # frontend polls here every 8s while degraded or cold, so no spawn below may run unless
     # reject_if_kiro_unverified passes (tight 30 s bound: the only server-side
     # cooldown is the short failure backoff). It runs inline on a cold miss, in the
     # background refresh right before it spawns, and while the latch says signed

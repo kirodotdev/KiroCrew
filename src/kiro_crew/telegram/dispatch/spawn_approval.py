@@ -104,12 +104,12 @@ async def deliver_spawn_approval(
     keyboard = {
         "inline_keyboard": [
             [
-                {"text": "Approve", "callback_data": f"a:{rid}:{nonce}:1"},
-                {"text": "Deny", "callback_data": f"a:{rid}:{nonce}:0"},
+                {"text": "✅ Approve", "callback_data": f"a:{rid}:{nonce}:1"},
+                {"text": "🚫 Deny", "callback_data": f"a:{rid}:{nonce}:0"},
             ],
             [
                 {
-                    "text": "Trust this conversation",
+                    "text": "🤝 Trust this conversation",
                     "callback_data": f"a:{rid}:{nonce}:t",
                 }
             ],
@@ -119,7 +119,7 @@ async def deliver_spawn_approval(
     # format characters. Redact the rendered form before HTML escaping, which
     # preserves those characters. Keep the destination check after this pass.
     detail = _display_safe(" ".join((description or "spawn_run").split()))
-    body = f"Approve sub-agent spawn?\n<pre>{html.escape(detail)}</pre>"
+    body = f"🔐 Approve sub-agent spawn?\n<pre>{html.escape(detail)}</pre>"
     if not self._spawn_prompt_destination_permitted(chat_id, thread_id):
         # Authorization for this destination was withdrawn between the turn that
         # asked for the spawn and this delivery. Retire the armed nonce and fall

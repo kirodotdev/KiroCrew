@@ -36,6 +36,7 @@ vi.mock('../components/ModelEffortDropdown', async (orig) => {
 vi.mock('../components/ChatInput', () => ({ default: (p: Captured) => { seen.chatInput = p; return null } }))
 vi.mock('../components/SessionControlHost', () => ({ default: (p: Captured) => { seen.sessionControl = p; return null } }))
 vi.mock('../components/ErrorNotice', () => ({ default: () => null }))
+vi.mock('../components/KiroSignInPrompt', () => ({ default: () => null }))
 vi.mock('../components/FollowUpCard', () => ({ default: (p: Captured) => { seen.followUp = p; return null } }))
 vi.mock('../components/PendingQuestionCard', () => ({ default: () => null }))
 vi.mock('../components/FlyingQuote', () => ({ default: () => null }))

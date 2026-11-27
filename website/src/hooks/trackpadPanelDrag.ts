@@ -109,9 +109,10 @@ export function leadTrackpadSamples(base: number, lead: readonly { sum: number; 
   return lead.map(({ sum, at }) => ({ x: base - sum, t: at }))
 }
 
-/** The offset for the run's summed `deltaX` at `at`, recorded for the release
- *  speed. Fingers moving left report a positive `deltaX`, which pulls the panel
- *  in. */
+/** The offset for the run's summed finger travel at `at`, recorded for the
+ *  release speed. The sum is positive for fingers moving left (whatever the
+ *  Natural scrolling setting; `useTrackpadSwipe` normalizes it), which pulls
+ *  the panel in. */
 export function moveTrackpadDrag(d: TrackpadPanelDrag, sumX: number, at: number): number {
   const x = Math.min(d.travel, Math.max(0, d.base - sumX))
   d.samples.push({ x, t: at })

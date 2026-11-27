@@ -3,8 +3,8 @@ title: First-class loading of installed Agent Plugins / Kiro Powers
 status: superseded
 author: ShreyPurohit
 created: 2026-10-08
-last-audited: 2026-11-02
-audited-at: ddef7ee860
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 18181
 implementation-prs: []
 tracking-issues: [9212]

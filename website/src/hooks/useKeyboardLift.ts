@@ -57,7 +57,10 @@ export function useKeyboardLift(ref: RefObject<HTMLElement | null>, enabled: boo
     document.addEventListener('focusin', update)
     document.addEventListener('focusout', update)
     remeasureAll.add(update)
-    measure()
+    // First read on the next frame: measuring now, in the commit that mounts
+    // the box (opening a session mounts the composer), forces a layout of the
+    // whole page.
+    update()
     return () => {
       if (frame) cancelAnimationFrame(frame)
       remeasureAll.delete(update)

@@ -1,7 +1,13 @@
-"""Project management API handlers — thin alias over task runner runs."""
+"""Project management API handlers — thin alias over task runner runs.
+
+Every route asks :func:`require_owner_for_dashboard_caller` first: the runs are the
+owner's, so a dashboard session that is neither the owner nor an admitted teammate is
+refused, while app and internal callers stay under the controls that already govern them.
+"""
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
 from kiro_crew.dashboard.handlers.taskrunner import parse_run_name
 from kiro_crew.security import (
     redact_and_truncate,
@@ -50,6 +56,9 @@ def _run_to_project(run) -> dict:
 
 
 async def api_projects_list(request):
+    denied = await require_owner_for_dashboard_caller(request, "projects.list")
+    if denied is not None:
+        return denied
     tr = _runner(request)
     if not tr:
         return web.json_response([])
@@ -62,6 +71,9 @@ async def api_projects_list(request):
 
 
 async def api_project_get(request):
+    denied = await require_owner_for_dashboard_caller(request, "projects.get")
+    if denied is not None:
+        return denied
     tr = _runner(request)
     pid = request.match_info["id"]
     run = tr._runs.get(pid) if tr else None
@@ -71,10 +83,16 @@ async def api_project_get(request):
 
 
 async def api_project_create(request):
+    denied = await require_owner_for_dashboard_caller(request, "projects.create")
+    if denied is not None:
+        return denied
     return web.json_response({"error": "Use 'task run <spec>' to create projects"}, status=400)
 
 
 async def api_project_update(request):
+    denied = await require_owner_for_dashboard_caller(request, "projects.update")
+    if denied is not None:
+        return denied
     tr = _runner(request)
     pid = request.match_info["id"]
     try:
@@ -99,6 +117,9 @@ async def api_project_update(request):
 
 
 async def api_project_delete(request):
+    denied = await require_owner_for_dashboard_caller(request, "projects.delete")
+    if denied is not None:
+        return denied
     tr = _runner(request)
     pid = request.match_info["id"]
     try:

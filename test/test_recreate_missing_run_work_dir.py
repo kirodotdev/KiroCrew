@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import runtime_session_setup
 from kiro_crew.acp.session_handle_mcp import _missing_cwd_hint
@@ -129,12 +130,11 @@ def test_hint_is_empty_without_a_bound_cwd() -> None:
 @pytest.mark.asyncio
 async def test_a_failed_start_names_the_missing_cwd(tmp_path: Path) -> None:
     from kiro_crew.acp.mcp_session_report import McpSessionReport
-    from kiro_crew.acp.session_handle import AcpSessionHandle
     from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
     from kiro_crew.acp.types import METHOD_KAS_MCP_STATUS, JsonRpcMessage
 
     gone = tmp_path / RUN_DIR_NAME
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     handle._session_id = "sess-missing-cwd"
     handle._bound_cwd = str(gone)
     handle._mcp_report = McpSessionReport()

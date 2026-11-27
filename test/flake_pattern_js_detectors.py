@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
+from flake_pattern_registry_pin import j7_registry_pin
+
 _J1 = re.compile(
     r"new Promise(?:<[^>]*>)?\(\s*\(?\s*(\w+)[^)=]*\)?\s*=>\s*\{?\s*setTimeout\(\s*\1\s*,"
     r"\s*([1-9][\d_]*)"
@@ -83,4 +85,5 @@ JS_DETECTORS: dict[str, Callable[[str, str], list[int]]] = {
     "J4-playwright-visible-branch": _j4_visible_branch,
     "J5-duration-upper-bound": _j_lines(_J5),
     "J6-unrestored-fake-timers": _j6_unrestored_fake_timers,
+    "J7-registry-pin": j7_registry_pin,
 }

@@ -670,7 +670,8 @@ function resolveChannel(stamped, preference, required = "") {
  * A packager can number its builds with a fourth part (`0.12.0.3`, then
  * `0.12.0.4`). semver has no fourth part and coerces both to `0.12.0`, so when
  * the first three parts tie the fourth decides; a version without one counts
- * as `.0`.
+ * as `.0`. An edition shell's stamp of that build (`0.12.0-4`, see
+ * channelForVersion) is the same build, not a prerelease of `0.12.0`.
  *
  * @param {string} candidate
  * @param {string} current
@@ -678,6 +679,8 @@ function resolveChannel(stamped, preference, required = "") {
  */
 function isNewerVersion(candidate, current) {
   if (!candidate || !current) return null;
+  candidate = editionBuildAsFourPart(candidate);
+  current = editionBuildAsFourPart(current);
   let semver;
   try {
     semver = require("semver");
@@ -693,6 +696,13 @@ function isNewerVersion(candidate, current) {
   } catch {
     return null;
   }
+}
+
+// `0.12.0-4` (an edition build as the shell carries it, with or without a
+// leading `v`) -> `0.12.0.4`.
+function editionBuildAsFourPart(version) {
+  const v = String(version).trim().replace(/^v(?=\d)/, "");
+  return EDITION_BUILD_STAMP.test(v) ? v.replace("-", ".") : v;
 }
 
 // The fourth part of a four-part build number (`0.12.0.4` -> 4), else 0.
@@ -1341,10 +1351,10 @@ function initAutoUpdate(deps) {
 
 /**
  * Finish an armed update at app start, in Electron main, before the gateway
- * spawns and before any window opens (D-c). Only an install whose
+ * spawns and before the main window opens (D-c). Only an install whose
  * EXTERNALLY-MANAGED marker names an updateCommand can have one.
  */
-function runStartupApply({ app, store, resourcesPath = process.resourcesPath, log, managed = undefined, probeGateway = null, Notification = null }) {
+function runStartupApply({ app, store, resourcesPath = process.resourcesPath, log, managed = undefined, probeGateway = null, Notification = null, showApplying = null }) {
   return applyArmedUpdateAtStart({
     app,
     store,
@@ -1352,6 +1362,7 @@ function runStartupApply({ app, store, resourcesPath = process.resourcesPath, lo
     managedPath,
     log,
     probeGateway,
+    showApplying,
     notifyGatewayRunning: Notification
       ? (stopCommand) => new Notification({
         title: "Update not installed",

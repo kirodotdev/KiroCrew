@@ -484,7 +484,7 @@ class TestCommands:
 
         await d.handle_message(_inbound("/new"))
 
-        assert client.sent == [("CONV", "Started a fresh conversation.", _SVC)]
+        assert client.sent == [("CONV", "✅ Started a fresh conversation.", _SVC)]
         assert d._conv.current_gen(_EMAIL) == 1
         assert sessions.reserved_generations == [d._session_key(_EMAIL)]
         assert sessions.successes == []
@@ -529,7 +529,7 @@ class TestCommands:
             _inbound("/new", attachments=[{**_BODY_ECHO, "content": "<p>/new</p>"}])
         )
 
-        assert client.sent == [("CONV", "Started a fresh conversation.", _SVC)]
+        assert client.sent == [("CONV", "✅ Started a fresh conversation.", _SVC)]
         assert d._conv.current_gen(_EMAIL) == 1
         assert sessions.begin_turns == 0
 
@@ -574,14 +574,14 @@ class TestCommands:
         assert provider.compacted is True
         assert sessions.acquired == [key]
         assert sessions.released == [key]
-        assert client.sent == [("CONV", "Context compacted.", _SVC)]
+        assert client.sent == [("CONV", "🗜️ Context compacted.", _SVC)]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("kind", "reply"),
         [
-            ("failed", "Warning: Compaction failed — please try again."),
-            ("timeout", "Warning: Compaction timed out."),
+            ("failed", "⚠️ Compaction failed — please try again."),
+            ("timeout", "⚠️ Compaction timed out."),
         ],
     )
     async def test_compact_command_reports_an_unsuccessful_result(self, kind, reply) -> None:

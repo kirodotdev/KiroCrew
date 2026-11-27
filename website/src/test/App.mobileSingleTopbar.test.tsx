@@ -171,7 +171,7 @@ describe('phone chat page: one top bar', () => {
     // Each tile carries a visible caption: a finger cannot summon the desktop
     // rail's hover tip, and an icon-only Artifacts glyph was unreadable cold.
     expect(chat).toHaveTextContent('Sessions')
-    expect(within(rail).getByRole('button', { name: 'Settings' })).not.toHaveClass('nav-active')
+    expect(within(rail).getByRole('button', { name: 'Account & Settings' })).not.toHaveClass('nav-active')
     // Search moved here from the bar, same label, same command palette.
     expect(within(rail).getByTestId('mobile-nav-rail-search')).toHaveAccessibleName('Search sessions, files, and commands')
     // The brand mark is a control (home = chat root), not an inert picture in
@@ -181,23 +181,22 @@ describe('phone chat page: one top bar', () => {
     // rail's hover tip, so the full Customize name stays visible.
     const customize = within(rail).getByRole('button', { name: 'Customize' })
     expect(customize).toHaveTextContent('Customize')
-    expect(within(rail).getByRole('button', { name: 'Settings' })).toHaveTextContent('Settings')
+    expect(within(rail).getByRole('button', { name: 'Account & Settings' })).toHaveTextContent('Account & Settings')
     // The rail is the last row-set before Search; nothing in it is a text label
     // (icon-only, 56px wide), so every row must be named.
     for (const row of within(rail).getAllByRole('button')) expect(row).toHaveAccessibleName()
-    // The Apps list scrolls in its own frame (like the desktop rail), so 14
-    // installed apps cannot push Settings off the bottom of the screen. It keeps
-    // a two-tile floor, and the rail itself scrolls only as the last resort, so
-    // no tile is ever clipped (shell/nav/adaptiveMobileRail.tsx folds the
-    // secondary tiles into the Apps list first on short screens).
-    expect(rail).toHaveClass('overflow-y-auto')
-    expect(rail).not.toHaveClass('overflow-hidden')
-    const apps = within(rail).getByTestId('mobile-nav-rail-apps')
-    expect(apps).toHaveClass('overflow-y-auto', 'flex-1', 'min-h-[7.5rem]')
-    expect(apps).not.toContainElement(within(rail).getByTestId('mobile-nav-rail-home'))
-    expect(apps).not.toContainElement(within(rail).getByTestId('mobile-nav-rail-search'))
-    expect(apps).not.toContainElement(within(rail).getByRole('button', { name: 'Settings' }))
-    expect(apps).not.toContainElement(customize)
+    // Like the desktop rail, everything above Account & Settings and Search scrolls as
+    // ONE region, so 14 installed apps cannot push Account & Settings off the bottom of
+    // the screen and no group scrolls in a frame of its own.
+    expect(rail).toHaveClass('overflow-hidden')
+    expect(rail).not.toHaveClass('overflow-y-auto')
+    const scroller = within(rail).getByTestId('mobile-nav-rail-scroller')
+    expect(scroller).toHaveClass('overflow-y-auto', 'flex-1', 'min-h-0')
+    expect(scroller.querySelectorAll('.overflow-y-auto')).toHaveLength(0)
+    expect(scroller).toContainElement(within(rail).getByTestId('mobile-nav-rail-home'))
+    expect(scroller).toContainElement(customize)
+    expect(scroller).not.toContainElement(within(rail).getByTestId('mobile-nav-rail-search'))
+    expect(scroller).not.toContainElement(within(rail).getByRole('button', { name: 'Account & Settings' }))
   })
 
   it('carries Library and Terminal on the rail, and leaves out Developer and Connect-your-phone', async () => {
@@ -210,13 +209,12 @@ describe('phone chat page: one top bar', () => {
       // Developer lives in Settings > Developer; the old dev-mode key adds nothing.
       expect(within(rail).queryByRole('button', { name: 'Developer' })).toBeNull()
       // Terminal toggles the docked panel from the chat page itself, without a
-      // detour through another page's nav drawer. Pinned below the scrolling
-      // Apps frame, like Capabilities / Settings.
+      // detour through another page's nav drawer. It sits after the apps, with
+      // Capabilities, behind the divider.
       const terminal = within(rail).getByRole('button', { name: 'Terminal' })
       expect(terminal).toHaveAttribute('aria-pressed', 'false')
       expect(within(rail).queryByRole('button', { name: /connect your phone/i })).toBeNull()
-      const apps = within(rail).getByTestId('mobile-nav-rail-apps')
-      expect(apps).not.toContainElement(terminal)
+      expect(within(rail).getByTestId('mobile-nav-rail-secondary')).toContainElement(terminal)
     } finally {
       localStorage.removeItem('mc-dev-mode')
     }
@@ -398,6 +396,10 @@ describe('phone chat page: one top bar', () => {
     // It hangs over the top of <main>: a readout must not swallow the taps
     // and scroll starts that land there.
     expect(strip).toHaveClass('pointer-events-none')
+    // Above the Crewmates identity stack (fixed, z-30, same stacking context),
+    // whose hanging name chip would otherwise hide the centred message.
+    expect(strip).toHaveClass('z-40')
+    expect(strip).not.toHaveClass('z-[1]')
     await act(async () => { store.dispatch(sseConnected()) })
     expect(screen.queryByTestId('mobile-offline-strip')).toBeNull()
   })
@@ -432,44 +434,43 @@ describe('phone chat page: one top bar', () => {
   })
 
   // The desktop opens the account modal (balance, sign-in state) from the
-  // readout capsule's credits segment; the phone renders no capsule, so the two
-  // phone drawers carry an Account entry -- on exactly the readings the desktop
-  // segment would show. The default mocks are a non-Kiro harness with no
-  // reading: the one state with no segment on the desktop, and no entry here.
-  it('offers no Account entry on a harness whose desktop bar would show no credits segment', async () => {
+  // readout capsule's credits segment; the phone renders no capsule and no
+  // account row: its Account & Settings tile carries the account's initials and
+  // leads to Settings -> Kiro account, whose Credits section shows the balance.
+  it('draws an empty person avatar on the Account & Settings tile with no reading', async () => {
     localStorage.setItem('mc-onboarded', '1')
     renderWithProviders(<App />, { route: '/chat' })
     const rail = await screen.findByTestId('mobile-nav-rail')
-    // Settle the config + usage reads before asserting absence.
-    await screen.findByRole('button', { name: 'Settings' })
+    const tile = await within(rail).findByRole('button', { name: 'Account & Settings' })
+    expect(within(tile).getByTestId('account-avatar-empty')).toBeInTheDocument()
     expect(within(rail).queryByRole('button', { name: 'Kiro Account' })).toBeNull()
   })
 
-  it('puts a Kiro Account tile in the rail and a row in the nav drawer on the Kiro backend, opening the account modal', async () => {
+  it("draws the account's initials on the tile and offers no Kiro Account entry in either drawer", async () => {
     localStorage.setItem('mc-onboarded', '1')
-    const { api } = await import('../api/client')
     vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'kiro' } })
+    vi.mocked(api.sessionsUsage).mockResolvedValue({
+      usage: { credits_plan: 1000, credits_used: 250, email: 'zezhen.xu@example.com', account_type: 'IamIdentityCenter' },
+    } as never)
     try {
       const { unmount } = renderWithProviders(<App />, { route: '/chat' })
       const rail = await screen.findByTestId('mobile-nav-rail')
-      const tile = await within(rail).findByRole('button', { name: 'Kiro Account' })
-      // Between Capabilities and Settings, pinned with them (not in the Apps scroller).
-      expect(within(rail).getByTestId('mobile-nav-rail-apps')).not.toContainElement(tile)
-      expect(tile).toHaveAttribute('aria-pressed', 'false')
-      fireEvent.click(tile)
-      expect(await screen.findByRole('dialog', { name: 'Kiro Account' })).toBeInTheDocument()
-      expect(tile).toHaveAttribute('aria-pressed', 'true')
+      const tile = await within(rail).findByRole('button', { name: 'Account & Settings' })
+      expect(await within(tile).findByTestId('account-avatar-initials')).toHaveTextContent('ZX')
+      expect(within(rail).queryByRole('button', { name: 'Kiro Account' })).toBeNull()
       unmount()
 
-      // Every other phone page: the nav drawer carries the same entry.
+      // Every other phone page: the nav drawer has no account row either.
       renderWithProviders(<App />, { route: '/settings' })
       await screen.findByTestId('settings-page')
       fireEvent.click(within(header()).getByRole('button', { name: 'Open menu' }))
       const nav = await screen.findByRole('navigation', { name: 'Main navigation' })
-      fireEvent.click(await within(nav).findByRole('button', { name: 'Kiro Account' }))
-      expect(await screen.findByRole('dialog', { name: 'Kiro Account' })).toBeInTheDocument()
+      const row = await within(nav).findByRole('button', { name: 'Account & Settings' })
+      expect(await within(row).findByTestId('account-avatar-initials')).toHaveTextContent('ZX')
+      expect(within(nav).queryByRole('button', { name: 'Kiro Account' })).toBeNull()
     } finally {
       vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'claude' } })
+      vi.mocked(api.sessionsUsage).mockResolvedValue({ usage: null } as never)
     }
   })
 

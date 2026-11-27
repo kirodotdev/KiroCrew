@@ -3,8 +3,8 @@ title: The developer tools live in Settings > Developer, with no Developer Mode 
 status: implemented
 author: iamwhatever
 created: 2026-10-27
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr:
 implementation-prs: [24810]
 tracking-issues: [24797]

@@ -5,8 +5,10 @@ kiro-cli anchors each entry and matches it against the whole URL: a blocked matc
 refuses, then a trusted match runs without a prompt (``evaluate_url_permission``).
 Crew's gate grants only a trusted entry that is a plain URL or a plain URL plus
 ``.*``, read with string work (no regex), and only when every blocked entry has
-that shape and none matches. It adds no refusal: KAS's host deny stays as on main,
-and anything else keeps main's prompt.
+that shape and none matches. It refuses a fetch a plain-URL blocked entry KAS
+cannot carry definitely matches (as written, or in the one canonical form with no
+``/`` collapse), and asks on that entry's host so the fetch reaches the gate;
+anything else keeps main's behaviour.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from kiro_crew.acp.types import AcpEvent
 from kiro_crew.hooks import (
     TOOL_ALLOW,
     TOOL_AUTO_APPROVE,
+    TOOL_DENY,
     HookManager,
     HooksConfig,
     hook_gate_kwargs,
@@ -107,9 +110,23 @@ def test_trusted_runs_unprompted_unless_blocked() -> None:
     # Matched case-sensitively and whole, as kiro-cli anchors it.
     assert _judge("https://DOCS.example.com/guide", grant) == TOOL_ALLOW
     assert _judge("https://evil.com/https://docs.example.com/", grant) == TOOL_ALLOW
-    # A blocked match withholds the grant: main's prompt, not a refusal.
-    assert _judge("https://docs.example.com/private/x", grant) == TOOL_ALLOW
+    # A blocked match is refused, as kiro-cli refuses it.
+    assert _judge("https://docs.example.com/private/x", grant) == TOOL_DENY
     assert _judge("https://docs.example.com/\n", grant) == TOOL_ALLOW
+
+
+#: Spellings whose single canonical form (no ``/`` collapse) a blocked entry's
+#: matches: refused, not only withheld.
+_CANONICAL_MATCHES = frozenset(
+    {
+        "https://docs.example.com/%70rivate/x",
+        "https://docs.example.com/%2e/private/x",
+        "https://docs.example.com/guide/../private/x",
+        "https://docs.example.com:443/private/x",
+        "https://docs.example.com/public/x",
+        "https://docs.example.com/public/x#a",
+    }
+)
 
 
 @pytest.mark.parametrize(
@@ -145,7 +162,7 @@ def test_a_spelling_with_another_canonical_form_is_not_granted(url: str) -> None
         }
     )
     assert _judge("https://docs.example.com/guide", grant) == TOOL_AUTO_APPROVE
-    assert _judge(url, grant) == TOOL_ALLOW
+    assert _judge(url, grant) == (TOOL_DENY if url in _CANONICAL_MATCHES else TOOL_ALLOW)
 
 
 @pytest.mark.parametrize(
@@ -199,11 +216,11 @@ def test_entries_are_read_in_canonical_form_too() -> None:
     assert _judge("http://127.0.0.1/x", grant) == TOOL_ALLOW
 
 
-def test_gate_adds_no_refusal() -> None:
+def test_an_uncarried_blocked_entry_refuses_with_no_trusted_list() -> None:
     _out, grant = _project(toolsSettings={"web_fetch": {"blocked": ["https://evil\\.com/.*"]}})
-    # No trusted list: nothing to grant, so no record and main's behaviour.
-    assert grant is None
-    assert _judge("https://evil.com/x", grant) == TOOL_ALLOW
+    # No trusted list: nothing to grant by it, but the record refuses a match.
+    assert grant is not None and not grant.web_fetch_trusted
+    assert _judge("https://evil.com/x", grant) == TOOL_DENY
 
 
 def test_kas_policy_is_left_as_on_main() -> None:
@@ -264,9 +281,8 @@ def test_the_notice_drops_only_a_trusted_list_the_gate_applies() -> None:
             {"toolsSettings": settings}, translates_tools_settings=True
         )
 
-    assert lost({"web_fetch": {"blocked": ["https://evil\\.com/.*"], "trusted": _TRUSTED}}) == [
-        f"toolsSettings.web_fetch.blocked: https://evil\\.com/.* {_HOST_ONLY}"
-    ]
+    # A blocked entry the gate refuses is not named.
+    assert lost({"web_fetch": {"blocked": ["https://evil\\.com/.*"], "trusted": _TRUSTED}}) == []
     assert lost({"webFetch": {"trusted": [*_TRUSTED, "https://x\\.com/\\d+"]}}) == [
         "toolsSettings.webFetch.trusted"
     ]
@@ -347,8 +363,6 @@ def test_the_notice_names_each_blocked_entry_kas_cannot_carry() -> None:
         f'toolsSettings.webFetch.blocked: "x\\u007f/" {_HOST_ONLY}',
         f"toolsSettings.webFetch.blocked: {long_host} (longer than 1024 characters)",
         f"toolsSettings.webFetch.blocked: evil\\.(com|net) {_REGEX_SYNTAX}",
-        f"toolsSettings.webFetch.blocked: https://a\\.com/x {_HOST_ONLY}",
-        f"toolsSettings.webFetch.blocked: https://b\\.com/.* {_HOST_ONLY}",
     ]
     carried = {"toolsSettings": {"web_fetch": {"blocked": ["evil\\.com"]}}}
     assert kas_agents.spec_keys_without_carrier(carried, translates_tools_settings=True) == []
@@ -422,7 +436,8 @@ def test_a_spelling_that_reaches_blocked_or_leaves_trusted_stays_withheld(
         toolsSettings={"web_fetch": {"blocked": _PRIVATE_BLOCKED, "trusted": _TRUSTED}}
     )
     assert _judge("https://docs.example.com/guide", grant) == TOOL_AUTO_APPROVE
-    assert _judge(url, grant) == TOOL_ALLOW
+    refused = url in _CANONICAL_MATCHES
+    assert _judge(url, grant) == (TOOL_DENY if refused else TOOL_ALLOW)
 
 
 def test_a_blocked_query_value_is_read_unescaped_too() -> None:
@@ -449,8 +464,11 @@ def test_a_blocked_query_value_is_read_unescaped_too() -> None:
     assert _judge("https://docs.example.com/api?redirect=https%3A%2F%2Fgood.com", grant) == (
         TOOL_AUTO_APPROVE
     )
+    # The spelling the entry names is refused; the others are only withheld.
+    assert _judge("https://docs.example.com/api?redirect=https%3A%2F%2Fevil.com", grant) == (
+        TOOL_DENY
+    )
     for url in (
-        "https://docs.example.com/api?redirect=https%3A%2F%2Fevil.com",
         "https://docs.example.com/api?redirect=https:%2F%2Fevil.com",
         "https://docs.example.com/api?redirect=https://evil.com",
     ):
@@ -465,8 +483,8 @@ def test_a_blocked_query_value_is_read_unescaped_too() -> None:
         }
     )
     assert _judge("https://docs.example.com/s?q=a%2Bb", grant) == TOOL_AUTO_APPROVE
-    for url in ("https://docs.example.com/s?q=a+b", "https://docs.example.com/s?q=a%20b"):
-        assert _judge(url, grant) == TOOL_ALLOW, url
+    assert _judge("https://docs.example.com/s?q=a+b", grant) == TOOL_ALLOW
+    assert _judge("https://docs.example.com/s?q=a%20b", grant) == TOOL_DENY
 
 
 def test_a_blocked_private_range_prefix_withholds_only_its_range() -> None:
@@ -484,16 +502,17 @@ def test_a_blocked_private_range_prefix_withholds_only_its_range() -> None:
     )
     assert _judge("https://docs.example.com/guide", grant) == TOOL_AUTO_APPROVE
     assert _judge("http://11.0.0.1/", grant) == TOOL_AUTO_APPROVE
+    # Written under a blocked prefix: refused.
     for url in (
         "http://10.0.0.1/",
         "http://127.0.0.1/",
         "http://127.1/",
-        "http://0x7f.1/",
-        "http://0x7f.0.0.1/",
-        "http://2130706433/",
         "http://192.168.1.1/",
-        "HTTP://10.0.0.1./x",
     ):
+        assert _judge(url, grant) == TOOL_DENY, url
+    # Another spelling of a blocked address: only withheld. A prefix cut inside the
+    # host is compared as written, so a canonical spelling only withholds too.
+    for url in ("http://0x7f.1/", "http://0x7f.0.0.1/", "http://2130706433/", "HTTP://10.0.0.1./x"):
         assert _judge(url, grant) == TOOL_ALLOW, url
 
 
@@ -538,3 +557,179 @@ def test_a_trusted_cut_decimal_host_prefix_grants_nothing() -> None:
     _out, grant = _project(toolsSettings={"web_fetch": {"trusted": ["http://10\\..*"]}})
     assert _judge("http://10.0.0.1.evil.com/", grant) == TOOL_ALLOW
     assert _judge("http://10.0.0.1/", grant) == TOOL_ALLOW
+
+
+# ── a blocked entry KAS cannot carry, applied at the gate ────────────────────
+
+_EVIL = ["https://evil\\.example/.*"]
+_ALLOW = {"capability": "web_fetch", "effect": "allow"}
+
+
+def _web_fetch_rules(out: dict[str, Any]) -> list[dict[str, Any]]:
+    return [r for r in out["permissions"]["rules"] if r.get("capability") == "web_fetch"]
+
+
+def test_an_uncarried_blocked_url_is_refused_on_every_policy() -> None:
+    """kiro-cli refuses a fetch the whole-URL entry matches; so does the gate, and
+    the auto-approve floor (a cron job with ``approval_mode: auto``) too."""
+    from kiro_crew import permission_floor
+
+    _out, grant = _project(
+        allowedTools=["web_fetch"], toolsSettings={"web_fetch": {"blocked": _EVIL}}
+    )
+    event = _fetch("https://evil.example/x")
+    event.spec_denied_grant = grant
+    verdict = HookManager(HooksConfig()).on_tool_call(event.title, **hook_gate_kwargs(event))
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-denies")
+    assert verdict.reason == "Blocked by this agent's spec: the URL matches its web_fetch.blocked"
+    assert permission_floor.refusal_for(event, session_key="cron:probe", security_only=False) == (
+        verdict.reason
+    )
+
+
+def test_the_projection_asks_only_on_the_blocked_host() -> None:
+    """One ``ask`` scoped to the entry's host brings a fetch there to the gate; the
+    unscoped allow still runs every other host's fetch, as on main."""
+    out, grant = _project(
+        allowedTools=["web_fetch"], toolsSettings={"web_fetch": {"blocked": _EVIL}}
+    )
+    assert _web_fetch_rules(out) == [
+        _ALLOW,
+        {"capability": "web_fetch", "match": ["evil.example"], "effect": "ask"},
+    ]
+    assert out[CREW_SPEC_DENIES_KEY]["builtins"] == ["web_fetch"]
+    # A fetch to another host KAS never asks about; were it asked, it is granted.
+    assert _judge("https://ok.example/", grant) == TOOL_AUTO_APPROVE
+
+
+def test_a_clear_url_on_the_blocked_host_is_granted_by_name() -> None:
+    _out, grant = _project(
+        allowedTools=["web_fetch"],
+        toolsSettings={"web_fetch": {"blocked": ["https://evil\\.example/private/.*"]}},
+    )
+    assert _judge("https://evil.example/ok", grant) == TOOL_AUTO_APPROVE
+    assert _judge("https://evil.example/private/a", grant) == TOOL_DENY
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # No canonical form: neither refused nor granted.
+        "https://u@evil.example/x",
+        # Reaches the entry only once `//` is collapsed.
+        "https://evil.example//private/a",
+    ],
+)
+def test_an_unsure_url_on_the_blocked_host_asks(url: str) -> None:
+    _out, grant = _project(
+        allowedTools=["web_fetch"],
+        toolsSettings={"web_fetch": {"blocked": ["https://evil\\.example/private/.*"]}},
+    )
+    assert _judge(url, grant) == TOOL_ALLOW
+
+
+def test_another_scheme_than_the_entry_is_not_refused() -> None:
+    """kiro-cli does not refuse ``http://`` against an ``https://`` entry."""
+    _out, grant = _project(
+        allowedTools=["web_fetch"], toolsSettings={"web_fetch": {"blocked": _EVIL}}
+    )
+    assert _judge("http://evil.example/x", grant) == TOOL_AUTO_APPROVE
+
+
+def test_a_non_literal_entry_is_left_as_on_main() -> None:
+    """An entry Crew cannot read without a regex adds no ask and no record, and
+    refuses nothing."""
+    out, grant = _project(
+        allowedTools=["web_fetch"],
+        toolsSettings={"web_fetch": {"blocked": ["https://evil\\.example/\\d+"]}},
+    )
+    assert out["permissions"] == {"rules": [_ALLOW]}
+    assert CREW_SPEC_DENIES_KEY not in out and grant is None
+    assert _judge("https://evil.example/1", grant) == TOOL_ALLOW
+
+
+def test_a_host_entry_kas_carries_is_left_as_on_main() -> None:
+    out, grant = _project(
+        allowedTools=["web_fetch"], toolsSettings={"web_fetch": {"blocked": ["evil\\.example"]}}
+    )
+    assert out["permissions"] == {
+        "rules": [{"capability": "web_fetch", "match": ["evil.example"], "effect": "deny"}, _ALLOW]
+    }
+    assert CREW_SPEC_DENIES_KEY not in out and grant is None
+
+
+@pytest.mark.parametrize(
+    "entry", ["https://u@evil\\.example/.*", "https:.*", "https://ev%69l\\.example/.*"]
+)
+def test_an_entry_with_no_clear_host_asks_for_every_fetch(entry: str) -> None:
+    out, grant = _project(
+        allowedTools=["web_fetch"], toolsSettings={"web_fetch": {"blocked": [entry]}}
+    )
+    assert _web_fetch_rules(out) == [_ALLOW, {"capability": "web_fetch", "effect": "ask"}]
+    assert grant is not None and "web_fetch" in grant.builtins
+
+
+def test_a_prefix_cut_inside_the_host_asks_on_the_host_prefix() -> None:
+    out, _grant = _project(
+        allowedTools=["web_fetch"], toolsSettings={"web_fetch": {"blocked": ["https://Evil\\..*"]}}
+    )
+    assert _web_fetch_rules(out)[-1] == {
+        "capability": "web_fetch",
+        "match": ["evil.*"],
+        "effect": "ask",
+    }
+
+
+def test_a_prefix_cut_inside_the_host_refuses_only_as_written() -> None:
+    """Its canonical form drops the trailing host dot, which would also start
+    ``evilcorp.com``; kiro-cli refuses only the URL the entry starts as written."""
+    _out, grant = _project(toolsSettings={"web_fetch": {"blocked": ["https://Evil\\..*"]}})
+    assert _judge("https://Evil.example/x", grant) == TOOL_DENY
+    assert _judge("https://evilcorp.com/", grant) == TOOL_ALLOW
+
+
+def test_an_entry_with_a_fragment_refuses_only_as_written() -> None:
+    """A fetch never sends the fragment, so the canonical form of an entry with one
+    would name every path of its host."""
+    _out, grant = _project(
+        toolsSettings={"web_fetch": {"blocked": ["https://app\\.example/#/admin.*"]}}
+    )
+    assert _judge("https://app.example/#/admin/x", grant) == TOOL_DENY
+    assert _judge("https://app.example/docs", grant) == TOOL_ALLOW
+
+
+def test_a_host_entry_kas_carries_keeps_the_by_name_grant() -> None:
+    """A host entry KAS already denies cannot match a whole URL, so it does not make
+    every fetch to the asked host unsure."""
+    _out, grant = _project(
+        allowedTools=["web_fetch"],
+        toolsSettings={
+            "web_fetch": {"blocked": ["evil\\.com", "https://evil\\.example/private/.*"]}
+        },
+    )
+    assert _judge("https://evil.example/ok", grant) == TOOL_AUTO_APPROVE
+    assert _judge("https://evil.example/private/a", grant) == TOOL_DENY
+
+
+def test_an_authored_restriction_keeps_the_by_name_grant_off() -> None:
+    _out, grant = _project(
+        allowedTools=["web_fetch"],
+        permissions={"rules": [{"capability": "web_fetch", "match": ["*.ok"], "effect": "ask"}]},
+        toolsSettings={"web_fetch": {"blocked": _EVIL}},
+    )
+    assert grant is not None and "web_fetch" not in grant.builtins
+    assert _judge("https://evil.example/x", grant) == TOOL_DENY
+
+
+def test_opted_in_fail_closed_adds_no_ask(monkeypatch) -> None:
+    """``agent.kas_fail_closed_web_fetch_blocked`` on: its deny over ``*`` already
+    refuses every fetch, so the projection is as before."""
+    from kiro_crew.acp import kas_permissions, kas_unread_commands
+
+    monkeypatch.setattr(kas_permissions, "fails_closed_on_uncarried_blocked", lambda: True)
+    monkeypatch.setattr(kas_unread_commands, "fails_closed_on_uncarried_blocked", lambda: True)
+    out, grant = _project(
+        allowedTools=["web_fetch"], toolsSettings={"web_fetch": {"blocked": _EVIL}}
+    )
+    assert not any(r.get("effect") == "ask" for r in _web_fetch_rules(out))
+    assert CREW_SPEC_DENIES_KEY not in out and grant is None

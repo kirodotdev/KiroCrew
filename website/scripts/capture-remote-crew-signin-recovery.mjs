@@ -74,7 +74,7 @@ const STEPS_REGISTERED = [
     key: 'connect',
     label: 'Connect',
     state: 'done',
-    detail: 'Added to Your crews. Sign in to Kiro on the crew after you connect.',
+    detail: 'Added to My Crews. Sign in to Kiro on the crew after you connect.',
   },
 ]
 
@@ -188,15 +188,19 @@ const AWS_EC2_ROW = {
  * unsigned and whether a code is live; `instances` decides whether Your crews
  * has a row at all.
  */
-const world = { jobs: [], instances: [], signinAnswer: null }
+const world = { jobs: [], instances: [], signinAnswer: null, identity: null }
+// The row asks the box before badging a finished unsigned job. With no answer
+// set, the box says it is signed out, so the badge shot below is the real one.
+const BOX_SIGNED_OUT = { status: 409, body: { error: 'no sign-in pending', code: 'no_signin_pending' } }
 
 const extra = async (path, route) => {
   if (path === '/api/instances') {
     return json(route, { active: true, warm_set_cap: 5, instances: world.instances }), true
   }
   if (path === '/api/cloud/launch') return json(route, { jobs: world.jobs }), true
-  if (/^\/api\/cloud\/launch\/[^/]+\/signin$/.test(path) && world.signinAnswer) {
-    return json(route, world.signinAnswer.body, world.signinAnswer.status), true
+  if (/^\/api\/cloud\/launch\/[^/]+\/signin$/.test(path)) {
+    const answer = world.signinAnswer || BOX_SIGNED_OUT
+    return json(route, answer.body, answer.status), true
   }
   const one = /^\/api\/cloud\/launch\/([^/]+)$/.exec(path)
   if (one) {
@@ -206,7 +210,7 @@ const extra = async (path, route) => {
   if (path === '/api/cloud/provisioners') return json(route, { provisioners: [AWS_EC2_ROW] }), true
   if (path.startsWith('/api/cloud/preflight')) return json(route, PREFLIGHT_OK), true
   if (path === '/api/cloud/identity') {
-    return json(route, { identity: null, suggested_target: null, discovery: 'read' }), true
+    return json(route, world.identity || { identity: null, suggested_target: null, discovery: 'read' }), true
   }
   if (path === '/api/cloud/iam-policy') return json(route, { policy: '{}' }), true
   return false
@@ -814,6 +818,57 @@ for (const theme of ['dark', 'light']) {
   await page.close()
 }
 world.signinAnswer = null
+
+// ---- Frame 12: the box could not be asked -----------------------------------
+// The probe answered 502 `signin_probe_failed` (SSM unreachable, or a crew with
+// no Kiro sign-in program). Nobody checked that its chats fail, so no badge and
+// no "chats will fail" panel -- only the failed check, minor, with the hand-off.
+
+world.jobs = [UNSIGNED_JOB]
+world.instances = [{ ...UNSIGNED_INSTANCE, status: { instance_id: 'kc1', state: 'connected' } }]
+world.signinAnswer = { status: 502, body: { error: 'could not reach the crew to check its sign-in', code: 'signin_probe_failed' } }
+for (const theme of ['dark', 'light']) {
+  const page = await openPage(theme)
+  await page.goto(`${base}/settings?tab=instances`, { waitUntil: 'domcontentloaded' })
+  const row = page.locator('[data-crew-id="kc1"]')
+  await row.getByText(/could not reach the crew to check its sign-in/i).waitFor({ timeout: 20000 })
+  await page.waitForTimeout(400)
+  const rowText = await row.innerText()
+  if (/Needs sign-in/i.test(rowText)) fail(`${theme}: an unasked crew must not be badged`)
+  if (await row.locator('[data-testid="signin-prompt"]').count()) fail(`${theme}: no sign-in panel for an unasked crew`)
+  if (!(await row.getByRole('button', { name: /ask the agent/i }).isVisible())) {
+    fail(`${theme}: the failed check keeps the agent hand-off`)
+  }
+  await page.screenshot({ path: `${OUT}/12-check-failed-row-${theme}.png`, clip: await clipOf(page, row, 10, 0) })
+  console.log(`wrote 12 (${theme})`)
+  await page.close()
+}
+world.signinAnswer = null
+
+// ---- Frame 13: the launch form cannot read this computer's sign-in -----------
+// whoami really failed: the form still works, only the preselect is missing, so
+// the notice is amber (`partial`, role=status), not red, and keeps Ask the agent.
+
+world.jobs = []
+world.instances = []
+world.identity = { identity: null, suggested_target: null, discovery: 'unknown' }
+for (const theme of ['dark', 'light']) {
+  const page = await openPage(theme)
+  await page.goto(`${base}/settings?tab=instances`, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('radio', { name: /Set up a new one/i }).click()
+  const note = page.getByText(/sign-in could not be read/i).first()
+  await note.waitFor({ timeout: 20000 })
+  await page.waitForTimeout(400)
+  const box = note.locator('xpath=ancestor::*[@role="status" or @role="alert"][1]')
+  if ((await box.getAttribute('role')) !== 'status') fail(`${theme}: the unknown identity notice must be amber (status), not red`)
+  if (!(await box.getByRole('button', { name: /ask the agent/i }).isVisible())) {
+    fail(`${theme}: the unknown identity notice keeps the agent hand-off`)
+  }
+  await page.screenshot({ path: `${OUT}/13-launch-identity-unknown-${theme}.png`, clip: await clipOf(page, box.locator('xpath=..'), 10, 0) })
+  console.log(`wrote 13 (${theme})`)
+  await page.close()
+}
+world.identity = null
 
 await browser.close()
 srv.close()

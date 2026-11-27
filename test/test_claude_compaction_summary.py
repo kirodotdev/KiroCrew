@@ -372,14 +372,14 @@ async def test_a_turn_that_compacts_draws_the_streamed_summary_on_its_card() -> 
     record = await run_turn(
         TurnScript(events=[*await _recorded_events(1), _DONE], provider=_ClaudeProvider)
     )
-    assert _compaction_rows(record) == [f"✅ Conversation compacted: {STREAMED_SUMMARY}"]
+    assert _compaction_rows(record) == [f"Conversation compacted: {STREAMED_SUMMARY}"]
     # The open chat gets the row as it lands, tagged for the card.
     sent = [
         f.payload["content"]
         for f in record.frames("chat_message")
         if (f.payload.get("meta") or {}).get("kind") == "compaction"
     ]
-    assert sent == [f"✅ Conversation compacted: {STREAMED_SUMMARY}"]
+    assert sent == [f"Conversation compacted: {STREAMED_SUMMARY}"]
     # The reply after the compaction is still the turn's answer.
     replies = [row["content"] for row in record.rows("assistant") if row not in _cards(record)]
     assert replies == ["amber, cobalt"]
@@ -394,4 +394,4 @@ async def test_a_manual_compact_draws_the_summary_on_its_card() -> None:
             message="/compact",
         )
     )
-    assert _compaction_rows(record) == [f"✅ Conversation compacted: {MANUAL_SUMMARY}"]
+    assert _compaction_rows(record) == [f"Conversation compacted: {MANUAL_SUMMARY}"]

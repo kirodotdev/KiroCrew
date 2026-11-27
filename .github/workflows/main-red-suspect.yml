@@ -1,0 +1,190 @@
+name: Main Red Suspect
+
+# `main-red-watch.yml` files the `Main is red:` issue only after a push run of
+# `CI` on main ends red, and a full push run takes about an hour. Pull requests
+# based on the commit that broke main fail the same test in that hour, and
+# nothing tells their authors, because no issue is open yet. Those pull request
+# runs already hold the signal: one test, one message start, several unrelated
+# pull requests.
+#
+# WHAT IT DOES: when a `CI` run of a same-repository pull request that targets
+# main ends `failure` and names a failing test, it reads the newest failed runs
+# of other pull requests and, when the same test fails with the same first 80
+# characters of message on 3 pull requests (the run that started it or not), files
+# ONE issue titled `ci: Main may be red: <node id>` under the
+# `main-red-suspected` label, listing the tests, the 3 pull requests and the
+# one of their bases that the other two contain. When a push run of `CI` on main ends, it closes the
+# suspected issues that run answers: one whose test the `Main is red:` issue now
+# names (main is red, that issue tracks it), and, after a green run that ran the
+# full backend suite and contains the recorded base, every such one (main was
+# green). A test closed that way is not suspected again for 24 hours: main ran
+# it green after 3 pull requests failed it, so it is more likely flaky than
+# broken. `.github/scripts/main_red_suspect.py` holds the rules and says what
+# counts.
+#
+# THE COMMENT: a suspected issue in the issue list reaches few authors, so a
+# pull request that fails a suspected test is told on the pull request, once per
+# suspected issue: the 3 the issue names when it is filed, and any other once
+# its failed run is among the newest runs a later run reads (its own next run,
+# or another pull request's). It gets the comment only when its run is on its
+# current head,
+# fails the test with the same message start, it does not change the test's
+# file, and its base contains the issue's recorded base. The comment is a hint:
+# the same test fails on other pull requests, here is the issue, and this pull
+# request's own change may still be the cause. It is found by a marker among the
+# Actions token's own comments and never edited; when the issue closes, the link
+# shows whether main was red or green, and the 24 hour cool-down keeps a false
+# alarm from being repeated.
+#
+# A NOTICE ONLY, AND NEVER A SKIP: `scripts/ci_main_red_skip.py` deselects tests
+# for the issue the watcher's `pick_issue` returns, and `main-red-pr-notice.yml`
+# comments for the same one. A suspected issue has another title prefix, another
+# record marker and another label, so neither reads it. Whatever a pull request
+# run reports, the only thing that can deselect a test is still a red push run
+# on main, by the watcher's unchanged rules. This workflow changes no check,
+# label or assignee of a pull request, edits no comment of another workflow,
+# and cannot fail a job (`continue-on-error`). Deleting this file and the
+# script removes it.
+#
+# WHO CAN CAUSE AN ISSUE: annotations are written by the code a pull request
+# runs, so one pull request can report any failure it likes. An issue needs 3
+# pull requests whose heads are in this repository (a fork's run is skipped by
+# the gate, and each pull request's head repository is read again), by 3
+# authors, in runs started by 3 accounts, each failing on its current head and
+# none changing the test's file. That takes three accounts with write access.
+# What they get is one issue that says "may be red" and is closed by the next
+# green run on main, and one comment saying so on each pull request that fails
+# that test with that message. A fork's pull request is never a witness, so it
+# never gets the comment.
+#
+# NEVER RUNS PR CODE: the script is read from a sparse checkout of main
+# (`workflow_run` checks out the default branch). Annotation text is data: `gh`
+# returns it as JSON, the script cuts it to printable ASCII and writes it only in
+# code spans. Event values reach the script through `env:` and are matched there
+# before they reach an API path. Nothing from the event is in the `run:` text.
+#
+# API CALLS: a push run on main costs 1 issue read; with a suspected issue open
+# it adds a second issue read (red) or the run's jobs and one compare per
+# suspected issue, at most 3 (green). A failed pull request run costs 2 issue
+# reads and stops there while a `Main is red:` issue is open. Otherwise it reads
+# its own jobs and up to 3 annotation sets, and stops when they name no test.
+# While a suspected issue is open, a run that names a test also reads the run
+# list and each open issue's timeline (which says who is told, at most 3
+# reads), then the jobs and annotations of the newest 10 other pull requests
+# that are not yet told. For each run that fails a suspected test and is not
+# told: its pull request, its changed files and its comments (3 reads, 1
+# compare for a different base) and one comment per suspected issue. Once
+# every pull request in that window is told, such a run costs about 6 reads.
+# The first run after an issue is filed costs the most: with 10 other pull
+# requests all failing the suspected test, up to 81 reads and 11 writes.
+# Filing an issue adds one comment read and one write for each of the 3 pull
+# requests it names.
+# One read of the suspected issues closed in the last 24 hours follows, and it
+# stops when a green main run closed one for every test that fails here.
+# Then: the list of failed pull request runs of the last 3 hours (read to the
+# end), and for each of the newest 10 other pull requests its jobs and up to 3
+# annotation sets. A pull request and its changed files (2 reads) are read only
+# for a run that is one of 3 failing a test the same way, and up to 3 compares
+# place their bases. It reads no other run when fewer than 1,500 requests are
+# left for the token, and the `gh` wrapper waits out a spent limit for at most
+# two minutes.
+#
+# PERMISSIONS: `actions: read` for runs and jobs; `checks: read` for the
+# annotations of a failed job's check run; `contents: read` for the checkout and
+# the compare reads; `pull-requests: read` for a pull request's author, head and
+# base; `issues: write` to file, comment on and close the suspected issue, to
+# create its label, and to write the comment on a pull request (a pull request
+# is an issue to the comments endpoint).
+#
+# `test/test_main_red_suspect.py` pins the gate, the permissions, the rules and
+# the three checks that keep a suspected issue out of the skip;
+# `test/test_main_red_suspect_notice.py` pins the comment.
+
+on:
+  workflow_run:
+    workflows:
+      - "CI"
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+# One run that may file at a time and one that may close at a time, never
+# killed: two side by side is how a lookup passes twice and files two issues.
+# GitHub keeps one queued run per group, so a newer run replaces an older queued
+# one. Each leg of the group expression is therefore the job gate's own leg,
+# clause for clause: only a run the job takes can replace a queued one, and
+# every other completion of `CI` gets a group of its own. What a replaced run
+# loses: a filing run, nothing while its failed run is among the newest 10 the
+# next one reads (neither the agreement nor the comment needs the run that
+# started the job; the next run that names a failing test does both for every
+# run it reads); a green main run replaced by a newer red one leaves its
+# suspected issue open until the next green run that contains the base.
+concurrency:
+  group: >-
+    ${{ github.event.workflow_run.head_repository.full_name == github.repository
+    && github.event.workflow_run.event == 'pull_request'
+    && github.event.workflow_run.conclusion == 'failure'
+    && github.event.workflow_run.pull_requests[0].base.ref == 'main'
+    && 'main-red-suspect-detect'
+    || github.event.workflow_run.head_repository.full_name == github.repository
+    && github.event.workflow_run.event == 'push'
+    && github.event.workflow_run.head_branch == 'main'
+    && (github.event.workflow_run.conclusion == 'failure'
+    || github.event.workflow_run.conclusion == 'timed_out'
+    || github.event.workflow_run.conclusion == 'success')
+    && 'main-red-suspect-settle'
+    || format('main-red-suspect-skip-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  suspect:
+    name: Open or close the suspected main-red issue
+    # The `kirocrew-runners` group in THIS repository, rather than the standard
+    # pool whose concurrency is shared enterprise-wide. Named by its runner
+    # LABEL, not by `group:`: the group belongs to the kirodotdev organization,
+    # so a fork running its own copy cannot reach it and would wait forever for
+    # a runner. The `||` leg keeps a fork on the hosted image.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    continue-on-error: true
+    if: >-
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      ((github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.conclusion == 'failure' &&
+        github.event.workflow_run.pull_requests[0].base.ref == 'main') ||
+       (github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        (github.event.workflow_run.conclusion == 'failure' ||
+         github.event.workflow_run.conclusion == 'timed_out' ||
+         github.event.workflow_run.conclusion == 'success')))
+    steps:
+      # `workflow_run` checks out the default branch, so the script is main's own.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/actions/gh-rate-limit
+
+      - uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "120"
+
+      - name: Open or close the suspected main-red issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          COMMAND: ${{ github.event.workflow_run.event == 'pull_request' && 'detect' || 'settle' }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          ACTOR: ${{ github.event.workflow_run.actor.login }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          BASE_SHA: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
+        run: python3 .github/scripts/main_red_suspect.py "$COMMAND"

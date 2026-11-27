@@ -22,12 +22,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 
 from kiro_crew.dashboard import handlers_instances as handlers
 from kiro_crew.dashboard import server
 from kiro_crew.instances.registry import InstancesRegistry
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState, TunnelStatus
 from kiro_crew.pre_exec_stops import register_pre_exec_stop, run_pre_exec_stops
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 #: Bound on reaping a test's own child after a signal. It only names a hang: a
 #: child that ignores SIGTERM is killed at it, and one that outlives the kill

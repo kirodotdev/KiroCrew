@@ -1,12 +1,12 @@
 ---
 title: ErrorNotice looks as serious as the failure is, through an impact level and a nested form
-status: accepted
+status: partial
 author: kirocrew agent session, directed by buluoray
 created: 2026-11-14
-last-audited: 2026-11-14
-audited-at: 2cbf235c10
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 37124
-implementation-prs: []
+implementation-prs: [37263]
 tracking-issues: [37118]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: ErrorNotice looks as serious as the failure is, through an impact level and a nested form
 
-Status: accepted. Accepted 2026-11-14 when this document merged as [#37124](https://github.com/kirodotdev/KiroCrew/pull/37124) after its review approval; the repository owner then asked for the implementation, tracked in [#37262](https://github.com/kirodotdev/KiroCrew/issues/37262). Nothing is built yet. Asked for 2026-11-14 by the repository owner, who chose the layout, the blocking tone and the button styling shown here from earlier design rounds. Code references were read on main at `8a1b4d3855`; the call-site survey ran at `a67cbbb4d3`, and neither `ErrorNotice.tsx` nor `AUTOSDE.yaml` changed between the two. Tracking issue: [#37118](https://github.com/kirodotdev/KiroCrew/issues/37118). This document changes no code.
+Status: partial. Phase 1a is on main from [#37263](https://github.com/kirodotdev/KiroCrew/pull/37263) (`impact` and `nested` on `ErrorNotice` in `website/src/components/ErrorNotice.tsx`); Phase 1b, the remaining call sites, is open under [#37262](https://github.com/kirodotdev/KiroCrew/issues/37262). Checked at `cdb601611f`. Accepted 2026-11-14 when this document merged as [#37124](https://github.com/kirodotdev/KiroCrew/pull/37124) after its review approval; the repository owner then asked for the implementation, tracked in [#37262](https://github.com/kirodotdev/KiroCrew/issues/37262). Asked for 2026-11-14 by the repository owner, who chose the layout, the blocking tone and the button styling shown here from earlier design rounds. Code references were read on main at `8a1b4d3855`; the call-site survey ran at `a67cbbb4d3`, and neither `ErrorNotice.tsx` nor `AUTOSDE.yaml` changed between the two. Tracking issue: [#37118](https://github.com/kirodotdev/KiroCrew/issues/37118). This document changes no code.
 
 ## Summary
 

@@ -10,6 +10,7 @@ import ErrorNotice from './ErrorNotice'
 import { NewFolderForm, NewFolderToggle } from './ProjectPickerNewFolder'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
 import { endsWithSeparator, isWindowsPath, lastSegment, parentIsDriveList, pathSeparator, stripTrailingSeparator } from '../utils/browsePath'
+import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 import { searchErrorCause, type SearchErrorCause } from '../lib/searchErrorCause'
 import { canPickFolderNatively, hasNativeFolderPicker, pickFolderNatively } from '../lib/electron'
 
@@ -17,6 +18,9 @@ import { i18nT } from '../i18n/t'
 
 /** The Browse tab's Tab trap dismisses nothing itself (`handleEscape: false`). */
 const noop = () => {}
+
+/** A Recent or Favourites row's bold title: the folder name, also for a native Windows path. */
+const projectTitle = (d: string) => pathBasename(stripTrailingSeparators(d)) || d
 
 // Copy for a failed DIRECTORY listing, keyed on the same classifier WorkspacePicker and
 // FolderPanel read, so one failure is named one way whichever picker the user is in. Three
@@ -190,7 +194,8 @@ interface Props {
    * only a mount with nothing unsaved beneath it may set this: ComposerDockView's
    * project chooser does (its composer draft is persisted per slot by
    * `chatDrafts`). Off by default — the safe direction — for FolderConfigModal
-   * (folder form), RepoSettings (repo form) and ProjectScaffolderPage (wizard).
+   * (folder form), RepoSettings (repo form) and the App SDK's `ProjectPicker`
+   * (an app page).
    */
   errorHandoff?: boolean
   /**
@@ -922,7 +927,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 >
                   <FolderOpen size={12} className="text-accent shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-mono font-semibold text-text truncate">{d.split('/').pop()}</div>
+                    <div className="text-[13px] font-mono font-semibold text-text truncate">{projectTitle(d)}</div>
                     <div className="text-[11px] text-muted truncate">{d}</div>
                   </div>
                 </button>
@@ -997,7 +1002,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 >
                   <FolderOpen size={12} className="text-accent shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-mono font-semibold text-text truncate">{d.split('/').pop()}</div>
+                    <div className="text-[13px] font-mono font-semibold text-text truncate">{projectTitle(d)}</div>
                     <div className="text-[11px] text-muted truncate">{d}</div>
                   </div>
                 </button>
@@ -1114,8 +1119,8 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               {/* No hand-off unless the mount opts in (`errorHandoff`): three
                   of the four callers float this popover over an unsaved draft —
                   FolderConfigModal's folder form (name, colour, tags,
-                  directory), RepoSettings' repo form, ProjectScaffolderPage's
-                  wizard — and the hand-off would navigate away from it. ChatPage
+                  directory), RepoSettings' repo form, an app page through the
+                  App SDK's export — and the hand-off would navigate away from it. ChatPage
                   opts in; its composer draft is persisted. When on, the popover
                   closes itself so it does not float over the chat it hands to. */}
               <ErrorNotice

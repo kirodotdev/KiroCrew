@@ -149,7 +149,10 @@ async def test_actual_queue_push_pop_and_detail_carry_only_normalized_identity(
     assert await chat_runner._start_next_queued_turn(state, slot)
     await asyncio.wait_for(slot.task, 30)
     pop = next(c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_pop")
-    assert pop["meta"] == {"sendId": "s-exact", "files": ["/work/File Name.txt"]}
+    assert {k: v for k, v in pop["meta"].items() if k != "author"} == {
+        "sendId": "s-exact",
+        "files": ["/work/File Name.txt"],
+    }
     assert "sendId" not in queue_entry_view(
         {"id": "bad", "content": "one", "meta": {"sendId": ["invalid"]}}
     ).get("meta", {})

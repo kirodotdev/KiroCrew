@@ -300,7 +300,7 @@ def test_the_publish_wrapper_rearms_the_channels_refresh(monkeypatch):
     armed: list[tuple] = []
     monkeypatch.setattr(board_pkg, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         publisher._retry_at[binding.channel_id] = 7.0
         return "deferred"
 
@@ -317,7 +317,7 @@ def test_the_publish_wrapper_rearms_the_channels_refresh(monkeypatch):
 def test_the_publish_wrapper_rechecks_the_scope_before_anything_is_sent(monkeypatch):
     sent: list = []
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         sent.append(snapshot)
         return "updated"
 
@@ -354,10 +354,11 @@ def test_a_waiting_row_leads_with_its_words_and_only_working_rows_spin():
         "pending",
     ]
     # Waiting and idle share the empty circle: the title's words set waiting apart.
-    assert tasks["it_2"]["title"] == "Waiting on you: Add retries"
-    assert not tasks["it_1"]["title"].startswith("Waiting") and tasks["it_3"]["title"] == "Docs"
+    assert tasks["it_2"]["title"] == "Needs you: Add retries"
+    assert tasks["it_1"]["title"] == "Working: Fix login"
+    assert tasks["it_3"]["title"] == "Idle: Docs"
     waiting = tasks["it_2"]["details"]["elements"][0]["elements"]
-    assert not any("Waiting on you" in str(e.get("text")) for e in waiting)  # said once
+    assert not any("Needs you" in str(e.get("text")) for e in waiting)  # said once
     assert waiting[-1]["type"] == "link" and waiting[-1]["text"] == "Open in dashboard"
 
 
@@ -390,7 +391,7 @@ def test_a_slack_that_refuses_the_pending_status_gets_the_plain_rows(slack, capl
     assert "C1" in publisher._plan_refused
     blocks = render.board_blocks(waiting, _link, look="rows")
     text = json.dumps(blocks)
-    assert '"plan"' not in text and "Waiting on you" in text and "Open in dashboard" in text
+    assert '"plan"' not in text and "Needs you" in text and "Open in dashboard" in text
 
 
 def test_every_edit_carries_new_block_ids_and_a_refused_plan_falls_back_once(
@@ -448,7 +449,7 @@ def test_plan_tasks_map_states_strip_the_shared_issue_prefix_and_cap_at_fifty():
         "error",
         "pending",
     ]
-    assert tasks["it_1"]["title"] == "Bitbucket"
+    assert tasks["it_1"]["title"] == "Working: Bitbucket"
     details = tasks["it_1"]["details"]["elements"][0]["elements"]
     assert details == [
         {"type": "text", "text": "Running "},
@@ -893,17 +894,21 @@ def test_a_long_rearm_waits_on_its_own_timer_not_the_refresh_loop(monkeypatch):
     monkeypatch.setattr(cc_binding, "active_binding", lambda ch, thread_ts=None: _binding())
 
     async def body():
+        # The loop's own clock, frozen: each deadline is then exact, never a second
+        # live reading subtracted from the first.
+        now = 2044.64
+        monkeypatch.setattr(asyncio.get_running_loop(), "time", lambda: now)
         assert board_pkg._schedule("C1", delay=120.0)
         assert calls == []  # nothing waits inside the channel's refresh loop
         assert board_pkg._schedule("C1", delay=3.5)  # earlier than 120 s: replaces it
         due, handle = board_pkg._timers["C1"]
-        assert due - asyncio.get_running_loop().time() <= 3.5
+        assert due == now + 3.5
         # Even a short re-arm waits on its own timer, armed in a clean context (at
         # least the debounce), never in the context of the pass that asked for it.
         assert board_pkg._schedule("C1", delay=0.05) is True
         assert calls == []
         due, handle = board_pkg._timers["C1"]
-        assert due - asyncio.get_running_loop().time() <= service.BOARD_DEBOUNCE_SECS
+        assert due == now + service.BOARD_DEBOUNCE_SECS
         handle._run()  # it fires: the ordinary debounced refresh
         assert calls == [service.BOARD_DEBOUNCE_SECS]
         handle.cancel()
@@ -1011,7 +1016,7 @@ def test_the_retry_is_taken_even_when_the_publish_raises(monkeypatch):
     armed: list[tuple] = []
     monkeypatch.setattr(board_pkg, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
 
-    async def boom(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def boom(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         publisher._retry_at[binding.channel_id] = 15.0
         raise RuntimeError("pin step blew up")
 
@@ -1114,6 +1119,7 @@ def test_work_aggregate_rides_the_slot_frame_and_its_patch():
 # ── green round: the watch's own refresh, status, DNS and the wrap-up ───────
 
 repo = suite.repo
+_repo_template = suite._repo_template
 
 
 def test_the_watch_refreshes_through_the_channels_stored_binding(
@@ -1633,7 +1639,7 @@ def test_a_stop_caught_by_the_publish_scope_check_keeps_the_board_owed(monkeypat
     monkeypatch.setattr(surface, "dashboard_state", lambda: None)
     sent: list = []
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         stopped[0] = True  # the person pressed Stop during the publisher's awaits
         if not admits():
             return "out_of_scope"

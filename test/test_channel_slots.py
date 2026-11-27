@@ -24,6 +24,7 @@ from redaction_structured_cases import github_classic
 from kiro_crew.dashboard import channel_slots
 from kiro_crew.history import _safe_key
 from kiro_crew.history_projection import METADATA_LINE_READABLE
+from kiro_crew.history_search import SessionCatalogProjection
 from kiro_crew.messaging.link import (
     channel_namespace_of,
     is_channel_session_key,
@@ -1446,6 +1447,45 @@ class TestFailedTranscriptReadDefers:
         # The pass still cannot name the session it skipped, so every channel key stays held.
         assert complete is False
         assert state.slot_list_hold_channels() is True
+
+
+@pytest.mark.usefixtures("frozen_clock")
+def test_a_pass_after_a_channel_turn_reads_one_listing_row_at_any_size(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pass lists sessions from the listing index, so its cost follows the change.
+
+    A channel turn written in this process moves the write epoch, which made the
+    direct scan re-read a row per transcript on the next pass; the index re-reads
+    the one transcript that changed, however many sit beside it.
+    """
+    reads: dict[int, int] = {}
+    real = SessionCatalogProjection._listing_row
+    for bulk in (50, 800):
+        (tmp_path / str(bulk)).mkdir()
+        state = _make_state(tmp_path / str(bulk))
+        _map_stems(state, "slack:1.1")
+        state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        log = state.conversation_log
+        log.append("slack:1.1", "user", "hi")
+        for i in range(bulk):
+            (log._dir / f"dashboard_chat-{i}-{i}.jsonl").write_text(
+                json.dumps({"_type": "metadata", "title": f"t{i}"}) + "\n", encoding="utf-8"
+            )
+        assert asyncio.run(channel_slots.reconcile_channel_slots(state, 30)) == 1
+        log.append("slack:1.1", "assistant", "a channel reply")
+        calls: list[str] = []
+
+        def _counted(self: Any, path: str, key: str, entry: Any) -> Any:
+            if self._log is log:
+                calls.append(key)
+            return real(self, path, key, entry)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(SessionCatalogProjection, "_listing_row", _counted)
+            asyncio.run(channel_slots.reconcile_channel_slots(state, 30))
+        reads[bulk] = len(calls)
+    assert reads == {50: 1, 800: 1}
 
 
 @pytest.mark.usefixtures("frozen_clock")

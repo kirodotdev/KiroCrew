@@ -139,9 +139,9 @@ def _append_rejections(self: TelegramRenderer, body: str, rejections: list[Rejec
     """
     for rejection in rejections:
         logger.info("telegram: local image not uploaded (%s)", rejection.reason)
-    lines = [f"Warning: {rejection}" for rejection in rejections[:_MAX_REJECTION_LINES]]
+    lines = [f"⚠️ {rejection}" for rejection in rejections[:_MAX_REJECTION_LINES]]
     if len(rejections) > _MAX_REJECTION_LINES:
-        lines.append(f"Warning: …and {len(rejections) - _MAX_REJECTION_LINES} more")
+        lines.append(f"⚠️ …and {len(rejections) - _MAX_REJECTION_LINES} more")
     note = "\n".join(lines)
     if len(body) + len(note) + 2 > self._limit():
         return body
@@ -187,7 +187,7 @@ async def _send_uploads(self: TelegramRenderer, files: list[OutboundFile]) -> No
     # Chunk the redacted whole by UTF-16 budget instead (redaction
     # first, so the scanner saw the contiguous text; a chunk is a pure
     # substring of it). Header rides the first bubble only.
-    header = "Warning: Couldn't upload:\n"
+    header = "⚠️ Couldn't upload:\n"
     budget = self._limit() - _utf16_len(header)
     for index, chunk in enumerate(_utf16_chunks(restored, budget)):
         await self._client.send_message(

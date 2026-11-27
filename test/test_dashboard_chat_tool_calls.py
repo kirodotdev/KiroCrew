@@ -197,7 +197,7 @@ class TestRunChatToolCallUpdate:
         tool_msgs = [m for m in slot.messages if m.get("role") == "tool"]
         assert len(tool_msgs) == 1
         # The persisted content should reflect the refined title, not the stub.
-        assert tool_msgs[0]["content"] == "🔧 ls /tmp"
+        assert tool_msgs[0]["content"] == "Tool: ls /tmp"
         assert tool_msgs[0]["meta"]["tool_call_id"] == "tc-1"
         # The refined input is patched into meta.
         assert "ls /tmp" in tool_msgs[0]["meta"]["input"]
@@ -413,7 +413,7 @@ class TestRunChatToolCallUpdate:
         # And the chat_message_update carries the patched content + meta.
         msg_updates = [p for k, p in ws_calls if k == "chat_message_update"]
         assert msg_updates[0]["tool_call_id"] == "tc-2"
-        assert msg_updates[0]["content"] == "🔧 ls /tmp"
+        assert msg_updates[0]["content"] == "Tool: ls /tmp"
         assert "input" in msg_updates[0]["meta"]
 
     @pytest.mark.asyncio
@@ -453,7 +453,7 @@ class TestRunChatToolCallUpdate:
         tool_msgs = [m for m in slot.messages if m.get("role") == "tool"]
         assert len(tool_msgs) == 1
         # ✅ icon survives the patch; only the title changes.
-        assert tool_msgs[0]["content"] == "✅ ls /tmp"
+        assert tool_msgs[0]["content"] == "Approved: ls /tmp"
 
     @pytest.mark.asyncio
     async def test_refinement_breaks_on_first_match_walking_reverse(self, tmp_path, monkeypatch):
@@ -490,8 +490,8 @@ class TestRunChatToolCallUpdate:
         assert len(tool_msgs) == 2
         # The earlier 🔧 message is untouched.
         assert tool_msgs[0]["content"] == "🔧 Terminal"
-        # The later ✅ message is patched, with its icon preserved.
-        assert tool_msgs[1]["content"] == "✅ ls /tmp"
+        # The later ✅ message is patched, keeping its kind in the word lead.
+        assert tool_msgs[1]["content"] == "Approved: ls /tmp"
 
     @pytest.mark.asyncio
     async def test_refinement_strips_running_prefix_from_pending_tools(self, tmp_path, monkeypatch):
@@ -545,7 +545,7 @@ class TestRunChatToolCallUpdate:
         # display surface, not the hook surface.
         tool_msgs = [m for m in slot.messages if m.get("role") == "tool"]
         assert len(tool_msgs) == 1
-        assert tool_msgs[0]["content"] == "🔧 Running: ls /tmp"
+        assert tool_msgs[0]["content"] == "Tool: Running: ls /tmp"
 
     @pytest.mark.asyncio
     async def test_refinement_logs_sel_audit_event(self, tmp_path, monkeypatch):

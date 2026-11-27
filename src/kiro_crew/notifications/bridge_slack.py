@@ -30,7 +30,7 @@ from kiro_crew.slack.format import SLACK_MAX_TEXT, escape_mrkdwn
 from kiro_crew.slack.retry import open_dm_with_retry
 
 #: The marker a critical note's first line carries.
-_CRITICAL_MARKER = ":rotating_light:"
+_CRITICAL_MARKER = "Critical:"
 
 #: Slack's limit on a section block's text. A longer last part is posted as its own
 #: message, ahead of the buttons.

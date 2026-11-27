@@ -9,7 +9,9 @@ in :data:`GAPS` instead of being drawn.
 
 Pure functions over row dicts (``role``, ``content``, ``ts``, ``meta``), so the
 derivation is tested without a gateway; the route in
-``dashboard/handlers/crew_workers.py`` feeds it the live slots' windows.
+``dashboard/handlers/crew_workers.py`` feeds it the live slots' windows. The one
+reader of files is :func:`add_billed_credits`, which takes a lane's credits from the
+per-turn usage store, since the rows miss a turn that left no reply.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ import math
 import re
 from datetime import datetime, timedelta
 from typing import Any, Final
+
+from kiro_crew.tool_row_prefix import strip_tool_row_lead, tool_row_kind
 
 #: Bar kinds, in the legend's order.
 KIND_TURN = "turn"
@@ -126,8 +130,7 @@ def tool_name(row: dict[str, Any]) -> str:
 
 def _tool_label(row: dict[str, Any]) -> str:
     text = _content(row)
-    body = text[1:] if text[:1] in ("🔧", "✅", "🚫") else text
-    return body.strip()[:_LABEL_RAW_MAX]
+    return strip_tool_row_lead(text).strip()[:_LABEL_RAW_MAX]
 
 
 def _tool_arg(row: dict[str, Any], name: str) -> str:
@@ -152,8 +155,12 @@ def send_target(row: dict[str, Any]) -> str:
     return _tool_arg(row, "target")
 
 
+# Rows lead with "Error: "; history written before that led with U+274C.
+_FAILURE_LEADS = ("Error: ", "\u274c")  # emoji-ok: old saved lead
+
+
 def _is_failure(row: dict[str, Any]) -> bool:
-    return row.get("role") == "error" or _content(row).startswith("❌")
+    return row.get("role") == "error" or _content(row).startswith(_FAILURE_LEADS)
 
 
 def _credits(row: dict[str, Any]) -> float:
@@ -213,7 +220,7 @@ def derive_lane(
     timed.sort(key=lambda pair: pair[0])
     open_end = now if (running or waiting_now) else None
 
-    # Row indexes by tool_call_id, built once, so finding a call's ✅ row is a
+    # Row indexes by tool_call_id, built once, so finding a call's Approved: row is a
     # lookup instead of a scan to the end of the window for every tool row.
     tcids: list[str] = []
     by_tcid: dict[str, list[int]] = {}
@@ -304,11 +311,12 @@ def derive_lane(
         tcid: str = raw_tcid if isinstance(raw_tcid, str) else ""
         text = _content(row)
         name = tool_name(row)
-        if text.startswith("🚫"):
+        row_kind = tool_row_kind(text)
+        if row_kind == "refused":
             marks.append({"kind": MARK_REFUSED, "ts": _iso(ts), "label": _tool_label(row)})
             continue
         if tcid and tcid in seen_tcids:
-            # The ✅ row of a call already drawn from its 🔧 row.
+            # The Approved: row of a call already drawn from its Tool: row.
             continue
         if tcid:
             seen_tcids.add(tcid)
@@ -327,14 +335,14 @@ def derive_lane(
             sends.append({"ts": _iso(ts), "to": title, "via": "dispatch"})
         approved: datetime | None = None
         end_index = index
-        if tcid and text.startswith("🔧"):
-            # The call's next row, if any: a ✅ there is the approval.
+        if tcid and row_kind == "call":
+            # The call's next row, if any: an Approved: row there is the approval.
             later = next((j for j in by_tcid.get(tcid, ()) if j > index), None)
-            if later is not None and _content(timed[later][1]).startswith("✅"):
+            if later is not None and tool_row_kind(_content(timed[later][1])) == "approved":
                 approved, end_index = timed[later][0], later
         start = ts
         if approved is not None and approved > ts:
-            # The ✅ row is written when the person approves: 🔧 -> ✅ is the wait.
+            # The Approved: row is written when the person approves: Tool: -> Approved: is the wait.
             bars.append(_bar(KIND_WAITING, ts, approved, END_RECORDED, _tool_label(row)))
             start = approved
         kind = KIND_WAITING if name in _QUESTION_TOOLS else KIND_TOOL
@@ -465,6 +473,31 @@ def redact_labels(lane: dict[str, Any], redact: Any) -> dict[str, Any]:
             limit = FAILED_LABEL_MAX if item.get("kind") == MARK_FAILED else LABEL_MAX
             item["label"] = str(redact(label))[:limit]
     return lane
+
+
+def add_billed_credits(lanes: list[dict[str, Any]], *, now: datetime) -> None:
+    """Raise each lane's ``credits`` to what the usage store billed its slot. IN PLACE.
+
+    A transcript's ``meta.turn_stats`` sits on the turn's reply row only, so a turn
+    that ends on tool calls with no reply (a conductor turn that stops after
+    ``autonudge_stop``) adds nothing from the rows. The per-turn usage rows
+    (``<data home>/usage/tokens``) record every billed turn when it ends, reply or
+    not; they are summed from the lane's first loaded row on, the same window the
+    rows cover, and the window ends at *now* so it spans exactly that interval.
+    The larger figure wins, so a lane whose store holds nothing keeps what its
+    rows recorded. Reads files: call it off the event loop.
+    """
+    from kiro_crew.dashboard.handlers.usage import slot_turn_usage
+
+    until = now.timestamp()
+    for lane in lanes:
+        since = parse_ts(lane.get("first_ts"))
+        if since is None:
+            continue
+        days = max((now - since).total_seconds(), 0.0) / 86400
+        usage = slot_turn_usage(str(lane["key"]), days, until=until)
+        billed = sum(float(row.get("credits") or 0.0) for row in usage)
+        lane["credits"] = round(max(float(lane.get("credits") or 0.0), billed), 4)
 
 
 def summarize(lanes: list[dict[str, Any]], *, now: datetime, live: bool) -> dict[str, Any]:

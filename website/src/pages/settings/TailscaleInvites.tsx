@@ -465,7 +465,7 @@ const REVOKE_BODY: Record<RevokeState, string> = {
   member: 'sharedCrew.person_revoke_body',
 }
 
-export function RevokeControl({ inviteId, name, link = false, state = 'sent', children, transport = 'tailscale' }: { inviteId: string; name: string; link?: boolean; state?: RevokeState; children?: ReactNode; transport?: InviteTransport }) {
+export function RevokeControl({ inviteId, name, link = false, state = 'sent', children, transport = 'tailscale', label }: { inviteId: string; name: string; link?: boolean; state?: RevokeState; children?: ReactNode; transport?: InviteTransport; label?: string }) {
   const qc = useQueryClient()
   const [confirming, setConfirming] = useState(false)
   const revoke = useMutation({
@@ -491,7 +491,7 @@ export function RevokeControl({ inviteId, name, link = false, state = 'sent', ch
           </>
         ) : (
           <Btn type="button" danger onClick={() => setConfirming(true)} data-testid="invite-revoke">
-            <Trash2 size={14} className="lucide-inline" aria-hidden /> {i18nT('sharedCrew.invite_revoke')}
+            <Trash2 size={14} className="lucide-inline" aria-hidden /> {label ?? i18nT('sharedCrew.invite_revoke')}
           </Btn>
         )}
       </div>
@@ -504,9 +504,9 @@ export function RevokeControl({ inviteId, name, link = false, state = 'sent', ch
 /** An invite whose person has not joined, under the "Invites" heading, with
  *  Resend (a pending email invite) and Remove. Only the text fades, so the
  *  buttons read as live. An accepted share whose person has not connected yet
- *  reads Accepted. Used under "Invites" in the People list and for a link in
- *  the invite dialog. */
-export function InviteRow({ invite }: { invite: InviteRecord }) {
+ *  reads Accepted. Used in the People list, with its source *chip*, and for a
+ *  link in the invite dialog. */
+export function InviteRow({ invite, chip }: { invite: InviteRecord; chip?: ReactNode }) {
   const resend = useMutation({ mutationFn: () => api.tailscaleResendInvite(invite.id) })
   const who = invite.accepted_login || invite.email || i18nT('sharedCrew.invite_link_row')
   const name = invite.alias || who
@@ -523,6 +523,7 @@ export function InviteRow({ invite }: { invite: InviteRecord }) {
       <div className="flex flex-col gap-0.5 min-w-0 flex-1 opacity-60">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className="text-sm font-medium text-text-strong truncate max-w-full" title={name}>{name}</span>
+          {chip}
           {invite.kind === 'link' && invite.multi_use
             ? <Badge variant="muted">{i18nT('sharedCrew.invite_reusable')}</Badge>
             : invite.status === 'accepted'
@@ -611,10 +612,11 @@ function TailscalePane({ status }: { status: TailscaleInvitesStatus }) {
   )
 }
 
-/** The People page's "Invite…" dialog. Invites not yet accepted show in the
- *  People list as Invites rows. AWS SSM is a second pane, shown as a tab only
- *  when Tailscale invites are on too. */
-export function InviteDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+/** The People page's invite dialog. Invites not yet accepted show in the
+ *  People list as invite rows. AWS SSM is a second pane, shown as a tab only
+ *  when Tailscale invites are on too. *transport* is the pane it opens on (the
+ *  source card it was opened from); without it, Tailscale when that is on. */
+export function InviteDialog({ open, onClose, transport: wanted }: { open: boolean; onClose: () => void; transport?: InviteTransport }) {
   const query = useInvites()
   const ssm = useSsmStatus()
   const status = query.data
@@ -624,7 +626,7 @@ export function InviteDialog({ open, onClose }: { open: boolean; onClose: () => 
   // swaps a half-filled form (or a link shown once) for the other path's.
   const first = useRef<InviteTransport | null>(null)
   if (!open) first.current = null
-  else if (first.current === null && (status || ssmStatus)) first.current = ssmStatus && !status ? 'ssm' : 'tailscale'
+  else if (first.current === null && (status || ssmStatus)) first.current = wanted === 'ssm' && ssmStatus ? 'ssm' : ssmStatus && !status ? 'ssm' : 'tailscale'
   const both = !!status && !!ssmStatus
   const transport: InviteTransport = both ? picked ?? first.current ?? 'tailscale' : ssmStatus && !status ? 'ssm' : 'tailscale'
   return (
@@ -652,28 +654,36 @@ export function InviteDialog({ open, onClose }: { open: boolean; onClose: () => 
   )
 }
 
-/** The one place a person is invited from: the `Invite…` button and its dialog,
- *  with `children` (links that belong beside it) after the button. Renders the
- *  button only for the owner, whose invite read answered over either transport;
- *  a failed read shows its notice and retry here, once. */
-export function InviteEntry({ children }: { children?: ReactNode }) {
-  const [open, setOpen] = useState(false)
+/** An invite button and its dialog, with `children` (links that belong beside
+ *  it) after the button. Renders the button only for the owner, whose invite
+ *  read answered. Without *transport* it is the one `Invite…` entry for either
+ *  transport, and a failed read shows its notice and retry here, once. With
+ *  *transport* it is that source card's own button ("Invite…" for Tailscale,
+ *  "Make invite link" for AWS SSM, shown while that transport can invite), the
+ *  dialog opens on it, and the read notices are the page's (`showErrors`),
+ *  which *onOpenChange* tells when the dialog takes them over. */
+export function InviteEntry({ children, transport, showErrors = true, onOpenChange }: { children?: ReactNode; transport?: InviteTransport; showErrors?: boolean; onOpenChange?: (open: boolean) => void }) {
+  const [open, setOpenState] = useState(false)
+  // The page that owns the read notices hides them while a dialog owns them.
+  const setOpen = (next: boolean) => { setOpenState(next); onOpenChange?.(next) }
   const query = useInvites()
   const ssmQuery = useSsmStatus()
-  const canInvite = useCanInvite()
+  const either = useCanInvite()
+  const canInvite = transport === 'ssm' ? ssmQuery.data?.state === 'active' : transport === 'tailscale' ? !!query.data : either
+  const label = transport === 'ssm' ? i18nT('sharedCrew.source_make_invite_link') : i18nT('sharedCrew.hero_invite')
   return (
     <>
       {canInvite && (
         <div className="flex items-center gap-3 min-w-0 flex-wrap">
-          <Btn onClick={() => setOpen(true)} data-testid="share-hero-invite">
-            <UserPlus size={14} className="lucide-inline" aria-hidden /> {i18nT('sharedCrew.hero_invite')}
+          <Btn primary={!!transport} onClick={() => setOpen(true)} data-testid={transport === 'ssm' ? 'source-ssm-invite' : 'share-hero-invite'}>
+            <UserPlus size={14} className="lucide-inline" aria-hidden /> {label}
           </Btn>
           {children}
         </div>
       )}
-      {!open && <InviteReadError query={query} testId="people-invites-error" />}
-      {!open && <SsmReadError query={ssmQuery} testId="people-ssm-error" />}
-      {canInvite && <InviteDialog open={open} onClose={() => setOpen(false)} />}
+      {showErrors && !open && <InviteReadError query={query} testId="people-invites-error" />}
+      {showErrors && !open && <SsmReadError query={ssmQuery} testId="people-ssm-error" />}
+      {canInvite && <InviteDialog open={open} onClose={() => setOpen(false)} transport={transport} />}
     </>
   )
 }

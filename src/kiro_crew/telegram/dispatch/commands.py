@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.telegram.transport_dispatch")
 
 _RELEASE_FAILURE = (
-    "Warning: Could not leave the resumed session safely, so nothing changed. "
+    "⚠️ Could not leave the resumed session safely, so nothing changed. "
     "Try again before sending another message."
 )
 
@@ -70,6 +70,7 @@ async def _handle_dashboard(
     from kiro_crew.dashboard.token_auth import (
         MAX_SESSION_TTL_SECS,
         generate_token,
+        owner_mint_extra,
         parse_duration,
     )
     from kiro_crew.dashboard.urls import dashboard_origin, parse_dashboard_url
@@ -78,7 +79,8 @@ async def _handle_dashboard(
     if not self._is_private_route(route):
         await self._reply(
             chat_id,
-            "Dashboard links are only sent in a direct message — " "DM me `/kirocrew dashboard`.",
+            "🔒 Dashboard links are only sent in a direct message — "
+            "DM me `/kirocrew dashboard`.",
             thread=thread,
         )
         return
@@ -87,7 +89,24 @@ async def _handle_dashboard(
         MAX_SESSION_TTL_SECS,
     )
     try:
-        token = generate_token(str(user_id), ttl_seconds=ttl_secs)
+        # The owner's own link carries the owner's dashboard session, as the
+        # owner's Slack link does: the sender must be the id the owner named as
+        # theirs (``telegram.owner_user_id``, the KIROCREW_OWNER_ID of this
+        # channel), read live so a removed owner stops at once. Being the only
+        # allow-listed id is NOT that proof: an operator may allow-list one
+        # other person. The subject is the one the dashboard's owner gate admits
+        # (its owner id, else ``local-app``), so the link needs the dashboard
+        # attached. Every other link stays under the sender's own id, which the
+        # owner's chat refuses.
+        owner_id = self._live_cfg().telegram.owner_user_id
+        state = getattr(self, "dashboard_state", None)
+        if state is not None and type(owner_id) is int and owner_id > 0 and user_id == owner_id:
+            from kiro_crew.shared_crew.owner import DEFAULT_OWNER_SUBJECT
+
+            subject = str(getattr(state, "owner_id", "") or "") or DEFAULT_OWNER_SUBJECT
+            token = generate_token(subject, ttl_seconds=ttl_secs, extra=owner_mint_extra())
+        else:
+            token = generate_token(str(user_id), ttl_seconds=ttl_secs)
         origin = dashboard_origin(self.cfg.dashboard.url)
         if not origin:
             # No configured dashboard.url: fall back to the local port
@@ -107,7 +126,7 @@ async def _handle_dashboard(
         )
         await self._reply(
             chat_id,
-            f"Dashboard link (valid {ttl_display}):\n{url}",
+            f"🔗 Dashboard link (valid {ttl_display}):\n{url}",
             thread=thread,
         )
     except Exception as exc:
@@ -126,7 +145,7 @@ async def _handle_dashboard(
             pass
         await self._reply(
             chat_id,
-            f"Warning: Could not generate dashboard link: {exc}",
+            f"⚠️ Could not generate dashboard link: {exc}",
             thread=thread,
         )
 
@@ -305,7 +324,7 @@ async def _require_direct_chat(
         )
         await self._reply(
             chat_id,
-            f"The {subject} names conversations across this whole install, so "
+            f"🔒 The {subject} names conversations across this whole install, so "
             "it is only sent when `telegram.allowed_user_ids` holds a single "
             "operator. It currently holds several, and the agent cannot tell "
             "which of them owns the install.",
@@ -322,7 +341,7 @@ async def _require_direct_chat(
     )
     await self._reply(
         chat_id,
-        f"The {subject} is only sent in a direct message. DM me `/{cmd}`.",
+        f"🔒 The {subject} is only sent in a direct message. DM me `/{cmd}`.",
         thread=thread,
     )
     return False
@@ -376,7 +395,7 @@ async def _handle_link(
     if resumed_key is not None:
         await self._reply(
             chat_id,
-            "Warning: A resumed session is active here. Send /unlink first.",
+            "⚠️ A resumed session is active here. Send /unlink first.",
             thread=thread,
         )
         return
@@ -396,7 +415,7 @@ async def _handle_link(
         logger.info("telegram link refused: conversation already held")
         await self._reply(
             chat_id,
-            "Warning: Another session is already linked here. Send /unlink first.",
+            "⚠️ Another session is already linked here. Send /unlink first.",
             thread=thread,
         )
         return
@@ -414,7 +433,7 @@ async def _handle_unlink(self: TelegramDispatcher, route: tuple[str, str], chat_
     if left_resumed is not None:
         await self._reply(
             chat_id,
-            "Left the resumed session. Back to your Telegram conversation.",
+            "✅ Left the resumed session. Back to your Telegram conversation.",
             thread=thread,
         )
         return
@@ -443,8 +462,12 @@ async def _handle_compact(
     chat_id: int,
     *,
     session_key: str | None = None,
+    focus: str = "",
 ) -> None:
     """In-place ACP ``/compact`` on the user's session (mirrors Slack).
+
+    *focus* is the cleaned text a person typed after ``/compact``; empty (a bare
+    ``/compact``) calls ``provider.compact()`` with no argument, as before.
 
     Holds the per-session semaphore for the WHOLE compaction. Each Telegram
     update is dispatched as its own task, so a bare ``locked()`` check
@@ -465,7 +488,7 @@ async def _handle_compact(
         elif self.sessions.has_session(target_key):
             await self._reply(
                 chat_id,
-                "Still working on your last message — try /compact once it finishes.",
+                "⏳ Still working on your last message — try /compact once it finishes.",
                 thread=thread,
             )
         else:
@@ -486,7 +509,7 @@ async def _handle_compact(
             await self._reply(chat_id, compact_unsupported_reply(unsupported), thread=thread)
             return
 
-        status_id = await self._reply(chat_id, "Compacting context…", thread=thread)
+        status_id = await self._reply(chat_id, "🔄 Compacting context…", thread=thread)
         result_text: str | None = None
         try:
 
@@ -499,24 +522,24 @@ async def _handle_compact(
             # nested inside another timeout, or the graceful "timed out"
             # branch is unreachable and a slow-but-healthy session gets
             # destroyed by the outer TimeoutError.
-            await asyncio.wait_for(provider.compact(), timeout=120)
+            await asyncio.wait_for(
+                provider.compact(focus) if focus else provider.compact(), timeout=120
+            )
             cr = await provider.wait_for_compaction(
                 timeout=self.sessions.compact_wait_budget_secs()
             )
             if cr["type"] == "completed":
                 # ``summary`` is model-facing compacted context, not a
                 # user-facing receipt. Never publish its orchestration text.
-                result_text = "Context compacted."
+                result_text = "✅ Context compacted."
             elif cr["type"] == "failed":
                 err = cr.get("summary", "")
-                result_text = (
-                    f"Error: Compaction failed: {err}" if err else "Error: Compaction failed."
-                )
+                result_text = f"❌ Compaction failed: {err}" if err else "❌ Compaction failed."
             else:
-                result_text = "Warning: Compaction timed out."
+                result_text = "⚠️ Compaction timed out."
         except Exception:
             logger.warning("Telegram /compact failed for %s", target_key, exc_info=True)
-            result_text = "Error: Compaction failed unexpectedly."
+            result_text = "❌ Compaction failed unexpectedly."
             # Drop the wedged native conversation, NOT the session's channel
             # identity: the map entry carries the mirror binding, so a full
             # ``destroy`` would silently unlink a mirrored conversation.
@@ -527,7 +550,7 @@ async def _handle_compact(
             except Exception:
                 logger.debug("Telegram: discard after compact failure failed", exc_info=True)
 
-        final = result_text or "Context compacted."
+        final = result_text or "✅ Context compacted."
         # The status line is only a placeholder: when it cannot be edited (deleted
         # during the wait, or the edit failed) the result goes out as a new message.
         if not (status_id and await self.client.edit_message(chat_id, status_id, final)):

@@ -3,8 +3,8 @@ title: Crewmate page on a goal wake -- the goal-loop wakes build a crewmate's fi
 status: implemented
 author: rayrayxu, with kirocrew-worker
 created: 2026-10-21
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [22533, 22560]
 tracking-issues: []
@@ -15,7 +15,7 @@ superseded-by: []
 # RFC: Crewmate page on a goal wake
 
 - Status: implemented. This is the product owner's decision, given 2026-10-21 by
-  rayrayxu. Both parts are on main: the first build merged in
+  rayrayxu. Both parts are on main (checked at `fc89562d69`): the first build merged in
   [#22533](https://github.com/kirodotdev/KiroCrew/pull/22533)
   (`dashboard_line` / `DASHBOARD_BUILD_LINE` in `dashboard/goal_reminder.py`) and the
   ask-once offer in [#22560](https://github.com/kirodotdev/KiroCrew/pull/22560)

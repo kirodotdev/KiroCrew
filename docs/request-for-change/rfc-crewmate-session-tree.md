@@ -4,8 +4,8 @@ status: draft
 author: iamwhatever
 created: 2026-10-04
 revision: 2
-last-audited: 2026-10-07
-audited-at: 0d885e681
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 16790
 implementation-prs: []
 tracking-issues: []

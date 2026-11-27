@@ -37,9 +37,11 @@ class Stats:
             "messages_received": 0,
             "messages_success": 0,
             "messages_failed": 0,
+            "messages_admitted": 0,
             "tool_approvals": 0,
             "tool_denials": 0,
             "tool_auto_approved": 0,
+            "tool_calls": 0,
             "timeouts": 0,
             "sessions_created": 0,
             "sessions_cleaned": 0,
@@ -65,6 +67,15 @@ class Stats:
     def inc_message_received(self) -> None:
         self.inc("messages_received")
 
+    def inc_message_admitted(self) -> None:
+        """Count a person-sent message the dashboard or the shared channel pipeline took in.
+
+        No outcome is recorded for it, so ``summary()`` and ``daily_report()``
+        keep counting only ``messages_received`` (the Slack and Telegram
+        transports, which record ok/fail).
+        """
+        self.inc("messages_admitted")
+
     def inc_message_success(self) -> None:
         self.inc("messages_success")
 
@@ -79,6 +90,9 @@ class Stats:
 
     def inc_tool_auto_approved(self) -> None:
         self.inc("tool_auto_approved")
+
+    def inc_tool_call(self) -> None:
+        self.inc("tool_calls")
 
     def inc_cost_usd(self, amount: float) -> None:
         with self._mu:
@@ -145,17 +159,17 @@ class Stats:
         s = self.snapshot()
         total = s["messages_received"]
         if total == 0:
-            health = "🔇 no messages"
+            health = "no messages"
         else:
             rate = s["messages_success"] / total * 100
             if rate >= 90:
-                health = f"🟢 healthy ({rate:.0f}%)"
+                health = f"healthy ({rate:.0f}%)"
             elif rate >= 70:
-                health = f"🟡 degraded ({rate:.0f}%)"
+                health = f"degraded ({rate:.0f}%)"
             else:
-                health = f"🔴 critical ({rate:.0f}%)"
+                health = f"critical ({rate:.0f}%)"
         return (
-            f"📊 *Kiro Crew Daily Report*\n"
+            f"*Kiro Crew Daily Report*\n"
             f"Health: {health}\n"
             f"Uptime: {self.uptime_str()}\n"
             f"Messages: {s['messages_received']} received, "

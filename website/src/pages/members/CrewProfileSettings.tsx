@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { fmtList, fmtPercent, joinSentences } from '../../i18n/format'
-import { Check, Cpu, Gauge, Layers, Loader2, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
+import { Check, Cpu, Gauge, Layers, Loader2, Network, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
@@ -109,7 +109,7 @@ function withCurrent(options: string[], value: string): string[] {
 
 /**
  * The crewmate's own settings on its Profile card: permission, model, effort,
- * the worker pair, and the preview switches. One iOS-style group — each picker is
+ * the worker pair, and the switches. One iOS-style group — each picker is
  * a row reading its current value, and tapping it pushes a single-choice page
  * over the card (the card's own push, through `ProfilePagePushContext`); each
  * boolean is a switch in its own group with its one line of help as the group's
@@ -268,6 +268,24 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   const dynOn = dynFlip.isPending
     ? (dynFlip.variables ?? false)
     : member.dynamic_capabilities === true
+
+  // Workers can conduct: the owner's switch on the Bot's own record, off by
+  // default (`agents.<name>.worker_conducts`). On, each worker the Bot's thread
+  // opens may split its task and open further workers of the same Bot. No Bot
+  // tool writes it, so the Bot cannot turn it on. The server reloads the Bot's
+  // workers after a change, so the record is the whole write.
+  const conductsFlip = useMutation({
+    mutationFn: (want: boolean) => api.updateKirocrewAgent(member.name, { worker_conducts: want }),
+    onSuccess: (_r, want) => {
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        rows?.map((r) => (r.name === member.name ? { ...r, worker_conducts: want } : r)))
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY }),
+  })
+  // Absent (an older gateway, or a Bot never switched on) reads as off.
+  const conductsOn = conductsFlip.isPending
+    ? (conductsFlip.variables ?? false)
+    : member.worker_conducts === true
 
   const save = async (key: Setting, next: string) => {
     if (inFlight.current || waiting) return
@@ -789,6 +807,33 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       <RowGroup>
         {pickers.map(row)}
       </RowGroup>
+      {/* Its own group, under the one holding Workers at once, so its caption
+          (what a conducting worker may do, and the limit that then applies)
+          sits under it. */}
+      <RowGroup caption={t('pages.membersPage.profile_worker_conducts_hint', { name })}>
+        <RowStatic
+          icon={<Network size={16} />}
+          tone="info"
+          label={t('pages.membersPage.profile_worker_conducts')}
+          sub={t('pages.membersPage.profile_worker_conducts_switch', { name })}
+          testId="crew-profile-worker-conducts"
+          wrap
+        >
+          <Toggle
+            checked={conductsOn}
+            onChange={(v) => conductsFlip.mutate(v)}
+            // Its own write: `busy` keeps the tab stop while it runs.
+            busy={conductsFlip.isPending}
+            label={t('pages.membersPage.profile_worker_conducts_switch', { name })}
+          />
+        </RowStatic>
+      </RowGroup>
+      {/* No hand-off: the Crewmates page's composer may hold an unsent draft to
+          this crewmate. The switch shows the stored value again. */}
+      <ErrorNotice
+        message={conductsFlip.isError ? t('pages.membersPage.profile_worker_conducts_failed') : null}
+        testId="crew-profile-worker-conducts-error"
+      />
       {/* Its own group, so its caption (what a click on a card does) sits under it. */}
       <RowGroup caption={t('pages.membersPage.profile_dashboard_card_send_hint', { name })}>
         <RowStatic icon={<SendHorizontal size={16} />} tone="accent" label={t('pages.membersPage.profile_dashboard_card_send_switch')} testId="crew-profile-dashboard-card-send">

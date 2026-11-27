@@ -20,6 +20,7 @@ import pytest
 
 import kiro_crew.dashboard.handlers.kiro_usage_api as api
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
+from kiro_crew.testing.wait import await_until
 
 _FP_A = "fp-a"
 _FP_B = "fp-b"
@@ -164,12 +165,36 @@ class TestRefreshFromVault:
 
     @pytest.mark.asyncio
     async def test_identity_change_discards_reading(self):
+        # A sign-in landing during the refresh: the popup shows the new account
+        # loading (not "no reading"), and the next poll refreshes for it at once
+        # instead of after the ten-minute interval.
+        sessions_mod._usage_cache_ts = 10**12
         await _run(_vault(fps=(_FP_A, _FP_B)))
-        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._usage_cache == {}
+        assert sessions_mod._usage_cache_ts == 0.0
 
     @pytest.mark.asyncio
-    async def test_auth_rejected_reports_signin(self):
+    async def test_api_refusing_the_served_credential_is_no_reading_not_no_signin(self):
+        # The vault served a live credential, the one the engine runs on, and
+        # GetUsageLimits refused it. A fresh Company SSO sign-in kept the top bar on
+        # "no active Kiro sign-in" because of this mapping; it is a failed read, and
+        # the plain marker renders the "no balance reading yet" dash instead.
         resolve = await _run(_vault(result=api.UsageResult(None, api.AUTH_REJECTED)))
+        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._vault_signin_marker is None
+        resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_plan_without_a_limit_reports_it(self):
+        result = api.UsageResult(None, api.AUTH_OTHER, plan_without_limit=True)
+        await _run(_vault(result=result))
+        assert sessions_mod._usage_cache == {"available": False, "reason": "plan_without_limit"}
+        # It describes that account, so it is published under its fingerprint.
+        assert sessions_mod._usage_cache_vault_fp == _FP_A
+
+    @pytest.mark.asyncio
+    async def test_empty_vault_credential_reports_signin(self):
+        resolve = await _run(_vault(result=api.UsageResult(None, api.AUTH_NO_CREDENTIAL)))
         assert sessions_mod._usage_cache == {"available": False, "reason": "signin_required"}
         resolve.assert_not_called()
 
@@ -217,7 +242,8 @@ class TestRefreshFromVault:
         sessions_mod._usage_cache_vault_fp = _FP_A
         current = AsyncMock(side_effect=RefreshRejected("HTTP 400"))
         await _run(_vault(fps=(_FP_A, _FP_B), current=current))
-        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._usage_cache == {}
+        assert sessions_mod._usage_cache_ts == 0.0
 
     @pytest.mark.asyncio
     async def test_failure_keeps_same_identity_reading_stale(self):
@@ -306,21 +332,58 @@ class TestVaultOwnership:
             assert sessions_mod._vault_owns_usage_sync() is False
         holds.assert_not_called()
 
+    @staticmethod
+    def _takes_bundle(value: bool):
+        return patch(
+            "kiro_crew.agent_sdk.kas_bundle.kas_spawn_takes_bundle",
+            MagicMock(return_value=value),
+        )
+
     def test_kas_without_vault_identity_does_not_own(self):
+        # The relay can run here, so kiro-cli owns the login.
         with (
             patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kas")),
             self._holds(False) as holds,
+            self._takes_bundle(False) as takes,
         ):
             assert sessions_mod._vault_owns_usage_sync() is False
         holds.assert_called_once_with(warn=False)
+        takes.assert_called_once()
+
+    def test_automatic_bundle_route_owns_with_no_sign_in(self):
+        # A host with no Kiro sign-in at all: kiro-cli is absent or proven signed
+        # out, so the spawn switches to the bundle with ``agent.kas_bundle`` off.
+        # The vault is then the only credential, and the poll must report
+        # ``signin_required`` from it, never the kiro-cli gate's 503 that the
+        # account popup can only show as "could not read your balance".
+        cfg = _config("kas")
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg),
+            self._holds(False),
+            self._takes_bundle(True) as takes,
+        ):
+            assert sessions_mod._vault_owns_usage_sync() is True
+        takes.assert_called_once_with(cfg.agent)
+
+    def test_kiro_cli_backend_never_asks_the_route(self):
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kiro")),
+            self._holds(False),
+            self._takes_bundle(True) as takes,
+        ):
+            assert sessions_mod._vault_owns_usage_sync() is False
+        takes.assert_not_called()
 
     def test_unusable_vault_identity_still_owns_and_does_not_warn(self, caplog):
         # This probe runs on every poll; the spawn-time WARNING must not repeat
         # here. Drives the real predicate over a store holding an unusable entry:
         # the vault is still the sign-in (the spawn never falls back to kiro-cli),
         # so usage never relabels kiro-cli's account as this one's.
+        # The launcher is pinned: the remedy text names this install's
+        # ``kirocrew``, and a host where none resolves logs that at WARNING.
         with (
             patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kas")),
+            patch("kiro_crew.lts_sign_in._launcher", return_value="kirocrew"),
             self._store(self._token(False)),
             caplog.at_level("DEBUG", logger="kiro_crew.auth.bridge"),
         ):
@@ -438,7 +501,44 @@ class TestUsageGateBypass:
         ):
             resp = await sessions_mod.api_sessions_usage(_request())
             await asyncio.sleep(0)
-        assert json.loads(resp.body) == {"usage": {"available": False}}
+        assert json.loads(resp.body) == {"usage": {}}
+        fetch.assert_awaited_once_with(vault_owned=True)
+
+    @pytest.mark.asyncio
+    async def test_sign_in_change_during_a_refresh_is_refreshed_by_the_next_poll(self):
+        # The refresh read A, then the sign-in to B landed. The next poll must
+        # show B loading and fetch B now, not serve "no reading" for ten minutes.
+        await _run(_vault(fps=(_FP_A, _FP_B)))
+        request = _request()
+        fetch = AsyncMock(return_value=None)
+        with (
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=True)),
+            patch.object(sessions_mod, "_fetch_usage_bg", fetch),
+        ):
+            resp = await sessions_mod.api_sessions_usage(request)
+            await await_until(
+                asyncio.gather(*request.app["state"]._background_tasks), what="usage refresh"
+            )
+        assert json.loads(resp.body) == {"usage": {}}
+        fetch.assert_awaited_once_with(vault_owned=True)
+
+    @pytest.mark.asyncio
+    async def test_a_no_limit_marker_for_another_identity_is_never_served(self):
+        # A's plan has no limit; the Crew sign-in switches to B inside the
+        # refresh interval. The GET must not tell B that its plan has none: it
+        # serves B as loading, like any other reading of another identity.
+        sessions_mod._usage_cache_ts = 10**12  # fresh: the timer would not refresh
+        sessions_mod._usage_cache = {"available": False, "reason": "plan_without_limit"}
+        sessions_mod._usage_cache_vault_fp = _FP_A
+        fetch = AsyncMock(return_value=None)
+        with (
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=True)),
+            patch("kiro_crew.auth.bridge.vault_identity_fingerprint", return_value=_FP_B),
+            patch.object(sessions_mod, "_fetch_usage_bg", fetch),
+        ):
+            resp = await sessions_mod.api_sessions_usage(_request())
+            await asyncio.sleep(0)
+        assert json.loads(resp.body) == {"usage": {}}
         fetch.assert_awaited_once_with(vault_owned=True)
 
     @pytest.mark.asyncio
@@ -468,7 +568,7 @@ class TestUsageGateBypass:
         ):
             resp = await sessions_mod.api_sessions_usage(_request())
             await asyncio.sleep(0)
-        assert json.loads(resp.body) == {"usage": {"available": False}}
+        assert json.loads(resp.body) == {"usage": {}}
         # B's freshly published reading is left in place for the next poll.
         assert sessions_mod._usage_cache == b_reading
         assert sessions_mod._usage_cache_vault_fp == _FP_B
@@ -491,7 +591,7 @@ class TestUsageGateBypass:
         ):
             resp = await sessions_mod.api_sessions_usage(_request())
             await asyncio.sleep(0)
-        assert json.loads(resp.body) == {"usage": {"available": False}}
+        assert json.loads(resp.body) == {"usage": {}}
         fetch.assert_awaited_once_with(vault_owned=True)
         # Decided from the payload's own provenance, with no vault read needed.
         fingerprint.assert_not_called()
@@ -513,10 +613,10 @@ class TestUsageGateBypass:
             resp = await sessions_mod.api_sessions_usage(_request())
             await asyncio.sleep(0)
         gate.assert_awaited_once()
-        assert json.loads(resp.body) == {"usage": {"available": False}}
+        assert json.loads(resp.body) == {"usage": {}}
         fetch.assert_awaited_once_with(vault_owned=False)
         # Dropped, so the kiro-cli path can never preserve it as its own.
-        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._usage_cache == {}
         assert sessions_mod._usage_cache_vault_fp == ""
 
     @pytest.mark.asyncio

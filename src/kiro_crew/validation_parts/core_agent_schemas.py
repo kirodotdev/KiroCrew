@@ -25,6 +25,7 @@ from kiro_crew.effort import EFFORT_VALUES
 from kiro_crew.monitoring.limits import MAX_RUNTIME_CEILING_SECS, validate_runtime_secs
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_AGENT_TURNS,
+    MAX_MONITOR_ALSO_WAKE_ON,
     MAX_MONITOR_CADENCE_SECS,
     MAX_MONITOR_PROVIDER_ERRORS,
     MAX_MONITOR_STOP_REASON_CHARS,
@@ -61,10 +62,13 @@ from kiro_crew.validation_parts.input_bounds import (
 #: membership check into a log line or an error message.
 _BACKEND_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
+# A sub-agent brief (spawn_run's task and tasks[].task, spawn_continue's task,
+# spawn_steer's message) is a task spec, so it takes the task-spec bound, and
+# ``mcp_tools/spawn_parts/schemas.py`` advertises that bound as its maxLength.
 SPAWN_RUN_TASK_ITEM_SCHEMA = ToolSchema(
     tool_name="spawn_run.tasks[]",
     fields=[
-        FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("task", str, required=True, max_len=MAX_LONG_STRING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
         FieldSpec("reasoning_effort", str, allowed=EFFORT_VALUES),
         FieldSpec("backend", str, max_len=MAX_SHORT_STRING, pattern=_BACKEND_NAME_RE),
@@ -84,13 +88,13 @@ SPAWN_BATCH_MEMBERS_MAX = 128
 SPAWN_RUN_SCHEMA = ToolSchema(
     tool_name="spawn_run",
     fields=[
-        FieldSpec("task", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("task", str, max_len=MAX_LONG_STRING),
         FieldSpec(
             "tasks",
             list,
             max_items=SPAWN_BATCH_MEMBERS_MAX,
             item_type=(str, dict),
-            item_max_len=MAX_MEDIUM_STRING,
+            item_max_len=MAX_LONG_STRING,
             item_schema=SPAWN_RUN_TASK_ITEM_SCHEMA,
         ),
         FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=REGISTERED_AGENT_NAME_RE),
@@ -111,6 +115,10 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # absolute, exist, and be under subagent_cwd_allowed_roots. Validated
         # in SubagentManager.spawn.
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+        # Optional ``"worktree"``: each task gets a git worktree of its own of the
+        # repository ``cwd`` is in. Shape only here; the value and the cwd it
+        # needs are checked at admission, so a refusal is counted like a bad cwd.
+        FieldSpec("isolate", str, max_len=MAX_SHORT_STRING),
         # Optional model override for the subagent (e.g. "deepseek-3.2").
         # When set, the subagent runs on this model instead of the gateway default.
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
@@ -177,7 +185,7 @@ SPAWN_CONTINUE_SCHEMA = ToolSchema(
     tool_name="spawn_continue",
     fields=[
         FieldSpec("conversation", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("task", str, required=True, max_len=MAX_LONG_STRING),
         FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=REGISTERED_AGENT_NAME_RE),
         FieldSpec("max_turns", int, min_val=0, max_val=SUBAGENT_MAX_TURNS_CEILING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
@@ -188,7 +196,7 @@ SPAWN_STEER_SCHEMA = ToolSchema(
     tool_name="spawn_steer",
     fields=[
         FieldSpec("agent_id", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("message", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("message", str, required=True, max_len=MAX_LONG_STRING),
         FieldSpec("mode", str, pattern=re.compile(r"^(interrupt|follow_up)$")),
     ],
 )
@@ -421,6 +429,17 @@ _WATCH_WORK_LEDGER = "work-ledger"
 #: every caller written before this field existed.
 _MONITOR_WATCH_FIELD = FieldSpec("watch", str, allowed=frozenset({_WATCH_WORK_LEDGER}))
 
+#: Shared by ``monitor_watch`` and ``monitor_update``: the other pull requests a
+#: structured watch also wakes on. Each entry is parsed against the watch's kind
+#: after this shape check.
+_MONITOR_ALSO_WAKE_ON_FIELD = FieldSpec(
+    "also_wake_on",
+    list,
+    item_type=str,
+    item_max_len=MAX_SHORT_STRING,
+    max_items=MAX_MONITOR_ALSO_WAKE_ON,
+)
+
 
 MONITOR_WATCH_SCHEMA = ToolSchema(
     tool_name="monitor_watch",
@@ -442,6 +461,7 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
         FieldSpec("wake_on_terminal", bool),
+        _MONITOR_ALSO_WAKE_ON_FIELD,
     ],
 )
 
@@ -617,5 +637,6 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         # is the only way a conductor that armed a plain timer reaches the gate without
         # tearing its loop down and losing its cycle count.
         _MONITOR_WATCH_FIELD,
+        _MONITOR_ALSO_WAKE_ON_FIELD,
     ],
 )

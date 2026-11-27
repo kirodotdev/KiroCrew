@@ -17,10 +17,14 @@ import {
   principalInitials,
   principalName,
   heldLinks,
+  distinctPeopleCount,
+  personSource,
+  soleSource,
   waitingInvites,
   type PeopleRow,
 } from './sharedCrewUi'
 import type { TailscaleInvite } from './sharedCrewInvites'
+import { connectionSources, consoleUrl, type CrewModeResponse } from './sharedCrewMode'
 
 const work = (over: Partial<AcceptedWork> = {}): AcceptedWork => ({
   work_id: 'w1', session_key: 's1', operation: 'chat_turn', state: 'queued', revision: 1,
@@ -299,5 +303,94 @@ describe('heldLinks: a link stays removable until its person is a member', () =>
 
   it('never lists an email invite', () => {
     expect(heldLinks([], [link({ kind: 'email', email: 'a@example.test' })])).toEqual([])
+  })
+})
+
+describe('connection sources and their people', () => {
+  const rowOf = (id: string, login: string, over: Partial<PeopleRow> = {}): PeopleRow => ({
+    principal: { id, kind: 'human', display: { name: login, login, captured_at: null } }, sources: ['observed'], ...over,
+  })
+
+  it('names the source each row came in through, from its provenance', () => {
+    expect(personSource(rowOf('a', 'a', { provenance: 'tailscale_serve' }))).toBe('tailscale')
+    expect(personSource(rowOf('a', 'a', { provenance: 'tailscale_listener' }))).toBe('tailscale')
+    expect(personSource(rowOf('a', 'a', { sources: ['tailscale_share'] }))).toBe('tailscale')
+    expect(personSource(rowOf('a', 'a', { provenance: 'ssm_invite' }))).toBe('ssm')
+    expect(personSource(rowOf('a', 'a', { provenance: 'kiro_relay' }))).toBe('kiro_login')
+    expect(personSource(rowOf('a', 'a', { sources: ['directory'] }))).toBe('organization')
+    // At this machine: no source, whatever else is on.
+    expect(personSource(rowOf('a', 'a', { provenance: 'local_operator' }))).toBeNull()
+    expect(personSource(rowOf('a', 'a', { provenance: 'local_operator' }), 'kiro_login')).toBeNull()
+    // A creator read back with no provenance takes the one source that is on, else none.
+    expect(personSource(rowOf('a', 'a', { sources: ['session_creator'], provenance: 'none' }))).toBeNull()
+    expect(personSource(rowOf('a', 'a', { sources: ['session_creator'], provenance: 'none' }), 'kiro_login')).toBe('kiro_login')
+    expect(soleSource(['kiro_login'])).toBe('kiro_login')
+    expect(soleSource(['kiro_login', 'tailscale'])).toBeNull()
+    expect(soleSource([])).toBeNull()
+  })
+
+  it('counts one person once across sources, by login, case-insensitively', () => {
+    expect(distinctPeopleCount([
+      rowOf('t', 'Priya@example.test', { provenance: 'tailscale_serve' }),
+      rowOf('r', 'priya@example.test', { provenance: 'kiro_relay' }),
+      rowOf('x', ''),
+      rowOf('y', ''),
+    ])).toBe(3)
+  })
+
+  it('counts the owner at this machine and over the relay once, by the e-mail label, when no login is sent', () => {
+    const labelled = (id: string, name: string, over: Partial<PeopleRow>): PeopleRow => ({
+      principal: { id, kind: 'human', display: { name, login: '', captured_at: null } }, sources: ['observed'], ...over,
+    })
+    expect(distinctPeopleCount([
+      labelled('p_local', 'owner@example.test', { provenance: 'local_operator', is_owner: true }),
+      labelled('p_relay', 'Owner@example.test', { provenance: 'kiro_relay' }),
+      labelled('p_mate', 'mate@example.test', { provenance: 'none', sources: ['session_creator'] }),
+    ])).toBe(2)
+  })
+
+  it('counts an e-mail once whether it is the login or the label', () => {
+    const local: PeopleRow = { principal: { id: 'p_local', kind: 'human', display: { name: 'owner@example.test', login: '', captured_at: null } }, sources: ['observed'], provenance: 'local_operator', is_owner: true }
+    const tailnet: PeopleRow = { principal: { id: 'p_ts', kind: 'human', display: { name: 'Owner', login: 'Owner@example.test', captured_at: null } }, sources: ['observed'], provenance: 'tailscale_serve' }
+    expect(distinctPeopleCount([local, tailnet])).toBe(1)
+  })
+
+  it('never merges two people who only share a display name', () => {
+    const named = (id: string): PeopleRow => ({
+      principal: { id, kind: 'human', display: { name: 'Alex', login: '', captured_at: null } }, sources: ['observed'], provenance: 'kiro_relay',
+    })
+    expect(distinctPeopleCount([named('p_a'), named('p_b')])).toBe(2)
+  })
+
+  it('counts each card from the list rows under its chip once the rows are read', () => {
+    const mode = { mode: 'network', sources: [
+      { id: 'tailscale', state: 'unavailable', reason: 'not_configured', people: 0 },
+      { id: 'kiro_login', state: 'available', reason: '', people: 1 },
+    ] } as unknown as CrewModeResponse
+    const rows: PeopleRow[] = [
+      rowOf('p_local', 'owner', { provenance: 'local_operator', is_owner: true }),
+      rowOf('p_relay', 'owner', { provenance: 'kiro_relay' }),
+      rowOf('p_mate', 'mate', { provenance: 'none', sources: ['session_creator'] }),
+    ]
+    expect(connectionSources(mode, ALL_UNAVAILABLE, rows).find(s => s.id === 'kiro_login')?.people).toBe(2)
+    // Not read: the gateway's own count.
+    expect(connectionSources(mode, ALL_UNAVAILABLE, null).find(s => s.id === 'kiro_login')?.people).toBe(1)
+  })
+
+  it('reads the sources the gateway sends, and derives them on an older gateway', () => {
+    const mode = { mode: 'network', adapters: { tailscale: { state: 'available', reason: '' } } } as unknown as CrewModeResponse
+    const derived = connectionSources(mode, ALL_UNAVAILABLE, [rowOf('t', 't', { provenance: 'tailscale_serve' })])
+    expect(derived.map(s => [s.id, s.state, s.people])).toEqual([
+      ['tailscale', 'available', 1], ['ssm', 'unavailable', 0], ['organization', 'unavailable', 0], ['kiro_login', 'unavailable', 0],
+    ])
+    const sent = connectionSources({ ...mode, sources: [{ id: 'kiro_login', state: 'available', reason: '', people: 4 }] }, ALL_UNAVAILABLE, null)
+    expect(sent.find(s => s.id === 'kiro_login')).toEqual({ id: 'kiro_login', state: 'available', reason: '', people: 4 })
+  })
+
+  it('links a validated Console in any mode, and never an unsafe one', () => {
+    const body = (url: string) => ({ mode: 'network', console: { state: 'available', url } }) as unknown as CrewModeResponse
+    expect(consoleUrl(body('https://console.example.test/c'))).toBe('https://console.example.test/c')
+    expect(consoleUrl(body('javascript:alert(1)'))).toBe('')
+    expect(consoleUrl({ ...body('https://console.example.test/c'), console: { state: 'not_offered', url: 'https://console.example.test/c' } })).toBe('')
   })
 })

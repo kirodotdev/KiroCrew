@@ -81,6 +81,15 @@ describe('NotificationsPanel channels section', () => {
     expect(screen.queryByText('turn')).toBeNull()
   })
 
+  it('names the relay channel as the Crew switcher names its group: Remote Crews', async () => {
+    mockChannels.mockResolvedValue({ channels: [
+      { channel: 'system.relay', source: 'system', registered: true, default_priority: 'default', protected: false, settings: {} },
+    ] })
+    renderPanel()
+    expect(await screen.findByText('Remote Crews')).toBeTruthy()
+    expect(screen.queryByText('relay')).toBeNull()
+  })
+
   it('keeps only the mute consequence under the Sources heading; what the section is sits in its tip', async () => {
     renderPanel()
     await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())

@@ -248,7 +248,43 @@ class TestHealthIsNamesOnly:
         assert body["status"] == "expired"
         assert "123456789012" not in resp.text
         assert "arn:" not in resp.text
-        probe.assert_awaited_once_with("sso-dev", "eu-west-1")
+        from kiro_crew.dashboard.handlers import aws_project_profile as handler
+
+        probe.assert_awaited_once()
+        assert probe.await_args.args == ("sso-dev", "eu-west-1")
+        # The probe's CLI child is ended at the read's budget, not its own 15 s default.
+        assert probe.await_args.kwargs == {"timeout": handler._STATUS_BUDGET_SECS}
+
+    def test_the_probe_budget_is_inside_the_dashboard_read_deadline(self) -> None:
+        from kiro_crew.dashboard.handlers import aws_project_profile as handler
+
+        # The dashboard stops waiting on this read at BROWSE_FILES_TIMEOUT_MS
+        # (website/src/api/client/files.ts); past it the user is told the gateway is busy.
+        assert handler._STATUS_BUDGET_SECS < 10.0
+
+    def test_a_probe_that_never_answers_reads_unavailable_within_the_budget(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.apps.builtins.aws_control.backend import accounts
+        from kiro_crew.dashboard.handlers import aws_project_profile as handler
+
+        async def _never(*_args: object, **_kwargs: object) -> aws_consent.Identity:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr(aws_consent, "probe_identity", _never)
+        monkeypatch.setattr(accounts, "configured_region", AsyncMock(return_value=""))
+        monkeypatch.setattr(accounts, "classify_profile", AsyncMock(return_value=accounts.KIND_SSO))
+        # A zero budget expires at once, so the test needs no clock.
+        monkeypatch.setattr(handler, "_STATUS_BUDGET_SECS", 0)
+        proj = _project(home)
+        _put({"path": str(proj), "profile": "slow-login"})
+
+        resp = _get(str(proj))
+        assert resp.status == 200
+        body = json.loads(resp.text)
+        assert body["profile"] == "slow-login"
+        assert body["status"] == "unavailable"
 
     def test_a_non_sso_profile_that_does_not_resolve_reads_unavailable(
         self, home: Path, monkeypatch: pytest.MonkeyPatch

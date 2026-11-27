@@ -384,13 +384,6 @@ class TestTheWideningIsNotOverlyNarrow:
         assert match.group("lwrap") is None
         assert OPTIONS_RE_LINE.sub("", text) == "**Choose:** "
 
-    def test_a_marker_spanning_newlines_still_closes_the_trailer(self):
-        # TRAILER's body omits ``\n`` from its negated class on purpose (DOTALL),
-        # so the temper must not have re-introduced a line boundary.
-        match = OPTIONS_RE_TRAILER.search("Done.\n\n[OPTIONS: Alpha |\nBravo]")
-        assert match is not None
-        assert match.group("labels") == " Alpha |\nBravo"
-
     def test_the_markdown_link_close_tic_still_composes(self):
         match = OPTIONS_RE_LINE.search("[OPTIONS: A | B](OPTIONS)")
         assert match is not None

@@ -8,6 +8,15 @@ When an installed app has ``dev: true`` in its ``installed.json``:
   the recommended dev setup symlinks ``ui/`` to the developer's source tree)
   and broadcasts an ``app_reload`` WebSocket event whenever any file changes.
   The dashboard's AppHost reloads so edits appear without a manual refresh.
+  On Windows, link ``ui/`` with a directory junction instead: from cmd, keep
+  the installed ``ui\\`` as a backup
+  (``ren "%USERPROFILE%\\.kiro\\crew\\apps\\<name>\\ui" ui.bak``), run
+  ``mklink /J "%USERPROFILE%\\.kiro\\crew\\apps\\<name>\\ui" "<source>\\ui"``, then re-run
+  ``kirocrew app dev <name> --confirm-out-of-install-root`` so the dev grant
+  binds to the link target. A junction needs no privilege, while a directory
+  symlink needs Developer Mode or an elevated shell. A junction must point at
+  a local absolute path. The route and the watcher follow it the same way
+  they follow a symlink.
 
 Link the whole ``ui/`` DIRECTORY, never individual files inside it: the UI route
 opens the final name with ``O_NOFOLLOW`` (the swap-resistant open that closes

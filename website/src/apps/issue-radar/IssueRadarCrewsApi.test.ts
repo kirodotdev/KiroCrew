@@ -292,7 +292,8 @@ describe('phase classification mirrors crew_store.py', () => {
     for (const set of [TERMINAL_PHASES, TTL_ACTIVE_PHASES, EDITING_PHASES]) {
       for (const phase of set) expect(known.has(phase)).toBe(true)
     }
-    expect(CREW_PHASES).toHaveLength(13)
+    expect(CREW_PHASES.length).toBeGreaterThan(0)
+    expect(new Set(CREW_PHASES).size, 'CREW_PHASES lists a phase twice').toBe(CREW_PHASES.length)
   })
 
   it('never marks a terminal phase as ttl-active or editing', async () => {

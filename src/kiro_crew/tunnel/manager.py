@@ -60,6 +60,8 @@ class TunnelStatus:
     started_at: float = 0.0
     connected_at: float = 0.0
     reconnect_attempt: int = 0
+    #: The error is a wait on this Crew's own eligibility, not a fault on the way.
+    cannot_host_yet: bool = False
 
 
 class TunnelManager:
@@ -153,7 +155,14 @@ class TunnelManager:
             except ValueError:
                 logger.debug("tunnel snapshot has unknown state %r; keeping prior", raw_state)
                 status.state = self._status.state
-        for field in ("url", "error", "started_at", "connected_at", "reconnect_attempt"):
+        for field in (
+            "url",
+            "error",
+            "started_at",
+            "connected_at",
+            "reconnect_attempt",
+            "cannot_host_yet",
+        ):
             if field in snap:
                 setattr(status, field, snap[field])
         return status

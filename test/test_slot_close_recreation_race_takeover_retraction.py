@@ -24,7 +24,7 @@ from slot_close_recreation_race_helpers import (
 )
 
 from kiro_crew.dashboard import chat_handlers as handlers
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
 
 
 class _TombstoneClock:
@@ -847,6 +847,49 @@ async def test_cleanup_keeps_its_dismissal_owed_when_the_taker_gives_up_later(
     )
     assert NAME not in state._slots
     assert state._takeover_watches == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close", ["delete", "cleanup"])
+async def test_a_late_save_of_the_popped_original_keeps_its_owed_close(
+    tmp_path, monkeypatch, close
+):
+    """The closed marker an owed dismissal wrote survives the original's late full save.
+
+    A turn that outlived the hand-over close still saves its popped slot when it
+    ends. That slot reads open only because it is stale, so rebuilding the line from
+    it would erase the marker and the restore would bring the dismissed tab back.
+    """
+    state = _make_state(tmp_path)
+    # The stage reuses the slot already on the key, so this is the popped original.
+    original = state.get_or_create_slot(NAME)
+    key, rehydrate, read_release, _unpark = await _close_handed_over_to_a_parked_taker(
+        state, monkeypatch, close=close
+    )
+    rehydrate.cancel()
+    read_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(rehydrate, FALLBACK_TIMEOUT_SECS)
+    owed = state.conversation_log.get_metadata(key)
+    assert owed.get("closed") is True, "the owed dismissal was not written"
+
+    original.append("assistant", "LATE-1")
+    original.drain()
+    assert await handlers.save_slot_off_loop(state, original, best_effort=False)
+
+    meta = state.conversation_log.get_metadata(key)
+    assert meta.get("closed") is True, "a stale save of the popped original reopened its tab"
+    assert meta.get("closed_id") == owed.get("closed_id")
+    rows = [m["content"] for m in state.conversation_log.read_messages_chained(key)]
+    assert rows[-1] == "LATE-1", "the late save did not keep its row"
+
+    # A reopen is a new slot object: its save opens the line as before.
+    reopened = state.get_or_create_slot(NAME)
+    assert reopened is not original
+    reopened.append("user", "back again")
+    reopened.drain()
+    assert await handlers.save_slot_off_loop(state, reopened, best_effort=False)
+    assert "closed" not in state.conversation_log.get_metadata(key)
 
 
 @pytest.mark.asyncio

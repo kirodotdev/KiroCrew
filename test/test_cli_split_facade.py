@@ -10,11 +10,11 @@ name a test patches through the facade.
 ``test/test_facade_mirror_guards.py`` holds every mirrored facade to the shared rules.
 These tests pin what is particular to this one: every name the test trees patch through it
 reaches every module holding it; the owner list, with no exclusion and no forwarded table;
-the names an owner serves from outside the family stay visible to type checkers, and every
-public name the module held before the split still type-checks through it; the owners log
-as ``kiro_crew.cli``; a facade write of the log-queue slot lands in the module that rebinds
-it; and the registrars read no patched name, each called exactly once by ``main`` before
-``cli_help.hide_internal_commands``.
+no module outside the family imports an owner; the names an owner serves from outside the
+family stay visible to type checkers, and every public name the module held before the
+split still type-checks through it; the owners log as ``kiro_crew.cli``; a facade write of
+the log-queue slot lands in the module that rebinds it; and the registrars read no patched
+name, each called exactly once by ``main`` before ``cli_help.hide_internal_commands``.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from pathlib import Path
 from types import ModuleType
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 import test_campaign_facades_base_public_names as base_names
@@ -262,6 +263,24 @@ def test_no_owner_or_registrar_imports_the_facade_or_an_owner() -> None:
         for module in split_out
     }
     assert {name: found for name, found in reached.items() if found} == {}
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_index().owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # The facade importing its owners proves the scan reads real imports.
+    assert "cli.py" in importers
+    assert importers - family == set()
 
 
 # --------------------------------------------------------------------------- #

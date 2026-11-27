@@ -396,7 +396,7 @@ async def test_a_superseding_connect_waits_for_the_first_listener(monkeypatch, g
     gate = asyncio.Event()
     scans: list[str] = []
 
-    def _scan(url):
+    def _scan(url, _server=None):
         scans.append(url)
         if len(scans) == 1:
             asyncio.run_coroutine_threadsafe(gate.wait(), loop).result()

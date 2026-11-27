@@ -33,12 +33,14 @@ if TYPE_CHECKING:
         _history_key_for,
         _loading_refusal,
         _normalize_slot_key,
+        _persisted_tag_write,
         _read_model_field,
         _rebase_rehydrated_refresh_mark,
         _record_explicit_agent_selection,
         _rehydrate_slot_title,
         _slot_switch_session_lock,
         _sync_dashboard_slots,
+        _tag_vocabulary,
         _unhide_folder,
         _workspace_name_for_dir,
         audit_app_slot_denial,
@@ -49,15 +51,16 @@ if TYPE_CHECKING:
         default_template,
         deny_app_slot_session_access,
         dispatch_kiro_agent,
+        dispatch_session_lane_changed_bulk,
         drained_to_thread,
         effective_session_key,
         folder_principal,
         is_owner_dashboard_request,
-        is_sensitive_canonical_path,
         logger,
         members_mod,
         owner_start_priority,
         pin_private_agent_store,
+        probe_project_dir,
         read_bounded_json,
         redact_credentials,
         redact_exfiltration_urls,
@@ -68,10 +71,12 @@ if TYPE_CHECKING:
         restore_agent_selection,
         save_slot_off_loop,
         schedule_eager_spawn,
+        sel,
         selects_bot_identity,
         slot_history_key,
         slot_not_found,
         tags_write_lock,
+        usable_default_project,
         validate_folder_tag_ids,
         voice_runtime_workspace_conflict,
         wait_for_memory_preparation,
@@ -149,19 +154,7 @@ async def _birth_default_project(cfg: KiroCrewConfig | None, workspace: str) -> 
     cfg_proj = cfg.dashboard.default_project if cfg else ""
 
     def resolve() -> str:
-        if isinstance(cfg_proj, str) and cfg_proj:
-            resolved = os.path.realpath(os.path.expanduser(cfg_proj))
-            # *resolved* is canonical, so the canonical gate judges it: it answers
-            # inline off the loop, where a resolver stall cannot read as a match.
-            # A configured default that overlaps the data home would be refused
-            # at spawn anyway, so it is skipped here like a sensitive path.
-            if (
-                os.path.isdir(resolved)
-                and not is_sensitive_canonical_path(resolved)
-                and voice_runtime_workspace_conflict(resolved) is None
-            ):
-                return resolved
-        return default_project_dir(workspace)
+        return usable_default_project(cfg_proj) or default_project_dir(workspace)
 
     # Off the loop: every branch, the workspace fallback included, touches the
     # disk or reloads config.
@@ -234,6 +227,55 @@ async def _app_hides_own_mode(request: web.Request, body: dict[str, Any], mode: 
     from kiro_crew.apps.hidden_sessions import may_hide_sessions
 
     return await asyncio.to_thread(may_hide_sessions, mode)
+
+
+async def _birth_project(request: web.Request, raw: Any) -> tuple[str, web.Response | None]:
+    """A create's ``project``: the resolved directory, or the refusal the project route gives."""
+    from kiro_crew.hooks import is_unc_shape, unc_probe_allowed
+
+    if not isinstance(raw, str) or not raw.strip():
+        return "", web.json_response(
+            {"error": "Not a directory", "code": "not_a_directory"}, status=400
+        )
+    # The text can come from an app, so on Windows a share outside the gateway's own
+    # roots is refused before any probe: resolving it would open SMB to that host.
+    # Off the loop: the first call resolves and caches the trusted roots.
+    if (
+        os.name == "nt"
+        and is_unc_shape(raw.strip())
+        and not await asyncio.to_thread(unc_probe_allowed, raw.strip())
+    ):
+        return "", web.json_response(
+            {"error": "Not a directory", "code": "not_a_directory"}, status=400
+        )
+    probed = await asyncio.to_thread(probe_project_dir, raw.strip())
+    if probed is None or not probed[1]:
+        return "", web.json_response(
+            {"error": "Not a directory", "code": "not_a_directory"}, status=400
+        )
+    project, _is_dir, sensitive = probed
+    refusal = "sensitive path" if sensitive else ""
+    conflict = (
+        None if sensitive else await asyncio.to_thread(voice_runtime_workspace_conflict, project)
+    )
+    if conflict is not None:
+        refusal = "voice runtime overlap"
+    if refusal:
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="chat_slot_create",
+            outcome="denied",
+            resources=f"project={project}",
+            error=refusal,
+        )
+        if sensitive:
+            return "", web.json_response(
+                {"error": "Access denied", "code": "sensitive_path"}, status=403
+            )
+        return "", web.json_response(
+            {"error": conflict, "code": "workspace_overlaps_data_home"}, status=400
+        )
+    return project, None
 
 
 async def api_chat_slot_create(request: web.Request) -> web.Response:
@@ -470,6 +512,23 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             source_is_dir: bool = await asyncio.to_thread(os.path.isdir, source_project)
             if source_is_dir:
                 carried_project = source_project
+    # A project the person's dashboard asks the new chat to start on, judged the way
+    # the project route judges a pick and applied before the chat is first published,
+    # so a refused directory leaves no session behind (an app's Sessions New row).
+    birth_project = ""
+    # Only a fresh unnamed create from the person's own dashboard reads it. Any other
+    # create ignores it, as every create did before, and is never probed for it, so no
+    # other caller gets a filesystem oracle.
+    if (
+        "project" in body
+        and not name
+        and not request_app
+        and not carried_project
+        and is_owner_dashboard_request(request)
+    ):
+        birth_project, birth_refusal = await _birth_project(request, body.get("project"))
+        if birth_refusal is not None:
+            return birth_refusal
     # Binding resolution checks memory readiness. A fresh conversation gets
     # the same bounded recovery grace as its first turn, before any slot or
     # protected assignment is published.
@@ -534,7 +593,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 resolve_agent_bindings,
                 cfg,
                 agent,
-                project_dir=carried_project or None,
+                project_dir=carried_project or birth_project or None,
                 validate_memory_files=False,
                 selection_kind=agent_kind,
             )
@@ -552,7 +611,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     resolve_agent_bindings,
                     cfg,
                     agent,
-                    project_dir=carried_project or None,
+                    project_dir=carried_project or birth_project or None,
                     validate_memory_files=False,
                     selection_kind=agent_kind,
                 )
@@ -631,7 +690,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         and (not preflight_key or preflight_key not in state._slots)
     ):
         preflight_project = (
-            carried_project or folder_project or await _birth_default_project(cfg, workspace)
+            carried_project
+            or birth_project
+            or folder_project
+            or await _birth_default_project(cfg, workspace)
         )
         try:
             await _check_new_slot_assignment(cfg, agent, agent_kind, preflight_project, memory_mode)
@@ -710,6 +772,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     count_new_chat = False
     born_crew = False
     crew_repeat = False
+    # Why the owner's stored start mode did not apply (`chat_default_mode`), or "".
+    default_mode_refused = ""
     async with contextlib.AsyncExitStack() as creation_stack:
         request_deferred_flush = creation_stack.enter_context(state.suspend_slots_push())
         if request_app and _requested_key:
@@ -909,6 +973,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # File the slot before the coalesced broadcast, so its first appearance
         # in every client is already inside the folder.
         folder_applied = False
+        inherited_tags_move: tuple[list[str], list[str]] | None = None
         if folder_id:
             # Mirror PATCH /api/chat/slots/{slot}/folder: a CHANGED folder must
             # re-inject the [FOLDER] breadcrumb on the next turn. `is_new` alone
@@ -930,13 +995,22 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # failing the turn. The folder's un-hide and claim are writes, so
             # they run once nothing later can refuse the create (below);
             # this only reads whether the folder is there.
+            # An agent-socket call carries no secret but is marked internal_auth.
             claim_folder = (
-                folder_id != previous_folder and request.headers.get("X-Internal-Secret") is None
+                folder_id != previous_folder
+                and request.headers.get("X-Internal-Secret") is None
+                and request.get("internal_auth") is not True
             )
             if not await state.read_folders(
                 lambda folders: any(f["id"] == folder_id for f in folders)
             ):
-                slot.folder_id = previous_folder
+                # The old folder can be deleted inside the same await: keep it
+                # only while it exists, else the conversation lands Unfiled.
+                slot.folder_id = (
+                    previous_folder
+                    if any(f["id"] == previous_folder for f in state._folders)
+                    else ""
+                )
                 slot._folder_changed = previous_changed
             else:
                 folder_applied = True
@@ -971,6 +1045,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     # lock) matches the folder create/PATCH paths.
                     async with tags_write_lock(state):
                         inherited = await state.read_folders(_read_folder_tags)
+                        prior_tags = list(slot.tags)
                         appended = False
                         for tid in validate_folder_tag_ids(inherited, state):
                             if tid not in slot.tags:
@@ -982,6 +1057,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                         # the inherited list must not ship under that same one.
                         if appended:
                             _bump_slot_tags_revision(slot)
+                            inherited_tags_move = (prior_tags, list(slot.tags))
         # A slot with no project filed into a project-linked folder inherits
         # from the nearest configured ancestor before its first broadcast. The
         # server owns this fallback because the client folder cache can be
@@ -989,6 +1065,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # it and continue to use the project endpoint for scope changes.
         if carried_project and is_new_slot and not slot.project:
             slot.project = carried_project
+        if birth_project and is_new_slot and not slot.project:
+            # The person picked the row that named it, so it counts as their pick.
+            slot.project = birth_project
+            slot._project_picked = True
         if folder_project and folder_applied and not slot.project:
             slot.project = folder_project
         # A fresh folder per new chat, when the owner turned it on. Only for a
@@ -1109,6 +1189,28 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     )
                 if assigned_store:
                     slot.memory_store = assigned_store
+                # The owner's start mode for a plain New chat, before its first
+                # frame. Asked for explicitly (`start_mode_default: true`, sent by
+                # the person's own New chat entry points), so an app page's or any
+                # other caller's create keeps how it starts. A named create can
+                # reopen a saved session, and an app's, a cron's, a worker's or a
+                # helper's chat is never a plain one.
+                if body.get("start_mode_default") is True and not (
+                    _requested_key
+                    or request_app
+                    or cron_creator
+                    or _mode
+                    or app_agent_owner
+                    or work_item is not None
+                    or embed_app
+                    or body.get("ephemeral")
+                    or "app_launch" in body
+                ):
+                    from kiro_crew.dashboard.chat_default_mode import seed_new_chat
+
+                    default_mode_refused = await seed_new_chat(
+                        state, request, slot, cfg, chosen.execution_context
+                    )
         if is_new_slot and not getattr(slot, "crew_mode_agent", ""):
             # A chat born on the Crew Mode conductor (the conductor as the default
             # template, or a create naming it) is stamped the way the agent switch
@@ -1269,7 +1371,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # from then on. A folder deleted since the read above declines the
             # move, as it would have at that read.
             if not await _unhide_folder(state, folder_id, claim_for_person=claim_folder):
-                slot.folder_id = previous_folder
+                # Same rule as the read above: never back into a deleted folder.
+                slot.folder_id = (
+                    previous_folder
+                    if any(f["id"] == previous_folder for f in state._folders)
+                    else ""
+                )
                 slot._folder_changed = previous_changed
                 folder_applied = False
         if folder_id or title:
@@ -1284,12 +1391,22 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # has a metadata line and `best_effort` (default) logs the failure
             # and marks the slot dirty so the periodic flush retries it, which
             # is the retry the metadata mutation routes rely on.
-            await save_slot_off_loop(
-                state,
-                slot,
-                force=True,
-                expected_history_key=slot_history_key(slot),
-            )
+            if inherited_tags_move is None:
+                await save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    expected_history_key=slot_history_key(slot),
+                )
+            else:
+                # Inherited tags may put the session in a lane, so this takes the
+                # tag routes' confirming save: same re-arm on a failure, but the
+                # lane hook below runs only for a write that committed.
+                written, persist_confirmed = await _persisted_tag_write(
+                    state, slot, expected_history_key=slot_history_key(slot)
+                )
+                if not (written and persist_confirmed):
+                    inherited_tags_move = None
         # Guarantee a frame. get_or_create_slot pushes for a NEW slot, but
         # returns an existing named slot without pushing — and this handler is
         # now the only thing that files a slot (the client sends no follow-up
@@ -1303,6 +1420,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             request_deferred_flush(f"create slot {slot.key!r}")
     # The create is committed here: every refusal and retraction above returns
     # from inside the block, and an exception leaving it retracts the newborn.
+    # So a folder lane the new session inherited is announced here, through the
+    # tag routes' dispatcher and permit gate.
+    if inherited_tags_move is not None:
+        await dispatch_session_lane_changed_bulk(
+            [(slot.key, *inherited_tags_move)],
+            tags_by_id=_tag_vocabulary(state),
+            session_keys={slot.key: effective_session_key(slot)},
+            request=request,
+        )
     if count_new_chat:
         from kiro_crew.metrics import crew_mode as crew_mode_metrics
 
@@ -1365,6 +1491,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     created = _created_slot_row(state, request, slot)
     if session_folder_notice:
         created["session_folder_notice"] = session_folder_notice
+    if default_mode_refused:
+        created["default_mode_refused"] = default_mode_refused
     if headroom is not None:
         created["headroom"] = headroom
     if work_item is not None:

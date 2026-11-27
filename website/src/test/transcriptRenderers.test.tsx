@@ -3,8 +3,8 @@
  *
  * The registry's own defaults are store-free and therefore draw a REDUCED
  * transcript — a static pill for a tool call, and nothing at all for a thinking
- * trace, a sent file, an auto-nudge turn, a workflow or sub-agent launch, a
- * recovery inject or a workflow completion. This module supplies the
+ * trace, a sent file, an auto-nudge turn, a workflow or sub-agent launch or a
+ * workflow completion. This module supplies the
  * store-connected set, so what is pinned here is that every one of those rows
  * resolves to an entry that actually DRAWS something, and that the narrow
  * entries win over the broad ones they refine.
@@ -19,6 +19,7 @@
  * own guarantee. Both are pinned below.
  */
 import { describe, it, expect } from 'vitest'
+import { cleanup, render as renderDom, screen } from '@testing-library/react'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ReactElement } from 'react'
@@ -28,6 +29,8 @@ import { appAgentRefusalIsNewest, authRequiredIsNewest, contextOverflowIsNewest,
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { i18nT } from '../i18n/t'
+import type { KasLoginStatus } from '../api/client'
+import { signedInNow } from '../pages/developer/kiroSignInState'
 import { FEATURE_REQUEST_FORM_URL, FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import { isWorkflowRunTool } from '../pages/chat/WorkflowRunCard'
 import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
@@ -122,10 +125,6 @@ describe('narrow rows win over the broad row they refine', () => {
   })
 
   it('routes a gateway-stamped inject to the card and leaves speech-bearing ones alone', () => {
-    // This registry serves ChatPane / SideChat / ChatEmbed. It previously gated on
-    // a recognised recovery marker alone, so every other injected shape fell
-    // through to the SDK default and painted machine prose as a bubble. The shared
-    // resolver closes that on every surface at once.
     const synthesis = msg('inject', {
       content: '[SYSTEM] Sub-agent synthesis: produce the consolidated write-up.',
       meta: { injectKind: 'synthesis' },
@@ -240,6 +239,70 @@ describe('the error row offers Continue only where the single-chat surface does'
   it('withholds it on a surface that cannot continue a turn', () => {
     const el = render(errs[2], { slot: 's1' }, { index: 2, messages: errs }) as ReactElement
     expect(el.props.onContinue).toBeUndefined()
+  })
+})
+
+describe('a signed-out row offers Resume once the Kiro sign-in works again (#34690)', () => {
+  const signedOut = msg('error', { content: 'Not signed in to Kiro.', meta: { kind: 'auth_required', notice: 'kas_signed_out' } })
+  const rows = [msg('user', { content: 'What can you do for me today?' }), signedOut]
+  const opts = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined, onOpenSignIn: () => undefined }
+
+  it('adds Resume beside the kept sign-in button, worded for it, only while signed in', () => {
+    const out = render(signedOut, opts, { index: 1, messages: rows }) as ReactElement
+    expect(out.props.onOpenSignIn).toBeTypeOf('function')
+    expect(out.props.onContinue).toBeUndefined()
+    expect(out.props.signInWorks).toBe(false)
+
+    const back = render(signedOut, { ...opts, kiroSignedIn: true }, { index: 1, messages: rows }) as ReactElement
+    expect(back.props.onContinue).toBe(opts.onContinue)
+    expect(back.props.onOpenSignIn).toBe(opts.onOpenSignIn)
+    expect(back.props.signInWorks).toBe(true)
+    expect(back.props.resumeContent).toBe(i18nT('pages.chat.errorCard.retry_kas_signed_in'))
+
+    const later = [...rows, msg('user', { content: 'And another thing.' })]
+    const passed = render(signedOut, { ...opts, kiroSignedIn: true }, { index: 1, messages: later }) as ReactElement
+    expect(passed.props.onContinue).toBeUndefined()
+    expect(passed.props.signInWorks).toBe(false)
+  })
+
+  it('reads an expired token as not signed in, even one a stored refresh token keeps usable', () => {
+    const live: KasLoginStatus = {
+      authenticated: true, provider: 'Google', identity: 'social', transport: 'device',
+      expires_at: '2099-01-01T00:00:00Z', expired: false, has_refresh_token: true, refresh_rejected: false, usable: true,
+    }
+    expect(signedInNow(live)).toBe(true)
+    expect(signedInNow({ ...live, expires_at: '2000-01-01T00:00:00Z', expired: true })).toBe(false)
+    expect(signedInNow({ ...live, refresh_rejected: true })).toBe(false)
+  })
+
+  it('shows a failed sign-in check on the row where no sign-in button or app notice reports it', () => {
+    const failed = new Error('token_store_failed: could not read the stored sign-in')
+    const frame = { ...opts, onOpenSignIn: undefined, kiroSignInCheckError: failed }
+    const el = render(signedOut, frame, { index: 1, messages: rows }) as ReactElement
+    expect(el.props.onContinue).toBeUndefined()
+    renderDom(el)
+    const notice = screen.getByTestId('error-card-sign-in-check-failed')
+    expect(notice).toHaveTextContent(i18nT('components.kasLogin.sign_in_status_unavailable'))
+    expect(notice).toHaveTextContent(failed.message)
+    expect(notice).not.toHaveTextContent(i18nT('components.askAgent.ask_the_agent'))
+    cleanup()
+  })
+
+  it("keeps the sign-in card on a row whose fix is kiro-cli's login, which Kiro's sign-in cannot clear", () => {
+    const launcher = msg('error', {
+      content: "KAS runs through kiro-cli's launcher. Run `kiro-cli login` in your terminal, then send your message again.",
+      meta: { kind: 'auth_required' },
+    })
+    const el = render(launcher, { ...opts, kiroSignedIn: true }, { index: 1, messages: [rows[0], launcher] }) as ReactElement
+    expect(el.props.onContinue).toBeUndefined()
+    expect(el.props.onOpenSignIn).toBeTypeOf('function')
+  })
+
+  it("withholds Resume on the relay's kiro_cli_sign_in row, which keeps the kas_signed_out notice", () => {
+    const relay = msg('error', { content: 'Not signed in to Kiro.', meta: { kind: 'kiro_cli_sign_in', crew_sign_in: true, notice: 'kas_signed_out' } })
+    const el = render(relay, { ...opts, kiroSignedIn: true }, { index: 1, messages: [rows[0], relay] }) as ReactElement
+    expect(el.props.onContinue).toBeUndefined()
+    expect(el.props.signInWorks).toBe(false)
   })
 })
 
@@ -527,6 +590,68 @@ describe('a session start that failed twice in a row swaps Resume for the restar
   })
 })
 
+describe('a run of identical failures draws as one card (#38910)', () => {
+  const notReady = (ts: string) => msg('error', {
+    content: 'The agent could not start because its built-in tools were not ready in time.',
+    ts,
+    meta: { notice: 'tools_not_ready' },
+  })
+  // The `inject` row a Resume press lands as (the RecoveryCard row).
+  const resumed = () => msg('inject', { content: '[Continue — requested by the user]\nplease carry on', meta: { injectKind: 'recovery' } })
+  // A red notice row too, so only its `kind` keeps two of them apart.
+  const denied = (ts: string) => msg('error', { content: 'Access denied. Please check your authentication.', ts, meta: { kind: 'auth_required', notice: 'kas_signed_out' } })
+  const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+  const drawn = (rows: ChatMessage[]) => rows.map((m, i) => render(m, recoverable, { index: i, messages: rows }))
+
+  it('draws nine Resume-separated failures as one card on the first row, which offers Resume', () => {
+    const rows: ChatMessage[] = [msg('user', { content: 'hi' })]
+    for (let i = 0; i < 9; i++) {
+      if (i > 0) rows.push(resumed())
+      rows.push(notReady(`2026-11-18T20:5${i}:00Z`))
+    }
+    const out = drawn(rows)
+    const card = out[1] as ReactElement
+    expect(card.type).toBe(ErrorCard)
+    expect(card.props.attempts).toEqual(rows.filter(m => m.role === 'error'))
+    expect(card.props.onContinue).toBeTypeOf('function')
+    // Every later failure, and every Resume press between two of them, draws nothing.
+    expect(out.slice(2).every(o => o === null)).toBe(true)
+  })
+
+  it('keeps a different failure as its own card, which ends the run on each side of it', () => {
+    const rows = [
+      msg('user', { content: 'hi' }),
+      notReady('2026-11-18T20:50:00Z'), resumed(), notReady('2026-11-18T20:51:00Z'), resumed(),
+      denied('2026-11-18T20:52:00Z'), resumed(),
+      notReady('2026-11-18T20:53:00Z'), resumed(), notReady('2026-11-18T20:54:00Z'),
+    ]
+    const out = drawn(rows)
+    expect(out.map(o => o !== null)).toEqual([true, true, false, false, true, true, true, true, false, false])
+    expect((out[1] as ReactElement).props.attempts).toEqual([rows[1], rows[3]])
+    expect((out[5] as ReactElement).props.attempts).toBeUndefined()
+    expect((out[7] as ReactElement).props.attempts).toEqual([rows[7], rows[9]])
+    // Resume only on the card whose run holds the chat's newest error.
+    expect((out[1] as ReactElement).props.onContinue).toBeUndefined()
+    expect((out[7] as ReactElement).props.onContinue).toBeTypeOf('function')
+  })
+
+  it('never folds a row that is a card of its own, nor across a reply', () => {
+    const twice = [msg('user', { content: 'hi' }), denied('2026-11-18T20:50:00Z'), resumed(), denied('2026-11-18T20:51:00Z')]
+    expect(drawn(twice).every(o => o !== null)).toBe(true)
+    const answered = [msg('user', { content: 'hi' }), notReady('2026-11-18T20:50:00Z'), msg('assistant', { content: 'Still here.' }), notReady('2026-11-18T20:51:00Z')]
+    const out = drawn(answered)
+    expect(out.every(o => o !== null)).toBe(true)
+    expect((out[1] as ReactElement).props.attempts).toBeUndefined()
+  })
+
+  it('leaves a lone failure, and the Resume press after it, as they are', () => {
+    const rows = [msg('user', { content: 'hi' }), notReady('2026-11-18T20:50:00Z'), resumed()]
+    const out = drawn(rows)
+    expect(out.every(o => o !== null)).toBe(true)
+    expect((out[1] as ReactElement).props.attempts).toBeUndefined()
+  })
+})
+
 describe('a context overflow swaps Resume for a fresh session', () => {
   const TOO_LONG = 'Input is too long: this conversation does not fit in one request to the model.'
   const overflow = () => msg('error', { content: TOO_LONG, meta: { kind: 'context_overflow' } })
@@ -771,6 +896,15 @@ describe("a change card in a mate's chat", () => {
     expect(el.props.pos).toBe('cont')
   })
 
+  // #30200: as wide as a mate's bubble, the content column; never a fixed measure.
+  it('takes the content column, like a mate bubble', () => {
+    const el = render(card, { slot: 's1', crewmate: mate }, { index: 0, messages: [card] }) as ReactElement<{ children: ReactElement<{ className?: string }> }>
+    expect(el.type).toBe(CrewmateMessage)
+    const cls = el.props.children.props.className ?? ''
+    expect(cls).toMatch(/(^|\s)max-w-full(\s|$)/)
+    expect(cls).not.toMatch(/(^|\s)max-w-(?!full(\s|$))/)
+  })
+
   it('stays a plain card outside a mate chat', () => {
     const el = render(card, { slot: 's1' }, { index: 0, messages: [card] }) as ReactElement
     expect(el.type).not.toBe(CrewmateMessage)
@@ -841,6 +975,11 @@ describe('authRequiredIsNewest -- the composer keeps Resume under a sign-in erro
     }
   })
 
+  it('holds under a row that asks for kiro-cli’s own sign-in too', () => {
+    const kiroCli = msg('error', { content: 'Not signed in.', meta: { kind: 'kiro_cli_sign_in' } })
+    expect(authRequiredIsNewest([user(), kiroCli])).toBe(true)
+  })
+
   it('lets go once a later turn opens or answers, and under a newer error of another kind', () => {
     expect(authRequiredIsNewest([user(), live(), msg('user', { content: 'again' })])).toBe(false)
     expect(authRequiredIsNewest([user(), live(), msg('assistant', { content: 'ok' })])).toBe(false)
@@ -884,5 +1023,40 @@ describe('a usage-limit row hands the card its chat, so the card can offer one c
       // No Resume, so the card offers no new wait (ErrorCard.limitContinue.test.tsx).
       expect(el.props.onContinue).toBeUndefined()
     }
+  })
+})
+
+describe('the kiro-cli sign-in row reads this gateway, so only its own surface draws it', () => {
+  const row = msg('error', { content: 'Not signed in.', meta: { kind: 'kiro_cli_sign_in', crew_sign_in: true } })
+
+  it('is drawn where the surface offers this gateway\u2019s sign-in', () => {
+    const own = render(row, { slot: 's1', onOpenSignIn: () => {} }, { messages: [row], index: 0 }) as ReactElement<{ kiroCliSignIn?: boolean; kiroCliCrewSignIn?: boolean }>
+    expect(own.props.kiroCliSignIn).toBe(true)
+    expect(own.props.kiroCliCrewSignIn).toBe(true)
+  })
+
+  it('keeps the row text in a crew window, which passes no sign-in', () => {
+    const peer = render(row, { slot: 's1' }, { messages: [row], index: 0 }) as ReactElement<{ kiroCliSignIn?: boolean; kiroCliCrewSignIn?: boolean }>
+    expect(peer.props.kiroCliSignIn).toBe(false)
+    expect(peer.props.kiroCliCrewSignIn).toBe(false)
+  })
+
+  it('withholds Continue in a pane that offers no sign-in, as on its own surface', () => {
+    const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+    const pane = render(row, recoverable, { messages: [row], index: 0 }) as ReactElement<{ kiroCliSignIn?: boolean; onContinue?: unknown }>
+    expect(pane.props.kiroCliSignIn).toBe(false)
+    expect(pane.props.onContinue).toBeUndefined()
+  })
+})
+
+describe('a host that cannot build an OS sandbox withholds the composer Resume', () => {
+  const user = msg('user', { content: 'hi', meta: { sendId: 's-h', mid: 'u-h' } })
+  it('owns recovery while the refusal is not momentary', () => {
+    const row = msg('error', { content: 'host_sandbox_unavailable: x', meta: { code: 'host_sandbox_unavailable' } })
+    expect(newestErrorOwnsRecovery([user, row])).toBe(true)
+  })
+  it('leaves Resume for a momentary refusal', () => {
+    const row = msg('error', { content: 'host_sandbox_unavailable: x', meta: { code: 'host_sandbox_unavailable', retryable: true } })
+    expect(newestErrorOwnsRecovery([user, row])).toBe(false)
   })
 })

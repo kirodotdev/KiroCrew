@@ -217,7 +217,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "Cannot use config root as workspace directory"}, status=400
             )
-        if src_path.is_dir():
+        if await asyncio.to_thread(src_path.is_dir):
             copy_pending = True
         else:
             # Source workspace is registered but its folder is absent on disk: the
@@ -271,7 +271,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             resources=name,
         )
         return web.json_response({"error": "Invalid directory path"}, status=400)
-    if not _abs and not validated_dir.is_relative_to(data_home().resolve()):
+    if not _abs and not validated_dir.is_relative_to(await asyncio.to_thread(data_home().resolve)):
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="workspace.create",
@@ -280,7 +280,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             resources=name,
         )
         return web.json_response({"error": "Invalid directory path"}, status=400)
-    if validated_dir == data_home().resolve():
+    if validated_dir == await asyncio.to_thread(data_home().resolve):
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="workspace.create",
@@ -513,7 +513,7 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
                 resources=name,
             )
             return web.json_response({"error": "Invalid directory path"}, status=400)
-        if not _abs and not resolved.is_relative_to(data_home().resolve()):
+        if not _abs and not resolved.is_relative_to(await asyncio.to_thread(data_home().resolve)):
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="workspace.update",
@@ -522,7 +522,7 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
                 resources=name,
             )
             return web.json_response({"error": "Invalid directory path"}, status=400)
-        if resolved == data_home().resolve():
+        if resolved == await asyncio.to_thread(data_home().resolve):
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="workspace.update",

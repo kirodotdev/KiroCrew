@@ -7,6 +7,7 @@ through ``install_app`` / ``set_app_provenance`` and, end to end, through
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -58,7 +59,7 @@ def _install(tmp_path: Path, name: str, *, registry_id: str | None, url: str = S
 @pytest.fixture
 def labels(monkeypatch):
     """Start from an empty label set; calling it fills the set from disk, as the gateway does."""
-    monkeypatch.setattr(fu, "_public_app_ids", frozenset())
+    monkeypatch.setattr(fu, "_public_app_ids", {})
     return fu.refresh_public_app_ids
 
 
@@ -184,21 +185,10 @@ def test_an_uninstalled_store_app_drops_out(tmp_path, labels):
     assert fu.app_public_id("weather-app") == "private"
 
 
-def test_app_label_is_unchanged_for_the_same_apps(tmp_path, labels):
-    """``kirocrew.app.task.completed`` keeps sending exactly what it sent before."""
-    _install(tmp_path, "weather-app", registry_id="")
-    labels()
-    assert fu.app_public_id("weather-app") == "weather-app"
-    assert fu.app_label("weather-app") == "private"
-    assert fu.app_label("auto-improvement") == "private"
-    assert fu.app_label("papyrus") == "papyrus"
-    assert fu.app_label(None) == "private"
-
-
 def test_a_failed_refresh_keeps_the_last_set(monkeypatch):
-    monkeypatch.setattr(fu, "_public_app_ids", frozenset({"weather-app"}))
+    monkeypatch.setattr(fu, "_public_app_ids", {"weather-app": "1.0.0"})
 
-    def _boom() -> frozenset[str]:
+    def _boom() -> dict[str, str]:
         raise OSError("unreadable")
 
     monkeypatch.setattr(store_origin, "public_app_ids", _boom)
@@ -225,7 +215,7 @@ def test_the_reconciler_tick_does_not_rescan_the_ids(monkeypatch):
 
     calls: list[int] = []
     monkeypatch.setattr(fu, "refresh_public_app_ids", lambda: calls.append(1))
-    monkeypatch.setattr(store_origin, "public_app_ids", lambda: calls.append(2) or frozenset())
+    monkeypatch.setattr(store_origin, "public_app_ids", lambda: calls.append(2) or {})
     monkeypatch.setattr("kiro_crew.hooks.set_builtin_app_names", lambda _v: None)
     monkeypatch.setattr("kiro_crew.hooks.set_builtin_app_mcp_servers", lambda _v: None)
     monkeypatch.setattr("kiro_crew.hooks.set_builtin_app_agents", lambda _v: None)
@@ -238,15 +228,49 @@ def test_the_installed_counter_closes_via(monkeypatch):
     monkeypatch.setattr(
         "kiro_crew.metrics.events.emit_counter", lambda n, a: seen.append((n, dict(a)))
     )
-    monkeypatch.setattr(fu, "_public_app_ids", frozenset({"weather-app"}))
+    monkeypatch.setattr(fu, "_public_app_ids", {"weather-app": "1.2.3"})
     fu.record_app_installed("weather-app", "store")
     fu.record_app_installed("weather-app", "default")
     fu.record_app_installed("mine", "a-url")
+    v = "entity_version"
     assert seen == [
-        (fu.APP_INSTALLED, {"app": "weather-app", "via": "store"}),
-        (fu.APP_INSTALLED, {"app": "weather-app", "via": "default"}),
-        (fu.APP_INSTALLED, {"app": "private", "via": "other"}),
+        (fu.APP_INSTALLED, {"app": "weather-app", "via": "store", v: "1.2.3"}),
+        (fu.APP_INSTALLED, {"app": "weather-app", "via": "default", v: "1.2.3"}),
+        (fu.APP_INSTALLED, {"app": "private", "via": "other", v: "private"}),
     ]
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("1.2.3", "1.2.3"),
+        ("2026.11.20", "2026.11.20"),
+        ("12345.1.1", "other"),
+        ("1.2.3-beta", "other"),
+        ("1.2.3+build.7", "other"),
+        ("1.2", "other"),
+        ("", "other"),
+    ],
+)
+def test_the_public_version_keeps_only_plain_numbers(monkeypatch, version, expected):
+    monkeypatch.setattr(fu, "_public_app_ids", {"weather-app": version})
+    assert fu.app_public_version("weather-app") == expected
+
+
+def test_a_private_app_version_is_private(monkeypatch):
+    monkeypatch.setattr(fu, "_public_app_ids", {"weather-app": "1.2.3"})
+    assert fu.app_public_version("mine") == "private"
+    assert fu.app_public_version(None) == "other"
+
+
+def test_the_version_is_read_from_the_install_record(tmp_path, labels):
+    _install(tmp_path, "weather-app", registry_id="")
+    labels()
+    assert fu.app_public_version("weather-app") == "1.0.0"
+    from kiro_crew.apps.discovery import discover_builtin_apps
+
+    shipped = {a["name"]: a["version"] for a in discover_builtin_apps()}
+    assert fu._public_app_ids["auto-improvement"] == shipped["auto-improvement"]
 
 
 # -- end to end through install_from_registry ---------------------------------
@@ -257,6 +281,11 @@ def _registry_install(monkeypatch, tmp_path):
     """Admit a registry install whose clone 'produces' a local tree."""
     monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
     monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
+    # No real git runs here, so a runner without git must not refuse the install.
+    monkeypatch.setattr(registry, "git_unavailable_refusal", lambda _n: None)
+    monkeypatch.setattr(
+        "kiro_crew.apps.registry_pipeline.install.git_unavailable_refusal", lambda _n: None
+    )
     monkeypatch.setattr("kiro_crew.apps.official_catalog.inventory_for_install", lambda n: None)
     clone = _source(tmp_path / "clone", "weather-app")
 
@@ -303,7 +332,6 @@ async def test_install_from_registry_end_to_end(
     assert installed_counts == [(expected, "store")]
     labels()
     assert fu.app_public_id("weather-app") == expected
-    assert fu.app_label("weather-app") == "private"
 
 
 @pytest.mark.asyncio
@@ -324,6 +352,121 @@ async def test_a_default_install_counts_once_and_an_update_does_not(
     assert installed_counts == [("weather-app", "default")]
 
 
+@pytest.fixture
+def lifecycle_counts(monkeypatch):
+    """Every ``kirocrew.app.*`` lifecycle point recorded, as ``(name, attrs)``."""
+    seen: list[tuple[str, dict]] = []
+    names = (fu.APP_INSTALLED, fu.APP_UPDATED, fu.APP_UNINSTALLED)
+
+    def _emit(name, attrs):
+        if name in names:
+            seen.append((name, dict(attrs)))
+
+    monkeypatch.setattr("kiro_crew.metrics.events.emit_counter", _emit)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_an_update_counts_one_updated_with_the_new_version(
+    _registry_install, labels, lifecycle_counts, monkeypatch, tmp_path
+):
+    entry = {"name": "weather-app", "gitUrl": STORE_URL, "repo": STORE_URL, "branch": "main"}
+    _registry_install(entry)
+    assert (await registry.install_from_registry("weather-app"))["ok"] is True
+    monkeypatch.setattr(
+        "kiro_crew.apps.registry_pipeline.install._resolve_install_entry",
+        lambda _n: (dict(entry), ""),
+    )
+    _source(tmp_path / "clone", "weather-app", "1.1.0")
+    again = await registry.install_from_registry("weather-app")
+    assert again["ok"] is True, again.get("error")
+    app = {"app": "weather-app", "via": "store"}
+    assert lifecycle_counts == [
+        (fu.APP_INSTALLED, {**app, "entity_version": "1.0.0"}),
+        (fu.APP_UPDATED, {**app, "entity_version": "1.1.0"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_older_concurrent_refresh_does_not_relabel_the_update(
+    labels, lifecycle_counts, monkeypatch
+):
+    """Another app's older scan lands on the shared map while this count waits."""
+    monkeypatch.setattr(store_origin, "public_app_ids", lambda: {"weather-app": "1.1.0"})
+    real_to_thread = asyncio.to_thread
+
+    async def _to_thread_then_stale_refresh(func, *args, **kwargs):
+        result = await real_to_thread(func, *args, **kwargs)
+        monkeypatch.setattr(fu, "_public_app_ids", {"weather-app": "1.0.0"})
+        return result
+
+    monkeypatch.setattr(store_origin.asyncio, "to_thread", _to_thread_then_stale_refresh)
+    await store_origin.count_install("weather-app", "store", was_installed=True)
+    assert lifecycle_counts == [
+        (fu.APP_UPDATED, {"app": "weather-app", "via": "store", "entity_version": "1.1.0"})
+    ]
+
+
+@pytest.mark.parametrize("keep_data", [True, False])
+def test_an_uninstall_counts_once_with_the_removed_version(
+    tmp_path, labels, lifecycle_counts, keep_data
+):
+    _install(tmp_path, "weather-app", registry_id="")
+    labels()
+    assert manager.uninstall_app("weather-app", keep_data=keep_data).ok
+    assert lifecycle_counts == [
+        (
+            fu.APP_UNINSTALLED,
+            {"app": "weather-app", "entity_version": "1.0.0", "keep_data": str(keep_data).lower()},
+        )
+    ]
+
+
+def test_an_uninstall_in_a_process_that_never_filled_the_map_names_the_app(
+    tmp_path, labels, lifecycle_counts
+):
+    """A CLI uninstall: nothing filled the map, so the uninstall reads the record itself."""
+    _install(tmp_path, "weather-app", registry_id="")
+    assert fu._public_app_ids == {}
+    assert manager.uninstall_app("weather-app").ok
+    assert lifecycle_counts == [
+        (
+            fu.APP_UNINSTALLED,
+            {"app": "weather-app", "entity_version": "1.0.0", "keep_data": "true"},
+        )
+    ]
+
+
+def test_a_failed_uninstall_is_not_counted(labels, lifecycle_counts):
+    labels()
+    assert not manager.uninstall_app("never-installed").ok
+    assert lifecycle_counts == []
+
+
+@pytest.mark.asyncio
+async def test_a_raising_recorder_leaves_install_and_uninstall_results_unchanged(
+    _registry_install, labels, monkeypatch, tmp_path
+):
+    def _boom(*_a, **_k):
+        raise RuntimeError("recorder down")
+
+    for name in ("record_app_installed", "record_app_updated", "record_app_uninstalled"):
+        monkeypatch.setattr(fu, name, _boom)
+    entry = {"name": "weather-app", "gitUrl": STORE_URL, "repo": STORE_URL, "branch": "main"}
+    _registry_install(entry)
+    first = await registry.install_from_registry("weather-app")
+    assert first["ok"] is True, first.get("error")
+    monkeypatch.setattr(
+        "kiro_crew.apps.registry_pipeline.install._resolve_install_entry",
+        lambda _n: (dict(entry), ""),
+    )
+    again = await registry.install_from_registry("weather-app")
+    assert again["ok"] is True, again.get("error")
+    gone = manager.uninstall_app("weather-app")
+    assert gone.ok, gone.error
+    assert manager.get_app("weather-app") is None
+
+
 def test_a_local_install_is_not_counted_and_is_private(tmp_path, labels, installed_counts):
     """A local folder never goes through the registry install, and its label is private."""
     _install(tmp_path, "weather-app", registry_id=None)
@@ -331,3 +474,211 @@ def test_a_local_install_is_not_counted_and_is_private(tmp_path, labels, install
     assert installed_counts == []
     fu.record_app_installed("weather-app", "store")
     assert installed_counts == [("private", "store")]
+
+
+# -- registries an edition names -------------------------------------------------
+
+REGISTRY_REPO = "https://forge.example.com/org/app-registry.git"
+
+
+def _edition(rows, listed: "tuple[str, ...]" = ("weather-app", "notes-app"), url=STORE_URL):
+    """Run with an edition whose ``AppsLoader.default_registries()`` returns *rows*.
+
+    Each pinned registry's index cache then lists *listed* at clone target *url*.
+    """
+    import dataclasses
+
+    from kiro_crew.apps.registry_pipeline.caches import (
+        _external_registry_cache_identity,
+        _write_external_registry_cache,
+    )
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform import context as ctx_mod
+    from kiro_crew.platform.bootstrap import build_default_context
+    from kiro_crew.platform.defaults import DefaultAppsLoader
+
+    class _Loader(DefaultAppsLoader):
+        def default_registries(self):
+            if isinstance(rows, Exception):
+                raise rows
+            return rows
+
+    base = build_default_context(KiroCrewConfig())
+    ctx_mod.set_context(dataclasses.replace(base, apps_loader=_Loader()))
+    if isinstance(rows, Exception):
+        return
+    for reg in registry._pinned_registries():
+        _write_external_registry_cache(
+            _external_registry_cache_identity(reg),
+            [{"name": name, "gitUrl": url} for name in listed],
+        )
+
+
+def _row(name: str = "acme-index", namespace: object = "acme", repo: str = REGISTRY_REPO) -> dict:
+    return {
+        "name": name,
+        "repo": repo,
+        "branch": "main",
+        "trust": "owner",
+        "appNamespace": namespace,
+    }
+
+
+def test_an_app_from_a_registry_the_edition_named_gets_the_namespace(tmp_path, labels, monkeypatch):
+    _edition([_row()])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    _install(tmp_path, "notes-app", registry_id="other-index")
+    ids = labels()
+    assert fu.app_public_id("weather-app") == "acme.weather-app"
+    assert fu.app_public_version("weather-app") == "1.0.0"
+    assert fu.app_public_id("notes-app") == "private"
+    assert ids is not None and ids.names == {"weather-app": "acme.weather-app"}
+
+
+def test_the_registry_id_matches_like_the_build_pins_it(tmp_path, labels, monkeypatch):
+    """The comparison key is the registry identity key, so case does not split one registry."""
+    _edition([_row(name="Acme-Index")])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "acme.weather-app"
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    ["Acme", "acme!", "", 7, None, "a" * 60],
+    ids=["upper case", "bad char", "empty", "not a string", "missing", "id over 64"],
+)
+def test_a_namespaced_id_a_sink_would_refuse_stays_private(
+    tmp_path, labels, monkeypatch, namespace
+):
+    _edition([_row(namespace=namespace)])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "private"
+    assert fu.app_public_version("weather-app") == "private"
+
+
+def test_a_row_the_build_could_not_pin_names_nothing(tmp_path, labels, monkeypatch):
+    """A plaintext repo is not pinned (``_pinned_registries``), so its namespace is ignored."""
+    _edition([_row(repo="http://forge.example.com/org/app-registry.git")])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "private"
+
+
+def test_a_dev_mode_app_from_a_named_registry_is_private(tmp_path, labels, monkeypatch):
+    from dataclasses import replace
+
+    from kiro_crew.apps.manager_records import _read_installed, _write_installed
+
+    _edition([_row()])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    meta = _read_installed("weather-app")
+    assert meta is not None
+    _write_installed("weather-app", replace(meta, dev=True))
+    labels()
+    assert fu.app_public_id("weather-app") == "private"
+
+
+@pytest.mark.parametrize("broken", ["rows", "pinned list"])
+def test_a_raising_edition_leaves_every_other_id_as_it_was(tmp_path, labels, monkeypatch, broken):
+    if broken == "rows":
+        _edition(RuntimeError("edition down"))
+    else:
+        _edition([_row()])
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry._pinned_registries",
+            lambda: (_ for _ in ()).throw(RuntimeError("pinned list down")),
+        )
+    _install(tmp_path, "weather-app", registry_id="")
+    _install(tmp_path, "notes-app", registry_id="acme-index")
+    ids = labels()
+    assert ids is not None
+    assert fu.app_public_id("weather-app") == "weather-app"
+    assert fu.app_public_id("notes-app") == "private"
+    assert "auto-improvement" in ids
+
+
+def test_with_no_record_naming_a_registry_the_edition_is_never_asked(tmp_path, labels, monkeypatch):
+    """The default build: the scan is today's, and its names are empty."""
+
+    def _never():
+        raise AssertionError("no record names a registry; the edition must not be read")
+
+    monkeypatch.setattr(store_origin, "_registry_namespaces", _never)
+    _install(tmp_path, "weather-app", registry_id="")
+    _install(tmp_path, "notes-app", registry_id=None)
+    ids = labels()
+    assert ids is not None and ids.names == {}
+    assert fu.app_public_id("weather-app") == "weather-app"
+    assert fu.app_public_id("notes-app") == "private"
+
+
+def test_an_uninstall_counts_the_namespaced_id(tmp_path, labels, lifecycle_counts, monkeypatch):
+    _edition([_row()])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert manager.uninstall_app("weather-app").ok
+    assert lifecycle_counts == [
+        (
+            fu.APP_UNINSTALLED,
+            {"app": "acme.weather-app", "entity_version": "1.0.0", "keep_data": "true"},
+        )
+    ]
+
+
+def test_a_name_an_operator_registry_also_claims_stays_private(tmp_path, labels, monkeypatch):
+    """The operator's own ``acme-index`` predates the pin: neither is served, nothing named."""
+    from kiro_crew.config.integration_sections import ExternalRegistryConfig
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    real_load = KiroCrewConfig.load
+
+    def _load(cls, *a, **k):
+        cfg = real_load(*a, **k)
+        cfg.registries = [
+            ExternalRegistryConfig(name="acme-index", repo="https://forge.example.com/me/mine.git")
+        ]
+        return cfg
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_load))
+    _edition([_row()])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "private"
+    assert fu.app_public_version("weather-app") == "private"
+
+
+@pytest.mark.parametrize(
+    ("listed", "url"),
+    [((), STORE_URL), (("weather-app",), "https://forge.example.com/me/other.git")],
+    ids=["app not listed", "listed at another repository"],
+)
+def test_an_app_the_pinned_index_does_not_list_at_its_source_stays_private(
+    tmp_path, labels, listed, url
+):
+    """A record left from an earlier registry of that name names another repository."""
+    _edition([_row()], listed=listed, url=url)
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "private"
+
+
+def test_a_row_the_build_rejected_cannot_lend_its_namespace(tmp_path, labels):
+    """A same-named plaintext row is dropped by the pipeline, and so is its namespace."""
+    _edition(
+        [_row(), _row(namespace="other", repo="http://forge.example.com/org/app-registry.git")]
+    )
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "acme.weather-app"
+
+
+def test_a_repo_only_row_names_its_apps(tmp_path, labels):
+    """A row with no ``name`` is identified by its repo, as the pipeline does."""
+    row = _row()
+    del row["name"]
+    _edition([row])
+    _install(tmp_path, "weather-app", registry_id=REGISTRY_REPO)
+    labels()
+    assert fu.app_public_id("weather-app") == "acme.weather-app"

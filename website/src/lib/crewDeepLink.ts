@@ -4,11 +4,14 @@
  * "Crew deep link".
  *
  *  - Hub: `useCrewDeepLink` handles the route the desktop resolver hands over
- *    the native navigate channel (never read from the router URL), and
+ *    the native navigate channel (pane switch, connect rule), and
  *    `useDeliverPendingPaneSlot` posts the held key to the crew's pane.
+ *    `useCrewAddressLink` reads the same route off the dashboard's own address,
+ *    and only opens the crew window.
  *  - Pane: `usePaneOpenSlot` opens a posted key the way a local session link does.
  */
 import { useCallback, useEffect, useRef } from 'react'
+import { matchPath, useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { api, type InstanceView } from '../api/client'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
@@ -17,6 +20,7 @@ import { setAgentSwitchNotice, switchSlot } from '../store/chatSlice'
 import { i18nT } from '../i18n/t'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import { autoConnectEnabled } from '../hooks/useAutoConnectInstances'
+import { noteCrewOpened, sshCrewKey } from './crewWarmSet'
 import { connectInstanceInto } from './connectInstance'
 import { isEmbeddedPane } from './embedded'
 import { paneOriginFor } from './paneCache'
@@ -24,6 +28,8 @@ import { rememberPaneSlot } from './paneLastSlot'
 import { rememberActivePane } from './activePaneMemory'
 import { hasDashboardPane } from '../utils/remoteCrew'
 import { applyNavIntentInMain } from '../utils/navIntent'
+import { appPathname } from './basePath'
+import { crewWindowCalls, openCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
 
 /** Hub -> pane: open this session. Carries only the key. */
 export const PANE_OPEN_SLOT_TYPE = 'mc-open-slot'
@@ -132,7 +138,10 @@ export function useCrewDeepLink(): (path: string) => boolean {
       if (superseded()) return
       const autoConnect = autoConnectEnabled()
       if (!autoConnect) {
-        const st = await connectInstanceInto(dispatch, inst.id, 'link', { onlyIfConnected: true }).catch(() => null)
+        // Recorded as opened only once admitted and still the current link, before its warm entry
+        // exists, so the warm set keeps that entry and a refused or superseded link moves nothing.
+        const beforeWarm = () => { if (!superseded()) noteCrewOpened(sshCrewKey(inst.id)) }
+        const st = await connectInstanceInto(dispatch, inst.id, 'link', { onlyIfConnected: true, beforeWarm }).catch(() => null)
         if (st?.state !== 'connected' || !st.local_port || !st.token) {
           refuse(i18nT('store.chatSlice.crew_link_not_connected'))
           return
@@ -155,6 +164,76 @@ export function useCrewDeepLink(): (path: string) => boolean {
     })().finally(unsubscribe)
     return true
   }, [dispatch, store, queryClient])
+}
+
+/** The query params of a crew link route. */
+const CREW_LINK_PARAMS = ['crew', 'crewSid', 'crewError']
+
+/**
+ * Drop from `next` each crew link param the live address no longer carries.
+ * A URL writer that copies the router's search can still see a route
+ * `useCrewAddressLink` took off the address: the router commits a navigation
+ * in a transition, so a render in between reads the entry before the replace,
+ * and writing that back would put the spent route on the address again.
+ */
+export function withoutSpentCrewLink(next: URLSearchParams): URLSearchParams {
+  const live = new URLSearchParams(window.location.search)
+  CREW_LINK_PARAMS.forEach(p => { if (!live.has(p)) next.delete(p) })
+  return next
+}
+
+/**
+ * Hub side, the dashboard's own address: `/chat?crew=<crew id>&crewSid=<key>`
+ * (the route the desktop resolver builds) opens that session in the crew window
+ * over the local chat page. Unlike the native link it never switches to the
+ * crew's pane and never connects, because any web page can open a dashboard
+ * address: a crew that is not connected opens the window not connected.
+ */
+export function useCrewAddressLink() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const dispatch = useAppDispatch()
+  const store = useAppStore()
+  const queryClient = useQueryClient()
+  // Bumped only for a link, so the re-run its own replace causes keeps it.
+  const seq = useRef(0)
+  useEffect(() => {
+    // The LIVE address, not this render's: the chat page's URL writer, which
+    // copies every other param, may have replaced the entry since the render.
+    const live = new URL(window.location.href)
+    const path = appPathname(live.pathname)
+    if (isEmbeddedPane() || !matchPath('/chat/:slug?', path)) return
+    const link = parseCrewDeepLink('/chat' + live.search)
+    if (!link) return
+    const mine = ++seq.current
+    CREW_LINK_PARAMS.forEach(p => live.searchParams.delete(p))
+    navigate(path + live.search + live.hash, { replace: true })
+    // The window shows over the local chat page, so the link wins over a
+    // remembered crew pane, as the native link does.
+    if ((store.getState().instances?.activeId ?? null) === null) rememberActivePane(null)
+    if (localCovered(store.getState())) dispatch(setActiveId(null))
+    // A read that answers after the user moved gives up: a newer address link, a
+    // window opened or closed (a sidebar pick closes one), a crew pane forward, another page.
+    const calls = crewWindowCalls()
+    const superseded = () => mine !== seq.current || crewWindowCalls() !== calls
+      || localCovered(store.getState()) || !matchPath('/chat/:slug?', appPathname(window.location.pathname))
+    const refuse = (message: string) => dispatch(setAgentSwitchNotice({ message, error: true }))
+    if (link.kind === 'error') {
+      refuse(i18nT('store.chatSlice.crew_link_malformed'))
+      return
+    }
+    void queryClient.ensureQueryData({ queryKey: ['instances'], queryFn: () => api.listInstances() }).then(
+      ({ instances }) => {
+        if (superseded()) return
+        const inst = instances.find(i => i.id === link.crewId)
+        if (!inst) refuse(i18nT('store.chatSlice.crew_link_unknown'))
+        else if (inst.disabled) refuse(i18nT('store.chatSlice.crew_link_off'))
+        else if (!hasDashboardPane(inst)) refuse(i18nT('store.chatSlice.crew_link_no_dashboard'))
+        else openCrewWindow({ instanceId: inst.id, key: link.key })
+      },
+      () => { if (!superseded()) refuse(i18nT('store.chatSlice.crew_link_load_failed')) },
+    )
+  }, [location.key, location.pathname, location.search, navigate, dispatch, store, queryClient])
 }
 
 /** Hub side: post the held key once its crew's pane is ready for a src loaded after the link. */

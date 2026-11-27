@@ -49,6 +49,7 @@ from kiro_crew.vector_memory_constants import (
     _MAX_SEMANTIC_PER_CONSOLIDATION,
 )
 from kiro_crew.vector_memory_runtime import bulk_ingest as _bulk_ingest
+from kiro_crew.vector_memory_runtime import embedding_repair as _embedding_repair
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -95,18 +96,70 @@ def _member_identity(db: sqlite3.Connection) -> tuple[str, str]:
     return str(row[1]), str(row[2])
 
 
+#: ``resolved path -> (file stamp, identity)`` for files that passed every check.
+_IDENTITY_CACHE: dict[Path, tuple[tuple, tuple[str, str]]] = {}
+#: Member stores per host are few; past this many the cache starts over.
+_IDENTITY_CACHE_MAX = 1024
+#: Each retained identity string is bounded independently of the entry count.
+_IDENTITY_CACHE_MAX_CHARS = 256
+
+
+def _file_stamp(path: Path) -> tuple:
+    """The database file's and its WAL's stat identity; any write or replacement moves it.
+
+    ctime is included because a write cannot set it back, so a damaged file that
+    kept its size and mtime still shows. A missing WAL and an empty one hold no
+    frames and stamp the same, because opening a WAL database creates an empty one.
+    """
+    stamps: list[tuple[int, int, int, int, int] | None] = []
+    for candidate in (path, path.with_name(path.name + "-wal")):
+        try:
+            st = candidate.stat()
+        except FileNotFoundError:
+            stamps.append(None)
+            continue
+        if candidate is not path and st.st_size == 0:
+            stamps.append(None)
+            continue
+        stamps.append((st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+    return tuple(stamps)
+
+
 def read_member_database_identity(path: Path) -> tuple[str, str]:
-    """Inspect only an existing file; missing and old-format files are errors."""
+    """Inspect only an existing file; missing and old-format files are errors.
+
+    The full check (``PRAGMA quick_check`` reads every page) is cached per file
+    stamp when both identity strings fit ``_IDENTITY_CACHE_MAX_CHARS``. Longer
+    identities are returned uncached. The answer is kept while the database and
+    its WAL keep the same device, inode, size, mtime and ctime. A replaced,
+    rewritten or damaged file moves the stamp and is checked again. Only a file
+    that passed is kept, so a failure raises again on every call. A missing file
+    raises before the cache is read.
+    """
 
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
 
     sqlite3 = vm.sqlite3
 
-    db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+    resolved = Path(path).resolve()
+    before = _file_stamp(resolved)
+    if before[0] is not None:
+        kept = _IDENTITY_CACHE.get(resolved)
+        if kept is not None and kept[0] == before:
+            return kept[1]
+    db = sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True)
     try:
-        return _member_identity(db)
+        identity = _member_identity(db)
     finally:
         db.close()
+    if any(len(value) > _IDENTITY_CACHE_MAX_CHARS for value in identity):
+        return identity
+    # Kept only when nothing wrote the file while it was checked.
+    if before[0] is not None and _file_stamp(resolved) == before:
+        if len(_IDENTITY_CACHE) >= _IDENTITY_CACHE_MAX:
+            _IDENTITY_CACHE.clear()
+        _IDENTITY_CACHE[resolved] = (before, identity)
+    return identity
 
 
 def create_member_database(path: Path, *, member_id: str, store_id: str) -> None:
@@ -475,6 +528,9 @@ def apply_consolidation(
 
     Embeddings remain NULL until the writer's maintenance sweep. No provider,
     transcript or filesystem operation takes place inside this transaction.
+    After the commit the rows it wrote are queued for that sweep
+    (``embedding_repair.queue_fresh_vectors``), so they get their vector ahead
+    of any backlog instead of waiting their turn behind it.
 
     *kind_routing* is the ``route_consolidation_by_kind`` answer for this
     *result*; its bounded log is written inside the same transaction, so a
@@ -508,6 +564,7 @@ def apply_consolidation(
     fields_dropped = metadata_rejected = 0
     dedup = lesson_dedup.DedupLog(lesson_dedup_mode)
     new_lessons: list[str] = []
+    fresh: dict[str, list[str]] = {"fact": [], "episode": [], "directive": []}
     with self._db_lock:
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -601,6 +658,7 @@ def apply_consolidation(
                 )
                 if not rejection:
                     receipt["semantic"] += 1
+                    fresh["fact"].append(key)
                     if facets:
                         self.db.execute(
                             memory_schema.FACET_STAMP_SQL,
@@ -660,6 +718,7 @@ def apply_consolidation(
                         memory_schema.facet_stamp_params(item_id, facets),
                     )
                 receipt["episodic"] += 1
+                fresh["episode"].append(item_id)
             lessons = result.get("lessons")
             for item in (lessons if isinstance(lessons, list) else [])[
                 :_MAX_LESSONS_PER_CONSOLIDATION
@@ -731,6 +790,7 @@ def apply_consolidation(
                     _consolidation=True,
                 ):
                     receipt["lessons"] += 1
+                    fresh["directive"].append(key)
                     # A textual copy shadow already counted is not queued again,
                     # so shadow counts what enforce would fold, once.
                     if existed is None and leader is None and dedup.mode != lesson_dedup.MODE_OFF:
@@ -749,9 +809,7 @@ def apply_consolidation(
             if metadata_rejected:
                 receipt["metadata_rejected"] = metadata_rejected
             if kind_routing is not None:
-                record_kind_routing_in_transaction(
-                    self, kind_routing, source, session_key=session_key
-                )
+                record_kind_routing_in_transaction(self, kind_routing, source)
             if dedup.mode != lesson_dedup.MODE_OFF:
                 dedup.count("lessons", receipt["lessons"] + receipt.get("lessons_merged", 0))
                 lesson_dedup.remember_pending_in_transaction(self.db, new_lessons)
@@ -774,6 +832,8 @@ def apply_consolidation(
             self.db.rollback()
             raise
     self._invalidate_episodic_scoring()
+    for kind, identities in fresh.items():
+        _embedding_repair.queue_fresh_vectors(self, kind, identities)
     return receipt
 
 

@@ -12,7 +12,7 @@
  *  `origin: 'native'`, `request_id` and `request_mid`), which settles exactly the
  *  row shown or answers 404/409, and the reply goes through `sendTurn`, the
  *  composer's own send. There is no approve-all and no standing grant. */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
@@ -28,6 +28,7 @@ import StatusNotice from '../../components/StatusNotice'
 import { Btn } from '../../components/ui'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { mintSendId, sendTurn } from '../../chat-core/transport/sendTurn'
+import { announceSentIn } from '../../hooks/useTranscriptAnnouncement'
 import { adoptSendRaceRevision, baseRevisionFor, isSendRaceConflict, sendIdempotencyKey } from '../../api/sendRace'
 import { baseRevisionForPress } from '../../hooks/sharedCrew/sendRevisionSeed'
 import { ROW_META_CLS, ROW_STATUS_CLS } from '../../components/listShell'
@@ -75,6 +76,9 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cardRef = useRef<HTMLDivElement | null>(null)
+  // The last press inside the card's React tree, which takes in what it portals
+  // elsewhere (a diagram's full-screen viewer): those are not inside `cardRef`.
+  const pressInCard = useRef<Event | null>(null)
   const targetRef = useRef(target)
   targetRef.current = target
   const draftRef = useRef('')
@@ -161,8 +165,16 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
   useEffect(() => {
     if (!target) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !cardRef.current?.contains(document.activeElement)) close() }
+    // A press anywhere outside the card closes it, even with a draft (the draft is kept
+    // per row). A press on non-focusable space blurs to nothing, so `onBlur` never sees it.
+    // Bubble phase: the card's capture handler has marked a press inside it by then.
+    const onDown = (e: PointerEvent) => { if (e !== pressInCard.current) close() }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('pointerdown', onDown)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('pointerdown', onDown)
+    }
   }, [target, close])
 
   return (
@@ -182,6 +194,7 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
             // Resting on the card also cancels a swap armed by a row the pointer crossed on the way.
             onPointerEnter={clearTimers}
             onPointerLeave={scheduleClose}
+            onPointerDownCapture={e => { pressInCard.current = e.nativeEvent }}
             onClose={close}
           />
         )}
@@ -190,7 +203,7 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
   )
 }
 
-function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, draftRef, onPointerEnter, onPointerLeave, onClose }: {
+function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, draftRef, onPointerEnter, onPointerLeave, onPointerDownCapture, onClose }: {
   identity: string
   drafts: Map<string, string>
   inFlight: Map<string, Promise<ReplyState>>
@@ -200,6 +213,7 @@ function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, dra
   draftRef: { current: string }
   onPointerEnter: () => void
   onPointerLeave: () => void
+  onPointerDownCapture: (e: ReactPointerEvent) => void
   onClose: (refocus?: boolean) => void
 }) {
   const { t } = useTranslation()
@@ -305,6 +319,7 @@ function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, dra
       transition={{ duration: 0.12 }}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
+      onPointerDownCapture={onPointerDownCapture}
       onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(true) } }}
       // Close only when focus lands on a real element elsewhere. A click on the card's
       // own text (no tabIndex) blurs to nothing, and must not throw away a half-typed reply.
@@ -503,6 +518,8 @@ function QuickReply({ slotKey, title, replyRef, draftRef, drafts, inFlight, iden
     // First submit wins, as in the composer: the revision is read at the press.
     const baseAtPress = baseRevisionFor(slotKey)
     const baseRevision = await baseRevisionForPress(slotKey, baseAtPress)
+    // Spoken at the send, as the composer's own send is.
+    announceSentIn(slotKey, message)
     const receipt = await sendTurn({ message, slot: slotKey, race: { baseRevision, idempotencyKey: sendIdempotencyKey(mintSendId()) } })
       .then(r => {
         // An accepted send clears its own text from the shared draft before a

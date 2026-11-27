@@ -303,12 +303,14 @@ def test_off_loop_spawn_refuses_a_transport_that_spawns_elsewhere() -> None:
     asyncio.run(body())
 
 
-def test_gateway_loop_factory_is_the_off_loop_proactor_on_windows_only() -> None:
+def test_gateway_loop_factory_builds_an_off_loop_spawn_loop_on_every_platform() -> None:
     factory = offloop.gateway_loop_factory()
     if IS_WINDOWS:
         assert factory is offloop.OffLoopSpawnProactorEventLoop
-    else:
-        assert factory is None
+        return
+    assert factory is not None
+    with asyncio.Runner(loop_factory=factory) as runner:
+        assert isinstance(runner.get_loop(), offloop.OffLoopSpawnUnixSelectorEventLoop)
 
 
 # ── Windows: the real Proactor path ──

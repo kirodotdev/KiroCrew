@@ -121,7 +121,7 @@ def _prompt_build_embedding_deadline(enabled: bool, *, query: str = "") -> Itera
 
     inherited_work = embedding_work.get()
     wait = ctx._PROMPT_BUILD_EMBED_TIMEOUT_SECS
-    if query and embedding_in_flight(query):
+    if query and embedding_in_flight(query, query=True):
         wait = _startup_recall_timeout_secs() or wait
     deadline = time.monotonic() + wait
     if inherited_work is not None:

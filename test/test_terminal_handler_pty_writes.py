@@ -299,11 +299,51 @@ class TestWriteSerialization:
         assert terminal._strip_terminal_queries(b"a\x1b[6nb\x1b]11;?\x07c") == b"abc"
 
     @pytest.mark.asyncio
-    async def test_failed_ready_send_keeps_previous_owner(self):
+    @pytest.mark.parametrize("shell_ready", [True, False])
+    async def test_replayed_follows_catch_up_before_publication(self, shell_ready):
+        ws = MagicMock()
+        ws.closed = False
+        sess = _make_session(ws=None)
+        sess.shell_ready = shell_ready
+        sess.scrollback.extend(b"saved")
+        sess.output_bytes = len(sess.scrollback)
+        frames = []
+
+        async def send_bytes(data):
+            frames.append(data)
+            if data == b"saved":
+                await terminal._record_and_forward_terminal_output(sess, b"catch-up")
+
+        async def send_str(data):
+            assert sess.output_lock.locked()
+            assert sess.ws is None
+            frames.append(json.loads(data))
+
+        ws.send_bytes = AsyncMock(side_effect=send_bytes)
+        ws.send_str = AsyncMock(side_effect=send_str)
+
+        assert await terminal._replace_terminal_ws(sess, ws) is True
+        expected = [b"saved", b"catch-up", {"type": "replayed"}]
+        if shell_ready:
+            expected.append(
+                {"type": "ready", "shell": sess.shell, "fence_shells": sess.fence_shells}
+            )
+        assert frames == expected
+        assert sess.ws is ws
+        assert sess.shell_ready is shell_ready
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failed_frame", ["replayed", "ready"])
+    async def test_failed_control_send_keeps_previous_owner(self, failed_frame):
         old_ws = MagicMock()
         new_ws = MagicMock()
         new_ws.send_bytes = AsyncMock()
-        new_ws.send_str = AsyncMock(side_effect=ConnectionResetError)
+
+        async def send_str(data):
+            if json.loads(data)["type"] == failed_frame:
+                raise ConnectionResetError
+
+        new_ws.send_str = AsyncMock(side_effect=send_str)
         sess = _make_session(ws=old_ws, disconnect=123.0)
         sess.shell_ready = True
         sess.last_title = "old title"

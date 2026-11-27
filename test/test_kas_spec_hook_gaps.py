@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 import kiro_crew.config.paths as paths_mod
 import kiro_crew.hooks as hooks_mod
@@ -641,6 +642,7 @@ def _subagent_run(
     store: ScriptHookStore | None = None,
     switch_to: str = "",
     stale: bool = False,
+    second_round: str = "",
 ):
     """One subagent run on *backend*; every PreToolUse fire it makes denies.
 
@@ -685,6 +687,13 @@ def _subagent_run(
             mcp_server_name=mcp[0],
             tool_name=mcp[1],
         )
+        if second_round:  # KAS's next consent round: the call's id, another tool.
+            yield LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="r-2",
+                tool_call_id="t-1",
+                harness_tool_id=second_round,
+            )
         yield LLMEvent(
             kind=EVENT_TOOL_RESULT, tool_call_id="t-1", tool_output="ok", tool_final=True
         )
@@ -822,10 +831,14 @@ def test_a_kas_subagent_denies_on_its_permission_request_and_fires_once(monkeypa
 
 
 @pytest.mark.usefixtures("healthy_host_memory")
-def test_a_kas_subagent_post_tool_use_meets_the_id_its_request_stated(monkeypatch):
+@pytest.mark.parametrize("second_round", ["", "list_directory"])
+def test_a_kas_subagent_post_tool_use_meets_the_id_its_request_stated(monkeypatch, second_round):
     """A spec's PostToolUse matcher is a kiro-cli tool name, which KAS's call title
-    is not, so the subagent passes the names the request's id stands for."""
-    fire, _provider = _subagent_run(ACP_BACKEND_KAS, monkeypatch, harness_tool_id="run_command")
+    is not, so the subagent passes the names the request's id stands for: the first
+    request's, as a later consent round under the call's id names another tool."""
+    fire, _provider = _subagent_run(
+        ACP_BACKEND_KAS, monkeypatch, harness_tool_id="run_command", second_round=second_round
+    )
     (post,) = [c for c in fire.await_args_list if c.args[0] == HOOK_EVENT_POST_TOOL_USE]
     assert "execute_bash" in post.kwargs["extra_hooks_tool_names"]
 
@@ -1667,12 +1680,11 @@ def test_every_provider_declares_the_agent_its_batch_was_built_for():
 def test_a_kas_mode_switch_moves_the_sessions_agent_and_its_hooks(agents_dir, notices):
     """KAS session on agent A; a current_mode_update names B: the next call is gated
     by B's spec hooks, not A's, whether or not the turn names B."""
-    from kiro_crew.acp.session_handle import AcpSessionHandle
     from kiro_crew.acp.types import EVENT_AGENT_SWITCHED, UPDATE_CURRENT_MODE
 
     _write_spec(agents_dir, "agent-a", hooks={"preToolUse": [{"command": "a-guard.sh"}]})
     _write_spec(agents_dir, "agent-b", hooks={"preToolUse": [{"command": "b-guard.sh"}]})
-    handle = object.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     handle._last_kas_mode_id = "agent-a"
     handle.kas_projected_agent = "agent-a"
     handle.kas_registered_agents = []
@@ -1698,10 +1710,9 @@ def test_an_explicit_agent_wins_over_a_stale_recorded_one(agents_dir, notices):
 
 
 def test_a_mode_frame_on_a_session_with_no_batch_records_nothing():
-    from kiro_crew.acp.session_handle import AcpSessionHandle
     from kiro_crew.acp.types import UPDATE_CURRENT_MODE
 
-    handle = object.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     handle._last_kas_mode_id = ""
     handle.kas_projected_agent = ""
     handle._handle_kas_update(UPDATE_CURRENT_MODE, {"currentModeId": "agent-b"})
@@ -1814,12 +1825,11 @@ _FETCH_GUARD = {"preToolUse": [{"matcher": "web_fetch", "command": "b-guard.sh"}
 
 def _switched_handle(agents_dir, to: str):
     """A KAS session registered for agent-a (web_fetch auto-approved), then switched."""
-    from kiro_crew.acp.session_handle import AcpSessionHandle
     from kiro_crew.acp.types import UPDATE_CURRENT_MODE
 
     spec = kas_agents.load_agent_spec(agents_dir, "agent-a")
     batch = kas_agents.build_kas_custom_agents(agents_dir, "agent-a", spec)
-    handle = object.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     handle._last_kas_mode_id = "agent-a"
     handle.kas_projected_agent = "agent-a"
     handle.kas_registered_agents = batch

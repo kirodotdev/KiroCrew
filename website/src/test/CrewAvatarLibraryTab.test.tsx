@@ -482,6 +482,19 @@ describe('library pane — delete', () => {
     expect(onSelect).toHaveBeenLastCalledWith(BUILTIN_PACK_ID)
   })
 
+  it('gives both halves of an armed delete a resting fill and a strong edge on the selected card\'s tint', async () => {
+    mount('aurora')
+    await waitFor(() => expect(screen.getByTestId('avatar-pack-card-aurora')).toHaveClass('bg-accent-subtle'))
+    fireEvent.click(screen.getByTestId('avatar-pack-delete-aurora'))
+    const confirm = screen.getByTestId('avatar-pack-delete-confirm-aurora')
+    const keep = screen.getByTestId('avatar-pack-delete-cancel-aurora')
+    for (const button of [confirm, keep]) {
+      expect(button).toHaveClass('border-border-strong', 'bg-bg-elevated')
+      expect(button).not.toHaveClass('bg-transparent')
+      expect(button).not.toHaveClass('border-border')
+    }
+  })
+
   it('states what deleting costs, next to the button that does it', async () => {
     // The reader refused to click because nothing said whether a delete could be
     // undone. It cannot — but the bundle is re-importable, which is the half that

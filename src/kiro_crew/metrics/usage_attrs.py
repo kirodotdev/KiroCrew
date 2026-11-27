@@ -86,6 +86,7 @@ _ACTOR_TO_TRIGGER: dict[str, str] = {
     "autonudge": TRIGGER_MONITOR,
     "subagent": TRIGGER_SUBAGENT,
     "agent": TRIGGER_AGENT,
+    "resource": TRIGGER_WEBHOOK,
     "gateway": TRIGGER_SYSTEM,
     "other": TRIGGER_OTHER,
 }
@@ -132,6 +133,11 @@ _CURRENT_TRIGGER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 def set_current_trigger(value: str) -> contextvars.Token:
     """Mark the turn running in this context as started by *value*."""
     return _CURRENT_TRIGGER.set(trigger_source(value))
+
+
+def reset_current_trigger(token: contextvars.Token) -> None:
+    """Put back the trigger *token* replaced (from ``set_current_trigger``)."""
+    _CURRENT_TRIGGER.reset(token)
 
 
 def current_trigger() -> str | None:

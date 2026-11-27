@@ -97,6 +97,8 @@ function TypeAheadInput({
   return (
     <OverlayPortal>
       <div
+        // No dialog role here (the loaded bar has one), so a relay Crew tab's pane hides by this marker.
+        data-relay-pane-overlay=""
         className="fixed left-safe right-safe z-[9999] flex items-start justify-center pointer-events-none"
         style={{ top: vv.offsetTop, height: vv.height }}
       >

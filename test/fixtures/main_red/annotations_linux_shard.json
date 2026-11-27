@@ -1,0 +1,50 @@
+[
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/kirodotdev/KiroCrew/blob/09e5482863328e68e00d2bb487f700efe10c85b3/.github",
+    "start_line": 7890,
+    "start_column": null,
+    "end_line": 7890,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "Process completed with exit code 1.",
+    "raw_details": ""
+  },
+  {
+    "path": "test/test_kas_orchestrator_memory.py",
+    "blob_href": "https://github.com/kirodotdev/KiroCrew/blob/09e5482863328e68e00d2bb487f700efe10c85b3/test/test_kas_orchestrator_memory.py",
+    "start_line": 576,
+    "start_column": null,
+    "end_line": 576,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response0]",
+    "message": "test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response0] - Failed: DID NOT RAISE <class 'kiro_crew.acp.session_handle.AcpRuntimeError'>",
+    "raw_details": ""
+  },
+  {
+    "path": "test/test_kas_orchestrator_memory.py",
+    "blob_href": "https://github.com/kirodotdev/KiroCrew/blob/09e5482863328e68e00d2bb487f700efe10c85b3/test/test_kas_orchestrator_memory.py",
+    "start_line": 576,
+    "start_column": null,
+    "end_line": 576,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response2]",
+    "message": "test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response2] - Failed: DID NOT RAISE <class 'kiro_crew.acp.session_handle.AcpRuntimeError'>",
+    "raw_details": ""
+  },
+  {
+    "path": "test/test_kas_orchestrator_memory.py",
+    "blob_href": "https://github.com/kirodotdev/KiroCrew/blob/09e5482863328e68e00d2bb487f700efe10c85b3/test/test_kas_orchestrator_memory.py",
+    "start_line": 576,
+    "start_column": null,
+    "end_line": 576,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response1]",
+    "message": "test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response1] - Failed: DID NOT RAISE <class 'kiro_crew.acp.session_handle.AcpRuntimeError'>",
+    "raw_details": ""
+  }
+]

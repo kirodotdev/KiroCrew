@@ -23,7 +23,12 @@ from relay_client_helpers import (
 )
 
 from kiro_crew.relay_client.backoff import Backoff, CloseAction, ConnectionEnd, classify
-from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR, STATE_RECONNECTING
+from kiro_crew.relay_client.client import (
+    STATE_CONNECTED,
+    STATE_ERROR,
+    STATE_RECONNECTING,
+    STATE_STARTING,
+)
 from kiro_crew.relay_client.connection import RelayTimings
 from kiro_crew.relay_client.protocol import (
     BACKOFF_RESET_AFTER_SECONDS,
@@ -149,6 +154,37 @@ async def test_the_backoff_starts_again_after_a_connection_held_ready() -> None:
             await async_wait_until(lambda: client.state == STATE_CONNECTED)
             now[0] += BACKOFF_RESET_AFTER_SECONDS + 1
             await leg.close(1013)
+            await relay.next_leg()
+            assert client.delays[:3] == [2.0, 5.0, 2.0]
+        finally:
+            await stop(client, ingress)
+
+
+@asyncio_test
+async def test_the_backoff_starts_again_after_a_held_connection_moved() -> None:
+    now = [1000.0]
+    async with FakeRelay() as relay, FakeCrew() as crew:
+        client, _, ingress = make_client(
+            relay, crew, sleep=RecordingSleep(), monotonic=lambda: now[0]
+        )
+        await client.start()
+        try:
+            for _ in range(2):
+                leg = await relay.next_leg()
+                await leg.recv_type("hello")
+                await leg.close(1013)
+            old = await relay.next_leg()
+            await old.handshake()
+            await async_wait_until(lambda: client.state == STATE_CONNECTED)
+            # Held ready past the reset rule, then moved to a new connection.
+            now[0] += BACKOFF_RESET_AFTER_SECONDS * 25
+            await old.send(valid_message("frames/reconnect", 0))
+            new = await relay.next_leg()
+            await new.handshake()
+            await async_wait_until(lambda: client._draining is not None)
+            # The new connection ends before it has been up 60 seconds itself.
+            now[0] += 10
+            await new.close(1013)
             await relay.next_leg()
             assert client.delays[:3] == [2.0, 5.0, 2.0]
         finally:
@@ -320,6 +356,42 @@ async def test_a_source_that_cannot_renew_yet_does_not_spend_the_one_renewal() -
 
 
 @asyncio_test
+async def test_the_snapshot_says_when_the_wait_is_on_the_crew_and_a_later_fault_clears_it() -> None:
+    from kiro_crew.relay_client.token_source import HostTokenRetryLater
+
+    async with FakeRelay() as relay, FakeCrew() as crew:
+        client, source, ingress = make_client(relay, crew, sleep=RecordingSleep())
+        calls: list[int] = []
+        held: list[dict] = []
+        release = asyncio.Event()
+
+        async def current():
+            calls.append(len(calls))
+            if len(calls) == 1:
+                raise HostTokenRetryLater("the Crew is not signed in to Kiro", cannot_host_yet=True)
+            if len(calls) == 2:
+                held.append(client.snapshot())
+                raise HostTokenRetryLater("the lease service could not be reached")
+            held.append(client.snapshot())
+            await release.wait()
+            raise HostTokenRetryLater("stopping")
+
+        source.current = current  # type: ignore[method-assign]
+        await client.start()
+        try:
+            await async_wait_until(lambda: len(held) == 2)
+            # The eligibility hold is marked; the fault after it is not.
+            assert held[0]["state"] == STATE_RECONNECTING
+            assert held[0]["error"] == "the Crew is not signed in to Kiro"
+            assert held[0]["cannot_host_yet"] is True
+            assert held[1]["error"] == "the lease service could not be reached"
+            assert held[1]["cannot_host_yet"] is False
+        finally:
+            release.set()
+            await stop(client, ingress)
+
+
+@asyncio_test
 async def test_another_instance_holding_the_crew_waits_for_a_renewal_for_this_one() -> None:
     # host-leg.json, 4409: stop connecting, report that another instance holds the
     # Crew, and connect again only after a lease renewal succeeds for this instance.
@@ -461,12 +533,72 @@ async def test_reconnecting_status_says_why_the_last_connection_ended() -> None:
 async def test_a_dial_that_keeps_failing_says_so_in_status() -> None:
     async with FakeRelay() as relay, FakeCrew() as crew:
         client, _, ingress = make_client(relay, crew, sleep=RecordingSleep())
-        await relay.__aexit__()
+        # Unreachable in place: the server keeps its port, so no other listener on
+        # the host can take it and answer a dial.
+        relay.reachable = False
         await client.start()
         try:
             await async_wait_until(lambda: len(client.delays) >= 2)
             snapshot = client.snapshot()
             assert snapshot["state"] == "reconnecting"
             assert snapshot["error"].startswith("the last relay connection ended: dial failed: ")
+        finally:
+            await stop(client, ingress)
+
+
+@asyncio_test
+async def test_waiting_for_the_first_host_token_is_starting_not_reconnecting() -> None:
+    """Bug Bash row 49: after a restart the Tunnel card read "Reconnecting" with an
+    error while the lease had simply not issued the first token yet."""
+    async with FakeRelay() as relay, FakeCrew() as crew:
+        client, source, ingress = make_client(relay, crew, sleep=RecordingSleep())
+        real_current = source.current
+        release = asyncio.Event()
+        waits = 0
+
+        async def current():
+            nonlocal waits
+            if not release.is_set():
+                waits += 1
+                raise HostTokenRetryLater("the lease service has not issued a host token yet")
+            return await real_current()
+
+        source.current = current  # type: ignore[method-assign]
+        await client.start()
+        try:
+            await async_wait_until(lambda: waits >= 2)
+            assert client.state == STATE_STARTING
+            release.set()
+            leg = await relay.next_leg()
+            await leg.handshake()
+            await async_wait_until(lambda: client.state == STATE_CONNECTED)
+            # Once it has connected, a later wait for a token is a reconnect.
+            release.clear()
+            await leg.close(1012)
+            await async_wait_until(lambda: client.state == STATE_RECONNECTING)
+        finally:
+            release.set()
+            await stop(client, ingress)
+
+
+@asyncio_test
+async def test_a_lease_failure_before_the_first_connect_reads_as_reconnecting() -> None:
+    """A retry-later that needs the owner (a sign-in that cannot host) is not the
+    first-token wait: it keeps the reconnecting state and its reason."""
+    async with FakeRelay() as relay, FakeCrew() as crew:
+        client, source, ingress = make_client(relay, crew, sleep=RecordingSleep())
+        waits = 0
+
+        async def current():
+            nonlocal waits
+            waits += 1
+            raise HostTokenRetryLater("the Crew's Kiro sign-in could not be used")
+
+        source.current = current  # type: ignore[method-assign]
+        await client.start()
+        try:
+            await async_wait_until(lambda: waits >= 2)
+            assert client.state == STATE_RECONNECTING
+            assert "sign-in could not be used" in client.snapshot()["error"]
         finally:
             await stop(client, ingress)

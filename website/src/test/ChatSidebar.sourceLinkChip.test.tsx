@@ -60,6 +60,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 import ChatSidebar from '../pages/ChatSidebar'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
+import { expandSessionLinks } from './SessionLinksTestUtils'
 
 const PR_URL = 'https://github.com/kirodotdev/KiroCrew/pull/634'
 const ISSUE_URL = 'https://github.com/kirodotdev/KiroCrew/issues/701'
@@ -125,6 +126,7 @@ function renderSidebar(opts: {
       </Provider>
     </QueryClientProvider>,
   )
+  expandSessionLinks()
 }
 
 /** The chip's title now names the panel and the modifier escape hatch. Built
@@ -237,6 +239,9 @@ describe('ChatSidebar – PR chip', () => {
     expect(bar.className).toContain('group-has-[:focus-visible]:opacity-100')
     expect(bar.className).toContain('has-[[data-state=open]]:opacity-100')
     expect(bar.className).not.toContain('focus-within')
+    // Top-anchored, so it never covers the status line's links count (#38200).
+    expect(bar.className).toContain('top-1.5')
+    expect(bar.className).not.toContain('top-1/2')
   })
 
   it('keeps focus on the chip when it is activated from the keyboard', () => {
@@ -634,5 +639,28 @@ describe('ChatSidebar – chip label and provider mark', () => {
     // The fallback stays generic on purpose: reaching for `repo` here would be
     // a second copy of the naming rule, which is what this change removes.
     expect(el).not.toHaveTextContent('PROJ-123')
+  })
+})
+
+describe('ChatSidebar – a session with its chips switched off', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
+  })
+  afterEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.clearAllMocks()
+  })
+
+  it('draws no chip for it, even from links still on the row, and keeps the others', () => {
+    // The optimistic flip lands before the gateway's frame empties the row's
+    // links, so the row itself must hide what it still carries.
+    const rows = slots.map(s => (s.key === 's2' ? { ...s, source_links_off: true } : s)) as ChatSlot[]
+    renderSidebar({ onOpenSource: took(), rows })
+    expect(screen.queryByTitle(chipTitle(PR_URL))).toBeNull()
+    expect(screen.queryByTitle(chipTitle(ISSUE_URL))).toBeNull()
+    expect(chip(ACTIVE_PR_URL)).toHaveTextContent('#12')
   })
 })

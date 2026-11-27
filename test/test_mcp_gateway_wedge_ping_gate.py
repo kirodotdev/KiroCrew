@@ -4,6 +4,7 @@ Covers:
 - Old request + fresh ping -> not recycled, single warning logged
 - Old request + stale ping -> wedged (recycled)
 - HARD_WEDGE_CEILING_SECS exceeded -> wedged even with fresh pings
+- An open subscriptions/listen never reaches that ceiling (pings fresh), but still counts once pings stop
 - Cold-start not insta-reaped (fresh _last_ping_response_mono)
 - notifications/cancelled cancels running tool, no response emitted
 - Unknown notification silently ignored
@@ -188,6 +189,56 @@ async def test_hard_ceiling_wedged_even_with_fresh_pings() -> None:
     assert state == "wedged"
     assert not backend.is_alive
     assert "hard ceiling" in backend._dead_reason
+
+
+@pytest.mark.parametrize(
+    "method, ping_age, verdict",
+    [
+        ("subscriptions/listen", 5.0, "alive"),
+        ("tools/call", 5.0, "wedged"),
+        ("subscriptions/listen", PING_STALE_SECS + 1, "wedged"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_open_listen_does_not_reach_the_hard_ceiling(
+    method: str, ping_age: float, verdict: str
+) -> None:
+    """A ``subscriptions/listen`` stays open for the client's whole session, so
+    with fresh pings its age past the hard ceiling is no wedge, while a tool
+    call that old still is; with pings stopped the listen still counts."""
+    now = time.monotonic()
+    pending = {
+        "gw-9999-1": _PendingRequest(
+            stub_uuid="stub-A",
+            original_id="listen-1",
+            method=method,
+            t_start_ms=(now - (HARD_WEDGE_CEILING_SECS + 100)) * 1000.0,
+        ),
+    }
+    backend = _make_backend(pending=pending, last_ping_response_mono=now - ping_age)
+    assert await backend._heartbeat_once(now=now) == verdict
+
+
+@pytest.mark.asyncio
+async def test_an_open_listen_does_not_make_a_young_call_read_as_slow() -> None:
+    """The listen is the only old entry and is skipped, so the young tool call
+    beside it is neither warned about nor marked warned (which would silence
+    the warning it earns once it really is slow)."""
+    now = time.monotonic()
+    pending = {
+        "gw-9999-1": _PendingRequest(
+            stub_uuid="stub-A",
+            original_id="listen-1",
+            method="subscriptions/listen",
+            t_start_ms=(now - (HARD_WEDGE_CEILING_SECS + 100)) * 1000.0,
+        ),
+        "gw-9999-2": _PendingRequest(
+            stub_uuid="stub-A", original_id=2, method="tools/call", t_start_ms=(now - 2) * 1000.0
+        ),
+    }
+    backend = _make_backend(pending=pending, last_ping_response_mono=now - 5)
+    assert await backend._heartbeat_once(now=now) == "alive"
+    assert backend._warned_slow_ids == set()
 
 
 @pytest.mark.asyncio

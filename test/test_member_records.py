@@ -26,6 +26,12 @@ from kiro_crew import (
 )
 from kiro_crew.apps import bot_grant_store, protected_app_state
 from kiro_crew.config.paths import data_home
+from kiro_crew.dashboard import (
+    crew_api_approval_records,
+    crew_api_conversations,
+    crew_api_response_records,
+    local_authorization,
+)
 
 _SLUG = "atlas"
 _MEMBER = "Atlas"
@@ -108,6 +114,8 @@ def test_the_leaf_is_masked_precreated_and_never_aliased() -> None:
 
 
 def test_the_spelled_names_match_their_owners() -> None:
+    from kiro_crew.apps import protected_app_ui
+
     assert member_records.RECORD_KINDS == (
         members.RULES_DIR_NAME,
         member_goals.GOALS_DIR_NAME,
@@ -117,6 +125,13 @@ def test_the_spelled_names_match_their_owners() -> None:
         protected_app_state.APP_SECRETS_KIND,
         protected_app_state.APP_CRONS_DELETED_KIND,
         bot_grant_store.APP_BOT_GRANTS_KIND,
+        local_authorization.LOCAL_GRANTS_KIND,
+        protected_app_ui.APP_UI_KIND,
+        protected_app_state.APP_BROWSER_SITES_KIND,
+        protected_app_state.APP_STARTUP_KIND,
+        crew_api_approval_records.APPROVALS_KIND,
+        crew_api_response_records.RESPONSES_KIND,
+        crew_api_conversations.CONVERSATIONS_KIND,
     )
     assert member_records.MIGRATED_KINDS == (
         members.RULES_DIR_NAME,

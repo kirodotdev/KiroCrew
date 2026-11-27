@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from kiro_crew.config.fields import _meta, _safe_int, field_default
+from kiro_crew.config.sections_defaults import _report_clamp
 
 #: Bounds of a context-threshold percentage, and the single statement of the range.
 #: The floor is 1, not 0, because a 0% threshold means "always over" and would fire the
@@ -280,7 +281,7 @@ def _coerce_whatsapp_groups(raw: object) -> list[dict]:
         return []
     out: list[dict] = []
     seen: set[str] = set()
-    for entry in raw:
+    for index, entry in enumerate(raw):
         if not isinstance(entry, dict):
             continue
         jid = str(entry.get("jid", "")).strip()
@@ -294,6 +295,9 @@ def _coerce_whatsapp_groups(raw: object) -> list[dict]:
             cooldown = int(entry.get("cooldown_s", _WHATSAPP_GROUP_COOLDOWN_DEFAULT))
         except (TypeError, ValueError):
             cooldown = _WHATSAPP_GROUP_COOLDOWN_DEFAULT
+        if cooldown < 0:
+            # Keyed by list position: a group id does not belong in a log line.
+            _report_clamp(WhatsAppConfig, f"groups[{index}].cooldown_s", entry["cooldown_s"], 0)
         coerced: dict = {
             "jid": jid,
             "name": str(entry.get("name", "")).strip(),
@@ -671,6 +675,15 @@ class DiscordConfig:
             tags=["discord"],
         ),
     )
+    show_timing_footer: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Timing Footer",
+            'Post the "Finished in … · ctx …%" line under each reply. Turn it off for a '
+            "cleaner chat; choice buttons still post.",
+            tags=["discord"],
+        ),
+    )
     session_folder: str = field(
         default="",
         metadata=_meta(
@@ -717,6 +730,18 @@ class WebexConfig:
             "Allowed Emails",
             "Webex account emails permitted to DM the bot. Empty = deny all "
             "(fail closed): anyone in the org can message a Webex bot.",
+            tags=["webex"],
+        ),
+    )
+    owner_email: str = field(
+        default="",
+        metadata=_meta(
+            "Owner Email",
+            "Your own Webex account email, the way KIROCREW_OWNER_ID names you on "
+            "Slack. A /kirocrew dashboard link you request in a direct message "
+            "then opens your own dashboard session, chat included; every other "
+            "allow-listed user's link stays theirs. The email must also be in "
+            "Allowed Emails. Empty = no owner here.",
             tags=["webex"],
         ),
     )
@@ -950,6 +975,17 @@ class TeamsConfig:
             "often absent), so listing object ids works out of the box; emails "
             "are matched when Teams supplies them. Empty = deny all (fail "
             "closed): a Teams bot is reachable by anyone in the org.",
+            tags=["teams"],
+        ),
+    )
+    owner_id: str = field(
+        default="",
+        metadata=_meta(
+            "Owner ID",
+            "Your own Teams identity, your UPN/email or your AAD object id, the "
+            "way KIROCREW_OWNER_ID names you on Slack. A /dashboard link you request "
+            "then opens your own dashboard session, chat included; every other "
+            "allow-listed user's link stays theirs. Empty = no owner here.",
             tags=["teams"],
         ),
     )

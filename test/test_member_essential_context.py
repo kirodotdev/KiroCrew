@@ -14,9 +14,10 @@ from conftest import make_dir_link, requires_symlinks
 from kiro_crew import context as context_module
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.context import CONTEXT_GROUP_LESSONS
-from kiro_crew.member_essential_context import MemberEssentialContextError
+from kiro_crew.member_essential_context import ESSENTIAL_MAX_CHARS, MemberEssentialContextError
 from kiro_crew.members import slug_for_name, write_member_rules
 from kiro_crew.memory import MemoryStore
+from kiro_crew.memory_provider.contract import MAX_DOCUMENT_TEXT
 from kiro_crew.memory_stores import (
     UnknownMemoryStore,
     provision_member_memory,
@@ -95,13 +96,13 @@ def test_oversized_guide_is_left_out_by_name_instead_of_refusing_the_turn(env):
     partial_prompt``: the source is still named and never cut mid-body, but the
     member's core keeps working instead of every turn refusing.
     """
-    (env.project / "AGENTS.md").write_text("x" * 64_001, encoding="utf-8")
+    (env.project / "AGENTS.md").write_text("x" * (ESSENTIAL_MAX_CHARS + 1), encoding="utf-8")
     message, _ = env.builder.build_message(
         "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
     )
     assert "x" * 1_000 not in message
     assert "[Essential source: essential-context#omitted]" in message
-    assert f"{env.project / 'AGENTS.md'} (64,001 characters)" in message
+    assert f"{env.project / 'AGENTS.md'} ({ESSENTIAL_MAX_CHARS + 1:,} characters)" in message
     assert "Bound Soul: preserve the user's voice." in message
     assert "Preference anchor: 请保留中文原文。" in message
 
@@ -125,7 +126,8 @@ async def test_profile_save_rejects_oversized_candidate_without_replacing_anchor
     before = env.memory.read_preferences(), env.memory.read_projects()
     req = request(
         SimpleNamespace(state=state),
-        body={"content": "x" * 64_001},
+        # The tighter of the envelope and the memory-provider document cap.
+        body={"content": "x" * (min(ESSENTIAL_MAX_CHARS, MAX_DOCUMENT_TEXT) + 1)},
         query={"store": env.store},
         owner=True,
         session="dashboard:ui",

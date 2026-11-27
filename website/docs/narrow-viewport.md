@@ -167,8 +167,14 @@ width (an unfolded foldable in landscape is about 951px wide). A browser in desk
 the desktop form from 768px and keeps the phone form below it: the desktop top bar's
 collapse ladder (`.tb-measured`) only has rungs from 768px, so an iPad Split View or
 Slide Over window must not get the desktop form. Every other device, touch laptops
-included, keeps the 768px breakpoint. A home-screen web app has no
-desktop-site toggle, so it keeps the browser's default mode.
+included, keeps the 768px breakpoint. A home-screen web app or an in-app browser has no
+desktop-site toggle, so Settings > Display > View > Touch screen layout
+(`TouchLayoutSetting.tsx`) overrides the browser's mode on a touch-first device:
+Automatic (the default) is the rule above, Phone layout is the phone form at any width,
+and Desktop layout on wide screens is the desktop-mode result (desktop form from 768px,
+phone form below). The choice is saved on this browser only (`kc-touch-layout`), is read
+only after the touch-first test so a mouse device never sees it, and takes effect at
+once because `useIsMobile` re-reads the form on its change event.
 
 **The shell is an application, not a zoomable document — page zoom is off on touch.**
 Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
@@ -271,7 +277,7 @@ therefore keep their authored size on touch, and the composer uses the message f
 setting on every device. One size for the composer's typed text and its placeholder
 is also what keeps an empty composer one line tall: its auto-size measures the
 placeholder at the field's font size, so a field held at 16px over a 14px hint
-measured the hint a line too tall on a 375px phone (#28843).
+measured the hint a line too tall on a 375px phone.
 
 **There is deliberately no app-wide 16px field rule either**, because CSS cannot
 express a floor at all: it can only SET a size, so the two available shapes are wrong
@@ -328,7 +334,7 @@ gesture:
 | cell | who renders it | what is in it |
 |---|---|---|
 | leading (`auto`) | `shell/topbar/shellHeader.tsx` | the crew switcher (when a remote crew exists) and downstream widgets (while they exist); usually empty. Not the update pill: beside a remote crew's chip + dropdown it was a third action, so on this page a pending update is the first item of the overflow menu (`UpdatePill variant="menu-item"`, same lifecycle label) |
-| centre (`minmax(0,1fr)`) | `pages/chat/page/SessionsSidebarChrome.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the menu chevron with the session title after it, the same order as the desktop header (`ChatHeaderMenu` `triggerLabel`); Rename and Regenerate title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's `InboundLinkChip` would be a third control, so a two-way link's actions are read from the session menu's Linked surfaces section |
+| centre (`minmax(0,1fr)`) | `pages/chat/page/SessionsSidebarChrome.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the menu chevron with the session title after it, the same order as the desktop header (`ChatHeaderMenu` `triggerLabel`); Rename and Regenerate title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. Its Reveal in sidebar is offered only for a session that is a row of the Sessions list (`personSlots`): a Bot's session that list leaves out, or a crew member under its listed conductor, has no row to land on, and the wide header gives those a breadcrumb and no session menu. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's `InboundLinkChip` would be a third control, so a two-way link's actions are read from the session menu's Linked surfaces section |
 | trailing (`auto`, `.tb-trail`) | `shell/topbar/shellHeader.tsx`, plus the same `MobileTopBar`'s portal into `#mobile-topbar-trail-slot` | exactly two: the bell, then the page's overflow menu (update when pending, pop out or focus the popped-out window, activity panel, split view). The update row reads `<status> — Open update settings`: a menu row is read as an action, and the row only navigates to Settings › About, so it names that outcome instead of implying a download or restart. The update row is a lazy chunk inside its own `ErrorBoundary`, so a chunk that fails to load costs the row, not the page (a rejection would otherwise reach the route boundary); the fallback is an inline `ErrorNotice` plus its `ErrorNoticeMenuItem` hand-off (`errors-use-error-notice`), never `null`, because this menu is the update's only phone home and a silent gap would hide the failure |
 
 That is the `topbar-single` header variant (`src/styles/shell-chrome.css`), applied only while
@@ -336,7 +342,7 @@ That is the `topbar-single` header variant (`src/styles/shell-chrome.css`), appl
 `.tb-right`.** Those two are inline-size containers for the collapse ladders, and
 a size container in an `auto` track has no content size to give, so it collapses
 to its padding and clips its contents -- the measurement is recorded in
-`test/topbarMenuButtonNarrow.test.ts`, and `test/topbarSingleVariant.test.ts`
+`src/test/topbarMenuButtonNarrow.test.ts`, and `src/test/topbarSingleVariant.test.ts`
 pins that no container class reaches the variant's side cells. The single bar
 has no ladder to run (the readout capsule is not rendered on it), so it needs no
 containers. `.tb-trail` keeps `.tb-right`'s padding/negative-margin pair for the
@@ -370,16 +376,21 @@ the auth-specific cause. `App.mobileSingleTopbar.test.tsx` pins both states. The
 label, same command palette: the chat drawer's rail pins it at the foot (below), and
 the nav drawer carries it as a row in its bottom group, so every non-chat phone page
 still reaches it. The capsule's credits segment is also the desktop's door to the
-account modal (balance, sign-in state, `KiroAccountModal`), so the same two drawers
-carry a **Kiro Account** entry -- a row in the nav drawer's bottom group and a tile
-in the chat drawer's rail, both between Capabilities and Settings (in the rail
-only while the secondary tiles are pinned; otherwise it folds into the Apps scroller,
-see below), both opening the modal. On a Kiro harness (kiro-cli or KAS) it is
-always there (the modal's Refresh fills an empty reading); on any other harness
-only for a reading the desktop segment would show --
-`kiroAccountEntry = kiroCreditSurface || (reading !== null && !pillHidden)`, the
-segment's own derivation minus the warming `null`, where the desktop's spinner would
-become a nav row blinking in and out. Same test file pins both states.
+account modal (balance, sign-in state, `KiroAccountModal`). The phone has no such
+door and no account row: its Settings row, captioned **Account & Settings** and
+drawn as the account's initials (`AccountAvatar`; an empty person circle with no
+reading), leads to **Settings -> Kiro account**, whose **Credits** section
+(`KiroCreditsCard`) renders the modal's body. On a Kiro harness (kiro-cli or KAS)
+that section is always there (its Refresh fills an empty reading); on any other
+harness only for a reading the desktop segment would show --
+`kiroAccountEntry = kiroCreditSurface || (kiroUsageState !== null && !pillHidden)`, the
+segment's own derivation minus the warming `null`. While the build offers Kiro
+sign-in, the section shows once Kiro Crew is signed in (and not lapsed), or
+whenever there is a real reading: sessions on kiro-cli's own login still have a
+balance, and this is the phone's only view of it. Signed out or lapsed with no
+reading, the tab shows only the sign-in column. The tab
+itself shows while the build offers Kiro sign-in or that section has something to
+show.
 Off the chat route the phone header keeps the logo -> nav drawer
 and the bell, and renders an empty centre spacer so the header still has three
 in-flow children -- with two, the actions group would be auto-placed into the `auto`
@@ -410,13 +421,12 @@ container already claims its own swipe via `data-owns-swipe`.
 The rail carries everything the nav drawer does except Connect-your-phone, which is
 moot on the phone itself: the Main rows and Library on top, the apps, then
 Terminal (which toggles the docked panel and closes
-the drawer so the panel is not left behind it), Capabilities and Kiro Account, with
-Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` places
-that secondary group: it stays pinned above Settings while the Apps list keeps
-`APPS_FLOOR_PX` (240px, four tiles), and otherwise folds into the Apps scroller after
-the apps, behind a separator. The decision reads `stableRailHeight` — the tallest
-height seen at the current window width — so the on-screen keyboard or a browser
-toolbar shrinking the rail at the same width never moves the tiles.
+the drawer so the panel is not left behind it) and Capabilities, with
+Account & Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` lays it
+out like the desktop rail: everything above Account & Settings and Search is ONE scroll
+region (the top rows, the apps, then the secondary group behind a separator),
+with a bottom-edge fade while tiles sit below the fold; only the foot is pinned
+(#34398).
 
 **The Bots page hosts the same drawer.** On a phone `/members` lands on a
 Bot exactly as a wide window does, and its roster is a left drawer over the
@@ -566,7 +576,7 @@ hamburger-opened drawer cannot be dragged shut.
 the main-thread path, framer's `stop()` COMPLETES an animation whose duration has already
 passed, and `animate()` delivers that `onComplete` a microtask later, after the new
 gesture has committed. A busy main thread is exactly when that happens, and the stale
-arrival slid the side panel back open over a closing drag (#29908). Both main-thread
+arrival slid the side panel back open over a closing drag. Both main-thread
 settles, `animateDrawer`'s and the trackpad's `settleTrackpadDrag`, therefore note
 framer's `onStop` (it runs inside `stop()`, before that late `onComplete`) and drop an
 arrival that comes after it.
@@ -598,11 +608,15 @@ around a dozen such widget families in `src/` today (`ResizeHandle`, `ColumnSpli
 `components/ui.tsx`, …); asking each to remember an attribute means the next one
 silently fights the nav drawer instead.
 
-**Count the panels before believing the rule holds.** Four are driven by
-`registerDrawerTargets` today: the nav drawer, the chat page's sessions drawer and
-activity panel (all three with gestures), and the notification sheet (no gesture,
-portaled). Only the chat page declares a claim, because it is the only one that binds
-its own gesture inside the shell.
+**Count the panels before believing the rule holds.** Six are driven by
+`registerDrawerTargets` today: the nav drawer (`shell/appShell.tsx`), the chat page's
+sessions drawer and side panel (`pages/chat/page/sessionsDrawer.ts`), the Bots page's
+roster drawer and side panel (`pages/members/useMembersPageDrawers.ts`), all five with
+gestures, and the notification sheet (no gesture, portaled). The two pages that bind
+their own gesture inside the shell declare a claim (`ChatPageFrame.tsx`, and
+`MembersPage.tsx` while its roster drawer or side-panel swipe is available), and so does
+the session tab strip (`SessionTabStrip.tsx`), whose long-press reorder needs the touch
+before the shell drawer sees it.
 
 **Two sibling instances exclude each other on INTENT, not on arrival.** The chat page
 binds `useDrawerSwipe` twice on one element — sessions drawer on the left, side panel on
@@ -627,7 +641,9 @@ which is why the chrome derived from the phase does not change timing.
 ### The desktop counterpart: a trackpad swipe on the Bots page
 
 Off the phone the Bots page plays a two-finger trackpad swipe as the same side-panel
-DRAG (`useMembersPageTrackpadSwipe` over `hooks/useTrackpadSwipe`): to the left the
+DRAG (`useMembersPageTrackpadSwipe` over `hooks/useTrackpadSwipe`), but only while
+Settings → Chat → Side panel → **Swipe to Open and Close Side Panel** is on
+(`useSidePanelSwipe`, chat config `sidePanelSwipe`, on by default): to the left the
 panel follows the fingers in and settles open on its Dashboard tab, to the right it
 follows them out. A trackpad sends `wheel` events, not touches, so the reader cuts the
 stream into runs and reports the fingers' summed `deltaX`; the page drives `sidePanelX`
@@ -657,7 +673,12 @@ run unstarted. The fingers' moves before the start are kept for the release spee
 flick that just passes 80px still opens the panel. Under reduced motion it is not asked: nothing moves there, and a clear swipe
 already needs the same 80px. The start distance is there for a mouse's thumb wheel, which turns a little
 when the mouse is held or moved and sends runs of 1-2px steps that sum to a few dozen px:
-a run that short never moves a closed panel, and neither does a flick that short. The drag is released only on a real
+a run that short never moves a closed panel, and neither does a flick that short. A waiting reveal is
+also the one run whose owner can change after its first event: once its summed vertical travel
+reaches the furthest it has gone sideways its way (a turn back does not count against it), it is a
+scroll that started with a little sideways drift, not a swipe, and the rest of the run is handed
+back to the browser uncancelled (a new run for the reader, so its hold and quiet timer go), so the
+content under the fingers keeps scrolling and neither the panel nor the Dashboard tab moves. The drag is released only on a real
 lift-off: a 100ms gap (read from the events' own timestamps, so a slow frame is not a
 lift), or the momentum tail's signature, three steps in a row each smaller than the last
 by a near-constant ratio, or a creeping tail: three steps in a row of 4px or less after
@@ -700,7 +721,10 @@ only from `window.parent` at the origin it asked, for its own watch id.
 ### The same swipe on the chat page's side panel
 
 The chat page plays the same drag on its right side panel off the phone
-(`useChatPanelTrackpadSwipe` in `pages/chat/page/chatTrackpadSwipe.ts`), over
+(`useChatPanelTrackpadSwipe` in `pages/chat/page/chatTrackpadSwipe.ts`), behind the
+same switch (it listens only while the switch is on; with it off every run is left
+to the browser, as with a bottom-docked panel, so its own back/forward swipe may
+answer it), over
 the same reader and the same drag and release (`hooks/trackpadPanelDrag`, which
 the Bots page uses too). The panel lives in the shell's `actbar` column, an
 `auto` grid track, so the drag does not need a spacer in a page row: while it
@@ -711,8 +735,8 @@ from the column's own docked width, measured before the swap, and the panel is
 the same element throughout (its terminals and frames live on). The settle runs
 on the main thread so the column reads every frame. The swipe is bound on the
 shell grid, which holds both the chat and the column, so a run keeps going when
-the panel arrives under the pointer. It is off for a bottom-docked panel, while
-the find pane holds the dock, and in embed frames. The exact lift-off from the desktop app reaches it
+the panel arrives under the pointer. It is off for a bottom-docked panel and in
+embed frames. The exact lift-off from the desktop app reaches it
 through the same reader, and so does the start distance: a closed panel moves only once a
 leftward run has travelled 80px. An artifact frame in the panel (`ArtifactBodyIframe`
 with `relayWheel`, set only for the side panel) relays the runs its own content
@@ -758,7 +782,7 @@ does this, correctly.
 like a feel problem rather than a bug: a MotionValue deliberately does not re-render
 React, so the drag writes the value every frame while the DOM moves only on whatever
 re-render happens to occur — the panel comes out a little, freezes, and completes on
-release when the settle takes over. Bind it instead, as all three gesture-driven
+release when the settle takes over. Bind it instead, as every gesture-driven
 panels do:
 
 ```tsx
@@ -770,6 +794,15 @@ adopts and cancels whatever is running before either writes. A scrim has the sam
 requirement in its other half: derive its opacity from the offset (over the drawer's
 OWN travel, so the dim reaches 0 exactly as the panel clears the edge) rather than
 holding a literal, or it cannot dim with the finger.
+
+While the finger drives a registered panel (`registerDrawerTargets`), `useDrawerSwipe`
+sets `will-change: transform` on the panel and `will-change: opacity` on its scrim, and
+the settle's arrival clears both. The drag writes those two properties from the main
+thread on every touchmove; without a layer of its own the panel is painted into the
+page's layer, so each write repaints the panel and the chat under it (about three paints
+and 1.5M CSS px per frame in Chromium), and a phone rasterizes that on the main thread.
+The settle needs no help: a WAAPI transform animation gets its layer from the browser.
+The layer is dropped at rest because the shell's nav drawer stays mounted.
 
 ## Horizontal insets below the breakpoint
 
@@ -841,6 +874,15 @@ buttons that own the only gutter their content has, and rows inside a bordered p
 keep theirs. There is no lint gate for this, so read the structure around a hit before
 gating it.
 
+
+### A tab that draws its own header
+
+A `SidePanelTab` with `ownHeader` (Settings > Kiro account, whose centered column
+opens on the account's own header) gets no title row: the layout leaves out its
+`label`, `description` and a `header`-docked `headerRight`, and keeps the label as
+a visually hidden `h2` so a screen reader still meets the tab's title first. Unlike
+`paneOwnsHeader`, the phone keeps its back bar to the root list, because the pane
+has no back action of its own.
 
 ### Member memory drill-in
 

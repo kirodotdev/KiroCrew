@@ -193,7 +193,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "_running_loop": ("staticmethod", False, False, "() -> 'asyncio.AbstractEventLoop | None'"),
     "_schedule_trailing_flush": ("function", False, False, "(self, delay: 'float') -> 'None'"),
     "_send_slot_patch": ("function", False, False, "(self, data: 'dict[str, Any]') -> 'None'"),
-    "_send_web_push_all": ("function", True, False, "(self, note: 'dict[str, Any]') -> 'None'"),
+    "_send_web_push_all": ("function", True, False, "(self) -> 'None'"),
     "_send_ws_all": (
         "function",
         False,
@@ -636,7 +636,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, approval_id: 'str', source: 'str', tool: 'str', *, tool_input: "
         "'str' = '', tool_purpose: 'str' = '', slot: 'str' = '', is_background: "
         "'bool' = False, run_task_id: 'str' = '', task_index: 'int | None' = None, "
-        "on_host_decision: 'Callable[[str], object] | None' = None) -> 'bool'",
+        "on_host_decision: 'Callable[[str], object] | None' = None, person_only: "
+        "'bool' = False) -> 'bool'",
     ),
     "request_question": (
         "function",

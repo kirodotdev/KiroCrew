@@ -155,7 +155,8 @@ def _approve_emptied_batch(
     take by NAME, with a scanned-inode check and an unlink that are two separate syscalls.
     Admitting one is admitting that window, so a batch holding a link is kept and left for
     `empty_trash`, which removes links through its own approval when a user asks for the
-    empty.
+    empty - those its leftover check passes: one the manifest names, or one to neither a
+    regular file nor a directory.
     """
     scanned_ino = tree.files.get((MANIFEST_NAME,))
     if scanned_ino is None:
@@ -197,7 +198,9 @@ def _approve_emptied_batch(
         #
         # It costs nothing that matters: neither of these two removals was asked for, and a
         # batch kept for this reason is still cleared by `empty_trash` on the user's own
-        # say-so, which removes scanned links through its own approval.
+        # say-so, which removes scanned links through its own approval (a link its
+        # leftover check passes: one the manifest names, or one to neither a regular file
+        # nor a directory).
         logger.warning(
             "keeping trash batch %r: it holds %d link(s), which the removal could only take "
             "by name",

@@ -228,7 +228,9 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
       const isRedo = (k === 'z' && e.shiftKey) || k === 'y'
       if (isUndo || isRedo) {
         e.preventDefault()
-        stepUndoHistory(isRedo ? 'redo' : 'undo')
+        // A read-only textarea (disabled) still owns the gesture, but takes no
+        // step: the step writes the draft itself, past `readOnly`.
+        if (!e.currentTarget.readOnly) stepUndoHistory(isRedo ? 'redo' : 'undo')
         return true
       }
     }

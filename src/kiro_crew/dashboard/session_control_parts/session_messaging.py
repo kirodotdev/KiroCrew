@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly.markers import _apply_marker_spans, _marker_spans
-from kiro_crew.dashboard import session_managers
-from kiro_crew.dashboard.chat_delivery import sanitize_outbound
+from kiro_crew.dashboard import deferred_steer, session_managers
+from kiro_crew.dashboard.chat_delivery import sanitize_outbound, start_queue_persist
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
@@ -138,7 +138,7 @@ def _retain_orphaned_steer_delivery(
     slot_key: str,
     *,
     unavailable_outcome: str | None = None,
-    on_unavailable: "Callable[[], Awaitable[None]] | None" = None,
+    on_unavailable: "Callable[[], Awaitable[object]] | None" = None,
 ) -> None:
     """Keep a shielded steer delivery alive after its caller stopped waiting.
 
@@ -293,8 +293,10 @@ async def send_to_target(
       ``user_origin=False``, so a peer's steer does not inherit the composer's
       exemption from the drain's LINKED drop.
 
-    A steer that cannot be injected falls back to the queue — never dropped, and
-    the caller is told it queued rather than steered.
+    A steer that cannot be injected is held as a pending steer for the target's next
+    tool boundary (``dashboard.deferred_steer``) — never dropped and never a plain
+    end-of-turn queue entry. The caller is told ``pending-steer``; a turn that ends
+    first hands the held text to the queue.
 
     The turn is NOT charged against the background-turn cap, and deliberately so:
     that cap bounds an app's own automation on unattended (app-owned) slots. The
@@ -383,7 +385,8 @@ async def send_to_target(
     # redaction can only shrink the text, so validating the raw form is the honest
     # limit and keeps the error keyed to what the caller actually sent.
     envelope = _SEND_PROVENANCE.format(caller=caller_key or "unknown", via=via or "session_send")
-    prompt = envelope + _neutralize_send_provenance(sanitize_outbound(body))
+    sent_text = _neutralize_send_provenance(sanitize_outbound(body))
+    prompt = envelope + sent_text
 
     # The structured cross-session sender, stamped by the gateway onto the row the
     # delivery appends (``meta.relay``). The receiver's transcript draws the
@@ -412,7 +415,60 @@ async def send_to_target(
     # consumed by the turn at that point, so the failure travels in the audit trail
     # and the caller still sees the delivery it got.
     steer_containment_stop_failed = False
+    # A steer held for the target's next tool boundary (``dashboard.deferred_steer``).
+    pending_steer = False
+    # An unidentified caller gets a per-call id: two of them with the same text must
+    # not read as one sender's re-send.
+    steer_id = (
+        deferred_steer.steer_id_for(caller_key, slot.key, body)
+        if caller_key
+        else uuid.uuid4().hex[:16]
+    )
+
+    def _same_steer() -> dict[str, Any]:
+        # Nothing is delivered this time, but the send was authorized: record it like
+        # every other allowed send, so the trail shows the re-send.
+        reply = deferred_steer.same_steer_reply(slot, steer_id)
+        _audit(
+            caller_session_key=caller_session_key,
+            operation="send",
+            slot_key=slot.key,
+            outcome="allowed",
+            detail={
+                "started": False,
+                "steer_requested": True,
+                "steered": False,
+                "pending_steer": reply["pending_steer"],
+                "same_steer": True,
+                "chars": len(body),
+            },
+        )
+        return reply
+
+    # The prompts both steer verbs build for this caller and body differ only in the
+    # provenance line; any of them still on its way into this turn is this steer.
+    steer_prompts = {prompt}
+    if caller_key:
+        steer_prompts |= {
+            _SEND_PROVENANCE.format(caller=caller_key, via=steer_via) + sent_text
+            for steer_via in ("session_send", BROADCAST_VIA)
+        }
+
+    def _steer_on_its_way() -> bool:
+        return any(
+            text in slot._steer_rpc_in_flight
+            or text in slot._steer_delivery_ids
+            or text in slot._pending_steers
+            for text in steer_prompts
+        )
+
     if steer and slot.running:
+        # A re-send of a steer that is still held, or still on its way into this turn
+        # through either steer verb, is the same steer: report it again, deliver
+        # nothing a second time. A settled steer is neither, so the same text is a
+        # new message, and on an idle target it starts a turn.
+        if deferred_steer.known_steer(slot, steer_id) is not None or _steer_on_its_way():
+            return _same_steer()
         # The mid-turn arm. ONE text is handed to both arms, so what the target
         # reads and what its transcript keeps are the same bytes either way:
         # already redacted, already carrying the provenance envelope, so an
@@ -503,7 +559,15 @@ async def send_to_target(
         # suspended and the queue entry records the containment for the drain to
         # re-assert: a snapshot taken now must not certify a link the authorization
         # never saw.
-        async def _queue_after_orphaned_unavailable() -> None:
+        #
+        # *at_head* queues it at the head: a held steer its turn outlived outranks
+        # the messages queued meanwhile, as an unconsumed steer does. The orphaned
+        # RPC fallback keeps the tail.
+        async def _queue_after_orphaned_unavailable(
+            still_wanted: Callable[[], bool] | None = None,
+            *,
+            at_head: bool = False,
+        ) -> bool:
             await prewarm_app_reach(state)
             await prewarm_enabled_check()
             regated = authorize_target(
@@ -511,7 +575,8 @@ async def send_to_target(
                 caller_session_key=caller_session_key,
                 target=target,
                 operation="send",
-                precomputed_ownership_fenced=caller_fenced,
+                precomputed_ownership_fenced=bool(caller_fenced)
+                or _caller_is_ownership_fenced(state, caller_key),
             )
             if regated is not slot:
                 # Object identity, for the reason the in-frame arm gives: a target
@@ -523,12 +588,17 @@ async def send_to_target(
                     "target resolved to a different session; the message is not queued",
                     slot.key,
                 )
-                return
+                return False
+            if still_wanted is not None and not still_wanted():
+                # A hard stop discarded the steer while the gate awaited: the sender
+                # was told "discarded", so nothing is queued (no await from here to
+                # the queue write).
+                return False
             await session_deliver.deliver(
                 state,
                 slot,
                 prompt,
-                session_deliver.peer(steer=False, sender=caller_session_key),
+                session_deliver.peer(steer=False, sender=caller_session_key, at_head=at_head),
                 queue_meta={**send_origin_meta(state, caller_key), SESSION_SEND_QUEUED_META: True},
                 relay_meta=relay_meta,
             )
@@ -537,6 +607,125 @@ async def send_to_target(
                 "queued instead of lost",
                 slot.key,
             )
+            return True
+
+        # One retry of a held steer, run at a tool boundary of the turn it was sent
+        # into. It repeats what the immediate arm does -- authorize again, record
+        # the admission as an audience fence, steer, then compare the audience --
+        # because the gate that admitted the send is as old as the hold.
+        async def _attempt_at_boundary(held: Any) -> str:
+            def _still_held() -> bool:
+                # This very entry, not one that merely carries the same steer id: a hard
+                # stop followed by a re-send of the text leaves a replacement behind.
+                return any(h is held for h in slot._deferred_steers)
+
+            if slot._turn_generation != held_in_turn:
+                # The turn it was meant for is over and nothing handed it on. Queued at
+                # the head, as the hand-off's requeue does.
+                # shortcut: this flush walks the held list oldest first, so two stale
+                # steers found in one flush queue newest first; walk them newest first
+                # if a turn end ever leaves more than one held behind.
+                queued = await _queue_after_orphaned_unavailable(_still_held, at_head=True)
+                return deferred_steer.QUEUED if queued else deferred_steer.DROPPED
+            await prewarm_app_reach(state)
+            await prewarm_enabled_check()
+            try:
+                regated = authorize_target(
+                    state,
+                    caller_session_key=caller_session_key,
+                    target=target,
+                    operation="send",
+                    precomputed_ownership_fenced=bool(caller_fenced)
+                    or _caller_is_ownership_fenced(state, caller_key),
+                )
+            except SessionControlError:
+                # The gate now refuses this sender: drop the steer. Any other failure
+                # keeps it held for the next boundary.
+                return deferred_steer.DROPPED
+            if regated is not slot:
+                return deferred_steer.DROPPED
+            boundary_admission = {
+                **containment_meta(state, slot),
+                **send_origin_meta(state, caller_key),
+            }
+            fence = uuid.uuid4().hex
+            slot._steer_audience_fences[fence] = boundary_admission
+            # On a harness that can drop an accepted steer, `steer_into_running_turn` marks
+            # this steer delivered just before the RPC (see its `held_key`), so the turn's
+            # teardown requeue skips it: once injected it never runs a second time from the
+            # queue. A failed injection clears the mark and the steer stays held.
+            # Harnesses that keep every steer need no mark: their requeue is lossless.
+            if not _still_held():
+                # A hard stop discarded this steer while the gate awaited: it must not
+                # be injected after its sender was told it was discarded.
+                slot._steer_audience_fences.pop(fence, None)
+                return deferred_steer.RETRY
+            try:
+                outcome = await session_deliver.deliver(
+                    state,
+                    slot,
+                    prompt,
+                    # A fresh delivery id per attempt: `steer_id` is a fixed hash, and
+                    # an earlier row of the same text would match it as "already
+                    # persisted" and report a requeue for a steer the client took.
+                    session_deliver.peer(
+                        steer=True, held=uuid.uuid4().hex, mark=steer_id, entry=held
+                    ),
+                    admission=boundary_admission,
+                    relay_meta=relay_meta,
+                )
+            except asyncio.CancelledError:
+                # A cancelled RPC may already have written the steer. A marked one keeps
+                # its mark (at most once beats a second run). An unmarked one that is
+                # already registered pending is requeued once by the teardown, so its
+                # held entry is settled now: both paths would otherwise queue it.
+                if (
+                    _still_held()
+                    and steer_id not in slot._deferred_steer_delivered
+                    and prompt in slot._pending_steers
+                ):
+                    deferred_steer.settle_held(slot, steer_id, deferred_steer.QUEUED)
+                raise
+            except Exception:
+                slot._deferred_steer_delivered.pop(steer_id, None)
+                slot._deferred_steer_injected.pop(steer_id, None)
+                slot._steer_audience_fences.pop(fence, None)
+                raise
+            if (
+                outcome == session_deliver.DELIVERED_REQUEUED
+                and steer_id in slot._deferred_steer_delivered
+            ):
+                # The client took the text and a stop raced it: delivery is accepted or
+                # ambiguous, so the mark stays and the teardown requeue skips it.
+                slot._steer_audience_fences.pop(fence, None)
+                return deferred_steer.DELIVERED
+            if outcome != session_deliver.DELIVERED_STEERED:
+                slot._deferred_steer_delivered.pop(steer_id, None)
+                slot._deferred_steer_injected.pop(steer_id, None)
+                slot._steer_audience_fences.pop(fence, None)
+                # The turn ended during the RPC and its teardown queued the text.
+                return (
+                    deferred_steer.QUEUED
+                    if outcome == session_deliver.DELIVERED_REQUEUED
+                    else deferred_steer.RETRY
+                )
+            if (
+                newly_held_constraints(
+                    containment_snapshot(state, slot, on_probe_failure=True), boundary_admission
+                )
+                and slot._turn_generation == held_in_turn
+            ):
+                from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+                try:
+                    await stop_slot_turn(
+                        state, slot, source="session_send_steer_containment", escalate=False
+                    )
+                except Exception:
+                    logger.exception(
+                        "Containment stop failed after a deferred steer (%s)", slot.key
+                    )
+            return deferred_steer.DELIVERED
 
         _steer_task = asyncio.ensure_future(_steer_delivery())
         try:
@@ -695,10 +884,56 @@ async def send_to_target(
                     code="target_moved",
                     status=409,
                 )
+            if slot.running and _steer_on_its_way():
+                # The RPC was refused because this steer is already on its way into
+                # this turn (an overlapping send of the same steer). Holding this one
+                # would inject the text a second time at the next boundary.
+                return _same_steer()
+            _client = getattr(slot, "_acp_client", None)
+            if slot.running and (_client is None or getattr(_client, "supports_steer", False)):
+                # Never a plain queue for a steer: hold it for the next tool
+                # boundary of this turn. A turn whose client cannot steer has no
+                # boundary injection to wait for, so its steer queues below; one
+                # with no client yet may still publish a steer-capable one.
+                # A turn that ended during the RPC leaves
+                # `slot.running` False, and the queue-or-run arm below starts it.
+                # The turn the steer is held for is the one running at the hold:
+                # the RPC and the re-gate await, and a hand-off during them can
+                # start the next turn. `_attempt_at_boundary` reads this name when
+                # it runs, so it compares against this generation.
+                held_in_turn = slot._turn_generation
+                hold_result = deferred_steer.hold(
+                    slot,
+                    steer_id=steer_id,
+                    sender=caller_key or "unknown",
+                    attempt=_attempt_at_boundary,
+                    to_queue=_queue_after_orphaned_unavailable,
+                    origin_meta=send_origin_meta(state, caller_key),
+                    text=prompt,
+                    relay_meta=relay_meta,
+                )
+                if hold_result == deferred_steer.FULL:
+                    raise SessionControlError(
+                        f"that target already holds {deferred_steer.MAX_DEFERRED_STEERS} "
+                        "pending steers; wait for it to reach a tool boundary",
+                        code="steer_pending_full",
+                        status=429,
+                    )
+                if hold_result == deferred_steer.DUPLICATE:
+                    # The same steer is already held, or injected and still pending.
+                    return _same_steer()
+                # ENDED: the turn is in its hand-off, so nothing would hand a held
+                # steer on; the queue-or-run arm below queues it for the next turn.
+                pending_steer = hold_result == deferred_steer.HELD
+                if pending_steer:
+                    # A held steer is saved as a queue entry: start that write as
+                    # the queue arm's admission does, so a restart keeps it.
+                    start_queue_persist(state, slot)
 
-    if steered or requeued:
-        # Neither arm starts a turn: a steer runs inside one that is already going,
-        # and a requeued steer waits for the next like any queued message.
+    if steered or requeued or pending_steer:
+        # No arm starts a turn: a steer runs inside one that is already going, a
+        # requeued steer waits for the next like any queued message, and a held
+        # steer is delivered at the next boundary or handed to the next turn.
         started = False
     else:
         # `deliver` passes `_run_chat` straight through, NOT wrapped in
@@ -749,6 +984,7 @@ async def send_to_target(
             "started": started,
             "steer_requested": bool(steer),
             "steered": steered,
+            "pending_steer": pending_steer,
             "chars": len(body),
             # Only when a steer's turn was actually stopped, so the common shape is
             # unchanged. Names the constraints that newly held, which is what a
@@ -764,7 +1000,10 @@ async def send_to_target(
             **({"steer_containment_stop_failed": True} if steer_containment_stop_failed else {}),
         },
     )
-    return {"ok": True, "target": slot.key, "started": started, "steered": steered}
+    reply = {"ok": True, "target": slot.key, "started": started, "steered": steered}
+    if pending_steer:
+        reply.update(pending_steer=True, steer_id=steer_id, steer_state=deferred_steer.PENDING)
+    return reply
 
 
 #: The two broadcast modes, named rather than a boolean. ``queue`` waits for each
@@ -1194,6 +1433,15 @@ async def broadcast_to_targets(
                 "ok": True,
                 "started": bool(sent.get("started")),
                 "steered": bool(sent.get("steered")),
+                **(
+                    {
+                        "pending_steer": bool(sent.get("pending_steer")),
+                        "steer_id": sent.get("steer_id", ""),
+                        "steer_state": sent.get("steer_state", ""),
+                    }
+                    if sent.get("steer_id")
+                    else {}
+                ),
             }
         )
 

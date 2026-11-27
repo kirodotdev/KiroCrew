@@ -165,7 +165,7 @@ tool call before it runs, or block it outright.
 | `PreToolUse` | before a tool runs | allows the tool |
 | `PostToolUse` | after a tool ran | nothing |
 | `Stop` | the turn ends | usually nothing — but see the continuation contract below |
-| `SessionLaneChanged` | a dashboard user moves a session between board lanes — an agent's move fires nothing | nothing |
+| `SessionLaneChanged` | a dashboard user moves a session between board lanes, or starts one in a folder whose tags include a lane — an agent's move fires nothing | nothing |
 
 A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
 (with the task its parent wrote) before its prompt is sent, and their exit-0
@@ -206,7 +206,10 @@ audits calls sees a call that asks for approval twice there: once at the notice
 and once at its approval request.
 
 On every other event a non-zero exit is warn-only: the run is recorded against
-the hook with its error, and the turn continues.
+the hook with its error, and the turn continues. Any exit other than 0 or 2, on
+any event, also leaves one WARNING in the gateway log,
+`Hook <name> (<event>) failed: <detail>`, whose detail is the error, else the
+end of the hook's stderr, else `exited with code N`.
 
 **Exit 0 discards both streams except where the table says otherwise.** On
 `PostToolUse` and `Stop` a successful run surfaces nothing — stderr included — and
@@ -225,8 +228,8 @@ agent to act on.
 
 ### The six Kiro Agent triggers
 
-A Kiro Agent session has eleven triggers where the gateway has five. The other
-six can be authored and saved here, and a saved one reads back unchanged.
+A Kiro Agent session has triggers the gateway has no event for. Six of them can
+be authored and saved here, and a saved one reads back unchanged.
 
 **No event fires any of them.** The gateway has no lifecycle moment for the six,
 so nothing fires one on its own, and no other reader exists. Authoring one records
@@ -326,7 +329,11 @@ other; single quotes group nothing under `cmd.exe`.
 Both platforms get `KIROCREW_HOOK_EVENT` and `KIROCREW_HOOK_CONTEXT` in the
 environment, and the hook-event JSON on stdin. `KIROCREW_HOOK_CONTEXT` is capped
 at 500 characters on every event. Read the full text from stdin instead: `prompt`
-on `UserPromptSubmit`, `assistant_text` on `Stop`.
+on `UserPromptSubmit`, `assistant_text` on `Stop`. On `PostToolUse`,
+`tool_response.output` holds at most the first 2,000 characters of the redacted
+tool output: `truncated` says whether it was cut, and `output_length` is the
+length of the text it was cut from, which is no more than about 8,000 for a tool
+result Kiro Crew reads over ACP.
 
 In a dashboard chat, and on a channel turn that runs the Hooks page's hooks (your
 own conversation, such as a Slack 1:1 DM), `prompt` is your message, not the
@@ -347,6 +354,19 @@ them with a default: `session_key` is the firing session's own key (a dashboard
 chat, a channel thread); `subagent_id` and `parent_session_key` appear only on
 an event a spawned subagent fired. To tell a person's turn from a subagent's,
 check for `subagent_id`, not `parent_session_key`.
+
+In a dashboard chat, Kiro Crew can send a prompt again, unchanged, when an
+attempt the prompt hooks already ran for did not finish the turn: it failed, was
+refused, or stopped early. The hooks fire again for the re-send, and that
+`UserPromptSubmit` carries `"replay": true`, so a hook can tell it from a new
+message and choose to skip it or still process the text. A continuation Kiro
+Crew writes to resume a turn is never marked, even when re-sent, and a queued
+re-send you edit is a new prompt and is not marked. The re-sent prompt is an earlier one from
+this chat that got no reply, not always the one just before it: a message sent
+while it waited can run first. The key is absent on every other prompt. Channel
+turns fire `UserPromptSubmit` once per message and never carry it. On kiro-cli's
+older v2 engine kiro-cli runs the agent's own hooks itself, and they do not get
+it.
 
 An agent spec's own `hooks` that Kiro Crew runs itself (for a chat session, a
 subagent or the task runner) also get the session's ACP id, as
@@ -391,7 +411,10 @@ A hook's fields:
 **A tool matcher and a message matcher are matched differently.** On
 `PreToolUse` and `PostToolUse` the matcher is compared against the tool name with
 a fixed glob-style vocabulary — an exact name, `prefix*`, `*suffix`,
-`*contains*`, or `*` for everything — and `matcher_mode` is not consulted at all.
+`*contains*`, or `*` for everything, with `|` between plain tool names
+(`fs_write|execute_bash` meets either tool, and the whole text is still one
+pattern too, so the shell command `ls|wc` meets `ls|wc`; a matcher holding a glob
+character or a space is not split) — and `matcher_mode` is not consulted at all.
 The form knows this and hides the mode control for those two events. On
 `UserPromptSubmit`, `AgentSpawn` and `Stop` the matcher runs against the message
 or the final assistant text, and on `SessionLaneChanged` against the lane tokens
@@ -404,6 +427,11 @@ compares the whole string: write `*added:<id>;*` to catch a session entering tha
 lane, `*removed:<id>;*` to catch it leaving, and `*:<id>;*` for either. Keep both
 the leading `:` and the trailing `;` — without them a selector also matches a lane
 whose id merely contains yours, and runs your hook on somebody else's session.
+
+The form helps with both halves. With `SessionLaneChanged` in `glob` mode it states
+the grammar under the matcher, and its **Insert a lane** menu lists the status tags
+(the lanes) by tag name and fills in `*added:<id>;*` with that tag's id, which no other
+screen shows.
 
 ### Creating, testing, enabling and deleting one
 
@@ -465,14 +493,20 @@ so a spec written for either tool loads here:
 ```
 
 Both shapes are held to the same bar: same command and matcher rules, same
-dedup, same per-event and total caps. Twelve triggers are accepted, each in
-kiro-agent's own PascalCase, its IDE camelCase spelling, or its CLI alias —
-the whole table from kiro-agent's `packages/kiro-agent/src/hooks/trigger-names.ts` at blob `2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`, matched without regard to case. Five map onto the five kiro-cli event
+dedup, same per-event and total caps. Fourteen triggers are accepted, each in
+kiro-agent's own PascalCase, its IDE camelCase spelling, its CLI alias, or the
+Open Plugins alias `afterFileEdit` — the whole table from kiro-agent's
+`packages/kiro-agent/src/hooks/trigger-names.ts`, plus `PreCompact` and
+`PostCompact` from the pinned engine, matched without regard to case. The engine's
+`PermissionRequest` trigger (`permissionRequest`) is not one of them: on the engine a
+hook there can allow or deny the permission request itself, and Kiro Crew keeps that
+answer in its own approval flow, so such a hook is skipped with an
+`unknown trigger` warning; to refuse a tool call, use a `PreToolUse` hook. Five map onto the five kiro-cli event
 names: `PreToolUse` to `preToolUse`, `PostToolUse` to `postToolUse`,
 `UserPromptSubmit` to `userPromptSubmit`, `SessionStart` to `agentSpawn`, `Stop`
 to `stop`. Only those five reach kiro-cli; a hook on `SessionEnd`, `PreTaskExec`,
-`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete` or `Manual`
-stays in your config and is not installed for that trigger. Autoimport is a
+`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Manual`,
+`PreCompact` or `PostCompact` stays in your config and is not installed for that trigger. Autoimport is a
 separate path: a script sitting in your hooks directory is still discovered there
 on its own, on the event that scan infers, unless a hook you switched off names
 it. An `action` of type `agent` has no
@@ -506,9 +540,25 @@ the list leaves out is refused, and a refused `preToolUse` hook blocks the
 call. With no `hooks` list every hook runs. The list only decides whether a
 hook runs: a listed hook still meets the blocked-commands list and the sandbox,
 as in a chat. The number is the hook's place in the spec, so reordering the
-spec's hooks changes which one a name means. The list applies where Kiro Crew
+spec's hooks changes which one a name means. A `PreCompact` or `PostCompact`
+hook, which Kiro Crew does not fire, takes no number. The list applies where Kiro Crew
 fires the hooks (Kiro Agent, goose, opencode, Strands); on the kiro-cli
 backend kiro-cli runs them itself.
+
+A hook document with a `name` of its own also answers to
+`<agent>/<Event>/<name>`, such as `my-agent/PreToolUse/read-guard`, which
+reordering does not change, and the refusal prints it beside the number. It
+names the hook, not its command: an update that keeps the name and changes the
+command is still admitted. A deny of either name refuses the hook. Each name
+is judged by the policy and the profile together, so when both carry a `hooks`
+list, name the hook the same way in both. These keep only the number: a
+document with no `name`, whose `<Trigger>-<n>` name is positional too, a name
+that is all digits or holds `/`, `\`, `*`, `?` or `[`, a name two of the
+agent's hook documents share, and every hook in the object form, which has no
+name. The list takes `fnmatch` globs: `my-agent/PreToolUse/*` lets
+every `preToolUse` hook of that agent run, including one a later update adds,
+and a glob meets these names too, so `*-guard` admits a document named
+`read-guard`.
 
 **On kiro-cli's v2 engine a `userPromptSubmit` hook reads the whole prompt.** A
 session runs on that older engine when a Kiro CLI choice meets a kiro-cli without
@@ -518,8 +568,9 @@ kiro-cli runs the agent spec's `userPromptSubmit` hooks itself, on the text Kiro
 Crew sends the model, with your message inside it. A session's first message
 carries the full session-start context: the agent prompt, the critical rules,
 memory and session context. The first message after a compaction carries part of
-it again (the agent prompt, the memory index, skills and lessons), and later
-messages carry Kiro Crew's per-turn context instead. A room or guest conversation
+it again (the agent prompt, the critical rules, the memory index, skills and
+lessons), and later messages carry Kiro Crew's per-turn context instead. A room or
+guest conversation
 gets less at both points, without the rules or memory. In every case that hook's
 stdin `prompt` is not the message you typed, and a hook that checks `prompt` for
 words also checks text you did not write. A Hooks-tab `UserPromptSubmit` hook
@@ -574,7 +625,7 @@ with the results.
 | | Chat lifecycle hook | `register_hook` |
 |---|---|---|
 | Created by | you, on the Hooks tab | an agent, mid-turn |
-| Fires on | one of five session events | an inbound HTTP POST |
+| Fires on | one of six session events | an inbound HTTP POST |
 | Runs | a shell command you wrote | a fresh agent turn |
 | Lives in | the `hooks` list in `hooks.json` | a top-level entry in the same file |
 

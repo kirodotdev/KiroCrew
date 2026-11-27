@@ -25,6 +25,7 @@ from kiro_crew.dashboard.handlers import agents as agent_handlers
 from kiro_crew.history import ConversationLog
 from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.template_mcp_additions import add_addition, merge_at_spawn
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture
@@ -154,6 +155,29 @@ def test_default_crew_servers_suppress_the_no_tools_notice(
     assert notice.AGENT_NO_TOOLS_NOTICE_FIELD not in ConversationLog().get_metadata(key)
 
 
+def test_an_edition_server_kas_mounts_suppresses_the_no_tools_notice(
+    home: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tool-less agent's KAS session gets the edition's server, so it is not tool-less."""
+    from kiro_crew.acp import default_crew_servers
+    from kiro_crew.acp.harness.kas import resolve_projected_spec
+
+    monkeypatch.setattr("kiro_crew.agent_state.get_capabilities", lambda agent: None)
+    monkeypatch.setattr("kiro_crew.apps.manager.owning_app_for_agent", lambda agent: None)
+    monkeypatch.setattr(default_crew_servers, "_registry_mode", lambda: False)
+    monkeypatch.setattr(default_crew_servers, "_edition_server_names", lambda: ("edition-vend",))
+    monkeypatch.setattr(
+        default_crew_servers,
+        "_edition_servers",
+        lambda names: {n: {"command": "/opt/edition/vend"} for n in names},
+    )
+    _agent(home, "empty", tools=[])
+
+    projected, _ = resolve_projected_spec(home["agents"], "empty", None)
+    assert projected["tools"] == ["@edition-vend"]
+    assert not notice.editable_agent_without_tools("empty")
+
+
 def test_an_agent_the_custom_agents_tab_cannot_edit_is_not_told_about(
     home: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -173,6 +197,24 @@ def test_an_agent_the_custom_agents_tab_cannot_edit_is_not_told_about(
     assert not notice.editable_agent_without_tools("packaged")
     assert not notice.editable_agent_without_tools("atlas")
     assert not notice.editable_agent_without_tools("twin")
+
+
+def test_a_credential_shaped_agent_name_is_redacted_in_the_row_and_its_meta(
+    home: dict[str, Path], surfaced
+) -> None:
+    secret = github_classic()
+    _agent(home, secret)
+    key = "dashboard_chat-9"
+    _chat(key)
+
+    assert _surface(_Slot("chat-9"), key, secret)
+
+    _slot_key, _role, content, meta = surfaced[0]
+    assert secret not in content
+    # No link token: a redacted name would open some other agent's page.
+    assert meta == {"kind": notice.AGENT_NO_TOOLS_NOTICE_KIND}
+    # The once-per-chat claim still keys on the real file name.
+    assert ConversationLog().get_metadata(key)[notice.AGENT_NO_TOOLS_NOTICE_FIELD] == secret
 
 
 def test_a_chat_is_told_once_and_again_for_another_such_agent(

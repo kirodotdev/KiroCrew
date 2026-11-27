@@ -4,7 +4,8 @@ Both callers resolve the path before ``materialize_workspace_dir`` sees it, and
 resolving follows a link at the final name. So the function also takes the
 unresolved ``leaf`` and refuses a symlink or a directory junction there, on every
 platform. Its by-name arm (the one Windows takes) additionally refuses a junction
-that appears at the name after resolution, including one that wins the EEXIST race.
+that appears at the name after resolution, including one that wins the EEXIST race,
+and a name whose mkdir returns without making a directory (a Windows device name).
 """
 
 from __future__ import annotations
@@ -156,3 +157,21 @@ class TestByNameRace:
         self._race(monkeypatch, ws, as_junction=False)
         _materialize(ws)
         assert ws.is_dir()
+
+
+def test_a_by_name_mkdir_that_leaves_no_directory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows ``NUL``: the mkdir returns without error and nothing is made at the name."""
+    _by_name(monkeypatch)
+    ws = tmp_path / "NUL"
+    real_mkdir = os.mkdir
+
+    def device_mkdir(path, *args, **kwargs):
+        if Path(path) == ws.resolve():
+            return None
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(loader.os, "mkdir", device_mkdir)
+    _refused(ws)
+    assert not ws.is_dir()

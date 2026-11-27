@@ -3,8 +3,8 @@ title: Dashboard real data -- a crewmate's Dashboard page shows real values or s
 status: draft
 author: kirocrew-worker, for the crewmate dashboard audit of 2026-10-30
 created: 2026-10-30
-last-audited: 2026-10-30
-audited-at: 5e7214b942
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: []
 tracking-issues: [26259]

@@ -181,6 +181,7 @@ def loop_patched_names(source: str | ast.Module) -> dict[str, set[str]]:
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def _corpus_patched_names() -> dict[str, frozenset[str]]:
     """Target -> every name the test trees patch through it, scanned once per worker."""
     found: dict[str, set[str]] = {PACKAGE: set(), READER: set()}

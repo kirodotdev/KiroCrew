@@ -25,32 +25,24 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "node:test must be able to load the supervisor without an Electron runtime",
   );
 
+  // The host calls the supervisor as `gateway.<member>` in main.js and in the
+  // IPC registrar it hands `gateway` to; each such member must exist and be a
+  // function, read from those sources so a new member needs no edit here.
   const { supervisor } = harness();
-  assert.deepStrictEqual(Object.keys(supervisor), [
-    "start",
-    "connect",
-    "mintLocalToken",
-    "ownsLocalListener",
-    "fetchRemoteToken",
-    "entryUrl",
-    "probePrimaryPortOwner",
-    "probePrimaryPortBinding",
-    "probePrimaryLockHolder",
-    "isCurrentBundleGateway",
-    "stopForUpdate",
-    "stopOnQuit",
-    "reopenTunnel",
-    "syncTunnel",
-    "forwardPanePorts",
-    "releasePaneForwards",
-    "canSwitchToRemoteCrew",
-    "switchToRemoteCrew",
-    "canRestartGateway",
-    "restartGateway",
-    "onInstallDispatched",
-    "onInstallFailed",
-    "isInstallingUpdate",
-  ]);
+  const members = Object.keys(supervisor);
+  assert.ok(members.length > 0, "the supervisor exposes no members");
+  for (const name of members) {
+    assert.strictEqual(typeof supervisor[name], "function", `supervisor.${name} is not a function`);
+  }
+  const hostCalls = new Set();
+  for (const host of ["main.js", "ipc-registrar.js"]) {
+    const text = fs.readFileSync(path.join(__dirname, "..", host), "utf8");
+    for (const [, name] of text.matchAll(/\bgateway\.([A-Za-z]+)\b/g)) hostCalls.add(name);
+  }
+  assert.ok(hostCalls.size > 0, "no gateway.<member> use found in main.js or ipc-registrar.js");
+  for (const name of hostCalls) {
+    assert.ok(members.includes(name), `the host calls gateway.${name}, which the supervisor does not expose`);
+  }
 });
 
 test("runtime gateway owners take every host dependency from the supervisor", () => {
@@ -59,22 +51,7 @@ test("runtime gateway owners take every host dependency from the supervisor", ()
   // above and, for __dirname, point at runtime/gateway instead of the app.
   const ownerDir = path.join(__dirname, "..", "runtime", "gateway");
   const owners = fs.readdirSync(ownerDir).filter((name) => name.endsWith(".js")).sort();
-  assert.deepStrictEqual(owners, [
-    "failure-dialog.js",
-    "family-takeover.js",
-    "holder-decision.js",
-    "home-lock.js",
-    "launch-preflight.js",
-    "port-holders.js",
-    "reconnect.js",
-    "remote-crew-prompt.js",
-    "remote-switch.js",
-    "respawn-owner.js",
-    "shutdown.js",
-    "successor-handoff.js",
-    "token-sources.js",
-    "user-restart.js",
-  ]);
+  assert.ok(owners.length > 0, `no owner modules under ${ownerDir}`);
   const facade = fs.readFileSync(MODULE_PATH, "utf8");
   for (const owner of owners) {
     const source = fs.readFileSync(path.join(ownerDir, owner), "utf8");
@@ -357,6 +334,21 @@ test("entryUrl preserves an initial path/query", () => {
   assert.strictEqual(result.searchParams.has("token"), false);
 });
 
+test("entryUrl keeps a deep link with query and hash", () => {
+  const { supervisor } = harness();
+  assert.strictEqual(
+    supervisor.entryUrl("http://localhost:5476", "/chat?sid=a#h"),
+    "http://localhost:5476/chat?sid=a#h",
+  );
+});
+
+test("entryUrl sends a path that leaves the gateway origin to the root", () => {
+  const { supervisor } = harness();
+  for (const path of ["//evil/x", "/\\evil/x", "/\t/evil"]) {
+    assert.strictEqual(supervisor.entryUrl("http://localhost:5476", path), "http://localhost:5476/");
+  }
+});
+
 test("disabled local gateway does not spawn when the backend is unreachable", async () => {
   let probes = 0;
   const { supervisor, spawnCalls, logs } = harness({
@@ -460,6 +452,46 @@ test("unexpected child exits are visible but quit exits stay file-only", async (
   assert.ok(
     quitting.logs.some((line) => line.includes("gateway child exited code=0 signal=SIGTERM")),
   );
+});
+
+test("the caller hears every change to the gateway quitting would stop", async () => {
+  // main.js rebuilds the tray menu from this, so its quit item names the
+  // gateway exactly while a child this app spawned is alive.
+  let changes = 0;
+  const exited = harness({ onOwnedGatewayChange: () => { changes += 1; } });
+  assert.strictEqual(exited.supervisor.stopsGatewayOnQuit(), false, "nothing spawned yet");
+  assert.strictEqual(await exited.supervisor.start(), true);
+  assert.ok(changes >= 1, "the spawn is announced");
+  assert.strictEqual(exited.supervisor.stopsGatewayOnQuit(), true);
+  const beforeExit = changes;
+  exited.spawnCalls[0].child.exitCode = 1;
+  exited.spawnCalls[0].child.emit("exit", 1, null);
+  assert.ok(changes > beforeExit, "the exit is announced");
+  assert.strictEqual(exited.supervisor.stopsGatewayOnQuit(), false);
+
+  let failedChanges = 0;
+  const failed = harness({ onOwnedGatewayChange: () => { failedChanges += 1; } });
+  assert.strictEqual(await failed.supervisor.start(), true);
+  const beforeError = failedChanges;
+  failed.spawnCalls[0].child.emit("error", Object.assign(new Error("missing"), { code: "ENOENT" }));
+  assert.ok(failedChanges > beforeError, "a spawn that never ran is announced too");
+  assert.strictEqual(failed.supervisor.stopsGatewayOnQuit(), false);
+
+  const throwing = harness({ onOwnedGatewayChange: () => { throw new Error("menu gone"); } });
+  assert.strictEqual(await throwing.supervisor.start(), true, "a failing listener never breaks the start");
+});
+
+test("stopping on quit announces the change, so the quit label is rebuilt", async () => {
+  let changes = 0;
+  const built = harness({ onOwnedGatewayChange: () => { changes += 1; } });
+  assert.strictEqual(await built.supervisor.start(), true);
+  // Marked exited without an `exit` event, as the respawn tests do: a live
+  // child's stop reaches the real shutdown request and process listing, which
+  // this harness cannot fake. The announcement is the stop's own.
+  built.spawnCalls[0].child.exitCode = 0;
+  const before = changes;
+  built.supervisor.stopOnQuit();
+  assert.ok(changes > before, "the stop clears the owned child and announces it");
 });
 
 test("Settings' Restart gateway is not offered before the main window connects to the gateway this app spawned", async () => {

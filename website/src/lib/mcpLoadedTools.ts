@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../types'
 import { mcpIdentityFromTitle } from '../utils/toolCallTitle'
+import { stripToolCallLead } from './toolRowContract'
 
 /** Per-tool loaded state for the session MCP view. */
 export type McpToolStatus = 'active' | 'deferred' | 'disabled'
@@ -35,7 +36,7 @@ export function deriveLoadedMcpTools(messages: ChatMessage[]): Set<string> {
     if (typeof server === 'string' && server) {
       const tool = typeof m.meta?.tool_name === 'string' && m.meta.tool_name
         ? m.meta.tool_name
-        : mcpIdentityFromTitle(m.content.replace(/^🔧\s*/, ''))?.tool
+        : mcpIdentityFromTitle(stripToolCallLead(m.content))?.tool
       if (tool) loaded.add(`${server}::${tool}`)
     }
     const out = m.meta?.output

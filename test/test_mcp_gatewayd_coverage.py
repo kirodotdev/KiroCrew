@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -53,7 +54,7 @@ from kiro_crew.mcp_gateway.rewriter import (
     env_sidecar_name,
     resolve_overlay_dir,
 )
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
@@ -1132,7 +1133,9 @@ class TestZombieDiagnostic:
         task = asyncio.create_task(
             gw._zombie_diagnostic(cast(Any, server), BackendPool(max_backends=1), set(), stop)
         )
-        await async_wait_until(lambda: diag.exists(), off_loop=True)
+        await async_wait_until(
+            diag.read_text, off_loop=True, ignoring=(FileNotFoundError, PermissionError)
+        )
         stop.set()
         await await_until(task)
 
@@ -1367,6 +1370,57 @@ class TestAmain:
         loop = MagicMock()
         handler(loop, {"message": "with exc", "exception": RuntimeError("x")})
         handler(loop, {"message": "no exc"})
+
+    @pytest.mark.asyncio
+    async def test_loop_exception_handler_names_the_task_and_its_async_generator(
+        self, _quiet_amain, monkeypatch, caplog
+    ):
+        """The finalizer's ``aclose()`` on a generator suspended in an ``await`` fails
+        frameless from C, so only the task and generator lines can name it."""
+        monkeypatch.setattr(gw, "run_gatewayd", AsyncMock())
+        loop = asyncio.get_running_loop()
+        previous = loop.get_exception_handler()
+        suspended = asyncio.Event()
+
+        async def suspended_ticker():
+            while True:
+                suspended.set()
+                await loop.create_future()  # never resolved
+                yield 1
+
+        async def consume(agen):
+            async for _ in agen:
+                pass
+
+        async def drop_bare_generator_task():
+            agen = suspended_ticker()
+            holder = loop.create_task(consume(agen))
+            await suspended.wait()  # the generator is suspended in its await
+            task = loop.create_task(agen.aclose())
+            await asyncio.wait({task})  # raises at once: the generator is running
+            del task  # dropped unretrieved: the handler logs it
+            holder.cancel()
+            await asyncio.wait({holder})
+
+        try:
+            assert await gw._amain(_quiet_amain) == 0  # leaves the daemon's handler set
+            with caplog.at_level(logging.ERROR, logger=gw.logger.name):
+                await finished(drop_bare_generator_task(), "the bare aclose() task")
+        finally:
+            loop.set_exception_handler(previous)
+
+        (message,) = [
+            r.getMessage()
+            for r in caplog.records
+            if r.exc_info and "already running" in str(r.exc_info[1])
+        ]
+        code = suspended_ticker.__code__
+        assert message.startswith("gatewayd event-loop exception: ")
+        assert "\nTask: <Task finished" in message
+        assert (
+            f"\nAsync generator: {suspended_ticker.__qualname__} "
+            f"({code.co_filename}:{code.co_firstlineno})"
+        ) in message
 
 
 class TestMain:

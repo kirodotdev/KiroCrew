@@ -449,9 +449,9 @@ def cmd_tree(a):
     def walk(nid, depth):
         node = asks[nid]
         if nid in dones:
-            mark = " ✅"
+            mark = " [done]"
         elif nid == cur:
-            mark = " ⏳"
+            mark = " [now]"
         else:
             mark = ""
         ans = answers.get(nid)

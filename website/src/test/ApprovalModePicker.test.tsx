@@ -1,17 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 vi.mock('../api/client', () => ({
-  api: { chatMode: vi.fn().mockResolvedValue({}) },
+  api: {
+    chatMode: vi.fn().mockResolvedValue({}),
+    viewerOwnerOk: vi.fn().mockResolvedValue(null),
+    yoloAck: vi.fn().mockResolvedValue({ acknowledged: false }),
+    setYoloAck: vi.fn().mockResolvedValue({ acknowledged: true }),
+  },
 }))
 
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import ApprovalModePicker from '../components/ApprovalModePicker'
 import { createTestStore } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { api } from '../api/client'
 import { isTrustRootTarget } from '../guide/findTargetPolicy'
+import { queryClient } from '../api/queryClient'
+import { sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
+import type { ApprovalModeRemote } from '../components/ApprovalModePicker'
 
 function renderPicker(mode = 'normal', compact = false) {
   const store = createTestStore()
@@ -26,12 +35,18 @@ function renderPicker(mode = 'normal', compact = false) {
   return store
 }
 
-describe('ApprovalModePicker', () => {
-  beforeEach(() => {
-    localStorage.clear()
-    vi.mocked(api.chatMode).mockClear()
-  })
+// Every case starts from the mock defaults above, empty storage and an empty
+// cache, so no case passes only because of the order the cases ran in.
+beforeEach(() => {
+  localStorage.clear()
+  queryClient.clear()
+  vi.mocked(api.chatMode).mockReset().mockResolvedValue({})
+  vi.mocked(api.viewerOwnerOk).mockReset().mockResolvedValue(null)
+  vi.mocked(api.yoloAck).mockReset().mockResolvedValue({ acknowledged: false })
+  vi.mocked(api.setYoloAck).mockReset().mockResolvedValue({ acknowledged: true })
+})
 
+describe('ApprovalModePicker', () => {
   it('renders trigger with current mode label', () => {
     renderPicker('trust')
     expect(screen.getByText('Trust')).toBeInTheDocument()
@@ -104,13 +119,14 @@ describe('ApprovalModePicker', () => {
     expect(localStorage.getItem('mc-yolo-ack')).toBeNull()
   })
 
-  it("ticking Don't show again then Enable persists mc-yolo-ack", () => {
+  it("ticking Don't show again then Enable persists mc-yolo-ack", async () => {
     renderPicker('normal')
     fireEvent.click(screen.getByLabelText('Approval mode: Normal'))
     fireEvent.click(screen.getAllByRole('menuitem')[3])
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(screen.getByText('Enable'))
     expect(localStorage.getItem('mc-yolo-ack')).toBe('1')
+    await waitFor(() => expect(queryClient.getQueryData(['chat-yolo-ack'])).toEqual({ acknowledged: true }))
   })
 
   it('check-then-Cancel does NOT persist the ack (gate cannot be silently disabled)', () => {
@@ -146,8 +162,6 @@ describe('ApprovalModePicker', () => {
  *  Tailwind's `font-mono` resolves to `var(--mono)`, a token that setting never
  *  writes, so a `font-mono` here would pin JetBrains Mono in every mode. */
 describe('ApprovalModePicker — trigger follows the Font Family setting', () => {
-  beforeEach(() => { localStorage.clear() })
-
   it('does not pin the trigger to font-mono in any mode', () => {
     for (const [mode, label] of [['normal', 'Normal'], ['trust_reads', 'Reads'], ['trust', 'Trust'], ['yolo', 'YOLO']] as const) {
       renderPicker(mode)
@@ -168,8 +182,6 @@ describe('ApprovalModePicker — trigger follows the Font Family setting', () =>
  *  so hiding that row too would show "Trust" on the button with no Trust row and
  *  no checkmark anywhere — a control contradicting itself with no explanation. */
 describe('ApprovalModePicker — policy-disabled modes are hidden, not greyed', () => {
-  beforeEach(() => { localStorage.clear() })
-
   function renderWithDisabled(disabled: string[], mode = 'normal') {
     const store = createTestStore({
       dashboard: { status: { disabled_approval_modes: disabled } } as never,
@@ -247,5 +259,154 @@ describe('ApprovalModePicker — policy-disabled modes are hidden, not greyed', 
     const reads = screen.getAllByRole('menuitem').find(i => (i.textContent || '').includes('Reads'))!
     fireEvent.click(reads)
     expect(await screen.findByText(/Disabled by your organization/i)).toBeInTheDocument()
+  })
+})
+
+
+/** The machine owner's *Don't show again* is also kept on the gateway
+ *  (`/api/chat/yolo-ack`), so a fresh browser profile with an empty localStorage
+ *  still skips the confirmation for the owner. A teammate and a remote session
+ *  never read or write that record. */
+describe('ApprovalModePicker — the owner acknowledgement kept on the gateway', () => {
+  const ACK_KEY = ['chat-yolo-ack']
+  const OWNER_KEY = [...sharedCrewKeys.viewer, 'owner-ok']
+  // The first record read waits for the owner check: owner-ok answers, then chat-yolo-ack.
+  const ACK_READ = () => namedCeiling('ACK_READ_AFTER_OWNER_OK', 5000)
+
+  beforeEach(() => {
+    vi.mocked(api.viewerOwnerOk).mockResolvedValue(true)
+  })
+  afterEach(() => {
+    cleanup()
+    queryClient.clear()
+  })
+
+  function renderWith(remote?: ApprovalModeRemote) {
+    render(
+      <Provider store={createTestStore()}>
+        <MemoryRouter>
+          <ApprovalModePicker mode="normal" slotKey="dashboard:1" remote={remote} />
+        </MemoryRouter>
+      </Provider>,
+    )
+  }
+  const pickYolo = () => {
+    fireEvent.click(screen.getByLabelText('Approval mode: Normal'))
+    fireEvent.click(screen.getAllByRole('menuitem')[3])
+  }
+  const ownerAnswered = () => waitFor(() => expect(queryClient.getQueryState(OWNER_KEY)?.status).toBe('success'))
+  // The notices' own copy; the raw error text must never reach the reader.
+  const READ_FAILED = "Couldn't check whether you turned this confirmation off, so it is showing. Enable still works."
+  const SAVE_FAILED = '“Don\'t show again” was saved only in this browser, so other browsers will still ask before YOLO turns on. The switch to YOLO itself is not affected.'
+
+  it('an owner whose record is acknowledged switches to YOLO without the confirmation', async () => {
+    vi.mocked(api.yoloAck).mockResolvedValue({ acknowledged: true })
+    renderWith()
+    await waitFor(() => expect(queryClient.getQueryData(ACK_KEY)).toEqual({ acknowledged: true }), ACK_READ())
+    pickYolo()
+    expect(screen.queryByText('YOLO mode is an app-wide setting')).not.toBeInTheDocument()
+    expect(api.chatMode).toHaveBeenCalledWith('yolo', 'dashboard:1')
+    expect(api.yoloAck).toHaveBeenCalledTimes(1)
+  })
+
+  it('a teammate never fetches the record and sees the confirmation', async () => {
+    vi.mocked(api.viewerOwnerOk).mockResolvedValue(false)
+    renderWith()
+    await ownerAnswered()
+    pickYolo()
+    expect(screen.getByText('YOLO mode is an app-wide setting')).toBeInTheDocument()
+    expect(api.yoloAck).not.toHaveBeenCalled()
+    expect(api.chatMode).not.toHaveBeenCalled()
+  })
+
+  it('a record that cannot be read counts as absent: the confirmation shows', async () => {
+    vi.mocked(api.yoloAck).mockRejectedValue(new Error('gateway unreachable'))
+    renderWith()
+    await waitFor(() => expect(queryClient.getQueryState(ACK_KEY)?.status).toBe('error'), ACK_READ())
+    pickYolo()
+    expect(screen.getByText('YOLO mode is an app-wide setting')).toBeInTheDocument()
+    expect(api.chatMode).not.toHaveBeenCalled()
+    // The failed read is reported in the menu while the confirmation shows.
+    expect(screen.getByText(READ_FAILED)).toBeInTheDocument()
+    expect(screen.queryByText('gateway unreachable')).not.toBeInTheDocument()
+  })
+
+  it('Enable with the box ticked as the owner writes the record and still writes localStorage', async () => {
+    renderWith()
+    await waitFor(() => expect(queryClient.getQueryData(ACK_KEY)).toEqual({ acknowledged: false }), ACK_READ())
+    pickYolo()
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByText('Enable'))
+    expect(api.setYoloAck).toHaveBeenCalledWith(true)
+    expect(localStorage.getItem('mc-yolo-ack')).toBe('1')
+    expect(api.chatMode).toHaveBeenCalledWith('yolo', 'dashboard:1')
+    await waitFor(() => expect(queryClient.getQueryData(ACK_KEY)).toEqual({ acknowledged: true }))
+  })
+
+  it('a failed write neither blocks nor undoes the switch', async () => {
+    vi.mocked(api.setYoloAck).mockRejectedValue(new Error('write failed'))
+    renderWith()
+    await waitFor(() => expect(queryClient.getQueryData(ACK_KEY)).toEqual({ acknowledged: false }), ACK_READ())
+    pickYolo()
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByText('Enable'))
+    expect(api.setYoloAck).toHaveBeenCalledWith(true)
+    expect(api.chatMode).toHaveBeenCalledWith('yolo', 'dashboard:1')
+    expect(localStorage.getItem('mc-yolo-ack')).toBe('1')
+    // The menu re-opens to report the failed save; the switch itself stands.
+    // Awaited first, so the rejection's state updates land inside a wait.
+    expect(await screen.findByText(SAVE_FAILED)).toBeInTheDocument()
+    await expect(vi.mocked(api.setYoloAck).mock.results[0].value).rejects.toThrow('write failed')
+    expect(screen.queryByText('write failed')).not.toBeInTheDocument()
+    // A partial failure, read politely: the switch itself worked.
+    expect(screen.getByText(SAVE_FAILED).closest('[role]')).toHaveAttribute('role', 'status')
+    expect(queryClient.getQueryData(ACK_KEY)).toEqual({ acknowledged: false })
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    expect(api.chatMode).toHaveBeenCalledWith('yolo', 'dashboard:1')
+  })
+
+  it('an owner check that failed still sends the write, for the gateway to decide', async () => {
+    vi.mocked(api.viewerOwnerOk).mockRejectedValue(new Error('owner check failed'))
+    renderWith()
+    await waitFor(() => expect(queryClient.getQueryState(OWNER_KEY)?.status).toBe('error'))
+    pickYolo()
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByText('Enable'))
+    expect(api.setYoloAck).toHaveBeenCalledWith(true)
+    expect(localStorage.getItem('mc-yolo-ack')).toBe('1')
+    expect(api.chatMode).toHaveBeenCalledWith('yolo', 'dashboard:1')
+    await waitFor(() => expect(queryClient.getQueryData(ACK_KEY)).toEqual({ acknowledged: true }))
+  })
+
+  it('a failed owner check is reported while the confirmation shows', async () => {
+    vi.mocked(api.viewerOwnerOk).mockRejectedValue(new Error('owner check failed'))
+    renderWith()
+    await waitFor(() => expect(queryClient.getQueryState(OWNER_KEY)?.status).toBe('error'))
+    pickYolo()
+    expect(screen.getByText('YOLO mode is an app-wide setting')).toBeInTheDocument()
+    expect(api.chatMode).not.toHaveBeenCalled()
+    expect(api.yoloAck).not.toHaveBeenCalled()
+    expect(screen.getByText(READ_FAILED)).toBeInTheDocument()
+    expect(screen.queryByText('owner check failed')).not.toBeInTheDocument()
+  })
+
+  it('Enable with the box ticked as a teammate writes localStorage only', async () => {
+    vi.mocked(api.viewerOwnerOk).mockResolvedValue(false)
+    renderWith()
+    await ownerAnswered()
+    pickYolo()
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByText('Enable'))
+    expect(localStorage.getItem('mc-yolo-ack')).toBe('1')
+    expect(api.setYoloAck).not.toHaveBeenCalled()
+    expect(api.chatMode).toHaveBeenCalledWith('yolo', 'dashboard:1')
+  })
+
+  it('a remote session never fetches the record', async () => {
+    renderWith({ write: vi.fn().mockResolvedValue({}), trustScoped: false, note: '' })
+    await ownerAnswered()
+    fireEvent.click(screen.getByLabelText('Approval mode: Normal'))
+    expect(api.viewerOwnerOk).toHaveBeenCalled()
+    expect(api.yoloAck).not.toHaveBeenCalled()
   })
 })

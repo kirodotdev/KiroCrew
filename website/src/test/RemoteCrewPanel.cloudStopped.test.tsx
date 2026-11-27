@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders } from './helpers'
+import { createConnectedTestStore, renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
@@ -93,10 +93,11 @@ describe('a cloud crew stopped from its menu', () => {
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [STOPPED_CREW] })
     vi.mocked(api.cloudStart).mockResolvedValue({ started: true } as never)
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     const row = (await screen.findByText(NAME)).closest('[data-crew-id]') as HTMLElement
     expect(within(row).getByText('Stopped')).toBeInTheDocument()
+    await u.click(within(row).getByRole('button', { name: `Show details for ${NAME}` }))
     expect(within(row).getByText(/You stopped this crew's cloud machine/)).toBeInTheDocument()
     expect(within(row).queryByText(/TargetNotConnected/)).not.toBeInTheDocument()
     expect(within(row).queryByText('Error')).not.toBeInTheDocument()
@@ -105,19 +106,19 @@ describe('a cloud crew stopped from its menu', () => {
     await u.click(within(row).getByRole('button', { name: `Start ${NAME}` }))
     await waitFor(() => expect(api.cloudStart).toHaveBeenCalledWith('kc-3f9a', expect.anything()))
 
-    await u.click(within(row).getByRole('button', { name: /More actions/i }))
-    expect(screen.queryByRole('menuitem', { name: `Stop ${NAME}` })).not.toBeInTheDocument()
+    // Its details offer no Stop for a machine that is already stopped.
+    expect(screen.queryByRole('button', { name: `Stop ${NAME}` })).not.toBeInTheDocument()
   })
 
   it('still offers Stop on a running cloud crew', async () => {
     const running = { ...STOPPED_CREW, cloud_stopped: false, status: { instance_id: 'kc1', state: 'connected' as const } }
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [running] })
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     const row = (await screen.findByText(NAME)).closest('[data-crew-id]') as HTMLElement
     expect(within(row).queryByText(/You stopped this crew's cloud machine/)).not.toBeInTheDocument()
-    await u.click(within(row).getByRole('button', { name: /More actions/i }))
-    expect(screen.getByRole('menuitem', { name: `Stop ${NAME}` })).toBeInTheDocument()
+    await u.click(within(row).getByRole('button', { name: `Show details for ${NAME}` }))
+    expect(screen.getByRole('button', { name: `Stop ${NAME}` })).toBeInTheDocument()
   })
 })

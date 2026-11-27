@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useState } from 'react'
 import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
@@ -22,6 +22,7 @@ const touchEnv = vi.hoisted(() => ({ touch: false }))
 vi.mock('../utils/isTouchDevice', () => ({ isTouchDevice: () => touchEnv.touch }))
 
 import ChatInput from '../components/ChatInput'
+import { registerComposerUpload, unregisterComposerUpload } from '../utils/composerSendHolds'
 
 beforeEach(() => {
   touchEnv.touch = false
@@ -36,12 +37,24 @@ beforeEach(() => {
   vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {})
 })
 
-let finishUpload: () => void = () => {}
+/** The uploads a Host started, as the hosts keep them: in the shared
+ *  registry, one per file, each ending when it settles or is aborted. */
+const SLOT = 'chat-1'
+const live = new Set<AbortController>()
+const endUpload = (c: AbortController) => { if (live.delete(c)) unregisterComposerUpload(SLOT, c) }
+const finishUpload = () => { [...live].forEach(endUpload) }
+afterEach(() => { act(() => finishUpload()) })
 
 function Host({ initial = '', collapsible = false }: { initial?: string; collapsible?: boolean }) {
   const [val, setVal] = useState(initial)
-  const [uploading, setUploading] = useState(false)
-  finishUpload = () => setUploading(false)
+  const uploadFiles = (files: File[]) => {
+    for (const file of files) {
+      const c = new AbortController()
+      live.add(c)
+      c.signal.addEventListener('abort', () => endUpload(c))
+      registerComposerUpload(SLOT, c, file.name)
+    }
+  }
   return (
     <SlotProvider slotId="chat-1">
       <ChatInput
@@ -49,9 +62,8 @@ function Host({ initial = '', collapsible = false }: { initial?: string; collaps
         value={val}
         onChange={setVal}
         onSend={vi.fn()}
-        onUploadFiles={() => setUploading(true)}
-        onCancelUpload={() => setUploading(false)}
-        uploading={uploading}
+        onUploadFiles={uploadFiles}
+        uploadSlot={SLOT}
       />
       <button type="button">Elsewhere</button>
     </SlotProvider>
@@ -125,16 +137,21 @@ describe('ChatInput focus after the upload file picker', () => {
     expect(document.activeElement).toBe(elsewhere)
   })
 
-  it('keeps focus on the attach slot when the user cancels the upload from its cancel control', async () => {
+  it('moves focus to the next chip, then to "+", as the user cancels uploads from their chips', async () => {
     renderWithProviders(<Host />)
     await openPicker()
-    chooseFile()
-    const cancel = screen.getByRole('button', { name: 'Cancel upload' })
-    cancel.focus()
-    fireEvent.click(cancel)
-    expect(screen.queryByRole('button', { name: 'Cancel upload' })).not.toBeInTheDocument()
-    // The cancel control and the "+" trigger share one slot and one element,
-    // so focus stays on the restored trigger instead of dropping to <body>.
+    const input = fileInput()
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File(['x'], 'a.txt'), new File(['y'], 'b.txt')] })
+    fireEvent.change(input)
+    const cancelA = screen.getByRole('button', { name: 'Cancel uploading a.txt' })
+    cancelA.focus()
+    fireEvent.click(cancelA)
+    expect(screen.queryByRole('button', { name: 'Cancel uploading a.txt' })).not.toBeInTheDocument()
+    // The cancelled chip is gone, so focus is on its neighbour, not <body>.
+    const cancelB = screen.getByRole('button', { name: 'Cancel uploading b.txt' })
+    expect(document.activeElement).toBe(cancelB)
+    fireEvent.click(cancelB)
+    expect(screen.queryByTestId('composer-upload-chip')).not.toBeInTheDocument()
     expect(document.activeElement).toBe(trigger())
   })
 

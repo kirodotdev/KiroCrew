@@ -1,0 +1,4 @@
++25
+The double-quoted `$( )` span reader in `shell_commands` skips its heredoc re-read when
+no heredoc body can reach the close the walk found (`shell_normalizer_walk` now reports how
+far that walk read). The skip changes no span and no verdict.

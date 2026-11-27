@@ -949,7 +949,29 @@ describe('KiroPrerequisiteGate agent choice', () => {
 
     await settle(queryClient)
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Kiro CLI is installed but could not be verified' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'The agent sandbox could not be started' })).toBeInTheDocument()
+  })
+
+  it('heads the sandbox-blocked screen as a sandbox problem on the built-in engine route', async () => {
+    // What failed is the host's sandbox, whichever engine runs, so the heading
+    // names the sandbox and never sends the user after a Kiro CLI problem.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_remedy: 'apparmor_userns',
+    }))
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: {} })
+    vi.mocked(api.acpBackends).mockResolvedValue({
+      backends: [probe({ id: 'kas', policy_id: 'kas', independent_setup: false })],
+    })
+    const { queryClient } = renderSettled()
+
+    await settle(queryClient)
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'The agent sandbox could not be started' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /Kiro CLI/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/This host allows user namespaces, but the kernel then denied the mount namespace/)).toBeInTheDocument()
   })
 
   it('uses KAS when the config has no manual harness choice', async () => {
@@ -1075,6 +1097,28 @@ describe('KiroPrerequisiteGate agent choice', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Use Kiro CLI instead' }))
     await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('agent.acp_backend', 'kiro'))
   })
+
+  // The card never reads which agent is configured, so its first line names
+  // no default: the "Use other coding agents" notice is the one place that
+  // names the configured agent (docs/decisions/2026-11-14-the-kiro-cli-setup-card-does-not-name-a-default-agent.md).
+  it.each(['kas', 'kiro', 'claude'] as const)(
+    'says only that Kiro CLI is not installed, naming no default agent, with %s configured',
+    async (backend) => {
+      vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed: false }))
+      vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: backend } })
+      vi.mocked(api.acpBackends).mockResolvedValue({
+        backends: backend === 'claude' ? [probe({ installed: 'missing', install_command: 'npm install -g x' })] : [],
+      })
+      const { queryClient } = renderSettled()
+      await settle(queryClient)
+
+      const card = (await screen.findByRole('heading', { name: 'Get Kiro CLI' })).closest('div.card-glow')
+      expect(card).not.toBeNull()
+      expect((card as HTMLElement).querySelector('p')).toHaveTextContent(/^Kiro CLI isn't installed on this host yet\.$/)
+      expect(screen.queryAllByText(/default agent/i)).toHaveLength(0)
+      expect(document.body).not.toHaveTextContent(/default agent/i)
+    },
+  )
 
   it.each([false, true])('surfaces a config read failure without bypassing the Kiro checks (installed: %s)', async (installed) => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed }))

@@ -1331,6 +1331,7 @@ class TestAdaptiveHomeTargetsExpiry:
             "read",
             "write",
             "keystone-artifact",
+            "mcp-registry",
         }, f"the scan must reach every gate, found {sorted(set(named))}"
 
     def test_repointed_home_symlink_is_not_served_from_cache_at_the_longest_expiry(

@@ -121,6 +121,56 @@ describe('registryListingFailureMessage', () => {
   })
 })
 
+describe('a private GitHub registry the GitHub CLI could not read', () => {
+  it('names the repository and the fix for each gh cause, then the plain line', () => {
+    expect(registryRefreshFailureMessage({
+      ok: false,
+      failed: ['a', 'b', 'c'],
+      results: [
+        { name: 'a', ok: false, reason: 'gh_missing', host: 'github.com', repo: 'acme/apps' },
+        { name: 'b', ok: false, reason: 'gh_signed_out', host: 'github.com', repo: 'acme/apps' },
+        { name: 'c', ok: false, reason: 'gh_no_access', host: 'github.com', repo: 'acme/other' },
+      ],
+    })).toBe([
+      'registry_gh_missing {"repo":"acme/apps","names":"a"}',
+      'registry_gh_signed_out {"repo":"acme/apps","names":"b"}',
+      'registry_gh_no_access {"repo":"acme/other","names":"c"}',
+      'could_not_refresh_still_showing_last_synced {"names":"a, b, c"}',
+    ].join(' '))
+  })
+
+  it('shows the plain line only when the repository is unknown', () => {
+    expect(registryListingFailureMessage([
+      { name: 'team', cause: 'gh_signed_out', host: 'github.com', cached: false },
+    ])).toBe('registry_apps_missing {"names":"team"}')
+  })
+
+  it('names the strict-mode remedy only when the repository is known', () => {
+    expect(registryListingFailureMessage([
+      { name: 'team', cause: 'gh_strict_mode', repo: 'acme/apps', cached: false },
+    ])).toBe([
+      'registry_gh_strict_mode {"repo":"acme/apps","names":"team"}',
+      'registry_apps_missing {"names":"team"}',
+    ].join('\n'))
+    expect(registryListingFailureMessage([
+      { name: 'team', cause: 'gh_strict_mode', cached: false },
+    ])).toBe('registry_apps_missing {"names":"team"}')
+    const text = i18next.t('components.registryManager.registry_gh_strict_mode', { repo: 'acme/apps', names: 'team' })
+    expect(text).toContain('acme/apps')
+    expect(text).toContain('strict provider-binary mode')
+    expect(text).toContain('computer that runs Kiro Crew')
+    expect(text.toLowerCase()).not.toContain('token')
+  })
+
+  it('reads in English as a GitHub CLI sign-in on the computer that runs Kiro Crew', () => {
+    const text = i18next.t('components.registryManager.registry_gh_signed_out', { repo: 'acme/apps', names: 'team' })
+    expect(text).toContain('acme/apps')
+    expect(text).toContain('GitHub CLI')
+    expect(text).toContain('computer that runs Kiro Crew')
+    expect(text.toLowerCase()).not.toContain('token')
+  })
+})
+
 describe('registryRefreshFailureMessage in Japanese', () => {
   afterEach(async () => { await i18next.changeLanguage('en') })
 

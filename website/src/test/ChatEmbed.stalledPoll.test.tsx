@@ -23,7 +23,7 @@ vi.mock('../app-sdk/index', () => ({
 
 vi.mock('../app-sdk/ChatMessageList', () => ({
   default: React.forwardRef(function MockList(
-    { running, messages }: { running: boolean; messages: ChatMessage[] },
+    { running, messages, transcript }: { running: boolean; messages: ChatMessage[]; transcript?: { announcement?: string } },
     ref: React.Ref<unknown>,
   ) {
     React.useImperativeHandle(ref, () => ({ scrollToBottom: vi.fn() }), [])
@@ -32,6 +32,7 @@ vi.mock('../app-sdk/ChatMessageList', () => ({
         data-testid="chat-message-list"
         data-running={String(running)}
         data-tail-role={messages[messages.length - 1]?.role ?? ''}
+        data-announcement={transcript?.announcement ?? ''}
         data-rows={messages.map(m => `${m.role}${m.meta?.optimistic ? '*' : ''}:${m.content}`).join('|')}
       />
     )
@@ -112,6 +113,17 @@ describe('ChatEmbed stalled poll', () => {
     expect(screen.getByTestId('chat-message-list').dataset.tailRole).toBe('streaming')
     await advance(EMBED_STALL_MS + 2000)
     expect(screen.getByTestId('chat-message-list').dataset.tailRole).toBe('assistant')
+  })
+
+  it('does not announce a stale half-written reply as a finished one', async () => {
+    // The stall relabels the streaming tail as settled and drops `running`; the
+    // live region must not take that for the turn landing.
+    const page = { ...RUNNING_PAGE, messages: [...RUNNING_PAGE.messages, { role: 'streaming', content: 'part', ts: 2 }] }
+    mockGet.mockResolvedValueOnce(page).mockRejectedValue(new Error('gateway down'))
+    await mount()
+    await advance(EMBED_STALL_MS + 2000)
+    expect(screen.getByTestId('chat-message-list').dataset.tailRole).toBe('assistant')
+    expect(screen.getByTestId('chat-message-list').dataset.announcement).toBe('')
   })
 
   it('times the outage from its first failure, not from a success long before', async () => {

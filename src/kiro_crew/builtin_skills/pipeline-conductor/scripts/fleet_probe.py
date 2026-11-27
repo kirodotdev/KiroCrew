@@ -50,7 +50,7 @@ The data home is ``$KIROCREW_HOME`` when set, else ``~/.kiro/crew`` — the same
 resolution every pipeline script uses.
 
 Output (text, one line per FIRING signal; suppressed sessions print nothing):
-    🔔 <session-key> <age>s <TAG> i=<index> d=<digest>
+    ALERT <session-key> <age>s <TAG> i=<index> d=<digest>
 
 ``i=`` counts the rows that SESSION PRODUCED -- its own messages and tool calls,
 never an inbound nudge, inject or user row, because a supervisor's own nudge
@@ -1039,7 +1039,7 @@ def run_probe(cfg: dict[str, Any], state_path: Path) -> int:
         # which keys an (agent-authored) config watches. The index is a line
         # POSITION, so it carries no content either.
         index_text = "?" if index is None else str(index)
-        print(f"🔔 {key:<28} {age_text:>5}s {tag:<9} i={index_text} d={digest}")
+        print(f"ALERT {key:<28} {age_text:>5}s {tag:<9} i={index_text} d={digest}")
 
     banned_lines, host = _host_lines(cfg)
     for line in banned_lines:

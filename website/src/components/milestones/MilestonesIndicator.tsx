@@ -1,6 +1,7 @@
 import { featureProgress, milestonesLoadFailed, untriedNow, useMilestones, useMilestonesPanel, toggleMilestonesPanel } from './useMilestones'
 import { i18nT } from '../../i18n/t'
 import { Glass } from '../Glass'
+import { useLabelTip } from '../InstantTip'
 
 /**
  * A thin progress ring: `done / total` of the new-feature rows, drawn as a
@@ -60,8 +61,12 @@ export function useIndicatorState() {
 export default function MilestonesIndicator({ className, streakClassName = '', compact = false }: { className?: string; streakClassName?: string; compact?: boolean }) {
   const { shown, done, total, streak, dot } = useIndicatorState()
   const { open } = useMilestonesPanel()
-  if (!shown) return null
   const label = indicatorLabel(done, total, streak)
+  // The hint is drawn in the page: the top bar sits in the desktop window's
+  // drag band, where a native `title` never paints. It gives way while the
+  // panel it opens is up.
+  const tip = useLabelTip(label)
+  if (!shown) return null
   return (
     <button
       type="button"
@@ -72,10 +77,11 @@ export default function MilestonesIndicator({ className, streakClassName = '', c
         : `flex items-center justify-center gap-1 h-7 min-w-7 px-1.5 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 whitespace-nowrap ${open ? 'text-accent' : 'text-muted hover:text-text'}`}
       onClick={toggleMilestonesPanel}
       aria-label={label}
-      title={label}
+      {...tip.handlers}
       aria-haspopup="dialog"
       aria-expanded={open}
     >
+      {open ? null : tip.bubble}
       <MilestoneRing done={done} total={total} dot={dot} />
       {/* Says what the ring is and where it goes; the streak is the smaller second line of meaning. */}
       <span className="text-[12px] font-medium tabular-nums text-text" data-testid="milestones-count">{i18nT('milestones.pill_count', { done, total })}</span>

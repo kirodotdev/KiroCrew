@@ -43,13 +43,13 @@ from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     _normalize_slot_key,
     _safe_folder_tree,
+    bot_member,
     count_restored_workers,
     creator_slot_cap_refusal,
     note_new_worker,
-    own_worker_member,
     read_worker_execution,
-    worker_cap_refusal,
 )
+from kiro_crew.mate_worker_conducts import effective_worker_cap_refusal, holds_conducting_kit
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -281,6 +281,48 @@ def _revived_slot_refusal(slot: "_ChatSlot", caller_slot: "_ChatSlot") -> tuple[
 #: contains ``:``, so no slot key and no caller key can ever equal it.
 UNVERIFIED_CREATOR = "unverified:creator"
 
+
+def reconfirm_restored_creators(state: Any) -> int:
+    """Lift the restore fence from live slots whose creator the crew log now confirms.
+
+    On the loop, no I/O. A restart's restore judges each ``created_by`` claim once,
+    against the session tree as it stands then (``metadata_codec._read_created_by``).
+    When the tree does not hold the creation record yet, the worker is fenced as
+    :data:`UNVERIFIED_CREATOR`, and before this nothing judged it again: the Bot that
+    made it could not list, bind or revive it until the next restart. This re-asks the
+    same question on each tree change, with the same evidence (the crew log's creation
+    records, which no sandboxed process can write), so it widens nothing: a claim the
+    tree does not confirm, or names another creator for, stays fenced.
+
+    Only a slot the restore fenced carries a claim (``_unconfirmed_creator``). A slot
+    whose ``_created_by`` was set some other way since is left alone and loses the
+    claim. A lifted fence also gives the slot the thread-born mark the restore would
+    have given it had the tree held the record then (``members.note_worker_lineage``,
+    from the creator the record names). Returns how many fences were lifted.
+    """
+    # Circular at runtime: ``members`` imports this module.
+    from kiro_crew.members import note_worker_lineage
+
+    lifted = 0
+    for slot in list(getattr(state, "_slots", {}).values()):
+        claimed = str(getattr(slot, "_unconfirmed_creator", "") or "")
+        if not claimed:
+            continue
+        if getattr(slot, "_created_by", "") != UNVERIFIED_CREATOR:
+            slot._unconfirmed_creator = ""
+            continue
+        if _creation_parent(slot.key) != claimed:
+            continue
+        slot._created_by = claimed
+        slot._unconfirmed_creator = ""
+        note_worker_lineage(slot.key, claimed)
+        lifted += 1
+        logger.info(
+            "session %s: creator %s confirmed by the session tree after restore", slot.key, claimed
+        )
+    return lifted
+
+
 #: Rebinds started on a cancelled revive, held so the loop does not drop them.
 _PENDING_REBINDS: "set[asyncio.Task[None]]" = set()
 
@@ -292,6 +334,11 @@ def _rebind_in_background(slot: Any, meta: "Mapping[str, Any]") -> None:
     )
     _PENDING_REBINDS.add(task)
     task.add_done_callback(_PENDING_REBINDS.discard)
+
+
+#: The archived fence's ``not_creator`` wording; :func:`revive_session` puts the caller's
+#: own (:func:`_not_creator_reason`) in its place.
+_ARCHIVED_NOT_CREATOR = "target session was created by another session"
 
 
 def _archived_target_refusal(
@@ -336,8 +383,22 @@ def _archived_target_refusal(
         # be republishing to a channel the moment it is reopened. Unknown reads
         # as mirrored, the refusal paths' fail-closed direction.
         return "sessions mirrored to a channel are not addressable", "mirrored_target"
+    fence = _archived_fence_refusal(
+        slot_key, meta, caller_key=caller_key, ownership_fenced=ownership_fenced
+    )
     if str(meta.get("workspace") or "default") != caller_workspace:
-        return "target session belongs to a different workspace", "workspace_mismatch"
+        # One refusal names both walls: a workspace fix cannot clear the fence.
+        reason = "target session belongs to a different workspace"
+        if fence is not None:
+            reason += "; also, " + fence[0]
+        return reason, "workspace_mismatch"
+    return fence
+
+
+def _archived_fence_refusal(
+    slot_key: str, meta: "Mapping[str, Any]", *, caller_key: str, ownership_fenced: bool
+) -> tuple[str, str] | None:
+    """The ownership-fence half of :func:`_archived_target_refusal`, or None."""
     if ownership_fenced:
         if session_managers.recorded_manager(slot_key, str(meta.get("tab_id") or "")) == (
             caller_key
@@ -347,7 +408,7 @@ def _archived_target_refusal(
             # and it is the record the send fence reads for the live session.
             return None
         if str(meta.get("created_by") or "") != caller_key:
-            return "target session was created by another session", "not_creator"
+            return _ARCHIVED_NOT_CREATOR, "not_creator"
         # The metadata line is a file a sandboxed shell can write
         # (``metadata_codec._read_created_by`` says so where it restores it), so for a
         # FENCED caller the claim above is only a claim: a caller that rewrote
@@ -467,9 +528,16 @@ async def revive_session(
             if live.key == caller_key:
                 raise deny("a session cannot control itself", "self_target")
             live_caller = _check_caller_slot_fields(state, caller_key, deny)
+            fenced_out = ownership_fenced and _created_by_other(live, caller_key)
             if (refusal := _revived_slot_refusal(live, live_caller)) is not None:
-                raise deny(refusal[0], refusal[1])
-            if ownership_fenced and _created_by_other(live, caller_key):
+                reason, code = refusal
+                if fenced_out and code == "workspace_mismatch":
+                    # As authorize_target: a workspace fix cannot clear the fence.
+                    reason += "; also, " + _not_creator_reason(
+                        state, caller_key, live_caller, caller_fenced
+                    )
+                raise deny(reason, code)
+            if fenced_out:
                 raise deny(
                     _not_creator_reason(state, caller_key, live_caller, caller_fenced),
                     "not_creator",
@@ -508,8 +576,12 @@ async def revive_session(
     )
     if refusal is not None:
         reason, code = refusal
-        if code == "not_creator":
-            reason = _not_creator_reason(state, caller_key, caller_slot, caller_fenced)
+        if _ARCHIVED_NOT_CREATOR in reason:
+            # The caller's own wording, whether the fence refuses alone or after the workspace.
+            reason = reason.replace(
+                _ARCHIVED_NOT_CREATOR,
+                _not_creator_reason(state, caller_key, caller_slot, caller_fenced),
+            )
         raise deny(reason, code)
 
     if folder_id:
@@ -583,10 +655,10 @@ async def revive_session(
             return ResumeRefusal(
                 "sessions mirrored to a channel are not addressable", "mirrored_target", 403
             )
-        # A revived Bot worker takes a seat under its Bot's `max_workers`: its saved
-        # record is read here, and the seat is checked in `_final_check`.
+        # A revived session that runs as a Bot takes a seat under its `max_workers`:
+        # its saved record is read here, and the seat is checked in `_final_check`.
         revived_execution[0] = await asyncio.to_thread(read_worker_execution, history_key)
-        if own_worker_member(revived_execution[0]):
+        if bot_member(revived_execution[0]):
             await count_restored_workers(state)
         claimed_creator = str(meta.get("created_by") or "")
         if not getattr(built, "_created_by", "") and claimed_creator:
@@ -612,6 +684,13 @@ async def revive_session(
                 built._created_by = claimed_creator
             else:
                 built._created_by = UNVERIFIED_CREATOR
+        # The thread-born mark from the same verified creator a restart reads it
+        # from (``metadata_codec._read_created_by``), so a worker the Bot's thread
+        # opened is thread-born again after a revive whether or not the gateway
+        # restarted since it was archived; an unverified claim marks nothing.
+        from kiro_crew.members import note_worker_lineage
+
+        note_worker_lineage(built.key, str(getattr(built, "_created_by", "") or ""))
         # Charge the reviver for this slot under the per-caller cap (see
         # ``creator_slot_count``) without touching its ownership. Set before the
         # ceilings are read so the count includes this slot once published.
@@ -645,7 +724,10 @@ async def revive_session(
             return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
         if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
             return ResumeRefusal(cap_reason, "creator_slot_cap_reached", 409)
-        if (worker_reason := worker_cap_refusal(state, revived_execution[0])) is not None:
+        # A conducting worker that revives keeps the bound its own start gave it.
+        caller_conducts = holds_conducting_kit(state, live_caller)
+        worker_reason = effective_worker_cap_refusal(state, revived_execution[0], caller_conducts)
+        if worker_reason is not None:
             return ResumeRefusal(worker_reason, "bot_worker_cap_reached", 409)
         note_new_worker(built.key, revived_execution[0])
         from kiro_crew.dashboard.approval_inheritance import (
@@ -735,7 +817,11 @@ async def revive_session(
 
                     def _roll_back() -> None:
                         if slot.folder_id == folder_id:
-                            slot.folder_id = previous
+                            # `previous` can be deleted inside the awaits below:
+                            # never put the session back into a folder that is gone.
+                            slot.folder_id = (
+                                previous if any(f["id"] == previous for f in state._folders) else ""
+                            )
                             slot._folder_changed = previous_changed
 
                     try:

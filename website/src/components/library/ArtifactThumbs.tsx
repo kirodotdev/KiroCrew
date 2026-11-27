@@ -16,10 +16,12 @@ import { i18nT } from '../../i18n/t'
 import { stripMd } from '../notifications/notifMeta'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
 import { useFrameSrc } from '../../hooks/useFrameSrc'
+import { useFrameAliveRecovery } from '../../hooks/useFrameAliveRecovery'
 import { useSilentLoadWatch } from '../../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../../hooks/useNearViewport'
 import type { Artifact } from '../../types'
 import { SvgShadow } from '../SvgShadow'
+import { CanvasThumb } from '../canvas/lazyCanvas'
 import { THUMB_SVG_CSS } from './artifactThumbSvgCss'
 
 /** Read the current computed theme CSS vars (capped to the known set, each
@@ -60,6 +62,7 @@ export function WidgetThumb({ content, slug, goalReport }: {
         html: content, themeVars, mode: theme, includeHeightReporter: true,
         offlineScripts: frame.offlineScripts, rewriteBareLinks: false,
         pageScripts: frame.pageScripts,
+        aliveReply: true,
       })
       : null),
     [content, themeVars, theme, frame.offlineScripts, frame.pageScripts],
@@ -103,9 +106,12 @@ export function WidgetThumb({ content, slug, goalReport }: {
   // gateway has to hold in flight simultaneously — with image-bearing artifacts
   // that is megabytes, and the stash then has to refuse mints it could otherwise
   // have served. Deferring keeps the pressure proportional to what is on screen.
-  const { url: blobUrl, failed } = useSandboxDoc(near ? srcdoc : null)
+  const { url: blobUrl, failed, retry } = useSandboxDoc(near ? srcdoc : null)
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
+  // The browser can reload this frame by itself onto its spent url: re-mint when
+  // the document stops answering (both artifactFrame grants allow scripts).
+  useFrameAliveRecovery(iframeRef, blobUrl, true, retry)
   // No link bridge: every render site wraps the thumbnail in `pointer-events-none`
   // (the card's own click opens the artifact) and the frame is `tabIndex={-1}`,
   // so no click ever reaches it. `rewriteBareLinks: false` because the frame
@@ -246,7 +252,14 @@ export function ContentThumb({ content, kind, mini = false }: {
   kind: Artifact['kind']
   mini?: boolean
 }) {
+  // No content yet (the full read is loading or failed) shows the neutral tile for
+  // every kind. A saved canvas, even an empty one, is non-empty JSON.
   if (!content.trim()) return <div className="h-[64px] bg-bg-elevated" />
+
+  // A canvas draws its shapes, empty or not: its JSON is never something to read.
+  // Its drawing code loads with the first canvas shown; the neutral tile holds
+  // the card's place until then.
+  if (kind === 'canvas') return <CanvasThumb content={content} mini={mini} loading={<div className="h-[64px] bg-bg-elevated" />} />
 
   if (mini && kind === 'markdown') {
     // stripMd drops heading / emphasis / list markers but keeps table pipes, and

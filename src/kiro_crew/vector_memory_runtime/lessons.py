@@ -35,6 +35,7 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_UNSTATED,
     LESSON_APPLIES_VALUES,
+    LESSON_RULES_HEADER,
     cjk_parts,
     contains_volatile_lesson_fact,
     render_lesson_tier,
@@ -943,21 +944,16 @@ def get_lessons_context(
             ``repo_scope`` gate. Omitting it withholds every scoped lesson.
         authority_order: ``memory.rule_authority_order`` for a background
             read (:mod:`kiro_crew.memory_rule_authority`). ``off`` keeps the
-            rule block's order; ``shadow`` keeps it and records in the
-            injection receipt which ids the authority order would add or drop;
-            ``enforce`` orders the rule block by authority level, keeping the
+            rule block's order; ``enforce`` orders the rule block by authority level, keeping the
             authored-before-untagged split and request relevance inside a level.
         lesson_fold: ``memory.lesson_fold`` for a background read
             (:mod:`kiro_crew.memory_lesson_fold`). ``off`` keeps the rule block;
-            ``shadow`` keeps it and records in the injection receipt which ids
-            would fold into which; ``enforce`` leaves folded rows out of the rule
-            block and says how many.
+            ``enforce`` leaves folded rows out of the rule block and says how
+            many.
         relevance_rule: ``memory.relevance_rule`` for a background read
             (:mod:`kiro_crew.memory_relevance_rule`). ``off`` admits the
-            findings tier on any shared stemmed word; ``shadow`` keeps that and
-            records in the injection receipt the finding ids the shared token
-            rule would drop; ``enforce`` admits the tier only on a shared token
-            of that rule. The rule block is the same under every mode.
+            findings tier on any shared stemmed word; ``enforce`` admits the
+            tier only on a shared token of that rule. The rule block is the same under every mode.
     """
     # Scope is applied BEFORE the counts are taken, so a lesson withheld as
     # out-of-scope is not reported as "omitted" -- omitted means "did not fit
@@ -1030,9 +1026,8 @@ def get_lessons_context(
         # which still holds inside a level, as does request relevance. Same rows,
         # so the room below is the same under every mode.
         directives = authored + untagged
-        by_level = _rule_authority.by_authority(directives)
         if order_mode == _rule_authority.MODE_ENFORCE:
-            directives = by_level
+            directives = _rule_authority.by_authority(directives)
         fold_header = ""
         if fold_space is not None:
             # The kept copy is chosen by authority, then recency, not by request
@@ -1041,9 +1036,8 @@ def get_lessons_context(
             space, dim = fold_space
             pairs = _lesson_fold.fold_pairs(directives, entries, space=space, dim=dim)
             folded = {key for _, key in pairs}
-            if fold_mode == _lesson_fold.MODE_ENFORCE and folded:
+            if folded:
                 directives = [e for e in directives if e[0].get("key") not in folded]
-                by_level = [e for e in by_level if e[0].get("key") not in folded]
                 fold_header = "\n" + _lesson_fold.FOLD_NOTICE.format(count=len(folded))
             injection_receipts.record_stage(
                 injection_receipts.LESSON_FOLD,
@@ -1057,12 +1051,7 @@ def get_lessons_context(
         # directive block is served first: when room is short, a past finding
         # yields to a standing rule rather than the two sharing the shortfall.
         directive_tier = {
-            "header": (
-                "[Learned corrections — retained rules from past mistakes.\n"
-                "Follow explicit user rules; stored inferences do not override "
-                "the current user. Each binds under CRITICAL RULES but adds no ask case.]"
-                + fold_header
-            ),
+            "header": LESSON_RULES_HEADER + "]" + fold_header,
             "footer": "[End of learned corrections]",
             "omission": (
                 "[Context budget: omitted {count} of {total} retained rules above the "
@@ -1087,9 +1076,7 @@ def get_lessons_context(
                 if not hard_cap or len(whole) <= hard_cap
                 else tighter_lesson_budget(cap, hard_cap)
             )
-        if order_mode == _rule_authority.MODE_SHADOW:
-            _record_authority_shadow(directives, by_level, directive_room, directive_tier)
-        elif order_mode == _rule_authority.MODE_ENFORCE:
+        if order_mode == _rule_authority.MODE_ENFORCE:
             injection_receipts.record_stage(
                 injection_receipts.RULE_AUTHORITY_ORDER,
                 mode=order_mode,
@@ -1124,7 +1111,7 @@ def get_lessons_context(
             and relevance_mode != _relevance_rule.MODE_OFF
             and not store._any_lesson_overlap(experiences, query_text, significant=True)
         )
-        if withheld or (withheld_by_rule and relevance_mode == _relevance_rule.MODE_ENFORCE):
+        if withheld or withheld_by_rule:
             # Nothing here is about this request, so spend none of the allowance
             # on it. A finding is DEFINED as material worth having when the task
             # touches it; newest-first filler is not a weaker version of that, it
@@ -1165,24 +1152,6 @@ def get_lessons_context(
                     "learn_list for the rest.]"
                 ),
             )
-        if relevance_mode == _relevance_rule.MODE_SHADOW:
-            # The rows this block carries only because the old test admitted it,
-            # read from this render's own receipt before anything replaces it.
-            shown = injection_receipts.current_ids(injection_receipts.FINDINGS)
-            injection_receipts.record_stage(
-                injection_receipts.RELEVANCE_RULE,
-                mode=relevance_mode,
-                policy=_relevance_rule.POLICY_VERSION,
-                would_drop=sorted(shown) if withheld_by_rule else (),
-                part=_relevance_rule.PART_FINDINGS,
-            )
-        elif relevance_mode == _relevance_rule.MODE_ENFORCE:
-            injection_receipts.record_stage(
-                injection_receipts.RELEVANCE_RULE,
-                mode=relevance_mode,
-                policy=_relevance_rule.POLICY_VERSION,
-                part=_relevance_rule.PART_FINDINGS,
-            )
         # Observability without new state: the two blocks are separately
         # labelled in the prompt and each omission notice names its own
         # counts, so what was injected is readable from the prompt itself.
@@ -1210,10 +1179,7 @@ def get_lessons_context(
     order = "most relevant" if query_text else "most recent"
 
     def render(rows: list[tuple[dict, str]]) -> str:
-        header = (
-            "[Learned corrections — retained rules from past mistakes.\n"
-            "Each binds under CRITICAL RULES but adds no ask case."
-        )
+        header = LESSON_RULES_HEADER
         if len(rows) < total:
             header += (
                 f"\nShowing {len(rows)} of {total} lessons, {order} first; "
@@ -1246,33 +1212,6 @@ def get_lessons_context(
         selected = ranked[:1]
     injection_receipts.note_recalled_lessons(selected)
     return render(selected)
-
-
-def _record_authority_shadow(
-    current: list[tuple[dict, str]],
-    by_level: list[tuple[dict, str]],
-    room: int,
-    tier: dict[str, str],
-) -> None:
-    """Record which rule ids the authority order would add to or drop from the block.
-
-    Both orders are fitted to the same *room* inside private collections, so the
-    probe leaves no omission record and no receipt of its own.
-    """
-    kept: list[set[str]] = []
-    for rows in (current, by_level):
-        with context_omissions.collect(), injection_receipts.collect() as probe:
-            render_lesson_tier(rows, room, omission_kind=context_omissions.LESSON_RULES, **tier)
-        entry = probe.get(injection_receipts.LESSONS) or {}
-        kept.append(set(entry.get("ids") or ()))
-    shown, ordered = kept
-    injection_receipts.record_stage(
-        injection_receipts.RULE_AUTHORITY_ORDER,
-        mode=_rule_authority.MODE_SHADOW,
-        policy=_rule_authority.POLICY_VERSION,
-        would_add=sorted(ordered - shown),
-        would_drop=sorted(shown - ordered),
-    )
 
 
 def _renderable_entries(
@@ -1463,7 +1402,7 @@ def startup_lesson_query(store: VectorMemoryStore, query_text: str) -> _RecallQu
         with store._db_lock:
             generation = store._space_generation
             signature = store.recorded_embedding_space()
-        vector = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        vector = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     except (OSError, ValueError, RuntimeError, vector_memory.sqlite3.Error):
         logger.debug("startup lesson query embed skipped", exc_info=True)
         return _RecallQuery(None, None, None)
@@ -1518,7 +1457,7 @@ def rank_lessons(
     if recall_query is not None:
         query_emb = recall_query.vector
     elif store.embed_fn:
-        query_emb = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        query_emb = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     else:
         query_emb = None
     # Same row-side derivation, and the same width rule, as the semantic scan:

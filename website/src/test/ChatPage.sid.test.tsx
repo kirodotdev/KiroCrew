@@ -434,7 +434,7 @@ describe('ChatPage ?sid= URL parameter', () => {
     it('shows error for invalid ?sid=', async () => {
       vi.useFakeTimers()
       renderChatPage({ route: '/chat?sid=nonexistent', slots })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.getByText(/session "nonexistent" not found/i)).toBeTruthy()
       vi.useRealTimers()
     })
@@ -447,7 +447,7 @@ describe('ChatPage ?sid= URL parameter', () => {
     it('does not declare a session missing while the slot list has not arrived', async () => {
       vi.useFakeTimers()
       const { store } = renderChatPage({ route: '/chat?sid=chat-9-900', slots: [], slotsLoaded: false })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
 
       await act(async () => { store.dispatch(sseSlots([slot('chat-9-900', 'Late Session')])) })
@@ -462,11 +462,11 @@ describe('ChatPage ?sid= URL parameter', () => {
     it('withdraws not found when a later slot frame carries the key', async () => {
       vi.useFakeTimers()
       const { store } = renderChatPage({ route: '/chat?sid=chat-9-900', slots: [], slotsLoaded: false })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
 
       await act(async () => { store.dispatch(sseSlots(slots)) })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
 
       await act(async () => {
@@ -492,7 +492,7 @@ describe('ChatPage ?sid= URL parameter', () => {
         slotsLoaded: false,
       })
       await act(async () => { store.dispatch(sseSlots(slots)) })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
 
       await vi.advanceTimersByTimeAsync(60_000)
@@ -517,7 +517,7 @@ describe('ChatPage ?sid= URL parameter', () => {
         slotsLoaded: false,
       })
       await act(async () => { store.dispatch(sseSlots(slots)) })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
 
       await vi.advanceTimersByTimeAsync(10_000)
@@ -539,7 +539,7 @@ describe('ChatPage ?sid= URL parameter', () => {
         slotsLoaded: false,
       })
       await act(async () => { store.dispatch(sseSlots(slots)) })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
 
       await act(async () => { store.dispatch(sseConnected(false)) })
@@ -571,7 +571,7 @@ describe('ChatPage ?sid= URL parameter', () => {
       vi.mocked(api.chatSlotDetail).mockRejectedValueOnce(new Error(report.message))
       const { store } = renderChatPage({ route: '/chat?sid=chat-9-900', slots: [], slotsLoaded: false })
       await act(async () => { store.dispatch(sseSlots(slots)) })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
 
       await act(async () => {
@@ -598,7 +598,7 @@ describe('ChatPage ?sid= URL parameter', () => {
       vi.useFakeTimers()
       const { store } = renderChatPage({ route: '/chat?sid=chat-9-900', slots: [], slotsLoaded: false })
       await act(async () => { store.dispatch(sseSlots(slots)) })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
 
       await act(async () => { store.dispatch(sseSlots([...slots])) })
@@ -741,7 +741,7 @@ describe('ChatPage ?sid= URL parameter', () => {
       vi.useFakeTimers()
       vi.mocked(api.sessionsNamed).mockResolvedValueOnce(named('dashboard_chat-70-700'))
       const { store } = renderChatPage({ route: '/chat?sid=chat-7', slots })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.getByText('No session is named chat-7. Check the link, or start a new chat.')).toBeTruthy()
       expect(screen.queryByText(/not found/i)).toBeNull()
       expect(store.getState().chat.activeSlot).toBeNull()
@@ -777,7 +777,7 @@ describe('ChatPage ?sid= URL parameter', () => {
       let answer: (v: { sessions: Array<{ key: string; title?: string }> }) => void = () => {}
       vi.mocked(api.sessionsNamed).mockReturnValueOnce(new Promise(r => { answer = r }))
       const { store } = renderChatPage({ route: '/chat?sid=chat-2', slots })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.queryByText(/not found/i)).toBeNull()
       await act(async () => { answer(named('dashboard_chat-2-200')) })
       await vi.advanceTimersByTimeAsync(50)
@@ -822,7 +822,7 @@ describe('ChatPage ?sid= URL parameter', () => {
         slotsLoaded: false,
       })
       await act(async () => { store.dispatch(sseSlots(slots)) })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
 
       await act(async () => { await store.dispatch(switchSlot('chat-2-200')) })
@@ -844,7 +844,7 @@ describe('ChatPage ?sid= URL parameter', () => {
         slotsLoaded: false,
       })
       await act(async () => { store.dispatch(sseSlots(slots)) })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
 
       await act(async () => { await store.dispatch(switchSlot('chat-2-200')) })
@@ -994,7 +994,7 @@ describe('ChatPage ?sid= URL parameter', () => {
     it('does not fetch the on-screen session when the deep link is declared not found', async () => {
       vi.useFakeTimers()
       renderChatPage({ route: '/chat?sid=nonexistent', activeSlot: 'chat-1-100', slots })
-      await vi.advanceTimersByTimeAsync(5100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
       expect(detailCalls()).not.toContain('chat-1-100')
       expect(screen.getByText(/session "nonexistent" not found/i)).toBeTruthy()
       vi.useRealTimers()

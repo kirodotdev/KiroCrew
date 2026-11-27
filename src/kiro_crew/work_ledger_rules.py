@@ -17,6 +17,8 @@ from kiro_crew.work_ledger_records import (
     ACCEPTANCE_CHECK_NAME,
     ACCEPTANCE_CHECK_REF,
     ACCEPTANCE_GH_REPO,
+    ACCEPTANCE_GIT_BASE,
+    ACCEPTANCE_GIT_BRANCH,
     ACCEPTANCE_KINDS,
     ACCEPTANCE_PLACEHOLDERS,
     ACCEPTANCE_READ_FIELDS,
@@ -438,7 +440,7 @@ def quiet_since(item: WorkItem, *, wake: bool = True) -> str:
     *wake* False skips ``wake_at`` (the worker's loop is held; see :func:`is_stale`).
     """
     handed_back = _decided_after_report(item) if item.status in WAITING_STATUSES else None
-    since = handed_back or item.last_report_at or item.created_at or ""
+    since = handed_back or _report_clock(item) or item.created_at or ""
     if wake and item.wake_at:
         due = parse_stamp(item.wake_at)
         start = parse_stamp(since) if since else None
@@ -463,6 +465,14 @@ def _worker_owns_next_move(item: WorkItem) -> bool:
     return item.status == "done" and item.verdict == "fail"
 
 
+def _report_clock(item: WorkItem) -> str | None:
+    """*item*'s last report on the HUB's clock: ``received_at`` for a report filed
+    from a remote peer, whose ``last_report_at`` is the peer's own stamp, else
+    ``last_report_at``. Only durations read this; ordering and dedup keep the stamp.
+    """
+    return item.received_at or item.last_report_at
+
+
 def _decided_after_report(item: WorkItem) -> str | None:
     """*item*'s ``decided_at`` when it is at or after its last report, else ``None``.
 
@@ -476,9 +486,10 @@ def _decided_after_report(item: WorkItem) -> str | None:
     decided = parse_stamp(item.decided_at)
     if decided is None:
         return None
-    if not item.last_report_at:
+    last = _report_clock(item)
+    if not last:
         return item.decided_at
-    reported = parse_stamp(item.last_report_at)
+    reported = parse_stamp(last)
     if reported is None:
         return None
     try:
@@ -533,8 +544,9 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
     Non-concrete means: an empty acceptance; a ``kind`` outside :data:`ACCEPTANCE_KINDS`;
     a placeholder STRING (blank, or ``"TBD"`` in any case) in a read field; or a read
     field mistyped: a ``pr_checks`` / ``pr_merged`` ``pr`` that is not a positive
-    integer, a ``pr_merged`` ``repo`` or ``edition_check`` ``check`` / ``ref`` that does
-    not match the evaluator's pattern, a ``file`` ``path`` that is not a string, a
+    integer, a ``pr_merged`` ``repo``, ``edition_check`` ``check`` / ``ref`` or
+    ``git_commit`` ``branch`` / ``base`` that does not match the evaluator's pattern, a
+    ``git_commit`` ``repo`` or ``file`` ``path`` that is not a string, a
     ``file`` ``exists`` that is not a bool. An explicit ``null`` in an OPTIONAL read
     field is absence, so concrete; in a required one the type rule refuses it.
 
@@ -572,6 +584,20 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
         if not isinstance(check, str) or not ACCEPTANCE_CHECK_NAME.fullmatch(check):
             return False
         if not isinstance(ref, str) or not ACCEPTANCE_CHECK_REF.fullmatch(ref):
+            return False
+    if kind == "git_commit":
+        # A relative ``repo`` stays concrete: the evaluator REFUSES it, and that
+        # refusal must reach the conductor, as for ``cmd``.
+        repo = acceptance.get("repo")
+        if not isinstance(repo, str) or "\x00" in repo:
+            return False
+        branch = acceptance.get("branch")
+        if not isinstance(branch, str) or not ACCEPTANCE_GIT_BRANCH.fullmatch(branch):
+            return False
+        if ".." in branch:
+            return False
+        base = acceptance.get("base")
+        if not isinstance(base, str) or not ACCEPTANCE_GIT_BASE.fullmatch(base):
             return False
     if kind == "file":
         if not isinstance(acceptance.get("path"), str):

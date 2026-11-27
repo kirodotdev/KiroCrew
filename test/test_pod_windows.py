@@ -981,3 +981,45 @@ def test_the_wrapper_encoding_is_oem_on_windows_and_utf8_elsewhere(monkeypatch):
     assert win._script_encoding() == "oem"
     monkeypatch.setattr(win, "IS_WINDOWS", False)
     assert win._script_encoding() == "utf-8"
+
+
+def _child_writing(payload: bytes, monkeypatch) -> None:
+    """Make ``_schtasks_raw`` see a child that wrote *payload* to stderr and exited 1.
+
+    The stand-in decodes the bytes with the ``encoding`` / ``errors`` the call asked
+    for, as ``subprocess`` does, so no real child is started.
+    """
+
+    def run(argv, *, encoding, errors, **_kw):
+        return _cp(returncode=1, stderr=payload.decode(encoding, errors))
+
+    monkeypatch.setattr(win.subprocess, "run", run)
+
+
+def test_schtasks_output_is_decoded_in_the_oem_code_page(monkeypatch):
+    """the OEM bytes of ``/Z`` plus three accented letters survive."""
+    _child_writing("/Z \u00e9\u00fc\u00e8".encode("cp437"), monkeypatch)
+    monkeypatch.setattr(win, "_script_encoding", lambda: "cp437")
+    done = win._schtasks_raw("schtasks.exe", "/Query")
+    assert done.stderr == "/Z \u00e9\u00fc\u00e8"
+
+
+def test_a_localized_refusal_reaches_the_operator_unchanged(monkeypatch):
+    """a French cp850 ``/Create`` refusal keeps its accents in the error."""
+    french = "ERREUR\u00a0: Acc\u00e8s refus\u00e9."
+    _child_writing(french.encode("cp850"), monkeypatch)
+    monkeypatch.setattr(win, "_script_encoding", lambda: "cp850")
+    monkeypatch.setattr(win, "require_backend", _REAL_REQUIRE_BACKEND)
+    monkeypatch.setattr(win, "IS_WINDOWS", True)
+    monkeypatch.setattr(win, "_PROBE_OK", False)
+    monkeypatch.setattr(win, "schtasks_bin", lambda: r"C:\Windows\System32\schtasks.exe")
+    with pytest.raises(win.WindowsTaskCreateRefused) as exc:
+        win.require_backend()
+    assert french in str(exc.value)
+    assert "\ufffd" not in str(exc.value)
+
+
+def test_an_ascii_refusal_reads_the_same_in_the_oem_page(monkeypatch):
+    _child_writing(b"Access is denied.", monkeypatch)
+    monkeypatch.setattr(win, "_script_encoding", lambda: "cp437")
+    assert win._schtasks_raw("schtasks.exe", "/Query").stderr == "Access is denied."

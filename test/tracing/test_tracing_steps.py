@@ -442,7 +442,9 @@ async def test_a_peer_delivery_carries_its_sender_on_both_arms(spans):
     class _Slot:
         running = False
 
-        def enqueue_or_run_prompt(self, text, run, state, *, extra_meta=None, relay_meta=None):
+        def enqueue_or_run_prompt(
+            self, text, run, state, *, extra_meta=None, relay_meta=None, at_head=False
+        ):
             calls.append(extra_meta)
             # The run arm: the turn's task copies the delivery's context.
             started.append(asyncio.ensure_future(_receiver_turn("f" * 32)))

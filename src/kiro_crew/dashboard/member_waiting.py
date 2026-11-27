@@ -44,6 +44,7 @@ from kiro_crew.crew_log.entry_types import (
     CREWMATE_TEXT_LIMIT,
     CREWMATE_WAITING_LIMIT,
 )
+from kiro_crew.dashboard.slot_row_memo import is_posted_note_row
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.warm_task_brief_contract import WARM_TASK_BRIEF_MESSAGE_KINDS
 
@@ -168,16 +169,11 @@ _PRESSED_STATUSES = frozenset({"applied", "partial", "failed", "cancelled"})
 def chip_bar_options(text: str) -> list[str]:
     """The last marker's choices, split as the chip bar splits them.
 
-    Pipes when the marker's own line has one, else commas. The one rule both
-    the warm brief's copy and this reader use, so they cannot disagree.
+    The warm brief's copy and this reader both call it, so they cannot disagree.
     """
     from kiro_crew.dashboard.state import _parse_options
 
-    options = _parse_options(text)
-    marker = text[text.rfind("[OPTION") :].split("\n", 1)[0]
-    if len(options) == 1 and "|" not in marker:
-        options = [o.strip() for o in options[0].split(",") if o.strip()]
-    return options
+    return _parse_options(text)
 
 
 def pending_options(rows: list[dict[str, Any]]) -> str | None:
@@ -199,9 +195,7 @@ def pending_options(rows: list[dict[str, Any]]) -> str | None:
         # A live Stop card carries its kind only in ``cls``; the shared check reads both.
         if role in ("user", "queued") or is_stop_event_row(row):
             return ""
-        note = role == "inject" and (
-            "reconcile-note" in str(row.get("cls") or "") or bool(meta.get("noteSession"))
-        )
+        note = is_posted_note_row(row)
         speech = role == "assistant" and not is_system_notice(role, meta)
         if not (note or speech) or meta.get("kind") in WARM_TASK_BRIEF_MESSAGE_KINDS:
             continue

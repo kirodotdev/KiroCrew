@@ -11,10 +11,10 @@ writes it into every module holding the name.
 ``test/test_facade_mirror_guards.py`` holds every mirrored facade to the shared rules. These
 tests pin what is particular to this facade: every name the test trees patch through it
 reaches every module holding it; the owners are exactly the three siblings, loaded lowest
-layer first; every project import the unsplit module bound stays bound on the facade; the
-process state an owner rebinds is read through the facade as that owner holds it; the family
-logs under the facade's name; the hand-written ``__all__`` is the one the unsplit module
-declared; and the facade still runs as ``python -m``.
+layer first; no module outside the family imports an owner; every project import the unsplit
+module bound stays bound on the facade; the process state an owner rebinds is read through the
+facade as that owner holds it; the family logs under the facade's name; the hand-written
+``__all__`` is the one the unsplit module declared; and the facade still runs as ``python -m``.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from pathlib import Path
 from types import ModuleType
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -191,6 +192,24 @@ def test_the_facade_defines_its_own_surface_and_owners_define_the_rest() -> None
         )
     }
     assert sorted(_KEPT & set(owners_defining)) == []
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_index().owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # An owner importing a lower owner proves the scan reads real imports.
+    assert "platform/policy_distribution_boot.py" in importers
+    assert importers - family == set()
 
 
 def _owner_project_imports() -> dict[str, str]:

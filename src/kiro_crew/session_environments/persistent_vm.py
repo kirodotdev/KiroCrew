@@ -14,8 +14,8 @@ Two pieces, shared by both providers:
   blocking cross-process lock, so every call runs on a worker thread.
 * :class:`PersistentVmEnvironments` prepares, archives and sweeps, serialized
   per session by the same lifecycle lock and generation the Coder provider uses
-  (``retention.session_lifecycle``): a reopen supersedes a queued archive, and a
-  sweep re-reads the row under that lock before it deletes anything.
+  (``coder.retention.session_lifecycle``): a reopen supersedes a queued archive,
+  and a sweep re-reads the row under that lock before it deletes anything.
 
 A VM deleted outside Kiro Crew is replaced by a fresh one under a new minted
 name, never looked up by any other name. One that answers under the recorded
@@ -169,29 +169,24 @@ class SessionResourceRegistry:
 
         return bool(self._locked(mutate))
 
-    def set_resource_id(self, session_key: str, name: str, resource_id: str) -> None:
+    def _update_named(self, session_key: str, name: str, **fields: str) -> None:
+        """Set ``fields`` on the row only while it still names ``name`` (a newer one stays)."""
+
         def mutate(rows: dict[str, SessionResource]) -> None:
             current = rows.get(session_key)
             if current is not None and current.name == name:
-                rows[session_key] = replace(current, resource_id=resource_id)
+                rows[session_key] = replace(current, **fields)
 
         self._locked(mutate)
+
+    def set_resource_id(self, session_key: str, name: str, resource_id: str) -> None:
+        self._update_named(session_key, name, resource_id=resource_id)
 
     def set_credential_id(self, session_key: str, name: str, credential_id: str) -> None:
-        def mutate(rows: dict[str, SessionResource]) -> None:
-            current = rows.get(session_key)
-            if current is not None and current.name == name:
-                rows[session_key] = replace(current, credential_id=credential_id)
-
-        self._locked(mutate)
+        self._update_named(session_key, name, credential_id=credential_id)
 
     def set_home(self, session_key: str, name: str, home: str) -> None:
-        def mutate(rows: dict[str, SessionResource]) -> None:
-            current = rows.get(session_key)
-            if current is not None and current.name == name:
-                rows[session_key] = replace(current, home=home)
-
-        self._locked(mutate)
+        self._update_named(session_key, name, home=home)
 
     def set_deletion(self, session_key: str, due: str) -> Optional[SessionResource]:
         """Stamp (or with ``""`` clear) the row's deletion time; the updated row."""

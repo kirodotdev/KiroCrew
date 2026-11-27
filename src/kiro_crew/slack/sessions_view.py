@@ -4,7 +4,7 @@ Three Slack surfaces render the same recent-sessions list:
 
 - ``/<command> sessions`` slash handler (``events._handle_sessions``)
 - ``sessions`` keyword in DMs (``handler._handle_sessions_command``)
-- App Home Tab "Sessions" section (``events._publish_home_tab``)
+- App Home Tab "🧵 Sessions" section (``events._publish_home_tab``)
 
 The data collection is channel-neutral and lives in
 :mod:`kiro_crew.messaging.sessions_view`, shared with the chat channels'
@@ -239,24 +239,24 @@ def _session_home_tab_blocks(row: dict, safe_title: str, safe_agent: str) -> lis
     """Section + actions row for ``views.publish`` (Home Tab).
 
     Slack's ``views.publish`` API rejects ``task_card`` blocks, so the
-    Home Tab uses a plain ``section`` with the same state word
+    Home Tab uses a plain ``section`` with the same 🟢/⚫ status emoji
     plus the canonical ``mc_session_resume_{key}`` button. A dismissed row
-    reads "ended", matching :func:`kiro_crew.slack.blocks.session_task_card`, and
+    gets 🛑, matching :func:`kiro_crew.slack.blocks.session_task_card`, and
     is only ever rendered when a caller asked for dismissed rows.
     """
     if row["active"]:
-        state = "active"
+        emoji = "🟢"
     elif row.get("ended"):
-        state = "ended"
+        emoji = "🛑"
     else:
-        state = "idle"
+        emoji = "⚫"
     agent = safe_agent or "kirocrew"
     return [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*{safe_title}* — _{agent} agent_ ({state})",
+                "text": f"{emoji} *{safe_title}* — _{agent} agent_",
             },
         },
         {
@@ -264,13 +264,13 @@ def _session_home_tab_blocks(row: dict, safe_title: str, safe_agent: str) -> lis
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Resume"},
+                    "text": {"type": "plain_text", "text": "▶️ Resume"},
                     "action_id": f"mc_session_resume_{row['key']}",
                     "value": json.dumps({"key": row["key"], "title": safe_title}),
                 },
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "End"},
+                    "text": {"type": "plain_text", "text": "⏹️ End"},
                     "action_id": f"mc_session_end_{row['key']}",
                     "value": row["key"],
                     "style": "danger",

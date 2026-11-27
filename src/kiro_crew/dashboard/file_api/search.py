@@ -317,7 +317,12 @@ async def api_file_search(request: web.Request) -> web.Response:
     # TCC-gated folders the scoped walk keeps), all of which take the walk.
     state: DashboardState = request.app["state"]
     if scoped and len(safe_roots) == 1:
-        idx = await state.file_indexes.ensure(safe_roots[0])
+        try:
+            idx = await state.file_indexes.ensure(safe_roots[0])
+        except _PathProbeBusy:
+            return _probe_busy_response(
+                resource=safe_roots[0], operation="file_search", caller=caller
+            )
         if idx and idx.usable:
             results = await asyncio.to_thread(idx.search, query, _fuzzy_score, max_results, kinds)
             trimmed = [{k: v for k, v in r.items() if k != "_score"} for r in results]

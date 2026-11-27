@@ -1,12 +1,12 @@
 ---
 title: App contribution points on one sandboxed frame model
-status: draft
+status: partial
 author: buluoray, with kirocrew-worker
 created: 2026-10-30
-last-audited: 2026-10-31
-audited-at: 4537582b9b
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr:
-implementation-prs: [26479]
+implementation-prs: [26479, 26875, 26878, 26899, 27700, 27718, 27737, 32660]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,13 +14,16 @@ superseded-by: []
 
 # RFC: App contribution points on one sandboxed frame model
 
-- Status: draft. The sandboxed frame, its capability, its content security
-  policy, the link-preview grant families and the text-pattern budget shipped in
-  [#26479](https://github.com/kirodotdev/KiroCrew/pull/26479); every passage
-  that describes them is marked **Shipped in #26479**. Everything else is a
-  proposal. The repository owner's decisions on the scope and on the questions in
-  §13 are recorded there; the status flips to `accepted` when the document merges
-  with them.
+- Status: partial (checked at `0c5d8bd5f3`). The repository owner's scope
+  decision (§12) and answers to §13 merged with this document in #26859. Version 1
+  is on main: the frame and link previews ([#26479](https://github.com/kirodotdev/KiroCrew/pull/26479)), the shared frame
+  contract ([#26875](https://github.com/kirodotdev/KiroCrew/pull/26875), [#26899](https://github.com/kirodotdev/KiroCrew/pull/26899)) and `messageActions` ([#26878](https://github.com/kirodotdev/KiroCrew/pull/26878),
+  `apps/app_frame.py`). The deferred points shipped too: `selectionActions`
+  ([#27700](https://github.com/kirodotdev/KiroCrew/pull/27700)), `composerActions` ([#27718](https://github.com/kirodotdev/KiroCrew/pull/27718), `apps/composer_action_frame.py`) and
+  `linkOpen` ([#27737](https://github.com/kirodotdev/KiroCrew/pull/27737), `apps/link_open_frame.py`), and an app's own
+  `agentTools` ([#32660](https://github.com/kirodotdev/KiroCrew/pull/32660)). The §8 roadmap (context providers, message cards,
+  event handlers) is not built. Passages marked **Shipped in #26479** describe
+  that first pull request.
 - Builds on: `contributes.linkPreviews` from #26479, which runs an app's hover
   card in a cross-origin sandboxed frame. This document generalizes that frame and
   its message protocol into the one model every frame-backed point uses.

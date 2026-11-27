@@ -7,12 +7,20 @@ failures that must not fail a live turn.
 from __future__ import annotations
 
 import asyncio
+import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from redaction_structured_cases import github_classic
 from slack_handler_helpers import _clean_approval_state  # noqa: F401
-from slack_handler_helpers import FakeProvider, FakeSessionManager, _visible_texts, _within_lost_run
+from slack_handler_helpers import (
+    FakeProvider,
+    FakeSessionManager,
+    _visible_texts,
+    _within_lost_run,
+    hide_slack_timing_footer,
+)
 
 from conftest import MockSlackClient
 from kiro_crew.acp.client import AcpError
@@ -620,7 +628,7 @@ class TestTransientCompactionRetry:
         self, monkeypatch
     ):
         """Reasoning is not output that a replay could duplicate, so a
-        thinking-only abandoned attempt IS replayed -- but the Thinking placeholder it
+        thinking-only abandoned attempt IS replayed -- but the 💭 placeholder it
         posted above where its answer would have gone must not stay behind, and
         its reaction ladder / stall watchdog must be finalized before the nested
         call takes over the Slack message."""
@@ -653,7 +661,7 @@ class TestTransientCompactionRetry:
 
         assert provider.turns == 2, "a thinking-only attempt is still replayable"
         posted_thinking = [
-            a[1]["ts"] for a in slack.actions if a[0] == "post" and "*Thinking" in a[1]["text"]
+            a[1]["ts"] for a in slack.actions if a[0] == "post" and "💭" in a[1]["text"]
         ]
         deleted = [a[1]["ts"] for a in slack.actions if a[0] == "delete"]
         assert posted_thinking, "the abandoned attempt reserved a reasoning slot"
@@ -910,7 +918,7 @@ class TestLiveTurnPresentationFailure:
     """A raising presentation-side Slack call mid-run must not fail a live turn.
 
     These calls run on the first ``tool_call`` event, where a non-ACP raise would
-    reach the generic ``except Exception`` and render "Error: Something went wrong".
+    reach the generic ``except Exception`` and render "🔧 Something went wrong".
     """
 
     @pytest.fixture(autouse=True)
@@ -1634,6 +1642,62 @@ def test_native_options_footer_and_fallback_both_fail_books_failure(monkeypatch)
         sessions.calls["success"] == 0
     ), "booked success though OPTIONS choices never reached the reader"
     assert sessions.calls["failure"] == 1
+
+
+def _native_footers(slack) -> list[dict]:
+    """Every Block Kit post but the in-thread working indicator the turn starts with."""
+    return [kw for name, kw in slack.actions if name == "blocks" and kw["text"] != "Working…"]
+
+
+def test_native_hidden_timing_footer_posts_nothing_and_books_success(monkeypatch, tmp_path):
+    hide_slack_timing_footer(monkeypatch, tmp_path)
+    slack = MockSlackClient()
+    sessions = _TrackNativeSessions(FakeProvider([LLMEvent(kind="text_chunk", text="42")]))
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert _native_footers(slack) == [], "an empty footer must not be posted"
+    assert sessions.calls == {"success": 1, "failure": 0}
+
+
+def test_native_hidden_timing_footer_still_delivers_the_options(monkeypatch, tmp_path):
+    # The choices ride only in the footer, so the deferred OPTIONS verdict is
+    # booked from that post exactly as when the timing line is shown.
+    hide_slack_timing_footer(monkeypatch, tmp_path)
+    slack = MockSlackClient()
+    provider = FakeProvider(
+        [LLMEvent(kind="text_chunk", text="pick one [OPTIONS: Apple | Banana]")]
+    )
+    sessions = _TrackNativeSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    (footer,) = _native_footers(slack)
+    assert [b["type"] for b in footer["blocks"]] == ["actions"]
+    assert "Apple" in json.dumps(footer["blocks"]) and "Finished in" not in json.dumps(footer)
+    assert footer["text"] == "Options"
+    assert sessions.calls == {"success": 1, "failure": 0}
+
+
+def test_native_hidden_timing_footer_keeps_the_link_to_dashboard(monkeypatch, tmp_path):
+    import kiro_crew.slack.handler as _h
+
+    hide_slack_timing_footer(monkeypatch, tmp_path)
+    monkeypatch.setattr(_h, "_dashboard_state", SimpleNamespace(get_linked_slot=lambda ts: None))
+    slack = MockSlackClient()
+    slack._stream_enabled = True  # a streamed answer, so the footer could ride in its seal
+    sessions = _TrackNativeSessions(FakeProvider([LLMEvent(kind="text_chunk", text="42")]))
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", "thread1", "msg1", "U1"))
+
+    (footer,) = _native_footers(slack)
+    assert [e["text"]["text"] for b in footer["blocks"] for e in b["elements"]] == [
+        "Link to Dashboard"
+    ]
+    assert footer["text"] == "Link to Dashboard"
+    (seal,) = [kw for name, kw in slack.actions if name == "stop_stream"]
+    assert "blocks" not in seal, "a seal could not confirm a control-only footer"
+    assert sessions.calls == {"success": 1, "failure": 0}
 
 
 class _OptionsFallbackCapturingSlack(MockSlackClient):

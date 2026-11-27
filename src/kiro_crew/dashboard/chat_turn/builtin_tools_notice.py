@@ -1,5 +1,5 @@
-"""The session-start notice naming what of the agent spec's ``tools`` list and ``model``
-pin a claude session does not apply (``_notice_unapplied_builtin_tools``)."""
+"""The session-start notice naming the agent spec's ``model`` pin a claude session does
+not apply (``_notice_unapplied_builtin_tools``)."""
 
 from __future__ import annotations
 
@@ -30,8 +30,7 @@ async def _notice_unapplied_builtin_tools(
     state: "DashboardState", slot: "_ChatSlot", client: Any, agent: str
 ) -> None:
     """One notice row when *client*'s claude session runs the agent's spec without
-    its ``tools`` limit on the built-ins or without its ``model`` pin
-    (``agent_sdk.spec_builtin_tools``).
+    its ``model`` pin (``agent_sdk.spec_builtin_tools``).
 
     Notice only. Best-effort: a spec that cannot be read in time renders no row.
     """

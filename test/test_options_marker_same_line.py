@@ -72,6 +72,35 @@ def test_a_broken_chain_does_not_poison_a_marker_on_another_line():
 
 
 @pytest.mark.parametrize(
+    "prose",
+    [
+        "The `[OPTIONS:` line goes last.",
+        "Write ``[OPTIONS:`` last.",
+        "Use `[option:` or `[OPTIONS: x` here.",
+        "Path `C:\\` then `[OPTIONS:` last.",
+        "\\``[OPTIONS: x` is code.",
+    ],
+)
+def test_a_head_inside_inline_code_does_not_block_the_real_marker(prose):
+    _assert_every_reader(prose + " [OPTIONS: A | B]", prose, ["A", "B"])
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Use [option: x to pick. [OPTIONS: A | B]",
+        "[OPTIONS: dropped `x` [OPTIONS: A | B]",
+        "Use `[OPTIONS: then [OPTIONS: A | B]",
+        "Use ``[OPTIONS:` then [OPTIONS: A | B]",
+        "Use \\`[OPTIONS: x\\` then [OPTIONS: A | B]",
+        "\\``a ``b` [OPTIONS: x`` [OPTIONS: A | B]",
+    ],
+)
+def test_a_head_outside_a_closed_code_span_still_blocks(raw):
+    _assert_every_reader(raw, raw, [])
+
+
+@pytest.mark.parametrize(
     ("raw", "text"),
     [
         ("Use [OPTIONS: A | B], then pick [OPTIONS: Yes | No]", "Use [OPTIONS: A | B], then pick"),
@@ -86,11 +115,29 @@ def test_a_head_closed_before_inline_prose_does_not_stay_open(raw, text):
     ("raw", "options"),
     [
         ("[OPTIONS: Alpha ] | Bravo ]]", ["Alpha ]", "Bravo ]"]),
-        ("[OPTIONS: Alpha ], Bravo ]", ["Alpha ], Bravo"]),
+        ("[OPTIONS: Alpha ], Bravo ]", ["Alpha ]", "Bravo"]),
     ],
 )
 def test_a_label_that_carries_a_closer_still_parses(raw, options):
     _assert_every_reader(raw, "", options)
+
+
+@pytest.mark.parametrize(
+    ("raw", "text", "options"),
+    [
+        ("Pick [OPTIONS: A, B]", "Pick", ["A", "B"]),
+        ("Pick [OPTIONS: Merge, Rebase, Hold]", "Pick", ["Merge", "Rebase", "Hold"]),
+        ("Pick [OPTIONS: Rebase, then merge | Hold]", "Pick", ["Rebase, then merge", "Hold"]),
+        ("Pick [OPTIONS: Rebase, then merge |]", "Pick", ["Rebase, then merge"]),
+    ],
+)
+def test_labels_split_on_pipes_when_present_else_on_commas(raw, text, options):
+    _assert_every_reader(raw, text, options)
+
+
+@pytest.mark.parametrize("last", ["[OPTIONS: ,]", "[OPTIONS: , ,]", "[OPTIONS: |]"])
+def test_siblings_stay_when_the_last_marker_offers_only_separators(last):
+    _assert_every_reader(f"[OPTIONS: A] {last}", "[OPTIONS: A]", [])
 
 
 def test_siblings_stay_when_the_last_marker_offers_nothing():
@@ -124,6 +171,21 @@ class _CopyMeter(str):
 
 def test_the_line_walk_stays_linear_on_comma_followed_closers():
     text = _CopyMeter("[OPTIONS: " + "a], " * 400 + "[OPTIONS: B]")
+    _CopyMeter.walked = 0
+    list(OPTIONS_RE_LINE.finditer(text))
+    assert _CopyMeter.walked <= 8 * len(text)
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "".join("`" * width + " " for width in range(1, 60)),
+        "`x` " * 400,
+        "`[OPTIONS: ` " * 200,
+    ],
+)
+def test_the_line_walk_stays_linear_on_backtick_runs(prose):
+    text = _CopyMeter(prose + "[OPTIONS: B]")
     _CopyMeter.walked = 0
     list(OPTIONS_RE_LINE.finditer(text))
     assert _CopyMeter.walked <= 8 * len(text)

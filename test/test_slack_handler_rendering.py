@@ -183,7 +183,7 @@ class TestCronMessageSplitting:
 
         slack = MockSlackClient()
         result_text = "All systems healthy."
-        post_text = f"*Cron: health-check*\n\n{to_slack_mrkdwn(result_text)}"
+        post_text = f"⏰ *Cron: health-check*\n\n{to_slack_mrkdwn(result_text)}"
         parts = split_message(post_text, limit=_CRON_MSG_LIMIT)
 
         assert len(parts) == 1
@@ -206,7 +206,7 @@ class TestCronMessageSplitting:
         slack = MockSlackClient()
         # Generate text that exceeds the 3000-char Block Kit section limit
         result_text = "line of text\n" * 500  # ~6500 chars
-        post_text = f"*Cron: big-report*\n\n{to_slack_mrkdwn(result_text)}"
+        post_text = f"⏰ *Cron: big-report*\n\n{to_slack_mrkdwn(result_text)}"
         parts = split_message(post_text, limit=_CRON_MSG_LIMIT)
 
         assert len(parts) >= 2
@@ -237,7 +237,7 @@ class TestCronMessageSplitting:
         from kiro_crew.slack.gateway import _CRON_MSG_LIMIT
 
         result_text = "x" * 10000
-        post_text = f"*Cron: stress*\n\n{to_slack_mrkdwn(result_text)}"
+        post_text = f"⏰ *Cron: stress*\n\n{to_slack_mrkdwn(result_text)}"
         parts = split_message(post_text, limit=_CRON_MSG_LIMIT)
 
         for part in parts:
@@ -250,7 +250,7 @@ class TestCronMessageSplitting:
         from kiro_crew.slack.gateway import _CRON_MSG_LIMIT
 
         result_text = "unique_token_abc\n" * 400
-        post_text = f"*Cron: check*\n\n{to_slack_mrkdwn(result_text)}"
+        post_text = f"⏰ *Cron: check*\n\n{to_slack_mrkdwn(result_text)}"
         parts = split_message(post_text, limit=_CRON_MSG_LIMIT)
 
         # Strip continuation markers and rejoin
@@ -379,25 +379,35 @@ class TestContextFooter:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("pct", "shown"),
+        ("pct", "icon", "shown"),
         [
-            pytest.param(0.0, "ctx 0%", id="test_zero"),
-            pytest.param(29.9, "ctx 30%", id="test_29_9_rounds_to_30"),
-            pytest.param(29.4, "ctx 29%", id="test_29_4_rounds_to_29"),
-            pytest.param(49.9, "ctx 50%", id="test_49_9_rounds_to_50"),
-            pytest.param(69.4, "ctx 69%", id="test_69_4_rounds_to_69"),
-            pytest.param(100.0, "ctx 100%", id="test_100"),
+            pytest.param(0.0, "🟢", "ctx 0%", id="test_green_at_zero"),
+            # 29.9 rounds to 30 → 🟡 (not green). Icon and display are consistent.
+            pytest.param(29.9, "🟡", "ctx 30%", id="test_boundary_29_rounds_to_yellow"),
+            pytest.param(29.4, "🟢", "ctx 29%", id="test_green_at_29_exact"),
+            pytest.param(30.0, "🟡", "ctx 30%", id="test_yellow_at_exactly_30"),
+            # 49.9 rounds to 50 → 🟠. Icon and display are consistent.
+            pytest.param(49.9, "🟠", "ctx 50%", id="test_boundary_49_rounds_to_orange"),
+            pytest.param(49.4, "🟡", "ctx 49%", id="test_yellow_at_49_exact"),
+            pytest.param(50.0, "🟠", "ctx 50%", id="test_orange_at_exactly_50"),
+            # 69.9 rounds to 70 → 🔴. Icon and display are consistent.
+            pytest.param(69.9, "🔴", "ctx 70%", id="test_boundary_69_rounds_to_red"),
+            pytest.param(69.4, "🟠", "ctx 69%", id="test_orange_at_69_exact"),
+            pytest.param(70.0, "🔴", "ctx 70%", id="test_red_at_exactly_70"),
+            pytest.param(99.0, "🔴", "ctx 99%", id="test_red_at_99"),
+            pytest.param(100.0, "🔴", "ctx 100%", id="test_red_at_100"),
         ],
     )
-    async def test_footer_shows_rounded_pct_with_no_icon(self, pct, shown):
+    async def test_threshold_icon_and_display(self, pct, icon, shown):
         text, _ = await self._get_footer(pct)
-        assert f"· {shown}" in text
+        assert icon in text
+        assert shown in text
 
     # ── Format and structure ──
 
     @pytest.mark.asyncio
     async def test_footer_format_structure(self):
-        """Footer text should match 'Finished in Xs · ctx NN%'."""
+        """Footer text should match 'Finished in Xs · ICON ctx NN%'."""
         text, blocks = await self._get_footer(42.0)
         assert text.startswith("Finished in ")
         assert " · " in text
@@ -427,6 +437,7 @@ class TestContextFooter:
         assert "ctx 43%" in text
         assert "." not in text.split("ctx")[1]
         # round() returns int, so no format specifier needed
+        assert "🟡" in text
 
     # ── Error / fallback paths ──
 
@@ -836,6 +847,7 @@ class TestBuildTimingFooter:
         provider = FakeProvider()
         provider.context_usage_pct = lambda: 42.0
         blocks, text = build_timing_footer(3.0, provider)
+        assert "🟡" in text
         assert "ctx 42%" in text
 
     def test_no_client_no_ctx(self):
@@ -918,10 +930,8 @@ class TestToolElapsedTimer:
         complete_tasks = _completed_tasks(slack)
         assert complete_tasks, f"No complete tasks found. actions={slack.actions}"
         titles = [str(t.get("title", "")) for t in complete_tasks]
-        assert any(re.search(r"· \d+(\.\d+)?s$", t) for t in titles), titles
-        assert not any(
-            re.search(r"· \d+(m \d+)?(\.\d+)?s", str(t.get("details", ""))) for t in complete_tasks
-        )
+        assert any(re.search(r"⏱ \d+(\.\d+)?s", t) for t in titles), titles
+        assert all("⏱" not in str(t.get("details", "")) for t in complete_tasks)
 
     @pytest.mark.asyncio
     async def test_fast_tool_no_elapsed_time(self, monkeypatch):
@@ -946,8 +956,8 @@ class TestToolElapsedTimer:
         complete_tasks = _completed_tasks(slack)
         assert complete_tasks, f"No complete tasks found. actions={slack.actions}"
         for t in complete_tasks:
-            assert not re.search(r"· \d+(m \d+)?(\.\d+)?s", str(t.get("title", ""))), t
-            assert not re.search(r"· \d+(m \d+)?(\.\d+)?s", str(t.get("details", ""))), t
+            assert "⏱" not in str(t.get("title", "")), t
+            assert "⏱" not in str(t.get("details", "")), t
 
     @pytest.mark.asyncio
     async def test_tool_timer_cancelled_on_completion(self):
@@ -1002,18 +1012,16 @@ class TestToolElapsedTimer:
         task_appends = [a for a in slack.actions if a[0] == "append_task"]
         complete_tasks = [t for t in task_appends if t[1].get("status") == "complete"]
         # Elapsed time is shown in the TITLE (Slack replaces title on same
-        # task_id; details would APPEND and accumulate elapsed stamps). Elapsed is
+        # task_id; details would APPEND and accumulate ⏱ stamps). Elapsed is
         # N*75.5s for some N>=1, so assert the minutes FORMAT rather than a
         # specific minute count.
         title_list = [str(t[1].get("title", "")) for t in complete_tasks]
         assert any(
-            re.search(r"· \d+m \d+(\.\d+)?s$", t) for t in title_list
+            re.search(r"⏱ \d+m \d+(\.\d+)?s", t) for t in title_list
         ), f"Expected minutes-format elapsed in title but got: {title_list}"
         # Regression guard: elapsed must NOT be in details (append bug)
         details_list = [str(t[1].get("details", "")) for t in complete_tasks]
-        assert not any(
-            re.search(r"· \d+(m \d+)?(\.\d+)?s", d) for d in details_list
-        ), f"elapsed leaked into details: {details_list}"
+        assert all("⏱" not in d for d in details_list), f"⏱ leaked into details: {details_list}"
 
     @pytest.mark.asyncio
     async def test_elapsed_updater_fires_after_30s(self, monkeypatch):
@@ -1090,14 +1098,10 @@ class TestToolElapsedTimer:
         complete_tasks = [t for t in task_appends if t[1].get("status") == "complete"]
         # The first tool's completion (at transition) should carry elapsed in title
         title_list = [str(t[1].get("title", "")) for t in complete_tasks]
-        assert any(
-            re.search(r"· \d+(m \d+)?(\.\d+)?s", t) for t in title_list
-        ), f"No elapsed in any title: {title_list}"
+        assert any("⏱" in t for t in title_list), f"No elapsed in any title: {title_list}"
         # Regression guard: elapsed never leaks into details
         details_list = [str(t[1].get("details", "")) for t in complete_tasks]
-        assert not any(
-            re.search(r"· \d+(m \d+)?(\.\d+)?s", d) for d in details_list
-        ), f"elapsed leaked into details: {details_list}"
+        assert all("⏱" not in d for d in details_list), f"⏱ leaked into details: {details_list}"
 
 
 class _TaskCardRefusedSlack(MockSlackClient):
@@ -1182,7 +1186,7 @@ class TestCondenseThinking:
 
     def test_short_text_blockquoted_no_truncation(self):
         out = _condense_thinking("first line\nsecond line", limit=600)
-        assert out.startswith("*Thinking*\n")
+        assert out.startswith("💭 *Thinking*\n")
         assert "> first line" in out
         assert "> second line" in out
         assert "full reasoning in dashboard" not in out

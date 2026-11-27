@@ -3,7 +3,8 @@
 Writes the unit and the operator-editable overrides file as root, refuses a host
 that systemd did not boot and one where SELinux proves the system unit cannot
 start (:func:`selinux_refusal`, whose remedy embeds a rendered user unit), enables
-and starts the service (:func:`install`), and installs or removes the userns
+and starts the service (:func:`install`), turns linger on for the unit's account
+(:func:`enable_service_account_linger`), and installs or removes the userns
 AppArmor profiles for the service and for a directly launched app. Imports
 :mod:`kiro_crew.service.linux_unit` and :mod:`kiro_crew.service.linux_systemctl`.
 
@@ -23,8 +24,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from kiro_crew.platform_compat import trusted_system_bin
 from kiro_crew.service import apparmor, selinux
-from kiro_crew.service.common import SERVICE_NAME, kirocrew_bin
+from kiro_crew.service.common import SERVICE_NAME, kirocrew_bin, service_attach_path
 from kiro_crew.service.linux_systemctl import (
     ServiceInstallError,
     _privilege_prefix,
@@ -42,6 +44,7 @@ from kiro_crew.service.linux_unit import (
     _current_uid,
     _current_user,
     _home_for_user,
+    _linger_enabled,
     render_unit,
 )
 
@@ -183,7 +186,7 @@ def _env_file_is_untouched_seed() -> bool:
         return False
 
 
-def _user_scope_remedy() -> str:
+def _user_scope_remedy(*, headless: bool = False) -> str:
     """The commands that stand up a working per-user unit on this host.
 
     Shared by :func:`selinux_refusal` and :func:`selinux_start_failure_hint` so
@@ -199,7 +202,7 @@ def _user_scope_remedy() -> str:
     verbatim: a home with a space would word-split and put the unit somewhere
     systemd never reads.
     """
-    unit_body = render_unit(user_scope=True)
+    unit_body = render_unit(user_scope=True, headless=headless)
     user = _current_user()
     home = _home_for_user(user) if user else str(Path.home())
     account = user or "<the service account>"
@@ -235,7 +238,7 @@ def _user_scope_remedy() -> str:
     )
 
 
-def selinux_refusal(reason: str) -> str:
+def selinux_refusal(reason: str, *, headless: bool = False) -> str:
     """Operator-facing refusal for a system unit SELinux proves cannot start.
 
     A refusal rather than a warning because everything after this point is
@@ -264,7 +267,7 @@ def selinux_refusal(reason: str) -> str:
         f"   does not run in PID 1's domain, so it is allowed to execute a binary\n"
         f"   under $HOME.\n"
         f"\n"
-        f"{_user_scope_remedy()}\n"
+        f"{_user_scope_remedy(headless=headless)}\n"
         f"\n"
         f"   Installing kirocrew outside $HOME (onto a system-labelled path such\n"
         f"   as /usr/local/bin) also resolves it. Relocating only the LAUNCHER\n"
@@ -306,8 +309,11 @@ def selinux_start_failure_hint() -> str:
     )
 
 
-def install() -> apparmor.ProfileOutcome:
+def install(*, headless: bool = False) -> apparmor.ProfileOutcome:
     """Write the unit file and enable+start the service. Idempotent.
+
+    ``headless`` renders the unit that starts the gateway with ``--headless``
+    (:func:`render_unit`), and the unit the SELinux refusal prints.
 
     Calls ``sudo`` to write the unit and run ``systemctl``; its password prompt
     appears on the user's terminal. No kirocrew / LLM / agent code runs under
@@ -372,10 +378,10 @@ def install() -> apparmor.ProfileOutcome:
     # host without SELinux, or in permissive mode, is unaffected.
     blocked, selinux_reason = selinux.blocks_system_unit(kirocrew_bin())
     if blocked:
-        raise ServiceInstallError(selinux_refusal(selinux_reason))
+        raise ServiceInstallError(selinux_refusal(selinux_reason, headless=headless))
 
     needs_profile, profile_reason = apparmor.should_install()
-    write_res = _write_unit_via_sudo(render_unit())
+    write_res = _write_unit_via_sudo(render_unit(headless=headless))
     if write_res.returncode != 0:
         raise ServiceInstallError(
             "Failed to write the unit file. The sudo step is required because "
@@ -412,6 +418,11 @@ def install() -> apparmor.ProfileOutcome:
             f"{(enable_res.stderr or enable_res.stdout).strip()}"
         )
 
+    # Clear the unit's failed state and start counter first (best-effort): an
+    # install that repairs a unit which just crash-looped would otherwise hit
+    # `StartLimitBurst` and fail with "Start request repeated too quickly".
+    _systemctl("reset-failed", f"{SERVICE_NAME}.service")
+
     # Use restart (not start) so re-running install picks up a unit-file
     # change without manual intervention.
     restart_res = _systemctl("restart", f"{SERVICE_NAME}.service")
@@ -430,14 +441,54 @@ def install() -> apparmor.ProfileOutcome:
     return profile_outcome
 
 
+def enable_service_account_linger() -> tuple[bool, str] | None:
+    """Turn linger on for the system unit's account; ``(ok, line to print)`` or ``None``.
+
+    Agent runtime scopes live under that account's ``user@<uid>.service`` (the unit
+    bakes its ``/run/user/<uid>`` bus), which logind stops at its last logout unless
+    linger is on. ``None`` when there is nothing to do: linger reported on, no trusted
+    ``loginctl``, an unresolved uid (the unit then bakes no user bus), or no per-user
+    manager unit for linger to keep (the test ``kirocrew doctor`` reports by). An
+    account logind does not track (no session, no linger) reads as unknown and is
+    acted on. The call names the numeric uid, which resolves where root's name lookup
+    may not. Runs on every install, a re-install too; a failure only warns and never
+    changes the install outcome. ``loginctl`` comes from fixed system directories,
+    never ``PATH``, like the probe's.
+    """
+    user = _current_user()
+    uid = _current_uid(user)
+    loginctl = trusted_system_bin("loginctl")
+    if uid is None or loginctl is None or _linger_enabled(str(uid)) is True:
+        return None
+    # circular import: pod.runtime imports kiro_crew.service, whose __init__ loads this module.
+    from kiro_crew.pod.runtime import user_manager_unit
+
+    if user_manager_unit(uid) is None:
+        return None
+    res = _sudo_run(loginctl, "enable-linger", str(uid))
+    if res.returncode == 0:
+        return True, (
+            f"linger turned on for {user}, so agent runtimes keep running after its last "
+            f"logout. To turn it off: sudo loginctl disable-linger {uid}"
+        )
+    detail = (res.stderr or res.stdout).strip() or f"exit {res.returncode}"
+    return False, (
+        f"could not turn linger on for {user} ({detail}): until it is on, agent runtimes "
+        f"stop at its last logout and later ones start without their memory and "
+        f"fork-count ceilings. Run: sudo loginctl enable-linger {uid}"
+    )
+
+
 def install_apparmor_profile(expected_uid: int | None) -> apparmor.ProfileOutcome:
     """Install the userns AppArmor profile when this host needs one.
 
     NOT fatal: running without the profile is the status quo, while aborting
     an install over a hardening step is a regression.
 
-    Attaches the profile to ``kirocrew_bin()``, the path ``render_unit()`` uses
-    for ``ExecStart``, instead of ``AppArmorProfile=`` (see ``apparmor.py``).
+    Attaches the profile to ``service_attach_path(kirocrew_bin())``: the script
+    ``ExecStart`` runs, or, when ``ExecStart`` starts the Toolbox launcher, the
+    version script that launcher execs. Not ``AppArmorProfile=`` (see
+    ``apparmor.py``).
 
     ``expected_uid`` is the uid of the account the SERVICE runs as, not the
     installer's (which may be root under ``sudo``). When it is ``None`` the
@@ -468,7 +519,7 @@ def install_apparmor_profile(expected_uid: int | None) -> apparmor.ProfileOutcom
         _sudo_capture,
         os.getuid(),
         os.getgid(),
-        exec_path=kirocrew_bin(),
+        exec_path=service_attach_path(kirocrew_bin()),
         expected_uid=expected_uid,
     )
 

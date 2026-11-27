@@ -11,9 +11,10 @@
  * slot) that does not name the permission row's `request_mid`.
  * Apps under `src/apps/` own their gateway calls and are not scanned. The
  * app-sdk chat embed (`app-sdk/ChatEmbed.tsx`) is an app surface too: it posts
- * the slot approve with the app's own scoped client and a bare `request_id`,
- * as every app decide does, so this property covers the dashboard's own
- * controls and not the embed.
+ * the slot approve with the app's own scoped client, naming the card row's
+ * native target (`origin: 'native'` and `request_mid`), which its own tests
+ * pin (`ChatEmbed.approvalRollback.test.tsx`); this property covers the
+ * dashboard's own controls and not the embed.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'

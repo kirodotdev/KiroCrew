@@ -25,6 +25,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, NamedTuple, Optional
@@ -96,13 +97,36 @@ def random_bucket_name() -> str:
 # exactly why the Artifact Deploy "Verify" step failed for Homebrew users until
 # the gateway was relaunched from a shell that carried the full PATH. The SSM
 # session-manager-plugin installs into these same dirs, so it is resolved and
-# spawn-searched through them too.
+# spawn-searched through them too. A relative entry is a Windows folder under
+# ``%ProgramFiles%``: see :func:`_aws_bin_dirs`.
 _AWS_BIN_DIRS = (
     "/opt/homebrew/bin",  # Apple Silicon Homebrew
     "/usr/local/bin",     # Intel Homebrew + official AWS CLI v2 pkg symlink
+    # The plugin's Windows installer adds this to the registry PATH only, which a
+    # running gateway never re-reads.
+    os.path.join("Amazon", "SessionManagerPlugin", "bin"),
 )
+# The tools in those dirs that a child runs by name: ``aws ssm start-session``
+# runs the plugin, and an ssh ``ProxyCommand`` can run either.
+_AWS_BIN_DIR_TOOLS = ("session-manager-plugin", "aws")
 
-# ``(name, directory)`` pairs in :data:`_AWS_BIN_DIRS` whose candidate the
+
+def _aws_bin_dirs() -> tuple[str, ...]:
+    """:data:`_AWS_BIN_DIRS` for this platform.
+
+    Elsewhere only the POSIX dirs. On Windows the drive-less POSIX dirs are left
+    out: there ``/usr/local/bin`` resolves against the current drive, to a folder no
+    AWS installer uses. A relative dir is read under ``%ProgramFiles%`` and skipped
+    while that is unset or relative; a hit there still passes the provenance check.
+    """
+    if sys.platform != "win32":
+        return tuple(d for d in _AWS_BIN_DIRS if d.startswith("/"))
+    program_files = os.environ.get("ProgramFiles", "")
+    dirs = (os.path.join(program_files, d) for d in _AWS_BIN_DIRS if not d.startswith("/"))
+    return tuple(d for d in dirs if os.path.isabs(d))
+
+
+# ``(name, directory)`` pairs in :func:`_aws_bin_dirs` whose candidate the
 # provenance chokepoint most recently REFUSED. Keyed by the pair, not the dir
 # alone, because :func:`resolve_aws_tool_bin` is generic over ``name``: ``aws``
 # and ``session-manager-plugin`` share one body and one install dir, so a dir can
@@ -123,6 +147,9 @@ _REFUSED_AWS_BIN_DIRS: set[tuple[str, str]] = set()
 # filesystem-free while making an unchecked directory ineligible for PATH.
 _TRUSTED_AWS_BIN_DIRS: tuple[tuple[str, str], ...] = ()
 _WARNED_AWS_BIN_DIR_REFUSALS: set[tuple[str, str]] = set()
+# ``(name, directory, path, reason)`` refusals recorded and logged; a pair's keys are
+# dropped when that pair passes or its tool is gone, so a re-broken install logs again.
+_WARNED_AWS_TOOL_REFUSALS: set[tuple[str, str, str, str]] = set()
 _AWS_BIN_DIR_TRUST_LOCK = threading.Lock()
 
 
@@ -133,7 +160,7 @@ def _refresh_aws_bin_dir_trust() -> None:
     global _TRUSTED_AWS_BIN_DIRS
     with _AWS_BIN_DIR_TRUST_LOCK:
         trusted: list[tuple[str, str]] = []
-        for directory in _AWS_BIN_DIRS:
+        for directory in _aws_bin_dirs():
             if not directory:
                 continue
             try:
@@ -236,32 +263,116 @@ def resolve_aws_tool_bin_with_refusals(name: str) -> tuple[str, tuple[AwsToolRef
         # Same trust class as the pre-existing behaviour: execvp against the
         # inherited PATH already executed exactly this binary.
         return found, ()
-    for directory in _AWS_BIN_DIRS:
+    for directory in _aws_bin_dirs():
         if not directory:
             continue
         found = shutil.which(name, path=directory)
         if not found:
             continue
-        from kiro_crew.github_runner import validate_provider_executable
+        with _AWS_BIN_DIR_TRUST_LOCK:
+            resolved, refusal = _validate_tool_in_dir(name, directory, found)
+        if refusal is not None:
+            refusals.append(refusal)
+            continue
+        if resolved is None:
+            continue
+        return resolved, tuple(refusals)
+    return name, tuple(refusals)
 
-        try:
-            resolved = validate_provider_executable(found)
-        except ValueError as exc:
-            # This (name, dir) is out — for the argv head AND for the child's
-            # PATH. Keyed by name too: a sibling name passing in this dir must not
-            # clear THIS name's refusal.
-            _REFUSED_AWS_BIN_DIRS.add((name, directory))
-            refusals.append(AwsToolRefusal(found, str(exc)))
+
+def _validate_tool_in_dir(
+    name: str, directory: str, found: str
+) -> tuple[str | None, AwsToolRefusal | None]:
+    """Run the provenance check on ``found`` and record the verdict for ``(name, directory)``.
+
+    The caller holds :data:`_AWS_BIN_DIR_TRUST_LOCK`; nothing here takes it.
+    Returns ``(resolved_path, None)`` when the provenance chokepoint accepts
+    ``found`` and ``(None, refusal)`` when it refuses it. Either way it updates
+    :data:`_REFUSED_AWS_BIN_DIRS` for this ``(name, directory)`` and logs each
+    refusal once. Keyed by name too: a sibling name passing in this dir must not
+    clear THIS name's refusal.
+    """
+    from kiro_crew.github_runner import validate_provider_executable
+
+    try:
+        resolved = validate_provider_executable(found)
+    except ValueError as exc:
+        # This (name, dir) is out — for the argv head AND for the child's PATH.
+        refusal = AwsToolRefusal(found, str(exc))
+        _REFUSED_AWS_BIN_DIRS.add((name, directory))
+        warning_key = (name, directory, found, refusal.reason)
+        if warning_key not in _WARNED_AWS_TOOL_REFUSALS:
+            # One key per pair, so a refusal read back names this file and reason.
+            # The pair stays in the refused set throughout: an unlocked
+            # tool_spawn_env read must never see it missing.
+            _drop_aws_tool_warnings(name, directory)
+            _WARNED_AWS_TOOL_REFUSALS.add(warning_key)
             logger.warning(
                 "refusing %s at %s: failed provenance validation; trying the remaining "
                 "install dirs",
                 name,
                 found,
             )
-            continue
-        _REFUSED_AWS_BIN_DIRS.discard((name, directory))
-        return resolved, tuple(refusals)
-    return name, tuple(refusals)
+        return None, refusal
+    _clear_aws_tool_refusal(name, directory)
+    return resolved, None
+
+
+def _clear_aws_tool_refusal(name: str, directory: str) -> None:
+    """Forget the refusal of ``(name, directory)``; the caller holds the trust lock.
+
+    Only for a tool that passed or is gone.
+    """
+    _REFUSED_AWS_BIN_DIRS.discard((name, directory))
+    _drop_aws_tool_warnings(name, directory)
+
+
+def _drop_aws_tool_warnings(name: str, directory: str) -> None:
+    """Drop the recorded warnings of ``(name, directory)``; the caller holds the trust lock."""
+    _WARNED_AWS_TOOL_REFUSALS.difference_update(
+        {key for key in _WARNED_AWS_TOOL_REFUSALS if key[:2] == (name, directory)}
+    )
+
+
+def refused_aws_tool(name: str) -> AwsToolRefusal | None:
+    """The refusal the last sweep recorded for ``name`` in the earliest dir, or None."""
+    with _AWS_BIN_DIR_TRUST_LOCK:
+        recorded = {
+            directory: AwsToolRefusal(path, reason)
+            for tool, directory, path, reason in _WARNED_AWS_TOOL_REFUSALS
+            if tool == name
+        }
+    return next((recorded[d] for d in _aws_bin_dirs() if d in recorded), None)
+
+
+def refresh_aws_tool_trust() -> None:
+    """Validate every tool in :data:`_AWS_BIN_DIR_TOOLS` in every fallback dir.
+
+    Run it before :func:`tool_spawn_env` for a child that runs those tools by name, so
+    a refused tool's dir stays off its PATH and a repaired one is back without a
+    restart. Scans the filesystem: call it off the event loop.
+
+    Unlike :func:`resolve_aws_tool_bin_with_refusals`, which resolves one argv head
+    and stops at the first dir that passes, this does not stop early: it records a
+    refusal for EVERY tool refused in EVERY dir, so :func:`tool_spawn_env` keeps a
+    dir off the child's PATH when any tool there is refused. Without the full
+    sweep, a refused tool in a later dir could ride onto the child's PATH behind an
+    accepted tool in an earlier one, where a ProxyCommand would run it by name.
+    """
+    _refresh_aws_bin_dir_trust()
+    # The whole sweep holds the lock, so an overlapping sweep waits and its later
+    # verdict is the one that stays.
+    with _AWS_BIN_DIR_TRUST_LOCK:
+        for directory in _aws_bin_dirs():
+            if not directory:
+                continue
+            for name in _AWS_BIN_DIR_TOOLS:
+                found = shutil.which(name, path=directory)
+                if not found:
+                    # A removed tool clears its refusal, so its dir is eligible for PATH again.
+                    _clear_aws_tool_refusal(name, directory)
+                    continue
+                _validate_tool_in_dir(name, directory, found)
 
 
 def resolve_aws_bin() -> str:
@@ -365,9 +476,10 @@ def tool_spawn_env(argv_head: str) -> dict[str, str]:
     pairs its configured spelling with the canonical path published to the
     child, so retargeting a checked link cannot redirect the child's lookup.
 
-    Dirs already on ``PATH`` under either their configured or canonical spelling
-    are not repeated, so a terminal-launched gateway gets a byte-identical env
-    and the fix is inert outside the minimal-PATH case it exists for.
+    Dirs already on ``PATH`` under either their configured or canonical spelling,
+    a trailing separator included, are not repeated, so a terminal-launched
+    gateway gets a byte-identical env and the fix is inert outside the
+    minimal-PATH case it exists for.
 
     Unlike the resolvers above this touches no filesystem — it is a dict copy and
     a string join over ``os.environ`` — so it is safe to call directly on the
@@ -379,11 +491,12 @@ def tool_spawn_env(argv_head: str) -> dict[str, str]:
         # alone so it keeps failing execvp, as it did before this env existed.
         return env
     current = env.get("PATH", "")
-    have = {os.path.normcase(p) for p in current.split(os.pathsep) if p}
-    refused_dirs = {directory for _name, directory in _REFUSED_AWS_BIN_DIRS}
+    have = {os.path.normcase(os.path.normpath(p)) for p in current.split(os.pathsep) if p}
+    # Copied in one step: resolver walks in worker threads add and discard pairs.
+    refused_dirs = {directory for _name, directory in _REFUSED_AWS_BIN_DIRS.copy()}
     extra: list[str] = []
     for original, canonical in _TRUSTED_AWS_BIN_DIRS:
-        spellings = {os.path.normcase(original), os.path.normcase(canonical)}
+        spellings = {os.path.normcase(os.path.normpath(p)) for p in (original, canonical)}
         if original in refused_dirs or spellings & have:
             continue
         extra.append(canonical)

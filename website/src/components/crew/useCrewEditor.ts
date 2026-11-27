@@ -56,6 +56,7 @@ import type { CronJob } from '../../types'
 import { type KiroCrewAgent } from '../AgentSelector'
 import { modelSupportsEffort } from '../../lib/effort'
 import { type TemplateProvenance } from '../../lib/templateSource'
+import type { OpenMateSessionsState } from '../../lib/crewMode'
 import { INHERIT_MODEL } from './crewFields'
 
 export { INHERIT_MODEL }
@@ -281,6 +282,8 @@ export interface CrewEditorController {
    *  the embedded sub-sections that would otherwise discard the modal's unsaved
    *  panes with a raw navigate. */
   guardedNavigate: (to: string) => void
+  /** Open the bot's Profile tab after the dialog's leave guard has granted navigation. */
+  openProfilePage: (name: string) => void
   /** The editor's leave guard for an action that navigates on its own (an
    *  error notice's agent hand-off): it asks first when the modal holds
    *  unsaved edits, then runs `proceed`. */
@@ -1024,6 +1027,10 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   const guardedNavigate = useCallback((to: string) => {
     leave(() => navigate(to), to)
   }, [navigate, leave])
+  const openProfilePage = useCallback((name: string) => {
+    const state: OpenMateSessionsState & { leaveGranted: true } = { openMateSessions: true, tab: 'profile', leaveGranted: true }
+    navigate(`/members?member=${encodeURIComponent(name)}`, { state })
+  }, [navigate])
   // The leave guard for an action that navigates on its own. With unsaved panes
   // it asks through the editor's own discard confirm and runs `proceed` once
   // the user discards; the host page's guard only refuses and raises that
@@ -1140,6 +1147,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     isDefaultCrew,
     navigateManageMemory,
     guardedNavigate,
+    openProfilePage,
     leaveGate,
     memberNames,
     error,

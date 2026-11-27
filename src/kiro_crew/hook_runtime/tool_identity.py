@@ -14,6 +14,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
@@ -35,9 +36,11 @@ if TYPE_CHECKING:
         KIRO_TOOL_ALIASES,
         TOOL_AUTO_APPROVE,
         SpecDeniedGrant,
+        SpecParentLimits,
         ToolHookResult,
         _bounded_pattern_search,
         _every_operation_names_a_path,
+        as_parent_limits,
         as_spec_denied_grant,
         computer_use_action_classes,
         computer_use_action_from_title,
@@ -231,11 +234,18 @@ class ToolCall:
     #: ``AcpEvent.spec_granted_read_paths``: the same for the read ``allowedPaths``,
     #: against the target of a file read. Empty grants nothing.
     spec_granted_read_paths: tuple[str, ...] = ()
+    #: ``AcpEvent.spec_parent_limits``: for a KAS sub-agent run, one
+    #: ``SpecParentLimits`` per agent above it. Read by the ``spec-parent-limits``
+    #: row only, which REFUSES what any of them refuses. Empty refuses nothing.
+    spec_parent_limits: tuple[SpecParentLimits, ...] = ()
     #: ``AcpEvent.harness_builtin_tool``: the kiro-cli read built-in a claude call
     #: is for, from the name claude-agent-acp stamped on the tool_call frame. A
     #: deny target, so a rule on ``web_fetch`` binds claude's WebFetch, and the
     #: claude half of the read-only built-in proof. Never a grant.
     harness_builtin_tool: str = ""
+    #: The URL of a proven web fetch (:func:`proven_fetch_url`), which the path rule
+    #: does not resolve. Empty for every other call.
+    fetch_url: str = ""
     #: ``AcpEvent.deepseek_tool_name``: the DeepSeek Harness tool a call is for, as
     #: its tool_call frame stated it. Read by the gate on a ``classifier_only``
     #: (READ_ONLY) turn only: a deny target and a governance identity under both
@@ -249,6 +259,11 @@ class ToolCall:
     #: for a slot that carries none. Not on the event, so ``from_event`` leaves it
     #: empty unless the site overrides it; empty yields no identity (fail-closed).
     resolved_agent: str = ""
+    #: ``(app, agent)`` of an unattended run that has no slot: the app the gateway
+    #: stamped on the run (a cron job's ``created_by``) and the agent that actually
+    #: ran it. Read by the ``app-own-tools`` grant alone, and only when the surface
+    #: names no app. Not on the event; empty yields no grant (fail-closed).
+    app_run: tuple[str, str] = ("", "")
 
     @classmethod
     def from_event(cls, event: object, **overrides: Any) -> "ToolCall":
@@ -313,7 +328,9 @@ class ToolCall:
             "spec_granted_read_paths": _granted_patterns(
                 getattr(event, "spec_granted_read_paths", None)
             ),
+            "spec_parent_limits": as_parent_limits(getattr(event, "spec_parent_limits", ())),
             "harness_builtin_tool": getattr(event, "harness_builtin_tool", "") or "",
+            "fetch_url": proven_fetch_url(event),
             "deepseek_tool_name": getattr(event, "deepseek_tool_name", "") or "",
             "spawn_target": getattr(event, "spawn_target", "") or "",
         }
@@ -323,9 +340,9 @@ class ToolCall:
     def kwargs(self) -> dict[str, Any]:
         """The event-derived keywords of ``HookManager.on_tool_call`` for this call.
 
-        ``title`` and ``resolved_agent`` are left out: a site passes the title
-        positionally and the resolved agent beside the surface keywords, so a
-        splat of this dict can never collide with either.
+        ``title``, ``resolved_agent`` and ``app_run`` are left out: a site passes
+        the title positionally and the other two beside the surface keywords, so a
+        splat of this dict can never collide with any of them.
         """
         return {
             "tool_kind": self.kind,
@@ -350,10 +367,16 @@ class ToolCall:
             "spec_shell_readonly": self.spec_shell_readonly,
             "spec_granted_paths": self.spec_granted_paths,
             "spec_granted_read_paths": self.spec_granted_read_paths,
+            "spec_parent_limits": self.spec_parent_limits,
             "harness_builtin_tool": self.harness_builtin_tool,
+            "fetch_url": self.fetch_url,
             "deepseek_tool_name": self.deepseek_tool_name,
             "spawn_target": self.spawn_target,
         }
+
+    def names_fetch_url(self, text: str) -> bool:
+        """*text* is this call's proven fetch URL (:attr:`fetch_url`) or ``Fetch <url>``."""
+        return is_fetch_url_text(text, self.fetch_url)
 
 
 def _granted_names(value: object) -> frozenset[str]:
@@ -904,6 +927,43 @@ def mcp_identity_ref(mcp_server_name: str, mcp_tool_name: str) -> str:
     return f"@{mcp_server_name}/{mcp_tool_name}"
 
 
+def proven_fetch_url(event: object) -> str:
+    """The URL a proven web-fetch call opens over the network, or ``""``.
+
+    Proven by ``harness_tool_id``, the name the harness itself stamped on the
+    preceding ``tool_call`` frame (claude: ``claude#WebFetch``), never by this
+    frame's ``tool_kind``, which the payload can forge (Antigravity alone names an
+    unnamed call from its kind, ``ANTIGRAVITY_TOOL_ID_BY_KIND``); no table row
+    names an MCP tool. The URL is the trusted params' ``url``, and only a whole
+    ``http(s)`` URL with a host.
+    On any other tool a URL-shaped string is still a path to resolve:
+    ``https://.aws/credentials`` reaches a credential file through a planted
+    ``https:`` link.
+    """
+    # Imported at call time: an owner's own imports are inert for its functions
+    # (:mod:`kiro_crew.hook_runtime`), and the ``hooks`` facade does not import the SDK.
+    from kiro_crew.agent_sdk import is_harness_web_fetch
+
+    if not is_harness_web_fetch(_plain_str(getattr(event, "harness_tool_id", ""))):
+        return ""
+    if getattr(event, "raw_params_trusted", False) is not True:
+        return ""
+    params = getattr(event, "raw_tool_params", None)
+    url = params.get("url") if isinstance(params, dict) else None
+    if not isinstance(url, str):
+        return ""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    return url if parts.scheme in ("http", "https") and parts.hostname else ""
+
+
+def is_fetch_url_text(text: str, fetch_url: str) -> bool:
+    """*text* is the proven fetch URL, or the ``Fetch <url>`` title claude gives it."""
+    return bool(fetch_url) and text in (fetch_url, f"Fetch {fetch_url}")
+
+
 def title_is_trusted_mcp_identity(
     title: str,
     mcp_server_name: str,
@@ -1085,6 +1145,28 @@ def _tool_matches(pattern: str, tool_name: str) -> bool:
     if pattern == "*":
         return True
     return fnmatch.fnmatch(tool_name.lower(), pattern.lower())
+
+
+def _hook_matcher_alternatives(matcher: str) -> list[str]:
+    """The patterns a PreToolUse/PostToolUse hook's tool *matcher* stands for.
+
+    The whole matcher comes first, so a call titled with the same text (the shell
+    command ``ls|wc``) still meets it. Between plain tool names, ``|`` adds each
+    name as well: ``fs_write|execute_bash`` also stands for both tools. A matcher
+    holding a glob character or a space is not split: its parts would meet calls
+    its author never named (``*|sh*`` would hold ``*``).
+    """
+    if "|" not in matcher or any(ch in matcher for ch in " *?["):
+        return [matcher]
+    return [matcher, *(alt for alt in matcher.split("|") if alt)]
+
+
+def _hook_tool_matches(matcher: str, tool_name: str) -> bool:
+    """Whether one of *matcher*'s alternatives (:func:`_hook_matcher_alternatives`)
+    meets *tool_name*. Approve, deny and confirm patterns keep :func:`_tool_matches`:
+    there a ``|`` meaning would widen a saved pattern.
+    """
+    return any(_tool_matches(alt, tool_name) for alt in _hook_matcher_alternatives(matcher))
 
 
 def _has_global_inline_flags(pattern: str) -> bool:

@@ -113,9 +113,8 @@ class TestTheVocabulary:
             "SessionLaneChanged",
         )
 
-    def test_the_six_new_triggers_are_the_pascal_twins(self) -> None:
+    def test_the_kas_only_triggers_are_the_pascal_twins(self) -> None:
         assert set(HOOK_EVENTS_KAS_ONLY) == set(TWINS.values())
-        assert len(HOOK_EVENTS_KAS_ONLY) == 6
 
     def test_the_groups_do_not_overlap(self) -> None:
         assert not set(HOOK_EVENTS) & set(HOOK_EVENTS_KAS_ONLY)

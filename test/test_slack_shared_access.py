@@ -1,0 +1,1829 @@
+"""Shared Slack access (``slack.shared_access``): off by default, owner-only stays owner-only.
+
+The switch admits the Slack users the owner lists, once Slack confirms each one,
+to drive work as the owner. With it off, Slack answers the owner alone exactly as
+before, and the old ``slack.allowed_users`` list admits nobody either way. A shared
+user answers only their own turn's tool prompts (Trust on them included), never
+turns on YOLO or changes the approval mode, and reaches no owner-only command,
+button or keyword.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from session_helpers import cfg_fixture  # noqa: F401 - the cfg fixture, by name
+from slack_handler_helpers import _clean_approval_state  # noqa: F401
+
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.section_builders import _build_shared_access, _build_slack_config
+from kiro_crew.config.sections_slack import SlackConfig, is_slack_user_id, shared_user_ids
+from kiro_crew.slack import handler, interactions, shared_access
+from kiro_crew.slack.handler import _pending_approvals, _PendingApproval, handle_interaction
+
+OWNER = "UOWNER0001"
+FRIEND = "UFRIEND001"
+OTHER = "UOTHER0001"
+TEAM = "T0000TEAM1"
+
+
+class _SlackError(Exception):
+    def __init__(self, error: str) -> None:
+        super().__init__(error)
+        self.response = {"error": error}
+
+
+class FakeWeb:
+    """``auth.test`` / ``users.info`` as Slack answers them, recording each call."""
+
+    def __init__(self, users: dict[str, dict[str, Any]], team: str = TEAM) -> None:
+        self.users = users
+        self.team = team
+        self.calls: list[str] = []
+        self.down = False
+
+    async def auth_test(self) -> dict[str, Any]:
+        if self.down:
+            raise OSError("network down")
+        return {"team_id": self.team}
+
+    async def users_info(self, user: str) -> dict[str, Any]:
+        self.calls.append(user)
+        if user not in self.users:
+            raise _SlackError("user_not_found")
+        return {"user": self.users[user]}
+
+
+def _person(team: str = TEAM, **extra: Any) -> dict[str, Any]:
+    return {"team_id": team, "name": "friend", "profile": {"display_name": "Friend"}, **extra}
+
+
+def _cfg(
+    enabled: bool = True,
+    ids: tuple[str, ...] = (FRIEND,),
+    allowed: tuple[str, ...] = (),
+    *,
+    verify: bool = True,
+):
+    """A config with *ids* listed; Slack checks them unless *verify* is False."""
+    data = {
+        "shared_access": {"enabled": enabled, "user_ids": list(ids), "verify_with_slack": verify},
+        "allowed_users": [{"slack_id": u, "name": ""} for u in allowed],
+    }
+    cfg = KiroCrewConfig()
+    cfg.slack = _build_slack_config(data)
+    return cfg
+
+
+@pytest.fixture(autouse=True)
+def _gateway(_floor_monkeypatch):
+    web = FakeWeb({FRIEND: _person(), OTHER: _person()})
+    shared_access.install(web)
+    _floor_monkeypatch.setattr(handler, "_owner_id", OWNER)
+    _floor_monkeypatch.setattr(handler, "_orch_cfg", _cfg())
+    yield web
+    shared_access.reset()
+
+
+def _use(_floor_monkeypatch, cfg) -> None:
+    _floor_monkeypatch.setattr(handler, "_orch_cfg", cfg)
+
+
+# ── the setting ──────────────────────────────────────────────────────────────
+
+
+def test_shared_access_is_off_and_empty_by_default() -> None:
+    assert SlackConfig().shared_access.enabled is False
+    assert SlackConfig().shared_access.user_ids == []
+    assert _build_slack_config({}).shared_access.enabled is False
+
+
+@pytest.mark.parametrize("value", ["true", 1, "yes", None, {}])
+def test_only_a_literal_true_turns_it_on(value: object) -> None:
+    assert _build_shared_access({"enabled": value}).enabled is False
+    assert _build_shared_access({"enabled": True}).enabled is True
+    assert _build_shared_access({"verify_with_slack": value}).verify_with_slack is False
+    assert _build_shared_access({"verify_with_slack": True}).verify_with_slack is True
+
+
+def test_slack_is_not_asked_by_default() -> None:
+    assert SlackConfig().shared_access.verify_with_slack is False
+    assert _build_slack_config({}).shared_access.verify_with_slack is False
+
+
+def test_stored_ids_are_trimmed_well_formed_and_deduped() -> None:
+    raw = ["U123", " W45 ", "B999", "T111", "u12", "U123", 7, "U" + "1" * 30]
+    assert shared_user_ids(raw) == ["U123", "W45"]
+    assert shared_user_ids("U123") == []
+    assert not is_slack_user_id("U") and is_slack_user_id("W0ABC")
+
+
+@pytest.mark.parametrize(
+    "value, ok",
+    [
+        ("U0ABC123", True),
+        ("W0ABC123", True),
+        ("U1", True),
+        ("U" + "1" * 19, True),  # 20 characters
+        ("U" + "1" * 20, False),  # 21 characters
+        ("u0abc123", False),
+        ("U0abc", False),
+        ("", False),
+        ("U", False),
+        ("U0ABC\n", False),
+        (" U0ABC", False),
+        ("U0 ABC", False),
+        ("U0\u00c4BC", False),  # a non-ASCII letter
+        ("U0\u0663BC", False),  # a non-ASCII digit
+        ("U0\uff11BC", False),  # a fullwidth digit
+        ("B0ABC123", False),
+        ("T0ABC123", False),
+        (12345, False),
+        (None, False),
+        (b"U0ABC123", False),
+    ],
+)
+def test_a_member_id_is_what_the_messaging_schemas_accept(value: object, ok: bool) -> None:
+    from kiro_crew.validation_parts.input_bounds import USER_ID_RE
+
+    assert is_slack_user_id(value) is ok
+    if isinstance(value, str):
+        assert (USER_ID_RE.fullmatch(value) is not None) is ok
+
+
+# ── who is admitted ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_switch_off_keeps_slack_owner_only(_floor_monkeypatch) -> None:
+    await shared_access.prime(_cfg(), FRIEND, owner_id=OWNER)  # confirmed while on
+    _use(_floor_monkeypatch, _cfg(enabled=False))
+    assert handler.is_allowed_user(OWNER) is True
+    assert handler.is_shared_user(FRIEND) is False
+    assert handler.is_shared_user(FRIEND) is False
+
+
+@pytest.mark.asyncio
+async def test_switch_off_checks_nobody_with_slack(_gateway, _floor_monkeypatch) -> None:
+    _use(_floor_monkeypatch, _cfg(enabled=False))
+    await shared_access.prime_shared_user(FRIEND)
+    assert _gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_stale_allowed_users_entry_is_never_admitted(_floor_monkeypatch) -> None:
+    _use(_floor_monkeypatch, _cfg(ids=(FRIEND,), allowed=(OTHER,)))
+    await shared_access.prime_shared_user(OTHER)
+    assert handler.is_allowed_user(OTHER) is False
+
+
+@pytest.mark.asyncio
+async def test_a_listed_person_is_admitted_once_slack_confirms_them() -> None:
+    assert handler.is_shared_user(FRIEND) is False  # not checked yet
+    await shared_access.prime_shared_user(FRIEND)
+    assert handler.is_shared_user(FRIEND) is True
+    assert handler.is_shared_user(FRIEND) is True
+    assert handler.is_shared_user(OWNER) is False
+    assert handler.is_owner(FRIEND) is False
+
+
+@pytest.mark.parametrize(
+    "user, reason",
+    [
+        (_person(is_bot=True), shared_access.REASON_BOT),
+        (_person(deleted=True), shared_access.REASON_DEACTIVATED),
+        (_person(team="T0000OTHER"), shared_access.REASON_OTHER_TEAM),
+        (_person(team=""), shared_access.REASON_OTHER_TEAM),
+    ],
+)
+@pytest.mark.asyncio
+async def test_slack_must_confirm_a_person_in_the_bots_workspace(
+    _gateway, user: dict, reason: str
+) -> None:
+    _gateway.users[FRIEND] = user
+    await shared_access.prime_shared_user(FRIEND)
+    assert handler.is_shared_user(FRIEND) is False
+    verdict = shared_access._verdicts.get(FRIEND)
+    assert verdict is not None and verdict.reason == reason
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_id_and_an_unreachable_slack_admit_nobody(
+    _gateway, _floor_monkeypatch
+) -> None:
+    _use(_floor_monkeypatch, _cfg(ids=("UNOBODY001", FRIEND)))
+    await shared_access.prime_shared_user("UNOBODY001")
+    assert shared_access._verdicts.get("UNOBODY001").reason == shared_access.REASON_NOT_FOUND
+    _gateway.down = True
+    await shared_access.prime_shared_user(FRIEND)
+    assert shared_access._verdicts.get(FRIEND).reason == shared_access.REASON_UNVERIFIABLE
+    assert handler.is_shared_user(FRIEND) is False
+
+
+@pytest.mark.asyncio
+async def test_the_owner_on_the_list_is_never_a_shared_user(_floor_monkeypatch) -> None:
+    alias = "W" + OWNER[1:]
+    _use(_floor_monkeypatch, _cfg(ids=(OWNER, alias)))
+    for verify in (True, False):
+        verdict = await shared_access.check(
+            shared_access._client, alias, owner_id=OWNER, verify=verify
+        )
+        assert verdict.reason == shared_access.REASON_OWNER
+    assert handler.is_shared_user(OWNER) is False and handler.is_shared_user(alias) is False
+
+
+@pytest.mark.asyncio
+async def test_a_removal_and_a_switch_off_apply_to_the_next_event(_floor_monkeypatch) -> None:
+    await shared_access.prime_shared_user(FRIEND)
+    assert handler.is_shared_user(FRIEND) is True
+    _use(_floor_monkeypatch, _cfg(ids=()))
+    assert handler.is_shared_user(FRIEND) is False
+    _use(_floor_monkeypatch, _cfg())
+    assert handler.is_shared_user(FRIEND) is True
+    _use(_floor_monkeypatch, _cfg(enabled=False))
+    assert handler.is_shared_user(FRIEND) is False
+
+
+@pytest.mark.asyncio
+async def test_a_confirmation_is_asked_again_once_old(_gateway, _floor_monkeypatch) -> None:
+    now = [1000.0]
+    _floor_monkeypatch.setattr(shared_access, "clock", lambda: now[0])
+    await shared_access.prime_shared_user(FRIEND)
+    await shared_access.prime_shared_user(FRIEND)
+    assert _gateway.calls == [FRIEND]
+    _gateway.users[FRIEND] = _person(deleted=True)
+    now[0] += shared_access.CONFIRMED_TTL_SECS
+    await shared_access.prime_shared_user(FRIEND)
+    assert handler.is_shared_user(FRIEND) is False
+
+
+# ── verify_with_slack off: the owner's list alone ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "user",
+    [_person(), _person(is_bot=True), _person(deleted=True), _person(team="T0000OTHER")],
+)
+@pytest.mark.asyncio
+async def test_without_verify_a_listed_id_is_admitted_without_asking_slack(
+    _gateway, _floor_monkeypatch, user: dict
+) -> None:
+    _gateway.users[FRIEND] = user
+    _gateway.down = True  # auth.test would fail; it must not be called
+    _use(_floor_monkeypatch, _cfg(verify=False))
+    await shared_access.prime_shared_user(FRIEND)
+    assert handler.is_shared_user(FRIEND) is True
+    assert _gateway.calls == []
+    verdict = shared_access._verdicts[FRIEND]
+    assert verdict.ok and verdict.reason == shared_access.REASON_LISTED and verdict.name == ""
+
+
+@pytest.mark.asyncio
+async def test_without_verify_a_malformed_or_owner_id_is_still_refused(_gateway) -> None:
+    for user_id, reason in (
+        ("B0ABC123", shared_access.REASON_MALFORMED),
+        (OWNER, shared_access.REASON_OWNER),
+        ("W" + OWNER[1:], shared_access.REASON_OWNER),
+    ):
+        verdict = await shared_access.check(None, user_id, owner_id=OWNER, verify=False)
+        assert not verdict.ok and verdict.reason == reason, user_id
+    assert _gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_flipping_verify_asks_again_instead_of_reusing_the_old_answer(
+    _gateway, _floor_monkeypatch
+) -> None:
+    _gateway.users[FRIEND] = _person(is_bot=True)
+    _use(_floor_monkeypatch, _cfg(verify=False))
+    await shared_access.prime_shared_user(FRIEND)
+    assert handler.is_shared_user(FRIEND) is True
+    # Turned on: a list-only pass does not count, and Slack refuses the bot.
+    _use(_floor_monkeypatch, _cfg(verify=True))
+    assert handler.is_shared_user(FRIEND) is False
+    await shared_access.prime_shared_user(FRIEND)
+    assert shared_access._verdicts[FRIEND].reason == shared_access.REASON_BOT
+    # Turned off again: Slack's refusal does not count either.
+    _use(_floor_monkeypatch, _cfg(verify=False))
+    await shared_access.prime_shared_user(FRIEND)
+    assert handler.is_shared_user(FRIEND) is True
+
+
+@pytest.mark.asyncio
+async def test_a_list_only_pass_does_not_outlive_turning_verification_on(
+    _floor_monkeypatch,
+) -> None:
+    # still_confirmed serves a code channel mid-turn, with no expiry and no re-prime.
+    cfg_off, cfg_on = _cfg(verify=False), _cfg(verify=True)
+    _use(_floor_monkeypatch, cfg_off)
+    await shared_access.prime_shared_user(FRIEND)
+    assert shared_access.still_confirmed(cfg_off, FRIEND, owner=False) is True
+    assert shared_access.still_confirmed(cfg_on, FRIEND, owner=False) is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_slack_check_logs_slacks_error_code(_gateway, caplog) -> None:
+    async def _refuse(user: str) -> dict[str, Any]:
+        raise _SlackError("missing_scope")
+
+    _gateway.users_info = _refuse
+    with caplog.at_level("WARNING", logger=shared_access.__name__):
+        verdict = await shared_access.check(_gateway, FRIEND, owner_id=OWNER, verify=True)
+    assert verdict.reason == shared_access.REASON_UNVERIFIABLE
+    assert "missing_scope" in caplog.text
+
+
+# ── tool approvals ───────────────────────────────────────────────────────────
+
+
+class _Provider:
+    def __init__(self) -> None:
+        self.approved: list[str] = []
+        self.rejected: list[str] = []
+
+    async def approve_tool(self, request_id: str) -> None:
+        self.approved.append(request_id)
+
+    async def reject_tool(self, request_id: str) -> None:
+        self.rejected.append(request_id)
+
+
+async def _confirmed_friend() -> None:
+    await shared_access.prime_shared_user(FRIEND)
+    assert handler.is_shared_user(FRIEND)
+
+
+@pytest.mark.asyncio
+async def test_a_shared_user_answers_their_own_prompt() -> None:
+    await _confirmed_friend()
+    prov = _Provider()
+    _pending_approvals["C1:ts1"] = _PendingApproval(prov, "req-1", "s1", requester=FRIEND)
+    assert await handle_interaction("C1", "ts1", "approve_tool", user_id=FRIEND) == "approve_tool"
+    assert prov.approved == ["req-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requester", [OWNER, OTHER, ""])
+async def test_a_shared_user_cannot_answer_someone_elses_prompt(requester: str) -> None:
+    await _confirmed_friend()
+    prov = _Provider()
+    _pending_approvals["C1:ts1"] = _PendingApproval(prov, "req-1", "s1", requester=requester)
+    for action in ("approve_tool", "reject_tool"):
+        assert await handle_interaction("C1", "ts1", action, user_id=FRIEND) is None
+    assert prov.approved == [] and prov.rejected == []
+    assert "C1:ts1" in _pending_approvals  # still pending for its owner
+    assert await handle_interaction("C1", "ts1", "approve_tool", user_id=OWNER) == "approve_tool"
+
+
+@pytest.mark.asyncio
+async def test_a_shared_user_trusts_their_own_prompt(_floor_monkeypatch) -> None:
+    await _confirmed_friend()
+    audit = MagicMock()
+    _floor_monkeypatch.setattr(handler, "sel", lambda: audit)
+    prov = _Provider()
+    _pending_approvals["D1:ts1"] = _PendingApproval(prov, "req-1", "s1", requester=FRIEND)
+    assert await handle_interaction("D1", "ts1", "trust_tool", user_id=FRIEND) == "trust_tool"
+    assert prov.approved == ["req-1"]
+    assert handler.is_slack_session_trusted("s1")
+    # The same per-session Trust the owner's click gives: no other session, no YOLO.
+    assert not handler.is_slack_session_trusted("s2")
+    assert not handler.is_yolo_mode()
+    rows = [c.kwargs for c in audit.log_api_access.call_args_list]
+    assert {
+        "caller": FRIEND,
+        "operation": "slack.interactive.trust",
+        "outcome": "allowed",
+        "source": "slack",
+        "resources": "s1",
+    } in rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requester", [OWNER, OTHER, ""])
+async def test_a_shared_user_cannot_trust_someone_elses_prompt(requester: str) -> None:
+    await _confirmed_friend()
+    prov = _Provider()
+    _pending_approvals["D1:ts1"] = _PendingApproval(prov, "req-1", "s1", requester=requester)
+    assert await handle_interaction("D1", "ts1", "trust_tool", user_id=FRIEND) is None
+    assert prov.approved == [] and prov.rejected == []
+    assert not handler.is_slack_session_trusted("s1")
+    assert "D1:ts1" in _pending_approvals  # still pending for its owner
+
+
+@pytest.mark.asyncio
+async def test_a_removed_shared_user_cannot_trust_their_own_prompt(_floor_monkeypatch) -> None:
+    await _confirmed_friend()
+    _use(_floor_monkeypatch, _cfg(ids=()))
+    prov = _Provider()
+    _pending_approvals["D1:ts1"] = _PendingApproval(prov, "req-1", "s1", requester=FRIEND)
+    assert await handle_interaction("D1", "ts1", "trust_tool", user_id=FRIEND) is None
+    assert prov.approved == [] and not handler.is_slack_session_trusted("s1")
+
+
+@pytest.mark.asyncio
+async def test_a_shared_users_late_trust_click_is_refused() -> None:
+    # The prompt was already answered, so no live prompt names them: owner only.
+    await _confirmed_friend()
+    slack = SimpleNamespace(fetch_thread_replies=AsyncMock(return_value=[{"user": FRIEND}]))
+    assert (
+        await handle_interaction(
+            "C1", "ts-gone", "trust_tool", user_id=FRIEND, thread_ts="t1", slack=slack
+        )
+        is None
+    )
+    assert not handler.is_slack_session_trusted("t1")
+
+
+@pytest.mark.asyncio
+async def test_a_shared_user_cannot_answer_a_transport_prompt_they_did_not_ask(
+    _floor_monkeypatch,
+) -> None:
+    from kiro_crew.slack.renderer import TOOL_APPROVE_ACTION_PREFIX, SlackApprovalDecider
+
+    await _confirmed_friend()
+    resolved: list[str] = []
+    _floor_monkeypatch.setattr(
+        SlackApprovalDecider,
+        "resolve_global",
+        classmethod(lambda cls, key, approved, nonce="": resolved.append(key) or True),
+    )
+    _floor_monkeypatch.setattr(interactions, "_orch", None)
+    payload = {
+        "type": "block_actions",
+        "user": {"id": FRIEND},
+        "channel": {"id": "D1"},
+        "message": {"ts": "m1"},
+        "actions": [{"action_id": TOOL_APPROVE_ACTION_PREFIX + "x", "value": "s1:7"}],
+    }
+    await interactions.dispatch(payload)
+    assert resolved == []
+    _floor_monkeypatch.setitem(
+        SlackApprovalDecider._REGISTRY, "s1:7", SlackApprovalDecider("s1", requester=FRIEND)
+    )
+    await interactions.dispatch(payload)
+    assert resolved == ["s1:7"]
+
+
+# ── a press that changes nothing says why ────────────────────────────────────
+
+
+class _NoticeSlack:
+    """The Slack calls an approval press can make, recorded."""
+
+    def __init__(self) -> None:
+        self.ephemerals: list[tuple[str, str, str, str | None]] = []
+        self.updates: list[tuple[str, str, str]] = []
+
+    async def post_ephemeral(self, channel, user_id, text, blocks=None, thread_ts=None):
+        self.ephemerals.append((channel, user_id, text, thread_ts))
+
+    async def update_message(self, channel, ts, text="", blocks=None):
+        self.updates.append((channel, ts, text))
+
+    async def is_dm(self, channel: str) -> bool:
+        return channel.startswith("D")
+
+
+def _press(user: str, action: str = "approve_tool", channel: str = "C1") -> dict:
+    return {
+        "type": "block_actions",
+        "user": {"id": user},
+        "channel": {"id": channel},
+        "message": {"ts": "card1", "thread_ts": "t1"},
+        "actions": [{"action_id": action, "value": "7"}],
+    }
+
+
+@pytest.fixture
+def _notice_slack(_floor_monkeypatch) -> _NoticeSlack:
+    slack = _NoticeSlack()
+    _floor_monkeypatch.setattr(
+        interactions, "_orch", SimpleNamespace(slack=slack, sessions=None, dashboard_state=None)
+    )
+    return slack
+
+
+def _linked_card(_floor_monkeypatch, channel: str = "C1", requester: str = "") -> asyncio.Future:
+    """A dashboard slot's prompt mirrored to a Slack thread, asked by *requester*."""
+    from kiro_crew.slack.handler import _linked_approvals, _LinkedApproval
+
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    entry = _LinkedApproval(7, "dashboard:chat-1", False, "chat-1", fut, requester)
+    _floor_monkeypatch.setitem(_linked_approvals, f"{channel}:card1", entry)
+    _running_turn(_floor_monkeypatch, requester)
+    return fut
+
+
+def _running_turn(_floor_monkeypatch, requester: str) -> asyncio.Future:
+    """Slot ``chat-1``'s running turn, opened by *requester*'s message (``""``: nobody)."""
+    from kiro_crew.slack.turn_requester import note_turn_requester
+
+    state = getattr(handler, "_dashboard_state", None)
+    if "chat-1" not in (getattr(state, "_slots", None) or {}):
+        state = SimpleNamespace(_slots={"chat-1": SimpleNamespace(key="chat-1")})
+        _floor_monkeypatch.setattr(handler, "_dashboard_state", state)
+    turn: asyncio.Future = asyncio.get_running_loop().create_future()
+    state._slots["chat-1"].task = turn
+    note_turn_requester(turn, requester)  # type: ignore[arg-type]
+    return turn
+
+
+@pytest.fixture
+def _linked_slot_state(_floor_monkeypatch) -> list[tuple[str, str, bool]]:
+    """A dashboard whose slot ``chat-1`` settles a linked prompt's future on a click."""
+    resolved: list[tuple[str, str, bool]] = []
+
+    def _resolve(slot, rid, approved, expected_future=None):
+        resolved.append((slot.key, rid, approved))
+        expected_future.set_result("approved" if approved else "rejected")
+        return True
+
+    state = SimpleNamespace(_slots={"chat-1": SimpleNamespace(key="chat-1")})
+    state.resolve_slot_approval = _resolve
+    _floor_monkeypatch.setattr(handler, "_dashboard_state", state)
+    return resolved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action, outcome", [("approve_tool", True), ("reject_tool", False)])
+async def test_a_shared_user_answers_their_own_linked_prompt(
+    _floor_monkeypatch, _linked_slot_state, action: str, outcome: bool
+) -> None:
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch, requester=FRIEND)
+    assert await handle_interaction("C1", "card1", action, user_id=FRIEND) == action
+    assert _linked_slot_state == [("chat-1", "7", outcome)]
+    assert fut.result() == ("approved" if outcome else "rejected")
+
+
+@pytest.mark.asyncio
+async def test_a_requester_removed_during_the_code_channel_check_answers_nothing(
+    _floor_monkeypatch, _linked_slot_state
+) -> None:
+    # The opener check (code channels) awaits a store read before the requester
+    # gate; the owner removes the requester from shared access meanwhile.
+    from kiro_crew.slack.code_channels import shared_refusal
+
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch, requester=FRIEND)
+
+    def removed_while_checked(*_a: Any) -> bool:
+        _floor_monkeypatch.setattr(handler, "_orch_cfg", _cfg(ids=()))
+        return False
+
+    _floor_monkeypatch.setattr(shared_refusal, "opener_answers_prompt", removed_while_checked)
+    assert await handle_interaction("C1", "card1", "approve_tool", user_id=FRIEND) is None
+    assert _linked_slot_state == [] and not fut.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requester", [OWNER, OTHER, ""])
+async def test_a_shared_user_cannot_answer_someone_elses_linked_prompt(
+    _floor_monkeypatch, _linked_slot_state, requester: str
+) -> None:
+    from kiro_crew.slack.handler import _linked_approvals
+
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch, requester=requester)
+    for action in ("approve_tool", "reject_tool"):
+        assert await handle_interaction("C1", "card1", action, user_id=FRIEND) is None
+    assert _linked_slot_state == [] and not fut.done()
+    assert "C1:card1" in _linked_approvals  # still pending for its owner
+    assert await handle_interaction("C1", "card1", "approve_tool", user_id=OWNER) == "approve_tool"
+    assert fut.result() == "approved"
+
+
+@pytest.mark.parametrize("asker", ["UFRIEND001>|<!channel", "<@UFRIEND001>", "ufriend001", ""])
+def test_a_requester_that_is_not_a_member_id_is_never_mentioned(asker: str) -> None:
+    """The refusal names the requester as ``<@id>`` only for a well-formed member id,
+    so a malformed one cannot carry markup such as ``<!channel>`` into Slack."""
+    owner = f"the Kiro Crew owner (<@{OWNER}>)"
+    assert interactions._owner_only_text(asker) == (
+        interactions.APPROVAL_OWNER_ONLY_TEXT.format(owner=owner)
+    )
+    assert interactions._owner_only_text(OTHER) == (
+        interactions.APPROVAL_OWNER_OR_ASKER_TEXT.format(owner=owner, asker=OTHER)
+    )
+
+
+@pytest.fixture
+def _clean_linked_approvals():
+    """Empty the linked-card registry around a test that writes it for real
+    (``post_linked_approval``), so a failure cannot leave an entry for the next."""
+    from kiro_crew.slack.handler import _linked_approvals
+
+    _linked_approvals.clear()
+    yield
+    _linked_approvals.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_mirrored_card_answers_to_the_requester_it_was_posted_for(
+    _floor_monkeypatch, _linked_slot_state, _clean_linked_approvals
+) -> None:
+    """``post_linked_approval`` registers the card under the requester it is given."""
+    from kiro_crew.slack.handler import post_linked_approval
+
+    await _confirmed_friend()
+    _running_turn(_floor_monkeypatch, FRIEND)
+    slack = SimpleNamespace(post_blocks=AsyncMock(return_value="card1"))
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    ts = await post_linked_approval(
+        slack,
+        "C1",
+        "t1",
+        7,
+        "dashboard:chat-1",
+        "Run ls",
+        slot_key="chat-1",
+        future=fut,
+        requester=FRIEND,
+    )
+    assert ts == "card1"
+    assert await handle_interaction("C1", "card1", "approve_tool", user_id=FRIEND) == "approve_tool"
+    assert fut.result() == "approved"
+
+
+@pytest.mark.asyncio
+async def test_a_posted_card_stops_answering_its_requester_once_others_words_reach_the_turn(
+    _floor_monkeypatch, _linked_slot_state, _notice_slack: _NoticeSlack
+) -> None:
+    """The card was posted for the shared opener; someone then steered text into
+    the turn (``steer_into_running_turn`` drops the turn's record). The card's own
+    copy of the requester must not outlive that."""
+    from kiro_crew.slack.turn_requester import forget_turn_requester
+
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch, requester=FRIEND)
+    forget_turn_requester(handler._dashboard_state._slots["chat-1"])
+    await interactions.dispatch(_press(FRIEND))
+    assert _linked_slot_state == [] and not fut.done()
+    owner_only = interactions.APPROVAL_OWNER_ONLY_TEXT.format(
+        owner=f"the Kiro Crew owner (<@{OWNER}>)"
+    )
+    assert _notice_slack.ephemerals == [("C1", FRIEND, owner_only, "t1")]
+    assert await handle_interaction("C1", "card1", "approve_tool", user_id=OWNER) == "approve_tool"
+    assert fut.result() == "approved"
+
+
+def _trustable_linked_card(_floor_monkeypatch, requester: str) -> asyncio.Future:
+    """A DM-mirrored prompt of slot ``chat-1`` whose card carries the Trust proof."""
+    from kiro_crew.slack.handler import _linked_approvals, _LinkedApproval
+
+    slot = handler._dashboard_state._slots["chat-1"]
+    slot.linked_session_key = "dashboard:chat-1"
+    slot._trust = False
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    entry = _LinkedApproval(7, "dashboard:chat-1", True, "chat-1", fut, requester)
+    _floor_monkeypatch.setitem(_linked_approvals, "D1:card1", entry)
+    _running_turn(_floor_monkeypatch, FRIEND)
+    return fut
+
+
+@pytest.mark.asyncio
+async def test_a_shared_user_trusts_their_own_linked_prompt(
+    _floor_monkeypatch, _linked_slot_state
+) -> None:
+    from kiro_crew.messaging.session_trust import is_session_trusted
+
+    await _confirmed_friend()
+    fut = _trustable_linked_card(_floor_monkeypatch, requester=FRIEND)
+    sessions = MagicMock()
+    assert (
+        await handle_interaction("D1", "card1", "trust_tool", user_id=FRIEND, sessions=sessions)
+        == "trust_tool"
+    )
+    assert _linked_slot_state == [("chat-1", "7", True)] and fut.result() == "approved"
+    assert handler._dashboard_state._slots["chat-1"]._trust is True
+    assert is_session_trusted("dashboard:chat-1")
+    sessions.set_approval_policy.assert_called_with("dashboard:chat-1", "auto")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["approved", "rejected", "cancelled"])
+async def test_a_linked_prompt_answered_during_the_trust_check_grants_nothing(
+    _floor_monkeypatch, _linked_slot_state, outcome: str
+) -> None:
+    from kiro_crew.messaging.session_trust import is_session_trusted
+    from kiro_crew.slack.code_channels import shared_refusal
+
+    await _confirmed_friend()
+    fut = _trustable_linked_card(_floor_monkeypatch, requester=FRIEND)
+    loop = asyncio.get_running_loop()
+
+    def answered_while_checked(slot_key: str, thread_ts: str, **_who: str) -> bool:
+        if not slot_key:
+            # Queue the dashboard's answer on the loop before to_thread completes.
+            # The turn and card stay registered while only the prompt is settled.
+            if outcome == "cancelled":
+                loop.call_soon_threadsafe(fut.cancel)
+            else:
+                loop.call_soon_threadsafe(fut.set_result, outcome)
+        return False
+
+    _floor_monkeypatch.setattr(
+        shared_refusal, "shared_user_refused_for_slot", answered_while_checked
+    )
+    sessions = MagicMock()
+    action = await handle_interaction(
+        "D1", "card1", "trust_tool", user_id=FRIEND, sessions=sessions
+    )
+    assert fut.done()
+    assert not is_session_trusted("dashboard:chat-1")
+    assert getattr(handler._dashboard_state, "_slots")["chat-1"]._trust is False
+    sessions.set_approval_policy.assert_not_called()
+    assert action is None and _linked_slot_state == []
+    assert fut.cancelled() if outcome == "cancelled" else fut.result() == outcome
+
+
+@pytest.mark.asyncio
+async def test_a_shared_user_cannot_trust_a_linked_prompt_another_turn_asked(
+    _floor_monkeypatch, _linked_slot_state
+) -> None:
+    from kiro_crew.messaging.session_trust import is_session_trusted
+    from kiro_crew.slack.handler import _linked_approvals
+
+    await _confirmed_friend()
+    fut = _trustable_linked_card(_floor_monkeypatch, requester=OTHER)
+    assert (
+        await handle_interaction("D1", "card1", "trust_tool", user_id=FRIEND, sessions=MagicMock())
+        is None
+    )
+    assert _linked_slot_state == [] and not fut.done()
+    assert "D1:card1" in _linked_approvals
+    assert not is_session_trusted("dashboard:chat-1")
+
+
+@pytest.mark.asyncio
+async def test_a_shared_users_linked_trust_still_needs_the_cards_proof(
+    _floor_monkeypatch, _linked_slot_state
+) -> None:
+    """A card posted without ``trust_grantable`` grants nobody Trust, its requester
+    included: the press is refused as the owner's would be."""
+    from kiro_crew.messaging.session_trust import is_session_trusted
+
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch, channel="D1", requester=FRIEND)
+    assert (
+        await handle_interaction("D1", "card1", "trust_tool", user_id=FRIEND, sessions=MagicMock())
+        == "reject_tool"
+    )
+    assert fut.result() == "rejected"
+    assert not is_session_trusted("dashboard:chat-1")
+
+
+@pytest.mark.asyncio
+async def test_a_refused_press_names_the_shared_user_whose_turn_asked(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack
+) -> None:
+    await _confirmed_friend()
+    _linked_card(_floor_monkeypatch, requester=OTHER)
+    await interactions.dispatch(_press(FRIEND))
+    owner_or_asker = interactions.APPROVAL_OWNER_OR_ASKER_TEXT.format(
+        owner=f"the Kiro Crew owner (<@{OWNER}>)", asker=OTHER
+    )
+    assert _notice_slack.ephemerals == [("C1", FRIEND, owner_or_asker, "t1")]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_press_on_a_linked_card_tells_the_clicker_who_can_answer(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack
+) -> None:
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch)
+    await interactions.dispatch(_press(FRIEND))
+    assert len(_notice_slack.ephemerals) == 1, "the refused clicker was told nothing"
+    owner_only = interactions.APPROVAL_OWNER_ONLY_TEXT.format(
+        owner=f"the Kiro Crew owner (<@{OWNER}>)"
+    )
+    assert _notice_slack.ephemerals == [("C1", FRIEND, owner_only, "t1")]
+    # Nothing was answered and the buttons stay for the owner.
+    assert not fut.done() and _notice_slack.updates == []
+    from kiro_crew.slack.handler import _linked_approvals
+
+    assert "C1:card1" in _linked_approvals
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", [OWNER, FRIEND])
+async def test_a_press_on_a_card_nothing_waits_on_says_so(
+    who: str, _notice_slack: _NoticeSlack
+) -> None:
+    await _confirmed_friend()
+    await interactions.dispatch(_press(who))
+    assert len(_notice_slack.ephemerals) == 1, "the clicker was told nothing"
+    assert _notice_slack.ephemerals == [("C1", who, interactions.APPROVAL_NOT_WAITING_TEXT, "t1")]
+    assert _notice_slack.updates == []
+
+
+@pytest.mark.asyncio
+async def test_a_shared_users_trust_press_on_another_prompt_says_who_can_answer(
+    _notice_slack: _NoticeSlack,
+) -> None:
+    await _confirmed_friend()
+    _pending_approvals["D1:card1"] = _PendingApproval(_Provider(), "req-1", "s1", requester=OTHER)
+    await interactions.dispatch(_press(FRIEND, "trust_tool", channel="D1"))
+    assert len(_notice_slack.ephemerals) == 1, "the refused clicker was told nothing"
+    owner_or_asker = interactions.APPROVAL_OWNER_OR_ASKER_TEXT.format(
+        owner=f"the Kiro Crew owner (<@{OWNER}>)", asker=OTHER
+    )
+    assert _notice_slack.ephemerals == [("D1", FRIEND, owner_or_asker, "t1")]
+    assert "D1:card1" in _pending_approvals
+    assert not handler.is_slack_session_trusted("s1")
+
+
+@pytest.mark.asyncio
+async def test_a_shared_users_trust_press_on_their_own_prompt_is_labelled_trusted(
+    _notice_slack: _NoticeSlack,
+) -> None:
+    await _confirmed_friend()
+    prov = _Provider()
+    _pending_approvals["D1:card1"] = _PendingApproval(prov, "req-1", "s1", requester=FRIEND)
+    await interactions.dispatch(_press(FRIEND, "trust_tool", channel="D1"))
+    assert _notice_slack.ephemerals == []
+    assert _notice_slack.updates == [("D1", "card1", "🤝 Trusted")]
+    assert prov.approved == ["req-1"] and handler.is_slack_session_trusted("s1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["approved", "rejected", "cancelled"])
+async def test_a_native_prompt_answered_during_the_trust_check_grants_nothing(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack, outcome: str
+) -> None:
+    await _confirmed_friend()
+    prov = MagicMock(approve_tool=AsyncMock(), reject_tool=AsyncMock())
+    pending = _PendingApproval(prov, "req-1", "s1", requester=FRIEND)
+    _pending_approvals["D1:card1"] = pending
+
+    async def answered_while_checked(channel: str) -> bool:
+        if outcome == "cancelled":
+            pending.future.cancel()
+        else:
+            pending.future.set_result(outcome)
+        return True
+
+    _floor_monkeypatch.setattr(_notice_slack, "is_dm", answered_while_checked)
+    await interactions.dispatch(_press(FRIEND, "trust_tool", channel="D1"))
+    assert pending.future.done()
+    assert not handler.is_slack_session_trusted("s1")
+    prov.approve_tool.assert_not_awaited()
+    prov.reject_tool.assert_not_awaited()
+    assert _notice_slack.updates == []
+    assert (
+        pending.future.cancelled() if outcome == "cancelled" else pending.future.result() == outcome
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_transport_press_tells_the_clicker_who_can_answer(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack
+) -> None:
+    from kiro_crew.slack.approval_tokens import build_approval_token
+    from kiro_crew.slack.renderer import TOOL_APPROVE_ACTION_PREFIX, SlackApprovalDecider
+
+    await _confirmed_friend()
+    decider = SlackApprovalDecider("s1", requester=OTHER)
+    nonce = decider.reserve(7)  # the card's window is open
+    try:
+        press = _press(FRIEND, TOOL_APPROVE_ACTION_PREFIX + "s1:7")
+        press["actions"][0]["value"] = build_approval_token("s1", 7, nonce)
+        await interactions.dispatch(press)
+        stale = _press(FRIEND, TOOL_APPROVE_ACTION_PREFIX + "s1:7")
+        stale["actions"][0]["value"] = build_approval_token("s1", 7, "an-earlier-card")
+        await interactions.dispatch(stale)
+    finally:
+        decider.discard(7)
+    owner_or_asker = interactions.APPROVAL_OWNER_OR_ASKER_TEXT.format(
+        owner=f"the Kiro Crew owner (<@{OWNER}>)", asker=OTHER
+    )
+    # A live card names who can answer it; a stale card's buttons answer nothing.
+    assert _notice_slack.ephemerals == [
+        ("C1", FRIEND, owner_or_asker, "t1"),
+        ("C1", FRIEND, interactions.APPROVAL_NOT_WAITING_TEXT, "t1"),
+    ]
+    assert _notice_slack.updates == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requester", [FRIEND, OTHER, ""])
+async def test_a_shared_users_transport_trust_press_widens_only_their_own_prompts_session(
+    requester: str, _floor_monkeypatch, _notice_slack: _NoticeSlack
+) -> None:
+    from kiro_crew.messaging.session_trust import is_session_trusted
+    from kiro_crew.slack.approval_tokens import build_approval_token
+    from kiro_crew.slack.renderer import TOOL_TRUST_ACTION_PREFIX, SlackApprovalDecider
+
+    await _confirmed_friend()
+    audit = MagicMock()
+    _floor_monkeypatch.setattr(interactions, "sel", lambda: audit)
+    decider = SlackApprovalDecider("s1", requester=requester)
+    nonce = decider.reserve(7)
+    try:
+        press = _press(FRIEND, TOOL_TRUST_ACTION_PREFIX + "s1:7", channel="D1")
+        press["actions"][0]["value"] = build_approval_token("s1", 7, nonce)
+        await interactions.dispatch(press)
+        answered = decider._futures["7"].done()
+    finally:
+        decider.discard(7)
+    rows = [c.kwargs for c in audit.log_api_access.call_args_list]
+    if requester == FRIEND:
+        assert answered and is_session_trusted("s1")
+        assert _notice_slack.updates == [
+            ("D1", "card1", "🔓 Trusted this session — tools auto-approved")
+        ]
+        assert (rows[-1]["caller"], rows[-1]["outcome"]) == (FRIEND, "trusted")
+    else:
+        assert not answered and not is_session_trusted("s1")
+        assert _notice_slack.updates == []
+        assert rows[-1]["error"] == "not the requester"
+
+
+@pytest.mark.asyncio
+async def test_a_shared_user_removed_during_a_transport_trust_press_widens_nothing(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack
+) -> None:
+    from kiro_crew.messaging.session_trust import is_session_trusted
+    from kiro_crew.slack.approval_tokens import build_approval_token
+    from kiro_crew.slack.renderer import TOOL_TRUST_ACTION_PREFIX, SlackApprovalDecider
+
+    await _confirmed_friend()
+
+    async def removed_meanwhile(_c: str) -> bool:
+        _use(_floor_monkeypatch, _cfg(ids=()))
+        return True
+
+    _floor_monkeypatch.setattr(interactions, "channel_inbound_permitted", removed_meanwhile)
+    decider = SlackApprovalDecider("s1", requester=FRIEND)
+    nonce = decider.reserve(7)
+    try:
+        press = _press(FRIEND, TOOL_TRUST_ACTION_PREFIX + "s1:7", channel="D1")
+        press["actions"][0]["value"] = build_approval_token("s1", 7, nonce)
+        await interactions.dispatch(press)
+    finally:
+        decider.discard(7)
+    assert not is_session_trusted("s1")
+    assert _notice_slack.updates[-1][2] != "🔓 Trusted this session — tools auto-approved"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["approved", "rejected", "cancelled"])
+async def test_a_transport_prompt_answered_during_the_trust_check_grants_nothing(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack, outcome: str
+) -> None:
+    from kiro_crew.messaging.session_trust import is_session_trusted
+    from kiro_crew.slack.approval_tokens import build_approval_token
+    from kiro_crew.slack.renderer import TOOL_TRUST_ACTION_PREFIX, SlackApprovalDecider
+
+    await _confirmed_friend()
+    decider = SlackApprovalDecider("s1", requester=FRIEND)
+    nonce = decider.reserve(7)
+    fut = decider._futures["7"]
+
+    async def answered_while_checked(channel: str) -> bool:
+        if outcome == "cancelled":
+            fut.cancel()
+        else:
+            assert decider.resolve(7, outcome == "approved")
+        return True
+
+    _floor_monkeypatch.setattr(interactions, "channel_inbound_permitted", answered_while_checked)
+    try:
+        press = _press(FRIEND, TOOL_TRUST_ACTION_PREFIX + "s1:7", channel="D1")
+        press["actions"][0]["value"] = build_approval_token("s1", 7, nonce)
+        await interactions.dispatch(press)
+        assert fut.done()
+        assert not is_session_trusted("s1")
+        assert _notice_slack.updates == [("D1", "card1", "⏱ This approval already expired.")]
+        assert (
+            fut.cancelled() if outcome == "cancelled" else fut.result() == (outcome == "approved")
+        )
+    finally:
+        decider.discard(7)
+
+
+@pytest.mark.asyncio
+async def test_an_answered_press_gets_no_refusal_notice(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack
+) -> None:
+    prov = _Provider()
+    _pending_approvals["C1:card1"] = _PendingApproval(prov, "req-1", "s1", requester=OWNER)
+    await interactions.dispatch(_press(OWNER))
+    assert prov.approved == ["req-1"]
+    assert _notice_slack.ephemerals == []
+    assert _notice_slack.updates == [("C1", "card1", "✅ Approved")]
+
+
+# ── owner-only controls ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "action, permitted",
+    [
+        ("approve_tool", True),
+        ("reject_tool", True),
+        ("mc_tool_approve_x", True),
+        ("options_choice_1", True),
+        ("mc_stop_confirm", True),
+        ("mc_inline_stop_k", True),
+        ("mc_ch_add", False),
+        ("mc_ch_activation_C1", False),
+        ("mc_dashboard_copy", False),
+        ("mc_session_resume_x", False),
+        ("allowlist_approve", False),
+        ("mc_review_approve", True),
+        ("mc_review_cancel", True),
+        ("mc_agent_select", False),
+        ("mc_allowlist_remove_U1", False),
+    ],
+)
+def test_a_shared_user_reaches_only_their_own_buttons(action: str, permitted: bool) -> None:
+    assert shared_access.shared_action_permitted(action) is permitted
+
+
+@pytest.mark.asyncio
+async def test_an_owner_only_button_is_refused_with_a_plain_reply(_floor_monkeypatch) -> None:
+    await _confirmed_friend()
+    slack = SimpleNamespace(post_ephemeral=AsyncMock())
+    _floor_monkeypatch.setattr(interactions, "_orch", SimpleNamespace(slack=slack))
+    ran: list[str] = []
+    _floor_monkeypatch.setattr(interactions, "_handle_ch_add", AsyncMock(side_effect=ran.append))
+    payload = {
+        "type": "block_actions",
+        "user": {"id": FRIEND},
+        "channel": {"id": "C1"},
+        "message": {"ts": "m1"},
+        "actions": [{"action_id": "mc_ch_add"}],
+    }
+    await interactions.dispatch(payload)
+    assert ran == []
+    slack.post_ephemeral.assert_awaited_once_with(
+        "C1", FRIEND, shared_access.SHARED_OWNER_ONLY_TEXT
+    )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_links_stay_the_owners() -> None:
+    from kiro_crew.slack.handler import _route_bang_command
+
+    await _confirmed_friend()
+    slack = SimpleNamespace(post_message=AsyncMock())
+    handled = await _route_bang_command(
+        "!dashboard", slack, None, "D1", "t1", "m1", "s1", FRIEND, None  # type: ignore[arg-type]
+    )
+    assert handled is True
+    slack.post_message.assert_awaited_once_with("D1", "⛔ Not authorized.", "t1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["!channel off", "!yolo on", "!agent foo", "!allowlist"])
+async def test_owner_commands_stay_the_owners(command: str) -> None:
+    from kiro_crew.slack.handler import _route_bang_command
+
+    await _confirmed_friend()
+    slack = SimpleNamespace(post_message=AsyncMock())
+    assert await _route_bang_command(
+        command, slack, None, "D1", "t1", "m1", "s1", FRIEND, None  # type: ignore[arg-type]
+    )
+    assert slack.post_message.await_args.args[1] == "⛔ Owner-only command."
+
+
+@pytest.mark.asyncio
+async def test_schedules_and_task_runs_are_not_started_by_a_shared_user(
+    _floor_monkeypatch,
+) -> None:
+    from kiro_crew.slack.handler import maybe_handle_keyword_command
+
+    await _confirmed_friend()
+    cron = AsyncMock(return_value="⏰ scheduled")
+    run = AsyncMock(return_value="▶️ started")
+    # `spawn list` names every subagent on the host, the owner's code channels' too.
+    spawn = AsyncMock(return_value="🔹 every subagent")
+    _floor_monkeypatch.setattr(handler, "_handle_cron_command", cron)
+    _floor_monkeypatch.setattr(handler, "_handle_run_command", run)
+    _floor_monkeypatch.setattr(handler, "_handle_spawn_command", spawn)
+    slack = SimpleNamespace(post_message=AsyncMock())
+
+    async def _keyword(user: str, text: str) -> bool:
+        return await maybe_handle_keyword_command(
+            text,
+            slack,
+            None,
+            "D1",
+            "t1",
+            "m1",
+            "s1",
+            user,  # type: ignore[arg-type]
+            subagent_manager=object(),  # type: ignore[arg-type]
+            cron_service=object(),
+            task_runner=object(),  # type: ignore[arg-type]
+        )
+
+    assert await _keyword(FRIEND, "remind me in 5 minutes") is False
+    assert await _keyword(FRIEND, "run spec.md") is False
+    assert await _keyword(FRIEND, "spawn list") is False
+    cron.assert_not_awaited()
+    run.assert_not_awaited()
+    spawn.assert_not_awaited()
+    assert await _keyword(OWNER, "spawn list") is True
+    spawn.reset_mock(return_value=True)
+    spawn.return_value = None
+    assert await _keyword(OWNER, "remind me in 5 minutes") is True
+
+
+@pytest.mark.asyncio
+async def test_a_message_queued_by_a_shared_user_is_dropped_once_their_access_ends(
+    _floor_monkeypatch,
+) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from kiro_crew.slack.events import _dispatch_queued, _queue_tags
+
+    await _confirmed_friend()
+    tags = _queue_tags(FRIEND, "D1", shared=True)
+    assert tags.get("shared_sender") is True
+    assert "shared_sender" not in _queue_tags(OWNER, "D1")
+
+    def _orch() -> MagicMock:
+        orch = MagicMock()
+        orch.slack = SimpleNamespace(remove_reaction=AsyncMock())
+        orch._cfg = handler._orch_cfg
+        for name in ("ctx_builder", "cron_svc", "conv_log", "subagent_mgr", "task_runner"):
+            setattr(orch, name, None)
+        return orch
+
+    kwargs = {"channel": "D1", "thread_ts": "t1", "sender_id": FRIEND, **tags}
+    _use(_floor_monkeypatch, _cfg(ids=()))  # removed while the message waited
+    with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+        with patch(
+            "kiro_crew.slack.events.handle_message_transport", new_callable=AsyncMock
+        ) as hmt:
+            await _dispatch_queued(_orch(), "t1", "m1", "hello", dict(kwargs))
+    hm.assert_not_awaited()
+    hmt.assert_not_awaited()
+    _use(_floor_monkeypatch, _cfg())
+    with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+        with patch(
+            "kiro_crew.slack.events.handle_message_transport", new_callable=AsyncMock
+        ) as hmt:
+            await _dispatch_queued(_orch(), "t1", "m1", "hello", dict(kwargs))
+    assert hm.await_count + hmt.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_queued_message_is_kept_when_only_the_confirmation_aged_out(
+    _floor_monkeypatch,
+) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from kiro_crew.slack.events import _dispatch_queued, _queue_tags
+
+    now = [1000.0]
+    _floor_monkeypatch.setattr(shared_access, "clock", lambda: now[0])
+    await _confirmed_friend()
+    kwargs = {
+        "channel": "D1",
+        "thread_ts": "t1",
+        "sender_id": FRIEND,
+        **_queue_tags(FRIEND, "D1", shared=True),
+    }
+    now[0] += shared_access.CONFIRMED_TTL_SECS + 1  # a long turn ran meanwhile
+    orch = MagicMock()
+    orch.slack = SimpleNamespace(remove_reaction=AsyncMock())
+    orch._cfg = handler._orch_cfg
+    for name in ("ctx_builder", "cron_svc", "conv_log", "subagent_mgr", "task_runner"):
+        setattr(orch, name, None)
+    with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+        with patch(
+            "kiro_crew.slack.events.handle_message_transport", new_callable=AsyncMock
+        ) as hmt:
+            await _dispatch_queued(orch, "t1", "m1", "hello", kwargs)
+    assert hm.await_count + hmt.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_removed_shared_user_cannot_act_on_their_open_review_draft(
+    _floor_monkeypatch,
+) -> None:
+    from kiro_crew.slack.interactions_approvals import _can_act_on_review_draft
+
+    await _confirmed_friend()
+    assert _can_act_on_review_draft(FRIEND, FRIEND) is True
+    assert _can_act_on_review_draft(FRIEND, OWNER) is False
+    assert _can_act_on_review_draft(OWNER, FRIEND) is True
+    _use(_floor_monkeypatch, _cfg(ids=()))
+    assert _can_act_on_review_draft(FRIEND, FRIEND) is False
+
+
+@pytest.mark.asyncio
+async def test_every_modal_submission_asks_slack_again_before_its_handler_runs(
+    _floor_monkeypatch,
+) -> None:
+    from kiro_crew.slack import interactions_context, interactions_modals
+
+    now = [1000.0]
+    _floor_monkeypatch.setattr(shared_access, "clock", lambda: now[0])
+    await _confirmed_friend()
+    now[0] += shared_access.CONFIRMED_TTL_SECS + 1
+    seen: list[bool] = []
+
+    async def _handler(payload: dict) -> None:
+        seen.append(handler.is_shared_user(FRIEND))
+
+    _floor_monkeypatch.setitem(interactions_context.VIEW_REGISTRY, "test_modal", _handler)
+    # No orchestrator left behind by an earlier test: the check reads this test's config.
+    # Patched through the facade, which reaches every module that binds it.
+    from kiro_crew.slack import interactions
+
+    _floor_monkeypatch.setattr(interactions, "_orch", None)
+    payload = {"user": {"id": FRIEND}, "view": {"callback_id": "test_modal"}}
+    await interactions_modals.handle_view_submission(payload)
+    assert seen == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_review_modal_outliving_the_confirmation_is_still_accepted(
+    _floor_monkeypatch,
+) -> None:
+    from kiro_crew.slack.interactions_approvals import _can_act_on_review_draft
+
+    now = [1000.0]
+    _floor_monkeypatch.setattr(shared_access, "clock", lambda: now[0])
+    await _confirmed_friend()
+    now[0] += shared_access.CONFIRMED_TTL_SECS + 1
+    assert _can_act_on_review_draft(FRIEND, FRIEND) is False  # stale until asked again
+    await shared_access.prime_shared_user(FRIEND)
+    assert _can_act_on_review_draft(FRIEND, FRIEND) is True
+
+
+@pytest.mark.parametrize(
+    "text, refused",
+    [
+        ("/tools trust-all", True),
+        ("  /agent builder", True),
+        ("<@UBOT0001> /model claude", True),
+        ("please !incognito fix it", True),
+        ("!temporary", True),
+        ("fix the failing test", False),
+        ("see path a/b", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_shared_user_sends_no_harness_command_or_privacy_modifier(
+    text: str, refused: bool
+) -> None:
+    await _confirmed_friend()
+    assert shared_access.shared_command_refused(FRIEND, text) is refused
+    assert shared_access.shared_command_refused(OWNER, text) is False
+
+
+@pytest.mark.asyncio
+async def test_a_harness_command_from_a_shared_user_never_reaches_the_turn() -> None:
+    from kiro_crew.slack.handler import _dispatch_before_turn
+
+    await _confirmed_friend()
+    slack = SimpleNamespace(post_message=AsyncMock())
+    names = (
+        "sessions thread_ts msg_ts context_builder cron_service conversation_log "
+        "subagent_manager task_runner channel_agent target_slot_name route_pinned "
+        "session_key asker_key spool_text"
+    ).split()
+    turn = SimpleNamespace(
+        slack=slack,
+        channel="D1",
+        text="/tools trust-all",
+        user_id=FRIEND,
+        reply_ts="t1",
+        interpret_commands=True,
+        **{n: None for n in names},
+    )
+    assert await _dispatch_before_turn(turn) is False  # type: ignore[arg-type]
+    slack.post_message.assert_awaited_once_with("D1", shared_access.SHARED_OWNER_ONLY_TEXT, "t1")
+
+
+def test_a_listed_user_is_refused_the_owner_keywords_even_with_an_aged_confirmation(
+    _floor_monkeypatch,
+) -> None:
+    # No confirmation at all (as if it just aged out): still on the list, so still
+    # refused where a gate keeps shared users out.
+    assert handler.is_shared_user(FRIEND) is False
+    assert handler.is_shared_listed(FRIEND) is True
+    assert handler.is_shared_listed(OWNER) is False
+    _use(_floor_monkeypatch, _cfg(enabled=False))
+    assert handler.is_shared_listed(FRIEND) is False
+
+
+@pytest.mark.parametrize("text", ["/tools trust-all", "!temporary hi"])
+def test_an_aged_confirmation_lets_no_harness_command_through(text: str) -> None:
+    # Admitted while fresh, then the confirmation aged out before dispatch (a slow
+    # file download): the person is still listed, so the command is still theirs
+    # to be refused.
+    assert handler.is_shared_user(FRIEND) is False
+    assert shared_access.shared_command_refused(FRIEND, text) is True
+
+
+@pytest.mark.parametrize("change", ["removed", "switched_off"])
+@pytest.mark.asyncio
+async def test_a_removal_mid_message_lets_no_owner_only_control_through(
+    _floor_monkeypatch, change: str
+) -> None:
+    # Admitted as a shared user, then the owner removes them (or turns sharing
+    # off) while their message is still on its way to the owner-only gates.
+    await _confirmed_friend()
+    assert handler.is_shared_user(FRIEND) is True
+    _use(_floor_monkeypatch, _cfg(ids=()) if change == "removed" else _cfg(enabled=False))
+    assert handler.is_shared_user(FRIEND) is False  # no new message is admitted
+    assert handler.is_shared_listed(FRIEND) is True
+    assert shared_access.shared_command_refused(FRIEND, "/tools trust-all") is True
+    assert handler.is_shared_listed(OWNER) is False
+
+
+# ── is_allowed_user stays owner-only; shared users are admitted only on purpose ──
+
+
+@pytest.mark.asyncio
+async def test_is_allowed_user_stays_owner_only_for_a_confirmed_shared_user() -> None:
+    # Every reader of is_allowed_user (main's owner gate) refuses a shared user.
+    await _confirmed_friend()
+    assert handler.is_shared_user(FRIEND) is True
+    assert handler.is_allowed_user(FRIEND) is False
+    assert handler.is_allowed_user(OWNER) is True
+
+
+#: The sites that admit a shared user on purpose (``is_allowed_user(x) or
+#: is_shared_user(x)``). A new one is a decision, made here.
+_ADMISSION_SITES = {
+    "slack/agent_sessions/session_events.py",
+    # A Channel Bot's chat moves to a thread only for a sender the linked route hears.
+    "slack/channel_handler.py",
+    # A code channel a shared user opened admits them (opener_admitted, opener_of_request).
+    "slack/code_channels/shared_refusal.py",
+    "slack/events.py",
+    "slack/events_inbound.py",
+    "slack/events_queue.py",
+    "slack/events_slash.py",  # `/kirocrew conductor` only
+    "slack/handler_runtime/commands.py",
+    "slack/handler_runtime/inbound.py",
+    "slack/handler_runtime/permission_ladder.py",
+    "slack/interactions.py",
+    "slack/interactions_approvals.py",
+    "slack/interactions_options.py",
+    "slack/interactions_sessions.py",
+}
+
+
+def test_only_the_named_sites_admit_a_shared_user() -> None:
+    import ast
+    from pathlib import Path
+
+    import kiro_crew
+
+    root = Path(kiro_crew.__file__).parent
+    callers = set()
+    for path in root.rglob("*.py"):
+        rel = path.relative_to(root).as_posix()
+        if rel in ("slack/handler_runtime/access.py", "slack/shared_access.py"):
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call):
+                fn = node.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                via_owner_module = (
+                    isinstance(fn, ast.Attribute)
+                    and isinstance(fn.value, ast.Name)
+                    and fn.value.id == "shared_access"
+                )
+                if name == "is_shared_user" and not via_owner_module:
+                    callers.add(rel)
+    assert callers == _ADMISSION_SITES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["native", "transport"])
+async def test_the_status_keyword_shows_a_shared_user_no_host_counts(
+    _floor_monkeypatch, path: str
+) -> None:
+    # `status` replies with the host's message, approval, session and subagent
+    # counts: the owner's, so a shared user's "status" goes to the model instead.
+    import importlib
+
+    from slack_handler_helpers import FakeSessionManager
+
+    from conftest import MockSlackClient
+    from kiro_crew.slack import transport_dispatch
+    from kiro_crew.stats import Stats
+
+    await _confirmed_friend()
+    _floor_monkeypatch.setattr(Stats, "summary", lambda self: "HOST-STATS")
+
+    async def _send(user: str) -> list[str]:
+        if path == "native":
+            slack = MockSlackClient()
+            await handler.handle_message(
+                slack, FakeSessionManager(), "D1", "status", "t1", "m1", user
+            )
+            return [p.get("text", "") for _k, p in slack.actions]
+        golden = importlib.import_module("test_slack_golden_transcript")
+        rec = golden.RecordingSlackClient()
+        sessions = golden.FakeSessions(golden.ScriptedProvider([golden.make_event("ok")]))
+        await transport_dispatch.handle_message_transport(
+            rec, sessions, "D1", "status", "t1", "m1", user
+        )
+        return [str(kw.get("text", "")) for _m, kw in rec.transcript]
+
+    assert not any("HOST-STATS" in t for t in await _send(FRIEND))
+    assert any("HOST-STATS" in t for t in await _send(OWNER))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user, keeps_queue", [(FRIEND, True), (OWNER, False)])
+async def test_a_shared_users_kill_now_keeps_the_threads_queue(
+    _floor_monkeypatch, user: str, keeps_queue: bool
+) -> None:
+    # The thread's queue holds the owner's messages too: a shared user's Kill Now
+    # parks it for the successor session instead of dropping it.
+    from unittest.mock import MagicMock
+
+    await _confirmed_friend()
+    stop_turn = AsyncMock(return_value="hard")
+    orch = SimpleNamespace(slack=SimpleNamespace(), sessions=SimpleNamespace(stop_turn=stop_turn))
+    _floor_monkeypatch.setattr(interactions, "_orch", orch)
+    _floor_monkeypatch.setattr(interactions, "sel", lambda: MagicMock())
+    payload = {
+        "type": "block_actions",
+        "user": {"id": user},
+        "channel": {"id": "C1"},
+        "message": {"ts": "m1", "thread_ts": "t1"},
+        "actions": [{"action_id": "stop_kill_now", "value": "slack:t1"}],
+    }
+    await interactions.dispatch(payload)
+    stop_turn.assert_awaited_once()
+    assert stop_turn.await_args.kwargs["force"] is True
+    assert stop_turn.await_args.kwargs.get("preserve_queue", False) is keeps_queue
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["native", "transport"])
+@pytest.mark.parametrize("typed, refused", [("", False), ("/model x", True)])
+async def test_a_shared_users_file_is_judged_on_what_they_typed(
+    _floor_monkeypatch, path: str, typed: str, refused: bool
+) -> None:
+    # A file sent without a caption arrives as its absolute temp path: never read as
+    # a "/" command. A "/" the person typed is still refused, file or not.
+    import importlib
+
+    from slack_handler_helpers import FakeSessionManager
+
+    from conftest import MockSlackClient
+    from kiro_crew.slack import transport_dispatch
+
+    await _confirmed_friend()
+    ingested = "/tmp/tmpab12cd.png" if not typed else f"{typed}\n/tmp/tmpab12cd.png"
+
+    async def _texts() -> list[str]:
+        if path == "native":
+            slack = MockSlackClient()
+            await handler.handle_message(
+                slack, FakeSessionManager(), "D1", ingested, "t1", "m1", FRIEND, spool_text=typed
+            )
+            return [p.get("text", "") for _k, p in slack.actions]
+        golden = importlib.import_module("test_slack_golden_transcript")
+        rec = golden.RecordingSlackClient()
+        sessions = golden.FakeSessions(golden.ScriptedProvider([golden.make_event("ok")]))
+        await transport_dispatch.handle_message_transport(
+            rec, sessions, "D1", ingested, "t1", "m1", FRIEND, spool_text=typed
+        )
+        return [str(kw.get("text", "")) for _m, kw in rec.transcript]
+
+    texts = await _texts()
+    assert (shared_access.SHARED_OWNER_ONLY_TEXT in texts) is refused
+
+
+@pytest.mark.asyncio
+async def test_a_privacy_token_in_a_shared_users_attachment_changes_no_mode(
+    _floor_monkeypatch,
+) -> None:
+    # A caption-less file or a voice memo whose content says "!incognito" is prompt
+    # content: the shared user's typed text was empty, and no mode is applied.
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.slack.handler import maybe_apply_privacy_modifiers
+
+    await _confirmed_friend()
+    applied = AsyncMock()
+    _floor_monkeypatch.setattr(handler, "_apply_privacy_mode", applied)
+    text = "/tmp/tmpab12cd.txt\n\nnotes: use !incognito here"
+    out = await maybe_apply_privacy_modifiers(
+        text, text, "s1", FRIEND, "D1", SimpleNamespace(), SimpleNamespace(), "t1"  # type: ignore[arg-type]
+    )
+    assert out == (text, text, False)
+    applied.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("feedback, runs", [("shorten it", True), ("/model x", False)])
+async def test_a_shared_users_revision_is_judged_on_their_feedback(
+    _floor_monkeypatch, feedback: str, runs: bool
+) -> None:
+    # The draft (model-authored, here naming !incognito) is never read as a command;
+    # the person's own feedback is, before the draft is consumed.
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.slack import interactions_approvals
+    from kiro_crew.slack.handler import _review_drafts_get, _review_drafts_set
+
+    await _confirmed_friend()
+    ran = AsyncMock()
+    sessions = SimpleNamespace(get_session_for_thread=lambda ts: None)
+    orch = SimpleNamespace(
+        slack=SimpleNamespace(post_message=AsyncMock(), post_ephemeral=AsyncMock()),
+        sessions=sessions,
+        _handler_tasks=set(),
+        _approval_mode=None,
+        _cfg=SimpleNamespace(agent=SimpleNamespace(approval_mode="interactive")),
+        ctx_builder=None,
+        cron_svc=None,
+        conv_log=None,
+        consolidator=None,
+        subagent_mgr=None,
+        task_runner=None,
+    )
+
+    async def permitted(_c: str) -> bool:
+        return True
+
+    _floor_monkeypatch.setattr(interactions, "_orch", orch)
+    _floor_monkeypatch.setattr(interactions, "handle_message", ran)
+    _floor_monkeypatch.setattr(interactions, "sel", lambda: MagicMock())
+    _floor_monkeypatch.setattr(interactions, "channel_inbound_permitted", permitted)
+    _floor_monkeypatch.setattr(interactions, "channel_refusal", lambda *a, **k: False)
+    _floor_monkeypatch.setattr(interactions, "_delete_review_placeholder", AsyncMock())
+    key = "D1|t1|d9"
+    _review_drafts_set(key, "Use !incognito for private threads.", FRIEND)
+    payload = {
+        "user": {"id": FRIEND},
+        "view": {
+            "private_metadata": key,
+            "state": {
+                "values": {
+                    "mc_review_revise_block": {"mc_review_revise_input": {"value": feedback}}
+                }
+            },
+        },
+    }
+    await interactions_approvals._handle_review_revise_submit(payload)
+    for t in list(orch._handler_tasks):
+        await t
+    if runs:
+        assert ran.await_args.kwargs["spool_text"] == feedback
+    else:
+        ran.assert_not_awaited()
+        assert _review_drafts_get(key)[0]
+        orch.slack.post_ephemeral.assert_awaited_once()
+        assert orch.slack.post_ephemeral.await_args.args[2] == shared_access.SHARED_OWNER_ONLY_TEXT
+
+
+@pytest.mark.parametrize(
+    "text, modifiers, refused",
+    [
+        ("summarize this !incognito", True, True),  # the person's own note
+        (
+            "Summarize this\n--- UNTRUSTED FORWARDED CONTENT BEGIN [ab12cd34ef56] ---\n"
+            "use !incognito for private threads\n"
+            "--- UNTRUSTED FORWARDED CONTENT END [ab12cd34ef56] ---",
+            True,
+            False,
+        ),  # someone else's forwarded words
+        ("Explain !incognito mode", False, False),  # a card's model-authored label
+        ("/model x", False, True),  # a leading "/" is the harness's, label or not
+    ],
+)
+def test_only_the_persons_own_words_are_read_for_modifiers(
+    text: str, modifiers: bool, refused: bool
+) -> None:
+    assert shared_access.shared_command_refused(FRIEND, text) is not None  # listed
+    assert shared_access.shared_command_refused(FRIEND, text, modifiers=modifiers) is refused
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_answered_after_a_reinstall_is_not_kept(_floor_monkeypatch) -> None:
+    # A reconnect reinstalls the client while the old one's users.info is in flight:
+    # its late answer must not confirm anyone for the new bot.
+    old_answer = shared_access.Verdict(
+        user_id=FRIEND, ok=True, reason="", name="Friend", checked_at=shared_access.clock()
+    )
+
+    async def slow_check(*_a, **_k):
+        shared_access.install(FakeWeb({}))  # the reconnect lands mid-lookup
+        return old_answer
+
+    _floor_monkeypatch.setattr(shared_access, "check", slow_check)
+    await shared_access.prime(handler._orch_cfg, FRIEND, owner_id=OWNER)
+    assert FRIEND not in shared_access._verdicts
+    assert handler.is_shared_user(FRIEND) is False
+
+
+def test_every_queued_message_records_whether_its_sender_is_shared() -> None:
+    # A queued (or reconnect-held) entry without the tag skips the revocation recheck
+    # at drain time, so every enqueue site in the router passes it.
+    import inspect
+
+    from kiro_crew.slack import events
+
+    calls = [
+        line.strip()
+        for line in inspect.getsource(events).splitlines()
+        if "_queue_tags(" in line and "def _queue_tags" not in line and "import" not in line
+    ]
+    assert calls and all("shared=" in c for c in calls), calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action_id",
+    [
+        "kc_code_channel_trust_call",
+        "kc_code_channel_worker_trust",
+        "kc_code_channel_approval",
+        "kc_code_channel_approval_confirm",
+        "kc_code_channel_agent",
+    ],
+)
+async def test_a_shared_user_presses_no_code_channel_trust_or_approval_control(
+    _floor_monkeypatch, action_id: str
+) -> None:
+    # Slack Code's Trust (a worker card's too), approval-mode and agent controls are
+    # the owner's by identity: refused (and audited) before any handler, wherever
+    # posted. A worker card's Approve / Reject reach their handler, which admits only
+    # the owner or the channel's opener (test_slack_shared_access_code_channel_notices).
+    from unittest.mock import MagicMock
+
+    await _confirmed_friend()
+    audit = MagicMock()
+    slack = SimpleNamespace(post_ephemeral=AsyncMock())
+    _floor_monkeypatch.setattr(interactions, "_orch", SimpleNamespace(slack=slack))
+    _floor_monkeypatch.setattr(interactions, "sel", lambda: audit)
+    from kiro_crew.slack.code_channels import agent_picker, approval_picker, worker_approvals
+
+    for mod in (agent_picker, approval_picker):
+        _floor_monkeypatch.setattr(mod, "audit_refused_pick", lambda *a, **k: None)
+    ran = AsyncMock()
+    _floor_monkeypatch.setattr(worker_approvals, "dispatch_card_click", ran)
+    payload = {
+        "type": "block_actions",
+        "user": {"id": FRIEND},
+        "channel": {"id": "D1"},
+        "message": {"ts": "m1"},
+        "actions": [{"action_id": action_id, "value": "x"}],
+    }
+    await interactions.dispatch(payload)
+    ran.assert_not_awaited()
+    slack.post_ephemeral.assert_awaited_once()
+    denied = [c.kwargs for c in audit.log_api_access.call_args_list]
+    assert any(d.get("outcome") == "denied" and d.get("caller") == FRIEND for d in denied)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action_id", "module", "handler_name"),
+    [
+        ("kc_code_channel_enable_handoff", "handoff", "handle_handoff_click"),
+        ("kc_code_channel_resume_C1", "resume", "handle_resume_click"),
+        ("kc_code_channel_stop_C1", "resume", "handle_stop_click"),
+    ],
+)
+async def test_a_shared_user_presses_no_helper_agent_or_restart_control(
+    _floor_monkeypatch, action_id: str, module: str, handler_name: str
+) -> None:
+    # The hand-off notice's Turn-on button (it writes slack.code_channel_dispatch)
+    # and the restart notice's Resume and Stop are the owner's by identity: a shared
+    # user is refused and audited before the handler, so nothing is saved or resumed.
+    import importlib
+    from unittest.mock import MagicMock
+
+    await _confirmed_friend()
+    audit = MagicMock()
+    slack = SimpleNamespace(post_ephemeral=AsyncMock())
+    _floor_monkeypatch.setattr(interactions, "_orch", SimpleNamespace(slack=slack))
+    _floor_monkeypatch.setattr(interactions, "sel", lambda: audit)
+    ran = AsyncMock(return_value=True)
+    mod = importlib.import_module(f"kiro_crew.slack.code_channels.{module}")
+    _floor_monkeypatch.setattr(mod, handler_name, ran)
+    payload = {
+        "type": "block_actions",
+        "user": {"id": FRIEND},
+        "channel": {"id": "C1"},
+        "message": {"ts": "m1"},
+        "actions": [{"action_id": action_id, "value": "C1"}],
+    }
+    await interactions.dispatch(payload)
+    ran.assert_not_awaited()
+    slack.post_ephemeral.assert_awaited_once_with("C1", FRIEND, interactions.SHARED_OWNER_ONLY_TEXT)
+    denied = [c.kwargs for c in audit.log_api_access.call_args_list]
+    assert any(
+        d.get("outcome") == "denied"
+        and d.get("caller") == FRIEND
+        and d.get("resources") == action_id
+        for d in denied
+    )
+
+
+def test_a_shared_users_text_in_a_code_channel_slot_keeps_helper_agents_shut(
+    _floor_monkeypatch,
+) -> None:
+    # Backstop for the routing refusal: were a shared user's text ever routed into a
+    # code channel's slot, the dispatch exemption's sender clause (owner by identity)
+    # refuses, so it is never what lets the conductor start helper agents.
+    from kiro_crew.dashboard.session_control_parts import code_channel_exemption as ex
+
+    class _Slot:
+        key = "slack-code:C1"
+        _turn_channel_origin = True
+
+    slot = _Slot()
+    _floor_monkeypatch.setattr(handler, "is_owner", lambda u: u == OWNER)
+    ex.forget_senders()
+    try:
+        ex.note_channel_sender(slot, OWNER)
+        assert ex._sender_refusal(slot) == ""
+        ex.note_channel_sender(slot, FRIEND)
+        assert "someone other than the owner" in ex._sender_refusal(slot)
+    finally:
+        ex.forget_senders()
+
+
+@pytest.mark.asyncio
+async def test_a_shared_users_escalated_stop_keeps_the_owners_queued_message(cfg) -> None:
+    # The Stop buttons clear only the presser's entries (``owned_by``). When the
+    # stop escalates, the reset is a recycle: it parks what is left, the owner's
+    # message included, and the next session under the key adopts it at its head.
+    from session_helpers import _mock_provider_factory
+
+    from kiro_crew.messaging.queue_drain import QUEUED_OWNER_KEY, entries_queued_by
+    from kiro_crew.session import SessionManager
+    from kiro_crew.session_lifecycle_parts import parked_queue
+    from kiro_crew.slack.events import _entry_owner
+
+    key = "slack:1700.1"
+    mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+    provider, _, _ = await mgr.get_or_create(key)
+    mgr.release(key)
+    session = mgr._sessions[mgr._fold_key(key)]
+    owners = ("ts-owner", "owner's message", {QUEUED_OWNER_KEY: _entry_owner(OWNER, "C1")})
+    mine = ("ts-mine", "friend's message", {QUEUED_OWNER_KEY: _entry_owner(FRIEND, "C1")})
+    session.queue.extend([owners, mine])
+    provider.cancel = AsyncMock(return_value="timeout")
+    try:
+        outcome = await mgr.stop_turn(key, owned_by=entries_queued_by(_entry_owner(FRIEND, "C1")))
+        assert outcome == "hard"
+        await mgr.get_or_create(key)
+        successor = mgr._sessions[mgr._fold_key(key)]
+        assert list(successor.queue) == [owners]
+    finally:
+        parked_queue._parked_queue.clear()
+        await mgr.close_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action_id", "value"),
+    [("mc_inline_stop_slack:555.1", "slack:555.1"), ("stop_kill_now", "slack:555.1")],
+)
+async def test_a_shared_users_stop_button_naming_a_code_channel_session_is_refused(
+    _floor_monkeypatch, action_id: str, value: str
+) -> None:
+    # Pressed outside any code channel, a Stop button whose value is a code channel's
+    # session is still the owner's: refused and audited before anything stops.
+    from unittest.mock import MagicMock
+
+    from kiro_crew.slack.code_channels import routing
+
+    await _confirmed_friend()
+    audit = MagicMock()
+    stop_turn = AsyncMock(return_value="soft")
+    orch = SimpleNamespace(
+        slack=SimpleNamespace(update_message=AsyncMock(), post_ephemeral=AsyncMock()),
+        sessions=SimpleNamespace(stop_turn=stop_turn),
+    )
+    _floor_monkeypatch.setattr(interactions, "_orch", orch)
+    _floor_monkeypatch.setattr(interactions, "sel", lambda: audit)
+    _floor_monkeypatch.setattr(handler, "sel", lambda: audit)
+    _floor_monkeypatch.setattr(routing, "shared_user_refused_here", AsyncMock(return_value=False))
+    _floor_monkeypatch.setattr(interactions, "_outside_code_channel", AsyncMock(return_value=True))
+    _floor_monkeypatch.setattr(
+        routing, "shared_user_refused_for_slot", lambda s, t, **_k: s == value
+    )
+    payload = {
+        "type": "block_actions",
+        "user": {"id": FRIEND},
+        "channel": {"id": "C1"},
+        "message": {"ts": "m1", "thread_ts": "t1"},
+        "actions": [{"action_id": action_id, "value": value}],
+    }
+    await interactions.dispatch(payload)
+    stop_turn.assert_not_awaited()
+    denied = [c.kwargs for c in audit.log_api_access.call_args_list]
+    assert any(d.get("outcome") == "denied" and d.get("caller") == FRIEND for d in denied)

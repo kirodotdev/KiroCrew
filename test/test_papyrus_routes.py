@@ -1895,26 +1895,17 @@ class TestPaperTitleRoute:
         assert _FAKE_AWS_SECRET not in _json_of(response)["title"]
 
 
-def test_each_finished_compile_is_counted_after_the_compile():
-    """``app.task.completed`` counts a Papyrus compile once it has finished."""
-    import ast
-
-    tree = ast.parse(Path(routes.__file__).read_text(encoding="utf-8"))
-    fn = next(
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_handle_compile"
-    )
-
-    def lines(name: str) -> list[int]:
-        return [
-            n.lineno
-            for n in ast.walk(fn)
-            if isinstance(n, ast.Call)
-            and (n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", ""))
-            == name
-        ]
-
-    (rec_line,) = lines("record_app_task")
-    (compile_line,) = lines("compile_project")
-    assert rec_line > compile_line
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ok", [True, False])
+async def test_a_compile_records_no_metric(enabled: None, project: Path, ok: bool) -> None:
+    """``kirocrew.app.task.completed`` is retired: a compile, good or failed, records nothing."""
+    recorder = mock.MagicMock(enabled=True)
+    result = latex.CompileResult(ok=ok, log="log")
+    with (
+        mock.patch("kiro_crew.metrics.provider.get_recorder", return_value=recorder),
+        mock.patch.object(latex, "compile_project", mock.AsyncMock(return_value=result)),
+    ):
+        await routes._handle_compile(
+            _request("POST", "/api/apps/papyrus/compile", {"name": "my-paper"})
+        )
+    assert recorder.mock_calls == []

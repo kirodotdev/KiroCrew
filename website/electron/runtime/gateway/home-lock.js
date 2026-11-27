@@ -104,8 +104,10 @@ function createHomeLock({
   // which only Linux has, and these holders are macOS orphans. The CLI still
   // signals only a Kiro Crew listener on PORT and refuses one the desktop app
   // runs. The caller re-proves the holder right before it calls this.
+  // It is a "Stop and restart", so the gateway's kept YOLO and chat trust are
+  // kept (`--keeps-grants`): only a Quit or Stop the user chose ends them.
   function runPortStop() {
-    return runCliStop([], "orphaned gateway");
+    return runCliStop(["--keeps-grants"], "orphaned gateway");
   }
 
   /**

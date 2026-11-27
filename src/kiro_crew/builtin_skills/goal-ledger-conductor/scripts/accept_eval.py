@@ -23,7 +23,9 @@ stdin (JSON):
                                      "exists": true}},
         {"id": "item-4", "accept": {"kind": "human_approval"}},
         {"id": "item-5", "accept": {"kind": "edition_check",
-                                     "check": "name", "ref": "ID-1"}}
+                                     "check": "name", "ref": "ID-1"}},
+        {"id": "item-6", "accept": {"kind": "git_commit", "repo": "/abs/repo",
+                                     "branch": "feat/x", "base": "<sha>"}}
     ]}
 
 Kinds:
@@ -35,6 +37,14 @@ Kinds:
     file            a path exists (or, with ``"exists": false``, does not).
     human_approval  never machine-evaluated; always ``pending``.
     edition_check   an installed edition answers a named check (below).
+    git_commit      a local branch carries at least one commit that its base
+                    commit does not (``git rev-list --count``); none yet, or no
+                    such branch yet, is pending. ``repo`` must be an absolute
+                    path (a relative one is refused), ``branch`` a branch name,
+                    ``base`` the commit's hex id. Read-only and offline: only
+                    ``rev-parse`` and ``rev-list``, in an environment that
+                    refuses every transport, so a partial clone's missing
+                    object is an error, never a fetch.
 
 ``edition_check`` asks an installed edition. It runs
 ``kirocrew acceptance-check --json <check> <ref>``, which the public build
@@ -109,6 +119,7 @@ Stdlib-only, Python 3.8+.
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -121,8 +132,9 @@ from pathlib import Path
 #: executing it, which is the regression the `cmd` kind's removal prevents.
 #: `gh` serves `pr_checks`, its draft probe and `pr_merged`'s `pr view`;
 #: `kirocrew` serves `edition_check` and runs exactly one fixed subcommand,
-#: `acceptance-check --json <check> <ref>`.
-_SELF_BUILT_COMMANDS = {"gh", "kirocrew"}
+#: `acceptance-check --json <check> <ref>`; `git` serves `git_commit` and runs
+#: only `rev-parse --verify` and `rev-list --count`.
+_SELF_BUILT_COMMANDS = {"gh", "kirocrew", "git"}
 
 TIMEOUT_SECS = 300
 EVIDENCE_TAIL_CHARS = 500
@@ -140,6 +152,42 @@ _GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
 #: start with a letter or digit, so neither can ever read as a flag.
 _CHECK_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
 _CHECK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+#: ``git_commit``'s ``branch`` and ``base``, applied with ``fullmatch``. A branch
+#: starts with a letter or digit and holds no ``..``, so it can never read as a
+#: flag or a revision range; ``base`` is a lower-case hex commit id (SHA-1 or
+#: SHA-256, abbreviated to no fewer than 7).
+_GIT_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
+_GIT_BASE = re.compile(r"[0-9a-f]{7,64}")
+
+
+def _git_env():
+    """The environment every ``git`` call runs in: offline, whatever the repo says.
+
+    The repository is one an agent wrote, and this evaluator runs on the trusted
+    side, so its own ``.git/config`` must not choose a program to run. A partial
+    clone fetches a missing object on demand from inside a plain read
+    (``rev-parse``, ``rev-list``), through the repo's ``remote.<name>.uploadpack``
+    or a ``<helper>::`` transport. ``GIT_NO_LAZY_FETCH`` stops that on git 2.45+;
+    an empty ``GIT_ALLOW_PROTOCOL`` refuses every transport on any git, so a
+    missing object is an ``error`` instead. Inherited ``GIT_*`` variables go
+    first, so none can point git at another repository or config.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update(
+        {
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_ALLOW_PROTOCOL": "",
+            "GIT_PROXY_COMMAND": "",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_0": "false",
+        }
+    )
+    return env
+
 
 #: ``kirocrew acceptance-check`` exit codes and the report verdict each must
 #: carry. The report has to agree with the exit code before either is
@@ -188,6 +236,7 @@ def _exec(argv, cwd=None):
         proc = subprocess.run(  # noqa: S603 - argv array, no shell, script-built
             [str(a) for a in argv],
             cwd=cwd or None,
+            env=_git_env() if raw == "git" else None,
             capture_output=True,
             text=True,
             # Pin the decode instead of inheriting the locale: on Windows the
@@ -363,6 +412,82 @@ def _edition_check(accept):
     return (expected, summary)
 
 
+def _git_commit(accept):
+    """Does a local branch carry a commit its base does not?
+
+    For work that ends in a local commit rather than a pull request. Passes when
+    ``git rev-list --count refs/heads/<branch> --not <base>`` is at least 1; a
+    branch that does not exist yet, or holds nothing past its base, is
+    ``pending``. A base that is not a commit in the repository, or a path that is
+    not a repository, is ``error``: neither says anything about the work.
+
+    ``repo`` must be absolute: a relative one would resolve against whatever
+    directory the evaluator runs in, so it is ``refused`` rather than guessed.
+    Every argv is built here; ``branch`` is read only as ``refs/heads/<branch>``,
+    so it cannot name a tag, a remote ref or a revision expression.
+    """
+    repo = accept.get("repo")
+    if not isinstance(repo, str) or not repo or "\x00" in repo:
+        return ("error", "git_commit spec needs a repo path")
+    if not os.path.isabs(repo):
+        return (
+            "refused",
+            f"git_commit repo {repo!r} is not an absolute path; the evaluator will not "
+            "guess which checkout a relative path means -- name the repository's "
+            "absolute path",
+        )
+    branch = accept.get("branch")
+    if not isinstance(branch, str) or not _GIT_BRANCH.fullmatch(branch) or ".." in branch:
+        return (
+            "error",
+            "git_commit spec needs a branch: a letter or digit, then up to 199 letters, "
+            "digits, dots, slashes, underscores or hyphens, with no '..'",
+        )
+    base = accept.get("base")
+    if not isinstance(base, str) or not _GIT_BASE.fullmatch(base):
+        return ("error", "git_commit spec needs a base: a lower-case hex commit id, 7-64 chars")
+    ref = f"refs/heads/{branch}"
+
+    problem, proc = _exec(
+        ["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"]
+    )
+    if proc is None:
+        return problem or ("error", "could not run")
+    if proc.returncode != 0:
+        output = _tail(proc.stdout + "\n" + proc.stderr)
+        return ("error", f"base {base} is not a commit in {repo}: exit {proc.returncode}: {output}")
+
+    problem, proc = _exec(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref])
+    if proc is None:
+        return problem or ("error", "could not run")
+    if proc.returncode == 1:
+        return ("pending", f"branch {branch} does not exist in {repo} yet")
+    if proc.returncode != 0:
+        output = _tail(proc.stdout + "\n" + proc.stderr)
+        return (
+            "error",
+            f"could not read branch {branch} in {repo}: exit {proc.returncode}: {output}",
+        )
+    head = proc.stdout.strip()
+
+    problem, proc = _exec(["git", "-C", repo, "rev-list", "--count", ref, "--not", base])
+    if proc is None:
+        return problem or ("error", "could not run")
+    output = _tail(proc.stdout + "\n" + proc.stderr)
+    if proc.returncode != 0:
+        return (
+            "error",
+            f"could not count commits on {branch} in {repo}: exit {proc.returncode}: {output}",
+        )
+    try:
+        count = int(proc.stdout.strip())
+    except ValueError:
+        return ("error", f"git rev-list gave no count for {branch} in {repo}: {output}")
+    if count > 0:
+        return ("pass", f"{branch} in {repo} has {count} commit(s) past {base}; head {head}")
+    return ("pending", f"{branch} in {repo} has no commit past {base} yet")
+
+
 def _evaluate(item):
     accept = item.get("accept") or {}
     kind = accept.get("kind")
@@ -400,6 +525,8 @@ def _evaluate(item):
         return _pr_merged(accept)
     if kind == "edition_check":
         return _edition_check(accept)
+    if kind == "git_commit":
+        return _git_commit(accept)
     if kind == "file":
         path = accept.get("path")
         if not isinstance(path, str) or not path:

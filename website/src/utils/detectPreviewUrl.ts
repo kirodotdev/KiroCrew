@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../types'
+import { isHiddenReplyAt } from '../app-sdk/turnPolicyBlock'
 
 /**
  * Detect the URL the Web Preview tab should load, from the session's chat.
@@ -48,7 +49,7 @@ export function detectPreviewUrl(messages: ChatMessage[]): PreviewUrlHit | null 
   // decides — so a newer prose URL isn't shadowed by an older marker.
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]
-    if (msg.role !== 'assistant') continue
+    if (msg.role !== 'assistant' || isHiddenReplyAt(msg, messages, i)) continue
     const content = msg.content || ''
     const marker = lastMatch(MARKER_RE, content, 1)
     if (marker) return { url: marker, source: 'marker' }

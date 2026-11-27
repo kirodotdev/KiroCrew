@@ -41,10 +41,38 @@ function sequentialReplace(text: string): string {
   return CRED_PATTERNS.reduce((out, re) => out.replace(re, '[REDACTED]'), text)
 }
 
-it('has a reader for every pattern in CRED_PATTERNS', () => {
-  // `CredentialScan` mirrors these nine patterns one for one. A pattern added
-  // there needs a reader and a case in KINDS before this count moves.
-  expect(CRED_PATTERNS).toHaveLength(9)
+/** One or more credentials of every `CRED_PATTERNS` kind, none glued. The parity
+ *  test below runs these and `ORDINARY_TEXTS` through both `sanitizeCredentials`
+ *  and one `replace` per pattern. */
+const CREDENTIAL_TEXTS = [
+  `log: ${SLACK} ${JWS} end`,
+  `${AKIA}${JWS}`,
+  `${AKIA}${AKIA}`,
+  `aws_secret_access_key=${AKIA}xyz next`,
+  `clone ${USERINFO_URL} and ${LINK_TOKEN} then ${JWE}`,
+  `${PEM_HEADER} ${SLACK}`,
+  'aws_session_token=Sx9fakeSessionValue next',
+  'AccessKeyId: Sx9fakeKeyIdValue next',
+]
+/** Lookalikes and prose: no pattern takes any of it. */
+const ORDINARY_TEXTS = [
+  'see https://example.com/docs and xoxo, the http header',
+  'eyJsonSerializer.deserializeFromStringValue(x)',
+  'obj.eyJsonReader.readValueFromInputStream(x) keyJson.get(raw)',
+  'AKIA alone is a prefix, xoxb-short is too short',
+  'plain prose with no credential in it at all.',
+]
+const CORPUS = [...CREDENTIAL_TEXTS, ...ORDINARY_TEXTS]
+
+it('exercises every pattern in CRED_PATTERNS on the parity corpus', () => {
+  // `CredentialScan` mirrors these patterns one for one, and the parity test below
+  // is what holds each reader to its pattern, so every pattern must match some
+  // corpus text or a pattern added without its reader would pass unnoticed.
+  expect(CRED_PATTERNS.length).toBeGreaterThan(0)
+  for (const re of CRED_PATTERNS) {
+    const probe = new RegExp(re.source, re.flags.replace('g', ''))
+    expect(CREDENTIAL_TEXTS.some(text => probe.test(text)), `no corpus text exercises ${re.source}`).toBe(true)
+  }
 })
 
 const KEY_VALUE = 'Sx9fakeKeyValue'
@@ -222,19 +250,6 @@ describe('sanitizeCredentials: text that only starts like a credential', () => {
 })
 
 describe('sanitizeCredentials: text with no glued credentials', () => {
-  const CORPUS = [
-    `log: ${SLACK} ${JWS} end`,
-    `${AKIA}${JWS}`,
-    `${AKIA}${AKIA}`,
-    `aws_secret_access_key=${AKIA}xyz next`,
-    `clone ${USERINFO_URL} and ${LINK_TOKEN} then ${JWE}`,
-    `${PEM_HEADER} ${SLACK}`,
-    'see https://example.com/docs and xoxo, the http header',
-    'eyJsonSerializer.deserializeFromStringValue(x)',
-    'obj.eyJsonReader.readValueFromInputStream(x) keyJson.get(raw)',
-    'AKIA alone is a prefix, xoxb-short is too short',
-    'plain prose with no credential in it at all.',
-  ]
 
   it('sanitizes exactly as one replace per pattern does', () => {
     for (const text of CORPUS) {
@@ -248,7 +263,7 @@ describe('sanitizeCredentials: text with no glued credentials', () => {
   })
 
   it('leaves ordinary text untouched', () => {
-    for (const text of CORPUS.slice(6)) {
+    for (const text of ORDINARY_TEXTS) {
       expect(sanitizeCredentials(text)).toBe(text)
     }
   })

@@ -35,6 +35,7 @@ from unittest import mock
 
 import pytest
 from source_corpus import iter_statements as _statements
+from source_corpus import untraced
 from stale_package_attribute import package_attribute_replaced
 
 from kiro_crew import platform_compat, sandbox
@@ -335,6 +336,7 @@ def _parameters(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> fr
     return frozenset(arg.arg for arg in named if arg is not None)
 
 
+@untraced()
 def _create_patches(tree: ast.Module, *, source: str | None = None) -> list[tuple[int, str, str]]:
     """``(line, test function, name)`` for each patch that may create a forwarded name.
     *source* is the text *tree* came from, when the caller has it (see ``_Scope``)."""

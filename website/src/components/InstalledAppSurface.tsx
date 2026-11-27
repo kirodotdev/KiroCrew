@@ -10,6 +10,7 @@
  */
 import AppHost from './AppHost'
 import type { AppHostProps } from './AppHost'
+import { useAppViewMetrics } from '../lib/appViewTelemetry'
 
 export default function InstalledAppSurface({
   app,
@@ -20,6 +21,9 @@ export default function InstalledAppSurface({
   /** The name the route asked for, shown when `app` is absent. */
   requestedName?: string
 }) {
+  // One `opened` per mount and one foreground span per visible stretch; the
+  // not-installed state has no app to count.
+  useAppViewMetrics(app?.name ?? null)
   // AppHost guards a null `app` itself (its "not installed" state); its prop type
   // is non-null, so the nullable value is cast through. Routed pages act under the
   // dashboard-page identity the core API client uses, not whichever chat happens

@@ -17,12 +17,12 @@ Split out of :mod:`kiro_crew.acp.kas_agents`, which sits at the file-line cap.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from kiro_crew.acp.kas_permissions import merge_user_permissions
+from kiro_crew.acp.kas_prompt import expand_ref_vars
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path
 
 _FILE_SCHEME = "file://"
@@ -51,7 +51,7 @@ def _source(raw: object) -> str | None:
         # of the home folder, so neither names a folder the user meant.
         return None
     try:
-        path = Path(os.path.expandvars(ref)).expanduser()
+        path = Path(expand_ref_vars(ref)).expanduser()
         # ``anchor``, not ``is_absolute``: on Windows ``/x`` is rooted with no drive.
         if path.anchor and is_unsafe_prompt_path(path.resolve()):
             return None

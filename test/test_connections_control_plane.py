@@ -154,9 +154,8 @@ def test_service_ids_match_manifest_verbatim() -> None:
     assert SERVICE_IDS == _MANIFEST_SERVICE_IDS
 
 
-def test_run01_error_classes_are_the_twelve_value_closed_set() -> None:
+def test_run01_error_classes_are_the_closed_set() -> None:
     assert ERROR_CLASSES == _RUN01_ERROR_CLASSES
-    assert len(ERROR_CLASSES) == 12
 
 
 def test_credential_mode_is_the_three_value_axis_b_set() -> None:

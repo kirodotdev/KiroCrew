@@ -58,6 +58,13 @@ const collection = (over: Record<string, unknown> = {}) => ({
 })
 
 const LABEL = 'Record metrics'
+const LOCAL_LINE = 'Record performance metrics on this machine only.'
+const EXPORTING_LINE = /send them to the collectors named below/
+
+/** The disclosure lives under a collapsed Details section. */
+async function openDetails() {
+  await userEvent.click(await screen.findByRole('button', { name: 'Details' }))
+}
 
 function mount(over: Record<string, unknown> = {}) {
   beaconStatus.mockResolvedValue(BEACON_OFF as never)
@@ -77,25 +84,26 @@ describe('PrivacyPanel metric-recording switch', () => {
     await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('telemetry.enabled', true))
   })
 
-  it('says whether metrics are being recorded now, not only the default', async () => {
-    mount({ enabled: true })
-    expect(await screen.findByText('Usage and context records. Performance metrics are being recorded on this device now.')).toBeInTheDocument()
-    collectionStatus.mockResolvedValue(collection({ enabled: false }) as never)
-    await userEvent.click(await screen.findByRole('switch', { name: LABEL }))
-    expect(await screen.findByText('Usage and context records. Performance metrics are not being recorded on this device now.')).toBeInTheDocument()
+  it('says in one line that a local-only host records on this machine only', async () => {
+    mount()
+    const sw = await screen.findByRole('switch', { name: LABEL })
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+    expect(screen.getByText('Record performance metrics on this machine only.')).toBeInTheDocument()
   })
 
   it('tells a teammate the records stay on the Crew\'s computer, not their device', async () => {
     const owner = vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(false)
     mount({ enabled: true })
+    await openDetails()
     expect(await screen.findByText("Stays on the Crew's computer")).toBeInTheDocument()
-    expect(await screen.findByText("Usage and context records. Performance metrics are being recorded on the Crew's computer now.")).toBeInTheDocument()
+    expect(screen.getByText("Usage and context records, and the performance metrics this Crew records, are kept on the Crew's computer.")).toBeInTheDocument()
     expect(screen.queryByText('Stays on your device')).not.toBeInTheDocument()
     owner.mockRestore()
   })
 
   it('says what DO_NOT_TRACK turns off above its shell lines', async () => {
     mount()
+    await openDetails()
     expect(
       await screen.findByText('Setting DO_NOT_TRACK=1 turns off performance metrics and the heartbeat.'),
     ).toBeInTheDocument()
@@ -239,8 +247,8 @@ describe('PrivacyPanel metric-recording switch', () => {
     // Off, export_permitted reads false, but turning recording on in config.json
     // (what the note says to do) writes the opt-in that starts export.
     mount({ enabled: false, otlp_configured: true, export_permitted: false })
-    expect(await screen.findByText(/send them to the configured metrics collectors/)).toBeInTheDocument()
-    expect(screen.queryByText('Collect performance metrics on this machine.')).not.toBeInTheDocument()
+    expect(await screen.findByText(EXPORTING_LINE)).toBeInTheDocument()
+    expect(screen.queryByText(LOCAL_LINE)).not.toBeInTheDocument()
   })
 
   it('re-reads recording after the heartbeat switch changes', async () => {
@@ -265,7 +273,7 @@ describe('PrivacyPanel metric-recording switch', () => {
     await screen.findByRole('switch', { name: LABEL })
     expect(await screen.findByText(/nothing is sent to them until telemetry.enabled: true/)).toBeInTheDocument()
     expect(screen.queryByText(/being sent off this machine/)).not.toBeInTheDocument()
-    expect(screen.getByText('Collect performance metrics on this machine.')).toBeInTheDocument()
+    expect(screen.getByText(LOCAL_LINE)).toBeInTheDocument()
   })
 
   it('names every destination, marking one the build locked on', async () => {
@@ -323,9 +331,9 @@ describe('PrivacyPanel metric-recording switch', () => {
     mount({ otlp_configured: true })
     await screen.findByRole('switch', { name: LABEL })
     // Wait for the status query to land before asserting on the swap.
-    expect(await screen.findByText(/send them to the configured metrics collectors/)).toBeInTheDocument()
+    expect(await screen.findByText(EXPORTING_LINE)).toBeInTheDocument()
     expect(
-      screen.queryByText('Collect performance metrics on this machine.'),
+      screen.queryByText(LOCAL_LINE),
     ).not.toBeInTheDocument()
   })
 

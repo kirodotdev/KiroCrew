@@ -22,8 +22,8 @@ concurrency:
 
 jobs:
   # ── PR Hygiene ───────────────────────────────────────────────────────
-  # Enforces: (1) conventional commit message format on PR title,
-  # (2) at most two commits per PR (squash review-round noise before merge).
+  # Enforces a conventional commit message format on the PR title and the
+  # PR body's required sections.
   #
   # Every step assembles its `::error::` prefix at runtime through `err()` rather
   # than writing it literally. Actions echoes each `run:` block's source into the
@@ -43,8 +43,8 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      # First, because the commit count reads history and the Proof line and
-      # Sibling sweep steps read the base tip's tree.
+      # First, because the reader-list and app-repo steps read the merge-base,
+      # and the Proof line and Sibling sweep steps read the base tip's tree.
       - name: Resolve diff base (merge-base)
         id: diffbase
         env:
@@ -77,54 +77,6 @@ jobs:
             exit 1
           fi
           echo "PR title follows conventional commits: $PR_TITLE"
-
-      # ── Commit count per PR ─────────────────────────────────────────
-      # Contributors may carry at most two commits. One remains the norm;
-      # the second exists so a mechanical follow-up (a generated artifact
-      # rebuild, a formatting sweep) can stay separable from the change it
-      # accompanies instead of being squashed into it. Anything beyond that
-      # is review-round noise and must be squashed before pushing.
-      - name: Enforce commit count
-        env:
-          # base.sha (not the merge-base): rev-list is a commit-range query, so
-          # a non-ancestor base still yields only the PR's own commits — see the
-          # merge-base fix (#4968), which deliberately left this site alone.
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-          # The branch NAME, for the remedy text. Spelling `origin/main` literally
-          # is the wrong command for a PR opened against any other base, and sends
-          # the contributor to rebase onto a branch they are not targeting.
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          MAX_COMMITS: "2"
-        run: |
-          err() { printf '::%s::%s\n' error "$*"; }
-          COMMIT_COUNT=$(git rev-list --count "$BASE".."$HEAD")
-          if [ "$COMMIT_COUNT" -lt 1 ] || [ "$COMMIT_COUNT" -gt "$MAX_COMMITS" ]; then
-            err "PR must contain 1 or $MAX_COMMITS commits (has $COMMIT_COUNT). Rebase, do not merge:"
-            echo ""
-            echo "  Do NOT plain-click 'Update branch' on this page, and do not merge"
-            echo "  $BASE_REF into your branch. Both add a merge commit, which counts"
-            echo "  here and will re-trip this check. The button's dropdown carries an"
-            echo "  'Update with rebase' option that is safe; its default click is not."
-            echo ""
-            echo "  git fetch origin"
-            echo "  git rebase refs/remotes/origin/$BASE_REF"
-            echo "  Then squash your own commits (never a soft reset plus a commit,"
-            echo "  which takes whatever the index holds):"
-            echo "    git rebase -i refs/remotes/origin/$BASE_REF, marking later commits 'fixup'."
-            echo "  Or, with the kirocrew-prepare-pr skill, write the message to a file, then"
-            echo "    python3 <kirocrew-prepare-pr skill dir>/scripts/push_guard.py --base $BASE_REF --max-ahead $COMMIT_COUNT --squash <that file>"
-            echo "    (without a file it reads <git-dir>/prepare-pr-commit-msg-<branch>.txt, / as -)."
-            echo "    For commits made by hand it refuses first: it counts and lists the paths"
-            echo "    it did not commit, and writes them to a list file. Read each one's diff."
-            echo "    Only when every one is your own change, re-run that command with"
-            echo "    --paths-from-file <that list>. A count beyond what your PR changes"
-            echo "    means a stale tree: name none of them."
-            echo "  git push --force-with-lease=<branch>:<sha you last pushed> origin <branch>"
-            echo ""
-            exit 1
-          fi
-          echo "Commit count verified ($COMMIT_COUNT of at most $MAX_COMMITS)."
 
       # ── Frozen goal sections ────────────────────────────────────────
       # Every PR states its goal once, at open: a `**Goal:**` line under

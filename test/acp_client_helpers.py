@@ -2,7 +2,9 @@
 
 The topic parts are the ``test_acp_client_<topic>.py`` modules that import this one,
 split by behaviour. An autouse fixture applies only in a module that imports it by
-name, so each of them imports both autouse fixtures below.
+name, so each of them imports the first two autouse fixtures below; the modules
+that drive ``_spawn`` over a mocked ``asyncio.create_subprocess_exec`` also import
+the third.
 """
 
 import asyncio
@@ -53,6 +55,30 @@ def _native_projection_for_fake_processes(_floor_monkeypatch):
         lambda work_dir, **_kwargs: skill_projection.NativeSkillProjection(
             {"kirocrew": "kirocrew"}
         ),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _windows_cleanup_admission_passes_through(_floor_monkeypatch):
+    """Hand the spawn factory straight through Windows' cleanup admission.
+
+    On Windows ``launch`` spawns through
+    ``platform_compat.create_windows_cleanup_owned_process``, which builds the
+    child with ``CreateProcess`` instead of ``asyncio.create_subprocess_exec``, so
+    a test that mocks the latter would launch its fake binary for real. The
+    admission charges a capacity slot and pins the real child's handle, and these
+    doubles own no real child; the capacity contract has its own tests. On POSIX
+    the admission already calls the factory directly, so this changes nothing
+    there.
+    """
+    from acp_launch_capture import _windows_cleanup_passthrough
+
+    from kiro_crew.acp import client as client_mod
+
+    _floor_monkeypatch.setattr(
+        client_mod.platform_compat,
+        "create_windows_cleanup_owned_process",
+        _windows_cleanup_passthrough,
     )
 
 

@@ -120,6 +120,20 @@ describe('desktop About: Restart gateway', () => {
     expect(posts.some(url => url.includes('/api/restart'))).toBe(false)
   })
 
+  it('arms with no extra line: About passes no armed note', async () => {
+    stubFetch()
+    mountDesktop({ bridge: bridgeAnswering(true) })
+    await screen.findByTestId('desktop-gateway-restart-row')
+    fireEvent.click(screen.getByTestId('gateway-restart-desktop'))
+
+    const armed = screen.getByTestId('gateway-restart-desktop')
+    expect(armed.textContent).toContain(i18nT('pages.settings.aboutPanel.restart_confirm'))
+    expect(armed).not.toHaveAttribute('aria-describedby')
+    // The button is still its wrapper's only child: nothing rendered beside it.
+    expect(armed.parentElement?.childElementCount).toBe(1)
+    expect(screen.queryByText(i18nT('pages.settings.remoteCrewPanel.restart_clears_draft'))).toBeNull()
+  })
+
   it('says so when the app refuses or the bridge fails, and keeps the control', async () => {
     for (const restart of [async () => 'unavailable', async () => { throw new Error('gate') }]) {
       stubFetch()

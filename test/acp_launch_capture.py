@@ -116,6 +116,9 @@ VOLATILE_ENV = {
     # That the codex child RECEIVES it -- its SQLite home is its own -- is the fact
     # being pinned; the directory is not.
     "CODEX_SQLITE_HOME": "<scratch>",
+    # The goose home Crew builds for the spawn, inside its scratch window. That the
+    # goose child RECEIVES it is the fact being pinned; the directory is not.
+    "GOOSE_PATH_ROOT": "<goose-home>",
 }
 
 #: The parent environment every capture runs against, whatever the recording host's
@@ -307,8 +310,18 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
         if module is client_mod or name in vars(module)
     )
 
+    from kiro_crew.acp.harness import goose as goose_mod
+
     stack.extend(
         [
+            # The goose home is built off the host's own goose config; the capture
+            # pins that the child is pointed at one, on every platform.
+            patch.object(goose_mod, "side_home_supported", return_value=True),
+            patch.object(
+                goose_mod,
+                "build_session_goose_root",
+                side_effect=lambda env, parent: Path(parent) / "goose-session-root",
+            ),
             patch.object(client_mod, "create_subprocess_limited", side_effect=_factory),
             patch.object(client_mod, "finish_suspended_spawn", side_effect=_finish),
             patch.object(AcpClient, "_drain_stderr", side_effect=_drain),
@@ -331,7 +344,7 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
                     client_mod.agent_scratch.allocate_scratch,
                     lambda call: (
                         _allocate_capture_scratch(tmp_path, call["label"])
-                        if backend in (ACP_BACKEND_DEEPSEEK, ACP_BACKEND_STRANDS)
+                        if backend in (ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_STRANDS)
                         else None
                     ),
                 ),
@@ -420,6 +433,7 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(strands_mod, "strands_project_dir", return_value=_STRANDS_PROJECT),
             patch.object(strands_mod, "_seal_strands_gate", return_value=_STRANDS_GATE),
             patch.object(strands_mod, "strands_python_env_issue", return_value=""),
+            patch.object(strands_mod, "_strands_provider_sdk_issue", return_value=""),
             patch.object(strands_mod, "_strands_version_issue", return_value=""),
             patch.object(pi_node_mod, "choose_pi_node", return_value=pi_node_mod.PiNodeChoice()),
             patch.object(strands_mod, "_strands_user_project", return_value=("", "")),

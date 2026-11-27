@@ -2,7 +2,7 @@
 
 ``_interactive_approval`` posts the Block Kit card for cron, sub-agent, task-runner and
 AutoNudge approvals. The card showed the tool title, the command and a ``[cron]`` tag,
-and once answered it was rewritten to ``*<title>* — Approved``: a user running
+and once answered it was rewritten to ``🔐 *<title>* — ✅ Approved``: a user running
 several cron jobs could not tell which one was asking, or which one they had approved.
 The cron turn now passes ``requester`` (job name, id and agent); the card carries a
 ``From …`` line while it waits, in its plain-text fallback, and after it is
@@ -95,7 +95,7 @@ async def test_the_waiting_card_names_the_requester() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("outcome", "status"), [("approved", "Approved"), ("rejected", "Rejected")]
+    ("outcome", "status"), [("approved", "✅ Approved"), ("rejected", "🚫 Rejected")]
 )
 async def test_the_answered_card_keeps_the_requester(outcome: str, status: str) -> None:
     gw = _gateway()
@@ -104,7 +104,7 @@ async def test_the_answered_card_keeps_the_requester(outcome: str, status: str) 
 
     _channel, _ts = gw.slack.update_message.await_args.args
     text = gw.slack.update_message.await_args.kwargs["text"]
-    assert text == f"*Running: @notes-mcp/write_doc* — {status}\nFrom {REQUESTER}"
+    assert text == f"🔐 *Running: @notes-mcp/write_doc* — {status}\nFrom {REQUESTER}"
 
 
 @pytest.mark.asyncio
@@ -115,9 +115,9 @@ async def test_no_requester_leaves_the_card_as_it_was() -> None:
 
     _channel, blocks, fallback, _thread = gw.slack.post_blocks.await_args.args
     assert blocks == _build_approval_blocks(_event(), is_dm=True, source="cron")
-    assert fallback == "[cron] Approve: Running: @notes-mcp/write_doc?"
+    assert fallback == "🔐 [cron] Approve: Running: @notes-mcp/write_doc?"
     text = gw.slack.update_message.await_args.kwargs["text"]
-    assert text == "*Running: @notes-mcp/write_doc* — Approved"
+    assert text == "🔐 *Running: @notes-mcp/write_doc* — ✅ Approved"
 
 
 @pytest.mark.asyncio
@@ -157,17 +157,17 @@ async def test_a_key_split_by_slack_emphasis_is_still_redacted() -> None:
 @pytest.mark.asyncio
 async def test_a_job_name_cannot_add_a_line_to_the_card() -> None:
     """A line break or control character in a job name would draw a forged line,
-    such as a fake ``Approved``, under the card's own text."""
+    such as a fake ``✅ Approved``, under the card's own text."""
     gw = _gateway()
 
-    await _ask(gw, requester="cron job nightly\r\nApproved\tby\x00owner\u2028now (j1)")
+    await _ask(gw, requester="cron job nightly\r\n✅ Approved\tby\x00owner\u2028now (j1)")
 
-    flat = "cron job nightly Approved by owner now (j1)"
+    flat = "cron job nightly ✅ Approved by owner now (j1)"
     _channel, blocks, fallback, _thread = gw.slack.post_blocks.await_args.args
     assert _texts(blocks)[-1] == f"From {flat}"
     assert fallback.endswith(f"({flat})")
     text = gw.slack.update_message.await_args.kwargs["text"]
-    assert text == f"*Running: @notes-mcp/write_doc* — Approved\nFrom {flat}"
+    assert text == f"🔐 *Running: @notes-mcp/write_doc* — ✅ Approved\nFrom {flat}"
 
 
 @pytest.mark.asyncio

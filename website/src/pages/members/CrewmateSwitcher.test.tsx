@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import type { MemberRosterRow } from '../../api/client'
 import type { MemberSignals } from './rosterFilter'
+import { installInitialResizeObserver } from '../../test/initialResizeObserver'
 
 /* The crewmate switcher (crewmate-panel IA): the roster column folded into one
  * header chip. Closed it stacks the first faces and a chevron, the roster's
@@ -419,7 +420,6 @@ describe('CrewmateSwitcher list scroll cue', () => {
   // prototype, keyed by test id, and `scrollTop` is set on the node itself.
   const MASK_CLASS = '[mask-image:'
   const LIST = 'crewmate-switcher-listbox'
-  class InertObserver { observe() {} unobserve() {} disconnect() {} }
   const proto = HTMLElement.prototype
   const saved = {
     scrollHeight: Object.getOwnPropertyDescriptor(proto, 'scrollHeight'),
@@ -429,7 +429,8 @@ describe('CrewmateSwitcher list scroll cue', () => {
 
   beforeEach(() => {
     hiddenBelow = 0
-    vi.stubGlobal('ResizeObserver', InertObserver)
+    // The list's edges are first measured on the observer's first delivery.
+    installInitialResizeObserver()
     Object.defineProperty(proto, 'clientHeight', { configurable: true, get() { return 200 } })
     Object.defineProperty(proto, 'scrollHeight', {
       configurable: true,
@@ -551,5 +552,15 @@ describe('CrewmateUnreadColumn', () => {
     expect(rows[0].className).toContain('px-[3px]')
     expect(rows[0].className).toContain('-mx-[3px]')
     expect(pills()[0].className).toContain('mt-1.5')
+  })
+})
+
+describe('CrewmateSwitcher focus ring', () => {
+  it('draws each row\'s focus ring inside the row, where the scrolling list cannot clip it', async () => {
+    setup()
+    const list = await open()
+    // The rows sit in the scrolling listbox, which clips anything drawn past them.
+    expect(screen.getByTestId('crewmate-switcher-listbox').className).toContain('overflow-y-auto')
+    for (const o of options(list)) expect(o).toHaveClass('focus-visible:outline-offset-[-2px]')
   })
 })

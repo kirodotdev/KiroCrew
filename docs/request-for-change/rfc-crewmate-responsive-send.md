@@ -3,9 +3,9 @@ title: Crewmate responsive send — answer the person first, schedule the work b
 status: implemented
 author: buluoray
 created: 2026-10-15
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
-doc-pr:
+last-audited: 2026-11-20
+audited-at: fc89562d69
+doc-pr: 20889
 implementation-prs: [20240]
 tracking-issues: [20181]
 supersedes: []
@@ -16,7 +16,7 @@ superseded-by: []
 
 - Status: implemented by [#20240](https://github.com/kirodotdev/KiroCrew/pull/20240), merged 2026-10-16
   (`src/kiro_crew/dashboard/responsive_chat.py`, `STEER_GRACE_SECONDS = 3.0`; checked at
-  `1d08e941b3`). This is the product owner's decision, given 2026-10-15 by
+  `fc89562d69`). This is the product owner's decision, given 2026-10-15 by
   rayrayxu. Claims about today's code were checked at `37fa963dac` (main).
 - Author: buluoray
 - Related: [#20181](https://github.com/kirodotdev/KiroCrew/issues/20181),

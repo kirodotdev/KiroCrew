@@ -28,6 +28,9 @@ from chat_test_helpers import _make_state
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from kiro_crew.apps.core_route_grants import RouteGrant
+from kiro_crew.apps.host_exec_grants import grant_host_exec
+from kiro_crew.apps.manager import INSTALLED_META_FILENAME, app_dir, enable_app, install_app
 from kiro_crew.dashboard import chat_folder_scaffold
 from kiro_crew.dashboard.chat_folder_scaffold import (
     MAX_REPORTED_UNKNOWN,
@@ -58,48 +61,62 @@ def _make_scaffold_app(state: Any) -> web.Application:
 def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path / "home")
     (tmp_path / "home").mkdir()
-    # The endpoints are gated on the app being enabled (it ships off by
-    # default); every test here is about what an ENABLED app does, so the gate
-    # is opened once for the suite and closed again only by the disabled-app test.
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.chat_folder_scaffold.is_app_enabled", lambda name: True
-    )
+    # The endpoints answer only while an enabled app holds an approved grant for
+    # them (the app that ships them is off by default); every test here is about
+    # what a granted host does, so the gate is opened once for the suite and
+    # closed again only by the refusal tests.
+    monkeypatch.setattr(chat_folder_scaffold, "core_route_grant", _granted)
     return _make_state(tmp_path)
 
 
+def _granted(path: str, namespace: str) -> RouteGrant:
+    """The gate's answer on a host where an enabled app holds the grant."""
+
+    return RouteGrant(holder="folder-app")
+
+
 class TestDisabledApp:
-    """The app ships ``defaultEnabled: false``. Its two endpoints are plain
+    """The app that ships these endpoints is off by default. They are plain
     dashboard routes, not behind the app-backend proxy, so the proxy's
     enablement gate never sees them and a dashboard-user token bypasses the
     app-scope check — without their own gate they would answer for a person who
-    never turned the app on."""
+    never turned such an app on. The gate asks what the apps declare, never an
+    app's name."""
 
     @pytest.mark.asyncio
     async def test_both_endpoints_refuse_with_403_and_audit_denied(
         self, state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         root = _sibling_repos(tmp_path / "work")
-        asked: list[str] = []
+        asked: list[tuple[str, str]] = []
 
-        def _disabled(name: str) -> bool:
-            asked.append(name)
-            return False
+        def _off(path: str, namespace: str) -> RouteGrant:
+            asked.append((path, namespace))
+            return RouteGrant(disabled_declarers=("folder-app", "other-app"))
 
-        monkeypatch.setattr("kiro_crew.dashboard.chat_folder_scaffold.is_app_enabled", _disabled)
+        monkeypatch.setattr(chat_folder_scaffold, "core_route_grant", _off)
         events: list[dict[str, Any]] = []
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_folder_scaffold.sel",
             lambda: mock.Mock(log_api_access=lambda **kw: events.append(kw)),
         )
+        bodies = []
         async with TestClient(TestServer(_make_scaffold_app(state))) as client:
             for url in ("/api/project-scaffold/scan", "/api/project-scaffold/create"):
                 resp = await client.post(url, json={"root": str(root), "selected": []})
                 assert resp.status == 403
-                body = await resp.json()
-                assert body["code"] == "app_not_enabled"
-        # The gate asked about THIS app, nothing was scanned or created, and
-        # both refusals are in the trail as denials.
-        assert set(asked) == {"project-scaffolder"}
+                bodies.append(await resp.json())
+        # The refusal names the first app that declares the route and is off, in
+        # the shape the app proxy's own refusal has.
+        assert (
+            bodies == [{"code": "app_not_enabled", "error": "app 'folder-app' is not enabled"}] * 2
+        )
+        # The gate asked about each route inside the scaffold namespace, nothing
+        # was scanned or created, and both refusals are in the trail as denials.
+        assert asked == [
+            ("/api/project-scaffold/scan", "/api/project-scaffold"),
+            ("/api/project-scaffold/create", "/api/project-scaffold"),
+        ]
         assert state._folders == []
         denied = [e for e in events if e.get("outcome") == "denied"]
         assert [e["resources"] for e in denied] == [
@@ -107,6 +124,118 @@ class TestDisabledApp:
             "/api/project-scaffold/create",
         ]
         assert {e["error"] for e in denied} == {"app is not enabled"}
+
+    @pytest.mark.asyncio
+    async def test_with_no_declaring_app_the_refusal_names_none(
+        self, state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = _sibling_repos(tmp_path / "work")
+        monkeypatch.setattr(chat_folder_scaffold, "core_route_grant", lambda p, n: RouteGrant())
+        async with TestClient(TestServer(_make_scaffold_app(state))) as client:
+            resp = await client.post("/api/project-scaffold/scan", json={"root": str(root)})
+            assert resp.status == 403
+            assert await resp.json() == {
+                "code": "app_not_enabled",
+                "error": "no enabled app is approved to use this route",
+            }
+        assert state._folders == []
+
+
+def _declaring_app(tmp_path: Path, name: str, api: list[str]) -> Path:
+    """A manifest-only app folder declaring *api*, ready for ``install_app``."""
+
+    src = tmp_path / "sources" / name
+    src.mkdir(parents=True)
+    manifest = {
+        "name": name,
+        "version": "1.0.0",
+        "displayName": "Folder App",
+        "description": "calls the scaffold endpoints",
+        "author": "tester",
+        "permissions": {"api": api},
+    }
+    (src / "app.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return src
+
+
+class TestGrantFromARealRecord:
+    """The gate end to end against real app records, so it is the declaration and
+    the owner's recorded enable that open the routes, whatever the app is called."""
+
+    @pytest.fixture
+    def home_state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        (home / "config.json").write_text(
+            json.dumps({"agent": {"apps_allow_third_party": True}}), encoding="utf-8"
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: home)
+        return _make_state(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_any_app_declaring_the_namespace_opens_the_routes_once_enabled(
+        self, home_state: Any, tmp_path: Path
+    ) -> None:
+        root = _sibling_repos(tmp_path / "work")
+        assert install_app(_declaring_app(tmp_path, "folder-maker", ["/api/project-scaffold"])).ok
+        async with TestClient(TestServer(_make_scaffold_app(home_state))) as client:
+            resp = await client.post("/api/project-scaffold/scan", json={"root": str(root)})
+            assert resp.status == 403
+            assert await resp.json() == {
+                "code": "app_not_enabled",
+                "error": "app 'folder-maker' is not enabled",
+            }
+
+            assert enable_app("folder-maker").ok
+            status, body = await _scan(client, root)
+            assert status == 200, body
+            assert body["status"] == STATUS_OK
+
+    @pytest.mark.asyncio
+    async def test_a_record_forged_enabled_is_refused_until_the_owner_enable_is_recorded(
+        self, home_state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``installed.json`` is writable from the sandbox, so only the sealed owner-enable
+        marker opens the routes; both refusals keep the turned-off app's code and audit row."""
+        root = _sibling_repos(tmp_path / "work")
+        assert install_app(_declaring_app(tmp_path, "folder-maker", ["/api/project-scaffold"])).ok
+        events: list[dict[str, Any]] = []
+        audit = mock.Mock(log_api_access=lambda **kw: events.append(kw))
+        monkeypatch.setattr(chat_folder_scaffold, "sel", lambda: audit)
+        record = app_dir("folder-maker") / INSTALLED_META_FILENAME
+        async with TestClient(TestServer(_make_scaffold_app(home_state))) as client:
+            assert (await _scan(client, root))[1]["error"] == "app 'folder-maker' is not enabled"
+            forged = {**json.loads(record.read_text(encoding="utf-8")), "enabled": True}
+            record.write_text(json.dumps(forged), encoding="utf-8")
+            status, body = await _scan(client, root)
+            assert (status, body["code"]) == (403, "app_not_enabled")
+            assert body["error"] == (
+                "app 'folder-maker' reads enabled, but its enable was not recorded; "
+                "turn it off and on again"
+            )
+            assert grant_host_exec("folder-maker")
+            status, body = await _scan(client, root)
+            assert status == 200, body
+        denied = [e for e in events if e.get("outcome") == "denied"]
+        assert len(denied) == 2 and denied[0] == denied[1]
+        assert [denied[0][k] for k in ("operation", "resources", "error")] == [
+            "chat.folder_scaffold_disabled_app",
+            "/api/project-scaffold/scan",
+            "app is not enabled",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_enabled_app_with_only_a_broad_entry_leaves_them_off(
+        self, home_state: Any, tmp_path: Path
+    ) -> None:
+        root = _sibling_repos(tmp_path / "work")
+        assert install_app(_declaring_app(tmp_path, "broad-app", ["/api"])).ok
+        assert enable_app("broad-app").ok
+        async with TestClient(TestServer(_make_scaffold_app(home_state))) as client:
+            resp = await client.post("/api/project-scaffold/scan", json={"root": str(root)})
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "app_not_enabled"
 
 
 def _sibling_repos(root: Path) -> Path:
@@ -1050,9 +1179,7 @@ class TestAdditiveScaffold:
             mock.patch("kiro_crew.dashboard.state.config_dir", lambda: home),
             # This test builds its own state rather than using the `state`
             # fixture, so the enablement gate is opened here the same way.
-            mock.patch(
-                "kiro_crew.dashboard.chat_folder_scaffold.is_app_enabled", lambda name: True
-            ),
+            mock.patch.object(chat_folder_scaffold, "core_route_grant", _granted),
         ):
             state = _make_state(base)
             state._folders = copy.deepcopy(before)

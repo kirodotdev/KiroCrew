@@ -3,9 +3,10 @@
  *  the composer's context row (`SessionPresence`), who is typing in the locked
  *  composer (`TypingLockBanner`). */
 import { useEffect } from 'react'
-import { capabilityUsable } from '../../../api/sharedCrewUi'
+import { capabilityUsable, sharedCrewPreviewOn } from '../../../api/sharedCrewUi'
 import { isPermissionRefusal } from '../../../api/apiError'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { Glass } from '../../../components/Glass'
 import {
   useSessionDecisions,
   useSessionPresence,
@@ -34,8 +35,12 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
   const attributionOn = capabilityUsable(capabilities.attribution)
   const viewer = useSharedCrewViewer(presenceOn || attributionOn)
   // Own MessageByline's shared reads here, once per chat even with the sidebar closed.
+  // The mode is read with the preview off too: the chat page reads the cached mode
+  // (`sharedCrewInUse`, `cachedViewerIds`), and the gateway answers it without a
+  // catalogue walk then. People is built for the team surfaces only, so it waits
+  // for the preview, as the sidebar does.
   const mode = useSharedCrewMode(attributionOn)
-  const people = useSharedCrewPeople(attributionOn)
+  const people = useSharedCrewPeople(attributionOn && sharedCrewPreviewOn(capabilities))
   const presence = useSessionPresence(sessionKey, presenceOn)
   // Read here so its failure is said once; `useResolvedElsewhere` and `useRaisedBy` use the cache.
   const decisions = useSessionDecisions(sessionKey, attributionOn)
@@ -55,5 +60,14 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
   const failed = [caps, viewer, mode, people, presence, decisions, sendState, typingLease]
     .find(query => query.isError && !isPermissionRefusal(query.error))
   if (!sessionKey || !failed) return null
-  return <ErrorNotice message={failed.error instanceof Error ? failed.error.message : i18nT('sharedCrew.session_state_failed')} variant="inline" askAgent testId="session-collab-error" />
+  // On the dock's glass at the `thick` step, like the Read aloud bar: bare text
+  // lets the transcript scrolling under the dock show through it. No hue: red
+  // text on a red-mixed pane falls below AA in some dark palettes.
+  return (
+    <div className="pt-1.5">
+      <Glass variant="chip" thickness="thick" radius={8} className="flex px-3 py-1.5">
+        <ErrorNotice message={failed.error instanceof Error ? failed.error.message : i18nT('sharedCrew.session_state_failed')} variant="inline" askAgent testId="session-collab-error" />
+      </Glass>
+    </div>
+  )
 }

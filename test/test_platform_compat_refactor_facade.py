@@ -179,6 +179,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _UTF8_PROCESS_ENV _ensure_utf8_process_environment _KEPT_FOR_REEXEC keep_for_reexec
         kept_for_reexec _WHEEL_APPLY_MODULE cancel_wheel_applies_in_flight hard_exit
         _disarm_process_alarm_before_exec _rearm_process_alarm_after_failed_exec
+        REEXEC_CHILDREN_ENV _publish_children_for_successor _withdraw_children_for_successor
         reexec_launcher reexec_python_module
         execv_target_available _POST_DRAIN_EXEC_FAILURE_EXIT _EXIT_FLUSH_DEADLINE_SECS
         exit_after_failed_restart_exec _drain_event_log_for_exit _WINDOWS_ARM_MACHINES
@@ -246,6 +247,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.platform_compat_liveness": tuple("""
         PID_DEAD PID_ALIVE PID_UNSIGNALABLE live_thread_group_leaders is_thread_group_leader
         pid_liveness pgroup_of pgroup_of_leader pid_exists pid_is_zombie process_thread_count
+        SUPERVISION_TERMINAL SUPERVISION_OWN_GROUP SUPERVISION_NOT_POSIX supervision_shape_failure
         """.split()),
     "kiro_crew.platform_compat_identity": tuple("""
         process_cwd get_ppid _ANCESTRY_MAX_DEPTH _PYTHON_INTERPRETER_NAME
@@ -254,7 +256,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         process_is_sandboxed process_can_read_under_sandbox ProcessIdentitySource
         _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS _WINDOWS_EXIT_FILETIME_POLL_SECS
         _windows_process_handle_identity process_matches process_image_name
-        _win_process_image_name process_argv_matches_exact process_argv_fingerprint
+        _win_process_image_name process_argv process_argv_matches_exact process_argv_fingerprint
         linux_process_name process_cgroups_match process_command_line process_owner_uid
         effective_uid _START_TIME_PS_TIMEOUT _process_lstart process_start_time
         process_start_id_for_source _OWN_START_TIME _linux_boot_id _own_identity_token
@@ -331,10 +333,11 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _SUBTREE_MAX_PROCS
         proc_cpu_nanos_for_pid SubtreeSample _proc_pss_kb proc_subtree_sample
         proc_handle_count_for_pid
-        proc_rss_tree_mb_for_pid proc_cpu_seconds _prev_win_sys_cpu system_memory
-        system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
+        proc_rss_tree_mb_for_pid proc_cpu_seconds _prev_win_sys_cpu _memory_status system_memory
+        system_commit system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
         _EXTERNAL_PAGE_COUNT_ELEMENTS macos_vm_statistics _macos_available_mib
         _linux_available_mib host_total_mib _darwin_memsize_bytes host_available_mib MEMORY_PRESSURE_NORMAL
+        _LINUX_MEMORY_PSI_PATH linux_memory_psi_full_avg10
         MEMORY_PRESSURE_WARN MEMORY_PRESSURE_CRITICAL _MEMORY_PRESSURE_NAMES
         _MEMORY_PRESSURE_SYSCTL memory_pressure_level memory_pressure_name
         POWER_AC POWER_BATTERY POWER_UNKNOWN _LINUX_POWER_SUPPLY_ROOT _WIN_AC_OFFLINE
@@ -359,7 +362,9 @@ _BOUND_HERE: frozenset[str] = frozenset("""
 #: the graph has no cycle) or to a lock or owner-only module.
 _CARVED_IMPORTS: dict[str, frozenset[str]] = {
     "kiro_crew.platform_compat_proctable": frozenset({"kiro_crew.platform_compat_native"}),
-    "kiro_crew.platform_compat_runtime": frozenset({"kiro_crew.platform_compat_native"}),
+    "kiro_crew.platform_compat_runtime": frozenset(
+        {"kiro_crew.platform_compat_native", "kiro_crew.platform_compat_proctable"}
+    ),
     "kiro_crew.platform_compat_links": frozenset(
         {
             "kiro_crew.platform_compat_native",

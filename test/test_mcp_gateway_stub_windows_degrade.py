@@ -24,7 +24,9 @@ untested platform took a path nobody had exercised.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -79,14 +81,14 @@ def degrade(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     def _fake_which(cmd: str, path: str | None = None) -> str | None:
         seen["which"].append((cmd, path))
-        return f"/resolved/{cmd}"
+        return f"/resolved/{os.path.basename(cmd)}"
 
     def _fake_exit(rc: int) -> None:
         seen["exit"].append(rc)
         raise SystemExit(rc)
 
     monkeypatch.setattr(stub.os, "execvpe", _fake_exec)
-    monkeypatch.setattr(stub.shutil, "which", _fake_which)
+    monkeypatch.setattr(shutil, "which", _fake_which)
     monkeypatch.setattr(stub.os, "_exit", _fake_exit)
     return seen
 
@@ -173,14 +175,15 @@ def test_the_windows_degrade_resolves_the_command_on_the_childs_path(
     differently on the two platforms.
     """
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    declared = str(tmp_path / "declared")
     sidecar = tmp_path / "env.json"
-    sidecar.write_text('{"PATH": "C:\\\\declared\\\\bin"}', encoding="utf-8")
+    sidecar.write_text(json.dumps({"PATH": declared}), encoding="utf-8")
     _install_popen(monkeypatch, degrade, _FakeProc())
 
     with pytest.raises(SystemExit):
         stub.fallback_exec(_args(env_file=str(sidecar)))
 
-    assert degrade["which"] == [("backend-bin", "C:\\declared\\bin")]
+    assert degrade["which"] == [(os.path.join(declared, "backend-bin"), None)]
 
 
 def test_the_windows_degrade_exits_with_the_backends_own_status(

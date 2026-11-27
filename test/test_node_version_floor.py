@@ -10,6 +10,8 @@ floor (``>=22.12.0``) is stricter still, so that is the floor.
 from __future__ import annotations
 
 import io
+import os
+import shutil
 import subprocess
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -24,8 +26,10 @@ from kiro_crew.constants import (
     node_version_meets_floor,
     parse_node_version,
 )
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 FLOOR_TEXT = "v22.12.0"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_the_floor_is_the_first_22_with_both_needs() -> None:
@@ -334,3 +338,32 @@ def test_relay_route_without_node_keeps_the_install_advice(monkeypatch) -> None:
     out = buf.getvalue()
     assert "not found (Kiro Crew needs Node" in out
     assert "Fix: install Node.js" in out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the Makefile recipe is POSIX sh")
+@pytest.mark.skipif(shutil.which("make") is None, reason="GNU make is not installed")
+def test_make_frontend_without_npm_names_the_ensure_node_floor(tmp_path) -> None:
+    """`make build` with no npm must ask for the floor ensure-node.sh enforces."""
+    script = (REPO_ROOT / "ensure-node.sh").read_text(encoding="utf-8")
+    floor = next(line for line in script.splitlines() if line.startswith("MIN_VERSION="))
+    floor = floor.split('"')[1]
+    work = tmp_path / "work"
+    (work / "website").mkdir(parents=True)
+    (work / "ensure-node.sh").write_text("exit 0\n", encoding="utf-8")
+    # Only the tools the recipe calls before its npm check, so a host npm is never found.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for tool in ("bash", "cat"):
+        real = shutil.which(tool)
+        if real:
+            (tools / tool).symlink_to(real)
+    proc = subprocess.run(
+        [str(shutil.which("make")), "-f", str(REPO_ROOT / "Makefile"), "-C", str(work), "frontend"],
+        env={"PATH": str(tools), "KIROCREW_HOME": str(tmp_path / "home")},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+    )
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert f"ERROR: npm not found. Install Node {floor} or newer" in proc.stderr, proc.stderr

@@ -388,3 +388,157 @@ def _run_held_cycle_through_the_real_check(
 
 
 _SKIPPED_999 = {"version": "9.9.9", "snoozed_until": 0, "skipped": True}
+
+
+# ── an answer given while the unattended build runs ─────────────────────────
+#
+# The prompt opens when the check finds the update, which is the same cycle that
+# starts the unattended build, so "Remind me tomorrow" usually lands mid-build.
+
+
+@pytest.fixture
+def _no_applies_in_flight(monkeypatch):
+    from kiro_crew.platform import wheel_apply
+
+    monkeypatch.setattr(wheel_apply, "_IN_FLIGHT", set())
+
+
+async def _run_wheel_apply(apply, monkeypatch, *, refuse_if_unattended_off: bool = True):
+    from kiro_crew.platform import wheel_apply, wheel_engine
+
+    monkeypatch.setattr(wheel_engine, "apply_wheel_update", apply)
+    return await wheel_apply.run_wheel_apply(
+        channel="stable",
+        version="9.9.9",
+        feed_base="https://feed.example",
+        artifact_base="https://bytes.example",
+        refuse_if_unattended_off=refuse_if_unattended_off,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_no_applies_in_flight")
+@pytest.mark.parametrize(
+    ("refuse", "answer", "status"),
+    [
+        pytest.param(True, _snoozed("9.9.9", _FAR_FUTURE), "deferred", id="snoozed"),
+        pytest.param(True, _SKIPPED_999, "deferred", id="skipped"),
+        pytest.param(True, _snoozed("9.9.8", _FAR_FUTURE), "promoted", id="other-version"),
+        pytest.param(False, _snoozed("9.9.9", _FAR_FUTURE), "promoted", id="person-approved"),
+    ],
+)
+async def test_an_answer_saved_during_the_build_is_read_at_the_swap(
+    monkeypatch, tmp_path, refuse, answer, status
+) -> None:
+    import kiro_crew.memory_backup as backup
+    from kiro_crew.platform import wheel_apply
+
+    saved = {"cfg": _cfg({})}
+    promoted: list[int] = []
+
+    def apply(**kwargs: object):
+        saved["cfg"] = _cfg(answer)  # the click, while the tree builds
+        kwargs["before_promote"]()  # type: ignore[operator]
+        promoted.append(1)
+        return tmp_path / "crew-venv-9.9.9"
+
+    monkeypatch.setattr(wheel_apply, "snapshot_memory_before_update", lambda: (1, ""))
+    monkeypatch.setattr(backup, "newest_backup", lambda *a: None)
+    monkeypatch.setattr(
+        "kiro_crew.platform.update_governance.unattended_apply_allowed", lambda: True
+    )
+    monkeypatch.setattr("kiro_crew.config.KiroCrewConfig.load", lambda *a, **k: saved["cfg"])
+    outcome = await _run_wheel_apply(apply, monkeypatch, refuse_if_unattended_off=refuse)
+    assert outcome.status == status
+    assert len(promoted) == (status == "promoted")
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_no_applies_in_flight")
+async def test_saving_the_answer_stops_the_unattended_build_at_once(monkeypatch) -> None:
+    import threading
+
+    from kiro_crew.platform import wheel_apply, wheel_engine
+    from kiro_crew.platform import wheel_engine_contract as wheel_contract
+    from kiro_crew.testing.wait import async_wait_until, await_until
+
+    started = threading.Event()
+    reasons: list[str] = []
+
+    def apply(**kwargs: object):
+        cancel: wheel_engine.ApplyCancel = kwargs["cancel"]  # type: ignore[assignment]
+        fired = threading.Event()
+        cancel.on_set(fired.set)
+        started.set()
+        assert fired.wait(30), "the build was never stopped"
+        reasons.append(cancel.reason)
+        raise wheel_engine.WheelUpdateCancelled("cancelled", reason=cancel.reason)
+
+    task = asyncio.ensure_future(_run_wheel_apply(apply, monkeypatch))
+    try:
+        await async_wait_until(started.is_set, describe=lambda: "the build never started")
+        assert wheel_apply.stop_put_off_applies(_cfg(_snoozed("9.9.8", _FAR_FUTURE))) == 0
+        assert wheel_apply.stop_put_off_applies(_cfg(_snoozed("9.9.9", _FAR_FUTURE))) == 1
+        outcome = await await_until(task)
+    finally:
+        wheel_apply.cancel_wheel_applies()
+    assert outcome.status == "cancelled"
+    assert outcome.status in wheel_apply.RETRY_SOON
+    assert reasons == [wheel_contract._PUT_OFF_REASON]
+    # The gateway keeps running after this stop, so the engine must delete the
+    # partial tree at once rather than leave a tombstone for a later sweep.
+    assert wheel_contract._PUT_OFF_REASON in wheel_contract._REMOVE_PARTIAL_TREE_REASONS
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_no_applies_in_flight")
+async def test_saving_the_answer_leaves_a_person_approved_apply_running(monkeypatch) -> None:
+    import threading
+
+    from kiro_crew.platform import wheel_apply, wheel_engine
+    from kiro_crew.testing.wait import async_wait_until, await_until
+
+    started = threading.Event()
+
+    def apply(**kwargs: object):
+        cancel: wheel_engine.ApplyCancel = kwargs["cancel"]  # type: ignore[assignment]
+        fired = threading.Event()
+        cancel.on_set(fired.set)
+        started.set()
+        assert fired.wait(30)
+        raise wheel_engine.WheelUpdateCancelled("cancelled", reason=cancel.reason)
+
+    task = asyncio.ensure_future(
+        _run_wheel_apply(apply, monkeypatch, refuse_if_unattended_off=False)
+    )
+    try:
+        await async_wait_until(started.is_set, describe=lambda: "the build never started")
+        assert wheel_apply.stop_put_off_applies(_cfg(_snoozed("9.9.9", _FAR_FUTURE))) == 0
+    finally:
+        wheel_apply.cancel_wheel_applies()
+    await await_until(task)
+
+
+def test_the_dashboard_stops_a_put_off_build_when_the_answer_is_saved() -> None:
+    from aiohttp import web
+
+    from kiro_crew.config.live import ConfigChange
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.server import _register_config_watch
+
+    app = web.Application()
+    state = SimpleNamespace(
+        workflow_service=None, channel_manager=None, set_dynamic_cards_enabled=MagicMock()
+    )
+    _register_config_watch(app, state, None)
+    subs = {s.name: s for s in app["config_watch_subscriptions"]}
+    apply = subs["dashboard.update_nudge"].callback()
+    assert apply is not None
+    old, new = KiroCrewConfig(), KiroCrewConfig()
+    new.dashboard.update_nudge = _snoozed("9.9.9", _FAR_FUTURE)
+    with patch("kiro_crew.platform.wheel_apply.stop_put_off_applies", return_value=1) as stop:
+        apply(ConfigChange(old=old, new=new, changed=frozenset({"agent.model"})))
+        stop.assert_not_called()
+        apply(ConfigChange(old=old, new=new, changed=frozenset({"dashboard.update_nudge"})))
+        stop.assert_called_once()
+        assert stop.call_args.args[0] is new

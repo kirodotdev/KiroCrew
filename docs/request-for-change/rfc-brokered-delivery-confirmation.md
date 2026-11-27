@@ -3,8 +3,8 @@ title: Commit a brokered inline-collected result on the parent turn's outcome, n
 status: draft
 author: kirocrew agent session, directed by jeeshofone
 created: 2026-10-28
-last-audited: 2026-10-28
-audited-at: ea38bdd5e5
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: 25214
 implementation-prs: []
 tracking-issues: [18743]

@@ -23,10 +23,12 @@ vi.mock('../components/ArtifactPanel', () => ({ default: () => null }))
 vi.mock('../pages/chat/FolderPanel', () => ({ default: () => null }))
 vi.mock('../components/WebPreviewPanel', () => ({ default: () => null }))
 vi.mock('../components/McpAppFrame', () => ({ default: () => null }))
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: (props: { chatSlot?: string; remoteSlot?: string }) => (
     <div data-testid="terminal-body" data-chat-slot={props.chatSlot ?? ''} data-remote-slot={props.remoteSlot ?? ''} />
   ),
+}))
+vi.mock('../components/terminalSessions', () => ({
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))
@@ -230,9 +232,9 @@ describe('placement gates gateway file and terminal access', () => {
     expect(screen.queryByTestId('terminal-body')).toBeNull()
   })
 
-  // Four gateway terminals fill the chat's cap; once it is bound to a profile,
-  // Terminal has no workspace shell to reuse and opens nothing, so it says why.
-  it('explains a workspace terminal refused at the tab cap', async () => {
+  // Four gateway terminals no longer fill a per-chat cap: once the chat is
+  // bound to a profile, Terminal still opens a workspace shell.
+  it('opens a workspace terminal after four gateway terminals', async () => {
     const get = envRead().mockResolvedValue(local)
     const qc = mount(undefined, true)
     await filesReady('gateway-files')
@@ -244,12 +246,9 @@ describe('placement gates gateway file and terminal access', () => {
     get.mockResolvedValue(remote)
     act(() => { void qc.invalidateQueries() })
     await screen.findByTestId('remote-gateway-terminal-withheld')
-    expect(screen.queryByTestId('side-panel-workspace-terminal-capped')).toBeNull()
     openMenu()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Terminal' }))
-    const notice = await screen.findByTestId('side-panel-workspace-terminal-capped')
-    expect(notice).toHaveTextContent('this chat already has 4 terminal tabs')
-    expect(liveController!.tabs.filter(t => t.kind === 'terminal' && t.remoteSlot)).toHaveLength(0)
+    await waitFor(() => expect(liveController!.tabs.filter(t => t.kind === 'terminal' && t.remoteSlot)).toHaveLength(1))
   })
 
   // A file tab reads and saves the GATEWAY's copy; a remote chat must not edit

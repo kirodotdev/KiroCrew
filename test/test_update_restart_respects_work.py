@@ -151,6 +151,37 @@ async def test_a_restart_with_a_turn_in_flight_is_refused_and_admission_reopens(
 
 
 @pytest.mark.asyncio
+async def test_a_refused_restart_broadcasts_no_name_of_the_work_it_waits_on(gateway):
+    """``update_progress`` goes to every app token, so it carries counts only."""
+    from kiro_crew.dashboard import ws_event_scope
+    from kiro_crew.dashboard.state import DashboardState
+
+    sent: list[dict] = []
+    gateway.state._broadcast = sent.append
+    gateway.state.push_update_progress = lambda step, detail="": (
+        DashboardState.push_update_progress(gateway.state, step, detail)
+    )
+    gateway.orch._session_tasks["slack:quokka.123"] = asyncio.get_running_loop().create_future()
+    gateway.orch._running_script_ids.add("job-7f3a")
+    gateway.orch.cron_svc = SimpleNamespace(
+        get_job=lambda _id: SimpleNamespace(name="zebra-cron-name"),
+        running_since=lambda _id: None,
+    )
+    # The names exist: the host-only reader sees them.
+    named = quiescence.assess(gateway.orch, quiet_window_secs=0.0).named_holders()[0]
+    assert {h["name"] for h in named} == {"", "zebra-cron-name"}
+
+    assert await gateway.restart() is False
+
+    tier0 = [e for e in sent if e.get("_type") in ws_event_scope._TIER0_ALWAYS]
+    assert [e["step"] for e in tier0 if e["_type"] == "update_progress"][-1] == "error"
+    for event in tier0:
+        text = json.dumps(event)
+        assert "quokka" not in text and "zebra" not in text and "job-7f3a" not in text
+    assert "turns 1, background 1" in tier0[-1]["detail"]
+
+
+@pytest.mark.asyncio
 async def test_an_idle_restart_pauses_drains_fences_then_closes(gateway):
     assert await gateway.restart() is True
 
@@ -547,6 +578,27 @@ async def test_the_restart_endpoint_refuses_under_work_when_asked_not_to_interru
     assert body["turns"] == 1
     assert body["force_available"] is True
     restarted.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_restart_refusal_names_the_work_to_the_owner_who_asked(gateway, monkeypatch):
+    """The owner gate admits only callers that already list every slot and cron job."""
+    gateway.state._slots["chat-95"] = SimpleNamespace(task=None, _queue=[object()])
+    gateway.orch._running_script_ids.add("job-7f3a")
+    gateway.orch.cron_svc = SimpleNamespace(
+        get_job=lambda _id: SimpleNamespace(name="nightly-sync"),
+        running_since=lambda _id: None,
+    )
+    _restart_endpoint(gateway, monkeypatch)
+
+    resp = await updates.api_gateway_restart(_wired_request(gateway, {"force": False}))
+
+    assert resp.status == 409
+    body = _json(resp)
+    assert body["background"] == 1 and body["queued_messages"] == 1
+    named = {(h["kind"], h["name"]) for h in body.get("holders") or []}
+    assert named == {("script", "nightly-sync"), ("queued", "chat-95")}
+    assert body.get("holders_more") == 0
 
 
 @pytest.mark.asyncio

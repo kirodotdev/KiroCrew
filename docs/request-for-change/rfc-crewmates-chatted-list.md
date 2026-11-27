@@ -3,8 +3,8 @@ title: Crewmates list — only the crewmates the user chatted with, newest first
 status: superseded
 author: iamwhatever
 created: 2026-10-07
-last-audited: 2026-11-04
-audited-at: e86fbdc606
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: [17808]
 tracking-issues: [19341, 29769]
@@ -22,7 +22,7 @@ superseded-by: [rfc-session-template-vs-crewmate.md]
 > `crew_recency.json` and `last_chat_ts` are gone, and Recent order reads
 > `last_active_ts`. So the §2 ask below that a crewmate which only ran in the
 > background is never shown no longer holds; a heartbeat wake's message lists
-> its row. At `e86fbdc606`, `listedByDefault` in
+> its row. At `fc89562d69`, `listedByDefault` in
 > `website/src/pages/members/rosterFilter.ts` lists a starred row, Mate, a
 > crewmate the person created (restored by
 > [#24987](https://github.com/kirodotdev/KiroCrew/pull/24987)), the `default`

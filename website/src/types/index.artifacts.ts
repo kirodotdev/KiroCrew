@@ -34,6 +34,11 @@ export interface ArtifactPublication {
    *  unrecognised value.
    *  Optional so an older gateway that omits it reads as "". */
   notice_code?: string
+  /** When the destination deletes the copy (ISO 8601, UTC), or empty for no known
+   *  expiry. Optional so an older gateway that omits it reads as no expiry. */
+  expires_at?: string
+  /** Whether `expires_at` has passed, decided by the gateway's clock at read time. */
+  expired?: boolean
 }
 
 /** A publishing provider's self-described capabilities for a given artifact kind,
@@ -140,7 +145,7 @@ export interface Artifact {
    *  deliberately NOT in any picker: the backend keeps it out of
    *  `USER_SELECTABLE_KINDS` so nobody can mint one by hand, and a kind offered in
    *  the UI that the server refuses is a dead menu entry. */
-  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp' | 'image' | 'dashboard'
+  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp' | 'image' | 'dashboard' | 'canvas'
   /** Provenance/origin bucket. Carries either a legacy bucket
    * (chat|cron|subagent|manual|import) or the actual session origin
    * (dashboard|slack|cli|task-runner|unknown), so treated as an open string. */
@@ -159,6 +164,9 @@ export interface Artifact {
   /** Opaque optimistic-concurrency token for `content`; echo it back as
    * `expected_token` on a content save. Absent for live file-backed artifacts. */
   content_token?: string
+  /** The shown `content` had text masked (credentials, suspicious URLs), so it is
+   *  not the stored content; saving it back would write the placeholders. */
+  content_redacted?: boolean
   /** Original source path for file-backed artifacts (live pointer). */
   source_path?: string
   /** True when the live state differs from the latest numbered snapshot.

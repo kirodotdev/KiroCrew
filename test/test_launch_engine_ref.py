@@ -10,13 +10,18 @@ that can reach the clone path (``launch_engine.RealLaunchEngine.provision`` for
 the dashboard, ``wizard._deploy_with_progress`` for the CLI) pass no ref, and a
 seam fix covers a caller that does not exist yet.
 
-The tag probe is a ``git ls-remote`` round trip: never run here, always mocked.
+The tag probe is a ``git ls-remote`` round trip, or with no trusted ``git`` one
+HTTPS GET of GitHub's REST API: neither is ever run here, both always mocked.
 """
 
 from __future__ import annotations
 
+import http.client
+import io
 import os
 import subprocess
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -68,6 +73,14 @@ class TestPublicRepoUrl:
         """A tag confirmed on one remote and cloned from another proves nothing."""
         assert ec2.PUBLIC_REPO_URL == _template_default("KirocrewRepo")
 
+    def test_https_probe_asks_the_same_repository(self) -> None:
+        """The no-git fallback must confirm the tag on the repo the instance clones."""
+        from kiro_crew.cloud import github_tag_probe
+
+        owner_repo = ec2.PUBLIC_REPO_URL.removeprefix("https://github.com/").removesuffix(".git")
+        api = f"https://api.github.com/repos/{owner_repo}/git/ref/tags/"
+        assert github_tag_probe.PUBLIC_TAG_API_URL == api
+
     def test_template_still_defaults_to_main(self) -> None:
         """The fallback the WARNING promises ("the instance will run main")."""
         assert _template_default("KirocrewRef") == "main"
@@ -80,6 +93,19 @@ _TRUSTED_GIT = "/usr/bin/git"
 def trusted_git(monkeypatch):
     """A trusted ``git`` resolves; tests that want none override it."""
     monkeypatch.setattr(ec2.platform_compat, "trusted_git_bin", lambda: _TRUSTED_GIT)
+
+
+class _Response:
+    """What ``urllib.request.urlopen`` hands back, reduced to what the probe reads."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+    def __enter__(self) -> "_Response":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        return None
 
 
 class TestReleaseTagExists:
@@ -182,12 +208,58 @@ class TestReleaseTagExists:
         assert seen["cwd"] == ec2.Path(_TRUSTED_GIT).resolve().parent
 
     def test_no_trusted_git_is_a_miss_and_never_spawns(self, monkeypatch, caplog) -> None:
-        """A PATH shim must not run with the gateway's privileges; no git = no probe."""
+        """A PATH shim must not run with the gateway's privileges; no git = no probe.
+
+        A fork has no HTTPS twin to ask, so it must not touch the network either."""
         monkeypatch.setattr(ec2.platform_compat, "trusted_git_bin", lambda: None)
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not spawn"))
+        monkeypatch.setattr(
+            urllib.request, "urlopen", lambda *a, **k: pytest.fail("a fork has no HTTPS probe")
+        )
         with caplog.at_level("WARNING", logger="kiro_crew.cloud.ec2"):
-            assert ec2.release_tag_exists("v0.7.0") is False
+            assert ec2.release_tag_exists("v0.7.0", "https://example.com/fork.git") is False
         assert "no trusted git" in caplog.text
+
+    @pytest.mark.parametrize("repo", ["", ec2.PUBLIC_REPO_URL])
+    def test_no_trusted_git_confirms_the_public_tag_over_https(self, monkeypatch, repo) -> None:
+        """A machine with no git (most Windows desktops) still pins its own release."""
+        monkeypatch.setattr(ec2.platform_compat, "trusted_git_bin", lambda: None)
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not spawn"))
+        seen: dict = {}
+
+        def fake_urlopen(request, timeout):
+            seen["url"], seen["timeout"] = request.full_url, timeout
+            seen["accept"] = request.get_header("Accept")
+            seen["agent"] = request.get_header("User-agent")
+            return _Response(200)
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        assert ec2.release_tag_exists("v0.7.0", repo) is True
+        assert seen["url"] == "https://api.github.com/repos/kirodotdev/KiroCrew/git/ref/tags/v0.7.0"
+        assert seen["timeout"] == ec2._REF_PROBE_TIMEOUT_SECONDS
+        assert seen["accept"] == "application/vnd.github+json"
+        assert seen["agent"]
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            urllib.error.HTTPError("u", 404, "Not Found", {}, io.BytesIO(b"")),  # type: ignore[arg-type]
+            urllib.error.HTTPError("u", 403, "rate limited", {}, io.BytesIO(b"")),  # type: ignore[arg-type]
+            urllib.error.URLError("no network"),
+            TimeoutError("timed out"),
+            http.client.BadStatusLine("garbled"),
+        ],
+    )
+    def test_https_probe_failure_is_a_miss(self, monkeypatch, exc, caplog) -> None:
+        monkeypatch.setattr(ec2.platform_compat, "trusted_git_bin", lambda: None)
+
+        def raiser(request, timeout):
+            raise exc
+
+        monkeypatch.setattr(urllib.request, "urlopen", raiser)
+        with caplog.at_level("WARNING"):
+            assert ec2.release_tag_exists("v0.7.0") is False
+        assert "v0.7.0" in caplog.text
 
     def test_explicit_repo_is_the_remote_probed(self, monkeypatch, trusted_git) -> None:
         seen: dict = {}
@@ -272,12 +344,24 @@ class TestResolvePublicRef:
         assert probed == ["v0.7.0-insider.5"]
 
     def test_miss_is_empty_and_says_main(self, monkeypatch, caplog) -> None:
+        """The miss is said in words a user can act on: a development build that
+        this Kiro Crew may refuse to pair with."""
         monkeypatch.setattr(ec2, "__version__", "0.7.0")
         monkeypatch.setattr(ec2.release_channel, "__version__", "0.7.0")
         monkeypatch.setattr(ec2, "release_tag_exists", lambda ref, repo="": False)
         with caplog.at_level("WARNING", logger="kiro_crew.cloud.ec2"):
             assert ec2.resolve_public_ref() == ""
-        assert "v0.7.0" in caplog.text and "will run main" in caplog.text
+        text = caplog.text
+        assert "could not confirm release tag v0.7.0" in text
+        assert "development build from main" in text and "refuse to pair" in text
+
+    def test_no_trusted_git_still_pins_this_builds_tag(self, monkeypatch) -> None:
+        monkeypatch.setattr(ec2, "__version__", "0.7.0")
+        monkeypatch.setattr(ec2.release_channel, "__version__", "0.7.0")
+        monkeypatch.setattr(ec2.platform_compat, "trusted_git_bin", lambda: None)
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not spawn"))
+        monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout: _Response(200))
+        assert ec2.resolve_public_ref() == "v0.7.0"
 
     def test_nightly_never_probes(self, monkeypatch, caplog) -> None:
         monkeypatch.setattr(ec2, "__version__", "0.8.0.dev20260922")

@@ -1,16 +1,14 @@
 /** The mode-specific pieces of Settings > People (`api/sharedCrewMode`).
  *
- *  Each mode has its own surface and they never mix:
- *  - invalid: one error state naming the refused team setup's reason code;
- *  - console: read-only Team Access (people seen signing in, labelled as seen)
- *    and a server-validated Console link; no share or Tailscale setup surface;
- *  - network: the connect card and the People list (`PeopleCrew.tsx`);
- *  - personal: the setup guidance.
+ *  - invalid: one error state naming the refused team setup's reason code, in
+ *    place of the connection sources and the People list;
+ *  - a source's status badge, and the server-validated Console link the
+ *    organization card carries (`PeopleSources.tsx`).
  *
  *  No link is taken from a peer or a config value: the Console URL is validated
  *  by the server and again here, and the other links are fixed public pages. */
 import { ExternalLink } from 'lucide-react'
-import type { SetupPathCapability } from '../../api/sharedCrew'
+import type { CapabilityState } from '../../api/sharedCrew'
 import { consoleUrl, type CrewModeResponse } from '../../api/sharedCrewMode'
 import { Badge } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -35,8 +33,8 @@ export function TeamConfigInvalid({ mode }: { mode: CrewModeResponse }) {
   )
 }
 
-/** A setup path's honest status, as a badge. */
-export function statusBadge(row: SetupPathCapability | undefined) {
+/** A connection source's honest status, as a badge. */
+export function statusBadge(row: { state: CapabilityState; reason?: string } | undefined) {
   const state = row?.state ?? 'unavailable'
   if (state === 'available') return <Badge variant="ok">{i18nT('sharedCrew.setup_status_available')}</Badge>
   if (state === 'degraded') return <Badge variant="warn">{i18nT('sharedCrew.setup_status_degraded')}</Badge>
@@ -53,7 +51,7 @@ function DocLink({ href, label, testId }: { href: string; label: string; testId:
   )
 }
 
-/** Console mode: where team access is managed. */
+/** Where your organization manages access: its Console. */
 export function ConsoleAccess({ mode }: { mode: CrewModeResponse }) {
   const url = consoleUrl(mode)
   return url ? (

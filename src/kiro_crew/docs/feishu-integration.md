@@ -13,10 +13,17 @@ hostname, or open port to manage.
 > frame envelope), so it needs `lark-oapi`. It is **not** part of core, so install
 > it directly into the environment that runs the gateway:
 > `pip install "lark-oapi>=1.4,<2"`. Without it the gateway logs a line and skips
-> the channel — nothing else is affected.
+> the channel — nothing else is affected. On a `cli.sh` managed-venv install,
+> an in-app update keeps `lark-oapi`.
 >
-> **Desktop app: nothing to install.** The app bundles `lark-oapi`, and every
-> update ships it again. Do not run `pip` against the app's bundled Python;
+> **Desktop app: one click.** The app does not ship `lark-oapi`. Open
+> **Settings → Messaging Channels → Feishu** and press **Install**: the app
+> downloads the pinned, hash-checked SDK into your data home
+> (`~/.kiro/crew/extras/feishu/`), outside the app, so updates keep it. Restart
+> the gateway afterwards. If Feishu is already enabled when the app starts
+> without the SDK (for example right after updating from a version that
+> bundled it), the app installs it in the background and starts the channel
+> by itself. Do not run `pip` against the app's bundled Python;
 > that writes into the code-signed bundle.
 
 ## Quick start
@@ -36,8 +43,9 @@ Lark).
    `im:message.group_at_msg.include_bot:readonly` (receive group messages that
    @-mention the bot). The broader `im:message` grant does not replace the
    explicit p2p event scope in the current Feishu console. To receive the
-   images an answer refers to, also add `im:resource` (or
-   `im:resource:upload`); without it you get the image's path instead.
+   images an answer refers to and the files `file_send` sends, also add
+   `im:resource` (or `im:resource:upload`); without it you get the image's
+   path instead, and `file_send` says the upload was refused.
 4. **Use long connection** — under *Events & Callbacks*, choose
    **Long connection** (not a request URL), then subscribe to
    `im.message.receive_v1`.
@@ -114,9 +122,18 @@ Deny-by-default, in both directions:
   never evaluated can never run a turn.
 - **Every denial is audited.** Rejected inbound messages write a SEL audit
   record with `source: feishu`, so an unexpected sender shows up in
-  `kirocrew security events` rather than vanishing. A group message that does
-  not mention the bot is chatter, not an access attempt, so it is ignored
-  without a record.
+  `kirocrew security events` rather than vanishing. In an allow-listed group,
+  a message that does not mention the bot is chatter, not an access attempt,
+  so it is ignored without a record.
+- **Finding a group's `chat_id`.** Add the bot to the group and @-mention it
+  with a few words, for example `@bot hello`. A plain message is not enough:
+  with the group scope above, Feishu delivers only messages that @-mention the
+  bot, and a message that is nothing but the mention is dropped before it is
+  checked. The denial record for that message carries the group's id as
+  `chat_id=oc_...` in its `resources` field: look for operation
+  `feishu_transport.receive` and outcome `denied_group_not_allowed` in
+  `kirocrew security events` or in `~/.kiro/crew/security_events.jsonl`. Put
+  that id in `feishu.allowed_group_ids` and set `feishu.allow_group` to `true`.
 - **The agent can message you first, but only someone on the lists.** A cron
   result, a finished background task or a `send_message` to Feishu arrives as a
   new message in the DM or group it belongs to. Only an `open_id` in
@@ -137,7 +154,7 @@ Deny-by-default, in both directions:
   instruction and is ignored, so a bare `@bot` does not start an empty turn.
 - **Slash commands work in a group too.** A group message has to mention the
   bot, so it arrives as `@FeishuBot /new`. That single leading mention is
-  removed before matching, so `/new`, `/reset`, `/compact`, `/stop` and `/help` still intercept
+  removed before matching, so `/new`, `/reset`, `/compact`, `/agent`, `/stop`, `/cancel` and `/help` still intercept
   there instead of being sent to the agent as a prompt.
   Only a bare command intercepts, and **a message naming anyone else is never a
   command**: `@FeishuBot please run /new later` and `@FeishuBot /new @Alice` are
@@ -174,6 +191,8 @@ masked preview: a saved secret can be **replaced or cleared, never read back**.
 | `/new` (or `/reset`) | Start a fresh session; the old context is dropped. |
 | `/compact` | Compact the current context in place. |
 | `/agent [name]` | Show the agent and the ones you can pick; `/agent <name>` switches, `/agent default` goes back. |
+| `/stop` (or `/cancel`) | Stop the reply that is running. |
+| `/help` | List these commands. |
 
 Anything else is a prompt.
 
@@ -211,10 +230,27 @@ only images sends only the images.
   working directory or its own scratch directory.
 - Each image may be up to 10 MB, with ten images and 64 MiB per answer.
 - An incognito or temporary conversation never sends a local file.
-- A refused image keeps its path, with a `Warning: … not sent` line saying why. An
+- A refused image keeps its path, with a `⚠️ … not sent` line saying why. An
   image that fails to upload (for example, the app lacks `im:resource`) is
   named by its path in a follow-up message.
 - If the answer text cannot be sent, no image is sent either.
+
+## Files the agent sends
+
+When the agent sends a file with `file_send` in a conversation linked to a
+direct message, the file arrives in that chat. The file is also in the
+dashboard.
+
+- A PNG, JPEG, GIF, WebP or BMP image up to 10 MB arrives as an image message.
+  Any other file `file_send` accepts (text, PDF, audio or video) arrives as a
+  file message under its own name, up to 30 MB. A larger image is sent as a
+  file.
+- A description you give the file follows it as a text message.
+- Files go to direct messages only, to a person on the allow-list. A group
+  chat gets no file.
+- An incognito or temporary conversation never sends the file to Feishu.
+- When Feishu refuses the upload (for example, the app lacks `im:resource`),
+  the `file_send` result says why, and the file stays in the dashboard.
 
 ## Limits
 
@@ -237,9 +273,21 @@ Known gaps, all follow-up work rather than defects:
   one `open_id` is in `allowed_open_ids`, which is how the gateway knows the DM
   is yours. Answer an approval in the dashboard: a reply in Feishu does not
   answer it.
-- **The panel configures the channel; it does not install it.** `lark-oapi` is an
-  optional extra, and running `pip` from a dashboard action would be a new way to
-  execute code in the gateway's own environment. When the SDK is missing, Settings reports whether installation is supported for this gateway interpreter and shows its exact install command only when it is; you run that command yourself.
+- **Only the desktop app installs the SDK for you.** There, the **Install**
+  button in **Settings → Messaging Channels → Feishu** downloads the pinned,
+  hash-checked wheels into `~/.kiro/crew/extras/feishu/`, outside the app. If
+  you set up a package mirror for pip (`PIP_INDEX_URL` or pip's `index-url`),
+  it downloads from there, and tries pypi.org once if the mirror fails. When
+  an app update needs a newer SDK, an enabled channel downloads it again by
+  itself at the next start; otherwise the **Install** button comes back. It
+  works only for the dashboard owner on the gateway's own machine, never from a
+  remote session or an app token. An enabled channel with both credentials
+  saved also gets the SDK installed in the background when the app starts. A
+  gateway you installed from source or with `pip` never installs code itself:
+  that environment is yours, so when the SDK is missing Settings shows the exact
+  `pip install` command for the gateway's own Python, and you run it. Where pip
+  cannot install (no `pip` module, or an externally managed Python), no
+  command is shown.
 - **Credentials are not verified on save.** A REST tenant-token probe would have
   to pick a domain (`open.feishu.cn` or `open.larksuite.com`) and would report a
   false failure for whichever tenant it guessed wrong, so the panel stores what

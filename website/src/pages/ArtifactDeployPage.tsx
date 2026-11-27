@@ -22,6 +22,7 @@ import { Trans } from 'react-i18next'
 import { fmtNumber, fmtRelative } from '../i18n/format'
 import { ApiError, statusErrText, toApiError } from '../api/apiError'
 import { errMessage } from '../utils/thunkError'
+import { apiTransport } from '../api/apiTransport'
 const BASE = '/api/deploy'
 
 // Shared copy affordance for this page's three copy sites. `code` routes a
@@ -105,7 +106,7 @@ async function jget<T>(path: string): Promise<T> {
   return (await r.json()) as T
 }
 async function jsend<T>(path: string, body: unknown, method = 'POST'): Promise<{ status: number; data: T }> {
-  const r = await fetch(BASE + path, { method, headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
+  const r = await apiTransport.request(BASE + path, { method, headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
   if (!r.ok) throw await toApiError(r)
   return { status: r.status, data: (await r.json()) as T }
 }
@@ -1073,7 +1074,7 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
       // Entries flagged override_scan_required are blocked by
       // overridable (non-credential) findings — the human's explicit
       // "Deploy anyway" sends override_scan so the backend clears them.
-      const res = await fetch(BASE + `/pending/${id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: JSON.stringify(overrideScan ? { override_scan: true } : {}) })
+      const res = await apiTransport.request(BASE + `/pending/${id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: JSON.stringify(overrideScan ? { override_scan: true } : {}) })
       if (!res.ok) {
         // Carry the two technical fields alongside the message so the banner can
         // stay the plain sentence and the stack names go behind Details. A
@@ -1106,7 +1107,7 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
 
   const dismissMut = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(BASE + `/pending/${id}/dismiss`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' } })
+      const res = await apiTransport.request(BASE + `/pending/${id}/dismiss`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' } })
       if (!res.ok) throw await pendingActionError(res, 'pages.artifactDeployPage.dismiss_failed_status')
       return res.json()
     },

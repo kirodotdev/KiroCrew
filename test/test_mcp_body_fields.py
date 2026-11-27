@@ -287,6 +287,81 @@ class TestTheSizeRefusalIsNamedAndOffered:
     def test_a_body_field_name_is_not_executable(self, field) -> None:
         assert mbf.is_executable_field(field) is False
 
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "commands",
+            "Commands",
+            "cmds",
+            "cmdline",
+            "commandline",
+            "scripts",
+            "queries",
+            "statements",
+            "expressions",
+            "run_bash",
+            "runBash",
+            "exec_sh",
+            "zsh",
+            "powershell_script",
+            "pwsh",
+        ],
+    )
+    def test_a_plural_or_shell_name_is_executable(self, field) -> None:
+        assert mbf.is_executable_field(field) is True
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "commandment",
+            "scripture",
+            "shellfish",
+            "bashful",
+            "queryable_text",
+            "html_body",
+            "contents",
+            "message",
+            "description",
+            "summary",
+            "template",
+            "payload",
+        ],
+    )
+    def test_exact_words_only_so_a_longer_word_stays_allowed(self, field) -> None:
+        assert mbf.is_executable_field(field) is False
+
+    def test_command_id_keeps_its_verdict_from_before(self) -> None:
+        # ``command`` was already listed, so ``command_id`` was refused before this
+        # list grew; the new words neither add nor lift that refusal.
+        assert mbf.is_executable_field("command_id") is True
+        assert set(mbf._field_words("command_id")) & mbf._EXECUTABLE_WORDS == {"command"}
+
+    def test_a_stored_row_with_a_newly_listed_word_is_dropped_with_one_warning(
+        self, tmp_path, caplog, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(mbf, "_warned_dropped", set())
+        rows = [
+            {"server": "mail", "tool": "send", "field": "scripts"},
+            {"server": "mail", "tool": "send", "field": "html"},
+        ]
+        (tmp_path / "mcp_body_fields.json").write_text(json.dumps({"fields": rows}))
+        with caplog.at_level(logging.WARNING, logger=mbf.__name__):
+            assert [r["field"] for r in mbf.owner_rows()] == ["html"]
+            assert [r["field"] for r in mbf.owner_rows()] == ["html"]
+        dropped = [r for r in caplog.records if "'scripts'" in r.getMessage()]
+        assert len(dropped) == 1
+
+    def test_the_drop_warning_keeps_a_tool_name_on_one_line(
+        self, tmp_path, caplog, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(mbf, "_warned_dropped", set())
+        rows = [{"server": "mail", "tool": "send\nforged line", "field": "scripts"}]
+        (tmp_path / "mcp_body_fields.json").write_text(json.dumps({"fields": rows}))
+        with caplog.at_level(logging.WARNING, logger=mbf.__name__):
+            assert mbf.owner_rows() == []
+        (record,) = [r for r in caplog.records if "'scripts'" in r.getMessage()]
+        assert "\n" not in record.getMessage()
+
     @pytest.mark.asyncio
     async def test_an_allowed_body_before_an_oversize_field_names_the_oversize_one(self) -> None:
         # ``body`` is a default row for gmail/send_email; ``html`` is not listed.

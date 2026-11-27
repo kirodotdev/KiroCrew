@@ -18,7 +18,8 @@ describe('ListDock', () => {
     const observers: Array<(entries: unknown[]) => void> = []
     const RO = vi.fn(function (this: { observe: () => void; disconnect: () => void }, cb: (entries: unknown[]) => void) {
       observers.push(cb)
-      this.observe = vi.fn()
+      // Delivers once when it starts watching, as a browser's observer does.
+      this.observe = vi.fn((target: unknown) => { cb([{ target }]) })
       this.disconnect = vi.fn()
     })
     vi.stubGlobal('ResizeObserver', RO)

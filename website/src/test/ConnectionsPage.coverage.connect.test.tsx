@@ -54,6 +54,7 @@ vi.mock('../api/client', () => ({
     connectionsCancel: (...a: unknown[]) => connectionsCancel(...a),
     connectionsDisconnect: (...a: unknown[]) => connectionsDisconnect(...a),
     connectionsTest: (...a: unknown[]) => connectionsTest(...a),
+    connectionsAppManifests: () => Promise.resolve({ schema_version: 1, apps: {} }),
   },
 }))
 
@@ -257,6 +258,11 @@ describe('connecting a new provider', () => {
     },
     {
       reason: 'mint_kiro_cli_missing',
+      state: 'failed',
+      expected: 'Action failed: Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.',
+    },
+    {
+      reason: 'mint_kiro_cli_signed_out',
       state: 'failed',
       expected: 'Action failed: Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.',
     },
@@ -619,7 +625,7 @@ describe('relaying the loopback return address', () => {
     fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Paste the full http://127.0.0.1:PORT/…?code=… address from your browser.',
+      'Paste the full address from your browser. It starts with http://localhost or http://127.0.0.1.',
     )
     expect(relayInput()).toHaveAttribute('aria-invalid', 'true')
     expect(mcpOAuthRelay).not.toHaveBeenCalled()
@@ -1161,6 +1167,33 @@ describe('the authorization status feed', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent(
       'shares its stored authorization with: atlassian, linear, and jira.',
     )
+  })
+
+  it('joins the shared-grant sentences the way the language does, with no space after 。 in Japanese', async () => {
+    const { i18next } = await import('../i18n/all')
+    const { i18nT } = await import('../i18n/t')
+    await i18next.changeLanguage('ja')
+    try {
+      mcpServers.mockResolvedValue([server({ status: 'ok' })])
+      connectionsStatus.mockResolvedValue({
+        schema_version: 1,
+        connections: [{ slug: 'notion', status: 'connected', grantPresent: true, grantSharedWith: ['atlassian'] }],
+      })
+      mount()
+
+      await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
+      fireEvent.mouseEnter(await waitFor(() =>
+        within(card('notion')).getByRole('button', {
+          name: i18nT('pages.connectionsPage.shared_signin_for_provider', { provider: 'Notion' }),
+        }),
+      ))
+      const fact = i18nT('pages.connectionsPage.grant_shared_fact', { names: 'atlassian' })
+      const caveat = i18nT('pages.connectionsPage.grant_shared_caveat')
+      expect(fact.endsWith('。')).toBe(true)
+      expect(screen.getByRole('tooltip').textContent).toContain(fact + caveat)
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('hedges the shared-grant note when the census is incomplete', async () => {

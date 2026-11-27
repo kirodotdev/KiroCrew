@@ -452,9 +452,9 @@ def _note_injection_ignored(name: str, path: Path) -> None:
         return
     _ignored_injections_logged.add(name)
     agent_mod.logger.info(
-        "Knowledge agent spec %s carries an entry another tool injects into every agent "
+        "Agent spec %s carries an entry another tool injects into every agent "
         "spec (registered filter %r); leaving the file as it is and launching the "
-        "knowledge worker without it",
+        "agent without it",
         path,
         name,
     )
@@ -616,6 +616,37 @@ def knowledge_view_without_registered_injection(
     return expected
 
 
+def lite_view_without_registered_injection(spec: dict[str, Any]) -> dict[str, Any]:
+    """The ``kirocrew-lite`` spec a KAS session is sent, given the one read from disk.
+
+    The same rule as :func:`knowledge_view_without_registered_injection`: when the only
+    change to the file is an injection a registered filter removes exactly
+    (:func:`kiro_crew.agent_spec_injections.only_registered_injection`), the governed
+    template, never the filter's output, so the spec sent mounts nothing. Every other
+    spec is returned unchanged, and the file is never rewritten here. Used only where
+    Kiro Crew sends the spec itself (KAS); kiro-cli loads the file on disk, so there
+    nothing is tolerated. Blocking.
+    """
+    if not agent_spec_injections.registered_spec_injection_filters():
+        return spec
+    try:
+        expected = _lite_agent_config()
+        auto_approve.govern_spec(
+            expected,
+            agent_filename=_LITE_AGENT_FILENAME,
+            source="lite_view_without_registered_injection",
+            kas_policy="none",
+        )
+    except Exception:
+        agent_mod.logger.debug("lite template unavailable for the view", exc_info=True)
+        return spec
+    injection = agent_spec_injections.only_registered_injection(spec, expected)
+    if injection is None:
+        return spec
+    _note_injection_ignored(injection, agent_mod.kiro_agents_dir_path() / _LITE_AGENT_FILENAME)
+    return expected
+
+
 def _without_guide_server(config: dict) -> dict:
     """*config* with the guide and member platform servers, refs and grants removed.
 
@@ -767,7 +798,7 @@ def _mount_work_ledger(config: dict, grants: tuple[str, ...]) -> None:
     (owner decision in docs/decisions, case N2): a switch-off of ``kirocrew-work``
     on the default template (its entry's ``disabled`` or ``disabledTools``, an
     ``excludedTools`` entry naming it) is not carried over, as
-    :func:`_mount_team_lead_dispatch` and the Ultra Mode worker do not carry it.
+    :func:`_mount_team_lead_dispatch` and the conductor-mode worker do not carry it.
     """
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
@@ -845,7 +876,9 @@ def _install_team_lead_agent() -> None:
 def _install_dashboard_manager_agent() -> None:
     """Generate and install the ``kirocrew-dashboard-manager`` subagent config.
 
-    The agent a crewmate hands page work to. It is a SERVICE agent and not a
+    A page-work subagent. No Bot prompt routes to it: the gateway refuses a
+    subagent's dashboard calls (``no_dashboard_slot``), so a crewmate changes its
+    page in its own thread. It is a SERVICE agent and not a
     conductor: it is installed here, beside guest and knowledge, because like them
     it mounts a fixed minimal surface rather than deriving the kirocrew agent's
     whole governance ceiling. Carrying nothing it does not need is the point -- it

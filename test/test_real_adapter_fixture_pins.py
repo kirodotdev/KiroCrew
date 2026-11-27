@@ -1,7 +1,8 @@
 """A pinned adapter's live fixtures must have been captured at the pinned release.
 
 ``test/real_adapters/package.json`` pins the adapters the Real Adapter Contract
-lane installs, and Dependabot bumps it weekly. The lane's own contract tests
+lane installs, and Dependabot bumps it weekly; goose, a release binary, is pinned
+by ``test/real_adapters/goose.json`` instead. The lane's own contract tests
 re-measure the handshake on a bump, but the live captures under
 ``test/fixtures/acp_frames/<backend>/`` do not re-run: a feature that rests on one
 of them keeps standing on a release nobody runs any more, as ``codex/session-live``
@@ -40,6 +41,7 @@ import pytest
 from acp_frame_replay_harness import CORPUS, read_fixture
 from real_adapter_gate import (
     CODEX_ACP_PACKAGE,
+    GOOSE_PIN,
     OPENCODE_PACKAGE,
     PI_ACP_PACKAGE,
     PI_PACKAGE,
@@ -47,7 +49,7 @@ from real_adapter_gate import (
 )
 
 from kiro_crew.acp.client_turn_control import KIRO_CLI_TESTED_RANGE
-from kiro_crew.acp.kas_pin import KAS_PIN_VERSION
+from kiro_crew.acp.kas_pin import KAS_PIN_ENGINE_RELEASE
 from kiro_crew.agent_sdk.backends_launch import COPILOT_VERIFIED_VERSION
 from kiro_crew.kiro_cli import (
     MANDATORY_MCPS_DROP_MIN_VERSION,
@@ -56,19 +58,22 @@ from kiro_crew.kiro_cli import (
 from kiro_crew.mcp_hot_reload import MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION
 
 COPILOT_PACKAGE = "@github/copilot"
+#: goose is not an npm package; ``_pin`` reads its release from ``goose.json``.
+GOOSE_PACKAGE = "goose"
 
 ROOT = Path(__file__).resolve().parent.parent
 
-#: Fixture directory -> (npm package pinned in the manifest, ``agentInfo.name``
-#: that release answers ``initialize`` with). The name is what ties a fixture to
-#: the pin: a capture of some other agent in the same directory is not measured
-#: against this package's version.
+#: Fixture directory -> (package pinned in the manifest or ``goose.json``,
+#: ``agentInfo.name`` that release answers ``initialize`` with). The name is what
+#: ties a fixture to the pin: a capture of some other agent in the same directory is
+#: not measured against this package's version.
 PINNED_FIXTURE_ADAPTERS: dict[str, tuple[str, str]] = {
     "codex": (CODEX_ACP_PACKAGE, "@agentclientprotocol/codex-acp"),
     "opencode": (OPENCODE_PACKAGE, "OpenCode"),
     "claude": ("@agentclientprotocol/claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
     "pi": (PI_ACP_PACKAGE, "pi-acp"),
     "copilot": (COPILOT_PACKAGE, "Copilot"),
+    "goose": (GOOSE_PACKAGE, "goose"),
 }
 
 #: Adapters held to a measured release written here instead of the lane manifest.
@@ -89,6 +94,8 @@ def _pin(package: str) -> str:
     """
     if package == PI_ACP_PACKAGE:
         return f"{pinned_version(PI_ACP_PACKAGE)} (pi {pinned_version(PI_PACKAGE)})"
+    if package == GOOSE_PACKAGE:
+        return GOOSE_PIN["version"]
     return MEASURED_NOT_INSTALLED.get(package) or pinned_version(package)
 
 
@@ -254,7 +261,7 @@ def _release(version: str) -> tuple[int, ...] | None:
 #: name the kiro-cli they ran under are held to the kiro-cli floor too.
 #:
 #: A KAS capture marked ``route: kas-bundle`` ran Crew's own pinned engine, so it is
-#: held to ``KAS_PIN_VERSION`` (``_KAS_BUNDLE_ROUTE``). Every other KAS capture ran
+#: held to ``KAS_PIN_ENGINE_RELEASE`` (``_KAS_BUNDLE_ROUTE``). Every other KAS capture ran
 #: through kiro-cli's relay, which runs the engine kiro-cli ships rather than the
 #: pin, so a pin bump cannot move it; it is held to ``_KAS_RELAY_ENGINE_FLOOR``,
 #: which rises only by re-capturing on a newer kiro-cli.
@@ -270,7 +277,7 @@ FIXTURE_FLOORS: dict[str, dict[str, str]] = {
 def _floor_for(directory: str, meta: dict, header: str, floor: str) -> str:
     """*floor*, or the bundle pin for a KAS capture made off Crew's own engine."""
     if directory == "kas" and header == "agent_version" and meta.get("route") == _KAS_BUNDLE_ROUTE:
-        return KAS_PIN_VERSION
+        return KAS_PIN_ENGINE_RELEASE
     return floor
 
 
@@ -372,7 +379,7 @@ def test_the_floor_reds_on_each_drift(version, allowed, expected) -> None:
 def test_a_kas_capture_under_an_old_kiro_cli_reds(tmp_path) -> None:
     """A KAS header's ``kiro_cli_version`` is held to the kiro-cli floor, not only the engine."""
     (tmp_path / "kas").mkdir()
-    meta = {"backend": "kas", "recorded": "live", "agent_version": KAS_PIN_VERSION}
+    meta = {"backend": "kas", "recorded": "live", "agent_version": KAS_PIN_ENGINE_RELEASE}
     (tmp_path / "kas" / "a-live.jsonl").write_text(
         json.dumps({"_meta": dict(meta, kiro_cli_version="2.20.0")}) + "\n"
     )
@@ -384,7 +391,7 @@ def test_a_kas_capture_under_an_old_kiro_cli_reds(tmp_path) -> None:
 @pytest.mark.parametrize(
     ("route", "version", "floor"),
     [
-        (_KAS_BUNDLE_ROUTE, "0.66.33", KAS_PIN_VERSION),
+        (_KAS_BUNDLE_ROUTE, "0.66.33", KAS_PIN_ENGINE_RELEASE),
         (None, "0.66.32", _KAS_RELAY_ENGINE_FLOOR),
     ],
     ids=["bundle-held-to-pin", "relay-held-to-relay-floor"],
@@ -449,7 +456,7 @@ def test_a_capture_on_the_next_kiro_cli_major_reds(tmp_path) -> None:
 
 def test_the_relay_floor_never_passes_the_pin() -> None:
     """The relay floor is a floor for engines older than the pin, never above it."""
-    assert _release(_KAS_RELAY_ENGINE_FLOOR) <= _release(KAS_PIN_VERSION)
+    assert _release(_KAS_RELAY_ENGINE_FLOOR) <= _release(KAS_PIN_ENGINE_RELEASE)
 
 
 def test_another_adapters_capture_in_copilot_reds(monkeypatch, tmp_path) -> None:
@@ -657,7 +664,7 @@ def test_a_new_stale_synthesized_fixture_reds(tmp_path) -> None:
 
 def test_a_kas_note_is_held_on_both_headers(tmp_path) -> None:
     """A KAS note naming an old kiro-cli reds on that header even with a current engine."""
-    note = f"KAS {KAS_PIN_VERSION} under kiro-cli 2.20.0"
+    note = f"KAS {KAS_PIN_ENGINE_RELEASE} under kiro-cli 2.20.0"
     _write_synthesized(tmp_path, "kas", "a.jsonl", agent_version="unmeasured", note=note)
     problems = synthesized_behind(_synthesized_versions(tmp_path), {})
     assert [p.split(" ", 1)[0] for p in problems] == ["kas/a.jsonl:kiro_cli_version"]

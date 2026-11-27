@@ -25,6 +25,7 @@ from kiro_crew.dashboard.chat_delivery import (
     queue_for_next_turn,
     quote_meta,
 )
+from kiro_crew.dashboard.chat_paste_meta import paste_meta
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
@@ -264,6 +265,27 @@ def row_already_written(slot: Any, item: dict) -> bool:
     if not isinstance(content, str):
         return False
     return _present_row(slot, item) is not None or _restored_row(slot, item, content) is not None
+
+
+def written_queue_ids(slot: Any) -> set[str]:
+    """The ids of the waiting sends whose user row is already in the transcript
+    (:func:`row_already_written`): entries the queue's cancel and edit refuse."""
+    return {
+        item["id"]
+        for item in getattr(slot, "_queue", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), str)
+        and row_already_written(slot, item)
+    }
+
+
+def mark_written_on_push(slot: Any, queue_id: str, push: dict) -> None:
+    """Set ``meta.written`` on a ``queue_push`` frame whose entry already has its
+    user row (:func:`row_already_written`), the mark the slot-detail listing sets,
+    so a card drawn from the frame offers neither edit nor cancel."""
+    entry = next((i for i in getattr(slot, "_queue", []) if i.get("id") == queue_id), None)
+    if entry is not None and row_already_written(slot, entry):
+        push.setdefault("meta", {})["written"] = True
 
 
 def dequeue_waiting_run(slot: Any) -> tuple[str, list[dict]] | None:
@@ -535,6 +557,7 @@ async def accept(
         banner=str((meta or {}).get(CHAT_BANNER_META_KEY) or ""),
         queued_work=queued_admission,
         knowledge=knowledge_meta(meta),
+        pastes=paste_meta(meta, message),
     )
     entry = next(item for item in slot._queue if item["id"] == qid)
     entry[RESPONSIVE_KEY] = True

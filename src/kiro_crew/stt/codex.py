@@ -284,13 +284,15 @@ class StreamingSession:
             await self.close()
             raise
         except Exception as exc:
-            error = (
-                exc
-                if isinstance(exc, CodexError)
-                else CodexError(
-                    CODE_UNAVAILABLE, "This Codex build or account cannot start voice dictation."
-                )
-            )
+            if isinstance(exc, CodexError):
+                error = exc
+            else:
+                # Not a Codex answer: a local fault (the media stack, the peer, a
+                # malformed reply) that a retry can clear. The type is logged, and the
+                # detail goes to debug only, because it can carry the reply's text.
+                logger.warning("codex dictation did not start: %s", type(exc).__name__)
+                logger.debug("codex dictation start failure detail", exc_info=True)
+                error = CodexError(CODE_FAILED, "The Codex dictation connection failed.")
             self.failure = error
             await self.close()
             return str(error)

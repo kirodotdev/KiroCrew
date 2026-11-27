@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
 
 import pytest
 
@@ -74,11 +75,14 @@ def test_atomic_write_secret_locks_down_before_any_content_byte(tmp_path, monkey
     from kiro_crew import platform_compat
 
     events = []
+    test_thread = threading.get_ident()
     real_restrict = platform_compat.restrict_to_owner
     real_os_write = os.write
 
     def _spy(path):
-        events.append("restrict")
+        # This thread only: the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            events.append("restrict")
         return real_restrict(path)
 
     def _tracking_write(fd, data):

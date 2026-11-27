@@ -1650,6 +1650,47 @@ class TestOneProcess:
         assert report.removed == []
         assert "scout" in KiroCrewConfig.load().agents
 
+    def test_a_lock_error_that_is_not_contention_is_raised_not_retried(
+        self, old_style_config, bindings_dir, log, monkeypatch
+    ):
+        # Only a lock that is HELD is waited on again. A filesystem with no
+        # lock service answers at once with a real errno, so waiting for the
+        # "holder" would spin with no sleep and log a line per turn. The pass
+        # raises that error instead (the gateway logs it once and settles its
+        # barrier), deletes nothing and writes no marker, so the next boot
+        # tries again. The stand-in fails the sixth call so a retry loop ends
+        # the test without a clock.
+        import errno
+
+        calls = []
+
+        def _no_lock_service(*_args, **_kwargs):
+            calls.append(1)
+            if len(calls) > 5:
+                raise AssertionError("lock error retried")
+            raise OSError(errno.ENOLCK, "No locks available")
+
+        monkeypatch.setattr(mig, "file_lock", _no_lock_service)
+        with pytest.raises(OSError) as raised:
+            _run(old_style_config, log)
+        assert raised.value.errno == errno.ENOLCK
+        assert len(calls) == 1
+        assert not mig.marker_path().exists()
+        assert "scout" in KiroCrewConfig.load().agents
+
+    def test_a_held_lock_still_ends_the_wait_with_an_error_that_has_no_errno(self):
+        # What the pass keys on to tell contention from a real lock error: the
+        # timeout `file_lock` raises for a held lock carries no errno.
+        from kiro_crew.platform_compat import file_lock, open_lock_file
+
+        mig.lock_path().parent.mkdir(parents=True, exist_ok=True)
+        with open_lock_file(mig.lock_path()) as holder, file_lock(holder, exclusive=True):
+            with open_lock_file(mig.lock_path()) as waiter:
+                with pytest.raises(OSError) as raised:
+                    with file_lock(waiter, exclusive=True, timeout=0):
+                        pass
+        assert raised.value.errno is None
+
     def test_the_marker_is_created_exclusively(self, bindings_dir):
         mig._write_marker(mig.PruneReport(kept=["radar"]))
         with pytest.raises(FileExistsError):

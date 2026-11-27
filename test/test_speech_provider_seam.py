@@ -398,6 +398,56 @@ class TestBootRefreshesThePreBootConfig:
         load.assert_not_called()
 
 
+class TestLanguageRowWaitsForTheEdition:
+    """``stt.language_code: en-US`` is stale only where the provider that runs is local.
+
+    With no ``stt.provider`` stored, the edition default decides that provider, and
+    the CLI loads config once before boot installs the edition. That load must not
+    judge the row against the built-in default, or it warns about a value that
+    ``kirocrew config defaults`` (run after boot) then says is fine.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path, _floor_monkeypatch):
+        from kiro_crew.config import loader as L
+
+        mp = _floor_monkeypatch
+        mp.setattr(L, "config_path", lambda: tmp_path / "config.json")
+        mp.setattr(L, "config_dir", lambda: tmp_path)
+        mp.setattr(L, "config_local_path", lambda: tmp_path / "config.local.json")
+        mp.setattr("kiro_crew.platform.discovery.plugin_entry_points", lambda: [object()])
+        (tmp_path / "config.json").write_text(json.dumps({"stt": {"language_code": "en-US"}}))
+        L._REPORTED_SUPERSEDED_KEYS.clear()
+        yield
+        L._REPORTED_SUPERSEDED_KEYS.clear()
+
+    @staticmethod
+    def _stale_lines(caplog) -> list[str]:
+        return [r.getMessage() for r in caplog.records if "superseded default" in r.getMessage()]
+
+    def test_an_edition_default_provider_is_never_warned_about(self, monkeypatch, caplog) -> None:
+        from kiro_crew.config.superseded_defaults import superseded_default_drift
+
+        with caplog.at_level(logging.WARNING):
+            cfg = KiroCrewConfig.load()
+            _boot_with(monkeypatch, _Registry(stt=("acme",), default_stt="acme"), cfg)
+        assert cfg.stt.provider == "acme"
+        assert self._stale_lines(caplog) == []
+        # The same answer ``kirocrew config defaults`` gives after boot.
+        assert superseded_default_drift({"stt": {"language_code": "en-US"}}, acked={}) == []
+
+    def test_a_local_default_is_still_warned_about_once_at_boot(self, monkeypatch, caplog) -> None:
+        with caplog.at_level(logging.WARNING):
+            cfg = KiroCrewConfig.load()
+            assert self._stale_lines(caplog) == []
+            # Boot itself reports it: a CLI command may never load config again.
+            _boot_with(monkeypatch, _Registry(), cfg)
+            lines = self._stale_lines(caplog)
+            assert len(lines) == 1 and "stt.language_code" in lines[0]
+            KiroCrewConfig.load()
+        assert len(self._stale_lines(caplog)) == 1
+
+
 def test_the_dashboard_has_no_sentence_for_the_unavailable_code() -> None:
     """So it renders the backend ``detail`` instead of a canned Off sentence."""
     from kiro_crew import transcribe

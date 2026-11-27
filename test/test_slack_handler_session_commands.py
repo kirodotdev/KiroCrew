@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 from slack_handler_helpers import _clean_approval_state  # noqa: F401
-from slack_handler_helpers import FakeProvider, FakeSessionManager
+from slack_handler_helpers import FakeProvider, FakeSessionManager, hide_slack_timing_footer
 
 from conftest import MockSlackClient
 from kiro_crew.messaging import auto_title
@@ -537,7 +537,7 @@ class TestCompactCommand:
 
         texts = self._posted_texts(slack)
         assert any("Compacting" in t for t in texts)
-        assert "Context compacted." in texts
+        assert any("✅" in t for t in texts)
 
     @pytest.mark.asyncio
     async def test_bare_compact_does_not_trigger(self):
@@ -549,7 +549,7 @@ class TestCompactCommand:
         await handle_message(slack, sessions, "C1", "compact", "thread1", "msg1", "U_OWNER")
 
         texts = self._posted_texts(slack)
-        # The compact command posts "Compacting context…" — bare word must not.
+        # The compact command posts "🔄 Compacting context…" — bare word must not.
         assert not any("Compacting context" in t for t in texts)
 
     @pytest.mark.asyncio
@@ -596,7 +596,7 @@ class TestCompactCommand:
         await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
 
         texts = self._posted_texts(slack)
-        assert "Context compacted." in texts
+        assert any("✅" in t for t in texts)
 
     @pytest.mark.asyncio
     async def test_compact_failed_reports_error(self):
@@ -611,7 +611,7 @@ class TestCompactCommand:
         await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
 
         texts = self._posted_texts(slack)
-        assert any(t.startswith("Error:") and "out of memory" in t for t in texts)
+        assert any("❌" in t and "out of memory" in t for t in texts)
 
     @pytest.mark.asyncio
     async def test_compact_with_summary_keeps_internal_body_private(self):
@@ -732,6 +732,20 @@ class TestCompactCommand:
         assert footer["blocks"][0]["type"] == "context"
         assert "Finished in" in footer["text"]
         assert "ctx" not in footer["text"], "Footer must NOT include stale ctx% after compact"
+
+    @pytest.mark.asyncio
+    async def test_compact_posts_no_footer_when_the_timing_footer_is_hidden(
+        self, monkeypatch, tmp_path
+    ):
+        hide_slack_timing_footer(monkeypatch, tmp_path)
+        provider = self._make_provider_with_compact()
+        sessions = self._make_sessions_with_active(provider)
+        slack = MockSlackClient()
+
+        await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
+
+        assert "Context compacted" in " ".join(self._posted_texts(slack))
+        assert [a for a in slack.actions if a[0] == "blocks"] == [], "no footer may post"
 
     @pytest.mark.asyncio
     async def test_compact_timeout_reports_gracefully(self):

@@ -36,10 +36,18 @@ _STOP_ALIASES = frozenset(("!stop", "!cancel", "/stop", "/cancel"))
 # "!session link to a certain session") resolves here too instead of being sent
 # to the model.
 _SESSIONS_ALIASES = frozenset(("!sessions", "/sessions", "!session", "/session"))
+# ``!bots`` (plural) is a typo-safe alias for the same reason.
+_BOT_ALIASES = frozenset(("!bot", "/bot", "!bots", "/bots"))
 # ``!models`` (plural) is a typo-safe alias for the same reason.
 _MODEL_ALIASES = frozenset(("!model", "/model", "!models", "/models"))
 _STATUS_ALIASES = frozenset(("!status", "/status"))
-_AGENT_ALIASES = frozenset(("!agent", "/agent"))
+# ``!agents`` (plural) is a typo-safe alias for the same reason.
+_AGENT_ALIASES = frozenset(("!agent", "/agent", "!agents", "/agents"))
+# Privacy modifiers, Slack's ``!temporary`` / ``!incognito`` with the same modes
+# (``messaging/privacy_mode.py``). Read as a leading token, as Telegram reads its
+# ``/temporary``: ``!temporary <msg>`` marks the conversation and answers <msg>.
+_TEMPORARY_ALIASES = frozenset(("!temporary", "/temporary"))
+_INCOGNITO_ALIASES = frozenset(("!incognito", "/incognito"))
 
 _PREFIXES = ("!", "/")
 
@@ -53,11 +61,14 @@ def parse_command_argument(text: str) -> str:
 def parse_command(text: str) -> str | None:
     """Return the command name for *text*, or None when it is not a command.
 
-    One of 'new', 'compact', 'model', 'agent', 'status', 'sessions',
-    'link', 'unlink', 'stop', 'help'.
+    One of 'new', 'compact', 'model', 'agent', 'temporary', 'incognito',
+    'status', 'sessions', 'bot', 'link', 'unlink', 'stop', 'help'.
     """
     stripped = text.strip()
-    cmd = stripped.split()[0].lower() if stripped.startswith(_PREFIXES) and stripped.split() else ""
+    if not stripped.startswith(_PREFIXES):
+        return None
+    # Prefix-led after a strip, so the first token always exists.
+    cmd = stripped.split()[0].lower()
     if cmd in _NEW_ALIASES:
         return "new"
     if cmd in _COMPACT_ALIASES:
@@ -68,10 +79,16 @@ def parse_command(text: str) -> str | None:
         return "unlink"
     if cmd in _SESSIONS_ALIASES:
         return "sessions"
+    if cmd in _BOT_ALIASES:
+        return "bot"
     if cmd in _MODEL_ALIASES:
         return "model"
     if cmd in _AGENT_ALIASES:
         return "agent"
+    if cmd in _TEMPORARY_ALIASES:
+        return "temporary"
+    if cmd in _INCOGNITO_ALIASES:
+        return "incognito"
     if cmd in _STATUS_ALIASES:
         return "status"
     if cmd in _HELP_ALIASES:
@@ -133,8 +150,11 @@ COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("compact", "Compress the context when it gets long"),
     ("model", "Choose the model from a list"),
     ("agent", "Show the agent, or switch it by name"),
+    ("temporary", "This conversation reads and saves no memory"),
+    ("incognito", "This conversation may read memory but saves nothing"),
     ("status", "Show gateway runtime stats and the approval mode"),
     ("sessions", "Continue a recent or matching session here (owner only)"),
+    ("bot", "Talk to one of your Bots here, in its own thread (owner only)"),
     ("link", "Resume mirroring dashboard replies here (on by default)"),
     ("unlink", "Stop mirroring dashboard replies here"),
     ("stop", "Stop the current reply and clear the queue"),
@@ -161,13 +181,28 @@ _APP_COMMAND_CONTEXTS = (_APP_CONTEXT_GUILD, _APP_CONTEXT_BOT_DM)
 #: ``value`` is what comes back in ``DiscordInteraction.options``, so it has to
 #: be a token the ``!`` text handlers already accept: the slash and text paths
 #: share one parser.
+#:
+#: ``autocomplete`` makes Discord ask for matches as the user types (an
+#: interaction of type 4, answered in ``transport_dispatch_interactions``). It
+#: suggests; it does not restrict, so a typed value still reaches the same
+#: handler and is checked there.
 _COMMAND_OPTIONS: dict[str, tuple[dict[str, Any], ...]] = {
+    "model": (
+        {
+            "type": _APP_OPTION_STRING,
+            "name": "name",
+            "description": "The model to switch to; leave empty for the list",
+            "required": False,
+            "autocomplete": True,
+        },
+    ),
     "agent": (
         {
             "type": _APP_OPTION_STRING,
             "name": "name",
             "description": "The agent to switch to, or default",
             "required": False,
+            "autocomplete": True,
         },
     ),
     "sessions": (
@@ -176,6 +211,16 @@ _COMMAND_OPTIONS: dict[str, tuple[dict[str, Any], ...]] = {
             "name": "query",
             "description": "Match a session by title or slot name",
             "required": False,
+            "autocomplete": True,
+        },
+    ),
+    "bot": (
+        {
+            "type": _APP_OPTION_STRING,
+            "name": "name",
+            "description": "Match a Bot by its name",
+            "required": False,
+            "autocomplete": True,
         },
     ),
 }
@@ -221,8 +266,11 @@ def application_command_payload() -> list[dict[str, Any]]:
     return rows
 
 
-_HELP_HEADER = "**Kiro Crew — Discord**"
+_HELP_HEADER = "🦞 **Kiro Crew — Discord**"
 _HELP_FOOTER = (
+    "`!temporary <msg>` / `!incognito <msg>` — make this conversation private, "
+    "then answer <msg>\n"
+    "\n"
     "While a reply is running, prefix a message to control it:\n"
     "`!queue <msg>` — answer it after the current turn\n"
     "`!steer <msg>` — fold it into the running turn now\n"
@@ -296,6 +344,6 @@ def unknown_command_usage(text: str) -> str:
     # Echoing the token back is safe because the shape check above admits only
     # ``[a-z0-9_-]``, so it carries no backtick, mention or credential syntax.
     return (
-        f"`{token}` isn't a command. To chat, send the message without the "
+        f"❓ `{token}` isn't a command. To chat, send the message without the "
         f"leading `!`.\n\n{build_help_text()}"
     )

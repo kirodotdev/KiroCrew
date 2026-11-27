@@ -161,7 +161,7 @@ def test_a_prune_evicts_the_oldest_pickers_past_the_retention_cap() -> None:
 async def test_auto_with_nothing_live_applies_to_the_next_message() -> None:
     host = _host(_Sessions(live=False))
     outcome = await DiscordDispatcher._apply_model(host, "user:u1", "k", "")
-    assert outcome == "Model set to Auto — it applies to your next message."
+    assert outcome == "✅ Model set to Auto — it applies to your next message."
     assert host._model_pref == {"user:u1": ""}
 
 
@@ -177,7 +177,7 @@ async def test_auto_on_a_live_session_waits_for_the_next_conversation() -> None:
 async def test_a_model_with_nothing_live_applies_to_the_next_message() -> None:
     host = _host(_Sessions(live=False))
     outcome = await DiscordDispatcher._apply_model(host, "user:u1", "k", "m-1")
-    assert outcome == "Model set to m-1 — it applies to your next message."
+    assert outcome == "✅ Model set to m-1 — it applies to your next message."
     assert host._model_pref == {"user:u1": "m-1"}
 
 
@@ -202,7 +202,7 @@ async def test_a_failed_switch_says_so_keeps_the_preference_and_releases() -> No
     client = _Client(error=RuntimeError("refused"))
     host = _host(_Sessions(SimpleNamespace(client=client), live=True))
     outcome = await DiscordDispatcher._apply_model(host, "user:u1", "k", "m-1")
-    assert outcome.startswith("Warning: Couldn't switch this conversation to m-1 (RuntimeError)")
+    assert outcome.startswith("⚠️ Couldn't switch this conversation to m-1 (RuntimeError)")
     assert host._model_pref == {"user:u1": "m-1"}
     assert host.sessions.released == ["k"]
 
@@ -212,6 +212,6 @@ async def test_a_live_switch_reaches_the_session_and_releases_it() -> None:
     client = _Client()
     host = _host(_Sessions(SimpleNamespace(client=client), live=True))
     outcome = await DiscordDispatcher._apply_model(host, "user:u1", "k", "m-1")
-    assert outcome == "Now using m-1."
+    assert outcome == "✅ Now using m-1."
     assert client.models == ["m-1"]
     assert host.sessions.released == ["k"]

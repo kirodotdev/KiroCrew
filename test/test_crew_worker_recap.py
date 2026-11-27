@@ -306,13 +306,19 @@ def test_the_session_folds_give_last_turn_pending_approvals_and_open_questions(m
             ]
         },
     }
+    calls: list[str] = []
+
+    def one_pass(unit):
+        calls.append(unit)
+        return SimpleNamespace(
+            projection=lambda name: Projection(name=name, seq=1, value=values[name])
+        )
+
     monkeypatch.setattr(crew_log_emit, "enabled", lambda: True)
-    monkeypatch.setattr(
-        projection_session_memo,
-        "read_projection",
-        lambda unit, name: Projection(name=name, seq=1, value=values[name]),
-    )
+    monkeypatch.setattr(projection_session_memo, "fold_session_warm", one_pass)
     out = r._session_folds("unit-1")
+    # All three folds come from ONE warm pass.
+    assert calls == ["unit-1"]
     assert out["last_turn"].startswith("2023-11-14T22:13:20")
     assert out["approvals_count"] == 1 and out["approvals"][0]["tool"] == "Shell"
     assert out["questions"] == 2

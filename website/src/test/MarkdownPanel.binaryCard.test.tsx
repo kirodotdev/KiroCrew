@@ -16,6 +16,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { createTestStore } from './helpers'
 import MarkdownPanel from '../components/MarkdownPanel'
+import type { PartialCause } from '../utils/fileReadQuery'
 
 // Pierre owns a virtualizer and a worker pool — neither is the subject here, and
 // a stub makes "did the editor render at all" a direct assertion.
@@ -34,6 +35,7 @@ function renderPanel(props: {
   filePath: string
   content: string
   binary?: boolean
+  partial?: PartialCause | false
   onDiskContent?: (c: string, binary?: boolean) => void
 }) {
   const store = createTestStore()
@@ -48,6 +50,7 @@ function renderPanel(props: {
             filePath={panelProps.filePath}
             content={panelProps.content}
             binary={panelProps.binary}
+            partial={panelProps.partial}
             onDiskContent={panelProps.onDiskContent}
             onContentChange={vi.fn()}
             onSave={vi.fn()}
@@ -97,6 +100,12 @@ describe('MarkdownPanel binary gate', () => {
     // real bytes from the path.
     renderPanel({ filePath: '/home/user/data/cache.json', content: '', binary: true })
     expect(screen.getByTestId('binary-file-card')).toBeInTheDocument()
+  })
+
+  it('shows no partial-preview notice while the card replaces the preview', () => {
+    renderPanel({ filePath: '/home/user/data/cache.json', content: '', binary: true, partial: 'truncated' })
+    expect(screen.getByTestId('binary-file-card')).toBeInTheDocument()
+    expect(screen.queryByTestId('markdown-panel-partial-notice')).toBeNull()
   })
 
   it('leaves a byte-backed viewer alone — an image is binary and renders fine', () => {

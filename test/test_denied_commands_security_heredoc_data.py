@@ -1,0 +1,152 @@
+"""Tests that a heredoc body nothing runs is data to the self-subcommand floors.
+
+``cat``, ``tee`` and a bare ``python -`` with no way to shell out only store or print
+their body, so a cloud command written in it is a mention. A body a shell or
+an interpreter runs, or one the outer shell expands, is still read as commands.
+"""
+
+from __future__ import annotations
+
+import pytest
+from denied_commands_security_helpers import _NAME
+
+from kiro_crew import security
+from kiro_crew.security import is_denied
+
+# Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
+# back after, as every test of the test_denied_commands_security family does (see conftest.py).
+pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
+
+_CLOUD = f"{_NAME} cloud launch --no-login"
+_RULE = "self-protection-cloud"
+
+
+def _floor(cmd: str) -> "str | None":
+    """The floor id that refused *cmd*, or None when it is allowed."""
+    verdict = is_denied(cmd)
+    if verdict is None:
+        return None
+    return verdict.splitlines()[0].removeprefix(security.DENY_REASON_PREFIX)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # The issue's repro: Python writes the text into a Markdown file.
+        "python3 - <<'EOF'\nfrom pathlib import Path\n"
+        f'Path("note.md").write_text("Pass `{_CLOUD}` to skip the sign-in.\\n")\nEOF',
+        f"python3 <<'EOF'\nprint('{_CLOUD}')\nEOF",
+        f"cat > note.md <<'EOF'\nRun `{_CLOUD}` first.\n{_CLOUD}\nEOF",
+        f"cat <<EOF > note.md\n{_CLOUD}\nEOF",
+        f"tee -a note.md <<'EOF'\n{_CLOUD}\nEOF",
+    ],
+)
+def test_data_heredoc_body_is_allowed(cmd):
+    assert _floor(cmd) is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # A shell or interpreter runs the body.
+        f"bash <<'EOF'\n{_CLOUD}\nEOF",
+        f"sh -s <<'EOF'\necho hi\n{_CLOUD}\nEOF",
+        f"perl <<'EOF'\n`{_CLOUD}`;\nEOF",
+        f"python3 - <<'EOF'\nimport os\nos.system('`{_CLOUD}`')\nEOF",
+        f"python3 - <<'EOF'\nimport subprocess\nsubprocess.run('`{_CLOUD}`', shell=True)\nEOF",
+        f"python3 tool.py <<'EOF'\n{_CLOUD}\nEOF",
+        # The body reaches a shell around the data program.
+        f"cat <<'EOF' | sh\n{_CLOUD}\nEOF",
+        f"bash -c \"$(cat <<'EOF'\n{_CLOUD}\nEOF\n)\"",
+        f"cat > >(bash) <<'EOF'\n{_CLOUD}\nEOF",
+        f"{{ cat <<'EOF'\n{_CLOUD}\nEOF\n}} | bash",
+        # A word that only reads as cat may run a shell, and another command can
+        # rebind the name before cat runs.
+        f"cat=bash; $cat <<'EOF'\n{_CLOUD}\nEOF",
+        f"/tmp/x/cat <<'EOF'\n{_CLOUD}\nEOF",
+        f"hash -p /bin/sh cat; cat <<'EOF'\n{_CLOUD}\nEOF",
+        f"shopt -s expand_aliases\nalias cat=sh\ncat <<'EOF'\n{_CLOUD}\nEOF",
+        f"cat > a.md <<'EOF'\n{_CLOUD}\nEOF\ngit add a.md && git status",
+        # The outer shell expands an unquoted body before cat sees it.
+        f"cat > note.md <<EOF\n$({_CLOUD})\nEOF",
+        f"python3 - <<EOF\nprint('`{_CLOUD}`')\nEOF",
+        # A command after the body is not part of it.
+        f"cat > note.md <<'EOF'\nnotes\nEOF\n{_CLOUD}",
+        f"cat > note.md <<'EOF'\nnotes\\\nEOF\n{_CLOUD}",
+        # A tag bash decodes before matching (ANSI-C, quoted letters, escape) can
+        # close the body at a line the literal reader misses, leaving the next
+        # command to run: the whole text keeps its old read (GPT 6.1 F1).
+        "cat <<$'E\\x4fF'\nnotes\nEOF\nkirocrew cloud launch",
+        'cat <<"E"OF\nnotes\nEOF\nkirocrew cloud launch',
+        "cat <<E\\OF\nnotes\nEOF\nkirocrew cloud launch",
+        # A python body that unpickles or otherwise runs an opaque call is not
+        # proven inert, so it is not blanked (GPT 6.1 F2).
+        "python3 - <<'EOF'\nimport pickle\n"
+        f"pickle.loads(b\"cos\\nsystem\\n(S'`{_CLOUD}`'\\ntR.\")\nEOF",
+        f"python3 - <<'EOF'\ngetattr(__builtins__, 'ev'+'al')('__import__(\"os\")')\n{_CLOUD}\nEOF",
+        # A python body with a floored subcommand token in shell-program position,
+        # beside a non-inert statement, must stay unblanked so the floor sees it.
+        f"python3 - <<'EOF'\nresult = os.popen('x')\n{_CLOUD}\nEOF",
+        f"python3 - <<'EOF'\nprint(__import__('os'))\n{_CLOUD}\nEOF",
+        f"python3 - <<'EOF'\ndef f():\n    pass\n{_CLOUD}\nEOF",
+    ],
+)
+def test_executed_heredoc_body_is_still_refused(cmd):
+    assert _floor(cmd) == _RULE
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "print('hello')",
+        "import os\nx = 1\nprint(x)",
+        'from pathlib import Path\nPath("n").write_text("data")\n',
+        'open("n", "w").write("data")',
+        "y = [1, 2, 3]\nz = {'a': 1}",
+        "print('x' + 'y')",
+    ],
+)
+def test_python_body_is_data_accepts_inert(body):
+    from kiro_crew.security import argv_floor_self as mod
+
+    assert mod._python_body_is_data(body.lower())
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A call on an assignment RHS, a nested call argument, a string holding '('
+        # before a call (no line/bracket heuristic any more).
+        "import os\nresult = os.system('x')",
+        "print(__import__('os').system('x'))",
+        "print('(')\nos.system('x')",
+        'path("n").write_text(f"{os.popen(\'x\').read()}")',
+        "import pickle\npickle.loads(b'...')",
+        "getattr(__builtins__, 'system')('x')",
+        "def f():\n    os.system('x')\nf()",
+        "for i in range(1):\n    os.system('x')",
+        "this is not python",
+        "exec('os.system(\"x\")')",
+        "eval('1')",
+        # A name that shadows an accepted builtin makes a later call run it
+        # (GPT 6.1 F1).
+        "from os import system as print\nprint('x')",
+        "import os as open\nopen('x')",
+        "print = __import__('os').system\nprint('x')",
+        # A tree too deep to classify cheaply keeps the old read (GPT 6.1 F2);
+        # ast.parse raises on this, caught and read as not-data.
+        "x = " + "1 + " * 1100 + "1",
+        # A tuple / attribute / subscript assignment target can rebind an accepted
+        # name or mutate an untracked object.
+        "import os\nprint, unused = os.system, 0\nprint('x')",
+        "import builtins, os\nbuiltins.print = os.system\nprint('x')",
+        "import os\nd = {}\nd['f'] = os.system\nd['f']('x')",
+        # A call hidden in an f-string format spec, and in an annotation, both run.
+        "import os\nprint(f\"{1:{os.system('x')}}\")",
+        "import os\nx: os.system('y') = 1",
+    ],
+)
+def test_python_body_is_data_rejects_executable(body):
+    from kiro_crew.security import argv_floor_self as mod
+
+    assert not mod._python_body_is_data(body.lower())

@@ -237,5 +237,5 @@ class TestGatewayCommandPreflight:
             sealed.chmod(0o700)
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
-        assert f"Error: Cannot persist state: cannot create files in {home}: " in err
+        assert f"❌ Cannot persist state: cannot create files in {home}: " in err
         assert "Traceback" not in err

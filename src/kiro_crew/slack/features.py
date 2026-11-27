@@ -1,7 +1,8 @@
 """Slack Code: whether each Slack Code switch runs, and the code-channel defaults.
 
-The switches are the ones registered in :data:`kiro_crew.slack_manifest.FEATURE_SCOPES`
-(``agent_sessions``, ``code_channels``); everything here is keyed by that name, so registering
+The switches are the ones registered in :data:`kiro_crew.slack_manifest.FEATURES`
+(``agent_sessions``, ``code_channels``, and the manifest-only ``slack_mcp``, which has a
+toggle and nothing to run); everything here is keyed by that name, so registering
 a switch there is all this module needs. Two layers decide whether one runs, and
 both are read here so every caller answers "is it on?" the same way:
 
@@ -150,9 +151,10 @@ def toggle(cfg: Any, feature: str) -> bool:
     """A registered switch's toggle (``slack.<feature>``), capability aside.
 
     An unregistered name, a config without the field, and anything but a real
-    ``True`` all read as off.
+    ``True`` all read as off. ``slack_mcp`` has a toggle and no capability: it is
+    in ``slack_manifest.FEATURES`` and not in ``FEATURE_SCOPES``.
     """
-    if feature not in REQUIRED_SCOPE:
+    if feature not in slack_manifest.FEATURES:
         return False
     return getattr(_slack_section(cfg), feature, False) is True
 

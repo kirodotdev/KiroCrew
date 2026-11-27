@@ -3,8 +3,8 @@ title: Transcript Section Markers — chapter breaks for one-at-a-time work
 status: draft
 author: rnoack
 created: 2026-08-29
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 7033
 implementation-prs: []
 tracking-issues: []

@@ -18,6 +18,7 @@ const { seedRenamedStore } = require("../store-rename");
 const { STORE_FILE_MODE, tightenStoreFileMode } = require("../store-file-mode");
 const { openLocalImage } = require("../app-local-files");
 const { sessionCookieHeader } = require("../mochi-session-token");
+const { linkTokenIsStale } = require("../link-token-age");
 const {
   MOCHI_APP,
   parseMochiEnabled,
@@ -115,11 +116,21 @@ function probeLog(outcome) {
 // `value` is the credential fetchGatewayAuth() found (empty when it found
 // none), and `viaCookie` says HOW it must be delivered — see
 // withGatewayAuth().
+//
+// A minted link token is also re-resolved before the gateway's 300 s window
+// would refuse it (../link-token-age.js): that refusal is a `denied` security
+// event, and its 403 would snap the probe back to its base cadence.
 let cachedGatewayAuth = { value: "" };
+let cachedGatewayAuthAt = 0;
 
 async function gatewayToken() {
-  if (cachedGatewayAuth.value) return cachedGatewayAuth;
+  if (cachedGatewayAuth.value && !linkTokenIsStale(cachedGatewayAuth, cachedGatewayAuthAt, Date.now())) {
+    return cachedGatewayAuth;
+  }
+  // Stamped before the mint, so the measured age never undercounts it.
+  const resolvedAt = Date.now();
   cachedGatewayAuth = (await fetchGatewayAuth()) || { value: "" };
+  cachedGatewayAuthAt = resolvedAt;
   return cachedGatewayAuth;
 }
 
@@ -130,7 +141,7 @@ async function gatewayToken() {
  * A local-secret or SSH-fetched credential is a freshly minted LINK token
  * (local-token.js / remote-token.js): the gateway checks its 5-minute `exp`
  * claim when it arrives as `?token=`, which is fine because gatewayToken()
- * re-resolves on every cache miss (roughly every 5 minutes in steady state).
+ * re-resolves a link token before that window closes (../link-token-age.js).
  * A BORROWED session credential (mochi-session-token.js) is the opposite: it
  * is the value already sitting in the main window's `mc_token_<port>`
  * cookie, whose `exp` claim froze at the moment that window's session was

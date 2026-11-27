@@ -57,13 +57,18 @@ class CodeChannelApiError(CodeChannelError):
     cannot be used on this install -- see :data:`UNAVAILABLE_ERRORS`.
     ``maybe_applied`` is True when a write may have landed even though no
     success was observed (a transport failure after the request left), so a
-    caller must reconcile instead of retrying blindly.
+    caller must reconcile instead of retrying blindly. ``retry_after`` is the
+    seconds a rate limit's ``Retry-After`` asked for (``0.0``: none), so a caller
+    that backs off does not retry inside Slack's cooldown.
     """
 
-    def __init__(self, method: str, code: str, *, maybe_applied: bool = False) -> None:
+    def __init__(
+        self, method: str, code: str, *, maybe_applied: bool = False, retry_after: float = 0.0
+    ) -> None:
         self.method = method
         self.code = code or "unknown_error"
         self.maybe_applied = maybe_applied
+        self.retry_after = retry_after
         super().__init__(f"{method} failed: {self.code}")
 
     @property
@@ -143,3 +148,6 @@ class ChannelInfo:
     #: Whether Slack reports the channel archived (``is_archived``); ``None`` when
     #: the answer did not carry it.
     archived: bool | None = None
+    #: Whether the conversation is a multi-person DM (``is_mpim``); ``None`` when the
+    #: answer did not carry it. Its id can start with ``G`` or ``C`` like a channel's.
+    mpim: bool | None = None

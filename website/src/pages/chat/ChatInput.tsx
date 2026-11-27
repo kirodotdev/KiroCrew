@@ -176,7 +176,7 @@ export async function interceptSlashCommand(
       await performAgentSlotSwitch(slot, agent, dispatch, 'template', { announce: true })
     } catch (e: unknown) {
       // The caller reports it on the composer's notice, above the kept draft.
-      const message = agentSwitchFailureMessage(e)
+      const message = agentSwitchFailureMessage(e, agent)
       return { intercepted: true, failed: true, error: message, stage: 'agent' }
     }
     return { intercepted: true }

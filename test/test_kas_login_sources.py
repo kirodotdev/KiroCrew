@@ -18,6 +18,7 @@ from kiro_crew.testing.wait import await_until
 
 _ARN = "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABCDEFGHIJKL"
 _EMAIL = "person@example.com"
+_TEAMMATE = "teammate"
 
 
 class _FakeState:
@@ -25,11 +26,11 @@ class _FakeState:
 
 
 class _FakeRequest:
-    def __init__(self, *, owner: bool = True, app: dict | None = None):
+    def __init__(self, *, user: str = "local-app", app_id: str = "", app: dict | None = None):
         self.app = app if app is not None else {}
         self.app.setdefault("state", _FakeState())
         self.path = "/api/kas-login/sources"
-        self._items = {"app": "", "user": "local-app" if owner else "someone-else"}
+        self._items = {"app": app_id, "user": user}
 
     def __getitem__(self, key):
         return self._items[key]
@@ -55,6 +56,10 @@ def world_fixture(monkeypatch: pytest.MonkeyPatch):
         "whoami": {},
         "whoami_calls": 0,
         "gate": None,
+        "kiro_cli_harness": False,
+        "api_key": False,
+        "cli_signed_out": True,
+        "cli_store_relocated": False,
     }
 
     async def whoami():
@@ -72,11 +77,28 @@ def world_fixture(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sign_in, "stored_sign_ins", lambda: state["stored"])
     monkeypatch.setattr(kas_bundle, "relay_runs_on_kiro_cli_sign_in", lambda: state["relay"])
     monkeypatch.setattr(
+        kas_bundle, "kiro_cli_identity_store_is_relocated", lambda: state["cli_store_relocated"]
+    )
+    monkeypatch.setattr(sources, "main_harness_is_kiro_cli", lambda: state["kiro_cli_harness"])
+    from kiro_crew.acp import kas_route
+
+    # kiro-cli's own login beyond its store, as the Kiro CLI harness reads it.
+    monkeypatch.setattr(kas_route, "kiro_cli_api_key_set", lambda environ: state["api_key"])
+    monkeypatch.setattr(kas_route, "kiro_cli_signed_out", lambda **_: state["cli_signed_out"])
+    monkeypatch.setattr(
         kiro_vault_identity,
         "vault_identity_snapshot_sync",
         lambda: ("fingerprint", state["crew_fields"]),
     )
     monkeypatch.setattr(sources, "_whoami", whoami)
+    from kiro_crew.shared_crew import teammate_access
+
+    # A Shared Crew teammate with owner rights is the caller named "teammate".
+    monkeypatch.setattr(
+        teammate_access,
+        "teammate_passes_owner_gate",
+        lambda request: request.get("app") == "" and request.get("user") == _TEAMMATE,
+    )
     from kiro_crew.platform import enterprise_policy_fetch as epf
 
     # The account lock pins nothing unless a test sets "pin"; never the real stores.
@@ -109,6 +131,8 @@ async def test_nothing_stored(world) -> None:
         "name_unreadable": False,
         "same_account": None,
         "can_use_kiro_cli": False,
+        "kiro_cli_harness": False,
+        "relay_runs_on_kiro_cli": False,
     }
     assert world["whoami_calls"] == 0
 
@@ -214,10 +238,11 @@ async def test_two_different_accounts_offer_the_kiro_cli_one(world) -> None:
 @pytest.mark.asyncio
 async def test_only_the_owner_is_offered_the_kiro_cli_account(world) -> None:
     # The switch runs the card's sign-out, which answers anyone else with 403.
+    # A teammate passes the route gate but is not the machine owner.
     world["stored"] = sign_in.StoredSignIns(
         _stored("builder_id"), True, _stored("aws", arn=_ARN), True
     )
-    body = await _get_named(_FakeRequest(owner=False))
+    body = await _get_named(_FakeRequest(user=_TEAMMATE))
     assert body["active"] == "kiro_crew"
     assert body["can_use_kiro_cli"] is False
 
@@ -483,6 +508,8 @@ async def test_the_payload_carries_only_the_named_fields(world) -> None:
         "name_unreadable",
         "same_account",
         "can_use_kiro_cli",
+        "kiro_cli_harness",
+        "relay_runs_on_kiro_cli",
     }
     assert set(body["kiro_crew"]) == {"stored", "account_type", "portal_host"}
     assert set(body["kiro_cli"]) == {"stored", "usable", "account_type", "portal_host", "email"}
@@ -498,7 +525,7 @@ async def test_the_email_goes_to_the_owner_only_and_into_no_log(world, caplog) -
     app: dict = {}
     with caplog.at_level("DEBUG"):
         owner = await _get_named(_FakeRequest(app=app))
-        other = await _get(_FakeRequest(owner=False, app=app))
+        other = await _get(_FakeRequest(user=_TEAMMATE, app=app))
     assert owner["kiro_cli"]["email"] == _EMAIL
     assert other["kiro_cli"] == {"stored": True, "usable": True, "account_type": "BuilderId"}
     assert _EMAIL not in caplog.text
@@ -593,7 +620,313 @@ def test_the_store_read_asks_only_what_the_stores_call_for(
         "vault_identity_snapshot_sync",
         lambda: ("fingerprint", {"account_type": "BuilderId"}),
     )
-    found, crew_fields, relay = sources._read_stores()
+    monkeypatch.setattr(sources, "main_harness_is_kiro_cli", lambda: False)
+    found, crew_fields, relay, harness_active, cli_name_allowed = sources._read_stores()
+    assert harness_active is None
+    assert cli_name_allowed is True
     assert found is stored
     assert (asked == ["relay"], relay) == (relay_asked, relay_asked)
     assert crew_fields == ({"account_type": "BuilderId"} if named else {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user", "app_id"),
+    [
+        ("someone-else", ""),  # an authenticated subject that is not a teammate
+        ("local-app", "some-app"),  # an app iframe or internal caller
+        (_TEAMMATE, "some-app"),
+    ],
+)
+async def test_a_caller_without_owner_rights_is_refused_before_any_read(
+    world, monkeypatch, user: str, app_id: str
+) -> None:
+    from kiro_crew.dashboard.handlers import kas_login
+
+    audited: list[tuple[str, str]] = []
+
+    async def audit(_request, operation, outcome, error=""):
+        audited.append((operation, outcome))
+
+    monkeypatch.setattr(kas_login, "_audit", audit)
+    world["stored"] = sign_in.StoredSignIns(
+        _stored("builder_id"), True, _stored("aws", arn=_ARN), True
+    )
+    world["whoami"] = {"account_type": "BuilderId", "email": _EMAIL}
+    app: dict = {}
+    response = await sources.api_kas_login_sources(_FakeRequest(user=user, app_id=app_id, app=app))
+    assert response.status == 403
+    assert json.loads(response.text)["code"] == "owner_only"
+    assert sources._NAME_CACHE_KEY not in app
+    assert world["whoami_calls"] == 0
+    assert audited == [("kas_login_sources", "denied")]
+
+
+@pytest.fixture(name="harness_home")
+def harness_home_fixture(tmp_path, monkeypatch):
+    """A real ``config.json`` the loader reads, with Kiro CLI and KAS both selectable."""
+    from kiro_crew.agent_sdk import backends
+    from kiro_crew.config import loader
+
+    monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(loader, "config_path", lambda: tmp_path / "config.json")
+    monkeypatch.setattr(
+        backends, "_selectable", {backends.ACP_BACKEND_KIRO, backends.ACP_BACKEND_KAS}
+    )
+    monkeypatch.setattr(backends, "_host_unservable", {})
+
+    def store(acp_backend: str) -> None:
+        (tmp_path / "config.json").write_text(
+            json.dumps({"agent": {"acp_backend": acp_backend}}), encoding="utf-8"
+        )
+        loader._invalidate_config_cache()
+
+    yield store
+    loader._invalidate_config_cache()
+
+
+@pytest.mark.parametrize(
+    "acp_backend, v3_started, expected",
+    [
+        # A Kiro CLI pick with no v3 start confirmed keeps kiro-cli's v2 launch.
+        ("kiro", False, True),
+        # Once a v3 start is confirmed the pick runs on KAS, which takes the vault.
+        ("kiro", True, False),
+        ("kas", False, False),
+        ("kas", True, False),
+    ],
+)
+def test_the_main_harness_is_kiro_cli_only_on_the_v2_launch(
+    harness_home, monkeypatch, acp_backend, v3_started, expected
+) -> None:
+    from kiro_crew.agent_sdk import backends
+
+    monkeypatch.setattr(backends, "_kiro_cli_kas_started", v3_started)
+    harness_home(acp_backend)
+    assert sources.main_harness_is_kiro_cli() is expected
+
+
+def test_a_config_that_cannot_load_is_not_the_kiro_cli_harness(monkeypatch) -> None:
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    def broken(cls):
+        raise OSError("disk")
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(broken))
+    assert sources.main_harness_is_kiro_cli() is False
+
+
+@pytest.mark.asyncio
+async def test_the_kiro_cli_harness_uses_kiro_cli_sign_in_over_the_vault(world) -> None:
+    """kiro-cli's v2 launch never asks Kiro Crew: the vault is not the one in use."""
+    world["kiro_cli_harness"] = True
+    world["relay"] = True
+    world["stored"] = sign_in.StoredSignIns(
+        _stored("identity_center"), True, _stored("aws", arn=_ARN), True
+    )
+    world["crew_fields"] = {"account_type": "IamIdentityCenter"}
+    world["whoami"] = {"account_type": "BuilderId"}
+    body = await _get_named(_FakeRequest())
+    assert body["active"] == "kiro_cli"
+    assert body["kiro_cli_harness"] is True
+    # Nothing to switch to: kiro-cli's sign-in is already the one in use.
+    assert body["can_use_kiro_cli"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_key, relocated", [(True, False), (False, True), (True, True)])
+async def test_the_kiro_cli_harness_does_not_name_a_different_stored_login(
+    world, api_key, relocated
+) -> None:
+    world["kiro_cli_harness"] = True
+    world["api_key"] = api_key
+    world["cli_store_relocated"] = relocated
+    world["stored"] = sign_in.StoredSignIns(
+        _stored("identity_center"), True, _stored("aws", arn=_ARN), True
+    )
+    world["whoami"] = {
+        "account_type": "IamIdentityCenter",
+        "start_url": "https://other.awsapps.com/start",
+        "email": "other@example.com",
+    }
+    request = _FakeRequest()
+    body = await _get(request)
+    assert body["active"] == ("kiro_cli" if api_key else "unknown")
+    assert body["kiro_cli"] == {"stored": True, "usable": True}
+    assert body["name_pending"] is False
+    assert body["name_unreadable"] is False
+    assert sources._NAME_CACHE_KEY not in request.app
+    assert world["whoami_calls"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("check", ["kiro_cli_api_key_set", "kiro_cli_identity_store_is_relocated"])
+async def test_the_kiro_cli_harness_does_not_name_an_unknown_login_environment(
+    world, monkeypatch, check
+) -> None:
+    from kiro_crew.agent_sdk import kas_bundle
+
+    def unreadable():
+        raise OSError("login environment unreadable")
+
+    monkeypatch.setattr(kas_bundle, check, unreadable)
+    world["kiro_cli_harness"] = True
+    world["stored"] = sign_in.StoredSignIns(None, True, _stored("aws"), True)
+    request = _FakeRequest()
+    body = await _get(request)
+    assert body["active"] == "unknown"
+    assert body["kiro_cli"] == {"stored": True, "usable": True}
+    assert (body["name_pending"], body["name_unreadable"]) == (False, False)
+    assert sources._NAME_CACHE_KEY not in request.app
+    assert world["whoami_calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_key_on_the_kiro_cli_harness_does_not_publish_a_cached_store_name(world) -> None:
+    world["kiro_cli_harness"] = True
+    world["stored"] = sign_in.StoredSignIns(None, True, _stored("aws"), True)
+    world["whoami"] = {"account_type": "BuilderId", "email": _EMAIL}
+    request = _FakeRequest()
+    assert (await _get_named(request))["kiro_cli"]["email"] == _EMAIL
+    world["api_key"] = True
+    body = await _get(request)
+    assert body["active"] == "kiro_cli"
+    assert body["kiro_cli"] == {"stored": True, "usable": True}
+    assert (body["name_pending"], body["name_unreadable"]) == (False, False)
+    assert world["whoami_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_kiro_cli_harness_names_only_the_default_stored_login(world) -> None:
+    world["kiro_cli_harness"] = True
+    world["stored"] = sign_in.StoredSignIns(None, True, _stored("aws", arn=_ARN), True)
+    world["whoami"] = {
+        "account_type": "IamIdentityCenter",
+        "start_url": "https://example.awsapps.com/start",
+        "email": _EMAIL,
+    }
+    body = await _get_named(_FakeRequest())
+    assert body["active"] == "kiro_cli"
+    assert body["kiro_cli"] == {
+        "stored": True,
+        "usable": True,
+        "account_type": "IamIdentityCenter",
+        "portal_host": "example.awsapps.com",
+        "email": _EMAIL,
+    }
+    assert world["whoami_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_kas_keeps_naming_the_stored_login_with_a_key_and_relocated_home(world) -> None:
+    world["api_key"] = True
+    world["cli_store_relocated"] = True
+    world["stored"] = sign_in.StoredSignIns(None, True, _stored("aws"), True)
+    world["whoami"] = {"account_type": "BuilderId", "email": _EMAIL}
+    body = await _get_named(_FakeRequest())
+    assert body["kiro_cli_harness"] is False
+    assert body["active"] == "kiro_cli"
+    assert body["kiro_cli"] == {
+        "stored": True,
+        "usable": True,
+        "account_type": "BuilderId",
+        "email": _EMAIL,
+    }
+    assert world["whoami_calls"] == 1
+
+
+_VAULT_ONLY = sign_in.StoredSignIns(_stored("identity_center"), True, None, True)
+
+
+@pytest.mark.parametrize(
+    "stored, api_key, cli_signed_out, active",
+    [
+        # The vault alone runs nothing on the Kiro CLI harness.
+        (_VAULT_ONLY, False, True, "none"),
+        # A KIRO_API_KEY is a whole kiro-cli login with nothing in its store.
+        (_VAULT_ONLY, True, True, "kiro_cli"),
+        # Not proven signed out (a relocated store, say) is unknown, never "none".
+        (_VAULT_ONLY, False, False, "unknown"),
+        # An unreadable kiro-cli store is unknown, whatever the vault holds.
+        (
+            sign_in.StoredSignIns(_stored("identity_center"), True, None, False),
+            False,
+            True,
+            "unknown",
+        ),
+        # A lapsed kiro-cli token still runs: kiro-cli renews its own.
+        (
+            sign_in.StoredSignIns(None, True, _stored("aws", live=False), True),
+            False,
+            True,
+            "kiro_cli",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_kiro_cli_harness_reads_only_kiro_cli_login(
+    world, stored, api_key, cli_signed_out, active
+) -> None:
+    world["kiro_cli_harness"] = True
+    world["relay"] = False
+    world["stored"] = stored
+    world["api_key"] = api_key
+    world["cli_signed_out"] = cli_signed_out
+    body = await _get(_FakeRequest())
+    assert body["active"] == active
+    assert body["kiro_cli_harness"] is True
+
+
+@pytest.mark.parametrize("api_key, active", [(False, "unknown"), (True, "kiro_cli")])
+@pytest.mark.asyncio
+async def test_the_kiro_cli_harness_does_not_trust_a_relocated_stores_leftover(
+    world, api_key, active
+) -> None:
+    world["kiro_cli_harness"] = True
+    world["cli_store_relocated"] = True
+    world["api_key"] = api_key
+    world["stored"] = sign_in.StoredSignIns(
+        _stored("identity_center"), True, _stored("aws", arn=_ARN), True
+    )
+    body = await _get(_FakeRequest())
+    assert body["active"] == active
+    assert body["kiro_cli_harness"] is True
+    assert body["can_use_kiro_cli"] is False
+
+
+@pytest.mark.parametrize("runs", [True, False])
+def test_the_store_read_still_asks_the_relay_on_the_kiro_cli_harness(
+    world, monkeypatch, runs
+) -> None:
+    """Kiro Agent's row on that harness says what the relay would do, so it is asked."""
+    from kiro_crew.agent_sdk import kas_bundle
+    from kiro_crew.dashboard.handlers import kiro_vault_identity
+
+    asked: list[str] = []
+    monkeypatch.setattr(
+        sign_in, "stored_sign_ins", lambda: sign_in.StoredSignIns(None, True, _stored("aws"), True)
+    )
+    monkeypatch.setattr(
+        kas_bundle, "relay_runs_on_kiro_cli_sign_in", lambda: asked.append("relay") or runs
+    )
+    monkeypatch.setattr(kiro_vault_identity, "vault_identity_snapshot_sync", lambda: ("f", {}))
+    monkeypatch.setattr(sources, "main_harness_is_kiro_cli", lambda: True)
+    _found, _crew, relay, harness_active, cli_name_allowed = sources._read_stores()
+    assert (relay, harness_active, asked) == (runs, "kiro_cli", ["relay"])
+    assert cli_name_allowed is True
+
+
+@pytest.mark.parametrize("runs", [True, False])
+@pytest.mark.asyncio
+async def test_the_kiro_cli_harness_reports_what_the_relay_would_do(world, runs) -> None:
+    world["kiro_cli_harness"] = True
+    world["relay"] = runs
+    world["stored"] = sign_in.StoredSignIns(
+        _stored("identity_center"), True, _stored("aws", arn=_ARN), True
+    )
+    body = await _get(_FakeRequest())
+    assert body["kiro_cli_harness"] is True
+    assert body["active"] == "kiro_cli"
+    assert body["relay_runs_on_kiro_cli"] is runs
+    # The switch is never offered there, whatever the relay would do.
+    assert body["can_use_kiro_cli"] is False

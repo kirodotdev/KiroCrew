@@ -1,12 +1,12 @@
 ---
 title: Session search by meaning, routed so an exact identifier still wins
-status: draft
+status: partial
 author: dma9527
 created: 2026-10-26
-last-audited: 2026-11-01
-audited-at: 42243e7c
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 24478
-implementation-prs: []
+implementation-prs: [31794, 36002]
 tracking-issues: [24476]
 supersedes: []
 superseded-by: []
@@ -14,12 +14,17 @@ superseded-by: []
 
 # RFC: Session search by meaning
 
-- Status: draft. Nothing built. Acceptance by a maintainer of session search comes
-  before the first implementation pull request (section 10).
+- Status: partial. Accepted by a maintainer on
+  [#24476](https://github.com/kirodotdev/KiroCrew/issues/24476). Phase 1, the
+  session-recall bench, is on main as [#31794](https://github.com/kirodotdev/KiroCrew/pull/31794).
+  Phase 2, the chunk store and its gateway vector fill behind `session.semantic_search`
+  (off by default), is on main as [#36002](https://github.com/kirodotdev/KiroCrew/pull/36002);
+  search does not read it yet. Phases 3 and 4 are not built (section 10).
 - Tracking issue: [#24476](https://github.com/kirodotdev/KiroCrew/issues/24476).
 - Depends on [#23603](https://github.com/kirodotdev/KiroCrew/pull/23603) (configurable
   scan window and the `SearchRows` result type, for [#22233](https://github.com/kirodotdev/KiroCrew/issues/22233)).
-- Code read at `f172b404`. Code is cited by symbol name; every symbol is as of that commit.
+- The design read the code at `f172b404`; symbols are cited by name as of that commit.
+  `audited-at` above is the commit the status was last checked against.
 - Numbers come from one operator's host: 614 to 638 session files, 363 distinct
   conversations after twinned copies are folded, mixed English and Chinese. They were
   taken between 2026-10-13 and 2026-10-26 with the shipped `qwen3-embedding-0.6b`
@@ -31,9 +36,9 @@ Session search finds a conversation only when the query repeats characters the
 conversation contains. This document proposes a second retrieval leg over embedded
 transcript chunks, and a routing rule that decides per query which leg answers:
 
-- When the whole query occurs literally in the keyword leg's top conversation, the
-  query is an identifier. The result is reciprocal rank fusion of both legs with that
-  conversation held first.
+- When the query is at least 12 characters long and occurs whole in the keyword
+  leg's top conversation, the query is an identifier. The result is reciprocal rank
+  fusion of both legs with that conversation held first.
 - Otherwise the result is the vector ranking.
 - With the leg off, unavailable or empty, the result is today's keyword ranking, row
   for row.
@@ -103,8 +108,10 @@ embeds query text and stored text identically, with no instruction.
 Goals:
 
 1. A conversation is found by describing it, in English or Chinese.
-2. A query that repeats an exact identifier puts the conversation naming it first,
-   as today.
+2. A query that repeats an exact identifier of at least 12 characters puts the
+   conversation naming it first, as today. A shorter one takes the vector ranking
+   (7.3); on set D that changed 1 of 36 identifier queries, a 10-character one that
+   keyword search put 4th: routed, it fell from 38th to outside the vector leg's 50.
 3. With the leg off or the model absent, every surface returns today's rows in
    today's order.
 4. A row found by meaning says so on every surface.
@@ -205,8 +212,8 @@ conversations, and its top conversation was the target in 8 of the 49 that fired
 | 2 words | 10 of 40 | 0.425 | 0.375 | 0.775 | 0.750 |
 
 Routing still beats keyword search on short queries (R@1 0.275 against 0.138
-overall), but it falls below the vector leg alone, so the rule needs a rarity
-condition (open question 5).
+overall), but it falls below the vector leg alone, so 7.3 adds a length condition
+(open question 5).
 
 ## 7. Design
 
@@ -217,7 +224,9 @@ condition (open question 5).
 | Table | Key | Columns |
 |---|---|---|
 | `chunk` | chunk id | text hash (unique), token count, vector (nullable), embedder signature, vector written at |
+| `pending_text` | chunk id | the chunk's text, until its vector is written |
 | `chunk_ref` | session key, ordinal | message index, char start, char end, chunk id |
+| `session_state` | session key | file identity, chunker signature |
 
 - A chunk never spans two messages, so every hit addresses one message.
 - Chunks are cut at 300 tokens of the model's tokenizer, which caps every chunk at
@@ -225,8 +234,11 @@ condition (open question 5).
 - Identical text is stored once and referenced from every session holding it.
   Twinned files can diverge (measured: 35 of 227 pairs hold text only in the copy),
   so dedup is per chunk, and result rows collapse per conversation.
-- Rows are written with a null vector and filled at `PRIORITY_BULK`, so the pending
-  count is real and the build resumes after a restart.
+- Chunks are cut in the session index worker, which owns transcript parsing; the
+  gateway, which owns the one loaded model, fills vectors at `PRIORITY_BULK`.
+  Rows are written with a null vector and their text in `pending_text`, and the fill
+  writes the vector and deletes the text in one transaction, so the pending count is
+  real and the build resumes after a restart.
 - A session is indexed once quiet for `_INDEX_QUIET_WINDOW_SECS`, the FTS rule.
 - Incognito and temporary sessions are never indexed.
 
@@ -250,23 +262,29 @@ share of gold pairs at or above 0.62 from 0.53 to 0.33.
 
 ### 7.3 Routing
 
-Run the keyword leg first. If the case-folded whole query occurs in its top
-conversation's folded content, return `_rrf_fuse` of both legs with that conversation
-held first. Otherwise return the vector ranking. If the vector leg is off, absent or
-empty, return the keyword ranking unchanged. While coverage is below
+Run the keyword leg first. If the query is at least `SEMANTIC_LITERAL_MIN_CHARS` (12)
+characters long and its case-folded whole occurs in the keyword top conversation's
+folded content, return `_rrf_fuse` of both legs with that conversation held first.
+Otherwise return the vector ranking. If the vector leg is off, absent or empty,
+return the keyword ranking unchanged. While coverage is below
 `SEMANTIC_MIN_COVERAGE`, section 8.3 orders a non-literal query's rows instead.
 
-As written the rule treats almost every 1-word query as literal (6.6). Phase 3 adds a
-rarity condition on the literal branch, chosen on the harness (open question 5).
+The length condition is the rarity condition of open question 5: without it the rule
+treats almost every 1-word query as literal (6.6). The trigger stays the whole query,
+not an identifier token inside it (open question 2). Both were decided on set D
+(section 14).
 
 Pinned by tests:
 
 1. Leg disabled or empty: rows identical to today's, same order.
-2. Literal query: the keyword top conversation is row one against a higher-scoring
-   vector row.
+2. Literal query: a query of at least `SEMANTIC_LITERAL_MIN_CHARS` characters that
+   occurs whole in the keyword top conversation keeps that conversation as row one
+   against a higher-scoring vector row.
 3. Non-literal query: the vector ranking is returned as it stands.
 4. Partial index: below `SEMANTIC_MIN_COVERAGE`, a non-literal query returns every
    keyword row ahead of every meaning row.
+5. Short query: a query under `SEMANTIC_LITERAL_MIN_CHARS` characters that occurs in
+   the keyword top conversation returns the vector ranking.
 
 ### 7.4 Result rows
 
@@ -285,7 +303,7 @@ the same gates as keyword rows: app ownership (`_AppOwnedKeys`), redaction, and 
 ### 8.1 No mode switch
 
 The router decides per query, so a person never chooses between "text" and
-"meaning", and a literal query keeps today's first row. A switch would ask the
+"meaning", and a literal query of at least 12 characters keeps today's first row. A switch would ask the
 reader to predict which leg can answer, which is the decision the router already
 makes better. The operator control is a config key, `session.semantic_search`.
 
@@ -326,8 +344,12 @@ only the new text, and the sidebar's debounce already drops intermediate keystro
 - Identifier plus description: the keyword leg needs every word and often finds
   nothing, and the vector leg can miss the identifier. 1 of 6 such queries on set B
   failed both (target 22nd).
-- Short common query: the whole-query rule fires and holds a keyword hit first that
-  is usually wrong (6.6) until open question 5 is decided.
+- Short common query: with the length condition a query under 12 characters takes the
+  vector ranking, but on set C routed R@1 still stays below vector R@1 (0.275 against
+  0.312), because 15 of its 80 queries reach 12 characters and fire, among them
+  1-word names such as a 12-character project name (section 14). The 0.275 was
+  measured again under the length rule; it equals the October whole-query figure by
+  coincidence, since the whole-query rule now scores 0.237 on the grown store.
 - A query whose answer is not in the corpus still gets up to 10 meaning rows. They
   are labelled, and no floor is set because no measurement supports one (open question 1).
 
@@ -351,7 +373,7 @@ this leg, so it leaves with it.
 | 0 | #23603 (scan window key, `SearchRows`) | merged first |
 | 1 | Recall harness under `src/kiro_crew/eval/bench/` with a synthetic fixture | no behaviour change |
 | 2 | Chunk store, indexer, pending and coverage metrics | off |
-| 3 | Query role on the embed call, vector leg, routing (including `SEMANTIC_MIN_COVERAGE`), `match`, snippets, labels, tool text, coverage note. Entry condition: open questions 2 and 5 are decided on the harness first, so the routing rule ships once | off |
+| 3 | Query role on the embed call, vector leg, routing (including `SEMANTIC_MIN_COVERAGE`), `match`, snippets, labels, tool text, coverage note. Entry condition: open questions 2 and 5 are decided on the harness first, so the routing rule ships once (decided on set D, section 14) | off |
 | 4 | Default on, after the harness and an operator-run private set measured on the full index show routed R@1 at or above vector R@1 and literal R@1 at or above keyword, and the operator set's index has reached `SEMANTIC_MIN_COVERAGE`, and the resource ceilings below hold | on |
 
 Phase 4 changes a default, which is the decision this document asks to record.
@@ -364,9 +386,13 @@ Exit criteria, each a test or a harness run:
   row; the fixture indexes to coverage 1.0, and a restart mid-build resumes with the
   pending count never rising; the deletion test in section 12 passes.
 - Phase 3: a test asserts that an embed call without the query role sends the same
-  text as on main; tests 1 to 4 in 7.3 and the ownership test in section 9 pass; on the
-  fixture, routed R@1 is at or above vector R@1 and literal R@1 at or above keyword
-  R@1; the harness reports resident memory and CPU at the measured chunk count.
+  text as on main; tests 1 to 5 in 7.3, the ownership test in section 9 and the
+  count test in section 12 pass; on the fixture, routed R@1 is at or above vector
+  R@1 and literal R@1 at or above keyword R@1; the harness reports resident memory
+  and CPU at the measured chunk count, and routed against vector R@1 per query kind.
+  Where routed R@1 is below vector R@1 on a set (set C today, 0.275 against 0.312),
+  the phase 3 pull request lists the gap, and a maintainer accepts it there or the
+  rule changes before phase 4.
 
 Resource ceilings for phase 4, measured on the smallest host the project supports:
 
@@ -394,9 +420,10 @@ the measured chunk count so phase 4 can confirm or replace them.
 
 ## 12. Security considerations
 
-`session_vectors.db` holds transcript-derived data: text hashes, message offsets and
-the vectors computed from the text. It stores no chunk text, but a vector can leak the
-text it came from, so the store gets the FTS index's deletion and privacy contract.
+`session_vectors.db` holds transcript-derived data: text hashes, message offsets, the
+vectors computed from the text, and a chunk's text until its vector is written. That
+text is a subset of what the FTS index already keeps, and a vector can leak the text it
+came from, so the store gets the FTS index's deletion and privacy contract.
 
 - Restricted sessions: the indexer reads a session through the derivation guard
   (`_withhold_if_restricted`, which applies `is_incognito_transcript`), so incognito
@@ -415,11 +442,24 @@ text it came from, so the store gets the FTS index's deletion and privacy contra
 - Resident matrix: the drop removes the session's rows from the loaded matrix, so a
   deleted session never ranks once the delete returns. A session whose file is gone
   is dropped by the indexer, as the FTS indexer does.
+- Counts: the coverage note follows the `SearchRows` contract from #23603.
+  `semantic.eligible` is the same visible count as `SearchRows.eligible`, and
+  `semantic.indexed` counts the visible sessions in the current session list whose
+  chunks are all embedded. Neither count includes incognito or temporary sessions, and
+  neither depends on how many of them the store, the window or the build queue
+  holds, so `eligible` minus `indexed` counts only visible sessions still pending. A
+  search scoped by `keys` alone reports no semantic coverage, and a `title:` search
+  counts visible title matches, as `SearchRows` does. The bulk build's progress and
+  pending counts in logs and status follow the same rule.
 - Embedding runs on the local model, so no transcript text leaves the host.
 
 Pinned by a test: seed a session with a unique chunk, delete it, then assert that no
-`chunk_ref` or `chunk` row remains for it, that neither the database nor the WAL file
-contains its vector bytes, and that a meaning query no longer returns it.
+`chunk_ref`, `chunk` or `pending_text` row remains for it, that neither the database
+nor the WAL file contains its text or vector bytes, and that a meaning query no
+longer returns it. A second
+test pins the counts: a store holding N visible sessions plus any number of incognito
+and temporary ones reports the same `semantic` counts, at every stage of the build, as
+a store holding only the N visible sessions.
 
 ## 13. Alternatives considered
 
@@ -438,17 +478,31 @@ contains its vector bytes, and that a meaning query no longer returns it.
 
 1. Floor for meaning rows. Needs a set of queries with no answer in the corpus;
    until then the cap of 10 and the label stand.
-2. Identifier plus description. Route on an identifier token rather than the whole
-   query? Untested, and decided before phase 3 opens. `match` is a per-row field
-   (`"text"` or `"meaning"`) and does not depend on which rule picked the route, so
-   the answer changes routing only, not the row contract.
+2. Identifier plus description. Decided: route on the whole query, not on an
+   identifier token. On set D (below) the whole-query rule fired on none of 36 such
+   queries, which took the vector ranking (R@1 0.583); routing on an identifier token
+   fired on 27 and lowered R@1 to 0.472. `match` is a per-row field (`"text"` or
+   `"meaning"`) and does not depend on which rule picked the route.
 3. Chunks beyond the first 8 per conversation were not measured; the design indexes
    all of them. Phase 4 measures recall on the full index before the default changes.
 4. Should the bulk build run at full duty while the gateway is idle, shortening the
    75 to 161 hours?
-5. Rarity condition for the literal branch. Candidates: a cap on the keyword leg's
-   hit count, a share of scanned conversations, or a minimum query length. A hit-count
-   cap of 15, chosen after seeing sets A to C, keeps R@1 on set A, lifts it from 0.718
-   to 0.744 on set B and from 0.275 to 0.300 on set C, and lowers set B's R@5 from
-   0.949 to 0.923. It needs a fresh set before it is adopted,
-   and a fixed count drifts as stores grow, so a share is the likelier form.
+5. Rarity condition for the literal branch. Decided: the query must be at least 12
+   characters long (`SEMANTIC_LITERAL_MIN_CHARS`). Three candidates were tuned on
+   sets A to C (keyword hit cap 5, a 1% share of scanned conversations, minimum length
+   12), then scored once on set D. All three lift R@1 from 0.396 to 0.422. The cap
+   and the share lower R@5 from 0.703 to 0.667; the length rule lowers it to 0.693,
+   within the 0.025 the rule allowed, so it is adopted. The margin is 5 queries, and
+   12 was the largest length tried, so the rule may sit on a slope. Phase 3 keeps
+   `SEMANTIC_LITERAL_MIN_CHARS` a named constant, and before phase 4 turns the leg on
+   by default, 12 is scored again against a wider grid (12, 16, 20) on the next fresh
+   query set. Under the rule, literal identifiers keep keyword R@1: 0.583 on set D's
+   36 identifier queries, the same as keyword search, and 0.667 on sets A and B.
+
+Set D, used for questions 2 and 5: 40 targets drawn from the indexed conversations
+that set A and set B did not use, 192 queries (40 paraphrase, 36 identifier, 36
+identifier plus description, 80 of one or two words) written blind from one passage
+each by a writer who saw no results. The candidates, grids and decision thresholds
+were written down before set D existed. The keyword leg ran on main at `99953f89`
+over 796 session files; the vector leg used the same index and model as sets A to C,
+and reproduced their vector R@1 exactly.

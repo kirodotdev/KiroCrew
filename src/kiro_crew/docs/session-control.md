@@ -132,8 +132,10 @@ Two things it deliberately does not take:
   boundary it was written in, and a fork must stay inside it. A session bound to
   a different agent is `session_create`'s job. Like a human fork, it also keeps
   the source's sidebar color, so it sits in the same color group. One difference:
-  a person's fork of a pinned session is pinned, but a fork you make is never
-  pinned.
+  a person's fork of a pinned session is pinned (unless the owner turned off
+  `dashboard.fork_inherits_pin`), but a fork you make is never pinned. A person can also fork into a stricter memory mode (**Fork as
+  incognito**, **Fork as temporary**); `session_fork` sends no memory mode, so
+  your fork keeps the source's.
 - **No tail fork.** Only the head (everything up to the fork point) is offered.
 
 Forking another session is a **read** of its transcript, so naming a `source`
@@ -170,9 +172,26 @@ Three outcomes, and the reply tells you which one happened:
 | busy | `false` | Queued; it runs when the current turn ends |
 | busy | `true` | Injected into the running turn, so the target reads it mid-work |
 
-A steer that cannot be injected **falls back to the queue** rather than being
-dropped, and the reply says that explicitly. `steer` is ignored on an idle
-target, because the message starts a turn either way.
+A steer that cannot be injected at the instant of the send is **held as a
+pending steer** and injected at the target's next tool-call boundary in the same
+turn, retried at every boundary until it lands. The reply says `pending-steer`,
+and the target's `session_status` row later shows `delivered@<time>`. Only if the
+turn ends first does the held message take the end-of-turn queue, and the next
+turn then starts at once. The `steer_receipts` on a status row carry a short hash
+id and a state, never the text, and `session_status` lists only the sessions the
+caller itself manages. Sending the same steer again returns the same pending
+steer instead of delivering a second copy. A hard stop of the target discards its
+held steers: each sender gets the discard notice a queued message gets and its
+receipt reads `discarded@<time>`. A held steer survives a gateway restart as a
+queue card at the head of the target's queue, unless it was already handed to
+the harness, so a restart never runs it twice. While
+`agent.peer_steer_loss_recovery` is off, a held peer steer injected into a Claude
+Code, Codex, Goose, Pi or OpenCode turn can still be dropped by that harness; its
+sender is told it may not have run and the receipt reads `unconfirmed@<time>`. A
+steer sent while the target's turn is ending is queued
+for its next turn, not held, and so is a steer to a target whose harness cannot
+take one. `steer` is ignored on an idle target, because
+the message starts a turn either way.
 
 A queued message is checked again just before it runs. If the target gained a
 channel link or mirror in the meantime, the message is dropped instead of run,
@@ -506,7 +525,7 @@ and mirrored sessions are refused.
 
 ### `crew_list`
 
-Takes no arguments. Advertised only while `work_ledger.remote_dispatch` is on, and open only to the owner's own conductor-mode chat, the same caller rules as `crew=` on the session tools. It lists every remote crew registered on this hub: its id and name, its connection state, its version and whether it matches this hub's major.minor, and, for a connected crew whose version matches, the crew's headroom snapshot (free memory and disk, load per CPU, posture), its own count of open hub workers (`open_workers`), the open bindings this hub holds on it (`bound_here`), and its agent and model names. It lists at most 32 crews and counts the rest. A crew that is not connected is listed but not read. A read that failed is named in `unread`; a slow model catalog costs only the agent and model names, never the version gate or the headroom. It reads what placement and the crew window's header already read; it writes nothing.
+Takes one optional argument, `logins` (boolean). Advertised only while `work_ledger.remote_dispatch` is on, and open only to the owner's own conductor-mode chat, the same caller rules as `crew=` on the session tools. It lists every remote crew registered on this hub: its id and name, its connection state, its version and whether it matches this hub's major.minor, and, for a connected crew whose version matches, the crew's headroom snapshot (free memory and disk, load per CPU, posture), its own count of open hub workers (`open_workers`), the open bindings this hub holds on it (`bound_here`), its tags (the operator's `work_ledger.remote_dispatch_tags`, the names `requires.tags` matches; a tag that is not 1-32 of `a-z0-9_-`, starting with a letter or digit, with a letter is dropped), and its agent and model names. With `logins: true` it also shows each crew's login states, the ones `requires.logins` matches: `gh`, `glab` or `az`, each `valid`, `expired` or `unknown` (still checking); any other name or word is dropped, so no account or token is shown. Logins are opt-in because each crew runs its login checks first, waiting up to a few seconds; a plain call never waits on them. A crew too old to report logins shows `logins` in `unread`. It lists at most 32 crews and counts the rest. A crew that is not connected is listed but not read. A read that failed is named in `unread`; a slow model catalog costs only the agent and model names, never the version gate or the headroom. It reads what placement and the crew window's header already read; it writes nothing.
 
 ### `session_run_queued`
 
@@ -614,6 +633,14 @@ CREATED the target does not change, so `session_fork`, `session_rename` and
 sessions against the creator's memory. The target moves under `to` in the
 sidebar, and its transcript gets one note saying who manages it now.
 
+Pass `bind: true` to also give `to` the right to bind the target to its
+work-ledger items, which by default stays with the creator. Only the session that
+holds that right may pass it (`not_bind_holder` otherwise), and a target that
+conducts its own ledger moves only under a session whose ledger sits above it
+(`depth_exceeded`). Your own open item for the target is then closed as
+abandoned, unless it waits on a person, and from then on you cannot bind it. A
+later handoff without `bind` gives the right back to the creator.
+
 The new manager cannot hand the session back to the one that gave it. `to` must
 be a session the caller manages, and the giver manages the new manager, not the
 other way round, so the call is refused `not_creator`. A fenced
@@ -629,6 +656,8 @@ manages itself.
 | `self_manager` | `to` is the target itself. |
 | `already_manager` | `to` already manages the target. |
 | `would_cycle` | The target manages `to`, directly or up the line, so the handoff would make a loop. |
+| `not_bind_holder` | HTTP 403. You passed `bind: true` but do not hold the right to bind the target. |
+| `depth_exceeded` | HTTP 409. With `bind: true`: the target conducts a ledger that `to`'s own ledger is not above. |
 | `handoff_write_failed` | HTTP 500: the new manager could not be saved, so nothing changed. |
 
 With `agent.session_manager_chain` on (off by default), a session also reaches the
@@ -1231,7 +1260,7 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `ambiguous_target` | The string matches more than one session across the three forms below. Address it by its session key |
 | `self_target` | A session cannot control itself. session_close and session_release are the exceptions: both accept the caller as the target |
 | `not_creator` | The caller is fenced to sessions it created itself (a Bot's DM slot, a scheduled run, and anything either of them created) |
-| `workspace_mismatch` | Peers must be in the same workspace — that is the memory boundary |
+| `workspace_mismatch` | Peers must be in the same workspace — that is the memory boundary. When you are also fenced from the target, the message names that reason too, since moving workspaces would not clear it |
 | `ephemeral_target` | Incognito and temporary sessions are not addressable |
 | `app_scoped_target` | App-scoped sessions are not addressable, in either direction |
 | `unattended_caller` / `unattended_target` | Scheduled runs cannot be controlled; a cron caller reaches only what it created |
@@ -1311,7 +1340,7 @@ retry.
 | `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec, except Bot DM sessions and the owner's own-tab Conductor, which keep driving workers they created unless `agent.member_dispatch` is also off. Switch it in Settings > Developer > Feature Previews > Session control; a change applies on the next call, running sessions included |
 | `agent.session_manager_chain` | `false` | Let a session reach the whole line of sessions under it through `session_handoff`, and hand a closed manager's sessions up |
 | `agent.member_dispatch` | `true` | A Bot's DM session, and the Conductor in the owner's own dashboard tab, drive workers they created even when session control is off. Turn it off to put both back under the switch |
-| `agent.crew_panel` | `true` | A Bot publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |
+| `agent.crew_panel` | `true` | A Bot publishes its own webview, shown on the **Dashboard** tab of its thread on the Bots page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session
 creates (forks included), **10** folder creates, **10** tag creates, **10** board-column creates. Capacity ceilings sit behind
@@ -1322,15 +1351,21 @@ the next create with no restart. An agent can only propose the change on a
 card that you apply.
 
 A Bot also has its own limit: how many of its own worker sessions may be open
-at once (`max_workers` on its record, 1 to 32; 0, the default, sets no limit).
+at once (`max_workers` on its record, 1 to 32; 0, the default, sets no limit,
+except while the Bot's workers can conduct, `worker_conducts` on its record and
+**Workers can conduct** on its settings page: then 0 means at most 4).
 Its own worker sessions are the ones that run on its worker template. Its owner
 sets it on the Bot's settings page under **Workers at once**; no Bot tool can
-change it. A `session_create`, `session_revive` or `session_fork` that would
-leave one more of those worker sessions open past it, from the Bot's chat or
-from one of its workers, is refused with `bot_worker_cap_reached` (HTTP 409),
-and nothing is created. A session that a worker opens on another template is
-not counted here; the per-creator cap above still bounds it. A worker keeps its
-seat until it is closed, even after its work is done: close one that has
+change it. Those worker sessions are not all it counts: it counts every open
+session that runs as the Bot and that an agent opened with `session_create`,
+`session_revive` or `session_fork`: its worker sessions, and the sessions they
+open on another template or as the Bot itself, at any depth. The Bot's own chat, the chats you open, and sessions that
+do not run as a Bot are not counted. A call that would leave one more of those
+sessions open past the limit is refused with `bot_worker_cap_reached` (HTTP
+409), and nothing is created. Runs started with `spawn_run` or
+`spawn_sub_agents` are not counted: `agent.max_subagents` bounds them (a spawn
+past it waits in the queue), and so does the spawn depth limit. A session keeps
+its seat until it is closed, even after its work is done: close one that has
 finished (`session_close`), then try again.
 
 ## Combining two chats

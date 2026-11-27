@@ -465,10 +465,10 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "file_send",
             "description": (
-                "Send a file to the user. Copies the file to the outbox and "
+                "Send a file to the user. Copies it to the outbox and "
                 "notifies the dashboard with a download link. When this "
-                "session is linked to a Telegram, Discord or WeCom "
-                "conversation the file is also delivered there natively; "
+                "session is linked to a Telegram, Discord or WeCom chat "
+                "or Feishu DM the file is also delivered there natively; "
                 "otherwise it uploads to "
                 "Slack when the caller's Slack identity permits it. Use "
                 "when you've generated a report, export or artifact the "

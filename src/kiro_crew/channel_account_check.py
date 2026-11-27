@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 RESTART_FAILED_TEXT = (
-    "❌ This agent's session could not be restarted on the current Kiro account. "
+    "Error: This agent's session could not be restarted on the current Kiro account. "
     "Wake it to try again."
 )
 

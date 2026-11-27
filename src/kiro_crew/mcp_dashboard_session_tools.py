@@ -740,8 +740,8 @@ def _session_tools() -> tuple[Tool, ...]:
                             "thing it is working on is already done. Ignored when "
                             "the target is idle (the message starts a turn either "
                             "way), and when mid-turn injection is unavailable the "
-                            "message falls back to the queue rather than being "
-                            "dropped. Default false."
+                            "message is held and injected at its next tool boundary. "
+                            "Default false."
                         ),
                     },
                 },
@@ -878,9 +878,8 @@ def _session_tools() -> tuple[Tool, ...]:
                             "current turn ends (an idle one starts immediately). "
                             "`steer`: cut into the turn already running so the "
                             "target reads it mid-work; on an idle target it starts "
-                            "a turn either way, and where mid-turn injection is "
-                            "unavailable that target falls back to its queue "
-                            "rather than being dropped. No default — say which."
+                            "a turn either way, and where injection is unavailable "
+                            "it is held for the next tool boundary. No default — say which."
                         ),
                     },
                     "targets": {
@@ -911,9 +910,12 @@ def _session_tools() -> tuple[Tool, ...]:
             name="session_status",
             description=(
                 "List the sessions YOU stood up and what each one is doing right "
-                "now — the roster a conductor patrols. Each row is `working` (a "
-                "turn is in flight, wait), `queued` (idle with messages that will run "
-                "on their own), "
+                "now — the roster a conductor patrols. Each live row's `activity` "
+                "names its turn, turn admission, running or queued sub-agents, workflow, "
+                "synthesis, "
+                "preparation, compaction or automation. Its status is `working` "
+                "when current execution is active, `queued` when an idle session "
+                "has messages or sub-agents that will start on their own, "
                 "`idle` (open and doing nothing — this is the one that needs a "
                 "decision), `closed` (the crew log recorded a DELIBERATE tab close "
                 "and the dashboard no longer holds it: a worker that FINISHED and "
@@ -1010,7 +1012,10 @@ def _session_tools() -> tuple[Tool, ...]:
                 "session_handoff still needs it to manage the target and the "
                 "recipient, or it is refused `not_manager`. Who CREATED the session "
                 "stays on the record, so the new manager cannot fork it or open "
-                "sessions against your memory."
+                "sessions against your memory. With `bind` true it also moves the "
+                "right to bind the session to work-ledger items; only the session "
+                "that holds that right may pass it, and your own open item for that "
+                "session is closed as abandoned unless it waits on a person."
             ),
             schema={
                 "type": "object",
@@ -1022,6 +1027,10 @@ def _session_tools() -> tuple[Tool, ...]:
                     "to": {
                         "type": "string",
                         "description": "The session that will manage the target: its key or exact title.",
+                    },
+                    "bind": {
+                        "type": "boolean",
+                        "description": "Also give the recipient the right to bind the target to its work-ledger items. Default false.",
                     },
                 },
                 "required": ["target", "to"],

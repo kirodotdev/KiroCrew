@@ -15,7 +15,7 @@ import { configureStore, type Middleware } from '@reduxjs/toolkit'
 
 vi.mock('../api/client', () => ({ api: { chatSlotDetail: vi.fn() } }))
 
-import chatReducer, { switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
+import chatReducer, { captureForkOrigin, createSlot, selectPageLoaded, switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
 import { fetchSlots, removeSlotOptimistic, armConfirmedCloseHold } from './dashboardSlice'
 import { api } from '../api/client'
 import { isMissingSlotError } from '../utils/thunkError'
@@ -173,6 +173,29 @@ describe('switchSlot.rejected — a gone target restores the pre-switch selectio
     expect(s.activeSlot).toBe('flaky')
     expect(s.messages).toEqual([])
     expect(s.slotLoading).toBe(false)
+  })
+
+  it('a transient failure is not a loaded page until a retry loads it', async () => {
+    // The pane it leaves is empty, so taken for the loaded page it would make
+    // the retry's whole history read as new rows.
+    const store = await primedStore()
+    await store.dispatch(switchSlot('flaky'))
+    expect(selectPageLoaded(store.getState(), 'flaky')).toBe(false)
+    detail.mockImplementation(() => Promise.resolve(PAGES.A))
+    await store.dispatch(switchSlot('flaky'))
+    expect(selectPageLoaded(store.getState(), 'flaky')).toBe(true)
+  })
+
+  it('a transient failure reads loaded once a live row reaches its empty pane, so that row starts the baseline', async () => {
+    // A turn still running there streams on; held to the refresh its end
+    // dispatches, the baseline would already hold the reply.
+    const store = await primedStore()
+    await store.dispatch(switchSlot('flaky'))
+    expect(selectPageLoaded(store.getState(), 'flaky')).toBe(false)
+    store.dispatch(sseChatMessage({ slot: 'flaky', role: 'chunk', content: 'x' }))
+    expect(store.getState().chat.messages.length).toBeGreaterThan(0)
+    expect(store.getState().chat.slotOpenFailed).toBe('flaky')
+    expect(selectPageLoaded(store.getState(), 'flaky')).toBe(true)
   })
 
   it('a transient failure keeps the run state live frames gave the selected chat, so its Stop stays (#34428)', async () => {
@@ -755,6 +778,32 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     expect(n).toHaveLength(1)
     expect(n[0].payload).toMatchObject({ name: 'Alive session', kind: 'failed' })
     expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('names an untitled session the way its Sessions row does, not the backend placeholder (Bug Bash row 59)', async () => {
+    detail.mockRejectedValue(apiError(502, 'Bad Gateway'))
+    const { store, actions } = makeRecordingStore([{ key: 'fresh', title: 'New Session…' }])
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'fresh', announceOnMissing: true })).unwrap())
+    expect(goneNotices(actions)[0].payload).toMatchObject({
+      name: i18nT('pages.artifactDetailPage.untitled_session'),
+      kind: 'failed',
+    })
+  })
+
+  it('a chat the user creates clears the last switch failure notice (Bug Bash row 59)', async () => {
+    detail.mockRejectedValue(apiError(502, 'Bad Gateway'))
+    const { store } = makeRecordingStore([{ key: 'alive', title: 'Alive session' }])
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'alive', announceOnMissing: true })).unwrap())
+    expect(store.getState().chat.switchSlotGone).not.toBeNull()
+    // New is clicked after the failure: its origin is taken as it starts.
+    store.dispatch(createSlot.pending('req-new', undefined))
+    const o = captureForkOrigin(store.getState())
+    store.dispatch(createSlot.fulfilled({ key: 'new-one' } as never, 'req-new', undefined, {
+      originActiveSlot: o.activeSlot, originActiveSlotMoves: o.moves, originActiveSlotAutoMoves: o.autoMoves,
+      originActiveSlotRequestMoves: o.requestMoves, originRequestSeq: o.seq, originRequestBurst: o.burst, activate: true,
+    }))
+    expect(store.getState().chat.activeSlot).toBe('new-one')
+    expect(store.getState().chat.switchSlotGone).toBeNull()
   })
 
   it('an announced status-less failure notifies with failure copy and keeps the serialized-error shape', async () => {

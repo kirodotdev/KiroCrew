@@ -458,11 +458,11 @@ class TestRestart:
         out = capsys.readouterr().out
         assert "NOT restarted" not in out
         assert out.startswith(
-            "Warning: Restarted kirocrew service in the user scope; the restart did not "
+            "⚠️ Restarted kirocrew service in the user scope; the restart did not "
             "take in the system scope:\n"
         )
         assert "\n   user scope: restarted.\n" in out
-        assert "\n   Warning: system scope: kirocrew.service is activating (auto-restart)" in out
+        assert "\n   ⚠️ system scope: kirocrew.service is activating (auto-restart)" in out
         assert "Read why it exits:  sudo journalctl -u kirocrew.service" in out
         audit = mock_sel.log_api_access.call_args.kwargs
         assert audit["outcome"] == "partial"
@@ -795,6 +795,33 @@ class TestRestart:
         mock_spawn.assert_called_once()
         assert "Started detached gateway (pid 4321)" in capsys.readouterr().out
 
+    def test_explicit_port_restart_names_that_port_in_the_resume_hint(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """Following the hint must reach the gateway this restart named, not the default port."""
+        from kiro_crew import cli_server, cli_server_restart
+        from kiro_crew.dashboard import restart_resume
+
+        record = tmp_path / "resume-after-stop.json"
+        monkeypatch.setattr(restart_resume, "last_stop_path", lambda: record)
+        monkeypatch.setattr(cli_server_restart, "_now", lambda: 1_000_000.0)
+
+        def spawn(*_a, **_kw):
+            restart_resume.write_last_stop(["cut-a"])
+            os.utime(record, (1_000_000.0, 1_000_000.0))
+            return self._fake_proc(4321)
+
+        with (
+            self._mock_sel(),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[]),
+            patch("kiro_crew.cli_server._spawn_detached_gateway", side_effect=spawn),
+        ):
+            cli_server._restart(5999)
+        assert (
+            "1 chat(s) were cut by the stop. To resume them, run: kirocrew resume --port 5999\n"
+            in capsys.readouterr().out
+        )
+
     @contextlib.contextmanager
     def _probe_missed_gateway(self, holder_pid: int, *, kirocrew: bool):
         """Patches for the tool-present path where the port probe finds nothing
@@ -943,6 +970,14 @@ class TestRestart:
                 return_value=acknowledged,
             ),
             patch("kiro_crew.cli_server.lock_holder", **holder_kwargs),
+            # The restart's mode read binds its own ``lock_holder``; it sees the
+            # same holder, and that holder's argv is an ordinary gateway start.
+            patch("kiro_crew.cli_restart_headless.lock_holder", **holder_kwargs),
+            patch(
+                "kiro_crew.cli_restart_headless.platform_compat.process_argv",
+                return_value=["kirocrew", "gateway"],
+            ),
+            patch("kiro_crew.cli_restart_headless._recorded_gateway_pid", return_value=None),
             patch("kiro_crew.cli_server._is_kirocrew_process", return_value=kirocrew),
         ):
             yield

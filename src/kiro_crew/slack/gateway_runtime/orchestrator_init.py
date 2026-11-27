@@ -13,10 +13,13 @@ Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
 ``_channel_transports_started``, ``_config_subs``, ``_console_script_repair_task``,
 ``_cron_armed``, ``_cron_injecting``, ``_cron_reconciled``, ``_cron_runs_holding``,
 ``_dashboard_runner``,
-``_feature_video_task``, ``_handler_tasks``, ``_inbound_replay_task``, ``_json_ready``,
+``_feature_video_task``, ``_handler_tasks``, ``_headless``, ``_inbound_replay_task``,
+``_json_ready``,
 ``_marker_clear_pending``, ``_marker_write_task``, ``_mcp_gateway_manager``,
 ``_mcp_launch_approval_ready``, ``_mcp_resolve_home``, ``_mcp_resolve_prefetch``,
-``_mcp_target_env``, ``_memory_repair_cursor``, ``_memory_repair_stop``,
+``_mcp_resource_subscription_task``,
+``_mcp_target_env``, ``_memory_repair_cursor``, ``_memory_repair_fresh_cursor``,
+``_memory_repair_fresh_turn``, ``_memory_repair_stop``,
 ``_memory_repair_task``, ``_memory_startup``, ``_memory_startup_task``,
 ``_model_download_task``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
 ``_open_channels``, ``_owner_id``, ``_pending_queue``,
@@ -59,6 +62,7 @@ def __init__(
     cfg: KiroCrewConfig,
     *,
     no_dashboard: bool = False,
+    headless: bool = False,
     no_crons: bool = False,
     no_open: bool = False,
     port_override: str | None = None,
@@ -67,10 +71,15 @@ def __init__(
     test_mode: bool = False,
     credentials: Mapping[str, str] | None = None,
 ) -> None:
+    if headless and no_dashboard:
+        raise ValueError(
+            "headless=True requires no_dashboard=False; " "drop --headless or --slack-only."
+        )
     # NOTE: test_heartbeat_prompt_deliver.py creates instances via __new__
     # (bypassing __init__). Update that fixture if new attributes are added.
     self._cfg = cfg
     self._no_dashboard = no_dashboard
+    self._headless = headless
     self._no_crons = no_crons
     self._no_open = no_open
     self._port_override = port_override
@@ -114,6 +123,7 @@ def __init__(
     self._hoist_webex(cfg, creds)
     self._hoist_imessage(cfg, creds)
     self._hoist_teams(cfg, creds)
+    # Boot value only: the Slack config applier refreshes it on a change.
     self.slack_command = cfg.slack.command
     # Serializes restart_channel: two config writes landing within one
     # poll interval must close-then-start the same channel in order.
@@ -166,6 +176,9 @@ def __init__(
     self._inline_parked = {}
     self._inline_tasks = set()  # settled parked completions still routing
     self._running_script_ids = set()  # job IDs with in-flight script/command execution
+    # In-flight auto-pause notices (concurrent.futures from the callback's
+    # cross-thread hand-off), drained bounded by the exit path.
+    self._auto_pause_alerts = set()  # type: ignore[type-arg]
     self.task_runner = None
     # Runner admission over the task queue, attached by _wire_runner_admission
     self._runner_admission = None
@@ -187,6 +200,8 @@ def __init__(
     self._memory_repair_task = None
     self._memory_repair_stop = threading.Event()
     self._memory_repair_cursor = ""
+    self._memory_repair_fresh_cursor = ""
+    self._memory_repair_fresh_turn = True
     # Dedicated ownership for the repair's dep_sync/pip process tree. The
     # general set only prevents task GC; shutdown must cancel and await this
     # task so _check_console_script can kill and reap its child group.
@@ -254,6 +269,7 @@ def __init__(
     # loop keeps a strong reference (a bare create_task is only weakly held)
     # and so broker shutdown can cancel an install still in flight.
     self._mcp_resolve_prefetch = None
+    self._mcp_resource_subscription_task = None
     # The rewriter's ``KIROCREW_MCP_TARGET_*`` mapping from the last broker
     # start, kept so an explicit refresh resolves the same launches the
     # daemon is actually serving rather than a freshly re-derived guess.

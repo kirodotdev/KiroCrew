@@ -20,7 +20,7 @@
  * `scripts/capture-diff-card-count-overlap.mjs`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, cleanup, within, fireEvent } from '@testing-library/react'
+import { render, cleanup, within, fireEvent, screen } from '@testing-library/react'
 
 const hoisted = vi.hoisted(() => ({ names: [] as string[] }))
 
@@ -63,10 +63,12 @@ beforeEach(() => {
 })
 
 describe('row name for a Windows path', () => {
-  it('names a drive-letter row by its basename and keeps the full path on the tooltip', () => {
+  it('names a drive-letter row by its basename and shows the full path in the bubble on keyboard focus', () => {
     const { container } = render(<FileChangeChips fileChanges={[change(WIN, 'a', 'b')]} />)
     expect(filenameOf(container, WIN)).toHaveTextContent(/^notes\.md$/)
-    expect(filenameOf(container, WIN)).toHaveAttribute('title', WIN)
+    expect(filenameOf(container, WIN)).toHaveAttribute('title', '')
+    fireEvent.focus(filenameOf(container, WIN))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(WIN)
     // The tooltip row and the control labels keep the whole path: the basename
     // is a display choice, not a loss of information.
     expect(container.querySelector(`[data-testid="fcc-row-${css(WIN)}"]`)).toHaveAttribute('title', WIN)
@@ -77,7 +79,8 @@ describe('row name for a Windows path', () => {
   it('names a UNC row by its basename', () => {
     const { container } = render(<FileChangeChips fileChanges={[change(UNC, 'a', 'b')]} />)
     expect(filenameOf(container, UNC)).toHaveTextContent(/^report\.md$/)
-    expect(filenameOf(container, UNC)).toHaveAttribute('title', UNC)
+    fireEvent.focus(filenameOf(container, UNC))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(UNC)
   })
 
   it('leaves a POSIX name that contains a backslash whole', () => {
@@ -99,7 +102,11 @@ describe('row name for a Windows path', () => {
     const demoted = { ...change(UNC, '', ''), truncated: true, content_omitted: true, turn_budget_chars: 400_000 }
 
     const card = render(<FileChangeChips fileChanges={[truncated]} />)
-    expect(card.container.querySelector('[data-fcc-filename]')).toHaveTextContent(/^notes\.md$/)
+    const cardName = card.container.querySelector('[data-fcc-filename]')!
+    expect(cardName).toHaveTextContent(/^notes\.md$/)
+    expect(cardName).toHaveAttribute('title', '')
+    fireEvent.focus(cardName)
+    expect(card.getByRole('tooltip')).toHaveTextContent(WIN)
     card.unmount()
 
     const pills = render(<FileChangeChips fileChanges={[change(WIN, 'a', 'a\nb'), demoted]} style="minimal" />)
@@ -147,7 +154,8 @@ describe('collapsed row flex contract (count never under the diffstat cells)', (
 
   it('leaves the filename as the ONLY flex item in the header that may shrink', () => {
     const { container } = render(<FileChangeChips fileChanges={[wide]} artifactPaths={new Set([wide.path])} />)
-    const items = Array.from(header(container, wide.path).children) as HTMLElement[]
+    // The filename's `hidden` copy of its full path is no flex item.
+    const items = (Array.from(header(container, wide.path).children) as HTMLElement[]).filter(el => !el.hidden)
     expect(items.length).toBeGreaterThanOrEqual(5)
     const shrinkable = items.filter(el => !el.classList.contains('shrink-0'))
     expect(shrinkable).toHaveLength(1)

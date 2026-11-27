@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Collection
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -57,8 +58,9 @@ def _sandbox_confined() -> bool:
     """True when this process shows evidence of agent-shell confinement.
 
     ``cli.main`` pops ``KIROCREW_SANDBOX_ACTIVE`` before any subcommand runs, so
-    the launch mark it noted first is asked as well as the live probe. Used
-    only to pick a log level, never to grant anything.
+    the launch mark it noted first is asked as well as the live probe. It picks
+    a log level here, and ``kirocrew cron history`` reads an empty result as the
+    mask rather than as no runs when it is True. It never grants anything.
     """
     from kiro_crew import sandbox_launch_mark
     from kiro_crew.sandbox_unavailable import agent_confinement_evidence
@@ -165,6 +167,22 @@ def truncate_summary(text: str, cap: int) -> str:
         [body] if body else []
     )
     return "\n".join(parts)
+
+
+def keep_ends(text: str, cap: int) -> str:
+    """Cut ``text`` to one line of at most ``cap`` characters by removing its middle.
+
+    For a one-line record whose end matters as much as its start, such as a
+    refusal that names its rule after a long command. Newlines become spaces.
+    """
+    flat = text.replace("\n", " ")
+    if len(flat) <= cap:
+        return flat
+    room = cap - len(_CUT_MARKER) - 2
+    if room <= 0:
+        return flat[: max(cap, 0)]
+    tail = room // 2
+    return f"{flat[: room - tail]} {_CUT_MARKER} {flat[len(flat) - tail :]}"
 
 
 def _fit_links(candidates: list[str], budget: int) -> tuple[list[str], int]:
@@ -360,6 +378,21 @@ def _served_row(line: bytes) -> dict[str, Any] | None:
     return row
 
 
+def _served_rows(path: Path) -> list[dict[str, Any]]:
+    """The servable rows of *path*, oldest first; none when it is missing."""
+    try:
+        lines = _raw_lines(path)
+    except FileNotFoundError:
+        return []
+    return [row for line in lines if (row := _served_row(line)) is not None]
+
+
+def _finished_at(row: dict[str, Any]) -> float:
+    """*row*'s sort time; one that is not a number sorts as the oldest."""
+    value = row.get("finished_at")
+    return value if isinstance(value, (int, float)) else float("-inf")
+
+
 @dataclass
 class CronRunRecord:
     """Single cron execution record."""
@@ -374,6 +407,7 @@ class CronRunRecord:
     summary: str = ""
     trace: str = ""
     error: str = ""
+    last_error_kind: str = ""  # the run's CronJob.last_error_kind: "throttle", "capacity" or ""
     idle: bool = False  # a script's Skip(): it ran and found nothing to do
 
     def to_dict(self, include_trace: bool = True) -> dict[str, Any]:
@@ -412,6 +446,8 @@ class CronHistoryStore:
         # racing the prepare degrades rather than touching an unprepared store.
         self._prepared = False
         self._enabled = False
+        #: The last ``OSError`` ``_degrade`` handled; only ``kirocrew cron history`` reads it.
+        self.last_error: OSError | None = None
         if not _defer_prepare:
             self.prepare()
         # The caps above are copies of cron_history.*, so a config write reaches
@@ -550,6 +586,7 @@ class CronHistoryStore:
         (full disk, fd exhaustion, transient I/O) costs ONE record and the store
         stays enabled, because those clear on their own.
         """
+        self.last_error = exc
         if exc.errno in _DENIAL_ERRNOS:
             if self._enabled:
                 self._enabled = False
@@ -599,8 +636,7 @@ class CronHistoryStore:
         platform_compat.release_lock(fd)
         os.close(fd)
 
-    async def append(self, record: CronRunRecord) -> None:
-        """Write record to job file and index."""
+    def _fit(self, record: CronRunRecord) -> None:
         # The ONE truncation site for a summary: callers hand the text over
         # uncut, so the configured cap and the keep-the-links rule apply here.
         # A command cron's failure summary comes from ``job.last_error``, which
@@ -609,12 +645,31 @@ class CronHistoryStore:
         if len(record.trace) > self._trace_cap:
             record.trace = record.trace[:self._trace_cap] + "\n...[truncated]"
 
+    async def append(self, record: CronRunRecord) -> None:
+        """Write record to job file and index."""
+        self._fit(record)
         if not self._enabled:
             return
         try:
             await asyncio.to_thread(self._append_sync, record)
         except OSError as exc:
             self._degrade("append", exc)
+
+    def append_sync(self, record: CronRunRecord) -> bool:
+        """Synchronous :meth:`append`, for a worker-thread caller. True once the row is written.
+
+        Blocking filesystem I/O under the history lock, so it never runs on an
+        event loop; there, await :meth:`append`.
+        """
+        self._fit(record)
+        if not self._enabled:
+            return False
+        try:
+            self._append_sync(record)
+        except OSError as exc:
+            self._degrade("append", exc)
+            return False
+        return True
 
     def _append_sync(self, record: CronRunRecord) -> None:
         fd = self._lock()
@@ -673,13 +728,13 @@ class CronHistoryStore:
         return results, total
 
     async def get_all_history(
-        self, offset: int = 0, limit: int = 20, job_id: str | None = None
+        self, offset: int = 0, limit: int = 20, job_ids: Collection[str] | None = None
     ) -> tuple[list[dict[str, Any]], int]:
-        """Return records from global index, newest first, optionally filtered."""
+        """Return records newest first: the global index, or only *job_ids*' runs."""
         if not self._enabled:
             return [], 0
         try:
-            return await asyncio.to_thread(self._get_all_history_sync, offset, limit, job_id)
+            return await asyncio.to_thread(self._get_all_history_sync, offset, limit, job_ids)
         except OSError as exc:
             self._degrade("get_all_history", exc)
             return [], 0
@@ -687,17 +742,31 @@ class CronHistoryStore:
     # Reads are lock-free (eventually-consistent): a concurrent append may
     # produce a partial final line, silently skipped by the JSONDecodeError handler.
     def _get_all_history_sync(
-        self, offset: int, limit: int, job_id: str | None
+        self, offset: int, limit: int, job_ids: Collection[str] | None
     ) -> tuple[list[dict[str, Any]], int]:
-        if not self._index_path.exists():
-            return [], 0
-        try:
-            lines = _raw_lines(self._index_path)
-        except FileNotFoundError:
-            return [], 0
-        records = [row for line in lines if (row := _served_row(line)) is not None]
-        if job_id:
-            records = [row for row in records if row.get("job_id") == job_id]
+        records = _served_rows(self._index_path)
+        if job_ids is not None:
+            # A busy job can push another job's runs out of the capped index,
+            # so each job's own file (its newest runs) is merged back in.
+            wanted = set(job_ids)
+            for job_id in sorted(wanted):
+                try:
+                    job_path = self._job_path(job_id)
+                except ValueError:
+                    continue
+                if job_path.name != self._index_path.name:
+                    records.extend(_served_rows(job_path))
+            # A hand-edited id that is not a str cannot be hashed, so its row is skipped.
+            by_run = {
+                row["run_id"]: row
+                for row in records
+                if isinstance(row.get("run_id"), str)
+                and isinstance(row.get("job_id"), str)
+                and row["job_id"] in wanted
+            }
+            records = sorted(by_run.values(), key=_finished_at)
+            for row in records:
+                row.pop("trace", None)
         total = len(records)
         records.reverse()
         return records[offset : offset + limit], total
@@ -725,6 +794,14 @@ class CronHistoryStore:
             if row is not None and row.get("run_id") == run_id:
                 return row
         return None
+
+    def has_run_sync(self, job_id: str, run_id: str) -> bool:
+        """Whether *job_id*'s own history file holds a row with *run_id*. WORKER-THREAD ONLY.
+
+        Raises the ``OSError`` of a read that failed, so a caller never takes a
+        file it could not read for one without the row.
+        """
+        return self._get_run_detail_sync(job_id, run_id) is not None
 
     async def rotate(self, job_id: str) -> None:
         """Trim job file to last _MAX_RECORDS_PER_JOB records."""

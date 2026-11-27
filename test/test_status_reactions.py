@@ -731,9 +731,12 @@ class TestFormatTurnStatus:
     def test_elapsed_shape(self, elapsed: float, expected: str) -> None:
         assert format_turn_status(elapsed) == expected
 
-    @pytest.mark.parametrize("pct", [0.0, 29.9, 30.0, 49.0, 50.0, 70.0])
-    def test_context_reading(self, pct: float) -> None:
-        assert format_turn_status(5.0, pct) == f"Finished in 5s · ctx {round(pct)}%"
+    @pytest.mark.parametrize(
+        "pct,icon",
+        [(0.0, "🟢"), (29.9, "🟢"), (30.0, "🟡"), (49.0, "🟡"), (50.0, "🟠"), (70.0, "🔴")],
+    )
+    def test_context_bands(self, pct: float, icon: str) -> None:
+        assert format_turn_status(5.0, pct) == f"Finished in 5s · {icon} ctx {round(pct)}%"
 
     def test_unknown_usage_carries_no_chip(self) -> None:
         assert format_turn_status(5.0, None) == "Finished in 5s"

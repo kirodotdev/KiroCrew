@@ -200,11 +200,11 @@ async def test_the_wave_digest_names_an_empty_turn_after_work_as_its_cause():
     lines = "\n".join(injected).splitlines()
     empty_lines = [line for line in lines if f"`{empty.id}`" in line]
     assert any(
-        "✅ (partial: ended without a closing reply after tool calls)" in line
+        "completed (partial: ended without a closing reply after tool calls)" in line
         for line in empty_lines
     )
     assert not any("backend failed to generate" in line for line in empty_lines)
     assert any(
-        f"`{kept.id}` ✅ (partial: backend failed to generate the final response)" in line
+        f"`{kept.id}` completed (partial: backend failed to generate the final response)" in line
         for line in lines
     )

@@ -23,6 +23,7 @@ import shlex
 import urllib.parse
 from typing import Any
 
+from kiro_crew import change_card_memory as _memory_kind
 from kiro_crew import guide_catalog
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
@@ -32,6 +33,7 @@ from kiro_crew.change_card_catalog_kinds import (
     _SETTING_ORDER,
     CREWMATE_CREATE_SCHEDULE_STEP,
     DEFAULT_CREWMATE_TEMPLATE,
+    HEARTBEAT_HOURS_KEY,
     KIND_CONNECTION_CONNECT,
     KIND_CREWMATE_CAPABILITIES,
     KIND_CREWMATE_CHECK_INS,
@@ -45,7 +47,9 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_FOLDER_STEERING,
     KIND_MCP_ADD_CUSTOM,
     KIND_MCP_INSTALL,
+    KIND_MCP_SERVER,
     KIND_MCP_TOGGLE,
+    KIND_PROJECT_MCP_SERVER,
     KIND_SCHEDULE_CREATE,
     KIND_SCHEDULE_UPDATE,
     KIND_SECRET_SAVE,
@@ -64,6 +68,7 @@ from kiro_crew.change_card_catalog_kinds import (
     workflow_save_slug,
 )
 from kiro_crew.config.sections import (
+    DASHBOARD_KEYED_ENV_MAPS,
     DEFAULT_MODEL,
     MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE,
     MEMBER_APPROVAL_MODES,
@@ -202,6 +207,7 @@ DASHBOARD_SETTINGS: dict[str, tuple[str, tuple[Any, ...]]] = {
     "chat.auto-open-git-in-side-panel": ("auto_open_git_panel", _BOOL_VALUES),
     "chat.split-view-session-grid": ("session_grid", _BOOL_VALUES),
     "chat.tail-only-fork": ("tail_fork_enabled", _BOOL_VALUES),
+    "chat.pin-forks-of-pinned-sessions": ("fork_inherits_pin", _BOOL_VALUES),
     "chat.restore-sessions": ("restore_sessions", _BOOL_VALUES),
     "chat.restore-window": ("restore_window_minutes", (15, 30, 60, 120, 360, 720, 1440, 0)),
     "chat.pr-and-issue-chips-on-session-cards": ("session_card_source_links", _BOOL_VALUES),
@@ -416,13 +422,15 @@ def build_preview(
         label = snapshot.get("label") or p.get("setting_id") or p.get("path")
         if snapshot.get("store") == STORE_DASHBOARD and snapshot.get("key") in DASHBOARD_LIST_KEYS:
             raise _fail("list_setting", f"'{label}' is a list; pass 'op' and one 'item'")
-        if _setting_risk_key(p, snapshot) == "agent.strands_env":
+        risk_key = _setting_risk_key(p, snapshot)
+        if risk_key in DASHBOARD_KEYED_ENV_MAPS:
             # Its PATCH is a keyed change, not a replacement, so a card's whole-map
             # after and its whole-map undo would not do what the card shows. Set
             # in Settings > Agent Harness, one variable at a time.
             raise _fail(
                 "setting_not_editable",
-                "agent.strands_env is set in Settings > Agent Harness > Strands, one key at a time",
+                f"{risk_key} is set in Settings > Agent Harness > "
+                f"{DASHBOARD_KEYED_ENV_MAPS[risk_key]}, one key at a time",
             )
         if before == p["value"]:
             raise _fail("no_change", f"'{label}' already has that value")
@@ -484,6 +492,11 @@ def build_preview(
             {"label": "Name", "after": p["name"]},
             {"label": "Goal", "after": p["goal"]},
         ]
+        # "" and DEFAULT_MODEL both mean inherit: no row, and the create body
+        # carries no pin, exactly as a card without `model`.
+        model = normalize_agent_model(p.get("model"))
+        if model:
+            out["changes"].append({"field": "model", "label": "Model", "after": model})
         inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
         if inherited:
             # The crewmate runs these without asking from its first turn; the
@@ -515,6 +528,7 @@ def build_preview(
                     # Its first chat opens with the crewmate asking about this
                     # goal, as one made on the Crewmates page does.
                     "first_greeting": True,
+                    **({"model": model} if model else {}),
                 },
             ),
             step(
@@ -646,7 +660,7 @@ def build_preview(
                     "field": GOAL_HEARTBEAT_FIELD,
                     "after": offer["checked"],
                     "interval": every,
-                    "per_day": _goals.wakes_per_day(every),
+                    "per_day": _goals.wakes_per_day(every, offer["hours"]),
                 }
             )
             goal_body["heartbeat_offer"] = (
@@ -744,13 +758,14 @@ def build_preview(
         if not snapshot.get("has_goal") and any(p.get(c) is True for c in _goals.CADENCES):
             raise _fail("no_goal", "the Bot has no goal to check in on yet")
         label = str(context.get("label") or p["member"])
+        hours = snapshot.get(HEARTBEAT_HOURS_KEY)
         out["title"] = f"Set the check-ins for “{label}”"
         out["changes"] = [
             {
                 "label": CHECK_IN_LABELS[k],
                 "field": k,
-                "before": _check_in_value(k, before_ci.get(k)),
-                "after": _check_in_value(k, v),
+                "before": _check_in_value(k, before_ci.get(k), hours),
+                "after": _check_in_value(k, v, hours),
             }
             for k, v in changed.items()
         ]
@@ -761,7 +776,7 @@ def build_preview(
                 if row["field"] == _goals.CADENCE_HEARTBEAT:
                     row["after"] = (
                         f"On, every {_goals.interval_label(every)} "
-                        f"(up to {_goals.wakes_per_day(every)} runs a day)"
+                        f"(up to {_goals.wakes_per_day(every, hours)} runs a day)"
                     )
         out["scope"] = {"members": [label], "count": 1, "only_this_member": True}
         out["apply"] = [
@@ -905,6 +920,16 @@ def build_preview(
         out["apply"] = [
             step("POST", "/api/mcp/custom", {"servers": p["servers"], "enable": p["enable"]})
         ]
+    elif kind == KIND_MCP_SERVER:
+        from kiro_crew.change_card_mcp_server import build_preview as _mcp_server_preview
+
+        _mcp_server_preview(p, snapshot, out)
+    elif kind == KIND_PROJECT_MCP_SERVER:
+        from kiro_crew.change_card_project_mcp import build_preview as _project_mcp_preview
+
+        _project_mcp_preview(p, snapshot, out)
+    elif kind == _memory_kind.KIND_CREWMATE_MEMORY:
+        _memory_kind.build_preview(p, snapshot, out, str(context.get("label") or p["member"]))
     elif kind == KIND_MCP_TOGGLE:
         if not snapshot.get("exists"):
             raise _fail("not_found", "that MCP server is not configured")
@@ -1013,6 +1038,11 @@ def build_preview(
     elif kind == KIND_WORKFLOW_UPDATE:
         if not snapshot.get("exists"):
             raise _fail("not_found", f"no saved workflow '{p['workflow']}'")
+        if snapshot.get("builtin"):
+            raise _fail(
+                "builtin",
+                f"'{p['workflow']}' is a built-in workflow; save a copy under a new name",
+            )
         if snapshot.get("format") != "python":
             raise _fail("not_python", "only a Python workflow can be revised from a card")
         changed = {k: p[k] for k in ("name", "description") if k in p and p[k] != snapshot.get(k)}
@@ -1262,6 +1292,8 @@ def offers_no_undo(kind: str, params: dict[str, Any]) -> bool:
     if kind in (
         KIND_MCP_INSTALL,
         KIND_MCP_ADD_CUSTOM,
+        KIND_MCP_SERVER,
+        KIND_PROJECT_MCP_SERVER,
         KIND_CONNECTION_CONNECT,
         KIND_TRUST_APP,
         KIND_SCHEDULE_UPDATE,
@@ -1272,6 +1304,8 @@ def offers_no_undo(kind: str, params: dict[str, Any]) -> bool:
         # revision stays in the definition's history.
         KIND_WORKFLOW_SAVE,
         KIND_WORKFLOW_UPDATE,
+        # Each record keeps its history on the memory page, which restores a version.
+        _memory_kind.KIND_CREWMATE_MEMORY,
     ):
         return True
     return kind == KIND_DENIED_COMMAND and params.get("action") == "add"
@@ -1576,7 +1610,7 @@ GOAL_HEARTBEAT_FIELD = "heartbeat_offer"
 
 
 def _goal_heartbeat_offer(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any] | None:
-    """The goal card's Heartbeat checkbox, ``{checked, interval}``, or ``None`` for none.
+    """The goal card's Heartbeat checkbox, ``{checked, interval, hours}``, or ``None`` for none.
 
     Offered while the snapshot reads the Heartbeat off and never declined
     (the record's ``heartbeat_offer`` is not ``declined``). A snapshot taken
@@ -1589,7 +1623,11 @@ def _goal_heartbeat_offer(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[s
     every = hb.get("interval")
     if not _goals.is_heartbeat_interval(every):
         every = _goals.DEFAULT_HEARTBEAT_INTERVAL
-    return {"checked": p.get("heartbeat", True) is not False, "interval": every}
+    return {
+        "checked": p.get("heartbeat", True) is not False,
+        "interval": every,
+        "hours": hb.get("hours"),
+    }
 
 
 def _goal_path(slug: str) -> str:
@@ -1617,8 +1655,8 @@ CHECK_IN_LABELS = {
 _WEEKDAY_NAMES = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 
 
-def _check_in_value(key: str, value: Any) -> str | None:
-    """How one check-in field reads on the card."""
+def _check_in_value(key: str, value: Any, hours: Any = None) -> str | None:
+    """How one check-in field reads on the card, *hours* being its active hours."""
     if value is None:
         return None
     if key in _goals.CADENCES:
@@ -1630,7 +1668,7 @@ def _check_in_value(key: str, value: Any) -> str | None:
     if key == "interval" and isinstance(value, int):
         return (
             f"Every {_goals.interval_label(value)} "
-            f"(up to {_goals.wakes_per_day(value)} runs a day)"
+            f"(up to {_goals.wakes_per_day(value, hours)} runs a day)"
         )
     return str(value)
 

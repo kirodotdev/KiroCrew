@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { clickOptimize } from './optimizeRow'
 
 /**
  * fireEvent.paste passes eventProperties into the native event's clipboardData,
@@ -172,7 +173,7 @@ describe('ChatInput optimize: forwards paste content', () => {
         onPasteBlocksChange={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+    clickOptimize()
 
     // The optimize request must carry the full paste content keyed by seq, so
     // the backend can forward it to the model without expanding the token.

@@ -3,8 +3,8 @@ title: The batch write guard is on by default
 status: implemented
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-11-09
-last-audited: 2026-11-09
-audited-at: 87defc8a5f
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: 33570
 implementation-prs: [33582]
 tracking-issues: []
@@ -15,7 +15,9 @@ superseded-by: []
 # RFC: The batch write guard is on by default
 
 Status: implemented in
-[#33582](https://github.com/kirodotdev/KiroCrew/pull/33582). The repository owner (iamwhatever) asked for this on
+[#33582](https://github.com/kirodotdev/KiroCrew/pull/33582); checked at
+`fc89562d69`, `HooksConfig.batch_write_guard` in `hook_runtime/hook_types.py`
+defaults to `True`. The repository owner (iamwhatever) asked for this on
 2026-11-09 through the conductor chat that dispatched the work. This document
 landed first, and the code change rebased onto it. Every citation below was read
 on `origin/main` at `1e3b894d87`. Citations name a file and a symbol, not a line

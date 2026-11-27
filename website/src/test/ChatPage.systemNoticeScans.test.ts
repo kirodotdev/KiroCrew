@@ -37,8 +37,9 @@ describe('last-assistant scans skip system-notice rows', () => {
     expect(i).toBeGreaterThan(-1)
     const body = CHAT_PAGE.slice(i, CHAT_PAGE.indexOf('}, [messages])', i))
     expect(body).toContain('!isSystemNoticeRow(messages[i])')
-    // The invisible-row skip must survive alongside the new one.
-    expect(body).toContain('!isHiddenInvisibleAssistantRow(messages[i])')
+    // The hidden-reply skip (invisible-only rows, and a steering-note-only
+    // reply in a policy-block turn) must survive alongside the new one.
+    expect(body).toContain('!isHiddenReplyAt(messages[i], messages, i)')
   })
 
   it('showFooter walk passes over notice rows', () => {

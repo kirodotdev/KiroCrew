@@ -399,6 +399,16 @@ async def _monitor_watch(
     binding = _structured_binding(session_key)
     if not binding:
         raise _DirectiveDenied("monitor_watch is not supported from this session type.")
+    also_wake_on: list[str] = []
+    if args.get("also_wake_on") is not None:
+        from kiro_crew.monitoring.also_wake import normalize_also_wake_on
+
+        try:
+            also_wake_on = normalize_also_wake_on(
+                str(args["kind"]), str(args["target"]), list(args["also_wake_on"])
+            )
+        except (TypeError, ValueError) as exc:
+            raise _DirectiveDenied(f"Structured monitor NOT armed: {exc}") from exc
     budgets = MonitorBudgets(
         max_runtime_secs=int(args["max_runtime_secs"]),
         max_agent_turns=int(args["max_agent_turns"]),
@@ -414,6 +424,7 @@ async def _monitor_watch(
         cadence_secs=int(args["cadence_secs"]),
         wake_instructions=str(args.get("wake_instructions") or ""),
         wake_on_terminal=bool(args.get("wake_on_terminal") or False),
+        also_wake_on=also_wake_on,
     )
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
@@ -533,6 +544,7 @@ async def _monitor_update(
             "max_tokens",
             "max_provider_errors",
             "wake_instructions",
+            "also_wake_on",
         }
     )
     if structured_only:
@@ -852,6 +864,8 @@ async def _structured_monitor_update(
         structured["cadence_secs"] = int(patch["idle_secs"])
     if "wake_instructions" in patch:
         structured["wake_instructions"] = str(patch["wake_instructions"])
+    if "also_wake_on" in patch:
+        structured["also_wake_on"] = [str(extra) for extra in patch["also_wake_on"] or ()]
     budget_fields = {
         "max_runtime_secs",
         "max_agent_turns",

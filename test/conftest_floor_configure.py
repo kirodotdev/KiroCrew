@@ -1,6 +1,7 @@
 """Process-wide redirects ``pytest_configure`` installs once per run (the
 hypothesis database, bytecode, child ``PYTHONPATH``, the real ``node`` on ``PATH``, the
-pytest-asyncio scan gate, the crew-log switch), and the hook that trims every recorded warning.
+pytest-asyncio scan gate, the crew-log switch, the Windows UNC refusal), and the hook that
+trims every recorded warning.
 
 Part of the rootdir ``conftest.py``'s host-mutation floor. That file loads this module by
 path and binds the names it needs, so pytest registers every fixture and hook here as
@@ -13,12 +14,15 @@ are stdlib, pytest and the floor parts loaded before this one, and nothing here 
 from __future__ import annotations
 
 import functools
+import importlib.util
 import os
 import pathlib
 import shutil
 import subprocess
 import sys
+import time
 import warnings
+from importlib.metadata import entry_points as _installed_entry_points
 
 import pytest
 from conftest_floor_home import _account_home
@@ -145,6 +149,87 @@ def _redirect_bytecode_cache() -> None:
         return
     sys.pycache_prefix = candidate
     os.environ["PYTHONPYCACHEPREFIX"] = candidate
+
+
+#: A sibling checkout's mirror with no directory changed for this long is retired
+#: even though its source still exists: nothing has compiled there in two weeks.
+_MIRROR_IDLE_SECONDS = 14 * 24 * 3600.0
+#: How many ancestors of the rootdir have their mirror's children checked. Two
+#: covers both usual layouts: ``<repo>/.worktrees/<name>`` (the parent holds the
+#: sibling worktrees) and ``<scratch root>/<id>/<clone>`` (the grandparent holds
+#: the sibling scratch dirs, which the scratch sweep deletes as a whole).
+_MIRROR_PRUNE_LEVELS = 2
+
+
+def _mirror_path(source: str) -> str:
+    """The ``sys.pycache_prefix`` mirror CPython uses for sources under *source*.
+
+    Asks CPython's own mapping, so the drive handling on Windows is the interpreter's.
+    """
+    probe = os.path.join(os.path.abspath(source), "_mirror_probe.py")
+    return os.path.dirname(importlib.util.cache_from_source(probe))
+
+
+def _mirror_is_idle(mirror: str, cutoff: float) -> bool:
+    """Whether no directory under *mirror* changed since *cutoff*.
+
+    CPython writes a ``.pyc`` by renaming a temp file into place, which bumps its
+    directory's mtime, so the newest directory mtime is when bytecode last landed.
+    Stops at the first fresh directory, so a mirror in use costs a few stats.
+    """
+    for dirpath, _dirnames, _filenames in os.walk(mirror):
+        try:
+            if os.stat(dirpath).st_mtime >= cutoff:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _prune_bytecode_mirror_of_gone_checkouts(rootdir: str) -> None:
+    """Drop the mirrors of sibling checkouts that are gone or idle for two weeks.
+
+    :func:`_redirect_bytecode_cache` keys the mirror on each source's absolute path,
+    so every worktree and every throwaway clone gets a full copy, and that copy
+    outlives ``git worktree remove`` and the scratch sweep that delete its source.
+    Left alone, these copies reach tens of gigabytes on a busy host.
+
+    For the rootdir's parent and grandparent, each child of their mirror is removed
+    when its source path is gone, or when the source is a checkout (it holds a
+    ``.git``) and nothing under its mirror was written for :data:`_MIRROR_IDLE_SECONDS`.
+    A non-checkout child such as a shared ``.venv`` is only read once warm, so it is
+    never retired for age. The chain the rootdir sits on is never touched. Deleting
+    bytecode only costs a recompile, so a concurrent run is slowed at worst.
+    """
+    if not getattr(sys, "pycache_prefix", None):
+        return
+    here = os.path.abspath(rootdir)
+    cutoff = time.time() - _MIRROR_IDLE_SECONDS
+    ancestor = here
+    for _ in range(_MIRROR_PRUNE_LEVELS):
+        parent = os.path.dirname(ancestor)
+        if parent == ancestor:
+            return
+        ancestor = parent
+        try:
+            names = os.listdir(_mirror_path(ancestor))
+        except OSError:
+            continue
+        for name in names:
+            source = os.path.join(ancestor, name)
+            if here == source or here.startswith(source + os.sep):
+                continue
+            mirror = _mirror_path(source)
+            if not os.path.isdir(mirror) or os.path.islink(mirror):
+                continue
+            gone = not os.path.lexists(source)
+            idle_checkout = (
+                not gone
+                and os.path.lexists(os.path.join(source, ".git"))
+                and _mirror_is_idle(mirror, cutoff)
+            )
+            if gone or idle_checkout:
+                shutil.rmtree(mirror, ignore_errors=True)
 
 
 def _put_the_tree_under_test_first_on_child_paths() -> None:
@@ -343,7 +428,16 @@ def _hide_the_hosts_companion_plugins() -> None:
     wrapper drops the entry points present at configure time and keeps any a test
     plants later through ``importlib.metadata``. ``bootstrap`` imported the function by
     name, so its binding is replaced too. A child process still sees the companion.
+
+    With no ``kirocrew.plugins`` entry point installed (CI, and most developer venvs)
+    there is nothing to hide, so it returns before importing ``kiro_crew``: those
+    imports reach about a hundred modules every collection would otherwise pay for
+    (test/test_conftest_import_budget.py holds that line). The group name is
+    ``discovery.PLUGIN_GROUP``; the budget test pins the two together.
     """
+    if not _installed_entry_points(group="kirocrew.plugins"):
+        return
+
     from kiro_crew.platform import bootstrap, discovery
 
     real = discovery.plugin_entry_points
@@ -357,6 +451,138 @@ def _hide_the_hosts_companion_plugins() -> None:
 
     discovery.plugin_entry_points = without_host_companions
     bootstrap.plugin_entry_points = without_host_companions
+
+
+class UncNetworkPathRefused(BaseException):
+    """A test asked Windows to open a UNC share, which is a network connection.
+
+    A ``BaseException`` so the product's own ``except OSError`` / ``except Exception``
+    around the call cannot swallow it and turn the refusal into a quiet pass.
+    """
+
+
+def _unc_share(path) -> str | None:
+    """The ``\\\\host\\share`` Windows would open SMB to for *path*, else ``None``.
+
+    Lexical only. ``\\\\?\\`` and ``\\\\.\\`` paths are local (a long path, a volume, a
+    device) unless they continue with ``UNC\\``; forward slashes count as backslashes.
+    """
+    if isinstance(path, int):
+        return None  # a file descriptor
+    try:
+        text = os.fsdecode(path)
+    except Exception:  # noqa: BLE001 - not a path; the real call answers for it
+        return None
+    if text[:1] not in ("\\", "/") or text[1:2] not in ("\\", "/"):
+        return None  # the common case: a drive path, or a relative one
+    if "\0" in text:
+        return None  # Python refuses an embedded NUL before it asks Windows anything
+    text = text.replace("/", "\\")
+    if text[2:3] in ("?", ".") and text[3:4] == "\\":
+        if text[4:8].upper() != "UNC\\":
+            return None
+        text = "\\\\" + text[8:]
+    host, _, rest = text[2:].partition("\\")
+    if not host:
+        return None
+    share = rest.partition("\\")[0]
+    return ("\\\\" + host + "\\" + share).lower()
+
+
+_UNC_GUARD_INSTALLED = False
+
+
+def _refuse_unc_network_paths(rootdir: str) -> None:
+    """On Windows, refuse a stat or resolve of a UNC path instead of opening SMB to it.
+
+    ``os.path.realpath``, ``Path.resolve``, ``os.stat`` and ``os.path.exists`` on
+    ``\\\\host\\share\\x`` connect to ``host``. The answer (WinError 53, 64 or 67, or a
+    stall) follows the runner's network, so a test that reaches one is flaky by
+    construction (testing-conventions D10). The wrapped calls raise
+    ``UncNetworkPathRefused`` at once instead, which is the same on every runner. A
+    test stubs the seam the product calls, as a ``monkeypatch`` that replaces the
+    guarded function does. A share holding the checkout, the working directory, the temp
+    dir, the home or the interpreter stays allowed, so a run started from a network
+    drive still works.
+
+    shortcut: a name bound by ``from os.path import exists`` before ``pytest_configure``
+    keeps the unguarded call, and ``open``, ``listdir``/``scandir``, ``access`` and
+    ``ismount`` are not wrapped; widen the set when a flake shows one.
+    """
+    global _UNC_GUARD_INSTALLED
+    if os.name != "nt" or _UNC_GUARD_INSTALLED:
+        return
+    _UNC_GUARD_INSTALLED = True
+    import ntpath
+    import tempfile
+
+    homes = (
+        rootdir,
+        os.getcwd(),
+        tempfile.gettempdir(),
+        os.path.expanduser("~"),
+        sys.prefix,
+        sys.base_prefix,
+        sys.executable,
+    )
+    # A mapped drive (``Z:\`` on ``\\server\share``) resolves to its share, and
+    # ``realpath`` then stats that share, so the resolved form is allowed too. Resolved
+    # here, before the wrappers exist.
+    resolved = []
+    for home in homes:
+        try:
+            resolved.append(os.path.realpath(home))
+        except (OSError, ValueError):
+            pass
+    allowed = frozenset(share for share in map(_unc_share, (*homes, *resolved)) if share)
+
+    def guard(real, module_name: str, attr: str, name: str):
+        @functools.wraps(real)
+        def refuse_unc(*args, **kwargs):
+            # Read ``__fspath__`` once and hand the real call that same value, so the
+            # path checked is the path opened.
+            path = args[0] if args else kwargs.get("path")
+            if path is not None and not isinstance(path, (str, bytes, int)):
+                path = os.fspath(path)  # a non-path raises TypeError, as the real call does
+                if args:
+                    args = (path, *args[1:])
+                else:
+                    kwargs["path"] = path
+            share = _unc_share(path)
+            if share is not None and share not in allowed:
+                raise UncNetworkPathRefused(
+                    f"{name}({path!r}) would open an SMB connection to {share} on Windows, "
+                    "and the answer depends on the runner's network. Stub the seam the "
+                    "product calls (for example monkeypatch os.path.realpath to "
+                    "os.path.normpath for UNC input) or assert without resolving "
+                    "(testing-conventions D10)."
+                )
+            return real(*args, **kwargs)
+
+        # Named after the attribute it replaces, so ``pickle`` finds this object there.
+        refuse_unc.__module__ = module_name
+        refuse_unc.__qualname__ = attr
+        return refuse_unc
+
+    for module, attr, name in (
+        (os, "stat", "os.stat"),
+        (os, "lstat", "os.lstat"),
+        (os, "readlink", "os.readlink"),
+        (ntpath, "_getfinalpathname", "os.path.realpath"),
+        (ntpath, "exists", "os.path.exists"),
+        (ntpath, "isdir", "os.path.isdir"),
+        (ntpath, "isfile", "os.path.isfile"),
+        (ntpath, "islink", "os.path.islink"),
+    ):
+        real = getattr(module, attr, None)
+        if real is None:
+            continue
+        wrapped = guard(real, module.__name__, attr, name)
+        setattr(module, attr, wrapped)
+        # ``os.stat in os.supports_fd`` must still answer as it did for the real call.
+        for supports in (os.supports_fd, os.supports_dir_fd, os.supports_follow_symlinks):
+            if real in supports:
+                supports.add(wrapped)
 
 
 @pytest.hookimpl(trylast=True)

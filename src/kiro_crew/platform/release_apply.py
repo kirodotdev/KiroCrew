@@ -17,14 +17,12 @@ The order is fixed:
    venv, or the shadow tree the wheel engine builds beside the running one);
 2. the NEW release's own ``kirocrew kas install --if-in-use`` runs, on the new
    code's interpreter, so the pin it installs is the new release's and not the
-   one this process imported. The child decides how much the install needs the
-   engine: ``agent.kas_bundle`` is on, or an engine is on disk and KAS takes the
-   bundle route on its own (a failure fails the update), an engine
-   version is only on disk (a failure, or a download still running at
-   :data:`ENGINE_OPTIONAL_DEADLINE_SECS`, exits :data:`ENGINE_OPTIONAL_FAILED_EXIT`,
-   and the update goes on with the retry command reported), or neither (nothing
-   to do), so a relay-route host that cannot fetch the engine, or fetches it
-   slowly, keeps updating;
+   one this process imported. A platform wheel carries that engine inside its
+   package, so the child finds it and downloads nothing; a pure wheel or a git
+   checkout downloads it. Any failure fails the update, whatever
+   ``agent.kas_bundle`` says: no update switches to a release without its engine
+   (the engine guarantee). A host the engine cannot run on at all is the
+   one exception, reported by the child, which exits 0;
 3. only then is the release switched to: the wheel engine promotes the stable
    link, the git callers restart. A failed or timed-out engine install fails the
    update before that switch, and the old version keeps running.
@@ -52,12 +50,13 @@ import dataclasses
 import functools
 import logging
 import os
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, overload
 
-from kiro_crew import dep_sync
+from kiro_crew import dep_sync, extras
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform.wheel_engine_build_child import _redacted_detail, _spawn_build_child
 from kiro_crew.platform.wheel_engine_contract import ApplyCancel, WheelUpdateError, _BuildContext
@@ -79,36 +78,11 @@ ENGINE_INSTALL_TIMEOUT_SECS = 900.0
 #: ``-P`` like every self-launch of ``-m kiro_crew``.
 ENGINE_INSTALL_ARGS = ("-I", "-P", "-m", "kiro_crew", "kas", "install", "--if-in-use")
 
-#: What ``kas install --if-in-use`` exits with when it refreshed nothing for an
-#: engine that is only on disk (``agent.kas_bundle`` is off). Not a failure of the
-#: update: nothing runs that engine, so the release still switches.
-ENGINE_OPTIONAL_FAILED_EXIT = 4
-
-#: How long an optional refresh may download before it stops at its next chunk
-#: and exits :data:`ENGINE_OPTIONAL_FAILED_EXIT`. The child bounds itself, below
-#: :data:`ENGINE_INSTALL_TIMEOUT_SECS`, because this process's kill at that bound
-#: reads as a failed install: on a slow network the update would never switch.
-ENGINE_OPTIONAL_DEADLINE_SECS = 600.0
-
-#: When an optional refresh that never reaches a chunk (a stalled connection) is
-#: ended by the child's own timer, still before :data:`ENGINE_INSTALL_TIMEOUT_SECS`.
-ENGINE_OPTIONAL_HARD_STOP_SECS = 660.0
-
-#: The first stdout line of a ``kas install --if-in-use`` child whose refresh is
-#: optional, so a child that ends any other way (a signal) still reads as that case.
-ENGINE_OPTIONAL_MARKER = "kas-engine-need: optional"
-
-#: The line an update reports for that case, naming the retry.
-ENGINE_SKIPPED_MESSAGE = (
-    "The KAS engine this release pins was not installed (agent.kas_bundle is off, "
-    "so the update goes on). Retry with: kirocrew kas install"
-)
-
 #: The variable that names the data home.
 DATA_HOME_ENV = "KIROCREW_HOME"
 
 #: The progress line both routes show while the engine step runs.
-ENGINE_STEP_MESSAGE = "Installing the KAS engine the new version pins (when this install runs it)…"
+ENGINE_STEP_MESSAGE = "Installing the KAS engine the new version pins…"
 
 
 #: What argparse prints when the target release predates the engine step: one with
@@ -171,24 +145,22 @@ def _data_home_env() -> dict[str, str]:
     return {DATA_HOME_ENV: str(Path(data_home()).resolve())}
 
 
-def _install_engine(python: Path, ctx: _BuildContext) -> str | None:
+def _install_engine(python: Path, ctx: _BuildContext) -> None:
     """Run the new release's ``kirocrew kas install --if-in-use`` on *python*.
 
-    Returns ``None`` when the engine is in place (or not needed), and
-    :data:`ENGINE_SKIPPED_MESSAGE` when the child exited
-    :data:`ENGINE_OPTIONAL_FAILED_EXIT`, or exited any other nonzero way after
-    printing :data:`ENGINE_OPTIONAL_MARKER`: an engine only on disk was not
-    refreshed, which the caller reports and does not fail on. An optional child
-    ends itself by :data:`ENGINE_OPTIONAL_HARD_STOP_SECS`, so this process's own
-    timeout only ends a required install. Raises :class:`EngineInstallError` on a nonzero exit, and the spawn's own
-    :class:`WheelUpdateError` (timeout, could not start) or
-    ``WheelUpdateCancelled`` otherwise. The child's stderr tail, redacted, is the
-    reason a caller shows. A target release that predates the step (argparse's
-    usage exit naming it, :data:`_PREDATES_THE_STEP`) is a success: a channel
-    move or rollback to an older build must not fail on a flag that build never
-    had.
+    Returns when the pinned engine is in place: carried inside a platform wheel's
+    package, already in the data home, or installed now. Every nonzero exit
+    raises :class:`EngineInstallError`, whatever ``agent.kas_bundle`` says, so no
+    update switches to a release without its engine (the engine guarantee).
+    A host the engine cannot run on at all is the child's own success: it says so
+    and exits 0, since no retry could install it there. The spawn's own
+    :class:`WheelUpdateError` (timeout, could not start) or ``WheelUpdateCancelled``
+    propagates. The child's stderr tail, redacted, is the reason a caller shows. A
+    target release that predates the step (argparse's usage exit naming it,
+    :data:`_PREDATES_THE_STEP`) is a success: a channel move or rollback to an
+    older build must not fail on a flag that build never had.
     """
-    rc, out, err = _spawn_build_child(
+    rc, _out, err = _spawn_build_child(
         [str(python), *ENGINE_INSTALL_ARGS],
         ENGINE_INSTALL_TIMEOUT_SECS,
         "the KAS engine install",
@@ -197,19 +169,12 @@ def _install_engine(python: Path, ctx: _BuildContext) -> str | None:
         env_overrides=_data_home_env(),
     )
     if rc == 2 and any(marker in err for marker in _PREDATES_THE_STEP):
-        return None
-    # The child names an optional refresh before it starts one, so an optional
-    # child that ended any other nonzero way (a signal) never fails the update.
-    optional = ENGINE_OPTIONAL_MARKER.encode() in out.splitlines()
-    if rc == ENGINE_OPTIONAL_FAILED_EXIT or (rc != 0 and optional):
-        logger.warning("%s", ENGINE_SKIPPED_MESSAGE)
-        return ENGINE_SKIPPED_MESSAGE
+        return
     if rc != 0:
         detail = _redacted_detail(err)
         raise EngineInstallError(
             f"the new version's KAS engine install exited {rc}" + (f": {detail}" if detail else "")
         )
-    return None
 
 
 def _apply_git(release: GitRelease) -> int:
@@ -229,7 +194,7 @@ def _apply_git(release: GitRelease) -> int:
         # it would fail every git update on a platform that route supports.
         trusted = release.trusted_env and trusted_system_path() is not None
         try:
-            skipped = _install_engine(
+            _install_engine(
                 release.target_py,
                 _BuildContext(cancel=release.cancel, trusted_env=trusted),
             )
@@ -241,8 +206,6 @@ def _apply_git(release: GitRelease) -> int:
                 True,
             )
             return ENGINE_FAILED
-        if skipped:
-            release.emit(skipped, False)
         return 0
     finally:
         if undo is not None:
@@ -258,11 +221,9 @@ def _apply_wheel(release: WheelRelease) -> Path:
         release.progress(ENGINE_STEP_MESSAGE)
         # The managed venv is POSIX-only; the wheel engine spells its
         # interpreter the same way when it builds the tree.
-        skipped = _install_engine(tree / "bin" / "python3", ctx)
-        if skipped:
-            release.progress(skipped)
+        _install_engine(tree / "bin" / "python3", ctx)
 
-    return wheel_engine.apply_wheel_update(
+    tree = wheel_engine.apply_wheel_update(
         channel=release.channel,
         feed_base=release.feed_base,
         artifact_base=release.artifact_base,
@@ -276,6 +237,37 @@ def _apply_wheel(release: WheelRelease) -> Path:
         trusted_env=release.trusted_env,
         install_engine=_engine,
     )
+    _note_uncarried(release, tree)
+    return tree
+
+
+def _running_tree() -> Path:
+    """The tree this process runs from: the one the update replaced."""
+    return Path(sys.prefix)
+
+
+def _note_uncarried(release: WheelRelease, tree: Path) -> None:
+    """Name what the promoted *tree* did not carry over from the running one.
+
+    The update carries the declared extras only. Both the progress line and the log get
+    the note: the dashboard keeps only the latest step, and an automatic update has no
+    viewer. The add-back command names the stable link, which outlives the versioned tree.
+    The tree is already promoted, so nothing here may turn the update into a failure.
+    """
+    from kiro_crew.platform import wheel_engine
+
+    try:
+        text = extras.uncarried_note(
+            extras.site_packages(_running_tree()),
+            extras.site_packages(tree),
+            str(wheel_engine.managed_venv_layout().stable_link / "bin" / "python"),
+        )
+    except Exception:  # a note only: the update has already succeeded
+        logger.debug("Could not compare the updated tree's packages", exc_info=True)
+        return
+    if text:
+        release.progress(text)
+        logger.warning("%s", text)
 
 
 @overload
@@ -332,10 +324,6 @@ __all__ = [
     "ENGINE_FAILED",
     "ENGINE_INSTALL_ARGS",
     "ENGINE_INSTALL_TIMEOUT_SECS",
-    "ENGINE_OPTIONAL_DEADLINE_SECS",
-    "ENGINE_OPTIONAL_FAILED_EXIT",
-    "ENGINE_OPTIONAL_HARD_STOP_SECS",
-    "ENGINE_OPTIONAL_MARKER",
     "EngineInstallError",
     "GitRelease",
     "WheelRelease",

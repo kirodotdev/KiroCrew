@@ -85,3 +85,30 @@ describe('visibleInstanceTabs and the fargate method', () => {
     expect(visibleInstanceTabs([idle, sticky, live], {}).map(i => i.id)).toEqual(['sticky', 'live'])
   })
 })
+
+describe('visibleInstanceTabs and a crew turned Off', () => {
+  it('drops a crew turned Off even though its connect intent is kept', () => {
+    // Off keeps `was_connected` and the refused connect leaves an error status;
+    // neither may bring the row back as a live "tunnel error" entry.
+    const off = inst('off', 'ssh', {
+      was_connected: true,
+      disabled: true,
+      status: { instance_id: 'off', state: 'error', error: 'instance is disabled' },
+    })
+    const on = inst('on', 'ssh', { was_connected: true, status: { instance_id: 'on', state: 'connected' } })
+    expect(visibleInstanceTabs([on, off], {}).map(i => i.id)).toEqual(['on'])
+  })
+
+  it('drops a crew reached through a crew turned Off, and keeps the parent of an Off child', () => {
+    const parent = inst('p', 'ssh', { was_connected: true, status: { instance_id: 'p', state: 'connected' } })
+    const offChild = inst('c', 'ssh', { was_connected: true, disabled: true, via_instance_id: 'p' })
+    const grandchild = inst('g', 'ssh', { was_connected: true, via_instance_id: 'c' })
+    expect(visibleInstanceTabs([parent, offChild, grandchild], {}).map(i => i.id)).toEqual(['p'])
+  })
+
+  it('terminates on a registry loop', () => {
+    const a = inst('a', 'ssh', { was_connected: true, via_instance_id: 'b' })
+    const b = inst('b', 'ssh', { was_connected: true, via_instance_id: 'a' })
+    expect(visibleInstanceTabs([a, b], {}).map(i => i.id)).toEqual(['a', 'b'])
+  })
+})

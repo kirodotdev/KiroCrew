@@ -41,6 +41,7 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { bottomTerminalPrefsSnapshot } from '../hooks/useBottomTerminal'
 import { adoptBoardFolderCollapse, boardFolderCollapseBackup } from '../utils/boardFolderCollapse'
 import { DURABLE_PREF_KEYS, PRE_ROSTER_KEYS } from './uiPrefsKeys'
+import { apiTransport } from '../api/apiTransport'
 
 export { DURABLE_PREF_KEYS } from './uiPrefsKeys'
 
@@ -1232,7 +1233,7 @@ async function putPatch(
   keepalive = false,
 ): Promise<Response | null> {
   try {
-    return await fetch(ENDPOINT, {
+    return await apiTransport.request(ENDPOINT, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prefs: patch }),

@@ -23,7 +23,7 @@ Clips are hosted, not shipped inside the package. That includes the "Kiro Crew i
 | Watch a clip to the end (80% counts) | Records `seen`; that video is never offered again. |
 | Close the Explore video card | Records `dismissed`; same permanence. |
 | `dashboard.feature_videos_enabled: true` in config | Turns the feature ON. It is OFF by default: no clip is downloaded or shown. |
-| "Download all" in Settings | Fetches every clip for your release now, without the background rate limit. |
+| **Download all now** in Settings | Fetches every clip for your release now, without the background rate limit. |
 
 ## Hosted Clips
 
@@ -42,7 +42,7 @@ and plays them from there.
   lands on disk. Once a manifest has arrived it replaces the built-in list, so
   while nothing has landed yet, nothing is shown: the download runs in the
   background and the Explore card shows what it landed.
-- "Download all" in Settings does the same pass immediately, without the rate limit.
+- **Download all now** in Settings does the same pass immediately, without the rate limit.
 
 ### Trust
 
@@ -184,7 +184,7 @@ dashboard:
 ```
 
 The manifest mirror override is the environment variable
-`KIROCREW_FEATURE_VIDEOS_MANIFEST_URL` (see Governance above), not a config key.
+`KIROCREW_FEATURE_VIDEOS_MANIFEST_URL` (see [Turning the download off](#turning-the-download-off)), not a config key.
 
 Display state lives in `feature_videos_state.json` beside `tips_state.json`, and downloaded clips in `feature-videos/<release>/` — both written with owner-only permissions.
 

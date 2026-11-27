@@ -751,6 +751,39 @@ async def test_any_other_build_failure_is_an_audited_500(monkeypatch):
     assert json.loads(resp.body)["code"] == "export_failed"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [{}, {"format": "md"}], ids=["json", "markdown"])
+async def test_no_export_carries_the_hosts_sandbox_runbook(query):
+    """A chat the host could not sandbox leaves an error row holding the host's
+    runbook (``host_sandbox_refusal``). An export keeps user and assistant turns
+    only, so no reader's file, a teammate's included, carries that row."""
+    from kiro_crew.dashboard import host_sandbox_refusal as hsr
+
+    runbook = "kernel.apparmor_restrict_unprivileged_userns=1"
+    messages = [
+        MSGS[0],
+        {
+            "role": "error",
+            "content": hsr.row_text(runbook),
+            "meta": {"code": hsr.HOST_SANDBOX_UNAVAILABLE},
+            "ts": "t2",
+        },
+        MSGS[1],
+    ]
+    slot = _slot(messages)
+    state = _state(messages, sessions=_FakeSessions({SESSION_KEY: "auto"}), slots={"slot-1": slot})
+
+    resp = await se.api_chat_slot_export(_request(state, query=query))
+
+    assert resp.status == 200
+    body = _export_bytes(resp)
+    if not query:
+        body = gzip.decompress(body)
+    assert b"it forwards loopback" in body
+    assert runbook.encode() not in body
+    assert hsr.HOST_SANDBOX_UNAVAILABLE.encode() not in body
+
+
 # ── Layer B leaves only for an operator's explicit twofold opt-in ─────────
 
 
@@ -985,6 +1018,15 @@ def test_the_free_text_provenance_fields_are_redacted():
 
     assert "0123456789abcdefghijklmnopqrstuvwxyz" not in source["project"]
     assert "0123456789abcdefghijklmnopqrstuvwxyz" not in source["workspace"]
+
+
+def test_a_spaced_windows_profile_project_path_is_redacted_whole():
+    """The shared pass stops at a space, so on ``D:\\Users\\Jane Doe\\...`` it
+    would keep ``Doe\\source\\repos\\app``. ``project`` is one path, so it goes whole."""
+    source = build_source_record(project="D:\\Users\\Jane Doe\\source\\repos\\app")
+    assert source["project"] == "[redacted-path]"
+    # A plain name that is not a path is still kept verbatim.
+    assert build_source_record(project="my-project")["project"] == "my-project"
 
 
 @pytest.mark.asyncio

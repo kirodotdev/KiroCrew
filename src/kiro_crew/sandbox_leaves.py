@@ -173,6 +173,12 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``apps/aws-control/``: a mask covers the leaf, not its ancestors, and an
     # agent-writable ancestor could be renamed out from under it mid-transfer.
     "aws-control-staging",
+    # Kiro Space store sign-ins (``apps.market_registries.MARKET_REGISTRIES_LEAF``):
+    # one folder per added store holding that store's CLI config and credential file,
+    # read by the gateway and the CLI child it runs, never by an agent. Masked so a
+    # same-UID agent cannot read the refresh token or swap in another person's
+    # sign-in, which the gateway would then send on the owner's behalf.
+    "market-registries",
     # Restart-surviving vouches (``kiro_crew._durable_vouch``). Each file is the
     # gateway's word that a session may reach its member's private store, so a
     # sandboxed writer could forge admission to a peer member's memory. Only the
@@ -201,6 +207,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # the spool write and the notice pass happen in the GATEWAY process, which
     # opens the paths directly.
     "inbound-spool",
+    # Resource-subscription records carry server-defined URIs, which may be
+    # credentials, and choose which session/server holder the unsandboxed gateway
+    # restores. Nothing in-sandbox reads them, so the directory is HIDDEN rather
+    # than merely READONLY. The whole directory covers its lock and write temps.
+    "mcp-resource-subscriptions",
     # The durable task queue (``tasks/tasks.db`` + SQLite siblings). Fenced
     # from agent file tools by ``security._CREW_SECRET_LEAVES``; masked here so
     # a spawned shell's ``sqlite3`` cannot read other sessions' task prompts or
@@ -253,10 +264,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``data/state/`` and empties the PAT here; the registry and settings copies it keeps
     # for a rollback, and the marker that closes the copy, stay behind this mask.
     _MD_NOTEBOOK_STAGING_LEAF,
-    # Browser session material an earlier version's browser CLI wrote: a storage
-    # state (cookies), its extension token and three retired markers. No reader is
-    # left in the tree, and nothing creates them any more; they stay masked because
-    # a file left on disk from that version still holds the owner's sessions. The
+    # Browser session material from an earlier version's browser integration: a
+    # cookie jar, the storage state built from it, the extension token and two
+    # retired markers. No reader is left in the tree, and nothing creates them any
+    # more; they stay masked because a file left on disk from that version still
+    # holds the owner's sessions. The
     # live browser paths are the Harness leaves below; ``browser-snapshots`` (the
     # agent's own screenshots) is deliberately visible.
     "browser-cookies.txt",
@@ -386,6 +398,14 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # could forge deletes or drop them. Created on the first release, so it is in
     # ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too, and in ``_CREW_NO_ALIAS_LEAVES``.
     "released-sessions",
+    # Grants kept across a gateway exit the user did not choose (``kept_grants``): the
+    # signed YOLO and chat-trust records the next boot restores, and the user-stop mark
+    # that ends them. A sandboxed writer could plant a record of its own or delete the
+    # mark a user's stop left, keeping auto-approval past that stop. Only the gateway
+    # and the operator's own ``kirocrew stop`` open it. Created before the first spawn,
+    # so it is in ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too, and in
+    # ``_CREW_NO_ALIAS_LEAVES``.
+    "kept-grants",
     # Crewmate teams (``crew_teams.py``): which crewmates are on which team. The
     # same shape as ``crew-panels`` and for the same reason it is not under
     # ``trust/``: a team is the OWNER's grouping, so the crewmates it groups must
@@ -490,6 +510,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # The second root holds the same authority for retained V1 runs only.
     "subagents",
     "member-memory-bindings",
+    # The signed per-session identity records (``session_token_sig``). The gateway is the
+    # only writer; an in-sandbox MCP server only reads one. A record a sandboxed process
+    # could create would name the session a later request is attested as.
+    "session-tokens",
     # Built-in named-store writes run in the gateway. Keep arbitrary sandboxed
     # code from rewriting that learning authority while allowing reads; this
     # ordinary sandbox rule is not a cross-member confidentiality boundary.
@@ -512,6 +536,15 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # The MCP page's server store. Every rendered agent spec merges it and a shared
+    # server's backend is launched from it outside the sandbox, so only the person
+    # writes it (the MCP page, or a ``request_server`` card); a sandboxed shell that
+    # could write it would choose what the gateway launches. Every writer is the
+    # gateway (``mcp_config_files._atomic_write``, and the onboarding import's
+    # ``onboarding_apply._write_mcp``); reads stay open for ``kirocrew
+    # doctor`` and the MCP report. Its saves are vouched like ``config.json``'s
+    # (``config.write_provenance``), so a page save never fails a spawn.
+    "mcp.json",
     # The runtime config and its overlay. They are ordinary settings files, but they
     # also carry the switches that LOOSEN confinement -- ``agent.sandbox`` (``"off"``
     # skips this very sandbox for every later spawn), ``agent.apps_allow_third_party`` /
@@ -563,6 +596,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # as the consent records here: this kernel write-denial is the load-bearing
     # half, since the shell gate matches no paths.
     "chat_steering_off.json",
+    # The owner's acknowledgement of the YOLO confirmation (``yolo_ack``). A writable
+    # record lets an agent pre-satisfy the confirmation the owner's next YOLO pick
+    # would show; the gateway's owner-only route is the only writer.
+    "yolo_ack.json",
     # The owner's Shared Crew preview switch. A writable record lets an
     # auto-approved agent choose whether the Crew opens to other people on its
     # next start. The read-only mount is the load-bearing half; the shell gate
@@ -653,6 +690,11 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # over an installed prefix would read as "engine absent" to any in-sandbox
     # status probe, while a seal keeps the truth visible and only the write denied.
     "browser-harness",
+    # The optional channel SDKs the desktop app installs on first use
+    # (``sdk_extras.EXTRAS_LEAF``), which the unsandboxed gateway IMPORTS. Same class
+    # as ``browser-harness``: a write would choose code the gateway runs, so it is
+    # sealed; the installer runs in the gateway, outside the sandbox.
+    "extras",
     # The KAS engine bundles Kiro Crew installs itself (``acp.kas_bundle``): a
     # pinned ``@kiro/agent`` tree and the Node runtime that executes it. Same
     # class as ``browser-harness``: a sandboxed KAS process must read and execute
@@ -1057,6 +1099,9 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # a leaf no child should get. The read-only and no-follow seals still stop any
     # child replacing what the gateway execs.
     "browser-harness",
+    # The optional channel SDKs, withheld for the ``browser-harness`` reason: only the
+    # gateway imports them, so no child needs to read them.
+    "extras",
     # KAS MCP launch snapshots hold MCP servers' env values, and only a KAS child
     # (not an enforced harness's) starts the launcher that reads them.
     "kas-mcp-launch",
@@ -1099,6 +1144,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # Browser Harness prefix is NOT here: no sandboxed process runs it -- the
     # gateway does -- so a child needs no read of it; see ``_CREW_CHILD_WITHHELD_LEAVES``.)
     "engines",
+    # The signed session identity records. A foreign harness's MCP servers resolve their
+    # own session from one, so the child must keep reading the directory.
+    "session-tokens",
     # Authorization and lineage records an in-sandbox reader resolves. Read-only
     # sealed for the same reason: a forged entry decides a later grant.
     "apps/.dev-grants.json",
@@ -1135,9 +1183,17 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # nothing about the agent's own ceiling, and the gateway reads it outside the
     # sandbox. The risk is a write, answered by the read-only seal.
     "chat_steering_off.json",
+    # The owner's YOLO confirmation acknowledgement: one boolean, no credential, and
+    # the gateway reads it outside the sandbox. The risk is a write, answered by the
+    # read-only seal.
+    "yolo_ack.json",
     # The owner's MCP message-body fields: server, tool and field names, no
     # credential. The risk is a write, answered by the read-only seal.
     "mcp_body_fields.json",
+    # The MCP page's server store. Classified readable to keep what a foreign child
+    # could read before it was sealed: it is off the read-gate floor, so the mask
+    # never covered it. The risk this seal answers is a write.
+    "mcp.json",
     # The operator's cloud configuration and the launch record beside it. Neither holds
     # a credential (``CloudConfig`` documents the file as the operator's own, with none),
     # and in-sandbox code READS both: the provisioner selector resolves the Fargate block

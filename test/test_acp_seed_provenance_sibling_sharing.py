@@ -116,7 +116,8 @@ class TestSharedPermissionSurfaceEligibility:
         assert "model" not in _seed(tmp_path)
 
         sibling = _client(tmp_path, model=_SERVED[0])
-        assert "model" in json.loads(sibling._render_claude_settings_payload())
+        # The pin is pushed live, never written, so both payloads name no model.
+        assert "model" not in json.loads(sibling._render_claude_settings_payload())
         sibling._write_claude_local_settings()
 
         assert sibling._claude_settings_shared is True
@@ -139,10 +140,10 @@ class TestSharedPermissionSurfaceEligibility:
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, model=_SERVED[0])
         owner._write_claude_local_settings()
-        assert _seed(tmp_path)["model"] == _SERVED[0]
+        assert "model" not in _seed(tmp_path)
+        assert _SERVED[1] in _seed(tmp_path)["availableModels"]
 
         sibling = _client(tmp_path, model=_SERVED[1])
-        assert json.loads(sibling._render_claude_settings_payload())["model"] == _SERVED[1]
         sibling._write_claude_local_settings()
 
         assert sibling._claude_settings_shared is True
@@ -151,9 +152,9 @@ class TestSharedPermissionSurfaceEligibility:
     def test_siblings_without_an_allowlist_share_across_different_models(
         self, tmp_path, monkeypatch
     ):
-        # No other settings source defines availableModels, so the seed names a model
-        # and no list. Each session still runs its own pinned model, and the model key
-        # alone does not narrow the alias, so the second session may share the seed.
+        # No other settings source defines availableModels, so the seed names no list
+        # and no model. Each session pushes its own pin live onto the adapter's own
+        # list, so the second session may share the seed.
         monkeypatch.setattr(
             "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
             lambda *a, **k: False,
@@ -162,9 +163,9 @@ class TestSharedPermissionSurfaceEligibility:
         owner = _client(tmp_path, model=_SERVED[0])
         owner._write_claude_local_settings()
         assert "availableModels" not in _seed(tmp_path)
+        assert "model" not in _seed(tmp_path)
 
         sibling = _client(tmp_path, model=_SERVED[1])
-        assert json.loads(sibling._render_claude_settings_payload())["model"] == _SERVED[1]
         sibling._write_claude_local_settings()
 
         assert sibling._claude_settings_shared is True
@@ -270,16 +271,32 @@ class TestSharedPermissionSurfaceEligibility:
         assert any("belongs to the project" in line for line in lines)
         assert all("another open Crew session" not in line for line in lines)
 
-    def test_an_auto_sibling_is_refused_a_pinned_seed(self, tmp_path, monkeypatch):
+    def test_an_auto_sibling_shares_a_pinned_owners_seed(self, tmp_path, monkeypatch):
         # Another settings source defines availableModels, so the warm cache is written.
         monkeypatch.setattr(
             "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
             lambda *a, **k: True,
         )
-        # An unpinned session pushes no model, so it would start on the owner's pin.
+        # The owner's pin is pushed live and never written, so an unpinned sibling
+        # sharing the seed starts on the adapter's default, not on the owner's pin.
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, model=_SERVED[0])
         owner._write_claude_local_settings()
+        assert "model" not in _seed(tmp_path)
+
+        sibling = _client(tmp_path)
+        sibling._write_claude_local_settings()
+
+        assert sibling._claude_settings_shared is True
+
+    def test_an_auto_sibling_is_refused_a_seed_carrying_a_substitute(self, tmp_path, monkeypatch):
+        # The one model a seed carries is a substitute the backend named. An unpinned
+        # sibling pushes no model, so sharing would start it on that substitute.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
+        owner = _client(tmp_path, model=_SERVED[0])
+        owner._adopted_substitute_model = _SERVED[0]
+        owner._write_claude_local_settings()
+        assert _seed(tmp_path)["model"] == _SERVED[0]
 
         sibling = _client(tmp_path)
         sibling._write_claude_local_settings()

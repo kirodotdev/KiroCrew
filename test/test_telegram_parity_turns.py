@@ -75,11 +75,13 @@ class TestTurnFooter:
         footer = renderer._turn_footer()
         assert "Finished in 1m 35s" in footer and "ctx 4%" in footer
 
-    @pytest.mark.parametrize("pct", [50, 72, 55])
-    def test_a_high_context_reading_reports_itself_however_fast_the_turn(self, pct: int) -> None:
+    @pytest.mark.parametrize("pct,icon", [(50, "🟠"), (72, "🔴"), (55, "🟠")])
+    def test_a_high_context_reading_reports_itself_however_fast_the_turn(
+        self, pct: int, icon: str
+    ) -> None:
         renderer, _ = self._renderer_with_ctx(pct)
         footer = renderer._turn_footer()
-        assert f"ctx {pct}%" in footer
+        assert icon in footer and f"ctx {pct}%" in footer
 
     def test_an_unreadable_context_client_still_reports_a_slow_turn(self, monkeypatch) -> None:
         clock = _frozen_turn_clock(monkeypatch)
@@ -947,11 +949,11 @@ class TestVoiceReplyCharacterization:
     async def test_the_toggle_replies_are_exact(self) -> None:
         d, client, _ = _dispatcher({1})
         await d.handle_message(_msg("/voice on"))
-        assert client.sent[-1][0] == "Voice replies on."
+        assert client.sent[-1][0] == "🔊 Voice replies on."
         await d.handle_message(_msg("/voice  OFF "))
-        assert client.sent[-1][0] == "Voice replies off."
+        assert client.sent[-1][0] == "🔊 Voice replies off."
         await d.handle_message(_msg("/voice"))
-        assert client.sent[-1][0] == "Voice replies are *off*. Use `/voice on` or `/voice off`."
+        assert client.sent[-1][0] == "🔊 Voice replies are *off*. Use `/voice on` or `/voice off`."
         await d.handle_message(_msg("/voice maybe"))
         assert d._voice_pref[("direct", "1")] is False
 

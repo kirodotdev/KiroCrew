@@ -29,9 +29,10 @@ import { useChatPanelTypedFields } from './useChatPanelTypedFields'
 import { chatPanelConfigOpts, useChatPanelFallbackModels, useChatPanelModelDefaults } from './useChatPanelModels'
 import { AppModelsSection } from './AppModelsSection'
 import { FollowDefaultModelAction } from './FollowDefaultModelAction'
-import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
+import { KIRO_MODEL_SETTINGS_URL, KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { DefaultSessionFolderSetting } from './DefaultSessionFolderSetting'
 import { SessionsPerCreatorSetting } from './SessionsPerCreatorSetting'
+import { ShowAllBotsSessionsRow } from './ShowAllBotsSessionsRow'
 import { FeatureTipsList } from './FeatureTipsList'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
@@ -44,6 +45,7 @@ import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { i18nT } from '../../i18n/t'
 import { useProvider } from '../../providers'
 import { useModelsAuthRequired, useModelsDegradedReason } from '../../providers/modelListHealth'
+import { KiroCliSignInButton, useKiroCliCanRunHere, useKiroCliSignInInTerminal } from '../../components/KiroCliSignInInTerminal'
 import ErrorNotice from '../../components/ErrorNotice'
 import { parseWholeNumber } from '../../utils/wholeNumber'
 
@@ -162,6 +164,14 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_session_summaries')),
   })
 
+  // ── Since you left briefs (server-side; read on each qualifying return) ──
+  const warmTaskBrief = mcCfg?.dashboard?.warm_task_brief ?? true
+  const warmTaskBriefMut = useMutation({
+    mutationFn: (v: boolean) => api.patchConfig('dashboard.warm_task_brief', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_warm_task_brief')),
+  })
+
   // ── Auto-title refresh cadence (server-side; one background call per refresh) ──
   // The GET serializes the LOADED config, so a hand-edited 2 shows as the 4 that
   // runs. Per-path overlay like the Model selectors, so the stepper moves at click
@@ -272,7 +282,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     subagentModelMut, shownBackgroundEffort, shownSubagentEffort, bgEffortSupported,
     subEffortSupported, effortLabels, backgroundEffortMut, subagentEffortMut,
     memberEffortPinOverrides, showEffortPinNotice, resolvedEffortLabel, clearAgentEffortPinMut,
-    clearAgentEffortPinError,
+    clearAgentEffortPinError, shownOptimizerModel, optimizerModelOpts, optimizerModelLabels,
+    optimizerModelMut, shownOptimizerEffort, optimizerEffortLabels, optimizerEffortSupported,
+    optimizerEffortMut,
   } = useChatPanelModelDefaults({
     qc, setPathSaveError, clearOwnPathError, overlay, dashCfg, mcCfg, optimisticConfigOpts,
     fallbackModel, shownFallbackModel, refusalFallbackModel, shownRefusalFallbackModel,
@@ -325,8 +337,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   }
 
   const dashDisabled = !dashQ.isSuccess
-  // The conductor mode default is shown wherever conductor mode is: in an LTS build
-  // no chat offers it, so the setting would change nothing.
+  // The conductor mode settings are shown wherever conductor mode is: in an LTS
+  // build no chat offers it, so they would change nothing.
   const crewModeOffered = useCrewMode()
 
   // Second-level rail groups. Order = rail order; the first item (Transcript)
@@ -354,14 +366,20 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // one happened to host them when the page was one scroll.
   // When the model list is degraded because kiro-cli's login expired or is
   // signed out, the MODEL-LIST banner's notice says the one thing that fixes it
-  // (run `kiro-cli login`) instead of the generic "Failed to load config." The
+  // (sign kiro-cli in, through the button beside it that runs the sign-in in the
+  // Terminal panel) instead of the generic "Failed to load config." The
   // flag is set where the /api/models error is formed (providers/adapters/acp.ts),
   // so this reads one boolean rather than the refusal code; it feeds only the
   // availableModelsQ banner, since the dashboard/roster reads do not carry it.
   const kiroSignInRequired = useModelsAuthRequired(provider.id)
   const modelsDegradedReason = useModelsDegradedReason(provider.id)
+  const kiroCliSignIn = useKiroCliSignInInTerminal()
+  // Settings runs outside every chat, so the app-wide Terminal receiver answers.
+  const kiroCliCanRun = useKiroCliCanRunHere(true)
   const configLoadMessage = kiroSignInRequired
-    ? i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out')
+    ? kiroCliCanRun
+      ? i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out')
+      : i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out_copy')
     : i18nT('pages.settings.chatPanel.failed_to_load_config')
   const banner = (
     <>
@@ -423,13 +441,15 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           {/* No hand-off: the editable drafts in this panel stay mounted while
               the catalog retry runs; navigating away could discard them. This is
               the one banner whose cause the sign-in flag describes, so it shows
-              the "run kiro-cli login" message when the model list is degraded by
-              an expired / signed-out login. The failed fetch's own error sits
-              under either lead. */}
+              the kiro-cli sign-in message and its button when the model list is
+              degraded by an expired / signed-out login. Other failures keep
+              the failed fetch's own error under the generic lead. */}
           <ErrorNotice
             className="flex-1 min-w-[16rem]"
-            {...loadFailure(configLoadMessage, modelsDegradedReason)}
+            {...loadFailure(configLoadMessage, kiroSignInRequired ? '' : modelsDegradedReason)}
           />
+          {kiroSignInRequired && <KiroCliSignInButton signIn={{ run: kiroCliSignIn.askToSignIn, command: kiroCliSignIn.command, canRun: kiroCliCanRun }} />}
+          {kiroCliSignIn.dialog}
           <Btn onClick={() => availableModelsQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
         </div>
       )}
@@ -529,7 +549,13 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               description: model.name === 'auto'
                 ? i18nT('pages.settings.chatPanel.auto_always_visible')
                 : model.description,
-              locked: model.name === 'auto',
+              locked: model.name === 'auto' || model.hiddenByAccount === true,
+              lockedReason: model.hiddenByAccount === true
+                ? {
+                    text: i18nT('pages.settings.chatPanel.kiro_account_hidden_model_row'),
+                    link: { label: i18nT('pages.settings.chatPanel.kiro_account_hidden_model_link'), href: KIRO_MODEL_SETTINGS_URL },
+                  }
+                : undefined,
             }))}
             selected={selectedModelIds}
             onToggle={toggleVisibleModel}
@@ -932,6 +958,24 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.inline_markdown_input')} hint={i18nT('pages.settings.chatPanel.inline_markdown_input_desc')} checked={chatCfg.inlineMarkdown} onChange={v => setChat('inlineMarkdown', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_optimize_prompt')} hint={i18nT('pages.settings.chatPanel.show_optimize_prompt_desc', { chord: platformShortcut('Cmd+Shift+Enter') })} checked={chatCfg.showOptimizePrompt} onChange={v => setChat('showOptimizePrompt', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.optimize_before_sending')} hint={i18nT('pages.settings.chatPanel.optimize_before_sending_desc', { chord: platformShortcut('Cmd+Z') })} checked={chatCfg.optimizeBeforeSend} onChange={v => setChat('optimizeBeforeSend', v)} disabled={!chatCfg.showOptimizePrompt} />
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.optimize_prompt_model')}
+            hint={i18nT('pages.settings.chatPanel.optimize_prompt_model_hint')}
+            value={shownOptimizerModel}
+            options={optimizerModelOpts}
+            optionLabels={optimizerModelLabels}
+            onChange={v => optimizerModelMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.optimize_prompt_effort')}
+            hint={i18nT('pages.settings.chatPanel.optimize_prompt_effort_hint')}
+            value={shownOptimizerEffort}
+            options={[...EFFORT_LEVELS]}
+            optionLabels={optimizerEffortLabels}
+            onChange={v => optimizerEffortMut.mutate(v)}
+            disabled={!mcQ.isSuccess || !optimizerEffortSupported}
+          />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_pasted_text_in_full')} description={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc_summary')} hint={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc', { chord: platformShortcut('Cmd+Shift+V') })} checked={chatCfg.showFullPastes} onChange={v => setChat('showFullPastes', v)} />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.follow_up_bar_layout')} hint={i18nT('pages.settings.chatPanel.multiline_wraps_suggestions_onto_multiple_rows_s')} value={chatCfg.followUpLayout} options={[{ value: "multiline", label: i18nT('pages.settings.chatPanel.multiline') }, { value: "scroll", label: i18nT('pages.settings.chatPanel.single_line') }]} onChange={v => setChat('followUpLayout', v as ChatConfig['followUpLayout'])} />
           <SettingsInput
@@ -955,7 +999,6 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             }}
             disabled={!mcQ.isSuccess}
           />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.double_escape_to_stop')} hint={i18nT('pages.settings.chatPanel.double_escape_to_stop_desc')} checked={chatCfg.doubleEscapeToStop} onChange={v => setChat('doubleEscapeToStop', v)} />
         </SettingsCard>
           )
 
@@ -1051,7 +1094,11 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.mcp_apps_in_side_panel')} hint={i18nT('pages.settings.chatPanel.render_interactive_mcp_apps_in_the_right_side_pa')} checked={dashCfg.mcp_app_panel} onChange={v => setDash({ mcp_app_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_git_panel')} hint={i18nT('pages.settings.chatPanel.expand_the_side_panel_to_the_git_tab_each_time_yo')} checked={dashCfg.auto_open_git_panel} onChange={v => setDash({ auto_open_git_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_always_open')} hint={i18nT('pages.settings.chatPanel.side_panel_always_open_hint')} configKey="dashboard.side_panel_always_open" checked={dashCfg.side_panel_always_open ?? false} onChange={v => setDash({ side_panel_always_open: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_swipe')} hint={i18nT('pages.settings.chatPanel.side_panel_swipe_hint')} checked={chatCfg.sidePanelSwipe} onChange={v => setChat('sidePanelSwipe', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_pin_summary')} description={pinSummaryNeedsSummaries ? i18nT('pages.settings.chatPanel.side_panel_pin_summary_needs_session_summaries') : undefined} hint={i18nT('pages.settings.chatPanel.side_panel_pin_summary_hint')} configKey="dashboard.side_panel_pin_summary" checked={dashCfg.side_panel_pin_summary ?? false} onChange={v => setDash({ side_panel_pin_summary: v })} disabled={dashDisabled} />
+          {crewModeOffered && (
+            <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_conductor_board')} hint={i18nT('pages.settings.chatPanel.auto_open_conductor_board_hint')} configKey="dashboard.auto_open_conductor_board" checked={dashCfg.auto_open_conductor_board ?? true} onChange={v => setDash({ auto_open_conductor_board: v })} disabled={dashDisabled} />
+          )}
         </SettingsCard>
           )
 
@@ -1134,6 +1181,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.history_expanded')} hint={i18nT('pages.settings.chatPanel.expand_history_sidebar_by_default')} checked={chatCfg.historyExpanded} onChange={v => setChat('historyExpanded', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.confirm_before_closing_session')} hint={i18nT('pages.settings.chatPanel.show_a_confirmation_dialog_when_closing_a_sessio')} checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.sidebar_click_opens_tab')} hint={i18nT('pages.settings.chatPanel.sidebar_click_opens_tab_desc')} checked={chatCfg.sidebarClickOpensTab} onChange={v => setChat('sidebarClickOpensTab', v)} />
+          <ShowAllBotsSessionsRow />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.compact_empty_folders')} hint={i18nT('pages.settings.chatPanel.a_folder_with_no_chats_takes_one_row_instead_of')} checked={chatCfg.hideEmptyFolderBody} onChange={v => setChat('hideEmptyFolderBody', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.hide_empty_folders')} hint={i18nT('pages.settings.chatPanel.hide_empty_folders_description')} checked={chatCfg.hideEmptyFolders} onChange={v => setChat('hideEmptyFolders', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders')} hint={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders_description')} checked={chatCfg.countSubfolderContents} onChange={v => setChat('countSubfolderContents', v)} />
@@ -1183,11 +1231,21 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <DefaultSessionFolderSetting disabled={dashDisabled} />
           <SessionsPerCreatorSetting />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.tail_only_fork')} description={i18nT('pages.settings.chatPanel.fork_keeps_only_the_messages_after_the_chosen_po')} checked={dashCfg.tail_fork_enabled} onChange={v => setDash({ tail_fork_enabled: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.pin_forks_of_pinned_sessions')} description={i18nT('pages.settings.chatPanel.pin_forks_of_pinned_sessions_desc')} checked={dashCfg.fork_inherits_pin} onChange={v => setDash({ fork_inherits_pin: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.restore_sessions')} hint={i18nT('pages.settings.chatPanel.re_open_recently_active_sessions_on_startup')} checked={dashCfg.restore_sessions} onChange={v => setDash({ restore_sessions: v })} disabled={dashDisabled} />
           {dashCfg.restore_sessions && (
             <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} hint={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
           )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_summaries')} description={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_in_the_right_pa')} hint={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_hint')} checked={summaryEnabled} onChange={v => summaryMut.mutate(v)} disabled={!mcQ.isSuccess || summaryMut.isPending} />
+          <SettingsToggle
+            label={i18nT('pages.settings.chatPanel.warm_task_brief')}
+            description={i18nT('pages.settings.chatPanel.warm_task_brief_desc')}
+            hint={i18nT('pages.settings.chatPanel.warm_task_brief_hint')}
+            checked={warmTaskBrief}
+            onChange={v => warmTaskBriefMut.mutate(v)}
+            disabled={!mcQ.isSuccess || warmTaskBriefMut.isPending}
+            configKey="dashboard.warm_task_brief"
+          />
           {/* 0 is the built-in schedule and reads as "Default", so + leaves it
               for the minimum cadence, − at the minimum returns to it, and − at
               Default is disabled: there is nothing below it. A plain +/− stepper

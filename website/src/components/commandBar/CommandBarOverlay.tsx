@@ -5,6 +5,7 @@ import { Command, Loader2 } from 'lucide-react'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
 import { selectSlotsWithLiveLastTs } from '../../store/slotLastTs'
 import { selectPersonSlots } from '../../store/dashboardSlice'
+import { selectSlotStreamState } from '../../store/chatSlice'
 import { findReport } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -32,7 +33,7 @@ import { usePointerMotion } from '../../hooks/usePointerMotion'
 import { ARTIFACTS_ROW_LIMIT, COPY_KEY, DEBOUNCE_MS, ENTER_KEY, SKELETON_WIDTHS, actionLabel, headerOf, rootRowCopyable, type Scope } from './commandBarOverlayModel'
 import { useCommandBarOverlayEngines } from './useCommandBarOverlayEngines'
 import { useCommandBarOverlayRootRows } from './CommandBarOverlayRootRows'
-import { crewWaitingApprovals } from '../../pages/chat/command-center/model'
+import { crewWaitingApprovals, mateWaitingThreads } from '../../pages/chat/command-center/model'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { useCommandBarOverlaySlots } from './useCommandBarOverlaySlots'
 import { useCommandBarOverlayActivation } from './useCommandBarOverlayActivation'
@@ -182,8 +183,10 @@ export default function CommandBarOverlay({
   // and the alternative surfaces (sidebar, recents) are reading the same three.
   const liveSlots = useAppSelector(selectSlotsWithLiveLastTs)
   // The person's own sessions: a Crew Mode chat's workers are listed in its side
-  // panel, never in the Needs You or Recent sessions rows (the full set stays for
-  // the engines, which key navigation and the mates' running state on it).
+  // panel, never in the Needs You or Recent sessions rows, and the folders view
+  // leaves out a Bot's home that holds none of these on the chat page, as the
+  // Sessions list does (the engines also take the full set, which keys navigation
+  // and the mates' running state).
   const personSlots = useAppSelector(selectPersonSlots)
   // What those hidden workers owe the person, carried by their root: a worker's
   // tool approval is counted on its conductor over the FULL slot set, so Needs
@@ -191,10 +194,18 @@ export default function CommandBarOverlay({
   const crewMode = useCrewMode()
   // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the conductor mode read crewWaitingApprovals makes
   const crewWaiting = useMemo(() => crewWaitingApprovals(liveSlots), [liveSlots, crewMode])
+  // A live Bot thread's sessions leave the person's list too; what they owe the
+  // person rides on the Bot thread (All Dashboards reads the same `mateWaitingThreads`).
+  const mateWaiting = useMemo(() => mateWaitingThreads(liveSlots), [liveSlots])
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail ?? {})
   const subagentQueued = useAppSelector(s => s.chat.subagentQueued)
   const simplifiedToolNames = useSimplifiedToolNames()
+  // A running row says "Compacting…" from the slot's run state: a compaction leaves
+  // the status detail on the phase before it. Joined, so it compares by value.
+  const compactingKeys = useAppSelector(st =>
+    personSlots.filter(s => selectSlotStreamState(st, s.key) === 'compacting').map(s => s.key).join('\n'),
+  )
   // `aria-modal` is a promise that Tab cannot reach the page behind the dialog, so
   // the trap has to be real. Escape is owned by the dialog panel's own keydown
   // handler below, which needs it to pop a scope before it closes the bar (and
@@ -225,9 +236,10 @@ export default function CommandBarOverlay({
     folderSortError,
     artifacts,
     folders,
+    listedFoldersKey,
     runningMates,
     mates,
-  } = useCommandBarOverlayEngines({ scope, liveSlots, subagentQueued, dispatch, navigate })
+  } = useCommandBarOverlayEngines({ scope, liveSlots, personSlots, subagentQueued, dispatch, navigate })
 
   // The query is NOT reset here. It is seeded at mount, and clearing it on the open
   // edge would drop the type-ahead along with anything typed before this effect ran.
@@ -316,7 +328,7 @@ export default function CommandBarOverlay({
   commandByIdRef.current = commandById
 
   const ranked = useCommandBarOverlayRootRows({
-    liveSlots: personSlots, crewWaiting, unreadSlots, slotStatusDetail, simplifiedToolNames, dispatch, navigate, store, cycleTheme,
+    liveSlots: personSlots, crewWaiting, mateWaiting, unreadSlots, slotStatusDetail, simplifiedToolNames, compactingKeys, dispatch, navigate, store, cycleTheme,
     commandById, apps, settingsGovernance, resolved, scope, query, usage, attentionExpanded,
     setAttentionExpanded,
   })
@@ -329,7 +341,7 @@ export default function CommandBarOverlay({
     rowsAnswerTheQuery, slots, rowCount, scopeLoading, scopeFetching,
   } = useCommandBarOverlaySlots({
     scope, debounced, query, sessions, openSessionsKey, recentSessions, artifacts, folderSortMode, folders,
-    runningMates, mates,
+    listedFoldersKey, runningMates, mates,
     argCommand, ranked, selected, setSelected,
   })
 

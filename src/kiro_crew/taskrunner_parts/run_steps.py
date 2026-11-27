@@ -37,6 +37,7 @@ from kiro_crew.task_models import (
     TaskStatus,
 )
 from kiro_crew.task_planner import group_parallel_tasks
+from kiro_crew.taskrunner_parts.run_reporting import decompose_recording_refusal
 from kiro_crew.taskrunner_parts.run_scope import _SESSION_PREFIX
 from kiro_crew.workflow_memory import inherited_step_agent
 
@@ -115,7 +116,7 @@ async def _execute_tasks(self: TaskRunner, run: Project, history_key: str) -> No
         # No step could ever verify: stop before any agent turn edits the tree.
         run.status = "failed"
         run.error = "taskrunner.require_verification is on but no test command will run"
-        await self._notify("\U0001f9ea Verification required", run.error, run=run)
+        await self._notify("Verification required", run.error, run=run)
         return
     # Bound once per execution: a config reload adopted at a LATER run's
     # entry (``_refresh_from_config``) must not resize this run's groups.
@@ -139,12 +140,12 @@ async def _execute_tasks(self: TaskRunner, run: Project, history_key: str) -> No
         if self._global_timeout > 0 and run_age.age(run.started_at) >= self._global_timeout:
             run.status = "failed"
             run.error = f"Global timeout ({int(self._global_timeout)}s) exceeded"
-            await self._notify("\u23f1\ufe0f Task timed out", run.error, run=run)
+            await self._notify("Error: Task timed out", run.error, run=run)
             break
         if self._token_budget > 0 and run.tokens_used >= self._token_budget:
             run.status = "failed"
             run.error = f"Token budget exhausted ({run.tokens_used}/{self._token_budget})"
-            await self._notify("\U0001f4b0 Token budget exceeded", run.error, run=run)
+            await self._notify("Error: Token budget exceeded", run.error, run=run)
             break
         resolved = [next((t for t in run.tasks if t.index == ref.index), ref) for ref in group]
         if len(resolved) == 1:
@@ -161,7 +162,7 @@ async def _execute_tasks(self: TaskRunner, run: Project, history_key: str) -> No
         else:
             titles = ", ".join(t.title for t in resolved)
             await self._notify(
-                "\u26a1 Parallel group", f"Running {len(resolved)} tasks: {titles}", run=run
+                "Parallel group", f"Running {len(resolved)} tasks: {titles}", run=run
             )
             # Bound concurrency with a semaphore sized by the configurable
             # `taskrunner.max_parallel_steps` knob (bound per run above),
@@ -402,12 +403,12 @@ async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool
     run.replan_count += 1
     err_preview = failed_task.error[:200]
     await self._notify(
-        f"\U0001f504 Re-planning (attempt {run.replan_count}/{_MAX_REPLAN})",
+        f"Re-planning (attempt {run.replan_count}/{_MAX_REPLAN})",
         f"Task '{failed_task.title}' failed: {err_preview}",
         run=run,
     )
     completed = [t for t in run.tasks if t.status == TaskStatus.PASSED]
-    completed_summary = "\n".join(f"- \u2705 {t.title}" for t in completed)
+    completed_summary = "\n".join(f"- Done: {t.title}" for t in completed)
     memory_ctx = ""
     if run.branch_name:
         try:
@@ -433,16 +434,19 @@ async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool
         "Address the failure cause in your new plan.\n\n"
         f"## Original Specification\n\n{run.spec_content}\n\n"
         f"## Completed Tasks\n{completed_summary}\n\n"
-        f"## Failed Task\n- \u274c {failed_task.title}: {err_detail}\n{may_have_run}\n"
+        f"## Failed Task\n- Error: {failed_task.title}: {err_detail}\n{may_have_run}\n"
         f"{memory_ctx}\n\nRe-plan the REMAINING work."
     )
-    new_tasks = await self._decompose(replan_spec, run.work_dir, run.task_id, agent=run.agent)
+    replan_failed = f"Re-plan failed after task {failed_task.index}"
+    new_tasks = await decompose_recording_refusal(
+        self, run, replan_failed, replan_spec, run.work_dir, run.task_id, agent=run.agent
+    )
     if not new_tasks:
         if self._stopping():
             # The stop most likely took the planning session away; resumed on restart.
             return False
         run.status = "failed"
-        run.error = f"Re-plan failed after task {failed_task.index}"
+        run.error = replan_failed
         return False
     # The revised plan replaces every step that failed (a parallel group can
     # fail more than the one passed here) and the original's remaining work.
@@ -462,9 +466,7 @@ async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool
     run.tasks.extend(new_tasks)
     await self._workflow_set_plan(run, modified=True)
     task_list = "\n".join(f"  {t.index}. {t.title}" for t in new_tasks)
-    await self._notify(
-        "\U0001f4cb Revised plan", f"{len(new_tasks)} new task(s):\n{task_list}", run=run
-    )
+    await self._notify("Revised plan", f"{len(new_tasks)} new task(s):\n{task_list}", run=run)
     history_key = await self._bound_history_key(run, f"taskrunner:run:{Path(run.spec_path).stem}")
     for task in new_tasks:
         if run.status != "running" or self._stopping():
@@ -526,7 +528,7 @@ async def _watchdog_loop(self: TaskRunner, run: Project) -> None:
                 )
                 if dead_process_count >= _DEAD_THRESHOLD:
                     await self._notify(
-                        "💀 Watchdog: ACP process died",
+                        "Error: Watchdog: ACP process died",
                         f"Task {run.current_task} sub-agent is not running. "
                         "Resetting session to trigger recovery.",
                         run=run,
@@ -551,7 +553,7 @@ async def _watchdog_loop(self: TaskRunner, run: Project) -> None:
             self._stall_cancelled_ids.add(run.task_id)
             logger.warning("Watchdog: stall cancel after %d min", int(since_last / 60))
             await self._notify(
-                "\U0001f527 Watchdog: cancelling stalled task",
+                "Watchdog: cancelling stalled task",
                 f"No progress in {int(since_last / 60)} min",
                 run=run,
             )
@@ -563,7 +565,7 @@ async def _watchdog_loop(self: TaskRunner, run: Project) -> None:
             stall_notified = True
             logger.warning("Watchdog: no task progress in %d min", int(since_last / 60))
             await self._notify(
-                "\u26a0\ufe0f Task may be stalled",
+                "Warning: Task may be stalled",
                 f"No task completed in {int(since_last / 60)} min. Current: task {run.current_task}",
                 run=run,
             )

@@ -69,6 +69,20 @@ def test_the_listing_names_each_change_and_the_commands_that_resolve_it(
     assert lp.leaf_pending(lp.LEAF_CONFIG)
 
 
+def test_the_listing_says_when_nothing_is_held_and_offers_no_apply_for_broken_json(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    assert _run(monkeypatch) == 0
+    assert "Nothing is held for review." in capsys.readouterr().out
+
+    signature = _pending(lp.LEAF_CONFIG, SAVED, b'{"agent": ')
+    assert _run(monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "is not valid JSON; it can only be discarded" in out
+    assert "pending apply" not in out
+    assert f"kirocrew config pending discard config.json {signature}" in out
+
+
 def test_apply_endorses_the_listed_version_so_ordinary_saves_work_again(
     monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

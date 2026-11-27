@@ -9,8 +9,10 @@
  *
  * WHAT IT DOES
  *  - After the shared ['instances'] query resolves, and again whenever the tab
- *    regains focus/visibility, it fans `connectInstanceInto` at every crew that
- *    is not already live, bounded by concurrency and the warm-set cap.
+ *    regains focus/visibility, it fans `connectInstanceInto` at every SSH crew
+ *    in the warm set (useCrewWarmSet: the most recently opened Crews, SSH and
+ *    relay together, up to the warm-set cap) that is not already live, bounded
+ *    by concurrency.
  *  - Reuses the SAME connect-and-store unit as manual select
  *    (connectInstanceInto), so an auto-connected pane goes warm through the
  *    exact path a click would take. It NEVER touches `activeId`: tunnels come
@@ -21,9 +23,9 @@
  *    a remote token mint, so a many-crew user can turn the whole behavior off.
  *  - Per-crew off switch (the crew record's `disabled`): a crew its owner
  *    turned off is never a target; the gateway would refuse it anyway.
- *  - Warm-set cap: connecting past the cap would only make the viewport evict
- *    an equal number, so we target at most `warmCap` crews and skip any already
- *    connected — no thrash.
+ *  - Warm set: connecting a crew outside it would only see its pane dropped
+ *    again (useCrewWarmKeeper), so only crews in it are targets, in its order,
+ *    and any already connected is skipped — no thrash.
  *  - Per-instance cooldown: focus/visibility can fire in bursts (window manager
  *    churn, tab thrashing); a short cooldown keeps a burst from spamming mints
  *    at the same host. A genuinely-dropped tunnel is retried once the cooldown
@@ -38,11 +40,13 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type InstanceView } from '../api/client'
-import { WARM_SET_CAP_AUTO_CEILING, hasDashboardPane } from '../utils/remoteCrew'
+import { hasDashboardPane } from '../utils/remoteCrew'
 import { useAppDispatch, useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { connectInstanceInto } from '../lib/connectInstance'
+import { useCrewWarmSet } from './useCrewWarmSet'
+import { useCrewWarmKeeper } from './useCrewWarmKeeper'
 
 /** Global default-on switch. Absent key ⇒ on; '0' ⇒ off. */
 export const AUTO_CONNECT_KEY = 'mc-auto-connect'
@@ -133,14 +137,19 @@ export function useAutoConnectInstances() {
   const warmRef = useRef(warm)
   warmRef.current = warm
 
+  const warmSet = useCrewWarmSet()
+  // Records which Crew came to the front, prewarms relay Crews, drops what fell out.
+  useCrewWarmKeeper(autoConnectEnabled)
+
   const fanOut = useCallback(async () => {
     if (embedded || running.current || !autoConnectEnabled()) return
     const data = instancesQuery.data
-    if (!data?.active || !data.instances?.length) return
+    if (!data?.active || !data.instances?.length || !warmSet) return
 
-    const warmCap = data.warm_set_cap || WARM_SET_CAP_AUTO_CEILING
+    const byId = new Map(data.instances.map(i => [i.id, i]))
+    const inSet = warmSet.ssh.flatMap(id => byId.get(id) ?? [])
     const now = Date.now()
-    const targets = selectAutoConnectTargets(data.instances, warmRef.current, warmCap)
+    const targets = selectAutoConnectTargets(inSet, warmRef.current, inSet.length)
       // Drop anything attempted within the cooldown so a focus burst can't spam
       // the same host's SSH + mint.
       .filter(id => now - (lastAttempt.current[id] ?? 0) >= COOLDOWN_MS)
@@ -164,7 +173,7 @@ export function useAutoConnectInstances() {
       // connected (and what silently failed) rather than the pre-connect view.
       void queryClient.invalidateQueries({ queryKey: ['instances'] })
     }
-  }, [embedded, instancesQuery.data, dispatch, queryClient])
+  }, [embedded, instancesQuery.data, warmSet, dispatch, queryClient])
 
   // Trigger 1: the first (and every subsequent) successful instances load.
   useEffect(() => {

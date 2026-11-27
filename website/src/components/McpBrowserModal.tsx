@@ -19,12 +19,11 @@ import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from './AgentSpecN
 import { errMessage } from '../utils/thunkError'
 import { Btn } from './ui'
 import MarkdownRenderer from './MarkdownRenderer'
-import { DiscoverySearchBar, DiscoveryStates } from './DiscoverySearchBar'
+import { DiscoverySearchBar, DiscoveryStates, providerFailureLines } from './DiscoverySearchBar'
 import { safeHttpUrl } from '../lib/safeUrl'
 import type { DiscoveredMcpServer, McpDiscoverDetail, McpInstallPlan } from '../types'
 
 import { i18nT } from '../i18n/t'
-import { fmtNumber } from '../i18n/format'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { MORE_BELOW_MASK } from './ModelEffortDropdown'
@@ -56,22 +55,18 @@ function installReadyFor(
 }
 
 function ProviderFailureNotice({
-  failed,
-  total,
+  lines,
   allFailed,
   busy,
   onRetry,
 }: {
-  failed: number
-  total: number
+  /** One line per provider that could not search (`providerFailureLines`). */
+  lines: string[]
   allFailed: boolean
   busy: boolean
   onRetry: () => void
 }) {
-  const message = i18nT('components.mcpBrowserModal.provider_results_incomplete', {
-    failed: fmtNumber(failed),
-    total: fmtNumber(total),
-  })
+  const message = lines.join(' ')
   return (
     <div className={allFailed
       ? 'py-6 px-4 flex flex-col items-start gap-3'
@@ -164,8 +159,10 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
   const results = useMemo(() => data?.results ?? [], [data])
   const providers = data?.providers ?? []
   const providerOutcomes = data?.provider_outcomes ?? []
-  const failedProviderCount = providerOutcomes.filter(outcome => outcome.status !== 'ok').length
-  const allProvidersFailed = providerOutcomes.length > 0 && failedProviderCount === providerOutcomes.length
+  // Each provider that could not search is named, with its reason when it gave
+  // one (a package manager that is not installed says what to install).
+  const failureLines = providerFailureLines(providerOutcomes)
+  const allProvidersFailed = providerOutcomes.length > 0 && failureLines.length === providerOutcomes.length
 
   // New results or an install note change the rows, not the column's own box,
   // so no observer on the column sees it.
@@ -305,18 +302,16 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
           </div>
         ) : allProvidersFailed ? (
           <ProviderFailureNotice
-            failed={failedProviderCount}
-            total={providerOutcomes.length}
+            lines={failureLines}
             allFailed
             busy={isFetching}
             onRetry={() => { void refetch() }}
           />
         ) : (
           <>
-            {failedProviderCount > 0 && (
+            {failureLines.length > 0 && (
               <ProviderFailureNotice
-                failed={failedProviderCount}
-                total={providerOutcomes.length}
+                lines={failureLines}
                 allFailed={false}
                 busy={isFetching}
                 onRetry={() => { void refetch() }}
@@ -609,7 +604,7 @@ function ServerDetailPanel({
       {phase?.step === 'conflict' && (
         <ErrorNotice
           className="mb-3 text-xs"
-          message={i18nT('components.mcpBrowserModal.a_server_named_already_exists', { name: server.name })}
+          message={i18nT('components.mcpBrowserModal.a_server_named_already_exists', { name: server.name }).replace(/\s+/g, ' ')}
           askAgent
           testId="mcp-browser-detail-conflict"
         />

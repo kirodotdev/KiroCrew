@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from git_repo_templates import _surface_root_template, surface_worktree_fixture  # noqa: F401
 from redaction_structured_cases import github_classic
 from slack_code_channel_surface_helpers import (  # noqa: F401 - fixtures by name
     BRANCH,
@@ -47,9 +48,8 @@ from slack_code_channel_surface_helpers import (  # noqa: F401 - fixtures by nam
     _turn,
     _wrap,
     env_fixture,
-    worktree_fixture,
 )
-from slack_code_channels_helpers import OWNER
+from slack_code_channels_helpers import OWNER, start_new_turn, stop_running_turn
 
 from kiro_crew.config.loader import ACTIVATION_OFF, ACTIVATION_REVIEW
 from kiro_crew.mcp_tools import code_channels as mcp_code_channels
@@ -184,7 +184,7 @@ def test_html_view_is_redacted_and_sends_no_csp(env: Any) -> None:
 @pytest.mark.parametrize(
     "args, needle",
     [
-        ({"type": "diff", "content": "x"}, "published from the worktree"),
+        ({"type": "diff", "content": "x"}, "takes no content"),
         ({"type": "html", "view_key": "plan", "content": "x"}, "plan canvas"),
         (
             {"type": "block_kit", "view_key": "b", "blocks": [{"type": "actions", "elements": []}]},
@@ -224,6 +224,65 @@ def test_view_arguments_are_checked_before_slack(env: Any, args: dict, needle: s
     assert env.api.calls == []
 
 
+@pytest.mark.parametrize("holds", [True, False, None])
+def test_a_diff_view_has_the_workspace_publish_the_code_tab(
+    env: Any, monkeypatch: Any, holds: bool | None
+) -> None:
+    """The reported case: 'Show me the diff' opens the Code tab, whose one writer
+    is the workspace; with nothing there, the agent is told to use an html view."""
+    from kiro_crew.slack.code_channels.workspace import core as workspace_core
+
+    _bind(env)
+    asked: list[str] = []
+
+    class Workspace:
+        async def show_code_tab(self, binding: Any) -> bool | None:
+            asked.append(binding.channel_id)
+            return holds
+
+    monkeypatch.setattr(workspace_core, "_SERVICE", Workspace())
+    out = _run(env, tools.SET_VIEW, {"type": "diff"})
+    assert asked == [CH] and env.api.calls == []  # the tool itself sends nothing
+    if holds:
+        assert out.ok and "Code tab" in out.text and "do not paste" in out.text
+    elif holds is None:  # the workspace's pass is still running: it may find nothing
+        assert out.code == "code_tab_pending" and "html view now" in out.text
+    else:
+        assert out.code == "no_code_tab" and "html view" in out.text
+
+
+def test_a_diff_view_is_never_asked_of_the_workspace_from_a_conductor_thread(
+    monkeypatch: Any,
+) -> None:
+    """A thread has no Code tab, and the workspace's pass would cut a worktree and
+    move the thread's session onto it."""
+    from kiro_crew.slack.code_channels.store import Binding
+    from kiro_crew.slack.code_channels.workspace import core as workspace_core
+
+    asked: list[Any] = []
+
+    class Workspace:
+        async def show_code_tab(self, binding: Any) -> bool:
+            asked.append(binding)
+            return True
+
+    monkeypatch.setattr(workspace_core, "_SERVICE", Workspace())
+    thread = Binding(
+        channel_id=CH, team_id="T1", session_key=SLOT, anchor_ts="100.000001", thread=True
+    )
+    call = tools.Call(binding=thread, client=None, caller=SESSION)
+    with pytest.raises(tools.ToolRefusal) as refused:
+        asyncio.run(tools._show_code_tab(call, {"type": "diff"}))
+    assert refused.value.code == "thread_room" and "do not paste" in refused.value.text
+    assert asked == []
+
+
+def test_a_diff_view_with_no_workspace_points_at_an_html_view(env: Any) -> None:
+    _bind(env)
+    out = _run(env, tools.SET_VIEW, {"type": "diff"})
+    assert out.code == "no_code_tab" and "html view" in out.text and env.api.calls == []
+
+
 def test_block_kit_view_publishes(env: Any) -> None:
     _bind(env)
     env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "V3"}
@@ -244,6 +303,32 @@ def test_plan_canvas_is_created_once_then_updated(env: Any) -> None:
     assert _calls(env, "agents.conversations.setCanvasContent")[0]["canvas_id"] == "F1"
     view = _calls(env, "agents.conversations.setView")
     assert len(view) == 1 and view[0]["access_level"] == "comment"
+
+
+@pytest.mark.parametrize("what", ["stop", "set_off"])
+def test_a_stop_while_the_plan_tab_makes_room_is_said_as_stopped(
+    env: Any, monkeypatch: Any, what: str
+) -> None:
+    from kiro_crew.slack.code_channels import views
+
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = {"ok": True, "canvas_id": "F1"}
+    env.api.responses["agents.conversations.setView"] = {"ok": False, "error": "too_many_views"}
+
+    async def make_room(client: Any, channel_id: str, *, for_key: str, **_kw: Any) -> str:
+        if what == "stop":
+            stop_running_turn(CH)  # Slack's Stop lands while room is made
+        else:  # the channel is set Off or Review while room is made
+            monkeypatch.setattr(surface, "channel_admits", lambda cfg, b: False)
+        return ""
+
+    monkeypatch.setattr(views, "_make_room", make_room)
+    try:
+        out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"})
+    finally:
+        start_new_turn(CH)
+    assert out.text == (tools.STOPPED_TEXT if what == "stop" else tools.CHANNEL_OFF_TEXT)
+    assert surface_store().get(CH).plan_canvas_id == "F1"  # the canvas itself is kept
 
 
 def test_an_existing_canvas_is_never_retried_or_adopted(env: Any) -> None:

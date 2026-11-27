@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from kiro_crew.config.fields import _meta, _safe_bool
+from kiro_crew.config.fields import _meta, _safe_bool, _safe_int
 from kiro_crew.config.sections_channels import _clamp_pct, _coerce_int_ids, _threshold_pct
 from kiro_crew.config.sections_defaults import SectionReader
 from kiro_crew.config.sections_slack import ACTIVATION_ALWAYS, ACTIVATION_MENTION, ACTIVATION_OFF
@@ -88,7 +88,9 @@ def _parse_telegram_accounts(raw: object) -> dict[str, "TelegramAccountConfig"]:
             allowed_user_ids=_coerce_int_ids(account.get("allowed_user_ids")),
             allow_forum=account.read("allow_forum", _safe_bool),
             allowed_forum_chat_ids=_coerce_int_ids(account.get("allowed_forum_chat_ids")),
-            soft_threshold_pct=account.read("soft_threshold_pct", _threshold_pct),
+            soft_threshold_pct=account.read(
+                "soft_threshold_pct", _threshold_pct, unclamped=_safe_int
+            ),
         )
     return out
 
@@ -174,6 +176,18 @@ class TelegramConfig:
             "Allowed User IDs",
             "Numeric Telegram user IDs permitted to DM the bot. Empty = deny all "
             "(fail closed): a Telegram bot is globally reachable by @username.",
+            tags=["telegram"],
+        ),
+    )
+    owner_user_id: int = field(
+        default=0,
+        metadata=_meta(
+            "Owner User ID",
+            "Your own numeric Telegram user ID, the way KIROCREW_OWNER_ID names "
+            "you on Slack. A /kirocrew dashboard link you request in a DM then "
+            "opens your own dashboard session, chat included; every other "
+            "allow-listed user's link stays theirs. The ID must also be in "
+            "Allowed User IDs. 0 = no owner here.",
             tags=["telegram"],
         ),
     )

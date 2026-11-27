@@ -122,11 +122,11 @@ class EvalSetOptions:
 def snapshot_store(db_path: Path, dest: Path) -> Path:
     """Copy *db_path* through a read-only connection; the live file is never written."""
     from kiro_crew import platform_compat
-    from kiro_crew.memory_backup import _read_only_uri
+    from kiro_crew.sqlite_uri import read_only_uri
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     platform_compat.make_owner_only_dir(dest.parent)
-    with closing(sqlite3.connect(_read_only_uri(db_path), uri=True)) as src:
+    with closing(sqlite3.connect(read_only_uri(db_path), uri=True)) as src:
         with closing(sqlite3.connect(str(dest))) as dst:
             src.backup(dst)
             dst.execute("PRAGMA journal_mode=DELETE").fetchone()

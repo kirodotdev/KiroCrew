@@ -49,6 +49,7 @@ from kiro_crew.memory_stores import (
     declared_store_names,
     owned_store_path,
 )
+from kiro_crew.sqlite_uri import read_only_uri
 from kiro_crew.validation import clamp_query_offset
 
 from ._shared import (
@@ -163,7 +164,7 @@ def _probe_store_blocking(name: str) -> dict[str, Any]:
     table cannot be counted, so both report ``false`` with null counts instead of
     three zeros.
 
-    The connection is READ-ONLY, and through ``memory_backup``'s own URI builder
+    The connection is READ-ONLY, and through the shared ``sqlite_uri`` builder
     so the two readers escape a data-home path identically: interpolating one into
     ``file:...`` lets a ``?`` or ``#`` in it be parsed as the URI's query or
     fragment, truncating the path so a DIFFERENT database is opened. A probe of
@@ -198,7 +199,7 @@ def _probe_store_blocking(name: str) -> dict[str, Any]:
         return row
     if not path.is_file():
         return row
-    with closing(sqlite3.connect(memory_backup._read_only_uri(path), uri=True)) as db:
+    with closing(sqlite3.connect(read_only_uri(path), uri=True)) as db:
         lineage = memory_schema.detect_lineage(db)
         if lineage is None:
             return row
@@ -296,6 +297,26 @@ async def api_memory_stores(request: web.Request) -> web.Response:
         return denial
     stores = await asyncio.to_thread(_list_stores_blocking)
     return web.json_response({"stores": stores, "active": DEFAULT_MEMORY_STORE})
+
+
+async def api_memory_ownerless_stores(request: web.Request) -> web.Response:
+    """GET /api/memory/ownerless-stores — kept member stores a new crewmate can start from.
+
+    The stores the picker above omits: a deleted crewmate's V2 store that no
+    configured crewmate owns. Each row is ``name`` and ``former_owner`` (the
+    name the deleted Bot showed, for display only). The create flow offers them, and
+    ``POST /api/agents`` with ``adopt_memory_store`` binds one to the new
+    crewmate (``member_memory_adopt``). Owner-gated like every route here: it
+    enumerates stores, and nothing is read from inside them.
+    """
+    denial = await require_owner_dashboard_request(request, "memory.stores.ownerless")
+    if denial is not None:
+        return denial
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.member_memory_adopt import ownerless_member_stores
+
+    stores = await asyncio.to_thread(lambda: ownerless_member_stores(KiroCrewConfig.load()))
+    return web.json_response({"stores": stores})
 
 
 async def api_memory_retired(request: web.Request) -> web.Response:

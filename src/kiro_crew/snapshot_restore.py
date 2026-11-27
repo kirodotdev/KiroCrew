@@ -24,6 +24,7 @@ import os
 import shutil
 import stat as _stat
 from contextlib import ExitStack, closing
+from contextvars import ContextVar
 from datetime import timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, cast
@@ -45,25 +46,32 @@ from kiro_crew.snapshot_archive import (
     _safe_name,
 )
 from kiro_crew.snapshot_components import (
+    _BOM_TOLERANT_JSON_OBJECTS,
     _CORE_FILE_COMPONENTS,
     _DERIVED_INDEXES,
     _FLAT_DOCUMENT_VALIDATORS,
     _JSON_OBJECT_LISTS,
+    _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
+    _MERGE_NEVER_INSTALLS_FILES,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
     COMPONENT_JSON_OBJECTS,
-    COMPONENT_TREES,
     COMPONENTS,
     CORE_FILES,
     CORE_FILES_FLAT,
     UnsafeComponentRoot,
     _facade,
     _want,
+    component_trees,
     is_product_tree_database,
     safe_tree_root,
 )
-from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting, strip_utf8_bom
+
+host_local_installable: ContextVar[frozenset[str]] = ContextVar(
+    "host_local_installable", default=frozenset()
+)
 
 
 def _save_locked_document_to(backup: Path, rel: str) -> Callable[[Path], None]:
@@ -185,7 +193,7 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
 
         try:
             _, dropped = notification_settings.parse_imported_settings(
-                src.read_text(encoding="utf-8")
+                strip_utf8_bom(src.read_text(encoding="utf-8"))
             )
         except (
             notification_settings.ChannelSettingsError,
@@ -199,6 +207,21 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
                 "saved mutes or priorities."
             ) from e
         _refuse_dropped_entries(label, dropped)
+        return
+    if validator == "config_document":
+        from kiro_crew.archive_config_vetting import config_document_refusal
+
+        try:
+            parsed = json.loads(src.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, RecursionError):
+            return  # the JSON-object check has already refused an unreadable document
+        why = config_document_refusal(parsed)
+        if why:
+            raise SourceComponentUnsound(
+                f"{label} in this snapshot is not safe to install: {why}.\n"
+                "   Refusing to restore it: the roster and workspace entries become file "
+                "paths, so one that names a path rather than a file or folder is not applied."
+            )
         return
     raise AssertionError(f"no validator named {validator!r}")
 
@@ -334,11 +357,25 @@ def _backup_and_copy(
     ``O_EXCL``, not by name through ``shutil.copy2``: a by-name write follows a data-home
     component swapped for a link, or a symlink left at the core file's name. A name still
     occupied after the backup move is refused instead of written through.
+
+    A component's ``host_local`` files are neither moved nor installed unless this
+    caller explicitly marks one installable for its checked import. The others name
+    paths on the machine that made the archive, so this install's copy stays.
     """
+    installable = host_local_installable.get()
+    host_local = frozenset(f for f in COMPONENTS[component].host_local if f not in installable)
+    for f in host_local:
+        if os.path.lexists(snap / f):
+            kept = "; this install's copy is kept" if os.path.lexists(mc / f) else ""
+            print(
+                f"  ↩  {f}: not restored (the backup's copy points at the machine "
+                f"that made it){kept}."
+            )
+    files = [f for f in CORE_FILES.get(component, ()) if f not in host_local]
     if not _facade()._staging_is_pinned(
         allow_unpinned=allow_unpinned, what=f"restore of {component!r}"
     ):
-        for f in CORE_FILES.get(component, ()):
+        for f in files:
             # Validated before the live file is touched, and a symlink at the live name is
             # MOVED aside rather than skipped -- the same two properties the pinned branch
             # has. Skipping would skip both the backup AND the replacement, so the archive's
@@ -354,11 +391,18 @@ def _backup_and_copy(
             if installed is not None:
                 installed.add(f)
             live = mc / f
-            if live.is_symlink() or pinned_fs.is_reparse_point(live):
-                print(f"⚠️  Moving symlinked core file aside during backup: {live}")
-                shutil.move(str(live), str(backup / f))
-            elif live.is_file():
-                shutil.move(str(live), str(backup / f))
+            try:
+                if live.is_symlink() or pinned_fs.is_reparse_point(live):
+                    print(f"⚠️  Moving symlinked core file aside during backup: {live}")
+                    shutil.move(str(live), str(backup / f))
+                elif live.is_file():
+                    shutil.move(str(live), str(backup / f))
+            except OSError:
+                # A move that raised left the live file in place, so recovery must not
+                # read the name as reached and delete it.
+                if installed is not None:
+                    installed.discard(f)
+                raise
             # Not `copy2`, which opens the destination by name and follows a symlink
             # planted after the move; copy_file_pinned uses O_CREAT|O_EXCL|O_NOFOLLOW.
             # Skips are fatal: the live file is already in the backup, so a skip would
@@ -388,7 +432,7 @@ def _backup_and_copy(
                 backup, what=f"pre-restore backup for {component!r}"
             )
             try:
-                for f in CORE_FILES.get(component, ()):
+                for f in files:
                     live = mc / f
                     # Checked BEFORE the live file is touched: the archive is untrusted, and
                     # finding a FIFO or directory only after the move would leave nothing
@@ -407,11 +451,17 @@ def _backup_and_copy(
                     # or leave the archive's file unrestored. os.rename through both pinned
                     # descriptors cannot be redirected by a swapped ancestor, and is atomic.
                     live_st = pinned_fs.stat_at(dst_fd, f)
-                    if live_st is not None and _stat.S_ISLNK(live_st.st_mode):
-                        print(f"⚠️  Moving symlinked core file aside during backup: {live}")
-                        os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
-                    elif live_st is not None and _stat.S_ISREG(live_st.st_mode):
-                        os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
+                    try:
+                        if live_st is not None and _stat.S_ISLNK(live_st.st_mode):
+                            print(f"⚠️  Moving symlinked core file aside during backup: {live}")
+                            os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
+                        elif live_st is not None and _stat.S_ISREG(live_st.st_mode):
+                            os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
+                    except OSError:
+                        # As in the by-name branch: nothing moved, so the name is not reached.
+                        if installed is not None:
+                            installed.discard(f)
+                        raise
                     try:
                         copied = pinned_fs.copy_file_pinned(
                             str(snap / f),
@@ -476,9 +526,12 @@ def _read_at(dir_fd: int, name: str) -> bytes:
 
 
 #: Settings documents whose own writers create them owner-only. The config overlay can
-#: hold channel tokens, so a restored copy must not inherit a looser directory ACL
-#: on Windows, or the umask default on POSIX, from the copy that installed it.
-_OWNER_ONLY_SETTINGS_FILES = frozenset({"config.json", "config.local.json", "ui-prefs.json"})
+#: hold channel tokens and an MCP server's ``env`` and ``headers`` in ``mcp.json`` hold
+#: credentials, so a restored copy must not inherit a looser directory ACL on Windows,
+#: or the umask default on POSIX, from the copy that installed it.
+_OWNER_ONLY_SETTINGS_FILES = frozenset(
+    {"config.json", "config.local.json", "ui-prefs.json", "mcp.json"}
+)
 
 
 def _lock_down_restored(path: Path, component: str) -> None:
@@ -548,7 +601,7 @@ def _refuse_unsafe_destination_roots(mc: Path, components: list[str] | None) -> 
     for comp in COMPONENTS:
         if not _want(components, comp):
             continue
-        for tree in COMPONENTS[comp].trees:
+        for tree in component_trees(comp):
             d = mc / tree
             if safe_tree_root(d, what="destination root", home=mc) is None:
                 offenders.append(f"{comp}:{tree}")
@@ -595,6 +648,8 @@ def _refuse_corrupt_source_databases(
         files are installed only where their own destination is missing.
         """
         assert mc_for_merge is not None
+        if rel in _MERGE_NEVER_INSTALLS_FILES:
+            return False  # merge never installs it, so its bundle copy cannot refuse
         if rel == "crons.json":
             return True
         if rel == "memory_index.db":
@@ -613,6 +668,8 @@ def _refuse_corrupt_source_databases(
         if not _want(components, component):
             continue
         for name in files:
+            if name in COMPONENTS[component].host_local:
+                continue  # never installed, so its bundle copy cannot refuse the restore
             src = snap / name
             if not src.exists() and not platform_compat.is_link_or_junction(src):
                 continue  # absent from a selective bundle; nothing to validate
@@ -664,10 +721,12 @@ def _refuse_corrupt_source_databases(
     # Component TREES carry databases too (`workspace/knowledge/knowledge.db`). Strictness
     # is per PATH: a database this product owns is strict wherever it lives, while an
     # incidental `.db` in a tree (a Windows `Thumbs.db`) may legitimately not be SQLite.
-    for component, trees in COMPONENT_TREES.items():
+    for component in COMPONENTS:
         if not _want(components, component):
             continue
-        for tree in trees:
+        # Read from the bundle only, never a live root.
+        bundle_trees = component_trees(component)
+        for tree in bundle_trees:
             root = snap / tree
             if not root.exists() and not platform_compat.is_link_or_junction(root):
                 continue  # absent from a selective bundle; nothing to validate
@@ -700,10 +759,14 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
     nothing, so refusing would only fail every other component of the restore.
 
     Only structure is checked, not schema: field-level checks would duplicate each
-    consumer's validation and refuse bundles those consumers accept.
+    consumer's validation and refuse bundles those consumers accept. For the same reason
+    a leading byte-order mark is accepted where the file's readers accept one.
     """
     try:
-        parsed = json.loads(src.read_text(encoding="utf-8"))
+        text = src.read_text(encoding="utf-8")
+        if src.name in _BOM_TOLERANT_JSON_OBJECTS:
+            text = strip_utf8_bom(text)
+        parsed = json.loads(text)
     except (OSError, ValueError, RecursionError) as e:
         if not installed:
             return
@@ -863,6 +926,21 @@ def _do_replace(
     set known to be complete. The core-file swap must not run before phase one finishes.
     """
     facade = _facade()
+    # A tree whose root may be a supported link (`_LINKABLE_TREE_ROOTS`) and that this
+    # bundle does not carry is not restored by this run, so it is not this run's to vet or
+    # touch: a linked `members/` must not refuse a replace of everything else.
+    uncarried = [
+        c
+        for c in COMPONENTS
+        if _want(components, c)
+        and COMPONENTS[c].trees
+        and all(t in _LINKABLE_TREE_ROOTS for t in COMPONENTS[c].trees)
+        and not any((snap / t).is_dir() for t in COMPONENTS[c].trees)
+    ]
+    if uncarried:
+        components = [c for c in COMPONENTS if _want(components, c) and c not in uncarried]
+        for c in uncarried:
+            print(f"  {c}: not in this bundle, so the live folder is left as it is")
     # Before anything is created or copied: a destination tree root that does not resolve
     # inside the data home would have the restore write outside it.
     facade._refuse_unsafe_destination_roots(mc, components)
@@ -984,7 +1062,7 @@ def _do_replace(
         for comp in _WHOLE_TREE_COMPONENTS:
             if not _want(components, comp):
                 continue
-            for dirname in COMPONENTS[comp].trees:
+            for dirname in component_trees(comp):
                 d = mc / dirname
                 if dirname in _LOCKED_DOCUMENT_TREES:
                     # Saved in phase two instead, inside the lock hold that replaces it
@@ -1008,7 +1086,7 @@ def _do_replace(
         for comp in _WHOLE_TREE_COMPONENTS:
             if _want(components, comp):
                 targets.extend(
-                    _LOCKED_DOCUMENT_TREES.get(tree, tree) for tree in COMPONENTS[comp].trees
+                    _LOCKED_DOCUMENT_TREES.get(tree, tree) for tree in component_trees(comp)
                 )
         targets.extend(tree for tree, _ in mem_roots)
 
@@ -1084,7 +1162,9 @@ def _component_payload_absent(snap: Path, component: str) -> bool:
             continue
         if (snap / rel).exists():
             return False
-    for rel in getattr(spec, "trees", ()) or ():
+    # The BUNDLE's trees: nothing here reaches a live root, so no chokepoint is needed.
+    bundle_trees = component_trees(component)
+    for rel in bundle_trees:
         root = snap / rel
         if root.is_dir() and any(p.is_file() for p in root.rglob("*")):
             return False
@@ -1115,13 +1195,18 @@ def _drop_derived_indexes_absent_from_bundle(
         # needs. Adding the name before a save is known is what let recovery delete an
         # occupant it had never saved.
         installed.add(rel)
-        if platform_compat.is_link_or_junction(live) and not live.is_symlink():
-            # A junction is a directory reparse point; `shutil.move` on it is not the
-            # pairing this repo uses. Remove the link itself -- there is nothing to save,
-            # because the link's target is not ours and stays where it is.
-            platform_compat.unlink_link_or_junction(live)
-        else:
-            shutil.move(str(live), str(backup / rel))
+        try:
+            if platform_compat.is_link_or_junction(live) and not live.is_symlink():
+                # A junction is a directory reparse point; `shutil.move` on it is not the
+                # pairing this repo uses. Remove the link itself -- there is nothing to save,
+                # because the link's target is not ours and stays where it is.
+                platform_compat.unlink_link_or_junction(live)
+            else:
+                shutil.move(str(live), str(backup / rel))
+        except OSError:
+            # Nothing was removed, so the live index is not reached and recovery keeps it.
+            installed.discard(rel)
+            raise
         print(f"  ↩️  {rel} is not in the archive — moved aside so it can be rebuilt")
 
 
@@ -1195,10 +1280,12 @@ def _do_replace_mutations(
         _drop_derived_indexes_absent_from_bundle(snap, mc, backup, installed)
 
     for comp in _WHOLE_TREE_COMPONENTS:
-        if not _want(components, comp):
+        # A component with no trees this run (`named-workspaces` in a bundle without it)
+        # has nothing to replace and reports nothing.
+        if not _want(components, comp) or not component_trees(comp):
             continue
         kept_live = False
-        for dirname in COMPONENTS[comp].trees:
+        for dirname in component_trees(comp):
             d = mc / dirname
             # Required by `test_each_trees_loop_is_guarded`: the pre-flight runs in the
             # CALLER, a whole backup phase earlier, so this loop calls the chokepoint itself.

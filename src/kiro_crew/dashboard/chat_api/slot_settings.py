@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
     from kiro_crew.dashboard.chat_handlers import (
         AUTOCOMPACT_PCT_MAX,
         AUTOCOMPACT_PCT_MIN,
@@ -33,6 +35,7 @@ if TYPE_CHECKING:
         read_bounded_json,
         redact_credentials,
         redact_exfiltration_urls,
+        require_owner_for_dashboard_caller,
         resolve_agent_bindings,
         resolve_session_agent_bindings,
         save_slot_off_loop,
@@ -51,6 +54,28 @@ def _autocompact_txn_lock(history_key: str) -> asyncio.Lock:
     return lock
 
 
+async def _save_dropping_commit_on_cancel(
+    save: Coroutine[Any, Any, bool], commits: dict[str, Any], history_key: str
+) -> bool:
+    """Await *save*; if the request is cancelled, drop its commit once the save settles.
+
+    The save's worker runs on after the request unwinds and may record the commit
+    later, so the save runs as its own task and the pop waits for it. The task starts
+    eagerly, so the save dispatches in the caller's tick, as an awaited save does. The
+    caller still holds the transcript's transaction lock, so no later request's commit
+    can be the one dropped.
+    """
+    task = asyncio.eager_task_factory(asyncio.get_running_loop(), save)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.wait([task])
+        finally:
+            commits.pop(history_key, None)
+        raise
+
+
 async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
     """GET/POST /api/chat/slots/{slot}/autocompact — per-session compact threshold.
 
@@ -66,6 +91,9 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
     immediately via the SessionManager override map and persists with the slot
     metadata, so it survives gateway restarts.
     """
+    denied = await require_owner_for_dashboard_caller(request, "slot_autocompact")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -172,14 +200,18 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
 
         if state.conversation_log:
             try:
-                applied = await save_slot_off_loop(
-                    state,
-                    slot,
-                    force=True,
-                    best_effort=False,
-                    expected_history_key=authorized_history_key,
-                    autocompact_override=(pct,),
-                    after_commit_on_transcript=_record_commit,
+                applied = await _save_dropping_commit_on_cancel(
+                    save_slot_off_loop(
+                        state,
+                        slot,
+                        force=True,
+                        best_effort=False,
+                        expected_history_key=authorized_history_key,
+                        autocompact_override=(pct,),
+                        after_commit_on_transcript=_record_commit,
+                    ),
+                    autocompact_commits,
+                    authorized_history_key,
                 )
             except Exception:
                 logger.exception("Slot %s autocompact_pct persist failed", name)
@@ -316,9 +348,10 @@ def _slot_next_agent_autocompact_default(session_key: str, slot: Any) -> tuple[s
     """The crew a fresh session of *slot* would run, and the default it declares.
 
     Resolves the slot's selection the way a dashboard turn does before it
-    starts a session: the crew is the resolved alias, and a template
-    selection runs under no crew. Config and binding reads touch files, so
-    callers run this off the event loop.
+    starts a session (its execution record, else the namespace the slot was
+    stamped in): the crew is the resolved alias, and a template selection
+    runs under no crew. Config and binding reads touch files, so callers run
+    this off the event loop.
     """
     try:
         cfg = KiroCrewConfig.load()
@@ -328,6 +361,7 @@ def _slot_next_agent_autocompact_default(session_key: str, slot: Any) -> tuple[s
             session_key,
             slot.agent or None,
             slot.project or None,
+            agent_kind=slot.agent_kind,
         )
     except Exception:
         logger.debug("autocompact: could not resolve slot %s's agent", session_key, exc_info=True)
@@ -396,6 +430,9 @@ async def api_chat_slot_turn_timeout(request: web.Request) -> web.Response:
     transcript, and the live field changes only once the write has committed
     (see the comment at the save).
     """
+    denied = await require_owner_for_dashboard_caller(request, "slot_turn_timeout")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -448,14 +485,18 @@ async def api_chat_slot_turn_timeout(request: web.Request) -> web.Response:
                 turn_timeout_commits[authorized_history_key] = (secs,)
 
             try:
-                saved = await save_slot_off_loop(
-                    state,
-                    slot,
-                    force=True,
-                    best_effort=False,
-                    expected_history_key=authorized_history_key,
-                    turn_timeout_override=(secs,),
-                    after_commit_on_transcript=_record_commit,
+                saved = await _save_dropping_commit_on_cancel(
+                    save_slot_off_loop(
+                        state,
+                        slot,
+                        force=True,
+                        best_effort=False,
+                        expected_history_key=authorized_history_key,
+                        turn_timeout_override=(secs,),
+                        after_commit_on_transcript=_record_commit,
+                    ),
+                    turn_timeout_commits,
+                    authorized_history_key,
                 )
             except Exception:
                 logger.exception("Slot %s turn_timeout_secs persist failed", name)
@@ -506,6 +547,9 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
     ``in body``-gated so an old client sending only ``color_index`` cannot
     silently null an existing hex.
     """
+    denied = await require_owner_for_dashboard_caller(request, "slot_color")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)

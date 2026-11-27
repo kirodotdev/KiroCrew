@@ -43,6 +43,27 @@ function dashboardRetryPath(navigatedUrl, backendUrl, fallback = "") {
 }
 
 /**
+ * `path` resolved against the gateway at `backendUrl`, or the gateway root when
+ * it would leave that origin. A same-origin page can carry a `//host` pathname,
+ * which a relative resolve turns into another host.
+ */
+function dashboardUrlFor(backendUrl, path = "") {
+  const root = new URL(backendUrl);
+  if (!path) return root.toString();
+  try {
+    const target = new URL(path, root);
+    // `blob:` and `filesystem:` URLs report their inner origin, so the scheme
+    // has to match too.
+    if (target.protocol === root.protocol && target.origin === root.origin) {
+      return target.toString();
+    }
+  } catch {
+    // Falls back to the root below.
+  }
+  return root.toString();
+}
+
+/**
  * How long the sign-in request may take before the page loads anyway. The boot
  * path starts the liveness monitor only after the load, so a gateway that
  * wedges mid-exchange must not hold it off forever.
@@ -58,9 +79,10 @@ const EXCHANGE_TIMEOUT_MS = 10_000;
  * signed-in request that carries `?token=`, so that same request for the page is
  * sent once as a plain fetch through the window's own session, whose cookie jar
  * the page then loads with. A failed exchange still loads the bare URL; the
- * token is never put back.
+ * token is never put back. A given `mayLoad` is asked after the exchange, and a
+ * false answer leaves the page unloaded.
  */
-async function loadDashboardWithToken(webContents, url, token) {
+async function loadDashboardWithToken(webContents, url, token, mayLoad) {
   if (token) {
     const exchange = new URL(url);
     exchange.searchParams.set("token", token);
@@ -72,7 +94,13 @@ async function loadDashboardWithToken(webContents, url, token) {
       // The bare load below then shows the signed-out page.
     }
   }
+  if (mayLoad && !(await mayLoad())) return;
   if (!webContents.isDestroyed()) webContents.loadURL(url);
 }
 
-module.exports = { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken };
+module.exports = {
+  createTokenRetryHandler,
+  dashboardRetryPath,
+  dashboardUrlFor,
+  loadDashboardWithToken,
+};

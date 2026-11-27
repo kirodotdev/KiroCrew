@@ -121,7 +121,7 @@ def _report_authenticated_shutdown(port: int, reason: str = "listener_lookup_emp
         source="cli",
         resources=f"port={port} via=api reason={reason}",
     )
-    print(f"Done: Requested graceful shutdown from gateway on port {port}.")
+    print(f"✅ Requested graceful shutdown from gateway on port {port}.")
     return True
 
 
@@ -285,7 +285,7 @@ def _stop_expected_pid(port: int, expect_pid: int) -> None:
             source="cli",
             resources=f"port={port} expect_pid={expect_pid} reason={reason}",
         )
-        print(f"Error: {message} Not signalling anything.")
+        print(f"❌ {message} Not signalling anything.")
         sys.exit(1)
 
     def check_listener() -> None:
@@ -348,7 +348,7 @@ def _stop_expected_pid(port: int, expect_pid: int) -> None:
         source="cli",
         resources=f"pids=[{expect_pid}] port={port} via=expect_pid",
     )
-    print(f"Done: Sent SIGTERM to gateway (pid {expect_pid}).")
+    print(f"✅ Sent SIGTERM to gateway (pid {expect_pid}).")
     _stop_mcp_gateway_daemon()
 
 
@@ -391,7 +391,7 @@ def _refuse_service_alias(operation: str, port: int) -> bool:
     verb = "restart" if operation == "gateway_restart" else "stop"
     systemctl = "systemctl --user" if holder.scope == "user" else "sudo systemctl"
     print(
-        f"Error: kirocrew.service is an alias of {holder.unit_id} in the {holder.scope} "
+        f"❌ kirocrew.service is an alias of {holder.unit_id} in the {holder.scope} "
         f"scope; this command does not manage that unit. {verb.capitalize()} it with\n"
         f"   `{systemctl} {verb} {holder.unit_id}`, or remove the alias."
     )
@@ -524,14 +524,14 @@ def _refuse_desktop_supervised(operation: str, port: int, *, explicit_port: bool
     )
     if operation == "gateway_restart":
         print(
-            f"Error: The Kiro Crew desktop app (pid {app_pid}) runs this gateway (pid {gateway_pid}), "
+            f"❌ The Kiro Crew desktop app (pid {app_pid}) runs this gateway (pid {gateway_pid}), "
             f"so `kirocrew restart` will not kill it.\n"
             f"   Restart it from the app (Settings → About → Restart gateway), "
             f"or quit the app and run `kirocrew restart` again."
         )
     else:
         print(
-            f"Error: The Kiro Crew desktop app (pid {app_pid}) runs this gateway (pid {gateway_pid}), "
+            f"❌ The Kiro Crew desktop app (pid {app_pid}) runs this gateway (pid {gateway_pid}), "
             f"so `kirocrew stop` will not kill it: the app would start it again.\n"
             f"   Quit the app to stop the gateway."
         )
@@ -555,7 +555,7 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
     """
     if expect_pid is not None:
         if cli_port is None:
-            print("Error: --expect-pid needs --port. Not signalling anything.")
+            print("❌ --expect-pid needs --port. Not signalling anything.")
             sys.exit(2)
         _stop_expected_pid(resolve_client_port(cli_port), expect_pid)
         return
@@ -570,7 +570,7 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             source="cli",
             resources=f"port={port} via=service reason=service_stop_refused",
         )
-        print("Error: The service manager refused to stop kirocrew. Run it by hand:")
+        print("❌ The service manager refused to stop kirocrew. Run it by hand:")
         for hint in exc.hints:
             print(f"   {hint}")
         sys.exit(1)
@@ -583,7 +583,7 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             resources=f"port={port} via=service",
         )
         _refuse_if_gateway_outlived_service_stop()
-        print("Done: Stopped kirocrew service. To remove it: kirocrew service uninstall")
+        print("✅ Stopped kirocrew service. To remove it: kirocrew service uninstall")
         _stop_mcp_gateway_daemon()
         return
 
@@ -632,7 +632,7 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
                 source="cli",
                 resources=f"port={port} reason=lock_probe_indeterminate",
             )
-            print(f"Error: {exc}. Not signalling anything; check the file and retry.")
+            print(f"❌ {exc}. Not signalling anything; check the file and retry.")
             sys.exit(1)
         if holder.pid is not None and holder.alive:
             # A live holder is never signalled from here, whoever it is: the
@@ -789,7 +789,7 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             resources=f"pids={sorted(sent)} port={port}",
         )
         _verb = "Terminated" if platform_compat.IS_WINDOWS else "Sent SIGTERM to"
-        print(f"Done: {_verb} gateway (pid {', '.join(str(p) for p in sorted(sent))}).")
+        print(f"✅ {_verb} gateway (pid {', '.join(str(p) for p in sorted(sent))}).")
         _stop_mcp_gateway_daemon()
     if denied:
         sel().log_api_access(
@@ -806,7 +806,7 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             if platform_compat.IS_WINDOWS
             else "try: sudo kirocrew stop"
         )
-        print(f"Error: No permission to stop pid {', '.join(str(p) for p in denied)} — {remedy}")
+        print(f"❌ No permission to stop pid {', '.join(str(p) for p in denied)} — {remedy}")
         sys.exit(1)
     if not sent:
         sel().log_api_access(
@@ -855,7 +855,7 @@ def _refuse_if_lock_held(operation: str, port: int) -> None:
             source="cli",
             resources=f"port={port} reason=lock_probe_indeterminate",
         )
-        print(f"Error: {exc}. Not signalling anything and not starting a replacement.")
+        print(f"❌ {exc}. Not signalling anything and not starting a replacement.")
         sys.exit(1)
     if holder.pid is not None and holder.alive:
         _refuse_lock_holder(operation, port, holder.pid)
@@ -879,7 +879,7 @@ def _refuse_if_gateway_outlived_service_stop() -> None:
             return
         if holder.pid is not None and holder.alive:
             print(
-                f"Warning: Stopped kirocrew service, but pid {holder.pid} still holds "
+                f"⚠️  Stopped kirocrew service, but pid {holder.pid} still holds "
                 f"{config_dir() / 'gateway.lock'}: the service stop did not end it, so it "
                 f"and the MCP gateway daemon were left running.\n"
                 f"   To stop it, run `kirocrew stop` again, or: "
@@ -917,14 +917,14 @@ def _refuse_lock_holder(operation: str, port: int, pid: int) -> NoReturn:
     tail = "\n   Not starting a replacement." if operation == "gateway_restart" else ""
     if kirocrew:
         print(
-            f"Error: {lock_path} is held by pid {pid}: a Kiro Crew gateway is running, but "
+            f"❌ {lock_path} is held by pid {pid}: a Kiro Crew gateway is running, but "
             f"the port lookup and the authenticated shutdown could not reach it, so it is "
             f"not signalled from here.\n"
             f"   To stop it manually, run: {manual}{tail}"
         )
     else:
         print(
-            f"Error: {lock_path} is held by pid {pid}, but it does not look like a Kiro Crew "
+            f"❌ {lock_path} is held by pid {pid}, but it does not look like a Kiro Crew "
             f"gateway process — refusing to stop it. If this is wrong, stop it manually: "
             f"{manual}{tail}"
         )
@@ -955,17 +955,15 @@ def _stop_mcp_gateway_daemon() -> None:
         )
         return
     if outcome == "stopped":
-        print("Done: Stopped the MCP gateway daemon and its pooled MCP servers.")
+        print("✅ Stopped the MCP gateway daemon and its pooled MCP servers.")
     elif outcome == "draining":
-        print("MCP gateway daemon is draining its pooled MCP servers; it exits on its own.")
+        print("⏳ MCP gateway daemon is draining its pooled MCP servers; it exits on its own.")
     elif outcome == "denied":
         print(
-            "Warning: No permission to stop the MCP gateway daemon; it exits once it sees its gateway is gone."
+            "⚠️  No permission to stop the MCP gateway daemon; it exits once it sees its gateway is gone."
         )
     elif outcome == "unverified":
-        print(
-            "Warning: Something other than gatewayd answers the MCP gateway socket; left it alone."
-        )
+        print("⚠️  Something other than gatewayd answers the MCP gateway socket; left it alone.")
 
 
 def _pid_exited(pid: int) -> bool:

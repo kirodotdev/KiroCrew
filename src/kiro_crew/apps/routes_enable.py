@@ -17,6 +17,8 @@ import importlib
 import json
 import logging
 import os
+import threading
+import time
 from typing import Any
 
 from aiohttp import web
@@ -39,6 +41,7 @@ from kiro_crew.apps.manager import (
 from kiro_crew.apps.manifest import Dependencies
 from kiro_crew.apps.point_grants import point_grant_families
 from kiro_crew.apps.registry import _manifest_shell_platform_refusal, minimal_env
+from kiro_crew.apps.routes_kiro import kiro_consent_refusal
 from kiro_crew.apps.routes_lifecycle import (
     _backend_platform_refusal,
     _deregister_app_off_loop,
@@ -53,6 +56,7 @@ from kiro_crew.apps.teardown import teardown_app_runtime
 from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     cgroup_scope_argv,
     create_subprocess_limited,
     scrub_env,
@@ -256,6 +260,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     info = await asyncio.to_thread(get_app, name)
     if not info:
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
+    from kiro_crew import bot_chat_app_tools
 
     body: dict[str, Any] = {}
     if request.can_read_body:
@@ -292,6 +297,10 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         denied = await require_owner_dashboard_request(request, "app_enable_session_consent")
         if denied is not None:
             return denied
+        # Kiro operations run with the host owner's own Kiro sign-in: the host owner only.
+        denied = kiro_consent_refusal(request, grants_consent)
+        if denied is not None:
+            return denied
 
     resources = info.get("resources", "gateway")
     manifest = info.get("manifest", {})
@@ -322,6 +331,16 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             return web.json_response(result.to_dict(), status=400)
 
         resp: dict[str, Any] = result.to_dict()
+        if grants_consent and grants_consent.get("browserRecipeWatch"):
+            # A watch with nothing to run has ended; the new yes starts it again.
+            from kiro_crew.dashboard.handlers.browser_media_watch import (  # noqa: PLC0415
+                watch_app_tabs,
+            )
+
+            try:
+                watch_app_tabs(request.app.get("state"), name)
+            except Exception:  # noqa: BLE001 - the approval is stored; a watch starts later
+                logger.warning("could not restart the media watch of an app", exc_info=True)
 
         # Register resources if gateway-managed
         if resources == "gateway":
@@ -494,6 +513,8 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         sel().log_api_access(
             caller="dashboard", operation="app_enable", outcome="completed", resources=name
         )
+        # Under the lock, so a disable that waits on it announces after this, never before.
+        _announce_app_state(request, name, enabled=True)
 
     # After the lock: a gateway-managed app's MCP servers are in the agent spec, or will be
     # once its backend's health watch writes an HTTP one, so end as an MCP page write does
@@ -505,6 +526,8 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             await _reach_sessions(request)
         except Exception:  # noqa: BLE001 - the enable has committed
             logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
+    # A Bot chat the owner turned this app's server on for reconnects (``bot_chat_app_tools``).
+    await bot_chat_app_tools.after_app_change(request.app.get("state"))
     return web.json_response(resp)
 
 
@@ -525,14 +548,32 @@ async def handle_disable_app(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     info = await asyncio.to_thread(get_app, name)
     if not info:
+        # No installed record, but a Bot chat may still run the app's tools: stop
+        # those from the Bot tracking tables before answering.
+        from kiro_crew.bot_chat_ending_fence import stop_tracked_bot_chats
+
+        failed = await stop_tracked_bot_chats(request.app.get("state"), name)
+        if failed:
+            return web.json_response(
+                {
+                    "error": f"app {name!r} is not installed, but its Bot chats could not be stopped",
+                    "code": "bot_chat_stop_incomplete",
+                    "bot_chat_stop_failed": failed,
+                    "retryable": True,
+                },
+                status=409,
+            )
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 
     warnings: list[str] = []
+    _disable_bot_stop_failures: list[str] = []
+    from kiro_crew.bot_chat_app_tools import app_stop_fence
 
     # Per-app lifecycle lock: disable stops the backend and deregisters
     # resources — must not interleave with a concurrent install/update/
-    # uninstall/enable of the same app.
-    async with app_lifecycle_lock(name):
+    # uninstall/enable of the same app. The stop fence spans the teardown and
+    # the disabled-state write, so no Bot chat mounts the app in between.
+    async with app_lifecycle_lock(name), app_stop_fence(name):
         startup_refusal = await _refuse_while_startup_hook_runs(name, action="disable")
         if startup_refusal is not None:
             return startup_refusal
@@ -550,13 +591,21 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         # resources through the ONE shared teardown that revoking an app's
         # third-party execution grant also calls — see apps/teardown.py. Keeping a
         # second copy here is how the revoke path came to miss steps.
-        teardown = await teardown_app_runtime(name, info)
+        teardown = await teardown_app_runtime(name, info, state=request.app.get("state"))
         # This handler's documented contract is that disable proceeds even when a
         # step fails, so both lists become user-visible warnings rather than an
         # abort. (Trust revocation treats `failures` as fatal instead — it must not
         # claim an app was stopped when its crons may still fire.)
         for note in (*teardown.warnings, *teardown.failures):
             warnings.append(_redact_warning(note))
+        # Bot-chat stop failures go in their own key, which the Apps page shows
+        # as the stop-failed notice with the Bots' names and a retry, the same
+        # notice uninstall and trust revoke get; they are not repeated as raw
+        # warnings, which would name the Bots by slug.
+        _disable_bot_stop_failures = teardown.bot_stop_failures
+        if teardown.bot_stop_errored and not _disable_bot_stop_failures:
+            # stop_app_bot_chat_servers raised: which Bot chats still run is unknown.
+            _disable_bot_stop_failures = ["unknown"]
 
         result = await asyncio.to_thread(disable_app, name)
         if not result.ok:
@@ -636,6 +685,11 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         resp = result.to_dict()
         if warnings:
             resp["warnings"] = warnings
+        if _disable_bot_stop_failures:
+            resp["bot_chat_stop_failed"] = _disable_bot_stop_failures
+        # Under the lock, so an enable that waits on it announces after this, never
+        # before: a late "off" would otherwise overwrite that "on" in every tab.
+        await _end_turned_off_app_views(request, name)
 
     # After the lock: the teardown removed an enabled, gateway-managed app's MCP servers
     # from the agent spec, so end as an MCP page write does and a chat already open
@@ -648,7 +702,65 @@ async def handle_disable_app(request: web.Request) -> web.Response:
             await _reach_sessions(request)
         except Exception:  # noqa: BLE001 - the disable has committed
             logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
+    # Bot chat stop and after_app_change are handled inside teardown_app_runtime
+    # (called with state= above) so session_consent.py and other non-handler paths
+    # are covered too.  No separate calls here.
     return web.json_response(resp)
+
+
+async def _end_turned_off_app_views(request: web.Request, name: str) -> None:
+    """Stop the live browser views of *name*'s slots and tell every open dashboard.
+
+    The ``app_state`` frame lets a tab that shows the app (or its view) re-read the
+    app list at once instead of on its next focus. Best effort: the disable has
+    committed, and every live-view route refuses an off app's slot anyway. The caller
+    holds ``app_lifecycle_lock(name)`` (see ``_announce_app_state``).
+    """
+    state = request.app.get("state")
+    try:
+        from kiro_crew.dashboard.handlers.browser_live import end_app_browser_views  # noqa: PLC0415
+
+        await end_app_browser_views(state, name)
+    except Exception:  # noqa: BLE001 - the disable has committed
+        logger.warning("Live browser views of %s did not end", name, exc_info=True)
+    _announce_app_state(request, name, enabled=False)
+
+
+#: This gateway process, for ``app_state`` frames (see ``_announce_app_state``).
+_APP_STATE_BOOT = os.urandom(16).hex()
+_APP_STATE_SEQ_LOCK = threading.Lock()
+_app_state_last_seq = 0
+
+
+def _next_app_state_seq() -> int:
+    """A strictly increasing ``seq``. ``monotonic_ns`` never goes back but can repeat:
+    on Windows (about 15 ms a tick) two frames can read the same value."""
+    global _app_state_last_seq
+    with _APP_STATE_SEQ_LOCK:
+        _app_state_last_seq = max(time.monotonic_ns(), _app_state_last_seq + 1)
+        return _app_state_last_seq
+
+
+def _announce_app_state(request: web.Request, name: str, *, enabled: bool) -> None:
+    """Tell every open dashboard that *name* was turned on or off (``app_state``).
+
+    An app page reads its app once, so without this a tab keeps showing an app that
+    another tab turned off. Callers hold ``app_lifecycle_lock(name)``, so frames of one
+    app go out in the order the changes committed. ``seq`` says that order to a tab
+    that gets them out of order anyway (a reconnect): it is strictly increasing
+    within one process (``_next_app_state_seq``). ``boot`` is drawn once per process,
+    so a tab takes any ``seq`` from a gateway that restarted (a pid can repeat, and
+    the clock can restart lower). Best effort: the change has committed.
+    """
+    state = request.app.get("state")
+    broadcast = getattr(state, "broadcast_ws", None) if state is not None else None
+    if broadcast is None:
+        return
+    frame = {"app": name, "enabled": enabled, "seq": _next_app_state_seq(), "boot": _APP_STATE_BOOT}
+    try:
+        broadcast("app_state", frame)
+    except Exception:  # noqa: BLE001 - best effort
+        logger.debug("app_state broadcast for %s failed", name, exc_info=True)
 
 
 async def handle_open_app(request: web.Request) -> web.Response:
@@ -746,7 +858,10 @@ async def handle_open_app(request: web.Request) -> web.Response:
     try:
         base_cmd = ["/bin/sh", "-c", open_cmd]
         sandboxed_cmd, _cleanup = await wrap_argv_async(
-            base_cmd, mode="standard", _prepare=wrap_argv
+            base_cmd,
+            mode="standard",
+            _prepare=wrap_argv,
+            extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
         )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         # The manifest's own shell string runs here, and an installed app is

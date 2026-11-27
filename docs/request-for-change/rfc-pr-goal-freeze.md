@@ -3,8 +3,8 @@ title: Frozen PR goal — a fixed goal every review round is judged against
 status: partial
 author: zejiangg
 created: 2026-09-26
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 14265
 implementation-prs: [14181, 14161]
 tracking-issues: []

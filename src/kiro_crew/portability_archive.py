@@ -60,7 +60,8 @@ EXPORT_EXCLUDE = frozenset(
 #: ``ui-prefs.json`` is the host backup of the browser-held Settings (`ui_prefs.py`);
 #: ``notification_settings.json`` holds the Settings > Notifications mutes and priorities
 #: (`notifications/settings.py`). The snapshot ``config`` component carries the same
-#: three, so the two whole-install backups agree on what a setting is.
+#: three, and also ``mcp.json`` (the servers added on the MCP Servers page), which this
+#: export does not carry.
 _SETTINGS_DOCUMENTS: tuple[str, ...] = (
     "config.local.json",
     "ui-prefs.json",
@@ -374,7 +375,12 @@ def _largest_folders(infos: list[zipfile.ZipInfo], count: int = 3) -> str:
     sizes: dict[str, int] = {}
     for info in infos:
         parts = PurePosixPath(info.filename).parts[1:]
-        key = "/".join(parts[:2]) if len(parts) > 2 else (parts[0] if parts else "")
+        if len(parts) > 2:
+            key = "/".join(parts[:2])
+        elif parts:
+            key = parts[0]
+        else:
+            key = ""
         sizes[key] = sizes.get(key, 0) + info.file_size
     top = sorted(sizes.items(), key=lambda kv: kv[1], reverse=True)[:count]
     return ", ".join(f"{name} ({_gb(size)})" for name, size in top if name)

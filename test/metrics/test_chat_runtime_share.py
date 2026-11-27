@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from session_handle_helpers import bare_session_handle
 
 import kiro_crew.runtime_ownership as ro
 from kiro_crew.metrics import chat_runtime_share as crs
@@ -667,11 +668,9 @@ async def test_a_turn_on_a_process_of_its_own_is_counted_unshared(
 
 
 def test_a_kas_queued_notice_is_counted(rec):
-    from kiro_crew.acp.session_handle import AcpSessionHandle
-
     runtime = _Runtime(77)
     _leases(runtime, 2, key="key-a")
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle()
     handle._runtime = runtime
     handle._session_key = "dashboard:chat-1-1"  # holds one of the two leases
     update = {

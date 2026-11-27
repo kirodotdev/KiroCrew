@@ -60,6 +60,15 @@ from kiro_crew.memory_stores import (  # noqa: F401 - facade re-exports
     memory_store_namespace_lock,
     named_store_product_file,
 )
+from kiro_crew.snapshot_agent_config import (  # noqa: F401 - facade re-exports
+    _AGENT_CONFIG_NAMES,
+    _NOTE_NAMES,
+    _agent_config_paths,
+    _hold_back_agent_config,
+    _hold_back_agent_config_in,
+    _owned_by_whole_tree_component,
+    _restored_workspace_trees,
+)
 from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _CONTROL_CHARS,
     _DB_SIDECAR_GLOBS,
@@ -76,6 +85,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     MANIFEST_VERSION,
     MAX_ARCHIVE_GIB_CEILING,
     SKIP_DB_UNPINNED_SOURCE,
+    SKIP_LINKED_TREE_ROOT,
     DatabaseCopyFailed,
     ManifestUnreadable,
     _ArchiveTooLarge,
@@ -111,17 +121,27 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
 )
 from kiro_crew.snapshot_build import (  # noqa: F401 - facade re-exports
     _build_snapshot,
+    _caller_name,
+    _configured_named_workspace_trees,
     _estimate_selected_bytes,
     _fsize,
+    _report_named_workspaces_left_out,
+    _staged_trees,
 )
 from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
+    _BOM_TOLERANT_JSON_OBJECTS,
     _CONFIG_SETTINGS_DOCUMENTS,
     _CORE_FILE_COMPONENTS,
     _DERIVED_INDEXES,
     _FLAT_DOCUMENT_VALIDATORS,
     _HOST_LOCAL_PATHS,
     _JSON_OBJECT_LISTS,
+    _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
+    _MERGE_NEVER_INSTALLS_FILES,
+    _NAMED_WORKSPACE_PREFIX,
+    _NAMED_WORKSPACE_TREES,
+    _OPT_IN_COMPONENTS,
     _REPLACE_ONLY_COMPONENTS,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
@@ -131,6 +151,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     COMPONENTS,
     CORE_FILES,
     CORE_FILES_FLAT,
+    NAMED_WORKSPACES,
     NEVER_SNAPSHOT_FILES,
     PRODUCT_TREE_DATABASES,
     SECURITY_SENSITIVE_FILES,
@@ -142,13 +163,18 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     UnsafeComponentRoot,
     _facade,
     _is_host_local,
+    _may_hold_host_local,
     _mc_dir,
     _never_ships,
     _tree_roots_replace_clears,
     _want,
+    component_trees,
+    is_named_workspace_tree,
     is_product_tree_database,
+    named_workspace_scope,
     resolve_components,
     safe_tree_root,
+    set_named_workspace_trees,
 )
 from kiro_crew.snapshot_merge import (  # noqa: F401 - facade re-exports
     _MERGE_ALLOWED_TABLES,
@@ -213,6 +239,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _rmtree_or_raise,
     _save_locked_document_to,
     _trees_absent_from_bundle,
+    host_local_installable,
 )
 
 if TYPE_CHECKING:
@@ -267,7 +294,7 @@ def _audit(event_type: str, resources: str) -> None:
                 event_id=os.urandom(8).hex(),
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 event_type=event_type,
-                caller_identity=os.environ.get("USER", "unknown"),
+                caller_identity=_caller_name(),
                 agent="kirocrew",
                 source="cli",
                 operation=event_type,
@@ -717,7 +744,8 @@ def snapshot_main(
     # The TARBALL keeps the familiar name so `--list`, pruning and `--keep` still glob it.
     # Filled by the staging pass below, and read by the retention guard after it.
     omissions: list[dict[str, str]] = []
-    complete = set(selected) == set(COMPONENTS)
+    # Complete means every default component; an opt-in one added on top keeps it complete.
+    complete = {c for c in COMPONENTS if c not in _OPT_IN_COMPONENTS} <= set(selected)
     name = f"kirocrew-snapshot-{ts}"
     root_name = name if complete else f"kirocrew-partial-{ts}"
 
@@ -848,6 +876,7 @@ def snapshot_main(
     # The bundle on local disk is not redacted either, so it gets the same notice as
     # the copy that leaves the host: which components carry credential material.
     _report_unresolved_payload(selected, uploading=False)
+    _report_named_workspaces_left_out(mc, selected)
 
     _audit("snapshot_created", f"{outfile} ({human})")
 
@@ -1001,6 +1030,23 @@ def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
         for name in held["hooks"]:
             print(f"     {_safe_name(_terminal_safe(name))}")
         print("   Check each one, then enable it on the dashboard's Hooks page.")
+    if held.get("agent_config"):
+        # The held list names what the ARCHIVE carried; a current copy exists only where
+        # the live tree has one, so the two cases are not worded alike.
+        kept = [n for n in held["agent_config"] if os.path.lexists(mc / n)]
+        absent = [n for n in held["agent_config"] if n not in kept]
+        for heading, names in (
+            ("Not restored, kept your current copy of these agent-config files:", kept),
+            ("Not installed (no current copy):", absent),
+        ):
+            if names:
+                print(heading)
+                for name in names:
+                    print(f"     {_safe_name(_terminal_safe(name))}")
+        print("   They set permissions, hooks and MCP servers for the next agent session.")
+        print("   Copy anything you want from the archive by hand after reading it.")
+    for name in held.get("notes", []):
+        print(f"Restored notes: {_safe_name(_terminal_safe(name))}")
 
 
 def _is_interactive() -> bool:
@@ -1195,7 +1241,11 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             print(f"❌ This snapshot could not be extracted ({e}).\n   Nothing was restored.")
         return 1
 
-    with closing(tar), tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
+    with (
+        closing(tar),
+        tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str,
+        named_workspace_scope(),
+    ):
         work = Path(work_str)
         # Staged under the data home's ``staging`` leaf, not the system temp dir: the
         # bundle can be GBs and would sit in RAM on a tmpfs /tmp. It is no more exposed
@@ -1210,7 +1260,10 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         try:
             with tar:
                 rejected_entries: list[str] = []
-                _filter = _rejection_recording_filter(rejected_entries)
+                # Kept apart: a named workspace tree is only restored when the manifest
+                # declares it, so a drop there refuses only such a restore.
+                rejected_named: list[str] = []
+                _filter = _rejection_recording_filter(rejected_entries, rejected_named)
                 try:
                     tar.extractall(work, filter=_filter)
                 except TypeError:
@@ -1280,6 +1333,11 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             )
             _audit("state_restore_rejected", f"reason=manifest_unreadable from={snap_path.name}")
             return 1
+        if declared is not None and NAMED_WORKSPACES in declared:
+            # Its trees are the bundle's own top-level `workspace-<name>/` folders, and only
+            # in a bundle that declares the component: an older one restores none of them.
+            # Extraction already dropped every link, so a directory here is the bundle's own.
+            set_named_workspace_trees(tuple(d.name for d in snap.iterdir() if d.is_dir()))
         if partial_root and declared is None and components is None:
             # A partial root with no component map would fall through to all-components,
             # so replace would displace live components it never held. Only a COMPLETE
@@ -1388,6 +1446,15 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                         f"reason=partial_replace_absent_tree from={snap_path.name}",
                     )
                     return 1
+        if rejected_named and components is not None and NAMED_WORKSPACES in components:
+            print(
+                f"❌ This archive contains {len(rejected_named)} entr"
+                f"{'ies' if len(rejected_named) > 1 else 'y'} in its named workspace folders "
+                f"that cannot be extracted safely ({', '.join(sorted(rejected_named)[:3])}"
+                f"{', ...' if len(rejected_named) > 3 else ''}).\n   Nothing was restored."
+            )
+            _audit("state_restore_rejected", f"reason=unsafe_archive_entries from={snap_path.name}")
+            return 1
         if components:
             print(f"🔧 Components: {','.join(components)}")
         _warn_if_transcripts_left_behind(mc, components)
@@ -1403,6 +1470,12 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             return 0
 
         mc.mkdir(parents=True, exist_ok=True)
+        # Before either mode installs anything. Extraction screened entry NAMES; this reads
+        # what they became on disk, which no spelling of a name gets past. Read here, not at
+        # module level: the import side owns the walker and imports this facade.
+        from kiro_crew.portability import _strip_host_local_store_state
+
+        _strip_host_local_store_state(snap)
         try:
             # Replace installs everything it carries; merge installs only what the
             # destination is missing. Both are validated for exactly what they will put in
@@ -1425,10 +1498,13 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         # judged the files as the archive carried them, and before either mode reads it.
         try:
             held_back = _hold_back_executables(snap, mc, components, mode)
-        except OSError as exc:
+            held_back["agent_config"], held_back["notes"] = _hold_back_agent_config(
+                snap, mc, components, mode, allow_unpinned=allow_unpinned
+            )
+        except (OSError, pinned_fs.PinnedPathRefusal) as exc:
             # Only the staged copy was touched: live state is as it was.
             _audit("state_restore_rejected", f"reason=staging_rewrite_failed detail={exc}")
-            print(f"❌ Could not prepare the bundle's crons and hooks: {exc}")
+            print(f"❌ Could not prepare the bundle's crons, hooks and agent config: {exc}")
             print("   Nothing was restored; your current state is unchanged.")
             return 1
         # Contained here rather than allowed to propagate: a refusal is a decision

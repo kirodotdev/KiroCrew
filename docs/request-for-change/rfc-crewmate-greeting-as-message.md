@@ -1,20 +1,24 @@
 ---
 title: The crewmate greeting is a message in its chat, not a card above it
-status: accepted
+status: superseded
 author: iamwhatever
 created: 2026-10-09
-last-audited: 2026-10-09
-audited-at: d4c3a7334d
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr:
-implementation-prs: []
+implementation-prs: [18651]
 tracking-issues: []
 supersedes: []
-superseded-by: []
+superseded-by: [rfc-delayed-task-brief.md]
 ---
 
 # RFC: The crewmate greeting is a message in its chat, not a card above it
 
-- Status: accepted. This is the product owner's decision, given 2026-10-09 in
+- Status: superseded by [rfc-delayed-task-brief.md](rfc-delayed-task-brief.md). It
+  shipped in #18651; the warm message was then replaced by the warm task brief and
+  #23829 removed the cold Recap, so neither message is on main (`MateResumeCard`
+  and `MateWelcomeCard` are gone; checked at `0c5d8bd5f3`). It was accepted as the
+  product owner's decision, given 2026-10-09 in
   the "Crew page polish" goal: the warm "Where we left off" greeting reads as a
   pop-out card, and it should read as a message from the crewmate in the chat,
   so the crewmate feels like a partner and not a UI popup; the cold welcome the

@@ -461,6 +461,7 @@ class TerminalCoordinator(ManagerComponent):
             {
                 "elapsed": info.elapsed,
                 "credits": info.credits,
+                "cost_usd": info.cost_usd,
                 "error": _redact(info.error) if info.error else None,
                 "stopped": info.user_stopped,
                 "outcome": info.outcome,
@@ -1008,6 +1009,10 @@ class TerminalCoordinator(ManagerComponent):
                     # Shutdown the shared provider handle only
                     try:
                         if info._shared_provider:
+                            try:
+                                info._shared_provider.set_keep_transcript(True)
+                            except Exception:
+                                logger.debug("set_keep_transcript failed", exc_info=True)
                             await info._shared_provider.shutdown()
                     except Exception:
                         logger.debug(
@@ -1642,7 +1647,7 @@ class TerminalCoordinator(ManagerComponent):
                 )
             failure_msg = (
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
-                f"Agent `{info.id}` ❌ {reason}\n"
+                f"Agent `{info.id}` failed: {reason}\n"
                 f"Task: {task_preview}\n"
                 f"Usage: {format_subagent_usage(info.credits, info.elapsed)}\n"
                 f"{_injection_notice_outcome(info)}{result_hint}"

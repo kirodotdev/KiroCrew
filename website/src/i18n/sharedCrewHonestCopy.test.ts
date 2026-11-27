@@ -6,6 +6,8 @@
  * 2. **A hard-limit refusal names its cause and a next step.** The gateway
  *    refuses `containment_unavailable` until the host's resource-limit setup is
  *    fixed or hard limits are turned off, so "try again later" never helps.
+ * 3. **One name for a Crew several people use.** English says Shared Crew, never
+ *    Team Crew, and a new Crew's note names the switcher heading each catalog shows.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -62,5 +64,30 @@ describe('Shared Crew copy matches gateway behavior', () => {
     expect(copy).not.toContain('try again')
     expect(copy).toContain('hard limits')
     expect(copy).toContain('whoever runs this crew')
+  })
+
+  it('never calls a Crew a Team Crew in English', () => {
+    const en = LOCALES.find(([lang]) => lang === 'en')?.[1] as Record<string, unknown>
+    const said: string[] = []
+    const walk = (node: unknown, path: string): void => {
+      if (typeof node === 'string') {
+        if (node.toLowerCase().includes('team crew')) said.push(path)
+      } else if (typeof node === 'object' && node !== null) {
+        for (const [key, child] of Object.entries(node)) walk(child, path ? `${path}.${key}` : key)
+      }
+    }
+    walk(en, '')
+    expect(said).toEqual([])
+  })
+
+  it("names the Crew switcher's heading in a new Crew's note, in every catalog", () => {
+    for (const [lang, catalog] of LOCALES) {
+      // en-XA is generated from English, so English's own check covers it.
+      if (lang === 'en-XA') continue
+      const heading = value(catalog, 'components.relayCrews.group_team_crews')
+      for (const key of ['relay_crew_added_body', 'relay_crews_available_body']) {
+        expect(value(catalog, `components.notifications.systemNote.${key}`), `${lang} ${key}`).toContain(heading)
+      }
+    }
   })
 })

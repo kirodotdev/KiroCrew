@@ -4,8 +4,8 @@ status: accepted
 revision: 4
 author: zezhexu
 created: 2026-08-09
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 2328
 implementation-prs: [11582]
 tracking-issues: []
@@ -164,7 +164,7 @@ firing:
 | `CronService` | `cron.py` (2865 lines) | **wall-clock deadline** | yes — `crons.json`, due-ness recomputed from `now` |
 | `AutoNudgeService` | `autonudge.py` (888 lines) | **session event** — `HOOK_EVENT_STOP` then idle | partially — loop persists, the pending sleep does not |
 | `HeartbeatService` | `heartbeat.py` (322 lines) | **process tick** — fixed 60s counter | no state to survive; counters restart |
-| Mochi pet | `apps/builtins/mochi/backend/routes.py:243` | **client presence** — the Electron pet window polls every 30s | n/a — stops when the window closes, by design |
+| Mochi pet | `_handle_presence` in `apps/builtins/mochi/backend/routes.py` | **client presence** — the Electron pet window polls every 30s | n/a — stops when the window closes, by design |
 
 None of the four can host a perpetual agent as-is:
 
@@ -184,9 +184,9 @@ None of the four can host a perpetual agent as-is:
   and merges it to disk afterwards. There is no self-rescheduling path.
 
 - **AutoNudge** is closer than it looks — `_arm_timer` already accepts a custom
-  delay (`autonudge.py:822`, `:828`) — but it is a *sleep*, not a deadline:
+  delay ([`autonudge.py` `_arm_timer` at adbec83be0](https://github.com/kirodotdev/KiroCrew/blob/adbec83be0787fbbbd14af40eaaf44e627553d27/src/kiro_crew/autonudge.py#L822-L828)) — but it is a *sleep*, not a deadline:
   `await asyncio.sleep(...)` inside a live task. On reload it re-arms from zero
-  (`autonudge.py:457`) with no catch-up, so a wake scheduled for 03:00 that is
+  ([`autonudge.py` `start` at adbec83be0](https://github.com/kirodotdev/KiroCrew/blob/adbec83be0787fbbbd14af40eaaf44e627553d27/src/kiro_crew/autonudge.py#L457)) with no catch-up, so a wake scheduled for 03:00 that is
   missed by a gateway restart at 02:59 is silently pushed out by a full
   interval. For a 5-minute babysit loop that is invisible; for an agent whose
   cadence is hours to days it is a lost day. Cron's `_is_due` compares `now`
@@ -197,7 +197,7 @@ None of the four can host a perpetual agent as-is:
 
 - **Heartbeat** is a tick counter with two unrelated jobs bolted together —
   `HEARTBEAT.md` dispatch, plus maintenance on tick multiples
-  (`_FTS_REBUILD_TICKS = 15`, `_PRUNE_TICKS = 1440`, `heartbeat.py:39`–`:40`).
+  (`_FTS_REBUILD_TICKS = 15`, `_PRUNE_TICKS = 1440`, both in `heartbeat.py`).
   It has no per-task schedule at all.
 
 - **Mochi** is client-driven on purpose. Moving it server-side would make the
@@ -527,7 +527,7 @@ a security boundary.
 
 The existing `ask_question` tool is **not** reusable here. It blocks the caller
 on an open HTTP request until the human clicks
-(`dashboard/handlers/ask_question.py:127`; see the note at
+(`api_ask_question` in `dashboard/handlers/ask_question.py`; see the note at
 `dashboard/chat_handlers.py` (`_reset_slot_session`) — "ask_question holds an MCP worker on a
 blocked HTTP request"). Correct for a dashboard user who is looking at the
 screen; wrong for an agent whose next reasonable act is to sleep for six hours.
@@ -539,7 +539,7 @@ Flow:
 2. The supervisor is notified — bell notification plus Slack DM, and the
    pending question is surfaced on the job's Schedule detail panel, reusing the
    pending-question rendering that `api_ask_question_pending`
-   (`ask_question.py:203`) already feeds.
+   (`dashboard/handlers/ask_question.py`) already feeds.
 3. The agent calls `agent_sleep` normally. Escalating counts as work.
 4. When an answer lands, it is prepended to the next wake's prompt on the same
    path as `last_result` (§7) and the entry moves to `answered`.
@@ -872,7 +872,7 @@ Two smaller pieces of this idea are worth keeping:
   idle, self — is a real simplification and is the shape this RFC leaves room
   for. It is not a prerequisite.
 - **Heartbeat's maintenance half is a genuine absorption candidate.** FTS
-  rebuild every 15 ticks and history prune every 1440 (`heartbeat.py:39`–`:40`)
+  rebuild every 15 ticks and history prune every 1440 (`_FTS_REBUILD_TICKS` / `_PRUNE_TICKS` in `heartbeat.py`)
   are wall-clock periodic jobs wearing a tick counter. They could be two
   ordinary cron jobs, which would delete code rather than add it. Independent
   of this RFC; worth its own small change.
@@ -890,7 +890,7 @@ docs and sharper tool descriptions — cheap, and it does not put anyone's
 ### Host the perpetual agent on `AutoNudgeService`
 
 **Rejected.** Sleep-based rather than deadline-based: a missed wake is deferred
-by a full interval instead of firing on recovery (`autonudge.py:457`), which is
+by a full interval instead of firing on recovery ([`autonudge.py` `start` at adbec83be0](https://github.com/kirodotdev/KiroCrew/blob/adbec83be0787fbbbd14af40eaaf44e627553d27/src/kiro_crew/autonudge.py#L457)), which is
 acceptable for a 5-minute poll and not for a multi-hour cadence. It also
 requires a live nudge-able slot, and `binding_key_for` refuses `cron:` keys
 outright (`autonudge.py`).
@@ -997,9 +997,9 @@ is worth stating: the host choice (cron, deadline-based), the `agent_sleep` vs
 `wait` distinction, `LIFE.md` being agent-read-only, and the rejection of a
 unified wake engine all survived the re-read intact.
 
-The two newly-cited constants in §9 (`_AUTO_PAUSE_THRESHOLD` `cron.py:114`,
-`_JITTER_HOURLY_MAX` / `_JITTER_DAILY_MAX` `cron.py:193`–`:194`) were read at
-`30f5d6983`.
+The two newly-cited constants in §9 (`_AUTO_PAUSE_THRESHOLD`,
+`_JITTER_HOURLY_MAX` / `_JITTER_DAILY_MAX`, then in `cron.py`) were read at
+`30f5d6983`. They now live in `cron_service/model.py` and `cron_service/schedule.py`.
 
 Revision 2's honest summary of revision 1: the code facts were verified, the
 *requirements* were not. Four of five stated needs were predicted, the liveness

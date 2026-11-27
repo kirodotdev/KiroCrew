@@ -155,31 +155,16 @@ def test_the_global_its_owner_rebinds_has_that_owner_as_its_one_holder() -> None
     assert agent_discovery._PARSED_SPECS_GEN == before + 1
 
 
-#: The owner modules, one per line, so two changes that each add an owner edit
-#: different lines (testing-conventions.md § Merge-safe ratchets and counts).
-_OWNER_MODULES = (
-    "kiro_crew.agent_discovery_parts.agent_roster",
-    "kiro_crew.agent_discovery_parts.dir_revision",
-    "kiro_crew.agent_discovery_parts.project_agents",
-    "kiro_crew.agent_discovery_parts.skill_scope",
-    "kiro_crew.agent_discovery_parts.spec_fields",
-    "kiro_crew.agent_discovery_parts.spec_reads",
-    "kiro_crew.agent_discovery_parts.spec_snapshot",
-)
-
-
 def test_the_owners_are_the_parts_package_in_layer_order() -> None:
     """``_OWNERS`` names every module of ``agent_discovery_parts``, and each owner imports only
     owners listed before it: the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
+    assert owners, "the facade composes no owner"
     on_disk = {
         f"kiro_crew.agent_discovery_parts.{p.stem}": p
         for p in PARTS_DIR.glob("*.py")
         if p.name != "__init__.py"
     }
-    assert sorted(on_disk) == list(
-        _OWNER_MODULES
-    ), f"the owner modules changed; write one line per module in _OWNER_MODULES: {sorted(on_disk)}"
     assert sorted(owners) == sorted(on_disk)
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):

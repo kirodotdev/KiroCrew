@@ -216,7 +216,8 @@ describe('SlackPanel connection status', () => {
 describe('SlackPanel manifest card', () => {
   it('links the one-click create URL and copies the YAML, reverting the pill after 1.5s', async () => {
     const writeText = stubClipboard(() => Promise.resolve())
-    seed()
+    // An existing install: the setup wizard starts closed, so the card's own Create shows.
+    seed({ connected: true, bot_token_set: true })
     await hydrated()
 
     expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('href', MANIFEST.create_url)
@@ -232,7 +233,8 @@ describe('SlackPanel manifest card', () => {
 
   it('keeps the pill unchanged when the clipboard write is refused', async () => {
     stubClipboard(() => Promise.reject(new Error('clipboard denied')))
-    seed()
+    // An existing install: the setup wizard starts closed, so the card's own Create shows.
+    seed({ connected: true, bot_token_set: true })
     await hydrated()
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy manifest YAML' }))
@@ -243,7 +245,7 @@ describe('SlackPanel manifest card', () => {
 
   it('inertly disables create + copy while the manifest is unavailable', async () => {
     const writeText = stubClipboard(() => Promise.resolve())
-    seed({}, { manifestFails: true })
+    seed({ connected: true, bot_token_set: true }, { manifestFails: true })
     await hydrated()
 
     const create = screen.getByRole('link', { name: 'Create Slack app' })
@@ -281,8 +283,9 @@ describe('SlackPanel read-only session', () => {
     expect(screen.getByText('xoxb-••••aaaa')).toBeInTheDocument()
     // The app-level credential is unset, so its read-only row says so.
     expect(screen.getByText('(not set)')).toBeInTheDocument()
-    // An empty allowlist under read-only renders the placeholder, not an editor.
-    expect(screen.getByText('(none)')).toBeInTheDocument()
+    // An empty list under read-only renders the placeholder, not an editor:
+    // the enterprise allowlist and the tracked channels.
+    expect(screen.getAllByText('(none)')).toHaveLength(2)
     expect(screen.queryByRole('button', { name: 'Add' })).not.toBeInTheDocument()
   })
 
@@ -294,6 +297,26 @@ describe('SlackPanel read-only session', () => {
   })
 })
 
+/* ── placeholder tone ─────────────────────────────────────────────────────── */
+
+describe('SlackPanel placeholder tone', () => {
+  // The colour itself is measured per palette in SlackPanel.placeholderTone.test.ts;
+  // this pins that every placeholder the panel renders sits under the class.
+  it('puts every field with a placeholder under the faded-placeholder class', async () => {
+    const { container } = seed({ session_folder: 'Slack' })
+    await hydrated()
+
+    const fields = [...container.querySelectorAll<HTMLElement>('input[placeholder], textarea[placeholder]')]
+    expect(fields.map(f => f.getAttribute('placeholder'))).toEqual(expect.arrayContaining([
+      'U0123ABC456', 'E0123ABC456', 'kirocrew',
+    ]))
+    const bare = fields
+      .filter(f => !f.closest('[class*="[&_:is(input,textarea)::placeholder]:text-muted/"]'))
+      .map(f => f.getAttribute('placeholder'))
+    expect(bare).toEqual([])
+  })
+})
+
 /* ── TagListEditor ────────────────────────────────────────────────────────── */
 
 describe('SlackPanel enterprise allowlist editor', () => {
@@ -301,14 +324,18 @@ describe('SlackPanel enterprise allowlist editor', () => {
   function tagInput() {
     return screen.getByPlaceholderText('E0123ABC456')
   }
+  /** This editor's Add button; the tracked-channels editor has its own. */
+  function addBtn() {
+    return within(tagInput().closest('[data-setting-label]') as HTMLElement).getByRole('button', { name: 'Add' })
+  }
 
   it('adds an org on click and keeps Add disabled while the draft is blank', async () => {
     seed()
     await hydrated()
 
-    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled()
+    expect(addBtn()).toBeDisabled()
     fireEvent.change(tagInput(), { target: { value: ' T000TWO ' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    fireEvent.click(addBtn())
 
     expect(screen.getByText('T000TWO')).toBeInTheDocument()
     expect(tagInput()).toHaveValue('')
@@ -341,7 +368,7 @@ describe('SlackPanel enterprise allowlist editor', () => {
     expect(screen.getAllByText(/^E000ONE$/)).toHaveLength(1)
 
     fireEvent.change(tagInput(), { target: { value: 'E000ONE' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    fireEvent.click(addBtn())
     expect(screen.getAllByText(/^E000ONE$/)).toHaveLength(1)
     expect(tagInput()).toHaveValue('')
   })
@@ -356,6 +383,75 @@ describe('SlackPanel enterprise allowlist editor', () => {
     fireEvent.click(saveBtn())
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
     expect(save.mock.calls[0][0]).toMatchObject({ allowed_enterprise_ids: ['T000TWO'] })
+  })
+})
+
+describe('SlackPanel tracked channels editor', () => {
+  function trackInput() {
+    return screen.getByPlaceholderText('C0123ABC456')
+  }
+  function trackRow() {
+    return trackInput().closest('[data-setting-label]') as HTMLElement
+  }
+
+  it('lists the stored channels under Tracked channels', async () => {
+    seed({ tracking_channels: ['C000KEEP'] })
+    await hydrated()
+    expect(trackRow()).toHaveAttribute('data-setting-label', 'Tracked channels')
+    expect(within(trackRow()).getByText('C000KEEP')).toBeInTheDocument()
+  })
+
+  it('saves only what was added and removed, so a channel added in Slack meanwhile stays', async () => {
+    const { save } = seed({ tracking_channels: ['C000KEEP', 'C000GONE'] })
+    await hydrated()
+
+    fireEvent.click(within(trackRow()).getByRole('button', { name: 'Remove C000GONE' }))
+    fireEvent.change(trackInput(), { target: { value: 'G000PRIV' } })
+    fireEvent.click(within(trackRow()).getByRole('button', { name: 'Add' }))
+
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({
+      tracking_channels_add: ['G000PRIV'],
+      tracking_channels_remove: ['C000GONE'],
+    })
+  })
+
+  it('sends the removal of a channel the last save added', async () => {
+    const { save } = seed({ tracking_channels: ['C000KEEP'] })
+    await hydrated()
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({ tracking_channels: ['C000KEEP', 'C000NEW'] }))
+    fireEvent.change(trackInput(), { target: { value: 'C000NEW' } })
+    fireEvent.click(within(trackRow()).getByRole('button', { name: 'Add' }))
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ tracking_channels_add: ['C000NEW'] })
+    await screen.findByText('Saved.', undefined, { timeout: 5_000 })
+    fireEvent.click(within(trackRow()).getByRole('button', { name: 'Remove C000NEW' }))
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+    expect(save.mock.calls[1][0]).toMatchObject({ tracking_channels_remove: ['C000NEW'] })
+    expect(save.mock.calls[1][0]).not.toHaveProperty('tracking_channels_add')
+  })
+
+  it('sends no tracking edit when the list was not touched', async () => {
+    const { save } = seed({ tracking_channels: ['C000KEEP'] })
+    await hydrated()
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).not.toHaveProperty('tracking_channels_add')
+    expect(save.mock.calls[0][0]).not.toHaveProperty('tracking_channels_remove')
+  })
+
+  it('refuses an ID that is not a channel (a DM or a person)', async () => {
+    seed()
+    await hydrated()
+    fireEvent.change(trackInput(), { target: { value: 'D000DM' } })
+    fireEvent.keyDown(trackInput(), { key: 'Enter' })
+    expect(await within(trackRow()).findByRole('alert', undefined, { timeout: 5_000 })).toHaveTextContent(
+      'is not a valid ID',
+    )
+    expect(within(trackRow()).queryByText('D000DM')).not.toBeInTheDocument()
   })
 })
 
@@ -381,19 +477,132 @@ describe('SlackPanel save payload', () => {
       show_thinking: true,
       session_folder: '',
       auto_link_sessions: false,
-      show_in_session_list: true,
+      show_in_session_list: false,
     })
     expect(await screen.findByText('Saved.', undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
-  it('lists Slack conversations by default and saves the switch turned off', async () => {
+  it('keeps an owner ID edited while the save was in flight', async () => {
+    const { settle } = seed({}, { save: { pending: true } })
+    await hydrated()
+    // The refetch after the save answers a changed config (now connected)
+    // that still holds the owner ID loaded before the save.
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({ connected: true }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Show thinking' }))
+    fireEvent.click(saveBtn())
+    fireEvent.change(screen.getByPlaceholderText('U0123ABC456'), { target: { value: 'U0DURINGSAVE' } })
+    await act(async () => { settle(OK) })
+    await waitFor(() => expect(vi.mocked(api.getSlackConfig).mock.calls.length).toBeGreaterThan(1))
+    // A reseed would run in the effect of the render that shows Connected, and
+    // findBy flushes effects before it resolves.
+    await screen.findByText('Connected')
+    expect(screen.getByPlaceholderText('U0123ABC456')).toHaveValue('U0DURINGSAVE')
+  })
+
+  it('does not resend an owner ID the last save stored', async () => {
+    const { save } = seed()
+    await hydrated()
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({ owner_id: 'U000NEW' }))
+    fireEvent.change(screen.getByPlaceholderText('U0123ABC456'), { target: { value: 'U000NEW' } })
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ owner_id: 'U000NEW' })
+    await screen.findByText('Saved.', undefined, { timeout: 5_000 })
+    fireEvent.click(screen.getByRole('switch', { name: 'Show thinking' }))
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+    expect(save.mock.calls[1][0]).not.toHaveProperty('owner_id')
+  })
+
+  it('keeps a bot token typed during the first token save in its editor', async () => {
+    const { settle } = seed({}, { save: { pending: true } })
+    await hydrated()
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({
+      connected: true,
+      bot_token_set: true,
+      app_token_set: true,
+      bot_token_preview: 'xoxb-••••1111',
+      app_token_preview: 'xapp-••••2222',
+    }))
+    fireEvent.change(screen.getByLabelText('Slack bot token'), { target: { value: 'xoxb-first' } })
+    fireEvent.change(screen.getByLabelText('Slack app token'), { target: { value: 'xapp-first' } })
+    fireEvent.click(saveBtn())
+    fireEvent.change(screen.getByLabelText('Slack bot token'), { target: { value: 'xoxb-second' } })
+    await act(async () => { settle(OK) })
+    // Both fields render from the refetch that shows Connected.
+    await screen.findByText('Connected')
+    expect(screen.getByLabelText('Slack bot token')).toHaveValue('xoxb-second')
+    // The app token it sent is cleared: that field shows its stored preview.
+    expect(screen.queryByLabelText('Slack app token')).not.toBeInTheDocument()
+    expect(screen.getByText('xapp-••••2222')).toBeInTheDocument()
+  })
+
+  it('collapses a replaced bot token to its preview while an app token typed during the save stays', async () => {
+    const { settle } = seed({ bot_token_set: true, bot_token_preview: 'xoxb-••••aaaa' }, { save: { pending: true } })
+    await hydrated()
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({
+      connected: true,
+      bot_token_set: true,
+      app_token_set: true,
+      bot_token_preview: 'xoxb-••••1111',
+      app_token_preview: 'xapp-••••2222',
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }))
+    fireEvent.change(screen.getByLabelText('Slack bot token'), { target: { value: 'xoxb-replacement' } })
+    fireEvent.click(saveBtn())
+    fireEvent.change(screen.getByLabelText('Slack app token'), { target: { value: 'xapp-during' } })
+    await act(async () => { settle(OK) })
+    // Both fields render from the refetch that shows Connected.
+    await screen.findByText('Connected')
+    expect(screen.queryByLabelText('Slack bot token')).not.toBeInTheDocument()
+    expect(screen.getByText('xoxb-••••1111')).toBeInTheDocument()
+    expect(screen.getByLabelText('Slack app token')).toHaveValue('xapp-during')
+  })
+
+  it('shows the channel name in an unnamed folder once the save lands', async () => {
+    const { settle } = seed({}, { save: { pending: true } })
+    await hydrated()
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({ connected: true }))
+    fireEvent.click(screen.getByRole('switch', { name: 'File sessions in a different folder' }))
+    fireEvent.click(saveBtn())
+    await act(async () => { settle(OK) })
+    // A reseed from this refetch (no folder stored) would hide the field.
+    await screen.findByText('Connected')
+    expect(screen.getByPlaceholderText('Slack')).toHaveValue('Slack')
+  })
+
+  it('leaves the owner out of a save that did not edit it, so a claim confirmed meanwhile stays', async () => {
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.change(screen.getByPlaceholderText('kirocrew'), { target: { value: 'crew' } })
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).not.toHaveProperty('owner_id')
+  })
+
+  it('leaves Slack conversations out by default and saves the switch turned on', async () => {
     const { save } = seed()
     await hydrated()
 
     const toggle = screen.getByRole('switch', { name: 'Show Slack conversations in the session list' })
-    // A gateway that sends no value reads as on, the gateway's own default.
-    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    // A gateway that sends no value reads as off, the gateway's own default.
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
     expect(screen.getByText('Lists conversations that start in Slack with your other sessions.')).toBeInTheDocument()
+    fireEvent.click(toggle)
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ show_in_session_list: true })
+  })
+
+  it('shows a stored on as on and saves it turned off', async () => {
+    const { save } = seed({ show_in_session_list: true })
+    await hydrated()
+
+    const toggle = screen.getByRole('switch', { name: 'Show Slack conversations in the session list' })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(toggle)
     fireEvent.click(saveBtn())
 
@@ -401,17 +610,12 @@ describe('SlackPanel save payload', () => {
     expect(save.mock.calls[0][0]).toMatchObject({ show_in_session_list: false })
   })
 
-  it('shows a stored off as off and saves it turned back on', async () => {
-    const { save } = seed({ show_in_session_list: false })
+  it.each([false, undefined])('shows a stored %s as off', async (stored) => {
+    seed({ show_in_session_list: stored })
     await hydrated()
 
     const toggle = screen.getByRole('switch', { name: 'Show Slack conversations in the session list' })
     expect(toggle).toHaveAttribute('aria-checked', 'false')
-    fireEvent.click(toggle)
-    fireEvent.click(saveBtn())
-
-    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
-    expect(save.mock.calls[0][0]).toMatchObject({ show_in_session_list: true })
   })
 
   it('saves the auto-connect toggle once it is flipped on, with no target to pick', async () => {
@@ -434,7 +638,7 @@ describe('SlackPanel save payload', () => {
     const { save } = seed()
     await hydrated()
 
-    fireEvent.click(screen.getByRole('switch', { name: 'File sessions in a folder' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'File sessions in a different folder' }))
     expect(screen.getByPlaceholderText('Slack')).toHaveValue('')
     fireEvent.click(saveBtn())
 
@@ -446,7 +650,7 @@ describe('SlackPanel save payload', () => {
     const { save } = seed({ session_folder: 'Inbox' })
     await hydrated()
 
-    expect(screen.getByRole('switch', { name: 'File sessions in a folder' })).toHaveAttribute(
+    expect(screen.getByRole('switch', { name: 'File sessions in a different folder' })).toHaveAttribute(
       'aria-checked',
       'true',
     )
@@ -461,7 +665,7 @@ describe('SlackPanel save payload', () => {
     const { save } = seed({ session_folder: 'Inbox' })
     await hydrated()
 
-    fireEvent.click(screen.getByRole('switch', { name: 'File sessions in a folder' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'File sessions in a different folder' }))
     expect(screen.queryByPlaceholderText('Slack')).not.toBeInTheDocument()
     fireEvent.click(saveBtn())
 
@@ -864,5 +1068,105 @@ describe('SlackPanel Reconnect', () => {
     fireEvent.click(saveBtn())
     expect(await screen.findByText('Saved. Click Reconnect to apply.', undefined, { timeout: 5_000 })).toBeInTheDocument()
     expect(screen.getByText('The slash command applies after a gateway restart.')).toBeInTheDocument()
+  })
+})
+
+/* ── setup wizard gating ──────────────────────────────────────────────────── */
+
+describe('SlackPanel setup wizard', () => {
+  const wizard = () => screen.queryByTestId('slack-wizard')
+  /** The wizard is behind React.lazy: config hydration -> dynamic import of
+   *  SlackSetupWizard -> its first render. The default 1s find timeout can be
+   *  shorter than that chain on a loaded CI runner, so the wait is explicit. */
+  const findWizard = () => screen.findByTestId('slack-wizard', undefined, { timeout: 10_000 })
+
+  /** Open it the only way it opens: the header's Setup wizard button. */
+  async function openWizard() {
+    fireEvent.click(screen.getByTestId('slack-wizard-open'))
+    return await findWizard()
+  }
+
+  it('stays closed by default on a new setup, with the card exactly as before', async () => {
+    seed({ connected: false, configured: false, bot_token_set: false })
+    await hydrated()
+    expect(wizard()).not.toBeInTheDocument()
+    expect(screen.getByTestId('slack-wizard-open')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('href', MANIFEST.create_url)
+    expect(screen.getByText(/named KiroCrew-tester/)).toBeInTheDocument()  // brand-ok: product emits KiroCrew-<alias> (slack-manifest.yaml)
+  })
+
+  it('offers no Setup wizard button to a read-only remote session', async () => {
+    seed({ read_only: true, connected: false, configured: false, bot_token_set: false })
+    await hydrated()
+    expect(screen.queryByTestId('slack-wizard-open')).not.toBeInTheDocument()
+    expect(wizard()).not.toBeInTheDocument()
+  })
+
+  it('stays closed by default on an existing install whose connection dropped', async () => {
+    seed({ connected: false, bot_token_set: true, app_token_set: true, owner_id: 'U0123ABC456' })
+    await hydrated()
+    expect(screen.getByTestId('slack-wizard-open')).toBeInTheDocument()
+    expect(wizard()).not.toBeInTheDocument()
+  })
+
+  it('keeps Copy manifest YAML reachable while disconnected with the wizard open', async () => {
+    const writeText = stubClipboard(() => Promise.resolve())
+    seed({ connected: false, configured: false, bot_token_set: false })
+    await hydrated()
+    await openWizard()
+    // The card points at the wizard, and its own Create link steps aside;
+    // Copy manifest YAML and the setup guide stay.
+    expect(screen.queryByRole('link', { name: 'Create Slack app' })).not.toBeInTheDocument()
+    expect(screen.getByText(/The setup wizard above creates your Slack app/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy manifest YAML' }))
+    expect(writeText).toHaveBeenCalledWith(MANIFEST.manifest)
+    expect(screen.getByRole('link', { name: 'Setup guide' })).toBeInTheDocument()
+  })
+
+  it('opens from the button, closes on the first step, and the card comes back', async () => {
+    seed({ connected: false, configured: false, bot_token_set: false })
+    await hydrated()
+    await openWizard()
+    expect(screen.queryByTestId('slack-wizard-open')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('slack-wizard-close-header'))
+    expect(wizard()).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('href', MANIFEST.create_url)
+    await openWizard()
+  })
+
+  it('keeps the command the wizard saved at Create in a later Save Slack settings', async () => {
+    const { save } = seed({ connected: false, configured: false, bot_token_set: false })
+    vi.mocked(api.getSlackManifest).mockResolvedValue({ ...MANIFEST, alias: 'jdoe', command: 'kirocrew-jdoe' })
+    await hydrated()
+    const shown = await openWizard()
+    fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
+    fireEvent.change(screen.getByTestId('slack-wizard-alias'), { target: { value: 'jdoe' } })
+    const created = screen.getByRole('button', { name: /I created the app/ })
+    await waitFor(() => expect(created).toBeEnabled())
+    fireEvent.click(created)
+    await waitFor(() => expect(shown).toHaveAttribute('data-step', 'bot_token'))
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save.mock.calls[0][0]).toEqual({ command: 'kirocrew-jdoe' })
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+    expect(save.mock.calls[1][0]).toMatchObject({ command: 'kirocrew-jdoe' })
+  })
+
+  it('stays open after Slack connects, so the test step is reachable', async () => {
+    vi.spyOn(api, 'getSlackManifestStatus').mockResolvedValue({
+      features: [], required_scopes: [], required_events: [], required_features: [], feature_changes: {},
+      install: { status: 'up_to_date', missing_scopes: [], extra_scopes: [], disabled_features: [], app_id: 'A0123ABCD', team_id: 'T0456EFGH', reason: '' },
+      app_manifest_url: null, app_basic_info_url: null, app_dm_url: null,
+    })
+    const reconnect = vi.spyOn(api, 'reconnectSlack').mockResolvedValue({ connected: true, connect_error: '' })
+    seed({ connected: false, configured: false, bot_token_set: false })
+    await hydrated()
+    await openWizard()
+    // A refetch now answers "connected": the wizard must not vanish.
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({ connected: true, bot_token_set: true, app_token_set: true, owner_id: 'U0123ABC456' }))
+    fireEvent.click(screen.getByTestId('slack-reconnect'))
+    await waitFor(() => expect(reconnect).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText('Connected')).toBeInTheDocument())
+    expect(wizard()).toBeInTheDocument()
   })
 })

@@ -60,7 +60,7 @@ from kiro_crew.acp_backends import selectable_backends  # noqa: F401
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec, spec_model
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
-from kiro_crew.agent_sdk.backends import model_registry_namespace
+from kiro_crew.agent_sdk.backends import model_registry_namespace  # noqa: F401
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling_on
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.cold_start_sizing import (
@@ -273,6 +273,19 @@ def _is_claude_backend(provider: Any) -> bool:
     return is_claude_backend_name(backend)
 
 
+def _provider_model_id_namespace(provider: Any) -> str:
+    """The model-id namespace of the harness *provider* drives.
+
+    Read as ``SessionCapabilities.model_id_namespace`` of the backend id the
+    provider's client carries, so a provider with no client, or a client naming
+    no backend, answers the native ``acp`` namespace.
+    """
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+    backend = getattr(getattr(provider, "client", provider), "backend", "") or ""
+    return capabilities_for(backend).model_id_namespace
+
+
 def _provider_label(provider: Any) -> str:
     """Backend identity key for *provider* — see ``providers.acp.provider_label``.
 
@@ -459,9 +472,7 @@ class SessionManager:
                 namespace,
                 advertised=advertised,
             ),
-            provider_model_namespace=lambda provider: model_registry_namespace(
-                getattr(getattr(provider, "client", provider), "backend", "") or ""
-            ),
+            provider_model_namespace=lambda provider: _provider_model_id_namespace(provider),
             resolve_pin_spelling=lambda model, advertised, provider: resolve_pin_spelling_on(
                 model,
                 advertised,
@@ -641,6 +652,7 @@ class SessionManager:
     is_busy = _claims.is_busy
     touch = _claims.touch
     enqueue = _claims.enqueue
+    has_queued = _claims.has_queued
     dequeue = _claims.dequeue
     cancel_queued = _claims.cancel_queued
     is_cancelled = _claims.is_cancelled
@@ -741,6 +753,7 @@ class SessionManager:
     set_slack_paused = _links.set_slack_paused
     is_slack_paused = _links.is_slack_paused
     get_session_for_thread = _links.get_session_for_thread
+    slack_thread_owners = _links.slack_thread_owners
     channel_key_for_stem = _links.channel_key_for_stem
     set_mirror_link = _links.set_mirror_link
     get_mirror_link = _links.get_mirror_link
@@ -949,9 +962,21 @@ class SessionManager:
         # surface that can reach the user (a dashboard notification, a Slack DM)
         # decides what to do with it. Args: (session_key, parked_secs).
         self.on_stuck_turn: Callable[[str, float], None] | None = None
+        # Fired by the idle sweep after it reset a session on the idle clock
+        # (not an orphan reap). The same kind of seam as ``on_stuck_turn``: the
+        # dashboard checks the chat for a message whose turn never took the
+        # session. Args: (session_key,).
+        self.on_idle_expired: Callable[[str], None] | None = None
         # Fired once per turn by the RSS tick for a session over the ceiling whose
         # memory is held by processes outside its runtime's tree. Args: (key, notice).
         self.on_leftover_memory: Callable[[str, str], None] | None = None
+        # Fired by the host memory guard (``session_memory_guard``) for the tree it
+        # stopped, or could not stop, at critical memory. Args: (key, notice,
+        # ledger summary or None when nothing was stopped).
+        self.on_memory_guard_stop: Callable[[str, str, str | None], None] | None = None
+        from kiro_crew.session_memory_guard import MemoryGuardState
+
+        self._memory_guard = MemoryGuardState()
         # Fired once when the RSS recycle stops recycling a session whose fresh
         # processes keep climbing straight back over the ceiling
         # (``session_rss_rebound``), so the chat can say which setting to raise.
@@ -967,7 +992,6 @@ class SessionManager:
             self,
             CompactionDeps(
                 logger=logger,
-                is_claude_backend=lambda provider: _is_claude_backend(provider),
                 is_cc_managed=lambda provider: bool(
                     ClaudeCodeProvider is not None
                     and isinstance(provider, ClaudeCodeProvider)

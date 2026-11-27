@@ -13,6 +13,8 @@ file tools refuse (:mod:`kiro_crew.member_records`):
 * ``app-disabled/<app>`` -- present while the owner's disable of the app stands. Every
   read of an app's ``installed.json`` reports the app disabled while it exists, whatever
   the file says; only the owner-authenticated enable and an uninstall remove it.
+* ``app-startup/<app>.json`` -- the owner's approval of the app's ``ui.startup`` module
+  (``apps.startup_modules``), which lets that code run in every dashboard tab.
 
 A third record is a choice of the owner's that the app must not undo:
 
@@ -20,6 +22,10 @@ A third record is a choice of the owner's that the app must not undo:
   owner deleted. Registration skips them, so a deleted job stays deleted across
   gateway starts and app updates. The owner's disable of the app, and an uninstall,
   remove the record, so the next enable registers every declared job again.
+* ``app-browser-sites/<app>.json`` -- the owner's own edits of the pages the app's
+  agent may browse (``apps/browser_sites.py``): sites the owner added, sites the
+  owner turned off, and declared sites the owner removed. Only the owner's dashboard
+  route writes it, and an uninstall removes it.
 
 It also keeps one credential: ``app-secrets/<app>``, the app's gateway secret (the
 app-token exchange and the proxy signature both use it). Only the gateway writes it,
@@ -56,6 +62,8 @@ APP_GRANTS_KIND = "app-grants"
 APP_DISABLED_KIND = "app-disabled"
 APP_SECRETS_KIND = "app-secrets"
 APP_CRONS_DELETED_KIND = "app-crons-deleted"
+APP_BROWSER_SITES_KIND = "app-browser-sites"
+APP_STARTUP_KIND = "app-startup"
 
 #: Written in ``app-grants/`` once every app's set has been carried over from the app
 #: tree. Once it exists a missing record means nothing is approved.
@@ -121,6 +129,15 @@ def grants_write_lock(app_name: str) -> contextlib.AbstractContextManager[None]:
     return _exclusive_lock(_record_path(APP_GRANTS_KIND, app_name, ".lock"))
 
 
+def memory_consent_lock() -> contextlib.AbstractContextManager[None]:
+    """Serialize every rewrite of the memory egress consent record, in any process.
+
+    The record itself sits in the config directory and is rewritten in place, so the
+    lock is a sidecar here, where no sandboxed process can hold it.
+    """
+    return _exclusive_lock(member_records.records_dir(APP_GRANTS_KIND) / ".memory-consent.lock")
+
+
 def write_grants_text(app_name: str, text: str | None) -> None:
     """Store *app_name*'s set as *text*; ``None`` removes it.
 
@@ -148,6 +165,24 @@ def read_grants_text(app_name: str) -> str | None:
     """The stored set's text, or ``None`` when there is none. Other read faults raise."""
     try:
         return grants_path(app_name).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
+def write_startup_text(app_name: str, text: str | None) -> None:
+    """Store *app_name*'s startup-module approval as *text*; ``None`` removes it."""
+    path = _record_path(APP_STARTUP_KIND, app_name, ".json")
+    if text is None:
+        path.unlink(missing_ok=True)
+        return
+    mkdirs_owner_only(path.parent)
+    atomic_write(path, text)
+
+
+def read_startup_text(app_name: str) -> str | None:
+    """The stored startup approval's text, or ``None`` when there is none. Other faults raise."""
+    try:
+        return _record_path(APP_STARTUP_KIND, app_name, ".json").read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
 
@@ -245,26 +280,93 @@ def forget_deleted_app_crons(app_name: str) -> None:
         _deleted_crons_path(app_name).unlink(missing_ok=True)
 
 
-def snapshot_app(app_name: str) -> tuple[str | None, bool]:
-    """Both records of *app_name*, for :func:`restore_app` after a failed uninstall."""
-    return read_grants_text(app_name), owner_disabled(app_name)
+#: The keys of an ``app-browser-sites`` record, each a list of site entries.
+OWNER_SITE_KEYS = ("added", "disabled", "removed")
 
 
-def restore_app(app_name: str, snapshot: tuple[str | None, bool]) -> None:
+def _owner_sites_path(app_name: str) -> Path:
+    return _record_path(APP_BROWSER_SITES_KIND, app_name, ".json")
+
+
+def read_owner_browser_sites(app_name: str, installed_at: str) -> dict[str, list[str]]:
+    """The owner's own edits of *app_name*'s browsing sites; empty lists when none.
+
+    The record names the install it belongs to (the install record's ``installedAt``).
+    That value comes from the app's own ``installed.json``, which the app's sandboxed
+    code can rewrite, so a mismatch only ever narrows: the record's ``added`` sites
+    are dropped, and its ``disabled`` and ``removed`` sites stay in force. A fresh
+    install and a new registration under the name delete the record outright.
+
+    Raises ``OSError``/``ValueError`` when the record cannot be read, so a reader
+    that grants from it fails closed instead of reading a damaged record as "no
+    site disabled".
+    """
+    empty: dict[str, list[str]] = {key: [] for key in OWNER_SITE_KEYS}
+    try:
+        data = json.loads(_owner_sites_path(app_name).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return empty
+    if not isinstance(data, dict):
+        raise ValueError("an app's browser sites record is not an object")
+    same_install = data.get("installedAt") == installed_at
+    out: dict[str, list[str]] = {}
+    for key in OWNER_SITE_KEYS:
+        entries = data.get(key, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"an app's browser sites record has a bad {key!r}")
+        out[key] = list(dict.fromkeys(e for e in entries if isinstance(e, str) and e))
+    if not same_install:
+        out["added"] = []
+    return out
+
+
+@contextlib.contextmanager
+def owner_browser_sites_update(app_name: str, installed_at: str) -> Iterator[dict[str, list[str]]]:
+    """Read, let the caller edit, then store *app_name*'s record, under one lock.
+
+    *installed_at* is the install the caller checked; the record is stored for it.
+    The caller edits the yielded mapping in place; it is written when the block
+    leaves without raising.
+    """
+    path = _owner_sites_path(app_name)
+    with _exclusive_lock(_record_path(APP_BROWSER_SITES_KIND, app_name, ".lock")):
+        record = read_owner_browser_sites(app_name, installed_at)
+        yield record
+        mkdirs_owner_only(path.parent)
+        body: dict[str, object] = {"installedAt": installed_at}
+        body.update({key: list(dict.fromkeys(record.get(key, []))) for key in OWNER_SITE_KEYS})
+        atomic_write(path, json.dumps(body, indent=2) + "\n")
+
+
+def forget_owner_browser_sites(app_name: str) -> None:
+    """Drop *app_name*'s record, for an uninstall: a later app under the name starts clean."""
+    with _exclusive_lock(_record_path(APP_BROWSER_SITES_KIND, app_name, ".lock")):
+        _owner_sites_path(app_name).unlink(missing_ok=True)
+
+
+def snapshot_app(app_name: str) -> tuple[str | None, bool, str | None]:
+    """Every record of *app_name*, for :func:`restore_app` after a failed uninstall."""
+    return read_grants_text(app_name), owner_disabled(app_name), read_startup_text(app_name)
+
+
+def restore_app(app_name: str, snapshot: tuple[str | None, bool, str | None]) -> None:
     """Put back what :func:`snapshot_app` read; the disable first, so a fault keeps it."""
-    grants_text, disabled = snapshot
+    grants_text, disabled, startup_text = snapshot
     set_owner_disabled(app_name, disabled)
     write_grants_text(app_name, grants_text)
+    write_startup_text(app_name, startup_text)
 
 
 def forget_grants(app_name: str) -> None:
-    """Remove the approved set, for an uninstall: a later app under the name starts clean.
+    """Remove the approved set and the startup approval, for an uninstall.
 
-    The disable record stays until the uninstall commits (``uninstall_app`` removes
-    it then), so the app is never re-enabled while its tree is still on disk.
+    A later app under the name starts clean. The disable record stays until the
+    uninstall commits (``uninstall_app`` removes it then), so the app is never
+    re-enabled while its tree is still on disk.
     """
     with contextlib.suppress(ValueError):
         write_grants_text(app_name, None)
+        _record_path(APP_STARTUP_KIND, app_name, ".json").unlink(missing_ok=True)
 
 
 def secret_path(app_name: str) -> Path:

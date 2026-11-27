@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../types'
 import { ASK_ANSWERED_HEADER, ASK_PAIR_SEPARATOR, ASK_QUESTION_SERVER, isAskQuestionToolName } from './askQuestionTool'
+import { isToolCallRow } from '../lib/toolRowContract'
 
 export { ASK_ANSWERED_HEADER, ASK_PAIR_SEPARATOR, isAskQuestionToolName } from './askQuestionTool'
 
@@ -15,7 +16,7 @@ export function isAskAnsweredOutput(output: string): boolean {
 
 /** True for a tool row whose meta carries the user's ask_question answers, the same identity gate ToolCallLine applies before rendering the chip. */
 export function isAskAnsweredToolMessage(m: ChatMessage): boolean {
-  if (m.role !== 'tool' || !m.content?.startsWith('🔧')) return false
+  if (m.role !== 'tool' || !isToolCallRow(m.content)) return false
   const meta = m.meta as Record<string, unknown> | undefined
   return meta?.mcp_server === ASK_QUESTION_SERVER
     && isAskQuestionToolName(typeof meta.tool_name === 'string' ? meta.tool_name : '')

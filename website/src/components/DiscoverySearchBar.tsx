@@ -133,3 +133,26 @@ export function DiscoveryStates({ debouncedQuery, isLoading, resultCount, noun, 
   }
   return null
 }
+
+/** One provider leg of a discovery search, as both discover endpoints report it. */
+export interface DiscoveryProviderOutcome {
+  name: string
+  /** Display label for the provider; absent on gateways that predate it. */
+  display_name?: string
+  status: string
+  /** The provider's reason, scrubbed server-side. Set only when it said why it could not search. */
+  message?: string
+}
+
+/** One line per provider that could not search, naming it and, when it said, why.
+ *  A provider that answered with zero rows is not here: that is an empty result. */
+export function providerFailureLines(outcomes: DiscoveryProviderOutcome[]): string[] {
+  return outcomes
+    .filter(o => o.status !== 'ok')
+    .map(o => {
+      const provider = o.display_name || o.name
+      return o.message
+        ? i18nT('components.discoverySearchBar.provider_could_not_search', { provider, reason: o.message })
+        : i18nT('components.discoverySearchBar.provider_did_not_answer', { provider })
+    })
+}

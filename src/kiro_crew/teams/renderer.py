@@ -55,6 +55,7 @@ from kiro_crew.messaging.renderer import (
     _default_redactor,
     apply_options_cap,
     count_redaction_tags,
+    mcp_identity_line,
     new_approval_nonce,
     redaction_notice,
     split_options_trailer,
@@ -91,10 +92,10 @@ _PROGRESS_THROTTLE_S = 3.0
 #: 2 s. Teams' per-thread budget is 7 requests/second, so this spends about 4% of it.
 _TYPING_REFRESH_S = 4.0
 
-_ERROR_TEXT = "Error: Something went wrong — please try again."
+_ERROR_TEXT = "⚠️ Something went wrong — please try again."
 
 #: What the progress bubble becomes when the reply has no text to replace it with.
-_PROGRESS_DONE_TEXT = "Done"
+_PROGRESS_DONE_TEXT = "✅ Done"
 
 # Refusal lines appended to one answer before they are summarized. A reply that
 # referenced a dozen unusable paths must explain itself without burying the answer.
@@ -142,6 +143,15 @@ def _persisted_upload_root(session_key: str) -> str:
 
     root = SessionMap().get_cwd(session_key)
     return root if root and os.path.isabs(root) else ""
+
+
+def _identity_code_span(name: str) -> str:
+    """One MCP identity name in backticks, as the card writes the tool title.
+
+    A backtick in the name is swapped for the look-alike ``ˋ`` (U+02CB) and its
+    whitespace collapsed, so the name cannot end its span or the line early.
+    """
+    return "`" + " ".join(name.split()).replace("`", "\u02cb") + "`"
 
 
 def _display_safe(text: str) -> str:
@@ -308,7 +318,7 @@ class TeamsRenderer(Renderer):
         if self._progress_opened and now - self._last_progress < _PROGRESS_THROTTLE_S:
             return
         self._last_progress = now
-        await self._write_progress(f"Running {self._tool_title}…")
+        await self._write_progress(f"🔧 {self._tool_title}…")
 
     async def on_prompt_choice(
         self,
@@ -354,7 +364,12 @@ class TeamsRenderer(Renderer):
         purpose = await asyncio.to_thread(_display_safe, purpose) if purpose else ""
         nonce = new_approval_nonce()
         self._decider.arm(rid, nonce)
-        card = approval_card(title=title, purpose=purpose, request_id=rid, nonce=nonce)
+        # The trusted server and tool, in backticks like the title. Not model text,
+        # so no display-form scan.
+        identity = mcp_identity_line(*self.prompt_mcp_identity, fmt=_identity_code_span)
+        card = approval_card(
+            title=title, purpose=purpose, request_id=rid, nonce=nonce, identity=identity
+        )
         activity_id = await self._post_card(card)
         if not activity_id and not self._card_posted:
             # The card never reached the conversation, so nobody can click it. Refuse
@@ -362,7 +377,7 @@ class TeamsRenderer(Renderer):
             # prompt the user never saw, then denying with no explanation.
             self._decider.abandon(rid)
             await self._say(
-                "Warning: Could not show the approval prompt for "
+                "⚠️ Could not show the approval prompt for "
                 f"`{title}`, so the tool was not run. Try again."
             )
             return
@@ -722,9 +737,9 @@ class TeamsRenderer(Renderer):
             return body
         for rejection in rejections:
             logger.info("Teams: local image not sent (%s)", rejection.reason)
-        lines = [f"Warning: {rejection}" for rejection in rejections[:_MAX_REJECTION_LINES]]
+        lines = [f"⚠️ {rejection}" for rejection in rejections[:_MAX_REJECTION_LINES]]
         if len(rejections) > _MAX_REJECTION_LINES:
-            lines.append(f"Warning: …and {len(rejections) - _MAX_REJECTION_LINES} more")
+            lines.append(f"⚠️ …and {len(rejections) - _MAX_REJECTION_LINES} more")
         note = "\n".join(lines)
         return f"{body}\n\n{note}" if body else note
 

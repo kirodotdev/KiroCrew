@@ -17,10 +17,11 @@ import asyncio
 import importlib.machinery
 import importlib.util
 import os
+import re
 import sys
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -130,6 +131,7 @@ def _stand_in_strands(monkeypatch: pytest.MonkeyPatch) -> type:
         return {slot: types.SimpleNamespace(tool_name=slot) for slot in slots}
 
     module("strands_harness.agent", _builtin_tools=builtin_tools)
+    module("strands_harness.models", _PROVIDERS={})
     module("strands_harness", create_harness=lambda *a, **k: Agent(), BUILTIN_TOOL_NAMES=slots)
     return Agent
 
@@ -145,12 +147,16 @@ def gated(monkeypatch: pytest.MonkeyPatch) -> type:
     ):
         monkeypatch.delenv(name, raising=False)
     agent_cls = _stand_in_strands(monkeypatch)
+    agent_cls.gate = _load_gate()
+    return agent_cls
+
+
+def _load_gate() -> types.ModuleType:
     spec = importlib.util.spec_from_file_location("kiro_crew_strands_gate_under_test", GATE)
     assert spec is not None and spec.loader is not None
     gate = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gate)
-    agent_cls.gate = gate
-    return agent_cls
+    return gate
 
 
 def _run(agent: Any, prompt: Any) -> None:
@@ -279,6 +285,7 @@ module("strands.storage", LocalFileStorage=object)
 module("strands.tools", mcp=None)
 module("strands.tools.mcp", MCPAgentTool=object)
 module("strands_harness.agent", _builtin_tools=lambda *a, **k: {})
+module("strands_harness.models", _PROVIDERS={})
 module("strands_harness", create_harness=lambda *a, **k: Agent(), BUILTIN_TOOL_NAMES=())
 
 spec = importlib.util.spec_from_file_location("gate_child", sys.argv[1])
@@ -881,3 +888,224 @@ def test_an_exported_instance_refuses_a_launch_override_it_cannot_apply(gated, o
     """A plain ``agent = Agent(...)`` keeps its own model and effort: refused, not ignored."""
     with pytest.raises(ValueError, match="create_agent"):
         gated.gate._serve_exported_instance(gated(), "s", dict(overrides))
+
+
+# ── bedrock-mantle runs on the Bedrock API key and AWS_REGION ──
+#
+# Stand-ins for the strands-agents pieces a mantle request goes through, reduced to
+# what the real SDK does (strands-agents 1.66.0, ``strands/models/_openai_bedrock.py``):
+# the region is the config's or boto3's (``AWS_DEFAULT_REGION`` only), and the client
+# args always carry a SigV4-minted token. The same cases were checked on the real SDK
+# (strands-harness 0.3.3) in a scratch venv; see the PR.
+
+_KEY = "bedrock-api-key-test-value"
+_CANARY = "kirocrew-strands-canary-0123"
+#: A stand-in id the stand-in SDK serves from ``/openai/v1``; any other uses ``/v1``.
+_OPENAI_PATH_MODEL = "vendor.openai-path-model"
+
+
+class _Provider(NamedTuple):
+    build: Any
+    web_search: bool
+
+
+def _stand_in_mantle_sdk(monkeypatch: pytest.MonkeyPatch, agent_cls: type) -> list[str]:
+    """Install the stand-in SDK route and a harness that builds models from ``_PROVIDERS``.
+
+    Returns the list each SigV4 mint attempt is recorded in.
+    """
+    mints: list[str] = []
+
+    def validate_region(region: str) -> str:
+        if not re.fullmatch(r"[a-z]{2}(-[a-z]+)+-\d", str(region)):
+            raise ValueError(f"invalid AWS region: {region!r}")
+        return region
+
+    def resolve_region(config: dict) -> str:
+        region = config.get("region") or sys.modules["boto3"].Session().region_name
+        if not region:
+            raise ValueError("Could not resolve an AWS region for Amazon Bedrock.")
+        return validate_region(region)
+
+    def resolve_base_url(config: dict, region: str, model_id: str) -> str:
+        path = "/openai/v1" if model_id.startswith(_OPENAI_PATH_MODEL) else "/v1"
+        return f"https://bedrock-mantle.{region}.api.aws{path}"
+
+    def resolve_bedrock_client_args(config: dict, client_args=None, model_id: str = "") -> dict:
+        region = resolve_region(config)
+        mints.append(region)
+        raise RuntimeError(f"Failed to mint an Amazon Bedrock bearer token for region '{region}'.")
+
+    sdk = types.SimpleNamespace(
+        validate_region=validate_region,
+        _resolve_region=resolve_region,
+        _resolve_base_url=resolve_base_url,
+        resolve_bedrock_client_args=resolve_bedrock_client_args,
+    )
+
+    class MantleModel:
+        """``OpenAIResponsesModel`` with ``BedrockMantleConfig()``, as the harness builds it."""
+
+        def __init__(self, model_id: str, params: dict) -> None:
+            self.config = {"model_id": model_id, "params": params}
+            self.client_args: dict = {}
+            self._bedrock_mantle_config: dict = {}
+
+        def _resolve_client_args(self) -> dict:
+            return sdk.resolve_bedrock_client_args(
+                self._bedrock_mantle_config, self.client_args, model_id=self.config["model_id"]
+            )
+
+    def mantle_build(model_id: str, effort, web_search: bool, caching: bool) -> MantleModel:
+        params: dict = {} if effort is None else {"reasoning": {"effort": effort}}
+        if web_search:
+            params["tools"] = [{"type": "web_search"}]
+        return MantleModel(model_id, params)
+
+    def bedrock_build(model_id: str, effort, web_search: bool, caching: bool) -> object:
+        return object()
+
+    providers = {
+        "bedrock": _Provider(bedrock_build, web_search=False),
+        "bedrock-mantle": _Provider(mantle_build, web_search=True),
+    }
+
+    def create_harness(*_a: Any, model: Any = None, **_k: Any) -> Any:
+        agent = agent_cls()
+        if isinstance(model, str):
+            provider, _, name = model.partition("/")
+            agent.model = providers[provider].build(name, "high", True, False)
+        return agent
+
+    def module(name: str, **attrs: Any) -> None:
+        mod = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(mod, key, value)
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    module("strands.models._openai_bedrock", **vars(sdk))
+    module(
+        "boto3",
+        Session=lambda: types.SimpleNamespace(region_name=os.environ.get("AWS_DEFAULT_REGION")),
+    )
+    module("strands_harness.models", _PROVIDERS=providers)
+    sys.modules["strands_harness"].create_harness = create_harness  # type: ignore[attr-defined]
+    return mints
+
+
+@pytest.fixture
+def mantle(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
+    """The gate loaded over the stand-in mantle route, with no AWS name set."""
+    for name in (
+        "KIROCREW_STRANDS_PROJECT",
+        "KIROCREW_STRANDS_PROJECT_SHA256",
+        "KIROCREW_STRANDS_GATE_MARKER",
+        "KIROCREW_STRANDS_GATE_SESSION",
+        "KIROCREW_STRANDS_WITHHELD",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    agent_cls = _stand_in_strands(monkeypatch)
+    mints = _stand_in_mantle_sdk(monkeypatch, agent_cls)
+    gate = _load_gate()
+    providers = sys.modules["strands_harness.models"]._PROVIDERS  # type: ignore[attr-defined]
+
+    def build(model_id: str = _OPENAI_PATH_MODEL) -> Any:
+        return providers["bedrock-mantle"].build(model_id, "high", True, False)
+
+    return types.SimpleNamespace(gate=gate, mints=mints, providers=providers, build=build)
+
+
+def test_a_mantle_model_boots_under_the_read_back_canary_and_then_sends_the_api_key(
+    mantle, monkeypatch
+) -> None:
+    """Red before the fix: every request minted a SigV4 token and the key was never read.
+
+    The read-back boot puts a canary under every mapped name, which is no region, so
+    building the model must resolve nothing; the session's own values then reach each
+    request as the bearer key and the mantle host, with no mint.
+    """
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", _CANARY)
+    monkeypatch.setenv("AWS_REGION", _CANARY)
+    marked: list[bool] = []
+    monkeypatch.setattr(mantle.gate, "_write_marker", lambda: marked.append(True))
+
+    agent = mantle.gate.create_agent(model=f"bedrock-mantle/{_OPENAI_PATH_MODEL}")
+
+    assert marked == [True]
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", _KEY)
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    assert agent.model._resolve_client_args() == {
+        "api_key": _KEY,
+        "base_url": "https://bedrock-mantle.us-west-2.api.aws/openai/v1",
+    }
+    assert mantle.mints == []
+    # The harness's own build still applied the effort and native web search.
+    assert agent.model.config["params"] == {
+        "reasoning": {"effort": "high"},
+        "tools": [{"type": "web_search"}],
+    }
+
+
+@pytest.mark.parametrize(
+    ("env", "host"),
+    [
+        ({"AWS_REGION": "us-west-2"}, "bedrock-mantle.us-west-2.api.aws"),
+        ({"AWS_DEFAULT_REGION": "eu-west-1"}, "bedrock-mantle.eu-west-1.api.aws"),
+        # Both mapped: AWS_DEFAULT_REGION wins, as it does for plain bedrock.
+        (
+            {"AWS_REGION": "us-west-2", "AWS_DEFAULT_REGION": "eu-west-1"},
+            "bedrock-mantle.eu-west-1.api.aws",
+        ),
+    ],
+)
+def test_the_mantle_region_is_read_in_plain_bedrock_order(mantle, monkeypatch, env, host) -> None:
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", _KEY)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    args = mantle.build("vendor.other-model")._resolve_client_args()
+    assert args["base_url"] == f"https://{host}/v1"
+    assert args["api_key"] == _KEY
+    assert mantle.mints == []
+
+
+@pytest.mark.parametrize("region", ["evil.example.com/#", "us-west-2@evil.example.com", _CANARY])
+def test_a_region_that_is_not_one_never_reaches_a_url_with_the_key(
+    mantle, monkeypatch, region
+) -> None:
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", _KEY)
+    monkeypatch.setenv("AWS_REGION", region)
+    model = mantle.build()
+    with pytest.raises(ValueError, match="invalid AWS region") as raised:
+        model._resolve_client_args()
+    assert _KEY not in str(raised.value)
+
+
+def test_no_region_at_all_is_the_sdk_own_refusal(mantle, monkeypatch) -> None:
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", _KEY)
+    with pytest.raises(ValueError, match="Could not resolve an AWS region") as raised:
+        mantle.build()._resolve_client_args()
+    assert _KEY not in str(raised.value)
+
+
+def test_without_the_api_key_the_sdk_own_route_runs_with_aws_region(mantle, monkeypatch) -> None:
+    """No key mapped: the SDK's SigV4 route, now given the mapped AWS_REGION."""
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    with pytest.raises(RuntimeError, match="Failed to mint"):
+        mantle.build()._resolve_client_args()
+    assert mantle.mints == ["us-west-2"]
+
+
+def test_plain_bedrock_keeps_the_harness_build(mantle) -> None:
+    assert mantle.providers["bedrock"].build.__name__ == "bedrock_build"
+    assert mantle.providers["bedrock-mantle"].build is mantle.gate._mantle_build
+    assert mantle.providers["bedrock-mantle"].web_search is True
+
+
+def test_an_sdk_without_the_mantle_helpers_is_refused_by_name(mantle, monkeypatch) -> None:
+    sdk = sys.modules["strands.models._openai_bedrock"]
+    monkeypatch.delattr(sdk, "_resolve_base_url")
+    with pytest.raises(RuntimeError, match=r"_openai_bedrock\._resolve_base_url"):
+        mantle.build()

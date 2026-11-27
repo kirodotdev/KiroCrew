@@ -61,14 +61,20 @@ def is_wake_ref(ref: object) -> TypeGuard[str]:
     )
 
 
-def _bot_row(slug: str, name: str, agent_cfg: Any, has_goal: bool) -> dict:
-    """One ``Bot``: an explicit allowlist, every free-text value masked like the roster's."""
+def _bot_row(
+    slug: str, name: str, agent_cfg: Any, has_goal: bool, *, bot_id: str | None = None
+) -> dict:
+    """One ``Bot``: an explicit allowlist, every free-text value masked like the roster's.
+
+    ``id`` is *slug*, what an installed app is given, unless *bot_id* names another:
+    ``GET /v1/crew/bots`` gives the Bot's name.
+    """
     # The roster's redaction chokepoint, through the agents handlers' facade.
     from kiro_crew.dashboard.handlers.agents import _roster_mask
 
     display = _roster_mask(getattr(agent_cfg, "display_name", ""))
     return {
-        "id": slug,
+        "id": slug if bot_id is None else bot_id,
         "object": "bot",
         "name": display or name,
         "description": _roster_mask(getattr(agent_cfg, "description", "")),

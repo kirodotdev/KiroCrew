@@ -69,9 +69,11 @@ def token_claims(token: str) -> dict:
     """The host token's payload, read but not verified: the relay verifies it.
 
     The client reads only ``kind`` and ``sub``, which say whose Crew this is, to
-    tell the dashboard's relay ingress who the owner is, and the lease client reads
-    ``iat`` and ``exp`` for the token's lifetime. Nothing here trusts the token for
-    access; the relay checks its signature on every dial.
+    tell the dashboard's relay ingress who the owner is; ``iss``, ``rgn`` and ``ep``,
+    which say what a person's access token for this Crew must name
+    (``access_token.access_scope``); and the lease client reads ``iat`` and ``exp``
+    for the token's lifetime. Nothing here trusts the token for access; the relay
+    checks its signature on every dial.
     """
     parts = token.split(".")
     if len(parts) != 3:
@@ -111,11 +113,24 @@ class HostTokenUnavailable(Exception):
     """
 
 
+#: What a lease says while it simply has not issued the first host token yet. The
+#: client reads this prefix to tell that wait (still starting) from a failure that
+#: needs the owner (a sign-in that cannot host, an unreachable service).
+HOST_TOKEN_NOT_ISSUED_YET = "the lease service has not issued a host token yet"
+
+
 class HostTokenRetryLater(Exception):
     """No host token right now, for a reason that can pass (the backend is down).
 
     The client backs off with the same steps as a reconnect and asks again.
+    *cannot_host_yet* says the wait is on this Crew's own eligibility (its sign-in,
+    or remote access refused for its account or organization), not a fault on the
+    way to the service.
     """
+
+    def __init__(self, message: str = "", *, cannot_host_yet: bool = False) -> None:
+        super().__init__(message)
+        self.cannot_host_yet = cannot_host_yet
 
 
 class HostTokenSource(Protocol):

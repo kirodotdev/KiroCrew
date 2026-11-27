@@ -140,6 +140,15 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "the shared order.",
     ),
     (
+        "A crew's work-item copies read by a hub in one batch",
+        "dashboard/handlers/remote_work_items_pull.py",
+        "The same worker-owned fields and event tails as the per-slot read, for every "
+        "item one hub conductor holds on this crew, on their way to the hub over its "
+        "proxy (remote dispatch, a Feature Preview). It runs the Crew page's "
+        "`_redact_deep`, which runs `redact_via_context`, so both scanners run in the "
+        "shared order.",
+    ),
+    (
         "Conductor work items shown on the Crew page",
         "dashboard/handlers/work_ledger_board.py",
         "Every string in one conductor's work-item board on its way to a browser: "
@@ -278,6 +287,20 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "drops the event. The replay routes (handlers/browser_recordings.py) pass "
         "their turn list and turn detail JSON through the same function. Browser "
         "state and binary pixel frames are unchanged.",
+    ),
+    (
+        "Browser js, cdp and http_get results",
+        "browser_harness/raw_ops.py",
+        "The value a page script, a DevTools command or a direct fetch returns to the "
+        "agent passes the exfiltration-URL and credential redactors whole, then is "
+        "fence-neutralized and capped, before it leaves the op route.",
+    ),
+    (
+        "Browser per-origin sign-in",
+        "browser_harness/sign_in_guard.py",
+        "A provider's sign-in outcome reaches the agent as the site's host, a fixed "
+        "reason code and a note; the provider's own message passes the exfiltration-URL "
+        "and credential redactors whole before it is cut to 200 printable characters.",
     ),
     (
         "Browser action change reports",
@@ -965,6 +988,45 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Streamed and non-streamed completions served to third-party clients.",
     ),
     (
+        "Crew API responses",
+        "dashboard/crew_api_responses.py",
+        "The reply text and the failure reason of a POST /v1/responses turn, redacted "
+        "before the answer leaves. `metadata`, the model name and the names of ignored "
+        "fields go back as the caller sent them. The turn's record holds that answer, "
+        "with the same fields as sent, and each input text is redacted here before "
+        "it is written to the record.",
+    ),
+    (
+        "Crew API response read-back",
+        "dashboard/crew_api_response_reads.py",
+        "The reply text, the failure reason and the input texts of a kept POST "
+        "/v1/responses turn, served again by GET /v1/responses/{response_id} and its "
+        "input_items. Each is redacted again with the route's _redact on its way out; "
+        "a record file that is not the one shape the store writes is not served, and "
+        "in that shape every other field is a fixed value or one of the three sent "
+        "back as they are. No stream event is kept: a stream's events are made again "
+        "from the redacted answer, and from the kept text of its deltas only when "
+        "that redaction changes nothing in them, judged joined. `metadata`, the "
+        "model name and the names of ignored fields go back as the owner sent them.",
+    ),
+    (
+        "Crew API conversation history",
+        "dashboard/crew_api_conversation_lists.py",
+        "The input texts and the reply text of each kept turn of a conversation, "
+        "served by GET /v1/conversations/{conversation_id}/items. Each is redacted "
+        "again with the route's _redact on its way out, as a turn read back is. A "
+        "turn's failure reason is not served here.",
+    ),
+    (
+        "Crew API response stream",
+        "dashboard/crew_api_response_stream.py",
+        "The text deltas of a streamed POST /v1/responses turn pass through "
+        "StreamRedactor with the route's _redact before they leave. Its final text "
+        "is the concatenation of those deltas, including on failure. Held text is "
+        "redacted at the turn's end; oversized sensitive runs are replaced and their "
+        "continuations discarded. Approved links' token values are redacted too.",
+    ),
+    (
         "A conductor mode root's worker list and timeline",
         "dashboard/handlers/crew_workers.py",
         "The side panel's worker cards (a closed worker's saved title, the ledger "
@@ -1039,5 +1101,73 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "credential redactors (`redact`) would change is dropped rather than sent, "
         "because an operator can paste a token into the list. The login words "
         "beside them are fixed constants.",
+    ),
+    (
+        "A lease refusal in the tunnel status and the gateway log",
+        "relay_client/lease.py",
+        "The lease service's own message, appended to a refused lease's text in "
+        "`/api/tunnel/status` (which teammates can read) and its log line. It is "
+        "kept only as plain ASCII words with no ARN or 12-digit number, passes "
+        "the credential redactor (`redact_via_context`) and is cut to 200 "
+        "characters; anything else leaves the text the gateway wrote itself.",
+    ),
+    (
+        "The prompt a turn sent",
+        "dashboard/handlers/prompt_as_sent.py",
+        "The Context tab's prompt as sent: the text one turn sent the agent, read from "
+        "the in-memory prompt record, passes the exfiltration-URL and credential "
+        "redactors before it reaches the owner's browser.",
+    ),
+    (
+        "App Kiro call error bodies",
+        "apps/kiro_calls.py",
+        "The Kiro BFF's own error message, passed back to the app that made the call "
+        "in `kiro.message`. The upstream can echo request headers, so every token the "
+        "call sent is replaced first (a bare token matches no secret pattern) and the "
+        "credential scanner then runs over the text, cut to 300 characters.",
+    ),
+    (
+        "Managed-environment service error text",
+        "managed_env/client.py",
+        "The managed-environment service's own error message, kept on the client's "
+        "error for the caller to show. A 401 or 403 keeps no message; any other has "
+        "the bearer the call sent replaced first, then passes the credential scanner, "
+        "cut to 200 characters.",
+    ),
+    (
+        "Browser page text handed to an app",
+        "apps/browser_page_port.py",
+        "Every string `ctx.browser.page(slot)` returns to an app's backend: the page "
+        "outline, a tab's address and title, an op's result or error, the live view's "
+        "address and title and a picked element's name. Each passes the "
+        "exfiltration-URL and credential redactors whole before any cut to a length.",
+    ),
+    (
+        "The work a restart is waiting on",
+        "work_holders.py",
+        "The names a busy restart idle check lists to the CLI on the gateway "
+        "host: dashboard slot keys and cron job names. Terminal control "
+        "sequences and format characters are dropped, then the active "
+        "credential policy (`redact_via_context`) masks credentials, inside "
+        "URLs too, before the name is cut to 64 characters; a host whose "
+        "policy cannot be composed lists no name. The CLI repeats it on what "
+        "it prints.",
+    ),
+    (
+        "A chat's history search results",
+        "dashboard/chat_history_search.py",
+        "The excerpt each search hit shows in the browser, cut from a transcript "
+        "row. The row's text passes both redactors (exfiltration URLs and "
+        "credentials) whole before URLs are shortened and the excerpt is cut, so "
+        "a credential inside a long URL never reaches the excerpt.",
+    ),
+    (
+        "A Bot's held limits on its Profile tab",
+        "mate_held_rules.py",
+        "The stored text of each limit a Bot's move held for a person, on its way "
+        "to the Bot's Profile tab. The text can quote an old permission rule's "
+        "match, so each one passes the "
+        "exfiltration-URL and credential redactors (`redact`) before it leaves the "
+        "record, and a release compares the list it was sent with that same view.",
     ),
 )

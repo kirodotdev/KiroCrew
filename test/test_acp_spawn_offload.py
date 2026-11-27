@@ -290,17 +290,32 @@ class TestEnsureReadyWorkDir:
         one off-loop mkdir on the FIRST call and no syscall afterwards —
         restoring a per-prompt mkdir fails this test."""
         loop_thread = threading.current_thread()
-        client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
+        work_dir = tmp_path / "workspace"
+        client = AcpClient(work_dir=work_dir, session_key="k")
         proc = MagicMock()
         proc.returncode = None
         client._process = proc
         client._session_id = "sess-1"
 
+        # ``Path.mkdir`` is patched for the whole process, so a thread that has
+        # nothing to do with this client (the audit writer, a pool worker) can
+        # make a directory of its own inside the block. Only the work dir's
+        # mkdir is counted, and every call goes through to the real one.
+        real_mkdir = Path.mkdir
         mkdir_threads: list[threading.Thread] = []
-        with patch(
-            "pathlib.Path.mkdir",
-            side_effect=lambda *a, **kw: mkdir_threads.append(threading.current_thread()),
-        ):
+
+        def _rec_mkdir(self, *a, **kw):
+            if self == work_dir:
+                mkdir_threads.append(threading.current_thread())
+            return real_mkdir(self, *a, **kw)
+
+        bystander = threading.Thread(
+            target=lambda: (tmp_path / "elsewhere").mkdir(), name="bystander-mkdir"
+        )
+        with patch.object(Path, "mkdir", autospec=True, side_effect=_rec_mkdir):
+            bystander.start()
+            await asyncio.to_thread(bystander.join, 30)
+            assert (tmp_path / "elsewhere").is_dir(), "another thread's mkdir must go through"
             await client.ensure_ready()
             assert len(mkdir_threads) == 1, "first ensure_ready must create the work dir"
             assert mkdir_threads[0] is not loop_thread, "work-dir mkdir ran on the loop thread"
@@ -655,7 +670,7 @@ class TestRuntimeSpawnCarriesItsInstance:
             pass
 
         mock_proc = MagicMock()
-        mock_proc.pid = 5152
+        mock_proc.pid = UNALLOCATABLE_PID
         mock_proc.returncode = None
         mock_proc.stderr = None
         mock_proc.stdout = None
@@ -1125,6 +1140,51 @@ class TestRuntimeProjectedLaunchDocuments:
         assert runtime._native_launch_sources == {str(guide): ""}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("cancelled", [False, True], ids=["delivered", "cancelled"])
+    async def test_client_secrets_go_out_before_the_session_is_claimed(
+        self, tmp_path, monkeypatch, cancelled
+    ) -> None:
+        """A cancellation while a KAS engine takes a client secret leaves the session
+        unclaimed, so ``create_session``'s handler still tears it down."""
+        from kiro_crew.acp import kas_client_secret
+
+        runtime, _calls = await self._drive(monkeypatch, tmp_path, inherits=False)
+        monkeypatch.setattr(runtime, "_verify_spawn_agent_active", AsyncMock())
+        monkeypatch.setattr(runtime, "_activates_agent_by_mode", lambda: False)
+        monkeypatch.setattr(runtime, "_snapshot_descendants", AsyncMock())
+        seen: list[tuple[str, bool, bool]] = []
+
+        async def deliver(rt, session_id, clients):
+            seen.append(
+                (
+                    session_id,
+                    session_id in rt._session_queues,
+                    session_id in rt._unclaimed_new_sessions,
+                )
+            )
+            if cancelled:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(kas_client_secret, "deliver_prereg_clients", deliver)
+        runtime._unclaimed_new_sessions.add("created-session")
+        clients = {
+            "conf": kas_client_secret.PreregClient(value="s", url="https://x", client_id="c")
+        }
+        finish = runtime._finish_create_session(
+            "created-session",
+            {"models": []},
+            prereg_clients=clients,
+            **self._create_session_kwargs(runtime),
+        )
+        if cancelled:
+            with pytest.raises(asyncio.CancelledError):
+                await finish
+        else:
+            await finish
+        assert seen == [("created-session", True, True)]
+        assert ("created-session" in runtime._unclaimed_new_sessions) is cancelled
+
+    @pytest.mark.asyncio
     async def test_load_copies_the_launch_record(self, tmp_path, monkeypatch) -> None:
         runtime, _calls = await self._drive(monkeypatch, tmp_path, inherits=False)
         guide = tmp_path / "workspace" / ".kiro" / "steering" / "guide.md"
@@ -1278,7 +1338,14 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
         monkeypatch.setattr(runtime_mod, "resolve_krb5_ccname", lambda env: None)
         monkeypatch.setattr(runtime_mod, "inject_xdist_auto_cap", lambda env: None)
-        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 1.0)
+        # Only the fake process has an identity. Every other number reads as gone,
+        # so a real process or thread that holds a number the spawn's cleanup walks
+        # to (a failed start records and SIGKILLs the root's descendants) is never
+        # read as ours.
+        monkeypatch.setattr(
+            "kiro_crew.platform_compat.get_process_start_id",
+            lambda pid: 1.0 if pid == mock_proc.pid else None,
+        )
 
         async def fake_spawn(*_a, **_kw):
             return mock_proc
@@ -1389,6 +1456,9 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         backend = SimpleNamespace(
             create_windows_cleanup_owned_process=with_fake_process,
             finish_windows_cleanup_owned_spawn=with_fake_process,
+            # Not Linux: the fake tree has no sessions, so the teardown's
+            # session-leftover read stays off the host's /proc.
+            IS_LINUX=False,
             IS_POSIX=not windows,
             IS_WINDOWS=windows,
             terminate_windows_asyncio_tree=terminate_windows_tree,
@@ -1407,6 +1477,8 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             kill_process_tree_pinned=lambda pid, start, sig: (
                 (kill_tree(pid, sig) is None or True) if start == f"start-{pid}" else False
             ),
+            # A kill whose root exited inside the grace waits for the root's group.
+            pgroup_exists=lambda pgid: pgid in groups.values(),
             file_lock=platform_compat.file_lock,
             open_lock_file=platform_compat.open_lock_file,
         )
@@ -1556,7 +1628,7 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             pass
 
         mock_proc = MagicMock()
-        mock_proc.pid = 5150
+        mock_proc.pid = UNALLOCATABLE_PID
         mock_proc.returncode = None
         mock_proc.stderr = None
         mock_proc.stdout = None
@@ -1589,13 +1661,60 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         with caplog.at_level("ERROR"), pytest.raises(_StopSpawn):
             await runtime.spawn()
 
-        assert protected == [5150], (
+        assert protected == [UNALLOCATABLE_PID], (
             "a failed PID-file append must not cost the live runtime its "
             "sweep shield — register_protected_pid has to run first"
         )
         assert any(
-            r.levelname == "ERROR" and "5150" in r.getMessage() for r in caplog.records
+            r.levelname == "ERROR" and str(UNALLOCATABLE_PID) in r.getMessage()
+            for r in caplog.records
         ), "a runtime that could not be recorded leaks silently unless this is an ERROR"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_start_never_signals_a_real_process_its_walk_reaches(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The fake root's number can belong to a real process or thread on the host.
+
+        A failed start walks the root's tree and SIGKILLs the descendants it can
+        confirm by identity. When the fake number is a thread of the xdist
+        controller, the walk lists every worker; this worker stands in for them.
+        """
+
+        class _StopSpawn(Exception):
+            pass
+
+        mock_proc = MagicMock()
+        mock_proc.pid = UNALLOCATABLE_PID
+        mock_proc.returncode = None
+        mock_proc.stderr = None
+        mock_proc.stdout = None
+        self._patch_prelude(monkeypatch, tmp_path, mock_proc)
+        monkeypatch.setattr(runtime_mod, "register_protected_pid", lambda pid: None)
+        monkeypatch.setattr(runtime_mod, "_track_pid", lambda pid: None)
+        monkeypatch.setattr(runtime_mod, "_track_session_pid", lambda pid, token=None: None)
+        monkeypatch.setattr(
+            runtime_mod, "_get_child_pids", lambda pid, _visited=None: [os.getpid()]
+        )
+        signalled: list[tuple[int, int]] = []
+        monkeypatch.setattr(
+            "kiro_crew.platform_compat.kill_pid", lambda pid, sig: signalled.append((pid, sig))
+        )
+
+        async def _no_reader(_self) -> None:
+            return None
+
+        monkeypatch.setattr(AcpRuntime, "_reader_loop", _no_reader, raising=True)
+        monkeypatch.setattr(
+            AcpRuntime, "_send_and_await", AsyncMock(side_effect=_StopSpawn()), raising=True
+        )
+        monkeypatch.setattr(AcpRuntime, "kill", AsyncMock(), raising=True)
+
+        runtime = AcpRuntime(work_dir=tmp_path / "workspace")
+        with pytest.raises(_StopSpawn):
+            await runtime.spawn()
+
+        assert signalled == [], "a failed fake start signalled a real process"
 
 
 class TestRuntimeRootTrackingOffLoop:

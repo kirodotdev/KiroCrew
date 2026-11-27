@@ -55,6 +55,7 @@ from typing import Callable
 from unittest import mock
 
 import pytest
+import source_corpus
 import test_sandbox_refactor_create_guard as create_guard
 
 from kiro_crew import (
@@ -166,6 +167,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _install_root_targets_with _install_root_targets_cached _resolved_install_root_targets
         _bundled_kas_targets_cached _bundled_kiro_cli_targets_cached _bundled_root_spellings
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
+        app_backend_secret_mask_targets
         app_declared_mask_targets app_declared_readonly_targets _liftable_declared_file
         _liftable_declared_dir
         crew_home_visible_spellings carveout_chain_has_planted_link
@@ -198,7 +200,9 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _publish_empty_ceiling _materialize_sealable_parent_dirs _note_established
         _mint_gateway_id_before_seal _materialize_sealable_ceilings _warn_aliased_strict_leaves
         require_unaliased_cloud_config _delete_file_command require_unaliased_launch_state
-        require_unaliased_model_file
+        require_unaliased_model_file _resolved_kiro_mcp_registry_targets
+        _EMPTY_KIRO_MCP_REGISTRY _materialize_kiro_mcp_registry
+        _MAX_REGISTRY_LINK_HOPS _registry_chain_end
         """.split()),
     "kiro_crew.sandbox_aliases": tuple("""
         _CREW_ALIAS_TOLERATED_LEAVES _CREW_ALIAS_CHAIN_DEGRADE_LEAVES _CREW_HARDLINK_REFUSED_LEAVES
@@ -220,6 +224,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _reconcile_auth_store_staging_links _sweep_legacy_auth_store_temps
         _LEGACY_AUTH_SWEEP_CLEAN _materialize_env_mask_target
         _materialize_refresh_chains_mask_target _create_absent_mask_target
+        _materialize_signing_key_mask_target
         _sweep_one_md_notebook_state_dir _materialize_md_notebook_mask_targets
         """.split()),
     "kiro_crew.sandbox_workspace": tuple("""
@@ -277,7 +282,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _PROBE_SPAWN_TIMEOUT_SECONDS _probe_spawn_unavailable_logged _probe_spawned_death
         _probe_unshare_via_spawn _probe_unshare_via_fork is_wsl is_docker_container
         _probe_sandbox_exec _inside_kirocrew_sandbox _macos_sandbox_state
-        _inside_macos_sandbox
+        _inside_macos_sandbox _MAX_USER_NAMESPACES_PATH _read_max_user_namespaces
+        REMEDY_USERNS_CAP_ZERO
         """.split()),
     "kiro_crew.sandbox_unavailable": tuple("""
         _allow_no_isolation UNSANDBOXED_BY_OPERATOR UNSANDBOXED_BY_PLATFORM
@@ -300,6 +306,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _background_warm _kick_background_warm
         prewarm_backend warm_backend _probe_unshare userns_available _backend
         unavailable_kind _warn_no_isolation detect_backend reset_backend wrap_argv
+        remedy_recovery
         """.split()),
     "kiro_crew.sandbox_cgroup": tuple("""
         _CGROUP_DEFAULT_MAX_PROCESSES _CGROUP_DEFAULT_CPU_WEIGHT _CGROUP_MEMORY_FRACTION
@@ -353,7 +360,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         resource_limit_supervisor_argv _SESSION_HOST_PREEXEC session_host_preexec
         _BUILD_NOFILE_CEILING _BUILD_RESOURCE_PREEXEC build_resource_limit_preexec
         _SPAWN_SHIM_SOURCE _SPAWN_SHIM_CODE RLIMIT_PROFILE_TOOL RLIMIT_PROFILE_BUILD
-        RLIMIT_PROFILE_SESSION_HOST RLIMIT_PROFILE_EXTRACTOR _EXTRACTOR_MAX_AS_BYTES
+        RLIMIT_PROFILE_SESSION_HOST RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST RLIMIT_PROFILE_EXTRACTOR _EXTRACTOR_MAX_AS_BYTES
         _EXTRACTOR_MAX_CPU_SECS _EXTRACTOR_MAX_NOFILE RLIMIT_PROFILE_NONE _PROFILE_OOM_BIAS
         _SHIM_ARGV_SEPARATOR _SHIM_CHDIR_FD_FLAG _SHIM_CTTY_FD_FLAG _SHIM_ARGV_CACHE
         _SHIM_UNAVAILABLE_LOGGED _rlimit_spec spawn_shim_argv _shim_prefix_entering_fd
@@ -361,6 +368,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _needs_path_search create_subprocess_limited _prepare_limited_spawn run_limited
         _INTERPRETER_ENOENT_DELAYS _is_transient_interpreter_enoent
         _retry_interpreter_enoent popen_limited
+        _FORK_FREE_SPAWN _FORK_ONLY_SPAWN_KWARGS fork_free_spawns _fork_free_spawn_plan
+        _SHIM_SETSID_FLAG _SHIM_CHDIR_FLAG _SHIM_CLOSE_FDS_FLAG
         """.split()),
     "kiro_crew.sandbox_spawn": tuple("""
         corroborate_launcher_refusal credential_mask_applies spawn_delegates_masking
@@ -1075,6 +1084,7 @@ CENSUS_PARTS = 4
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def census_parts() -> tuple[tuple[Path, ...], ...]:
     """The files the census parses, dealt into ``CENSUS_PARTS`` parts of about equal
     source size: each file, largest first, joins the lightest part so far. Only the
@@ -1097,6 +1107,7 @@ def census_parts() -> tuple[tuple[Path, ...], ...]:
 
 
 @functools.lru_cache(maxsize=CENSUS_PARTS)
+@source_corpus.untraced()
 def census_part(index: int) -> tuple[_Patch, ...]:
     """``(file, line, enclosing function, facade, name)`` for every facade patch in the
     files of census part *index*, read once for both facades."""

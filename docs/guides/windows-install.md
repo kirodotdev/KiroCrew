@@ -154,8 +154,7 @@ Current status:
   controls remain on the right.
 - **Precompiled Windows gateway startup** — packaging traces the real
   `kiro_crew.cli_server` import after pruning and ships hash-based (unchecked) bytecode for
-  that import closure beside its sources, plus the `lark_oapi` closure the Feishu
-  channel imports on the gateway loop. Windows consumes those caches directly,
+  that import closure beside its sources. Windows consumes those caches directly,
   avoiding the thousand-file cache-population burst that otherwise overlaps
   Defender's post-install scanning. Linux redirects bytecode out of its
   read-only app tree, and macOS forbids writing any into its signed one. The Windows caches are **unchecked**-hash,
@@ -322,13 +321,24 @@ own sandbox, so Kiro Crew delegates the Kiro CLI chat backend, model list, accou
 identity and usage reads to it automatically.
 
 **The default chat harness, KAS, runs UNCONFINED on Windows.** KAS has no OS
-sandbox of its own on this platform, and it is not a Kiro CLI spawn, so it takes
-the same no-backend path as the other harnesses below: it can read your home
-directory, including `.aws` and `.ssh`. A fresh desktop install still needs no
-config edit before the first chat. To keep chat inside Kiro CLI's sandbox, pick
-**Kiro CLI** in Settings → Agent Harness (stored as `"acp_backend": "kiro"`).
-With the opt-out below declared, a KAS chat is refused with a message naming
-`sandbox_allow_unsandboxed_exec`; pick Kiro CLI to chat under that posture.
+sandbox of its own on this platform, and Kiro CLI's sandbox does not cover it
+here: started through `kiro-cli acp --agent-engine v3` or from Kiro Crew's bundled
+engine, the KAS process runs unconfined, so it takes the same no-backend path as
+the other harnesses below. It can read your home directory, including `.aws` and
+`.ssh`. A fresh desktop
+install still needs no config edit before the first chat. With the opt-out below
+declared, a KAS chat is refused with a message naming
+`sandbox_allow_unsandboxed_exec`.
+
+**Picking Kiro CLI keeps chat in Kiro CLI's sandbox only while your kiro-cli
+runs its v2 engine.** Settings → Agent Harness → **Kiro CLI** (stored as
+`"acp_backend": "kiro"`) runs on Kiro Crew's KAS path once the installed kiro-cli
+offers its v3 engine
+([decision](../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md)). On
+Windows that chat is then unconfined like any KAS chat, or refused under the
+opt-out. To keep agent chat from running unconfined on Windows, declare the
+opt-out below, which refuses chat instead of confining it, or run Kiro Crew in a
+Linux VM, where its own Linux sandbox confines it.
 
 Everything else — scripts, hooks, third-party ACP backends, app backends, MCP
 probes and the `gh`/`glab` provider CLIs — has no proven internal sandbox to
@@ -374,8 +384,9 @@ spawn the same `kiro-cli` binary chat does, at the same `agent.sandbox` tier —
 on this platform they succeed and fail together with chat, rather than one working
 while the other 503s. Concretely:
 
-- **Default install** (`agent.sandbox` unset → `"auto"`): chat and these fixed
-  Kiro reads delegate to the CLI's built-in sandbox. No broad opt-in is needed.
+- **Default install** (`agent.sandbox` unset → `"auto"`): these fixed Kiro reads,
+  and a Kiro CLI chat while kiro-cli runs its v2 engine, delegate to the CLI's
+  built-in sandbox. No broad opt-in is needed.
   The parent strips gateway credentials, secret/session variables and inherited
   Python runtime variables before every delegated spawn.
 - **`agent.sandbox` explicitly `"off"`** (isolation deferred to kiro-cli's own
@@ -387,7 +398,7 @@ while the other 503s. Concretely:
 
 | Feature | Status on Windows |
 |---------|-------------------|
-| Core gateway / chat / dashboard | works without `sandbox_allow_unsandboxed_exec`. The default KAS harness runs unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse it); the Kiro CLI harness delegates to Kiro CLI's built-in sandbox. The parent scrubs sensitive environment variables either way. A source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
+| Core gateway / chat / dashboard | works without `sandbox_allow_unsandboxed_exec`. The default KAS harness runs unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse it); the Kiro CLI harness delegates to Kiro CLI's built-in sandbox only while the installed kiro-cli runs its v2 engine, and once kiro-cli offers v3 a Kiro CLI pick runs on KAS, unconfined or refused like any KAS chat (see [above](#kiro-sandbox-delegation-and-the-unsandboxed-exec-opt-in)). The parent scrubs sensitive environment variables either way. A source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
 | Project skills (`<project>/.kiro/skills`) | not yet — Python on Windows does not expose handle-relative directory traversal that can reject every reparse point before resolving it. Catalog, consent and loading fail closed before canonicalizing the project path, preventing a raced junction to a UNC share from initiating SMB authentication. Global and installed skills continue to work. |
 | Theme-pack install, detail, assets, overlays, topbars, and removal | works — opened pack files are contained with `GetFinalPathNameByHandleW`; descriptor resolution fails closed instead of trusting a pathname-only check |
 | LLM cron jobs (the `message` kind) | works |
@@ -404,7 +415,7 @@ while the other 503s. Concretely:
 | Vector memory / embeddings | works — embeddings run **in-process** through the vendored llama-cpp-python (`_vendor/llama_cpp_libs/win_amd64`), which loads the Qwen3-Embedding-0.6B GGUF from `~/.kiro/crew/models`. With the default `memory.embedding_provider` (`llama_cpp`) no remote endpoint, no Docker and no Ollama server is involved on any platform; an Ollama server is used only when you set it to `ollama_http` |
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply | works out of the box on the default `system` provider: it drives `System.Speech` through Windows PowerShell 5.1, needs no install, and deliberately does NOT route through `wrap_argv`, so the missing sandbox backend does not block it. `polly` DOES route through `wrap_argv` and therefore runs unconfined under this platform's default; declare `sandbox_allow_unsandboxed_exec=false` and synthesis returns no audio, with the log naming that setting |
-| Launching a cloud crew | `kirocrew cloud launch` works. The dashboard's **Set up a new one** launcher does not: it needs a Linux or macOS gateway, and the tab says so instead of checking AWS. See [Launch a cloud crew from Windows](#launch-a-cloud-crew-from-windows) |
+| Launching a cloud crew | `kirocrew cloud launch` works. The dashboard's **Add Crew → Set up a new Crew** launcher does not: it needs a Linux or macOS gateway, and the form says so instead of checking AWS. See [Launch a cloud crew from Windows](#launch-a-cloud-crew-from-windows) |
 | `kirocrew cloud` tunnel (remote dashboard) | works — `kirocrew cloud connect` (alias `tunnel`) forwards the dashboard over an AWS Systems Manager session, not OpenSSH, so there is no SSH client requirement. It needs the AWS [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) on the machine you run `kirocrew cloud connect` from. The built-in installer covers macOS/Linux only, so on Windows install the plugin from AWS's page yourself |
 | Instances SSH tunnel (`ssh -N -L` transport) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
 | MCP server tool listing (dashboard MCP page, `kirocrew doctor`) | **built-in servers work, no opt-in** — `kirocrew-core` / `-cron` / `-computer` are probed for real: their command line is derived entirely inside the package (never user-config text), so the first-party carve-out spawns the handshake probe unconfined (env-scrubbed, SEL-audited as `unconfined`) even with no sandbox backend. When that probe cannot run (a transient sandbox failure, a governance sandbox floor, or a customized command for the server), the listing falls back to reading the package's own tool declaration and logs a WARNING noting that `ok` then means "declared" rather than "handshake succeeded". A **third-party** server has no declaration to read and never gets the carve-out, so its listing needs the `agent.sandbox_allow_unsandboxed_exec` opt-in — its binary is named by config and spawning it is what the sandbox exists to confine. The third-party server itself is unaffected: kiro-cli launches it from the agent config without this probe, so its tools still work in chat |
@@ -418,8 +429,8 @@ The not-yet items are tracked as Windows feature-parity follow-ups.
 
 ## Launch a cloud crew from Windows
 
-The dashboard's cloud launcher (**Settings → Remote Crew → Set up a new one**)
-needs a Linux or macOS gateway. On a Windows gateway that tab says so and runs no
+The dashboard's cloud launcher (**Settings → Remote Crew → Add Crew → Set up a new Crew**)
+needs a Linux or macOS gateway. On a Windows gateway that form says so and runs no
 AWS check, so it never reports your AWS profile as wrong. There are two ways to
 launch from a Windows PC.
 
@@ -456,7 +467,7 @@ they are.
    `kirocrew gateway`.
 5. Open the dashboard URL the gateway prints in your Windows browser. WSL 2
    forwards `localhost` to Windows by default. Then open **Settings → Remote Crew
-   → Set up a new one**.
+   → Add Crew → Set up a new Crew**.
 
 The WSL gateway listens on port 5476, the same default as the Windows desktop
 app. Quit the desktop app first, or start the WSL gateway on another port with
@@ -590,10 +601,13 @@ would freeze chat/heartbeat, so it takes the lock if free and otherwise fails
 immediately. **Off the loop** (cron, home migration, app backends) it polls up
 to a generous `_LOCK_TIMEOUT_SECS` ceiling — long enough to wait out a
 legitimately long holder such as a data-home migration, rather than racing it,
-yet bounded so a truly stuck/permission-denied fd still fails. Either way, if
-the lock cannot be taken the acquire **fails closed**: it raises rather than
-entering the critical section unserialized, since proceeding lock-less is the
-exact fail-open that loses writes. Non-blocking `try_acquire_lock` already used
+yet bounded so a truly stuck/permission-denied fd still fails. Only `EACCES`
+and `EDEADLOCK`, what a held byte reports, are retried; any other errno (a
+closed fd's `EBADF`, a pipe's `EINVAL`) is about the fd itself and raises at
+once with that errno. Either way, if the lock cannot be taken the acquire
+**fails closed**: it raises rather than entering the critical section
+unserialized, since proceeding lock-less is the exact fail-open that loses
+writes. Non-blocking `try_acquire_lock` already used
 `LK_NBLCK` and is unchanged.
 
 ### The ceiling is not Windows-only
@@ -765,8 +779,7 @@ Sub-agents that share the chat's own kiro-cli process, the default while
 `agent.session_sharing` is on, are not marked: the chat runs in that process,
 and a process-level hint cannot tell the two apart. Not covered yet: dedicated
 sub-agent processes (session sharing off, `keep`, a remote workspace), the
-`_bg` helper runtime, MCP gateway backends and cron scripts
-([#35537](https://github.com/kirodotdev/KiroCrew/issues/35537)).
+`_bg` helper runtime, MCP gateway backends and cron scripts.
 
 Windows pod teardown does not infer a clean stop from the gateway PID record
 vanishing. Before `/End`, it opens an exact handle to the recorded gateway and
@@ -898,9 +911,7 @@ anything.
 What this does **not** give you is supervision. `kirocrew service install` has
 no Windows backend: it prints that service management is supported only on
 systemd and launchd. A gateway started this way stops when you sign out or close
-its window, does not start at boot, and is not restarted if it exits. Windows
-supervision is a separate piece of work, proposed in
-[#11289](https://github.com/kirodotdev/KiroCrew/pull/11289).
+its window, does not start at boot, and is not restarted if it exits.
 
 ## Troubleshooting
 

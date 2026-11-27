@@ -26,6 +26,12 @@ from kiro_crew.ui_index_load import parse_index_text
 
 _WEBSITE = Path(__file__).resolve().parents[1] / "website"
 
+# 10x the worst of five local gen-ui-index.mjs runs (8.6 s).
+UI_GENERATOR_CEILING_SECS = 90
+
+# Twice the generator's ceiling, so a stuck generator fails by name first.
+pytestmark = pytest.mark.timeout(2 * UI_GENERATOR_CEILING_SECS)
+
 
 @pytest.fixture(autouse=True)
 def _fresh_cache(_floor_monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -344,7 +350,7 @@ def built(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=600,
+        timeout=UI_GENERATOR_CEILING_SECS,
         env={**os.environ, "NO_COLOR": "1"},
     )
     assert r.returncode == 0, r.stderr[-4000:]
@@ -405,10 +411,11 @@ def test_a_generated_shell_only_control_is_on_every_page(built: tuple[Path, Path
     ("query", "lang", "label", "path"),
     [
         (
+            # Shared by several pages: placed under each by page id, the shell last.
             "continue with github",
             "en",
             "Continue with GitHub",
-            ["Settings", "Agent Harness", "Continue with GitHub"],
+            ["Sessions", "Continue with GitHub"],
         ),
         (
             "where is the download tailscale button",

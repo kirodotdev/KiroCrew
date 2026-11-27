@@ -86,6 +86,7 @@ _COMPOSED: dict[str, str] = {
     "_apply_recent_session": "slot_builders",
     "_apply_restored_open_slot": "slot_builders",
     "_await_takeover_ordering_settled": "slot_builders",
+    "_commit_tab_id_backfills": "slot_builders",
     "_IDENTITY_UNRESOLVED": "slot_builders",
     "_WINDOW_ROWS": "slot_builders",
     "_load_rehydrated_window": "slot_builders",
@@ -584,7 +585,9 @@ class TestPatchReach:
         monkeypatch.setattr(
             cp,
             "_save_slot_to_history",
-            lambda state, slot, force, takeover_basis=None: saved.append(slot),
+            lambda state, slot, force, takeover_basis=None, unless_unchanged=False: saved.append(
+                slot
+            ),
         )
         slot = SimpleNamespace(key="k")
         state = SimpleNamespace(

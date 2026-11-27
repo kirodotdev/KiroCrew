@@ -1462,6 +1462,36 @@ test("a hostile id cannot take the focus-moved refusal past the log budget", asy
   );
 });
 
+// The echoed id is the renderer's: a line break in it must not start a second,
+// forged launch-log line, and an ordinary id is logged as is.
+test("a focus-moved refusal keeps a renderer id on one log line", async () => {
+  const forged = "x\n[2026-11-18T00:00:00.000Z] gateway token accepted\r\u2028\u2029\u0085\u0007";
+  for (const [id, expected] of [
+    [forged, "x?[2026-11-18T00:00:00.000Z] gateway token accepted?????"],
+    ["connection-menu", "connection-menu"],
+    ["设置…", "设置…"],
+    ["y".repeat(63) + "\n", "y".repeat(63) + "?"],
+  ]) {
+    const h = harness({ storeValues: { runLocalGateway: true } });
+    h.registrar.registerShell();
+    const event = localSenderEvent(`one-line-${expected.length}`);
+    h.windows.focusedDashboardWindow = () => ({ id: "the-requesting-window" });
+    h.windows.menu.execute = () => true;
+    let releaseProbe;
+    h.gateway.probePrimaryPortOwner = () => new Promise((resolve) => {
+      releaseProbe = resolve;
+    });
+    const pending = h.handlers.get("app-menu:execute")(event, id, 0);
+    h.windows.focusedDashboardWindow = () => ({ id: "a-different-window" });
+    releaseProbe("kirocrew");
+    assert.equal(await pending, false);
+    const lines = h.logs.filter((line) => line.includes("app-menu:execute refused"));
+    assert.equal(lines.length, 1);
+    assert.ok(lines[0].includes(`refused ${expected}[0]`), lines[0]);
+    assert.ok(!/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(lines[0]), "no line break may reach the log");
+  }
+});
+
 // The window can stay the same while the focused WebContents moves: a modal
 // opened inside the main window takes focus, and the Reload handler resolves the
 // focused WebContents when it runs. Comparing windows alone let that dispatch

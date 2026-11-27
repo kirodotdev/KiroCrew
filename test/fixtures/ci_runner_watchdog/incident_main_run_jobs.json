@@ -1,0 +1,718 @@
+{
+  "snapshot_at": "2026-11-18T05:45:19Z",
+  "run_created_at": "2026-11-18T04:49:28Z",
+  "source": "https://github.com/kirodotdev/KiroCrew/actions/runs/44239973267/attempts/1",
+  "jobs": [
+    {
+      "id": 134591559080,
+      "name": "Detect changed surface",
+      "created_at": "2026-11-18T05:06:33Z",
+      "started_at": "2026-11-18T05:06:55Z",
+      "runner_name": "a7f0dd0e-4a46-4992-8dc4-bb20b6493bb8",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:07:55Z"
+    },
+    {
+      "id": 134591559097,
+      "name": "Cancel Superseded Run",
+      "created_at": "2026-11-18T05:06:33Z",
+      "started_at": "2026-11-18T05:06:57Z",
+      "runner_name": "c2be87ad-9332-456d-b580-8adf3b8ac6b5",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:18:54Z"
+    },
+    {
+      "id": 134591559224,
+      "name": "Await Fast Gate",
+      "created_at": "2026-11-18T05:06:33Z",
+      "started_at": "2026-11-18T05:06:50Z",
+      "runner_name": "7abb3bbe-da02-478b-87f9-c32cf3437781",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:18:54Z"
+    },
+    {
+      "id": 134592083321,
+      "name": "Frontend Lint & Type Check",
+      "created_at": "2026-11-18T05:07:55Z",
+      "started_at": "2026-11-18T05:08:10Z",
+      "runner_name": "3bc2815e-7bf3-4818-9b50-ad9df33f5f09",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:11:56Z"
+    },
+    {
+      "id": 134592085278,
+      "name": "Backend Lint & Type Check",
+      "created_at": "2026-11-18T05:07:55Z",
+      "started_at": "2026-11-18T05:07:55Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:07:55Z"
+    },
+    {
+      "id": 134596360257,
+      "name": "Frontend Ratchets & i18n",
+      "created_at": "2026-11-18T05:18:54Z",
+      "started_at": "2026-11-18T05:19:09Z",
+      "runner_name": "28ef57b4-2278-4808-b81c-ba26634fb167",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:25:49Z"
+    },
+    {
+      "id": 134596360282,
+      "name": "Lockfile Installs On Declared Node Floor",
+      "created_at": "2026-11-18T05:18:54Z",
+      "started_at": "2026-11-18T05:19:16Z",
+      "runner_name": "d4c4a2cd-224c-4cc4-8d58-2dbd4dafd103",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:20:52Z"
+    },
+    {
+      "id": 134596360338,
+      "name": "Lint Gate",
+      "created_at": "2026-11-18T05:18:54Z",
+      "started_at": "2026-11-18T05:19:15Z",
+      "runner_name": "c5ce4d68-5d0f-4f80-8230-b56febfa6384",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:19:19Z"
+    },
+    {
+      "id": 134596362277,
+      "name": "Metric Schema Only Grows",
+      "created_at": "2026-11-18T05:18:54Z",
+      "started_at": "2026-11-18T05:18:54Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:18:54Z"
+    },
+    {
+      "id": 134596362438,
+      "name": "CloudFormation Lint",
+      "created_at": "2026-11-18T05:18:54Z",
+      "started_at": "2026-11-18T05:18:54Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:18:54Z"
+    },
+    {
+      "id": 134596362994,
+      "name": "Backend Ratchets & Boundaries",
+      "created_at": "2026-11-18T05:18:54Z",
+      "started_at": "2026-11-18T05:18:54Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:18:54Z"
+    },
+    {
+      "id": 134596522538,
+      "name": "Windows Fail-Closed Sandbox Contract",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:21:25Z",
+      "runner_name": "40eea2e8-7a2e-48a3-874d-76764c548ffa",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:23:23Z"
+    },
+    {
+      "id": 134596522816,
+      "name": "Backend Tests (IPv6, windows-latest)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:29:15Z",
+      "runner_name": "kirocrew-windows-4-core-1048736632",
+      "labels": [
+        "kirocrew-windows-4-core"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:31:05Z"
+    },
+    {
+      "id": 134596522818,
+      "name": "Pod Boot Canary (Windows)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:29:24Z",
+      "runner_name": "kirocrew-windows-4-core-1048736645",
+      "labels": [],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:32:48Z"
+    },
+    {
+      "id": 134596522834,
+      "name": "i18n Render Gate (en-XA, head vs base)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:20:19Z",
+      "runner_name": "72e9dd87-8b2d-4df6-afc6-70145682a27c",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:30:24Z"
+    },
+    {
+      "id": 134596522849,
+      "name": "Electron Shell Tests",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596522851,
+      "name": "Backend Tests (IPv6, ubuntu-latest)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:25:15Z",
+      "runner_name": "kirocrew-linux-4-core-1048736110",
+      "labels": [
+        "kirocrew-linux-4-core"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:26:00Z"
+    },
+    {
+      "id": 134596522869,
+      "name": "Electron Shell Tests (Windows port identity)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:22:00Z",
+      "runner_name": "758ccb40-0b35-429e-ad47-c19801e5a398",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:23:14Z"
+    },
+    {
+      "id": 134596522892,
+      "name": "Backend Tests (3.12, 4)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:40Z",
+      "runner_name": "b5ec23ef-8180-4539-b2a2-4431de2eec50",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:24:34Z"
+    },
+    {
+      "id": 134596522923,
+      "name": "Backend Tests (3.12, 5)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:39Z",
+      "runner_name": "66fcd229-df14-40d2-aacc-9b5068c59c16",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:24:46Z"
+    },
+    {
+      "id": 134596522927,
+      "name": "Bundle Size Gate",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:22:00Z",
+      "runner_name": "2e7a99f8-96b7-4cf7-a137-19255371ed80",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:22:56Z"
+    },
+    {
+      "id": 134596522952,
+      "name": "E2E (stub ACP backend, offline)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596522969,
+      "name": "Backend Tests (3.12, 3)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596522976,
+      "name": "Backend Tests (3.12, 8)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:20:23Z",
+      "runner_name": "c34fe105-009a-4e72-951a-2044f6ccde60",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:25:17Z"
+    },
+    {
+      "id": 134596522979,
+      "name": "Backend Tests (3.12, 7)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:21:59Z",
+      "runner_name": "0743bacc-61d3-4c52-8d91-86ac2d7c323c",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:26:12Z"
+    },
+    {
+      "id": 134596522985,
+      "name": "Integration (in-process gateway)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523054,
+      "name": "Backend Tests (3.12, 6)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:22:01Z",
+      "runner_name": "9b4f1eda-ee5a-4820-8b5c-4390bfa21c21",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:26:56Z"
+    },
+    {
+      "id": 134596523061,
+      "name": "E2E Gateway Boot (windows-latest)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:28:25Z",
+      "runner_name": "a9f28a01-d9e6-450b-943d-46ef0357336c",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:31:30Z"
+    },
+    {
+      "id": 134596523070,
+      "name": "E2E Gateway Boot (macos-15)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:24Z",
+      "runner_name": "GitHub Actions 1048735059",
+      "labels": [
+        "macos-15"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:22:51Z"
+    },
+    {
+      "id": 134596523076,
+      "name": "Wheel Engine (real venv build)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:23Z",
+      "runner_name": "GitHub Actions 1048735066",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:20:51Z"
+    },
+    {
+      "id": 134596523081,
+      "name": "Backend Tests (Windows) (2)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:34:07Z",
+      "runner_name": "bd96830c-512a-4188-b1f6-eefa1bd66b76",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "in_progress",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523089,
+      "name": "E2E Gateway Boot (ubuntu-latest)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523090,
+      "name": "Backend Tests (3.12, 1)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523092,
+      "name": "Backend Tests (3.12, 2)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523096,
+      "name": "Backend Tests (Windows) (7)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523099,
+      "name": "Render Benchmark (counter budgets)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:25:18Z",
+      "runner_name": "kirocrew-linux-4-core-1048736112",
+      "labels": [
+        "kirocrew-linux-4-core"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:34:03Z"
+    },
+    {
+      "id": 134596523100,
+      "name": "Backend Tests (Windows) (3)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523127,
+      "name": "Backend Tests (Windows) (4)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:29:36Z",
+      "runner_name": "124930e4-c298-46a2-ae1f-697ee12d4f34",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "in_progress",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523130,
+      "name": "Frontend Tests (4)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:42Z",
+      "runner_name": "e4044609-bade-4197-bfd7-8ed236198984",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:31:48Z"
+    },
+    {
+      "id": 134596523160,
+      "name": "Frontend Tests (2)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523161,
+      "name": "Backend Tests (Windows) (8)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523163,
+      "name": "Frontend Tests (1)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523173,
+      "name": "Backend Tests (Windows) (1)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523175,
+      "name": "Backend Tests (Windows) (6)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523194,
+      "name": "Backend Tests (Windows) (5)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-windows-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523224,
+      "name": "Frontend Tests (3)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1 instance-size:large"
+      ],
+      "status": "queued",
+      "conclusion": null,
+      "completed_at": null
+    },
+    {
+      "id": 134596523279,
+      "name": "E2E (private member namespace, hosted)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:25:22Z",
+      "runner_name": "kirocrew-linux-4-core-1048736126",
+      "labels": [
+        "kirocrew-linux-4-core"
+      ],
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-18T05:28:58Z"
+    },
+    {
+      "id": 134596524724,
+      "name": "Backend Tests (namespace sandbox)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "kirocrew-linux-4-core"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:19:19Z"
+    },
+    {
+      "id": 134596524890,
+      "name": "Linux Packaging (build + smoke-install)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "ubuntu-22.04"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:19:19Z"
+    },
+    {
+      "id": 134596524928,
+      "name": "Native Redaction Gate (kc_native)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:19:19Z"
+    },
+    {
+      "id": 134596524971,
+      "name": "Real Adapter Contract Tests",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:19:19Z"
+    },
+    {
+      "id": 134596525122,
+      "name": "Backend Tests (Kernel Lock Owner, hosted)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "kirocrew-linux-4-core"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:19:19Z"
+    },
+    {
+      "id": 134596525377,
+      "name": "Install Requires Wheel Closure (${{ matrix.machine }})",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:19:19Z"
+    },
+    {
+      "id": 134596525481,
+      "name": "New-test stability (${{ matrix.os }})",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:19:19Z"
+    },
+    {
+      "id": 134596525784,
+      "name": "Backend Tests (crew container)",
+      "created_at": "2026-11-18T05:19:19Z",
+      "started_at": "2026-11-18T05:19:19Z",
+      "runner_name": "",
+      "labels": [
+        "codebuild-kirocrew-gha-linux-44239973267-1"
+      ],
+      "status": "completed",
+      "conclusion": "skipped",
+      "completed_at": "2026-11-18T05:19:19Z"
+    }
+  ]
+}

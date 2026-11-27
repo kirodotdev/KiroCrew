@@ -38,9 +38,9 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.usage_store",
     "kiro_crew.dashboard.handlers.usage_spend",
     "kiro_crew.dashboard.handlers.usage_context",
+    "kiro_crew.dashboard.handlers.usage_sessions",
     "kiro_crew.dashboard.handlers.usage_cost",
     "kiro_crew.dashboard.handlers.usage_history",
-    "kiro_crew.dashboard.handlers.usage_sessions",
 )
 #: ``usage_series`` and ``usage_outcome`` are sibling handlers that read the facade by
 #: attribute, not owners.

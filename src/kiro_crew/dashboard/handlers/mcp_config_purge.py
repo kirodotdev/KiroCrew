@@ -38,19 +38,28 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
 
 
 async def _forget_owner_servers(names: list[str]) -> None:
-    """Drop the owner sign-in records for servers the owner removed.
+    """Drop the owner sign-in records for servers the owner removed, and their grants.
 
     Best effort, like the record on add: the removal already landed, and a stale
     record only matters if an entry with the same name AND URL comes back.
     """
     from kiro_crew.config.loader import update_config_locked
-    from kiro_crew.connections.owner_servers import forget
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.connections.owner_servers import forget, replaced_urls
     from kiro_crew.dashboard.chat_utils import run_config_write
 
+    dropped: dict[str, str] = {}
+
+    def _forget(cfg: dict) -> dict | None:
+        dropped.update(replaced_urls(cfg, dict.fromkeys(names)))
+        return forget(cfg, names)
+
     try:
-        await run_config_write(update_config_locked, mutate=lambda cfg: forget(cfg, names))
+        await run_config_write(update_config_locked, mutate=_forget)
     except Exception:  # noqa: BLE001 -- the removal itself already landed
         logger.warning("could not forget owner MCP servers %s", sorted(names), exc_info=True)
+        return
+    await crew_oauth.forget_owner_grants(dropped)
 
 
 #: One change's preflight resolution: scope label -> the raw key that scope held
@@ -239,7 +248,7 @@ def _sweep_dangling_uninstalls(
     uninstall_names: list[str],
     purged_names: set[str],
     preferred: dict[str, PreflightKeys] | None = None,
-) -> None:
+) -> list[str]:
     """Purge the config of every REQUESTED uninstall the apply loop did not reach.
 
     The compensation for package-first ordering: Phase 1 removes the companion
@@ -274,10 +283,12 @@ def _sweep_dangling_uninstalls(
     already purged by the loop (in ``purged_names``) is skipped and a re-run is
     cheap. With *preferred* (:func:`_preflight_change_keys`, taken before Phase 1) each
     name's purge carries the same tiebreaker the loop would have; presence is the read's.
+    Returns the names it purged, so the caller can forget them as the loop would have.
     """
+    swept: list[str] = []
     to_sweep = [n for n in uninstall_names if n not in purged_names]
     if not to_sweep:
-        return
+        return swept
     # Best-effort: this runs from the apply's finally, so it must NEVER raise —
     # a failure here (even the lock acquire) would replace a successful apply's
     # response with a 500, or mask the original exception being unwound. Guard
@@ -287,6 +298,7 @@ def _sweep_dangling_uninstalls(
         with _get_mcp_lock_sync():
             for uname in to_sweep:
                 _purge_server_config(uname, preferred=(preferred or {}).get(uname))
+                swept.append(uname)
                 logger.warning(
                     "mcp apply interrupted before purging config for requested "
                     "uninstall %r; swept it in guaranteed cleanup to avoid a "
@@ -299,3 +311,4 @@ def _sweep_dangling_uninstalls(
             "package until the next apply",
             to_sweep,
         )
+    return swept

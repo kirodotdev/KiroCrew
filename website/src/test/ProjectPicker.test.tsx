@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { screen, fireEvent, act, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ProjectPicker from '../components/ProjectPicker'
 import { api } from '../api/client'
@@ -210,6 +210,27 @@ describe('ProjectPicker', () => {
       )
       expect(await screen.findByText('projA')).toBeInTheDocument()
       expect(screen.getByText('projB')).toBeInTheDocument()
+    })
+
+    it('titles each recent row with its folder name, native Windows paths included', async () => {
+      // A Windows gateway serves native paths, which a `/`-only split would show whole.
+      const rows: [string, string][] = [
+        ['D:\\work\\proj', 'proj'],
+        ['\\\\host\\share\\shared', 'shared'],
+        ['D:\\work\\trail\\', 'trail'],
+        ['/home/u/posix', 'posix'],
+        ['/home/u/slash/', 'slash'],
+        ['/tmp/we\\ird', 'we\\ird'],
+      ]
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: rows.map(([path]) => path) })
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      const list = await screen.findByRole('listbox', { name: 'Recent projects' })
+      for (const [path, title] of rows) {
+        const row = (await within(list).findByText(title)).closest('[role="option"]') as HTMLElement
+        expect(within(row).getByText(path)).toBeInTheDocument()
+      }
     })
 
     it('calls onSelect and onOpenChange(false) when clicking a recent entry', async () => {

@@ -638,7 +638,7 @@ class TestSessionReload:
         if failure is None:
             assert row["content"] == expected
         else:
-            assert row["content"].startswith("⚠️ The reloaded agent did not start.")
+            assert row["content"].startswith("Warning: The reloaded agent did not start.")
             assert "spawn failed" in row["content"]
             assert self._TOKEN not in row["content"]
 

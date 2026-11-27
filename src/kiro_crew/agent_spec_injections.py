@@ -27,6 +27,17 @@ from kiro_crew.user_json import copy_json_document, strict_json_equal
 
 logger = logging.getLogger(__name__)
 
+#: The cause and the remedy a zero-tool refusal names. Kiro Crew writes these
+#: specs with nothing mounted, so an entry found there was most likely written back by
+#: another tool; the check stays strict and the fix belongs to that tool.
+WRITE_BACK_CAUSE = (
+    "Kiro Crew writes this spec with no tools, MCP servers or grants, so an entry in it "
+    "was most likely added by another tool, such as a sandbox or credential tool that "
+    "writes its own MCP server into every spec in the agents directory when kiro-cli "
+    "starts. Kiro Crew does not run this agent on such a spec: have that tool leave "
+    "Kiro Crew's tool-less specs alone"
+)
+
 #: Takes a copy of a parsed spec and returns it with the filter's injection removed,
 #: or ``None`` when the spec does not carry that injection in exactly its shape.
 SpecInjectionFilter = Callable[[dict[str, Any]], "dict[str, Any] | None"]

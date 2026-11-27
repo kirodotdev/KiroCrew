@@ -166,6 +166,37 @@ async def test_settings_write_rejects_a_credential_shaped_model(tmp_path, monkey
         assert (await resp.json())["model"] == ""
 
 
+#: A URL whose query carries data out. Redaction masks only credential values, so it
+#: leaves this one as written, and only the exfil scan flags it.
+_EXFIL_URL = "https://collector.example/c?d=" + "aGVsbG8gd29ybGQgdGhpcyBpcyBkYXRh" * 3
+
+
+def test_a_url_carrying_data_out_is_refused_though_redaction_keeps_it():
+    assert routes._redact(_EXFIL_URL) == _EXFIL_URL
+    assert routes._refuses(_EXFIL_URL)
+    assert not routes._refuses("an-ordinary-model-id")
+
+
+def test_refusal_fails_closed_without_the_security_module(monkeypatch):
+    monkeypatch.setattr(routes, "_HAS_SECURITY", False)
+    assert routes._refuses("an-ordinary-model-id")
+
+
+def test_load_settings_degrades_a_model_carrying_data_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "_SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(routes, "_STATE_DIR", tmp_path)
+    (tmp_path / "settings.json").write_text(json.dumps({"base_path": "", "model": _EXFIL_URL}))
+    assert routes._load_settings()["model"] == ""
+
+
+@pytest.mark.asyncio
+async def test_settings_write_rejects_a_model_carrying_data_out(tmp_path, monkeypatch):
+    async with _make_client(monkeypatch, tmp_path) as client:
+        resp = await client.put(f"{_BASE}/settings", json={"base_path": "", "model": _EXFIL_URL})
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "model_invalid"
+
+
 # ── failures are reported, never swallowed ───────────────────────────────────
 
 

@@ -40,6 +40,8 @@ _ETC_GLOB = os.path.join(_ETC, "**")
 _OPEN_SCOPES: dict[str, str] = {
     "mcp": "@other/tool",
     "tools": "fs_write",
+    # With no ``ask`` rule, trust approves a KAS web call as before (``web_ask_rule``).
+    "unattended_web_tools": "web_fetch",
     "commands": "ls",
     "filesystem.read": _ETC_FILE,
     "filesystem.write": _WORKSPACE_FILE,
@@ -65,6 +67,7 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "channels": ((), ("slack",)),
     "approval_mode": (("interactive",), ()),
     "sandbox.min_level": (("strict",), ()),
+    "command_chains": (("each",), ()),
     "yolo_duration": ((), ("permanent", "until_shutdown", "1h")),
     "agent_backend": (("kas",), ("claude", "kiro")),
     "webhooks": ((), ("agent", "ops-mission-control")),
@@ -177,6 +180,7 @@ def test_lts_unnamed_open_scope_keeps_crews_default(
 _OPEN_DENIES: dict[str, dict[str, object]] = {
     "mcp": {"mcp": {"mode": "deny", "deny": ["@other"]}},
     "tools": {"tools": {"mode": "deny", "deny": ["fs_write"]}},
+    "unattended_web_tools": {"unattended_web_tools": {"mode": "deny", "deny": ["web_fetch"]}},
     "commands": {"commands": {"mode": "allow", "allow": []}},
     "filesystem.read": {"filesystem": {"read": {"mode": "deny", "deny": [_ETC_GLOB]}}},
     "filesystem.write": {"filesystem": {"write": {"mode": "allow", "allow": []}}},

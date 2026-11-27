@@ -28,7 +28,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
-from kiro_crew.edition_locks import audit_refusal
+from kiro_crew.edition_locks import audit_refusal, locked_by_edition
 from kiro_crew.security import redaction_switch
 
 logger = logging.getLogger(__name__)
@@ -112,7 +112,9 @@ async def _deny_non_owner(request: web.Request, operation: str) -> web.Response 
 async def _view(state: redaction_switch.RedactionState) -> dict:
     """The state in force, plus whether this host's policy forbids turning redaction off."""
     locked = not await asyncio.to_thread(redaction_switch.owner_may_disable)
-    return {**state.to_dict(), "locked_by_policy": locked}
+    # No policy term can lift the lock, so the page names the edition instead.
+    edition = locked and locked_by_edition(redaction_switch.DISABLE_SCOPE)
+    return {**state.to_dict(), "locked_by_policy": locked, "locked_by_edition": edition}
 
 
 async def api_credential_redaction_get(request: web.Request) -> web.Response:

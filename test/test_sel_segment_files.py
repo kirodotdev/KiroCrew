@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
+import sys
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +30,7 @@ from sel_helpers import (  # noqa: F401 -- fixtures are requested by name
 )
 
 import kiro_crew.sel as sel_mod
+import kiro_crew.sel_append as sel_append
 from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.sel import SecurityEventLog
@@ -470,10 +473,19 @@ class TestSegmentEnumerationIsBounded:
                 examined += 1
                 return entry
 
-        with patch("kiro_crew.sel.os.scandir", _CountingScandir):
+        # The worker's stdlib os: count only the walk's own scan. (The sel owners
+        # share os, so test_facade_mirror_guards refuses swapping one's.)
+        walk = SecurityEventLog._segments_oldest_first.__code__
+
+        def counting_scandir(path="."):
+            if sys._getframe(1).f_code is not walk:
+                return real_scandir(path)
+            return _CountingScandir(path)
+
+        with patch.object(os, "scandir", counting_scandir):
             log._segments_oldest_first()
 
-        assert examined <= sel_mod._SEGMENT_SCAN_CAP + 1, (
+        assert 0 < examined <= sel_mod._SEGMENT_SCAN_CAP + 1, (
             f"walked {examined} entries with a cap of {sel_mod._SEGMENT_SCAN_CAP}; "
             "enumeration scales with a directory an agent could have filled"
         )
@@ -598,12 +610,16 @@ class TestSegmentDirIsNotFollowedThroughALink:
         assert log._segments_oldest_first(), "precondition: rotation happened"
         assert list(outside.iterdir()) == [], "audit segments landed outside the fence"
 
-    def test_an_unremovable_link_refuses_to_rotate(self, sel_dir, small_segments):
+    def test_an_unremovable_link_refuses_to_rotate(self, sel_dir, small_segments, caplog):
         """Refusing beats writing audit records outside the fence.
 
         The log keeps growing, which is the failure this release bounds — but an
         oversized log inside the fence beats a bounded one outside it.
         """
+        # Each refused rotation logs a warning with a traceback, about 36 MiB over
+        # this test, and pytest keeps captured logs for the whole session. No
+        # assertion reads them.
+        caplog.set_level(logging.ERROR, logger="kiro_crew.sel")
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 200)
         # Answer "link" only for rotation's paths (the segment dir and its
@@ -948,6 +964,21 @@ class TestLiveLogMovedOnHelper:
             assert sel_mod._identity_changed(previous, _St(dev, ino, size)) is (
                 sel_mod._live_log_moved_on(previous, (dev, ino, size))
             )
+
+    @pytest.mark.parametrize(
+        ("previous", "current", "expected"),
+        [
+            ((1, 10, 500), (1, 10, 900), False),  # a foreign append
+            ((1, 10, 500), (1, 11, 900), True),  # new inode that already grew
+            ((1, 10, 500), (2, 10, 900), True),  # same ino, different device
+            ((1, 10, 500), (1, 10, 40), True),  # shrank
+            ((1, 0, 500), (1, 0, 900), False),  # no inode available, grew
+            ((0, 0, 0), (1, 7, 512), False),  # anchored absent, somebody wrote
+        ],
+    )
+    def test_only_a_replaced_file_counts_as_replaced(self, previous, current, expected):
+        """Picks the log line only: a foreign append is routine, a replacement is not."""
+        assert sel_append._live_log_replaced(previous, current) is expected
 
 
 class TestTimeWindowRead:

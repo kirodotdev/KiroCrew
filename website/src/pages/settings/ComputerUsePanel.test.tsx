@@ -78,6 +78,21 @@ describe('ComputerUsePanel', () => {
     expect(toggle).toHaveAttribute('aria-describedby', expect.stringContaining(note.id))
   })
 
+  it('keeps the policy wording for a lock a policy can lift', async () => {
+    await renderPanel(snapshot({ locked_by_policy: true, locked_by_edition: false }))
+    const note = await screen.findByTestId('computer-use-locked-note')
+    expect(note).toHaveTextContent('Locked by policy')
+    expect(note).toHaveTextContent(/organization's policy controls this setting/i)
+  })
+
+  it('names the edition when no policy can lift the lock', async () => {
+    await renderPanel(snapshot({ locked_by_policy: true, locked_by_edition: true }))
+    const note = await screen.findByTestId('computer-use-locked-note')
+    expect(note).toHaveTextContent('Not available in this edition')
+    expect(note).toHaveTextContent(/an admin cannot turn it on/i)
+    expect(note).not.toHaveTextContent(/organization's policy/i)
+  })
+
   it('shows no lock note when nothing is locked', async () => {
     await renderPanel()
     expect(await screen.findByRole('switch', { name: ENABLE_LABEL })).not.toHaveAttribute('aria-disabled', 'true')

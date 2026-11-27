@@ -8,8 +8,8 @@ the child's memory, crew activity and folder steering (``prepare_child_context``
 records and the spawn event a restart and the panel read (``persist_spawn_records``), and
 the ``AgentSpawn`` and ``UserPromptSubmit`` hooks with their clock bookkeeping
 (``fire_prompt_hooks``). Each takes the run's ``RunEventCoordinator`` as ``self``, except
-``spec_builtin_tools_notice``, the line naming what of a named agent's ``tools`` and
-``model`` a claude session does not apply, which needs only the session.
+``spec_builtin_tools_notice``, the line naming a named agent's ``model`` pin a claude
+session does not apply, which needs only the session.
 
 The turn body runs on ``kiro_crew.subagent``'s globals (``bind_component_globals``), and
 tests patch names there (``sel``, ``time``, ``_redact``, the session re-projection
@@ -70,6 +70,21 @@ def _run_on(manager: Any, key: str) -> SubagentInfo | None:
         if (run.conversation_key or f"subagent:{run.id}") == key
     ]
     return max(runs, key=lambda run: (not run.done, run.started)) if runs else None
+
+
+def _parent_provider(manager: Any, parent_key: str) -> Any:
+    """The live provider of the session at *parent_key*, or ``None``.
+
+    A sub-agent parent on a shared runtime keeps its session on its run
+    (``_shared_provider``), outside the session registry; any other parent is
+    in the registry.
+    """
+    if not parent_key:
+        return None
+    run = _run_on(manager, parent_key) if parent_key.startswith("subagent:") else None
+    if run is not None and not run.done and run._session_sharing and run._shared_provider:
+        return run._shared_provider
+    return manager._sessions.get_provider(parent_key)
 
 
 def _approval_lineage(
@@ -301,6 +316,7 @@ async def acquire_session(
                 exc,
             )
             info._session_sharing = False
+            info._shared_slot_reserved = False
             info._shared_provider = None
             use_session_sharing = False
             # Admitted at the shared price; the process this launches was
@@ -358,6 +374,7 @@ async def acquire_session(
         # teardown to the shared arm. The old attempt's teardown, which read
         # it, has finished before this one runs.
         info._session_sharing = False
+        info._shared_slot_reserved = False
         info._shared_provider = None
 
         def _claim():
@@ -379,8 +396,11 @@ async def acquire_session(
     if is_new:
         # A spawn prompts the moment its session opens, and nobody reconnects a
         # slow server mid-run: hold the first prompt (bounded) for the agent
-        # spec's servers, as every other unattended run does.
-        await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
+        # spec's servers, as every other unattended run does. Not for one the
+        # parent's session on this host has given up on (failed, or hung): a
+        # dead server would cost every spawn the whole bound.
+        parent = _parent_provider(self._manager, info.parent_session_key)
+        await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS, seen_by=parent)
     return client, is_new, _resumed, is_cc, use_session_sharing
 
 
@@ -728,7 +748,7 @@ async def spec_builtin_tools_notice(
     client: Any, info: SubagentInfo, session_key: str, *, fresh: bool
 ) -> str:
     """The block a spawn's new session's first prompt carries when its claude session
-    leaves the named agent's ``tools`` limit or ``model`` pin unapplied
+    leaves the named agent's ``model`` pin unapplied
     (``agent_sdk.spec_builtin_tools``).
 
     Only on a *fresh* session, so a continuation or a respawn does not repeat it.

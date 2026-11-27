@@ -35,6 +35,7 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
+from kiro_crew.acp.sheet_digest import sheet_digests
 from kiro_crew.hooks import (
     is_unc_shape,
     safe_read_file_bytes,
@@ -259,7 +260,8 @@ def build_prompt_blocks(
     """Return ACP prompt blocks for *message*.
 
     Each readable image path found in *message* becomes an ``image`` block and is
-    replaced in the text by ``[image: <name>]`` so the model still sees where the
+    replaced in the text by ``[image: <name>]`` (followed by its absolute path when
+    the file sits directly in the uploads folder) so the model still sees where the
     attachment sat in the sentence. The marker lands only where the path grammar
     matched -- never inside a URL's own path or a longer local path that merely
     contains the same characters; a local path quoted as a URL query value
@@ -525,6 +527,7 @@ def build_prompt_blocks(
             marker_count[path.name] = marker_count.get(path.name, 0) + 1
             nth = marker_count[path.name]
             marker = f"[image: {path.name}]" if nth == 1 else f"[image: {path.name} ({nth})]"
+            marker += _upload_path_suffix(path)
             images.append({"type": "image", "data": data, "mimeType": out_mime})
             markers[raw] = marker
             raw_digests[raw_digest] = marker
@@ -538,6 +541,8 @@ def build_prompt_blocks(
                 max_prompt_image_blocks,
             )
         text = _rewrite_text(message, candidates, markers, notes)
+        # Off by default: a stored CSV or TSV gets a bounded digest, its typed markers escaped.
+        text += _rewrite_text(sheet_digests(scan, user_spans), [], {}, {})
     else:
         # The path stays as written, but a typed marker must not claim an
         # attachment on a backend that takes none either.
@@ -546,6 +551,25 @@ def build_prompt_blocks(
     if sent_images is not None:
         sent_images.stage(inlined_digests)
     return [{"type": "text", "text": str(text)}, *images]
+
+
+def _upload_path_suffix(path: Path) -> str:
+    """`` <absolute path>`` for a picture stored directly in the uploads folder.
+
+    A person's pasted picture lives there, and the marker alone hides its path, so
+    a conductor could not hand that picture on to a worker by path. Only that folder
+    qualifies: the path is text the person already sent, so this adds no read reach.
+    """
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.hooks import validate_file_path
+
+    # Both through the house path screen, which refuses a UNC host (and a link to
+    # one) before any probe, so neither canonicalization can reach an SMB share.
+    real = validate_file_path(str(path))
+    uploads = validate_file_path(str(data_home() / "uploads"))
+    if real is None or uploads is None:
+        return ""
+    return f" {real}" if Path(real).parent == Path(uploads) else ""
 
 
 def _user_spans(message: str) -> list[tuple[int, int]]:

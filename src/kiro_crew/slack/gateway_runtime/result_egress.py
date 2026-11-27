@@ -57,10 +57,10 @@ def _heartbeat_slack_parts(title: str, result_text: str) -> list[str]:
       and that strip can reassemble a credential the escapes had broken up.
       Redacting again after conversion is what closes that.
 
-    The ``*title*`` caption goes through ``header=``, which redacts it without
+    The ``💓 *title*`` caption goes through ``header=``, which redacts it without
     converting (it is already Slack mrkdwn) and charges it against the limit.
     """
-    return render_for_slack(result_text, header=f"*{title}*\n\n")
+    return render_for_slack(result_text, header=f"💓 *{title}*\n\n")
 
 
 async def _deliver_cron_response(
@@ -550,7 +550,7 @@ async def _deliver_result(
             # agent to append entries, so ``chan`` is untrusted input. An
             # unattended post reaches a NEW audience, which is what
             # ``api_send_message``'s tracked-channel allowlist governs.
-            allowed = bool(chan and CHANNEL_ID_RE.match(chan) and is_tracked_channel(chan))
+            allowed = bool(chan and CHANNEL_ID_RE.fullmatch(chan) and is_tracked_channel(chan))
             owner_dm: str | None = None
             if slack and not allowed and self._owner_id:
                 # Resolved only off the allowed path, where it serves twice: as

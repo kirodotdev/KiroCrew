@@ -143,7 +143,9 @@ def _discard_unused_cron_scratch(scratch: Path | None) -> None:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-_SCRATCH_OWNER_ERROR = "❌ Cron run stopped: its temp dir owner marker could not be recorded safely"
+_SCRATCH_OWNER_ERROR = (
+    "Error: Cron run stopped: its temp dir owner marker could not be recorded safely"
+)
 
 
 def _default_temp_dir() -> str:
@@ -188,7 +190,7 @@ def _default_temp_dir() -> str:
 #: environment is wrong, not the script). Only "non-zero" is load-bearing.
 CHILD_PERSISTENCE_EXIT_CODE = 78
 
-CHILD_PERSISTENCE_PREFIX = "❌ Cron child cannot persist state: "
+CHILD_PERSISTENCE_PREFIX = "Error: Cron child cannot persist state: "
 
 
 def child_persistence_preflight() -> None:

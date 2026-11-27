@@ -41,6 +41,24 @@ async def test_simultaneous_services_never_share_run_identity(world, second):
         assert run.result == [[scope.store or "V1"] * 2] + [scope.store or "V1"] * 3
 
 
+@pytest.mark.asyncio
+async def test_first_parallel_turn_does_not_wait_on_a_cold_skill_catalog(world, monkeypatch):
+    """A spent cold-catalog budget does not empty the first turn's skills.
+
+    A budget of zero is what a loaded Windows runner hands the first turn when
+    the background walk outlasts ``_COLD_CATALOG_WAIT_SECS``. ``world`` lists its
+    catalog before any turn, so the first ``ctx.parallel`` still carries the
+    skill marker instead of both calls failing to ``None``.
+    """
+    from kiro_crew import skills
+
+    monkeypatch.setattr(skills, "_COLD_CATALOG_WAIT_SECS", 0.0)
+    svc = WorkflowService(sessions=world.sessions, context_builder=world.builder, persist=False)
+    run = await finished(svc, await svc.start(SCRIPT, session_key="dashboard:alice"))
+    store = world.stores["alice"]
+    assert run.result[0] == [store, store]
+
+
 def test_thread_allocations_are_unique():
     import threading
 

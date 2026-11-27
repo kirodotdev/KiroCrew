@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
-import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
+import QueueStack, { SubagentDeliveryProgress, isAppMessageQueued, isServerWrittenQueued, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
 import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
 import { quoteBlock } from '../chat-core/composer/messageQuote'
@@ -719,6 +719,78 @@ describe('QueueStack editor hold', () => {
     expect(outgoing.mock.calls).toEqual([['q1', true], ['q1', false]])
     expect(incoming).not.toHaveBeenCalled()
   })
+
+  /** Two cards, the stack expanded, A's editor open; returns B's pencil and A's input. */
+  function openFirstOfTwo(onEditOpen: (queueId: string, open: boolean) => void) {
+    const { unmount } = render(<QueueStack messages={[queued('card a', 'qa'), queued('card b', 'qb')]} onCancel={() => {}} onEdit={() => {}} onEditOpen={onEditOpen} />)
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit queued message' })[0])
+    const input = screen.getByRole('textbox', { name: 'Edit queued message' })
+    const pencilB = () => screen.getAllByRole('button', { name: 'Edit queued message' }).at(-1)!
+    return { input, pencilB, unmount }
+  }
+
+  // Pressing B's pencil blurs A's editor, whose release (or save) goes out
+  // before the click opens B. B's hold goes out on the press, so the server
+  // sees it first and the queue never runs between the two editors.
+  it("sends the next card's hold on the press, before the open editor's blur releases its card", () => {
+    const onEditOpen = vi.fn()
+    const { input, pencilB } = openFirstOfTwo(onEditOpen)
+    fireEvent.mouseDown(pencilB())
+    fireEvent.blur(input)
+    fireEvent.mouseUp(pencilB())
+    fireEvent.click(pencilB())
+    // The open holds B again, which only renews the hold its press placed.
+    expect(onEditOpen.mock.calls).toEqual([['qa', true], ['qb', true], ['qa', false], ['qb', true]])
+    expect(screen.getByRole('textbox', { name: 'Edit queued message' })).toHaveValue('card b')
+  })
+
+  it('releases the pressed card when the press is dragged off its pencil', () => {
+    const onEditOpen = vi.fn()
+    const { input, pencilB } = openFirstOfTwo(onEditOpen)
+    fireEvent.mouseDown(pencilB())
+    fireEvent.blur(input)
+    fireEvent.mouseLeave(pencilB())
+    fireEvent.mouseUp(screen.getByText('card b'))
+    expect(onEditOpen.mock.calls).toEqual([['qa', true], ['qb', true], ['qa', false], ['qb', false]])
+    expect(screen.queryByRole('textbox', { name: 'Edit queued message' })).toBeNull()
+  })
+
+  // B's pencil can move or unmount under a still pointer, so no mouseleave
+  // ends its press: the next editor that opens, or the unmount, releases it.
+  it('releases a pressed card that never became a click when another card opens', () => {
+    const onEditOpen = vi.fn()
+    const { input, pencilB } = openFirstOfTwo(onEditOpen)
+    fireEvent.mouseDown(pencilB())
+    fireEvent.blur(input)
+    fireEvent.mouseUp(screen.getByText('card b'))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit queued message' })[0])
+    expect(onEditOpen.mock.calls).toEqual([['qa', true], ['qb', true], ['qa', false], ['qb', false], ['qa', true]])
+  })
+
+  it('releases a pressed card when the stack unmounts before the click', () => {
+    const onEditOpen = vi.fn()
+    const { pencilB, unmount } = openFirstOfTwo(onEditOpen)
+    fireEvent.mouseDown(pencilB())
+    fireEvent.mouseUp(pencilB())
+    unmount()
+    expect(onEditOpen.mock.calls).toEqual([['qa', true], ['qb', true], ['qa', false], ['qb', false]])
+  })
+
+  // A right or middle press, or a Ctrl press (the context menu on macOS),
+  // never becomes a click, and the pointer can stay on the pencil, so it must
+  // not leave the card held with no editor open.
+  it('sends no hold for a right, middle or Ctrl press', () => {
+    const onEditOpen = vi.fn()
+    const { pencilB } = openFirstOfTwo(onEditOpen)
+    // Each press ends in a release, as a real one does: React's select event
+    // stays suppressed after a mousedown until a mouseup reaches its root.
+    for (const init of [{ button: 2 }, { button: 1 }, { button: 0, ctrlKey: true }]) {
+      fireEvent.mouseDown(pencilB(), init)
+      fireEvent.mouseUp(pencilB(), init)
+    }
+    expect(onEditOpen.mock.calls).toEqual([['qa', true]])
+  })
 })
 
 describe('QueueStack durable verdict', () => {
@@ -816,5 +888,50 @@ describe('QueueStack collapsed stack with a held front card', () => {
     expect(h(boxes[0])).toBeGreaterThan(h(boxes[1]))
     // The backing card's top sits above the front card's top.
     expect(y(boxes[1])).toBeLessThan(y(boxes[0]))
+  })
+})
+
+describe('QueueStack server-written entry (resource wake, MCP-App message)', () => {
+  const WAKE_TEXT = '[Webhook wake]\nresource changed: crux://reviews/CR-9\n[End of webhook wake]'
+  const resourceWake = (queueId: string): ChatMessage => ({
+    role: 'queued', content: WAKE_TEXT, cls: 'msg msg-queued', ts: '',
+    meta: { queueId, kind: 'resource_wake', resourceServer: 'crux', resourceSubscription: 'rsub_1' },
+  }) as ChatMessage
+  const appMessage = (queueId: string): ChatMessage => ({
+    role: 'queued', content: 'clicked approve', cls: 'msg msg-queued', ts: '',
+    meta: { queueId, kind: 'mcp_app_message', appLabel: 'demo' },
+  }) as ChatMessage
+
+  it('isServerWrittenQueued holds for both server kinds and never for the person\'s own entry', () => {
+    expect(isServerWrittenQueued(resourceWake('q1'))).toBe(true)
+    expect(isServerWrittenQueued(appMessage('q2'))).toBe(true)
+    expect(isServerWrittenQueued(queued('my own words', 'q3'))).toBe(false)
+    expect(isServerWrittenQueued(undefined)).toBe(false)
+    // The app-only display predicate keeps its scope.
+    expect(isAppMessageQueued(resourceWake('q1'))).toBe(false)
+  })
+
+  it('a queued resource wake offers no edit, keeps cancel, and shows its text as it arrived', () => {
+    const onCancel = vi.fn()
+    render(<QueueStack messages={[resourceWake('q1')]} onCancel={onCancel} onEdit={vi.fn()} onInterrupt={vi.fn()} />)
+    expect(screen.queryByLabelText('Edit queued message')).toBeNull()
+    const cancel = screen.getByLabelText('Cancel queued message')
+    expect(cancel).toHaveAttribute('title', 'Cancel queued message')
+    fireEvent.click(cancel)
+    expect(onCancel).toHaveBeenCalledWith('q1')
+    expect(screen.getByTestId('queue-card').textContent).toContain('resource changed: crux://reviews/CR-9')
+  })
+
+  it('a queued MCP-App message keeps its read-only card and its app attribution', () => {
+    render(<QueueStack messages={[appMessage('q1')]} onCancel={vi.fn()} onEdit={vi.fn()} />)
+    expect(screen.queryByLabelText('Edit queued message')).toBeNull()
+    expect(screen.getByLabelText('Cancel queued message')).toHaveAttribute('title', 'Cancel queued message')
+    expect(screen.getByTestId('queue-card').textContent).toContain('demo')
+  })
+
+  it('the person\'s own queued message keeps its pencil and its move-back-to-input cancel', () => {
+    render(<QueueStack messages={[queued('my own words', 'q1')]} onCancel={vi.fn()} onEdit={vi.fn()} />)
+    expect(screen.getByLabelText('Edit queued message')).toBeInTheDocument()
+    expect(screen.getByLabelText('Cancel queued message')).toHaveAttribute('title', 'Cancel and move back to input')
   })
 })

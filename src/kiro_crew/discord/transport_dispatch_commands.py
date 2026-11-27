@@ -1,5 +1,6 @@
 """The ``!`` text commands and their registered slash forms that reply on their own:
-``!link``, ``!unlink``, ``!compact`` and ``!status``, the reply sink a text command
+``!link``, ``!unlink``, ``!compact`` and ``!status``, the step that applies
+``!temporary`` / ``!incognito`` (``_apply_privacy_mode``), the reply sink a text command
 answers through, and the single-reply command router both surfaces share.
 
 Each command's dispatch stays in ``handle_message``, which owns the resume-binding
@@ -26,7 +27,9 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew.discord.commands import parse_command, parse_mid_turn_override
 from kiro_crew.discord.session_resume import ResumeReleaseError
+from kiro_crew.messaging import privacy_mode
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,
@@ -51,7 +54,7 @@ logger = logging.getLogger("kiro_crew.discord.transport_dispatch")
 _REPLY_COMMANDS = frozenset({"status"})
 
 _RELEASE_FAILURE = (
-    "Warning: Couldn't save the session release, so the command was NOT completed. "
+    "⚠️ Couldn't save the session release, so the command was NOT completed. "
     "Fix the gateway's storage problem, then retry."
 )
 
@@ -62,6 +65,8 @@ async def _handle_link(
     channel_id: str,
     thread_id: str,
     resumed_key: str | None,
+    *,
+    reply: "ReplyFn | None" = None,
 ) -> None:
     """Re-enable mirroring of this conversation's dashboard tab back here.
 
@@ -71,20 +76,17 @@ async def _handle_link(
     supplies Discord's spelling of "this conversation" plus the two refusals
     only a resume-capable channel can hit.
     """
-    assert self.client is not None
+    say = reply or self._channel_reply(channel_id)
     # Refuse while a resumed session owns this conversation: linking would
     # rebind the same location and silently strand the resumed session. The
     # owner comes from the turn's routing decision, not a fresh resolve — a
     # second resolve is a second answer, and the gap between them is where a
     # concurrent rebind slips through.
     if resumed_key is not None:
-        await self.client.send_message(
-            channel_id,
-            "Warning: A resumed session is active here. Send `!unlink` first.",
-        )
+        await say("⚠️ A resumed session is active here. Send `!unlink` first.")
         return
     try:
-        reply = rebind_conversation_location(
+        linked = rebind_conversation_location(
             self.sessions,
             key=self._session_key(user_id, thread_id),
             location=self._origin_mirror_link(channel_id),
@@ -98,31 +100,30 @@ async def _handle_link(
         # reporting it beats surfacing a traceback as a generic command
         # failure.
         logger.info("discord link refused: conversation already held")
-        await self.client.send_message(
-            channel_id,
-            "Warning: Another session is already linked here. Send `!unlink` first.",
-        )
+        await say("⚠️ Another session is already linked here. Send `!unlink` first.")
         return
-    await self.client.send_message(channel_id, reply)
+    await say(linked)
 
 
 async def _handle_unlink(
-    self: DiscordDispatcher, user_id: str, channel_id: str, thread_id: str = ""
+    self: DiscordDispatcher,
+    user_id: str,
+    channel_id: str,
+    thread_id: str = "",
+    *,
+    reply: "ReplyFn | None" = None,
 ) -> None:
-    assert self.client is not None
+    say = reply or self._channel_reply(channel_id)
     # A resumed session takes precedence: it is what the user is actually
     # talking to, so releasing it is the only way back to their own
     # conversation from Discord.
     try:
         left_resumed = await self._session_resume.leave_resumed_session(channel_id)
     except ResumeReleaseError:
-        await self.client.send_message(channel_id, _RELEASE_FAILURE)
+        await say(_RELEASE_FAILURE)
         return
     if left_resumed is not None:
-        await self.client.send_message(
-            channel_id,
-            "Left the resumed session. Back to your Discord conversation.",
-        )
+        await say("✅ Left the resumed session. Back to your Discord conversation.")
         return
     key = self._session_key(user_id, thread_id)
     # Persist the refusal BEFORE releasing: mirroring is re-asserted on every
@@ -130,7 +131,7 @@ async def _handle_unlink(
     # message. Batched with the release so the pair is one whole-map write.
     with self.sessions.batched_save():
         self.sessions.set_mirror_opt_out(key, True)
-        reply, swept = release_conversation_location(
+        released, swept = release_conversation_location(
             self.sessions,
             key=key,
             location=self._origin_mirror_link(channel_id),
@@ -141,7 +142,111 @@ async def _handle_unlink(
         # projected at push time — nudge the dashboard like every other
         # binding mutation does.
         self._session_resume._push_slots()
-    await self.client.send_message(channel_id, reply)
+    await say(released)
+
+
+#: The two privacy modifiers ``parse_command`` names, spelled as ``privacy_mode``'s modes.
+_PRIVACY_COMMANDS = frozenset((privacy_mode.MODE_TEMPORARY, privacy_mode.MODE_INCOGNITO))
+
+
+def is_privacy_message(text: str) -> bool:
+    """Whether *text* leads with ``!temporary`` / ``!incognito``, bare or after ``!queue`` / ``!steer``."""
+    mode, rest = parse_mid_turn_override(text)
+    while mode is not None:  # `!queue !queue !incognito x` too
+        mode, rest = parse_mid_turn_override(rest)
+    return parse_command(rest) in _PRIVACY_COMMANDS
+
+
+#: ``!queue`` / ``!steer`` in front of a modifier: the message would be queued or
+#: steered as plain words with no mode on, so it is refused instead.
+_PRIVACY_PREFIXED_REFUSAL = (
+    "🔒 `!temporary` and `!incognito` can't follow `!queue` or `!steer`. Your message "
+    "was NOT processed. Send `!temporary <msg>` or `!incognito <msg>` on its own."
+)
+
+#: Refused like Telegram's: a resumed dashboard session carries its own memory
+#: mode on its slot, and marking only this channel's tracker would announce a
+#: privacy the slot does not keep.
+_PRIVACY_RESUMED_REFUSAL = (
+    "🔒 Privacy mode can't be changed while a dashboard session is resumed here. "
+    "Your message was NOT processed. Send `!unlink` or `!new` first."
+)
+
+#: A reply is running on the conversation: the modifier would land between that
+#: turn's writes, so it is refused whole rather than half-applied.
+_PRIVACY_BUSY_REFUSAL = (
+    "🔒 A reply is still running, so this conversation was NOT made {mode} and your "
+    "message was NOT processed. Send it again once the reply finishes."
+)
+
+
+async def _apply_privacy_mode(
+    self: DiscordDispatcher, mode: str, session_key: str, user_id: str, say: "ReplyFn"
+) -> bool | None:
+    """Put *session_key* into *mode* through the shared ``privacy_mode``.
+
+    Returns whether the user was told the mode is on (``False``: it already was,
+    and ``apply_mode`` said nothing), or ``None`` when it was refused: the user has
+    then been told the message was NOT processed (by ``apply_mode``, which also
+    audits it, or by :func:`_recorded_mode_refusal`), and the caller must run nothing.
+    """
+    refusal = await self._recorded_mode_refusal(mode, session_key)
+    if refusal is not None:
+        await say(refusal)
+        return None
+    notified: list[str] = []
+
+    async def _notify(note: str) -> None:
+        notified.append(note)
+        await say(note)
+
+    try:
+        applied = await privacy_mode.apply_mode(
+            mode,
+            session_key,
+            source="discord",
+            caller=user_id,
+            sessions=self.sessions,
+            notify=_notify,
+        )
+    except privacy_mode.PrivacyModeRefused:
+        return None
+    # A joined reservation announces through ``notify`` and still answers False.
+    return applied or bool(notified)
+
+
+#: A conversation whose execution record (written when it ran in its dashboard tab)
+#: the mode would tighten: session allocation reads the mode off that record and
+#: refuses any provider started, or starting, under the old one.
+_PRIVACY_RECORDED_SESSION_REFUSAL = (
+    "🔒 This conversation also ran in its dashboard tab, so it can't be made private "
+    "here. Your message was NOT processed. Send `!new`, then the modifier."
+)
+
+
+async def _recorded_mode_refusal(
+    self: DiscordDispatcher, mode: str, session_key: str
+) -> str | None:
+    """The refusal for applying *mode* to a conversation with a looser execution record.
+
+    Session allocation reads the memory mode off the record, which the transcript
+    stamp tightens, and refuses a provider holding another mode: one already open,
+    or one whose cold start read the record before the stamp. So the modifier is
+    refused BEFORE anything is stamped, whatever is live or starting, and nothing is
+    torn down. A Discord-only conversation has no record, and one already at least
+    as strict has nothing to tighten, so both take the mode.
+    """
+    from kiro_crew.execution_context import read_session_execution
+
+    try:
+        execution = await asyncio.to_thread(read_session_execution, session_key)
+    except Exception:
+        # Unreadable: allocation answers it with its own named refusal.
+        logger.debug("discord: execution record unreadable for %s", session_key, exc_info=True)
+        return None
+    if execution is None or execution.with_mode(mode).memory_mode == execution.memory_mode:
+        return None
+    return _PRIVACY_RECORDED_SESSION_REFUSAL
 
 
 async def _handle_compact(
@@ -150,25 +255,25 @@ async def _handle_compact(
     channel_id: str,
     thread_id: str,
     resumed_key: str | None,
+    *,
+    reply: "ReplyFn | None" = None,
 ) -> None:
     """In-place ACP ``/compact`` on the conversation's session."""
     assert self.client is not None
+    say = reply or self._channel_reply(channel_id)
     session_key = resumed_key or self._session_key(user_id, thread_id)
     if not await self.sessions.try_acquire(session_key):
         if self.sessions.is_retiring(session_key):
-            await self.client.send_message(channel_id, COMPACT_ACCOUNT_CHANGED_TEXT)
+            await say(COMPACT_ACCOUNT_CHANGED_TEXT)
         elif self.sessions.has_session(session_key):
-            await self.client.send_message(
-                channel_id,
-                "Still working on your last message — try `!compact` " "once it finishes.",
-            )
+            await say("⏳ Still working on your last message — try `!compact` once it finishes.")
         else:
-            await self.client.send_message(channel_id, "No active session to compact.")
+            await say("No active session to compact.")
         return
     try:
         provider = self.sessions.get_provider(session_key)
         if provider is None:
-            await self.client.send_message(channel_id, "No active session to compact.")
+            await say("No active session to compact.")
             return
 
         # Capability gate (mirroring the dashboard's gate): a
@@ -177,10 +282,10 @@ async def _handle_compact(
         # 120s wait below. Informational, never an error.
         unsupported = compact_unsupported_backend(provider)
         if unsupported:
-            await self.client.send_message(channel_id, compact_unsupported_reply(unsupported))
+            await say(compact_unsupported_reply(unsupported))
             return
 
-        status_id = await self.client.send_message(channel_id, "Compacting context…")
+        status_id = await say("🔄 Compacting context…")
         result_text: str | None = None
 
         def _safe(text: str) -> str:
@@ -210,17 +315,15 @@ async def _handle_compact(
             if cr["type"] == "completed":
                 # ``summary`` is model-facing compacted context, not a
                 # user-facing receipt. Never publish its orchestration text.
-                result_text = "Context compacted."
+                result_text = "✅ Context compacted."
             elif cr["type"] == "failed":
                 err = _safe(cr.get("summary", ""))
-                result_text = (
-                    f"Error: Compaction failed: {err}" if err else "Error: Compaction failed."
-                )
+                result_text = f"❌ Compaction failed: {err}" if err else "❌ Compaction failed."
             else:
-                result_text = "Warning: Compaction timed out."
+                result_text = "⚠️ Compaction timed out."
         except Exception:
             logger.warning("Discord !compact failed for %s", session_key, exc_info=True)
-            result_text = "Error: Compaction failed unexpectedly."
+            result_text = "❌ Compaction failed unexpectedly."
             # Drop the wedged native conversation, NOT the session's channel
             # identity: the map entry carries the mirror binding, so a full
             # ``destroy`` would silently unlink a mirrored conversation.
@@ -234,23 +337,25 @@ async def _handle_compact(
                     exc_info=True,
                 )
 
-        final = result_text or "Context compacted."
+        final = result_text or "✅ Context compacted."
         # The status line is only a placeholder: when it cannot be edited (deleted
         # during the wait, or the edit failed) the result goes out as a new message.
-        if not (status_id and await self.client.edit_message(channel_id, status_id, final)):
-            await self.client.send_message(channel_id, final)
+        # A private status line is not a channel message, so a private reply always
+        # answers with a second private message instead.
+        if reply is not None or not (
+            status_id and await self.client.edit_message(channel_id, status_id, final)
+        ):
+            await say(final)
     finally:
         self.sessions.release(session_key)
 
 
 # Each handler takes a ``reply`` sink instead of a channel id, because the
 # same body serves two delivery shapes: a ``!`` text command answers with a
-# normal channel message, while a registered slash command must answer its
-# own interaction (ephemerally, inside Discord's ~3s callback deadline).
-# Sharing the body is the point: a second copy per surface is how the two
-# drift, and the slash form is the one an operator will actually discover.
-# Each handler replies EXACTLY ONCE — an interaction callback may only be
-# used for the first response, and a second would need a followup route.
+# normal channel message, while a registered slash command answers through its
+# own interaction, privately. Sharing the body is the point: a second copy per
+# surface is how the two drift, and the slash form is the one an operator will
+# actually discover.
 async def _handle_status(
     self: DiscordDispatcher, reply: "ReplyFn", scope_id: str | None = None
 ) -> None:
@@ -271,7 +376,7 @@ async def _handle_status(
     so = safety_override()
     yolo = f"ON ({describe_grant_lifetime()})" if so.is_active() else "OFF"
     await reply(
-        f"{Stats().summary()}\n"
+        f"📊 {Stats().summary()}\n"
         f"agent `{self._resolve_agent(scope_id)}` · approval `{self.approval_mode}` · "
         f"YOLO {yolo}"
     )
@@ -280,9 +385,9 @@ async def _handle_status(
 def _channel_reply(self: DiscordDispatcher, channel_id: str) -> "ReplyFn":
     """A reply sink that posts a normal channel message."""
 
-    async def _send(text: str) -> None:
+    async def _send(text: str, *, components: list[dict] | None = None) -> str | None:
         assert self.client is not None
-        await self.client.send_message(channel_id, text)
+        return await self.client.send_message(channel_id, text, components=components)
 
     return _send
 

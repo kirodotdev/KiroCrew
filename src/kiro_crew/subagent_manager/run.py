@@ -109,7 +109,7 @@ def _unverified_title(title: str) -> str:
     approval is an informed judgment rather than a title-only rubber stamp.
     """
     return (
-        "⚠️ UNVERIFIED child request (security context "
+        "Warning: UNVERIFIED child request (security context "
         f"missing — title is agent-authored): {title or '<unknown tool>'}"
     )
 
@@ -246,6 +246,7 @@ class RunEventCoordinator(ManagerComponent):
     _write_state_off_loop_impl = _run_records._write_state_off_loop_impl
     _write_finished_result_off_loop_impl = _run_records._write_finished_result_off_loop_impl
     _start_result_file_impl = _run_records._start_result_file_impl
+    _append_result_chunk_impl = _run_records._append_result_chunk_impl
     _drain_state_writer_impl = _run_records._drain_state_writer_impl
     _hold_for_detached_writer_impl = _run_records._hold_for_detached_writer_impl
     _cap_unclaimed_result_impl = _run_records._cap_unclaimed_result_impl
@@ -269,6 +270,7 @@ class RunEventCoordinator(ManagerComponent):
     _yield_for_stop_recovery_impl = _run_yields._yield_for_stop_recovery_impl
     _await_lane_resume_impl = _run_yields._await_lane_resume_impl
     _withdraw_resume = _run_yields._withdraw_resume
+    _release_dead_runtime_waits = _run_yields._release_dead_runtime_waits
     _yield_for_dependency_impl = _run_yields._yield_for_dependency_impl
     _yield_for_infra_retry_impl = _run_yields._yield_for_infra_retry_impl
     ensure_running_marked = _run_yields.ensure_running_marked
@@ -282,6 +284,8 @@ class RunEventCoordinator(ManagerComponent):
     _should_use_session_sharing_impl = _run_start._should_use_session_sharing_impl
     _sharing_plan_impl = _run_start._sharing_plan_impl
     _aws_profile_split_possible = _run_start._aws_profile_split_possible
+    _aws_profile_rules_out_sharing = _run_start._aws_profile_rules_out_sharing
+    _kas_shared_slot_taken = _run_start._kas_shared_slot_taken
     _resolve_child_aws_profile = _run_start._resolve_child_aws_profile
     _ensure_dedicated_start_priced_impl = _run_start._ensure_dedicated_start_priced_impl
     _gate_exit_reset_impl = _run_start._gate_exit_reset_impl
@@ -449,11 +453,9 @@ class RunEventCoordinator(ManagerComponent):
     def _has_live_parent_run_task(self, parent_session_key: str, *, exclude_id: str = "") -> bool:
         """Whether a parent-owned run can still register its terminal report.
 
-        ``_run_inner`` publishes ``info.done`` before ``_run_impl`` resumes its
-        ``finally`` and registers the report task. During that scheduling gap the
-        ordinary ``running`` view is empty, but the outer task is still live.
-        Keep the parent pending until that task is removed; by then the report is
-        registered in ``_report_owners`` and the delivery barrier owns the wait.
+        The run-id task index ends at teardown, before the outer task awaits its
+        report. Counting that report-waiting task would stop the last completion
+        from arming synthesis while a sibling's delivery waits on the parent turn.
         """
         for info in self._manager._agents.values():
             if info.parent_session_key != parent_session_key or info.id == exclude_id:
@@ -466,12 +468,11 @@ class RunEventCoordinator(ManagerComponent):
     def has_unfinished_report_for_impl(self, parent_session_key: str) -> bool:
         """Whether a terminal report owned by *parent_session_key* is still running.
 
-        The span after :meth:`_has_live_parent_run_task` goes false: the run's
-        task is gone, and its report sits in ``_report_owners`` until delivery
-        resolves -- for a reaped run, across the reap's reset and kill awaits. A
-        parent teardown in that span marks the child teardown-cancelled and the
-        report skips ``_on_done``, so a caller deciding whether a parent may be
-        torn down must count it. Synchronous, in-memory, loop-safe.
+        Reports retain their own ownership until delivery resolves, independently
+        of the outer run task -- for a reaped run, across the reap's reset and kill
+        awaits. A parent teardown in that span marks the child teardown-cancelled
+        and the report skips ``_on_done``, so a caller deciding whether a parent may
+        be torn down must count it. Synchronous, in-memory, loop-safe.
         """
         if not parent_session_key:
             return False
@@ -489,17 +490,43 @@ class RunEventCoordinator(ManagerComponent):
             for run_id, task in watchers.items()
         )
 
+    def has_current_execution_for_impl(self, parent_session_key: str) -> bool:
+        """Whether this parent owns executing or finalizing subagent work.
+
+        Queue entries and parked spawn approvals are not execution. A live outer
+        run covers the done-to-report gap and cleanup after report settlement;
+        task ownership, reports and follow-up watchers survive run-record eviction.
+        All reads are in memory and synchronous on the gateway loop.
+        """
+        from kiro_crew.subagent import _parked_at_spawn_approval
+
+        return (
+            any(
+                parent == parent_session_key and not task.done()
+                for task, (_run_id, parent) in self._manager._run_task_owners.items()
+            )
+            or self._has_live_parent_followup_watcher(parent_session_key)
+            or self.has_unfinished_report_for_impl(parent_session_key)
+            or any(
+                not info.done
+                and info.parent_session_key == parent_session_key
+                and not _parked_at_spawn_approval(info)
+                for info in self._manager._agents.values()
+            )
+        )
+
     def has_in_memory_pending_work_for_impl(
         self, parent_session_key: str, *, exclude_id: str = ""
     ) -> bool:
         """The terms of :meth:`has_pending_work_for_impl` that need no store read.
 
-        A spawn in the dispatch window, a run whose terminal report is still
-        waiting on its teardown (*exclude_id* leaves out the run asking, whose
-        own task is live while its completion is delivered), and a live
-        follow-up watcher. With ``running_agents_for`` this is everything the
-        synthesis ARM consults: the store half is the fire gate's, so the
-        delivery path never waits on the task store's writer.
+        A spawn in the dispatch window, a sibling still present in the run-id
+        task index (*exclude_id* leaves out the run asking), and a live follow-up
+        watcher. A report-waiting outer task remains current execution but does
+        not block the last completion from arming synthesis. With
+        ``running_agents_for`` this is everything the synthesis ARM consults:
+        the store half is the fire gate's, so the delivery path never waits on
+        the task store's writer.
         """
         return (
             self._in_window_count(parent_session_key) > 0
@@ -514,14 +541,13 @@ class RunEventCoordinator(ManagerComponent):
         return None if overflow is None else in_window + overflow
 
     def has_pending_work_for_impl(self, parent_session_key: str) -> bool:
-        """True while a parent has queued, running, or finalizing sub-agents.
+        """True while a parent has queued, pre-report, or follow-up work.
 
-        The reset-deferral guards must consult this, not ``running`` alone —
-        see :meth:`queued_count_for` for why. A parent session reset while a
-        spawn is still queued strands that agent's completion on a
-        cold-started, context-free replacement session. A completed inner run
-        remains pending until its live outer task registers the terminal report,
-        and a follow-up watcher remains pending until it dispatches or settles.
+        The reset-deferral guards pair this with ``has_unfinished_report_for``;
+        report delivery remains current execution without blocking synthesis.
+        A parent session reset while a spawn is still queued strands that agent's
+        completion on a cold-started, context-free replacement session. A
+        follow-up watcher remains pending until it dispatches or settles.
         """
         if self._manager._queued_depth(parent_session_key) > 0:
             return True
@@ -558,7 +584,8 @@ class RunEventCoordinator(ManagerComponent):
         *wait* is the gate's label for WHY the rows wait (a ``QUEUED_REASON_*``
         ``reason``, plus ``available_gb`` / ``required_gb`` for the memory
         kinds, or ``cause`` in place of ``available_gb`` when the cgroup usage
-        is unreadable; ``memory_pressure`` carries no figures). It is recorded per parent with the request and rides on every
+        is unreadable or the host read did not answer; ``memory_pressure``
+        carries no figures). It is recorded per parent with the request and rides on every
         later non-zero frame for that parent until a depth-0 read that no
         request overlapped forgets it; an overlapped 0 read is published bare
         and keeps the label, since the overlapping request may have written it.
@@ -752,6 +779,29 @@ class RunEventCoordinator(ManagerComponent):
         overflow = await self._manager._admission.taskq_chip_overflow_async(parent_session_key)
         return None if overflow is None else in_window + overflow
 
+    async def _crew_tools_withheld_reason(self, info: SubagentInfo, client: LLMProvider) -> str:
+        """Why this run's session holds none of Crew's MCP tools, or ``""`` when it does.
+
+        A claude session whose folder's ``.claude`` settings file Crew cannot govern
+        gets no ``mcpServers`` array at all, and only the client's own warning in the
+        gateway log says why. This is the session's answer (``settings_withheld_reason``,
+        a file read, so off the loop): the fact alone, without the remedy the chat
+        notice adds, because it reaches this run's prompt and its parent's, and the
+        remedy is the person's to apply. It adds no log line of its own.
+        Best-effort: a read that fails says nothing rather than failing the run.
+        """
+        read = getattr(client, "settings_withheld_reason", None)
+        if not callable(read):
+            return ""
+        try:
+            reason = await asyncio.to_thread(read)
+        except Exception:
+            _logging.getLogger(__name__).debug(
+                "Subagent %s: settings-withheld reason unreadable", info.id, exc_info=True
+            )
+            return ""
+        return reason if isinstance(reason, str) else ""
+
     def _warn_unusable_mcp_servers(self, info: SubagentInfo, client: LLMProvider) -> str:
         """Log ONE warning naming the MCP servers this run's session cannot use,
         and return the same line for the run's own prompt (``""`` when clean).
@@ -790,6 +840,11 @@ class RunEventCoordinator(ManagerComponent):
         Not an ``*_impl`` method: it is called through ``self`` from
         ``_run_inner_impl``, so it keeps this module's own globals.
         """
+        if info.crew_tools_withheld:
+            # Every Crew server is missing for that one reason, which the client's
+            # own warning already logged, and the report would call each one "not
+            # configured". The prompt says it instead (``_spawn_mcp_notice``).
+            return ""
         log = _logging.getLogger(__name__)
         try:
             report = client.mcp_session_report() if client is not None else None
@@ -808,7 +863,7 @@ class RunEventCoordinator(ManagerComponent):
         )
         return names_only
 
-    def _spawn_mcp_notice(self, summary: str) -> str:
+    def _spawn_mcp_notice(self, summary: str, withheld: str = "") -> str:
         """The block a spawn's own first turn carries when its servers are broken.
 
         The operator's log cannot stop the hunting, because the run never reads
@@ -833,9 +888,22 @@ class RunEventCoordinator(ManagerComponent):
         takes that away. The failure reasons never reach here at all -- see
         ``_warn_unusable_mcp_servers``.
 
+        *withheld* is the session's reason for holding none of Crew's servers
+        (``_crew_tools_withheld_reason``): Crew's own words, so unfenced.
+
         Empty in, empty out, so the caller concatenates unconditionally and a
         healthy spawn's prompt is byte-for-byte what it was.
         """
+        if withheld:
+            # Imported here: not an ``_impl``, so this module's namespace, where the
+            # facade's names are only type hints.
+            from ..subagent import CREW_OWN_TOOLS
+
+            return (
+                f"[Kiro Crew] None of {CREW_OWN_TOOLS} are in this session, because "
+                f"{withheld}. Do not go looking for them: say in your result that they "
+                "were unavailable and continue with the tools you do have.\n\n"
+            )
         if not summary:
             return ""
         nonce = _secrets.token_hex(4)

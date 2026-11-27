@@ -33,6 +33,7 @@ const BASE_DASH = {
   quick_send: false,
   session_grid: false,
   tail_fork_enabled: false,
+  fork_inherits_pin: true,
   link_previews: false,
   mcp_app_panel: false,
   folder_suggestions_enabled: true,
@@ -102,8 +103,10 @@ vi.mock('../api/client', () => ({
 }))
 
 import { ChatPanel } from '../pages/settings/ChatPanel'
+import { i18nT } from '../i18n/t'
 import { ApiError } from '../api/apiError'
 import { markModelsAuthRequired, markModelsDegraded } from '../providers/modelListHealth'
+import { setTerminalEnabledFlag } from '../utils/terminalRegistry'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { MAX_MESSAGE_FONT_SIZE } from '../pages/chat/ChatSettings'
 import { DURABLE_PREF_KEYS } from '../lib/uiPrefs'
@@ -212,6 +215,7 @@ beforeEach(() => {
   )
   markModelsAuthRequired('acp', false)
   markModelsDegraded('acp', false)
+  setTerminalEnabledFlag(false)
   dashboardConfigMock.mockImplementation(() => Promise.resolve({ ...BASE_DASH }) as never)
   updateDashboardConfigMock.mockImplementation(() => Promise.resolve({}) as never)
   patchConfigMock.mockImplementation(() => Promise.resolve({}) as never)
@@ -273,7 +277,7 @@ describe('ChatPanel — load failures', () => {
     expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(2)
   })
 
-  it('says to run kiro-cli login when the model list is degraded by expired auth', async () => {
+  it('offers the in-app kiro-cli sign-in when the model list is degraded by expired auth', async () => {
     // /api/models answers 503 with the sign-in code (expired kiro-cli login).
     // The acp adapter reads that code where the fetch error forms and flags the
     // provider auth-required; the banner must then show the one actionable
@@ -284,11 +288,30 @@ describe('ChatPanel — load failures', () => {
       JSON.stringify({ error: 'kiro-cli login', code: 'kiro_prerequisite_required' }),
     )
     modelsMock.mockImplementation(() => Promise.reject(authErr) as never)
+    setTerminalEnabledFlag(true)
     wrap()
     expect(
-      await screen.findByText(/Run 'kiro-cli login' in your terminal, then click Retry\./i),
+      await screen.findByText(i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out')),
     ).toBeInTheDocument()
     expect(screen.queryByText('Failed to load config.')).not.toBeInTheDocument()
+    // The way out is in the app: no terminal to open, no command to type.
+    expect(screen.queryByText(/in your terminal/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: i18nT('components.kiroCliSignInInTerminal.sign_in') }))
+    expect(screen.getByText('kiro-cli login')).toBeInTheDocument()
+  })
+
+  it('explains how to copy the sign-in command when the terminal is off', async () => {
+    const authErr = new ApiError(
+      503,
+      'model list unavailable',
+      JSON.stringify({ error: 'kiro-cli login', code: 'kiro_prerequisite_required' }),
+    )
+    modelsMock.mockImplementation(() => Promise.reject(authErr) as never)
+    wrap()
+    expect(await screen.findByRole('button', { name: i18nT('components.kiroCliSignInInTerminal.copy_sign_in') })).toBeInTheDocument()
+    expect(screen.getByText("Kiro CLI isn't signed in or its login has expired. Copy the sign-in command, run it in a terminal, then click Retry.")).toBeInTheDocument()
+    expect(screen.queryByText(/Click Sign in/)).not.toBeInTheDocument()
+    expect(screen.queryByText('model list unavailable')).not.toBeInTheDocument()
   })
 
   it('keeps the generic config banner, with the fetch error under it, when /api/models is degraded for a non-auth reason', async () => {
@@ -301,6 +324,7 @@ describe('ChatPanel — load failures', () => {
     expect(await screen.findByText('Failed to load config.')).toBeInTheDocument()
     expect(await screen.findByText('model list timed out')).toBeInTheDocument()
     expect(screen.queryByText(/kiro-cli login/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('components.kiroCliSignInInTerminal.sign_in') })).not.toBeInTheDocument()
   })
 })
 
@@ -554,6 +578,24 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
+  it('shows Auto-Open Board in Side Panel on by default and persists turning it off', async () => {
+    wrap('sidepanel')
+    const sw = await settledSwitch('Auto-Open Board in Side Panel')
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ auto_open_conductor_board: false })
+    )
+  })
+
+  it('shows Swipe to Open and Close Side Panel on by default and stores turning it off locally', async () => {
+    wrap('sidepanel')
+    const sw = await screen.findByRole('switch', { name: 'Swipe to Open and Close Side Panel' })
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw)
+    await waitFor(() => expect(storedChat().sidePanelSwipe).toBe(false))
+  })
+
   it('offers Start New Chats in conductor mode with no preview turned on, and persists it', async () => {
     const label = 'Start New Chats in conductor mode'
     wrap('sessions')
@@ -595,6 +637,37 @@ describe('ChatPanel — Messages', () => {
     await waitFor(() =>
       expect(qc.getQueryState(['session-summary', 'chat-1'])?.isInvalidated).toBe(true)
     )
+  })
+
+  it('shows Since you left briefs right after Session summaries, on by default, and PATCHes it off', async () => {
+    wrap('sessions')
+    const sw = await settledSwitch('Since you left briefs')
+    const switches = screen.getAllByRole('switch')
+    expect(switches.indexOf(sw)).toBe(switches.indexOf(screen.getByRole('switch', { name: 'Session summaries' })) + 1)
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(document.querySelector('[data-setting-key="dashboard.warm_task_brief"]')).toContainElement(sw)
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('dashboard.warm_task_brief', false)
+    )
+  })
+
+  it('reflects a stored-off Since you left briefs flag and turns it back on', async () => {
+    seedMc({ dashboard: { warm_task_brief: false } })
+    wrap('sessions')
+    const sw = await settledSwitch('Since you left briefs')
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('dashboard.warm_task_brief', true)
+    )
+  })
+
+  it('surfaces a failed Since you left briefs write', async () => {
+    rejectOnce(patchConfigMock)
+    wrap('sessions')
+    fireEvent.click(await settledSwitch('Since you left briefs'))
+    expect(await screen.findByText(/Failed to save Since you left briefs setting/)).toBeInTheDocument()
   })
 
   it('persists the folder-suggestions toggle', async () => {
@@ -726,6 +799,7 @@ describe('ChatPanel — Sessions', () => {
   it.each([
     ['Split View (Session Grid)', 'session_grid', true],
     ['Tail-only Fork', 'tail_fork_enabled', true],
+    ['Pin forks of pinned sessions', 'fork_inherits_pin', false],
     ['Restore Sessions', 'restore_sessions', true],
   ])('persists %s through the dashboard config', async (label, key, expected) => {
     wrap('sessions')
@@ -1311,6 +1385,32 @@ describe('ChatPanel — per-role reasoning effort', () => {
       expect(patchConfigMock).toHaveBeenCalledWith('agent.role_efforts.background', 'low')
     )
   })
+})
+
+describe('ChatPanel — Optimize prompt model and effort', () => {
+  it.each([
+    ['Optimize Prompt Model', 'claude-opus-4.8', 'agent.role_models.optimizer', 'claude-opus-4.8'],
+    ['Optimize Prompt Effort', 'High', 'agent.role_efforts.optimizer', 'high'],
+  ])('%s PATCHes its own config path', async (label, option, path, value) => {
+    // A reasoning-capable Background model, so the effort row is live unset.
+    seedMc({ agent: { role_models: { background: 'claude-opus-4.8' } } })
+    wrap('composer')
+    await waitFor(() => expect(modelsMock).toHaveBeenCalled())
+    await openSelect(label)
+    fireEvent.click(await screen.findByRole('option', { name: option }))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(path, value))
+  })
+
+  it.each([['Optimize Prompt Model'], ['Optimize Prompt Effort']])(
+    '%s labels its unset value Same as Background',
+    async label => {
+      seedMc({ agent: { role_models: { background: 'claude-opus-4.8' } } })
+      wrap('composer')
+      const opts = await openSelect(label)
+      expect(opts[0].textContent).toBe('Same as Background')
+      expect(screen.getByRole('combobox', { name: label })).toHaveTextContent('Same as Background')
+    }
+  )
 })
 
 describe('ChatPanel — About You and Power', () => {

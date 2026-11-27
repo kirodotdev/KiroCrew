@@ -381,9 +381,9 @@ under it.
 The same reading applies at the TOP of a chat that a host crowns with a glass
 chip: the Members page's DM header (the Glass identity pill, the switcher, the
 panel opener) floats over the pane's top edge and the conversation scrolls under
-it (#18325). `ChatPane` takes the band's measured height as `topInset` and pads
+it. `ChatPane` takes the band's measured height as `topInset` and pads
 its scroller's rows below it (a Bot's chat draws no pinned-prompt band,
-#18346, so the inset is the only thing it pays); the host measures the header
+so the inset is the only thing it pays); the host measures the header
 with `useMeasuredHeight`, never a constant. Anything with controls that sits between such a header and the pane
 (a notice, a greeting card) stays in flow, padded below the header, and the pane
 then takes no inset: a control under the glass is an ambiguous tap. The row and
@@ -521,7 +521,7 @@ Inline within a `Card`, built from the shared primitives:
   since a native `<select>` cannot host a filter box, per-option sublabels or a
   command menu. Reaching for one of those does not mean the touch case has been
   handled for you; whether that scroller is a real defect on a phone is
-  unresolved in #5551. `NativeSelect` is the single file exempted from the
+  unresolved. `NativeSelect` is the single file exempted from the
   `no-restricted-syntax` rule; do not add a second.
 - `Toggle` for a boolean switch. It carries `role="switch"`, `aria-checked` and
   `aria-disabled` itself, so do not re-add them.
@@ -591,3 +591,16 @@ and below the drop overlay and every shell layer, and takes no pointer events,
 so the click that claims focus lands on the pane. A pane outside split view
 (`focused` undefined) never mounts it. The placeholder pane keeps its accent
 dot as well.
+
+### Split view: dropping a session on a pane
+
+A session row dragged from the sessions list (tree and flat lanes) onto a split
+pane shows that session in that pane and focuses it; the layout and every other
+pane stay as they are. Each pane, picker included, is one drop target over its
+whole area, drawn at `z-30` above `PaneDim`'s `z-20`, and a session
+already shown in a pane is refused on the hovered pane with a neutral note
+instead of the accent outline (its own pane says it cannot drop into itself).
+The dividers between panes are not drop targets.
+Panes take a drop only in desktop Split View and never while a crew window
+covers the chat area; single chat keeps its drop that stages a reference in the
+composer, and the Board layout and phones have no pane targets.

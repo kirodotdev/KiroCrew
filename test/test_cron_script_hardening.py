@@ -807,7 +807,7 @@ class TestPostKillDrainTimeoutHardening:
         # A timed-out command must report the timeout, not "Command failed".
         assert result == {
             "status": "error",
-            "output": "❌ Command timed out after 30s",
+            "output": "Error: Command timed out after 30s",
             "exit_code": -1,
         }
         mock_proc.stdout.close.assert_called_once()

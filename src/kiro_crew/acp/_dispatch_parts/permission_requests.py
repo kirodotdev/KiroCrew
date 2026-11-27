@@ -40,6 +40,7 @@ from kiro_crew.acp._dispatch_parts.tool_call_provenance import scoped_tool_cache
 from kiro_crew.acp.harness_tool_names import (
     CLAUDE_READ_ONLY_BUILTINS,
     GOOSE_READ_ONLY_BUILTINS,
+    GOOSE_TOOL_IDS_BY_KIRO_TOOL,
     qualified_harness_tool_id,
 )
 from kiro_crew.acp.types import (
@@ -158,6 +159,59 @@ def reject_option_id(params: dict) -> str | None:
         if isinstance(opt_id, str) and opt_id.lower() in _DENY_OPTION_IDS:
             return opt_id
     return None
+
+
+def asks_allow_always(option_id: str | None, event: AcpEvent | None, *, always: bool) -> bool:
+    """Whether an approval answering with *option_id* asks for an allow-always.
+
+    An id the frame offered is read by the kind it was offered as, before its
+    spelling: a frame may offer its one-call allow under the id ``allow_always``,
+    and choosing it is a one-call approval. Either reading of one call wins, so
+    the canonical ``allow_once`` never asks for an allow-always, whatever the
+    frame offered under that id. No id at all asks for what *always* says.
+    """
+    if option_id is None:
+        return always
+    offered = event.offered_allow if event is not None else {}
+    if option_id in (offered.get("once"), OPTION_ALLOW_ONCE):
+        return False
+    return option_id in (offered.get("always"), OPTION_ALLOW_ALWAYS)
+
+
+def offered_allow_id(resolved_id: str, event: AcpEvent | None, *, always: bool) -> str | None:
+    """*resolved_id* when *event*'s frame offered it, else its id naming the same allow.
+
+    The last step before an approval is written. A harness reads an id it never
+    offered as a refusal (claude-agent-acp: "Permission option was not offered"),
+    so a canonical allow literal that reached here because no allow id was
+    recorded for the request is answered with the id the frame offered for that
+    kind (``allow-once`` for ``allow_once``). The kinds are the builder's
+    (``AcpEvent.offered_allow``): an option's explicit ``kind`` first, a
+    well-known id only when it has none. Only the canonical literals are changed.
+
+    The kind asked for is *always*, the caller's decision after any downgrade to
+    a one-call answer, never the literal's spelling: an id already resolved by
+    its kind may be spelled like the other literal (a one-call option offered
+    under the id ``allow_always``), and reading the spelling would turn a
+    one-call approval into an allow-always. An allow-always the frame did not
+    offer is answered with its one-call allow, and a one-call allow is never
+    answered with an allow-always.
+
+    ``None`` when the frame offers no allow of the kind asked for and the
+    literal names one of its options of another kind (an ``allow_once`` id
+    offered as allow-always), which the caller refuses rather than answer. A
+    frame that classified no allow leaves *resolved_id* as it was.
+    """
+    if event is None or resolved_id not in (OPTION_ALLOW_ONCE, OPTION_ALLOW_ALWAYS):
+        return resolved_id
+    offered = event.offered_allow
+    if always and offered.get("always"):
+        return offered["always"]
+    if offered.get("once"):
+        return offered["once"]
+    if offered and resolved_id in {o.get("id") for o in event.options}:
+        return None
+    return resolved_id
 
 
 # Legacy kiro permission options omit the spec-mandated `kind` field. Only
@@ -472,6 +526,21 @@ def identified_mcp_call(event: AcpEvent) -> tuple[str, str] | None:
 #: The audit reasons of the two identity-channel refusals, the same on both drivers.
 REFUSAL_UNCLASSIFIED_CALL = "spec_disabled_tool_unclassified_call"
 REFUSAL_FOREIGN_SERVER = "spec_disabled_tool_foreign_server"
+#: The audit reason of the refusal of a request whose own arguments contradict the
+#: cached ones for its ``toolCallId`` (``AcpEvent.tool_call_id_reused``).
+REFUSAL_REUSED_CALL_ID = "tool_call_id_reused"
+
+
+def log_reused_call_id(log: logging.Logger, event: AcpEvent, session_id: object) -> None:
+    """Write the log line of that refusal under *log*, the same on both drivers."""
+    log.warning(
+        "refusing a permission request whose arguments contradict the ones cached for its "
+        "toolCallId (req=%s tool_call_id=%s): the id is reused, so which call would run "
+        "cannot be told [session=%s]",
+        _loggable_request_id(event.request_id),
+        _loggable_request_id(event.tool_call_id),
+        _loggable_request_id(session_id),
+    )
 
 
 def unclassified_call_refused(event: AcpEvent, *, frame_unclassified: bool) -> bool:
@@ -612,6 +681,36 @@ def kas_consent_tool(params: object) -> tuple[str, str]:
     return crew_name, target.strip()
 
 
+#: The ``_meta.kiro.consent.scope`` values KAS gives a rule the organisation set
+#: (its ``alwaysAllowUnavailableReason`` reads them as ``managed_rule``).
+_KAS_MANAGED_SCOPES = frozenset({"organization", "administration"})
+
+
+def kas_managed_ask(params: object) -> bool:
+    """Whether a KAS permission request's ``_meta.kiro.consent`` names an organisation's ``ask``.
+
+    KAS stamps ``matchedRule`` (with its ``effect``) and ``scope`` on the consent block
+    only for an explicit ``ask`` rule (``buildConsentRequest``). True only when the
+    rule's effect is ``ask`` and its scope is one the organisation sets; any other or
+    missing shape is False, and the policy fetch's record still applies
+    (``web_ask_rule``).
+    """
+    if not isinstance(params, dict):
+        return False
+    meta = params.get("_meta")
+    kiro = meta.get("kiro") if isinstance(meta, dict) else None
+    consent = kiro.get("consent") if isinstance(kiro, dict) else None
+    if not isinstance(consent, dict):
+        return False
+    rule = consent.get("matchedRule")
+    return (
+        isinstance(rule, dict)
+        and rule.get("effect") == "ask"
+        and isinstance(consent.get("scope"), str)
+        and consent["scope"] in _KAS_MANAGED_SCOPES
+    )
+
+
 #: The ``mcpServer.source`` claude-agent-acp stamps on a server the client handed it
 #: on the ``session/new`` array. A user, project or plugin server of the harness's own
 #: config carries another source, so a name Crew placed cannot be claimed by one.
@@ -695,6 +794,27 @@ def bridged_title_identity(
     return (fits[0], tool) if tool else ("", "")
 
 
+def _args_name_another_call(own: object, cached: object) -> bool:
+    """Whether a request's own arguments contradict the ones the cache holds.
+
+    Equal arguments are one call, and so are two dicts that agree on every key they
+    share: a harness streams its arguments in pieces, and some (copilot, mimocode)
+    seed the cache with a rewritten form of them (``path`` for ``fileName``), so a
+    key the other side lacks is no evidence of another call.
+    shortcut: a reused id whose arguments share no key with the cached ones is not
+    caught here, nor is a non-string value (a seeded path list); closing those needs
+    a gateway-minted call id.
+    """
+    if own == cached:
+        return False
+    if not (isinstance(own, dict) and isinstance(cached, dict)):
+        return True
+    return any(
+        isinstance(v, str) and isinstance(cached.get(k), str) and cached[k] != v
+        for k, v in own.items()
+    )
+
+
 def build_permission_event(
     msg: JsonRpcMessage,
     *,
@@ -774,6 +894,8 @@ def build_permission_event(
         return None, None
     # A float id is kept exactly as the frame sent it, so the answer echoes it.
     request_id = cast("str | int", msg.id)
+    from kiro_crew.acp.kas_approve_for_me import auto_approval_by
+
     params = msg.params or {}
     tool_call = params.get("toolCall", {})
     tool_call = tool_call if isinstance(tool_call, dict) else {}
@@ -892,6 +1014,31 @@ def build_permission_event(
     # same-origin repeat frames (re-ask after reject_once, mode-change
     # re-prompt) still find their entry.
     _ck = scoped_tool_cache_key(cache_scope, tool_call_id)
+    # The id is the model's, so a cached entry is evidence about the call that wrote
+    # it, not about this request. A request that states its OWN arguments and they
+    # are not the cached ones names a different call under a reused id, and neither
+    # side can be shown to be the call the harness will run. The event is marked
+    # ``tool_call_id_reused`` and every answering site refuses it before a card or a
+    # rule sees it; it is built from its own arguments with every cache a miss, so no
+    # trust from the earlier call reaches even the refusal's record. Not for a gate
+    # envelope, whose arguments are the harness's own.
+    _tool_call_id_reused = False
+    if envelope is None and tool_call_id and raw_params_cache is not None:
+        _own_args = next(
+            (v for v in (tool_call.get(k) for k in ("rawInput", "input", "params")) if v),
+            None,
+        )
+        _cached_args = raw_params_cache.get(_ck)
+        if (
+            _own_args is not None
+            and _cached_args is not None
+            and _args_name_another_call(_own_args, _cached_args)
+        ):
+            _tool_call_id_reused = True
+            tool_call = {**tool_call, "input": _own_args}
+            raw_params_cache = shell_cache = tool_input_cache = tool_input_redacted_cache = None
+            mcp_server_name_cache = tool_name_cache = diff_path_cache = tool_kind_cache = None
+            identity_unreadable_cache = harness_tool_name_cache = None
     # A permission frame that names no ``kind`` takes the one its preceding
     # ``tool_call`` frame carried, under the same origin-scoped id. KAS sends
     # ``toolCall: {toolCallId, status, title}`` here and puts ``kind`` on the
@@ -1339,6 +1486,20 @@ def build_permission_event(
             # goose does state is kept, and a non-read one still refuses the call.
             if tool_kind in ("", "other"):
                 tool_kind = "read"
+    # goose's own file writes (``write``, ``edit``) state no ACP kind either, and
+    # the identity channel reports their ``developer`` pair with no server, as it
+    # does the shell (``tool_call_identity``). The trusted name is the write, so
+    # ``other`` is read as ``edit`` and every write-plane row judges the target.
+    if (
+        harness_backend == ACP_BACKEND_GOOSE
+        and _mcp_identity_trusted
+        and not _mcp_server_name
+        and tool_kind in ("", "other")
+        and harness_tool_name_cache is not None
+        and tool_call_id
+        and harness_tool_name_cache.get(_ck, "") in GOOSE_TOOL_IDS_BY_KIRO_TOOL["fs_write"]
+    ):
+        tool_kind = "edit"
 
     # A remote workspace's tools stand in for the engine built-ins Crew unmounted
     # for that session, so they are read as those built-ins, as the claude and
@@ -1437,12 +1598,18 @@ def build_permission_event(
         title=title,
         tool_kind=tool_kind,
         raw_params_trusted=_raw_params_trusted,
+        tool_call_id_reused=_tool_call_id_reused,
         connection_mcp_identity=_pi_connection_identity(
             harness_backend, envelope, harness_mcp_servers
         )
         or _connection_identity,
         shell_classified=cached_shell is not None,
         options=options,
+        offered_allow={
+            slot: kind_to_id[kind]
+            for slot, kind in (("once", "allow_once"), ("always", "allow_always"))
+            if kind in kind_to_id
+        },
         tool_input=tool_input,
         tool_input_redacted=tool_input_redacted,
         tool_call_id=tool_call_id,
@@ -1463,6 +1630,11 @@ def build_permission_event(
         diff_path=_diff_path,
         spawn_target=_spawn_target,
         harness_tool_id=_harness_tool_id,
+        # Read beside the tool id, from the same engine-written block, and only on
+        # KAS (the store above is handed to no other harness).
+        kas_managed_ask=bool(
+            identity_unreadable_cache is not None and envelope is None and kas_managed_ask(params)
+        ),
         harness_builtin_tool=_harness_builtin_tool,
         deepseek_tool_name=_deepseek_tool_name,
         deepseek_read_only_issue=_deepseek_read_only_issue,
@@ -1476,5 +1648,7 @@ def build_permission_event(
             and kind_to_id.get("reject_once")
             and recorded.get("reject") == kind_to_id.get("reject_once")
         ),
+        # The engine's own verdict, read only off a KAS request; Crew's checks decide.
+        kas_auto_approval=auto_approval_by(params) if kas_consent_meta else "",
     )
     return event, recorded

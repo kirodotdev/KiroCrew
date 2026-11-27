@@ -1,38 +1,58 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
+import { AnimatePresence } from 'framer-motion'
 import VoiceDictationPanel from '../components/VoiceDictationPanel'
 import { createAudioSample } from '../hooks/mic'
 
-// The panel mounts the WebGL shader, which jsdom has no context for. Stub it:
-// these tests are about the transcript/chrome contract, and Strands.tsx's own
-// GL path is exercised by strandsSupported() + the browser harness.
-vi.mock('../components/Strands', () => ({
-  __esModule: true,
-  default: () => <div data-testid="strands-stub" />,
-  strandsSupported: () => true,
-}))
-
 const sampleRef = { current: createAudioSample() }
+
+function stubTranscriptScroll() {
+  const prototype = HTMLDivElement.prototype
+  const previousTop = Object.getOwnPropertyDescriptor(prototype, 'scrollTop')
+  const previousHeight = Object.getOwnPropertyDescriptor(prototype, 'scrollHeight')
+  const previousClientHeight = Object.getOwnPropertyDescriptor(prototype, 'clientHeight')
+  let scrollTop = 0
+  Object.defineProperty(prototype, 'scrollTop', {
+    configurable: true,
+    get: () => scrollTop,
+    set: (value: number) => { scrollTop = value },
+  })
+  Object.defineProperty(prototype, 'scrollHeight', { configurable: true, get: () => 999 })
+  Object.defineProperty(prototype, 'clientHeight', { configurable: true, get: () => 80 })
+  return {
+    read: () => scrollTop,
+    restore: () => {
+      if (previousTop) Object.defineProperty(prototype, 'scrollTop', previousTop)
+      else delete (prototype as unknown as Record<string, unknown>).scrollTop
+      if (previousHeight) Object.defineProperty(prototype, 'scrollHeight', previousHeight)
+      else delete (prototype as unknown as Record<string, unknown>).scrollHeight
+      if (previousClientHeight) Object.defineProperty(prototype, 'clientHeight', previousClientHeight)
+      else delete (prototype as unknown as Record<string, unknown>).clientHeight
+    },
+  }
+}
 
 describe('VoiceDictationPanel', () => {
   it('renders the listening state with the active device', () => {
-    render(<VoiceDictationPanel sampleRef={sampleRef} value="" deviceLabel="MacBook Pro Microphone" />)
+    render(<VoiceDictationPanel sampleRef={sampleRef} deviceLabel="MacBook Pro Microphone" onSelectDevice={() => {}} />)
     expect(screen.getByText('Listening')).toBeTruthy()
     expect(screen.getByText('MacBook Pro Microphone')).toBeTruthy()
   })
 
-  it('shows how long the recording has run, and holds it once capture has ended', () => {
+  it('shows elapsed recording time and freezes it during panel exit', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] })
     try {
-      const { rerender } = render(<VoiceDictationPanel sampleRef={sampleRef} value="" />)
+      const { rerender } = render(
+        <AnimatePresence>
+          <VoiceDictationPanel key="panel" sampleRef={sampleRef} onSelectDevice={() => {}} />
+        </AnimatePresence>,
+      )
       const reading = () => screen.getByTestId('voice-recording-elapsed').textContent
       expect(reading()).toBe('0:00')
       act(() => { vi.advanceTimersByTime(9_000) })
       expect(reading()).toBe('0:09')
-      // The panel outlives the release for the streaming drain. The mic is
-      // closed by then, so the reading must not keep climbing.
-      rerender(<VoiceDictationPanel sampleRef={sampleRef} value="" captureEnded />)
-      act(() => { vi.advanceTimersByTime(20_000) })
+      rerender(<AnimatePresence>{false}</AnimatePresence>)
+      act(() => { vi.advanceTimersByTime(100) })
       expect(reading()).toBe('0:09')
     } finally {
       vi.useRealTimers()
@@ -40,88 +60,103 @@ describe('VoiceDictationPanel', () => {
   })
 
   it('omits the device row entirely when no label is known', () => {
-    // Deliberately different from VoiceStatusBar, which shows "Default
-    // microphone": at 17px over a live shader an extra placeholder row is
-    // noise, and the panel's job is the transcript.
-    render(<VoiceDictationPanel sampleRef={sampleRef} value="" />)
+    render(<VoiceDictationPanel sampleRef={sampleRef} onSelectDevice={() => {}} />)
     expect(screen.queryByText('Default microphone')).toBeNull()
     expect(screen.getByText('Listening')).toBeTruthy()
   })
 
-  it('advertises the keyboard affordances that actually exist (batch: click the mic to finish)', () => {
-    render(<VoiceDictationPanel sampleRef={sampleRef} value="" />)
+  it('advertises the keyboard affordances that actually exist', () => {
+    render(<VoiceDictationPanel sampleRef={sampleRef} onSelectDevice={() => {}} />)
     expect(screen.getByText('Esc to cancel, click the mic to finish')).toBeTruthy()
   })
 
-  // With submit-on-release on, stopping sends in either transport, so the hint
-  // names the send and the way to keep a draft instead of the Enter shortcut.
   it.each([true, false])('names the send and Shift-click under submit-on-release (streaming=%s)', streaming => {
-    render(<VoiceDictationPanel sampleRef={sampleRef} value="" streaming={streaming} submitOnRelease />)
+    render(<VoiceDictationPanel sampleRef={sampleRef} streaming={streaming} submitOnRelease onSelectDevice={() => {}} />)
     expect(screen.getByText('Esc to cancel, Shift-click keeps a draft, click the mic to send')).toBeTruthy()
     expect(screen.queryByText('Esc to cancel, Enter to send')).toBeNull()
   })
 
-  it('promises Enter-to-send only in streaming mode (live transcript in composer)', () => {
-    render(<VoiceDictationPanel sampleRef={sampleRef} value="" streaming />)
+  it('promises Enter-to-send only in streaming mode', () => {
+    render(<VoiceDictationPanel sampleRef={sampleRef} streaming onSelectDevice={() => {}} />)
     expect(screen.getByText('Esc to cancel, Enter to send')).toBeTruthy()
   })
 
-  it('renders the whole value as committed when there is no partial', () => {
-    render(<VoiceDictationPanel sampleRef={sampleRef} value="summarize the startup fix" />)
-    const t = screen.getByTestId('voice-dictation-transcript')
-    expect(t.textContent).toBe('summarize the startup fix')
-    // No muted span -> nothing is being presented as provisional.
-    expect(t.querySelector('.text-muted')).toBeNull()
+  it('says editing resumes on stop only while streaming fills the text box', () => {
+    const { rerender } = render(<VoiceDictationPanel sampleRef={sampleRef} streaming onSelectDevice={() => {}} />)
+    expect(screen.getByText('Editing resumes when you stop')).toBeTruthy()
+    rerender(<VoiceDictationPanel sampleRef={sampleRef} onSelectDevice={() => {}} />)
+    expect(screen.queryByTestId('voice-dictation-edit-locked')).toBeNull()
+    rerender(<VoiceDictationPanel sampleRef={sampleRef} streaming gestureDriven onSelectDevice={() => {}} />)
+    expect(screen.queryByTestId('voice-dictation-edit-locked')).toBeNull()
   })
 
-  it('splits the trailing partial hypothesis out as muted text', () => {
-    render(
-      <VoiceDictationPanel
-        sampleRef={sampleRef}
-        value="summarize the startup fix and tell me"
-        partial=" and tell me"
-      />,
+  it('says Muted and offers unmute while muted', () => {
+    const onToggleMute = vi.fn()
+    render(<VoiceDictationPanel sampleRef={sampleRef} muted onToggleMute={onToggleMute} onSelectDevice={() => {}} />)
+    expect(screen.getByText('Muted')).toBeTruthy()
+    expect(screen.queryByText('Listening')).toBeNull()
+    const btn = screen.getByTestId('voice-mute-toggle')
+    expect(btn.getAttribute('aria-label')).toBe('Unmute microphone')
+    expect(btn.hasAttribute('aria-pressed')).toBe(false)
+    fireEvent.click(btn)
+    expect(onToggleMute).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the recording label truthful while the panel exits', () => {
+    const { rerender } = render(
+      <AnimatePresence>
+        <VoiceDictationPanel key="panel" sampleRef={sampleRef} onSelectDevice={() => {}} />
+      </AnimatePresence>,
     )
-    const t = screen.getByTestId('voice-dictation-transcript')
-    expect(t.textContent).toBe('summarize the startup fix and tell me')
-    const muted = t.querySelector('.text-muted')
-    expect(muted?.textContent).toBe(' and tell me')
+    rerender(<AnimatePresence>{false}</AnimatePresence>)
+    expect(screen.queryByText('Getting ready to transcribe your dictation.')).toBeNull()
+    expect(screen.getByText('Listening')).toBeTruthy()
   })
 
-  it('shows the transcript with whitespace preserved so line breaks render', () => {
-    render(<VoiceDictationPanel sampleRef={sampleRef} value="a" />)
-    expect(screen.getByTestId('voice-dictation-transcript').className).toContain('whitespace-pre-wrap')
+  it('keeps the touch transcript pinned to its newest words', () => {
+    const scroll = stubTranscriptScroll()
+    try {
+      const { rerender } = render(
+        <VoiceDictationPanel sampleRef={sampleRef} transcript="one" onSelectDevice={() => {}} />,
+      )
+      expect(scroll.read()).toBe(999)
+      rerender(
+        <VoiceDictationPanel
+          sampleRef={sampleRef}
+          transcript="one two three four five six seven eight"
+          onSelectDevice={() => {}}
+        />,
+      )
+      expect(scroll.read()).toBe(999)
+      expect(screen.getByTestId('hold-to-talk-transcript').className).toContain('overscroll-contain')
+    } finally {
+      scroll.restore()
+    }
   })
 
-  it('keeps line breaks in committed multi-line text', () => {
-    const value = '## First of all\nSome text\n\n## Second of all\nsome more text'
-    render(<VoiceDictationPanel sampleRef={sampleRef} value={value} />)
-    expect(screen.getByTestId('voice-dictation-transcript').textContent).toBe(value)
-  })
+  it('pauses touch transcript following while the user reads older words', () => {
+    const scroll = stubTranscriptScroll()
+    try {
+      const { rerender } = render(
+        <VoiceDictationPanel sampleRef={sampleRef} transcript="one" onSelectDevice={() => {}} />,
+      )
+      const transcript = screen.getByTestId('hold-to-talk-transcript')
+      transcript.scrollTop = 300
+      fireEvent.scroll(transcript)
+      rerender(
+        <VoiceDictationPanel sampleRef={sampleRef} transcript="one two" onSelectDevice={() => {}} />,
+      )
+      expect(scroll.read()).toBe(300)
 
-  it('keeps line breaks inside the trailing partial', () => {
-    const committed = '## First of all\nSome text'
-    const partial = '\n\n## Second of all\nsome more'
-    render(<VoiceDictationPanel sampleRef={sampleRef} value={committed + partial} partial={partial} />)
-    const t = screen.getByTestId('voice-dictation-transcript')
-    expect(t.textContent).toBe(committed + partial)
-    expect(t.querySelector('.text-muted')?.textContent).toBe(partial)
-  })
-
-  it('treats everything as committed when the partial is not the suffix', () => {
-    // The user typed after the partial landed, so the partial is no longer the
-    // tail of the value. Styling a slice that does not match would mute the
-    // wrong characters — fall back to all-committed instead.
-    render(
-      <VoiceDictationPanel
-        sampleRef={sampleRef}
-        value="summarize the startup fix — typed after"
-        partial="and tell me"
-      />,
-    )
-    const t = screen.getByTestId('voice-dictation-transcript')
-    expect(t.textContent).toBe('summarize the startup fix — typed after')
-    expect(t.querySelector('.text-muted')).toBeNull()
+      transcript.scrollTop = 919
+      fireEvent.scroll(transcript)
+      rerender(
+        <VoiceDictationPanel sampleRef={sampleRef} transcript="one two three" onSelectDevice={() => {}} />,
+      )
+      expect(scroll.read()).toBe(999)
+    } finally {
+      scroll.restore()
+    }
   })
 })
 
@@ -139,7 +174,7 @@ describe('useDictationPanelUsable', () => {
   })
   afterEach(() => { vi.unstubAllGlobals() })
 
-  it('is off when the setting is off, even with WebGL2 and full motion', async () => {
+  it('is off when the setting is off, even with full motion', async () => {
     const { useDictationPanelUsable } = await import('../components/VoiceDictationPanel')
     const seen: boolean[] = []
     const Probe = ({ on }: { on: boolean }) => {
@@ -150,7 +185,7 @@ describe('useDictationPanelUsable', () => {
     expect(seen[0]).toBe(false)
   })
 
-  it('is off under prefers-reduced-motion (the bar meter is the fallback, not a frozen frame)', async () => {
+  it('is off under prefers-reduced-motion', async () => {
     matchMediaSpy.mockImplementation((q: string) => ({
       matches: q.includes('reduced-motion'),
       media: q,
@@ -162,211 +197,5 @@ describe('useDictationPanelUsable', () => {
     const Probe = () => { seen.push(useDictationPanelUsable(true)); return null }
     render(<Probe />)
     expect(seen[0]).toBe(false)
-  })
-})
-
-describe('word revision tracking', () => {
-  it('climbs stability for surviving words and flashes the one revised in place', () => {
-    const { rerender } = render(
-      <VoiceDictationPanel sampleRef={sampleRef} value="fix the wold" partial="fix the wold" streaming />,
-    )
-    rerender(
-      <VoiceDictationPanel sampleRef={sampleRef} value="fix the world" partial="fix the world" streaming />,
-    )
-    const words = screen.getAllByTestId('dictation-word')
-    expect(words.map(w => w.textContent)).toEqual(['fix', 'the', 'world'])
-    // Survivors of two consecutive hypotheses ramp toward solid…
-    expect(words[0].getAttribute('data-stability')).toBe('1')
-    expect(words[1].getAttribute('data-stability')).toBe('1')
-    // …while "wold" → "world" is a revision: reset to dim, generation bump = flash.
-    expect(words[2].getAttribute('data-stability')).toBe('0')
-    expect(words[2].getAttribute('data-generation')).toBe('1')
-  })
-
-  it('does not flash words appended past the previous hypothesis (dictation, not revision)', () => {
-    const { rerender } = render(
-      <VoiceDictationPanel sampleRef={sampleRef} value="fix the" partial="fix the" streaming />,
-    )
-    rerender(
-      <VoiceDictationPanel sampleRef={sampleRef} value="fix the build" partial="fix the build" streaming />,
-    )
-    const words = screen.getAllByTestId('dictation-word')
-    expect(words.map(w => w.textContent)).toEqual(['fix', 'the', 'build'])
-    expect(words[2].getAttribute('data-generation')).toBe('0')
-    expect(words[2].getAttribute('data-stability')).toBe('0')
-  })
-
-  it('confines an insertion to the inserted word — the unchanged tail keeps its stability', () => {
-    const { rerender } = render(
-      <VoiceDictationPanel sampleRef={sampleRef} value="fix the build" partial="fix the build" streaming />,
-    )
-    rerender(
-      <VoiceDictationPanel sampleRef={sampleRef} value="fix in the build" partial="fix in the build" streaming />,
-    )
-    const words = screen.getAllByTestId('dictation-word')
-    expect(words.map(w => w.textContent)).toEqual(['fix', 'in', 'the', 'build'])
-    // "fix" survived; "in" was inserted (flashes); "the"/"build" re-anchor and
-    // KEEP their earned stability instead of reading as revised.
-    expect(words[0].getAttribute('data-stability')).toBe('1')
-    expect(words[1].getAttribute('data-generation')).toBe('1')
-    expect(words[1].getAttribute('data-stability')).toBe('0')
-    expect(words[2].getAttribute('data-stability')).toBe('1')
-    expect(words[3].getAttribute('data-stability')).toBe('1')
-  })
-
-  it('keeps the surviving words\u2019 DOM nodes across an insertion (no remount, no spurious flash)', () => {
-    const { rerender } = render(
-      <VoiceDictationPanel sampleRef={sampleRef} value="fix the build" partial="fix the build" streaming />,
-    )
-    const beforeNodes = screen.getAllByTestId('dictation-word')
-    rerender(
-      <VoiceDictationPanel sampleRef={sampleRef} value="fix in the build" partial="fix in the build" streaming />,
-    )
-    const after = screen.getAllByTestId('dictation-word')
-    // "the" and "build" re-anchored as the SAME words: identical DOM nodes,
-    // so React never remounted them and their flash cannot restart.
-    expect(after[2]).toBe(beforeNodes[1])
-    expect(after[3]).toBe(beforeNodes[2])
-    // The inserted word is a new node.
-    expect(beforeNodes).not.toContain(after[1])
-  })
-
-  it('flashes a replacement even when the new text duplicates a later word (a b c \u2192 a c c)', () => {
-    const { rerender } = render(
-      <VoiceDictationPanel sampleRef={sampleRef} value="a b c" partial="a b c" streaming />,
-    )
-    rerender(<VoiceDictationPanel sampleRef={sampleRef} value="a c c" partial="a c c" streaming />)
-    const words = screen.getAllByTestId('dictation-word')
-    expect(words.map(w => w.textContent)).toEqual(['a', 'c', 'c'])
-    // "b" \u2192 "c" is an in-place revision and must flash; anchoring to the old
-    // "c" would have read it as deletion-plus-append and never flashed.
-    expect(words[1].getAttribute('data-generation')).toBe('1')
-    expect(words[1].getAttribute('data-stability')).toBe('0')
-    // The original trailing "c" survived.
-    expect(words[2].getAttribute('data-stability')).toBe('1')
-  })
-
-  it('resets tracking when a phrase commits, instead of diffing across unrelated phrases', () => {
-    const { rerender } = render(
-      <VoiceDictationPanel sampleRef={sampleRef} value="hello world" partial="hello world" streaming />,
-    )
-    rerender(
-      <VoiceDictationPanel
-        sampleRef={sampleRef}
-        value="hello world. next phrase"
-        partial=" next phrase"
-        streaming
-      />,
-    )
-    const words = screen.getAllByTestId('dictation-word')
-    expect(words.map(w => w.textContent)).toEqual(['next', 'phrase'])
-    for (const w of words) {
-      expect(w.getAttribute('data-stability')).toBe('0')
-      expect(w.getAttribute('data-generation')).toBe('0')
-    }
-  })
-
-  it('preserves exact transcript text (whitespace included) through the word spans', () => {
-    render(
-      <VoiceDictationPanel
-        sampleRef={sampleRef}
-        value="summarize the fix  and   tell me"
-        partial="  and   tell me"
-      />,
-    )
-    const t = screen.getByTestId('voice-dictation-transcript')
-    expect(t.textContent).toBe('summarize the fix  and   tell me')
-    expect(t.querySelector('.text-muted')?.textContent).toBe('  and   tell me')
-  })
-})
-
-describe('transcript auto-scroll', () => {
-  // jsdom does no layout, so scrollHeight stays 0. Stub it tall and capture
-  // scrollTop to assert the effect pins the transcript to its bottom.
-  function tallScroll() {
-    let scrollTop = 0
-    Object.defineProperty(HTMLDivElement.prototype, 'scrollHeight', {
-      configurable: true,
-      get() { return 999 },
-    })
-    Object.defineProperty(HTMLDivElement.prototype, 'scrollTop', {
-      configurable: true,
-      get() { return scrollTop },
-      set(v: number) { scrollTop = v },
-    })
-    return () => {
-      delete (HTMLDivElement.prototype as unknown as Record<string, unknown>).scrollHeight
-      delete (HTMLDivElement.prototype as unknown as Record<string, unknown>).scrollTop
-    }
-  }
-
-  it('pins the transcript to its bottom so the newest dictated text stays visible', () => {
-    const restore = tallScroll()
-    try {
-      const { rerender } = render(
-        <VoiceDictationPanel sampleRef={sampleRef} value="line one" partial="line one" streaming />,
-      )
-      const t = screen.getByTestId('voice-dictation-transcript')
-      expect(t.scrollTop).toBe(999)
-      // More text arrives (past the 3-line clip); it must scroll to the new bottom.
-      rerender(
-        <VoiceDictationPanel
-          sampleRef={sampleRef}
-          value="line one two three four five six"
-          partial="line one two three four five six"
-          streaming
-        />,
-      )
-      expect(t.scrollTop).toBe(999)
-    } finally {
-      restore()
-    }
-  })
-
-  it('stops following while the user has scrolled up, and resumes at the bottom', () => {
-    const restore = tallScroll()
-    Object.defineProperty(HTMLDivElement.prototype, 'clientHeight', {
-      configurable: true,
-      get() { return 80 },
-    })
-    const panel = (v: string) => (
-      <VoiceDictationPanel sampleRef={sampleRef} value={v} partial={v} streaming />
-    )
-    try {
-      const { rerender } = render(panel('one'))
-      const t = screen.getByTestId('voice-dictation-transcript')
-      // Scrolled up to reread: new text must not yank the view back down.
-      t.scrollTop = 300
-      fireEvent.scroll(t)
-      rerender(panel('one two'))
-      expect(t.scrollTop).toBe(300)
-      // Back at the bottom (999 - 80): following resumes.
-      t.scrollTop = 919
-      fireEvent.scroll(t)
-      rerender(panel('one two three'))
-      expect(t.scrollTop).toBe(999)
-    } finally {
-      delete (HTMLDivElement.prototype as unknown as Record<string, unknown>).clientHeight
-      restore()
-    }
-  })
-})
-
-describe('VoiceDictationPanel mute', () => {
-  it('says Muted and offers unmute while muted', () => {
-    const onToggleMute = vi.fn()
-    render(<VoiceDictationPanel sampleRef={sampleRef} value="" muted onToggleMute={onToggleMute} onSelectDevice={() => {}} />)
-    expect(screen.getByText('Muted')).toBeTruthy()
-    expect(screen.queryByText('Listening')).toBeNull()
-    const btn = screen.getByTestId('voice-mute-toggle')
-    expect(btn.getAttribute('aria-label')).toBe('Unmute microphone')
-    expect(btn.hasAttribute('aria-pressed')).toBe(false)
-    fireEvent.click(btn)
-    expect(onToggleMute).toHaveBeenCalledTimes(1)
-  })
-
-  it('drops the control once capture has ended', () => {
-    render(<VoiceDictationPanel sampleRef={sampleRef} value="" onToggleMute={() => {}} captureEnded onSelectDevice={() => {}} />)
-    expect(screen.queryByTestId('voice-mute-toggle')).toBeNull()
   })
 })

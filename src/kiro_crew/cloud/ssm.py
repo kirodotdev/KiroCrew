@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import platform
@@ -38,6 +39,11 @@ from kiro_crew.deploy.engine import (
     resolve_aws_bin,
     resolve_aws_tool_bin,
     resolve_aws_tool_bin_with_refusals,
+)
+from kiro_crew.instances.validation import (
+    SsmTargetUnresolvedError,
+    split_ecs_target,
+    ssm_target_matches,
 )
 from kiro_crew.sandbox import without_python_env
 
@@ -181,8 +187,6 @@ def run_command(
             region,
         )
         if rc == 0:
-            import json
-
             try:
                 inv = json.loads(out or "{}")
             except json.JSONDecodeError:
@@ -506,6 +510,12 @@ def session_manager_plugin_unavailable_message(retry: str = _CLI_CONNECT_RETRY) 
             f"and rerun: {refusal.remedy_command}"
         )
     return f"{message} {REFUSAL_NEXT_STEP.get(refusal.code, REFUSAL_NEXT_STEP[''])}"
+
+
+def refusal_next_step(reason: str) -> str:
+    """The step that clears a provenance refusal, worded for its *reason*."""
+    code, _owner_uid = _classify_refusal(reason)
+    return REFUSAL_NEXT_STEP.get(code, REFUSAL_NEXT_STEP[""])
 
 
 def reinstall_cannot_clear_refusal() -> bool:
@@ -1148,6 +1158,87 @@ def task_exec_readiness(
     return TaskExecReadiness(ready=True)
 
 
+def resolve_ssm_target(kind: str, name: str, profile: str = "", region: str = "") -> str:
+    """The instance id an ``asg:``/``param:`` ``ssm_target`` names now, from one read.
+
+    *kind* and *name* are what :func:`~kiro_crew.instances.validation.split_ssm_resolver`
+    returns. ``asg`` reads the group (``autoscaling:DescribeAutoScalingGroups``) and
+    takes its one ``InService`` instance; ``param`` reads the parameter's value
+    (``ssm:GetParameter``, never decrypted). Both are read-only, and the answer is
+    never stored. Raises :class:`SsmTargetUnresolvedError` when the read fails or
+    does not name exactly one EC2 or managed-instance id. The message never quotes a
+    parameter's value: whatever the row points at is printed back nowhere.
+    """
+    if kind == "asg":
+        rc, out, err = aws.run_aws(
+            [
+                "autoscaling",
+                "describe-auto-scaling-groups",
+                "--auto-scaling-group-names",
+                name,
+                "--query",
+                "AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId",
+                "--output",
+                "json",
+            ],
+            profile,
+            region,
+        )
+        if rc != 0:
+            raise SsmTargetUnresolvedError(
+                f"could not read Auto Scaling group {name!r}: "
+                f"{err.strip()[:_MAX_AWS_ERROR_CHARS]!r}"
+            )
+        # An unknown group is an empty group list, whose [0] the CLI prints as null.
+        if out.strip() == "null":
+            raise SsmTargetUnresolvedError(
+                f"there is no Auto Scaling group named {name!r} in this AWS account and region"
+            )
+        try:
+            ids = json.loads(out)
+        except ValueError:
+            ids = None
+        if not isinstance(ids, list):
+            raise SsmTargetUnresolvedError(
+                f"could not read the instances of Auto Scaling group {name!r}"
+            )
+        if len(ids) != 1:
+            # Several is what a rolling replacement looks like for a moment: the
+            # forward is not built until one is left, rather than built to a guess.
+            raise SsmTargetUnresolvedError(
+                f"Auto Scaling group {name!r} has {len(ids)} InService instances; "
+                f"this crew connects to the group once it has exactly one"
+            )
+        target = ids[0] if isinstance(ids[0], str) else ""
+        source = f"Auto Scaling group {name!r}"
+    else:
+        rc, out, err = aws.run_aws(
+            [
+                "ssm",
+                "get-parameter",
+                "--name",
+                name,
+                "--query",
+                "Parameter.Value",
+                "--output",
+                "text",
+            ],
+            profile,
+            region,
+        )
+        if rc != 0:
+            raise SsmTargetUnresolvedError(
+                f"could not read SSM parameter {name!r}: {err.strip()[:_MAX_AWS_ERROR_CHARS]!r}"
+            )
+        target = out.strip()
+        source = f"SSM parameter {name!r}"
+    if not ssm_target_matches(target) or split_ecs_target(target) is not None:
+        raise SsmTargetUnresolvedError(
+            f"{source} does not name an EC2 instance id (i-...) or managed-instance id (mi-...)"
+        )
+    return target
+
+
 # --- small helpers ---------------------------------------------------------
 
 
@@ -1312,6 +1403,4 @@ def _install_error(argv: list[str], err: str) -> str:
 
 def _json_str_list(items: list[str]) -> str:
     """Render a JSON array of strings for the --parameters commands=[...] form."""
-    import json
-
     return json.dumps(items)

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Optional
 
 from kiro_crew import beacon
@@ -28,15 +30,51 @@ logger = logging.getLogger("kiro_crew.metrics.provider")
 # disable, unset/blank => defer to the ``telemetry.enabled`` config flag (itself
 # default True). A truthy value is also an explicit opt-in to export
 # (:func:`outbound_consented`): the default provider names the configured
-# ``telemetry.otlp_endpoint(s)``, which export once this var is truthy, and the
-# built-in Kiro telemetry destination (``metrics/kiro_export.py``), which also
-# needs its privacy notice shown.
+# ``telemetry.otlp_endpoint(s)``, which export once this var is truthy. The
+# built-in Kiro telemetry destination (``metrics/kiro_export.py``) needs no opt-in.
 # Public: a UI control over ``telemetry.enabled`` names this variable when it
 # reports the setting as pinned, and naming it from here keeps the message and the
 # lookup from drifting apart.
 TELEMETRY_ENV_VAR = "KIROCREW_TELEMETRY"
 _ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _ENV_FALSY = frozenset({"0", "false", "no", "off"})
+
+#: Every environment variable the consent pins read.
+_PIN_VARS = (beacon.DO_NOT_TRACK_ENV, TELEMETRY_ENV_VAR, beacon.DISABLE_ENV)
+
+#: The pin variables :func:`bind_env_pins` pinned, by thread ident.
+_pinned_env: dict[int, Mapping[str, str]] = {}
+
+
+def bind_env_pins(target: Callable[..., object]) -> Callable[..., None]:
+    """Bind *target* to the pin variables as the calling thread sees them now.
+
+    The entry of a worker thread its dispatcher builds: until *target* returns, every
+    pin this module resolves on the worker's thread answers from that snapshot
+    without reading the environment, which a test can clear in between
+    (``patch.dict``'s exit clears it before refilling it). Other threads are
+    unaffected.
+    """
+    pins = {name: os.environ.get(name, "") for name in _PIN_VARS}
+
+    def run(*args: object) -> None:
+        ident = threading.get_ident()
+        _pinned_env[ident] = pins
+        try:
+            target(*args)
+        finally:
+            del _pinned_env[ident]
+
+    return run
+
+
+def _env_value(name: str) -> str:
+    pins = _pinned_env.get(threading.get_ident()) if _pinned_env else None
+    return os.environ.get(name, "") if pins is None else pins.get(name, "")
+
+
+def _env_truthy(name: str) -> bool:
+    return _env_value(name).strip().lower() in _ENV_TRUTHY
 
 
 def env_pin() -> Optional[bool]:
@@ -50,9 +88,9 @@ def env_pin() -> Optional[bool]:
     """
     # DO_NOT_TRACK first: off wins, so a truthy DO_NOT_TRACK pins recording off
     # even when KIROCREW_TELEMETRY asks for it.
-    if beacon.do_not_track():
+    if _env_truthy(beacon.DO_NOT_TRACK_ENV):
         return False
-    raw = os.environ.get(TELEMETRY_ENV_VAR, "").strip().lower()
+    raw = _env_value(TELEMETRY_ENV_VAR).strip().lower()
     if raw in _ENV_TRUTHY:
         return True
     if raw in _ENV_FALSY:
@@ -71,7 +109,7 @@ def _heartbeat_env_opt_out_holds_recording_off() -> bool:
     written choice (Settings, ``kirocrew telemetry enable``) still decides. The
     files are read only when the variable is set, so other hosts pay nothing.
     """
-    if not beacon._env_truthy(beacon.DISABLE_ENV):
+    if not _env_truthy(beacon.DISABLE_ENV):
         return False
     try:
         from kiro_crew.config.loader import _ABSENT_AGENT_KEY, _stored_agent_value
@@ -90,9 +128,9 @@ def env_pin_is_soft() -> bool:
     ``kirocrew telemetry status`` must not report it as an env var that decides
     on its own. ``DO_NOT_TRACK`` and ``KIROCREW_TELEMETRY`` are hard pins.
     """
-    if beacon.do_not_track():
+    if _env_truthy(beacon.DO_NOT_TRACK_ENV):
         return False
-    raw = os.environ.get(TELEMETRY_ENV_VAR, "").strip().lower()
+    raw = _env_value(TELEMETRY_ENV_VAR).strip().lower()
     if raw in _ENV_TRUTHY or raw in _ENV_FALSY:
         return False
     return _heartbeat_env_opt_out_holds_recording_off()
@@ -100,9 +138,9 @@ def env_pin_is_soft() -> bool:
 
 def pin_env_var() -> str:
     """Name the env var behind :func:`env_pin`, for a UI note that says which to unset."""
-    if beacon.do_not_track():
+    if _env_truthy(beacon.DO_NOT_TRACK_ENV):
         return beacon.DO_NOT_TRACK_ENV
-    raw = os.environ.get(TELEMETRY_ENV_VAR, "").strip().lower()
+    raw = _env_value(TELEMETRY_ENV_VAR).strip().lower()
     if (
         raw not in _ENV_TRUTHY
         and raw not in _ENV_FALSY
@@ -129,10 +167,8 @@ def outbound_consented(cfg: KiroCrewConfig) -> bool:
     alone never permits export, so a host with an export destination configured
     cannot start exporting just because the default changed.
 
-    The Privacy chapter's acknowledgement (``dashboard.privacy_ack_version``) is
-    deliberately NOT enough: today's notice text says recorded data stays on this
-    machine, so agreeing to it is not agreeing to export. A notice that names the
-    export destination would have to bump the version before it could count.
+    A stored ``dashboard.privacy_ack_version`` (written by builds that showed a
+    dashboard notice) does not count either: it records a notice, not an opt-in.
 
     Fails closed: anything unreadable answers False.
     """

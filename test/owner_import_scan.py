@@ -11,6 +11,8 @@ import ast
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
+import source_corpus
+
 
 def imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
     """Dotted names an import statement in *module* reaches, relative spellings resolved."""
@@ -23,6 +25,7 @@ def imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str
     return [base, *(f"{base}.{alias.name}" for alias in node.names)]
 
 
+@source_corpus.untraced()
 def owner_importers(
     sources: Iterable[tuple[Path, str]], root: Path, is_owner: Callable[[str], bool]
 ) -> set[str]:

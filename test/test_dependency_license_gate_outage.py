@@ -98,6 +98,12 @@ def _run_verdict(tmp_path: Path, retry: str, gh_exit: int) -> subprocess.Complet
     )
 
 
+def _probes(tmp_path: Path) -> list[str]:
+    """The dependency-graph probes made, without the quota read before them."""
+    calls = (tmp_path / "calls").read_text(encoding="utf-8").splitlines()
+    return [c for c in calls if not c.startswith("api rate_limit")]
+
+
 @needs_bash
 def test_a_retry_that_passes_passes_the_gate(tmp_path: Path) -> None:
     proc = _run_verdict(tmp_path, retry="success", gh_exit=0)
@@ -111,7 +117,7 @@ def test_two_failures_with_a_working_api_are_a_license_verdict(tmp_path: Path) -
     assert proc.returncode == 1
     assert "license verdict" in proc.stdout
     assert "could not run" not in proc.stdout
-    calls = (tmp_path / "calls").read_text(encoding="utf-8").splitlines()
+    calls = _probes(tmp_path)
     assert len(calls) == 1 and "dependency-graph/compare/" in calls[0], calls
 
 
@@ -122,5 +128,5 @@ def test_two_failures_with_the_api_down_are_reported_as_could_not_run(tmp_path: 
     assert "could not run" in proc.stdout
     assert "not a license" in proc.stdout
     assert "HTTP 503" in proc.stdout
-    calls = (tmp_path / "calls").read_text(encoding="utf-8").splitlines()
+    calls = _probes(tmp_path)
     assert len(calls) == 3, calls

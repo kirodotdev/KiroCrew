@@ -39,6 +39,7 @@ from typing import Any, Iterator
 # ``onboarding_import.<name>`` reaches this module too.
 from kiro_crew import onboarding_scan
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config import write_provenance
 from kiro_crew.config.loader import ConfigReadError, update_config_locked
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.onboarding_plan import _SAFE_NAME_RE, _merge_missing
@@ -129,7 +130,11 @@ def _load_json_dict(path: Path, *, fail_closed: bool = False) -> dict[str, Any]:
 
 
 def _write_json(path: Path, data: Any) -> None:
-    atomic_write(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+    # ``<data home>/mcp.json`` is sealed read-only in every sandbox, so its save is
+    # recorded for the launcher's pin like the MCP page's own saves
+    # (``config.write_provenance``); the hook is ``None`` for any other path.
+    on_staged = write_provenance.staging_hook(path) if os.name == "posix" else None
+    atomic_write(path, json.dumps(data, indent=2, sort_keys=True) + "\n", on_staged=on_staged)
 
 
 def _load_ledger(path: Path) -> dict[str, Any]:

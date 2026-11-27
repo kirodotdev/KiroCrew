@@ -94,26 +94,26 @@ logger = logging.getLogger(__name__)
 # backend-owned strings have no catalog path yet
 # (docs/system-specs/common/code-style.md), so the owning module
 # is the unit of ownership.
-_ATTACHMENT_WITH_COMMAND = "附件未读取：这条是命令消息，请把附件单独发送。"
-_NEW_SESSION = "已开始新对话"
+_ATTACHMENT_WITH_COMMAND = "📎 附件未读取：这条是命令消息，请把附件单独发送。"
+_NEW_SESSION = "✅ 已开始新对话"
 # Three states, not two. The cancel is COOPERATIVE: the ack goes out after only
 # writing session/cancel, so the turn stops at its next safe point and the bubble
 # may still move for a moment -- "正在停止" is what the user will actually observe.
 # And a busy session whose cancel FAILED must not be told nothing was running: that
 # is the case /stop exists for, and cancel failures cluster on exactly those turns.
-_STOPPING = "正在停止当前回复…"
-_STOP_FAILED = "警告：停止失败，请重试。"
-_NOTHING_RUNNING = "提示：当前没有正在生成的回复。"
-_RESEND_AFTER_TURN = "上一条消息还在处理中，附件无法在这轮读取，请等回复结束后重新发送。"
-_STEER_MERGED = "已合并到当前回复"
-_STEER_UNAVAILABLE = "正在处理上一条，请稍后重发"
-_AUTO_COMPACTED = "上下文接近上限，已自动压缩。"
-_SOFT_THRESHOLD = "警告：对话上下文已较长，回复 /compact 压缩，或 /new 开始新对话。"
-_COMPACT_BUSY = "正在处理上一条消息，请稍后再试 /compact。"
-_COMPACT_NOTHING = "提示：当前没有可压缩的对话。"
+_STOPPING = "⏹ 正在停止当前回复…"
+_STOP_FAILED = "⚠️ 停止失败，请重试。"
+_NOTHING_RUNNING = "ℹ️ 当前没有正在生成的回复。"
+_RESEND_AFTER_TURN = "⏳ 上一条消息还在处理中，附件无法在这轮读取，请等回复结束后重新发送。"
+_STEER_MERGED = "⏳ 已合并到当前回复"
+_STEER_UNAVAILABLE = "⏳ 正在处理上一条，请稍后重发"
+_AUTO_COMPACTED = "🗜️ 上下文接近上限，已自动压缩。"
+_SOFT_THRESHOLD = "⚠️ 对话上下文已较长，回复 /compact 压缩，或 /new 开始新对话。"
+_COMPACT_BUSY = "⏳ 正在处理上一条消息，请稍后再试 /compact。"
+_COMPACT_NOTHING = "ℹ️ 当前没有可压缩的对话。"
 _COMPACT_ACCOUNT_CHANGED = COMPACT_ACCOUNT_CHANGED_REPLY_ZH
-_COMPACT_DONE = "已压缩上下文。"
-_COMPACT_FAILED = "警告：压缩失败，请重试。"
+_COMPACT_DONE = "🗜️ 已压缩上下文。"
+_COMPACT_FAILED = "⚠️ 压缩失败，请重试。"
 
 
 class WeixinDispatcher:
@@ -242,7 +242,7 @@ class WeixinDispatcher:
                 )
                 message = _NEW_SESSION
                 if not saved:
-                    message += "\n警告：新对话无法保存，重启后可能恢复到上一段对话。"
+                    message += "\n⚠️ 新对话无法保存，重启后可能恢复到上一段对话。"
                 await self._say(user_id, message)
                 return
             if cmd == "help":

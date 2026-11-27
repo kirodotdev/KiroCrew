@@ -6,10 +6,12 @@ the base :class:`Renderer`'s ``dispatch``) onto Discord's REST API:
 * ``on_turn_start`` -- typing indicator loop (Discord's lasts ~10s per trigger)
   plus the status ladder's first reaction on the user's own message.
 * ``on_text_chunk`` -- throttled in-place ``edit_message`` streaming, with any
-  trailing ``[OPTIONS:]`` markup held back from the visible stream.
-* ``on_thinking`` -- a ``-# Thinking:`` subtext note, only when ``discord.show_thinking``
+  trailing ``[OPTIONS:]`` markup held back from the visible stream. The bubble
+  being streamed carries a ⏹ Stop button (``x:<nonce>``); every seal and the
+  final edit replace it, and ``on_done`` retires its nonce.
+* ``on_thinking`` -- a ``-# 💭`` subtext note, only when ``discord.show_thinking``
   is on; off (the default) reasoning is never accumulated.
-* ``on_tool_call`` -- a transient ``Running {tool}…`` footer on live frames.
+* ``on_tool_call`` -- a transient ``🔧 {tool}…`` footer on live frames.
 * ``on_prompt_choice`` -- Approve/Deny buttons as a SEPARATE message (so
   streaming edits don't clobber them).
 * ``on_compaction`` -- a lightweight "compacting…" note.
@@ -26,7 +28,7 @@ off.
 Discord renders standard Markdown natively, so unlike Telegram there is no
 HTML translation pass -- the final seal sends the markdown as-is. Steer
 rotation (sealing the pre-steer segment and opening a fresh message headed by
-a "↪ steered" chip) mirrors the Telegram renderer.
+a "↪️ steered" chip) mirrors the Telegram renderer.
 
 Length splitting belongs to :func:`kiro_crew.messaging.split.split_markdown_safe`,
 the shared fence-safe splitter. This renderer owns no fence grammar: it consumes
@@ -85,11 +87,14 @@ from kiro_crew.discord.client import (
     EDIT_GONE,
     EDIT_OK,
 )
-from kiro_crew.discord.renderer_approval import DiscordApprovalDecider
+from kiro_crew.discord.renderer_approval import DiscordApprovalDecider, approval_prompt_text
 from kiro_crew.discord.renderer_components import (
     _STYLE_DANGER,
     _STYLE_SUCCESS,
     build_option_components,
+    build_stop_components,
+    register_stop_turn,
+    retire_stop_turn,
 )
 from kiro_crew.discord.renderer_text import (
     _as_subtext,
@@ -204,6 +209,7 @@ class DiscordRenderer(Renderer):
         react_message_id: str = "",
         reactions_enabled: bool = True,
         show_thinking: bool = False,
+        show_timing_footer: bool = True,
         now: Callable[[], float] | None = None,
     ) -> None:
         super().__init__(capabilities)
@@ -224,6 +230,9 @@ class DiscordRenderer(Renderer):
         # When discord.show_thinking is on, reasoning is surfaced as its own
         # subtext note. Off (the default) it is never accumulated at all.
         self._show_thinking = show_thinking
+        # discord.show_timing_footer: off, the "-# Finished in …" line is left
+        # off the final message and nothing else about the reply changes.
+        self._show_timing_footer = show_timing_footer
         self._thinking = ""
         self._thinking_posted = False
         # Read at turn end for the footer's context chip; unbound until the
@@ -254,6 +263,11 @@ class DiscordRenderer(Renderer):
         # message being edited (None -> next render sends a new one), the last
         # text pushed (skip no-op edits), and the edit throttle timestamp.
         self._stream_mid: str | None = None
+        # The turn's Stop button: the nonce its custom_id carries (minted with the
+        # first streamed bubble, retired when the turn finalizes) and the one
+        # message whose last confirmed state still shows it.
+        self._stop_nonce = ""
+        self._stop_mid: str | None = None
         self._shown = ""
         # The message the reader last saw, whole, so the next thing shown can be
         # graded against it. A rotation seals a bubble whose tail is a credential
@@ -328,7 +342,7 @@ class DiscordRenderer(Renderer):
         await self._seal_rotated_part(components=components, extract_uploads=True)
         clean_summary = _neutralize_md(summary)
         if clean_summary:
-            chip: str | None = "> ↪ " + clean_summary
+            chip: str | None = "> ↪️ " + clean_summary
         else:
             chip = self._chip_for_seal(self._seal_count)
         self._seal_count += 1
@@ -601,7 +615,7 @@ class DiscordRenderer(Renderer):
 
     async def _stream_live(self, *, force: bool = False) -> None:
         """Throttled in-place edit of the current segment. Sends the message on
-        first render. The transient ``Running {tool}…`` footer is appended ONLY here
+        first render. The transient ``🔧 {tool}…`` footer is appended ONLY here
         (live frames) — seals and the final render never carry it. ``force``
         bypasses the throttle so a tool-call event surfaces immediately."""
         if self._table_pending:
@@ -635,7 +649,7 @@ class DiscordRenderer(Renderer):
         # ``TurnDriver`` applies — and the display pass exists precisely for the
         # credential that is invisible until Discord renders the markdown away.
         body = _redact_transformed(body)
-        footer = f"-# Running {self._tool}…" if self._tool else ""
+        footer = f"-# 🔧 {self._tool}…" if self._tool else ""
         if footer:
             room = self._limit() - len(footer) - 2
             text = f"{body[:room]}\n\n{footer}".strip() if room > 0 else footer
@@ -657,9 +671,15 @@ class DiscordRenderer(Renderer):
             predecessor = self._seam_predecessor()
             graded = self._seam_safe(text)
             self._shown = graded
-            mid = await self._client.send_message(self._channel_id, graded)
+            # The Stop button rides on the bubble being streamed, and only on it:
+            # later live edits pass no components, which keeps it, and every seal
+            # or finalize edit replaces it.
+            stop = await self._stop_components()
+            mid = await self._client.send_message(self._channel_id, graded, components=stop)
             if mid is not None:
                 self._stream_mid = mid
+                if stop is not None:
+                    self._stop_mid = mid
                 # The delivered frame is the predecessor the NEXT fresh message
                 # grades against, so record ``graded`` -- not the note -- and then
                 # clear the hold. Recording the note would leave ``_sent_tail``
@@ -755,9 +775,9 @@ class DiscordRenderer(Renderer):
         """Append refusal reasons only when the answer budget permits."""
         for rejection in rejections:
             logger.info("discord: local image not uploaded (%s)", rejection.reason)
-        lines = [f"-# Warning: {rejection}" for rejection in rejections[:_MAX_REJECTION_LINES]]
+        lines = [f"-# ⚠️ {rejection}" for rejection in rejections[:_MAX_REJECTION_LINES]]
         if len(rejections) > _MAX_REJECTION_LINES:
-            lines.append(f"-# Warning: …and {len(rejections) - _MAX_REJECTION_LINES} more")
+            lines.append(f"-# ⚠️ …and {len(rejections) - _MAX_REJECTION_LINES} more")
         note = "\n".join(lines)
         if len(body) + len(note) + 2 > self._limit():
             return body
@@ -851,6 +871,45 @@ class DiscordRenderer(Renderer):
         """
         self._sent_tail = text
 
+    async def _stop_components(self) -> list[dict] | None:
+        """The Stop row for a fresh live bubble, or ``None`` when it gets none.
+
+        Only a turn that holds its session gets one: ``bind_context_source`` runs
+        once the session is acquired, so a hook auto-reply (which acquires nothing
+        and may stream beside another turn on the same key) never offers a Stop that
+        would cancel that other turn. The nonce is minted once per turn; a
+        finalized turn mints nothing.
+
+        A bubble still showing Stop is cleared before a new one gets it, so at most
+        one message carries the button: that bubble's seal edit failed and its text
+        went out as a fresh send instead.
+        """
+        if self._finalized or self._context_source is None or not self._session_key:
+            return None
+        if not self._stop_nonce:
+            # The driver streams in the task that claimed the session, so this is
+            # the task the session manager names as the turn's holder.
+            self._stop_nonce = register_stop_turn(
+                self._session_key, self._channel_id, asyncio.current_task()
+            )
+        await self._clear_stop_button()
+        return build_stop_components(self._stop_nonce)
+
+    async def _clear_stop_button(self) -> None:
+        """Best-effort: take the Stop button off the message still showing it.
+
+        Only reached for a bubble whose seal or finalize edit did not land, since a
+        landed one replaced the button. Harmless when it fails too: the nonce is
+        retired at turn end, so a press on a leftover button stops nothing.
+        """
+        mid, self._stop_mid = self._stop_mid, None
+        if mid is None:
+            return
+        try:
+            await self._client.edit_message_components(self._channel_id, mid, [])
+        except Exception:
+            logger.debug("discord: clearing a leftover Stop button failed", exc_info=True)
+
     async def _land_sealed(
         self,
         text: str,
@@ -870,14 +929,27 @@ class DiscordRenderer(Renderer):
                 # gets; without it the seal ships ungraded text and restores the
                 # credential span the fresh-send grade repaired.
                 edited = self._seam_against(self._bubble_above, text)
+                # A sealed bubble has stopped streaming, so its components are
+                # REPLACED -- the options, or ``[]`` -- never left as they were:
+                # ``None`` would keep the live Stop button, and adding a Stop row
+                # beside five option rows would have Discord refuse the whole edit.
                 edit_outcome = await self._client.edit_message_with_files_outcome(
-                    self._channel_id, self._stream_mid, edited, files, components=components
+                    self._channel_id,
+                    self._stream_mid,
+                    edited,
+                    files,
+                    components=[] if components is None else components,
                 )
                 if edit_outcome == EDIT_OK:
+                    if self._stop_mid == self._stream_mid:
+                        self._stop_mid = None
                     self._seals_landed += 1
                     self._tally_redactions(edited)
                     self._record_sent(edited)
                     return True
+                if edit_outcome == EDIT_GONE and self._stop_mid == self._stream_mid:
+                    # Deleted, so nothing is left to clear.
+                    self._stop_mid = None
                 # The edit did not land: fall through to a fresh send.
                 self._stream_mid = None
             # Any fresh send lands BELOW the message the reader currently sees --
@@ -1139,7 +1211,7 @@ class DiscordRenderer(Renderer):
                 self._buf = []
                 self._delivery_text = None
                 self._open_new_message()
-        note = _as_subtext(f"Thinking: {body}")
+        note = _as_subtext(f"💭 {body}")
         try:
             posted = await self._client.send_message(self._channel_id, note)
         except Exception:
@@ -1204,29 +1276,35 @@ class DiscordRenderer(Renderer):
                     {
                         "type": 2,
                         "style": _STYLE_SUCCESS,
-                        "label": "Approve",
+                        "label": "✅ Approve",
                         "custom_id": f"a:{rid}:{nonce}:1",
                     },
                     {
                         "type": 2,
                         "style": _STYLE_DANGER,
-                        "label": "Deny",
+                        "label": "🚫 Deny",
                         "custom_id": f"a:{rid}:{nonce}:0",
                     },
                 ],
             }
         ]
-        # The tool name is LLM-authored and Discord renders the message as
-        # markdown, so it goes through the same display-form scan as streamed text.
-        # The driver's byte-level pass sees `AKIA**…**` as broken while the rendered
-        # prompt shows it whole -- the reason _redact_transformed exists.
-        # The request's OWN title first: `_last_tool` is the last tool_call seen
-        # and is never cleared, so it names the previous tool for any permission
-        # that arrives without one of its own. Either source is LLM-authored, so
-        # the display-form scan above applies to both.
+        # The title, purpose and input are LLM-authored and Discord renders the
+        # message as markdown, so each goes through the same display-form scan as
+        # streamed text, off the loop. The driver's byte-level pass sees `AKIA**…**`
+        # as broken while the rendered prompt shows it whole -- the reason
+        # _redact_transformed exists.
+        # The request's OWN title only. No tool call id reaches this prompt, so the
+        # last tool_call seen (`_last_tool`) cannot be tied to the request and is
+        # never used: an untitled request reads `this tool` (approval_prompt_text).
         try:
-            tool = await asyncio.to_thread(
-                _redact_transformed, tool_title or self._last_tool or "this tool"
+            content = await asyncio.to_thread(
+                approval_prompt_text,
+                tool_title,
+                tool_purpose,
+                tool_input,
+                _redact_transformed,
+                _redact_all,
+                self.prompt_mcp_identity,
             )
             # A turn parked on a human is not a stalled turn: hold the watchdog until
             # the next real activity (``_note_progress``) resumes it, so waiting for
@@ -1235,7 +1313,7 @@ class DiscordRenderer(Renderer):
                 self._ladder_paused = True
                 self._ladder.pause_stall_watchdog()
             posted = await self._client.send_message(
-                self._channel_id, f"Approve `{tool}`?", components=components
+                self._channel_id, content, components=components
             )
             if not posted:
                 # This client reports a failed send by RETURNING no message id
@@ -1263,7 +1341,7 @@ class DiscordRenderer(Renderer):
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         try:
-            await self._client.send_message(self._channel_id, "Compacting context…")
+            await self._client.send_message(self._channel_id, "🗜️ Compacting context…")
         except Exception:
             logger.debug("Discord: compaction notice send failed", exc_info=True)
 
@@ -1271,6 +1349,11 @@ class DiscordRenderer(Renderer):
         if self._finalized:
             return
         self._finalized = True
+        # The turn is over, so its Stop button stops nothing from here on -- least
+        # of all the next turn on this session, which can start once the dispatcher
+        # releases it after ``close()``. Retired before the first await, so no
+        # raise or cancellation in the finalization below can skip it.
+        retire_stop_turn(self._stop_nonce)
         self._stop_typing()
         ok = stop_reason != "error"
         if self._ladder is not None:
@@ -1331,7 +1414,7 @@ class DiscordRenderer(Renderer):
             # reads as a finished reply. The bare ellipsis remains only for a
             # close the driver did not judge (a cancel); a close after an
             # exception keeps the explicit error placeholder.
-            placeholder = self.empty_turn_notice or ("…" if ok else "Error: please try again")
+            placeholder = self.empty_turn_notice or ("…" if ok else "⚠️ Error — please try again")
             if steer_summary:
                 # The chip is the USER's typed words, and this path hands them to
                 # the client directly rather than through `_seal_current`, so the
@@ -1362,12 +1445,15 @@ class DiscordRenderer(Renderer):
             # failed to send report as delivered, which is the exact
             # succeeded-with-no-reply case `delivery_failed` exists to catch.
             self._seals_attempted += 1
+            # ``[]`` without options: ``None`` would keep the live Stop button.
             landed = self._stream_mid is not None and await self._client.edit_message(
                 self._channel_id,
                 self._stream_mid,
                 placeholder,
-                components=components,
+                components=[] if components is None else components,
             )
+            if landed and self._stop_mid == self._stream_mid:
+                self._stop_mid = None
             # An edit that did not land falls through to a fresh send, as
             # `_land_sealed` does: otherwise the live "🔧 tool…" frame is the
             # turn's last word and the notice or option buttons never appear.
@@ -1409,15 +1495,22 @@ class DiscordRenderer(Renderer):
 
     async def close(self) -> None:
         """Idempotent teardown: stop the typing indicator, finalize the turn if
-        it never reached on_done, and drain the status ladder.
+        it never reached on_done, take off a Stop button no finalize edit
+        replaced, and drain the status ladder.
 
         The ladder is closed LAST and awaited: its debounce and stall timers are
         loop callbacks and its emoji edits are tasks, so a turn torn down by an
         exception would otherwise leave both running against a finished turn.
         """
         self._stop_typing()
-        if not self._finalized:
-            await self.on_done(stop_reason="error")
+        try:
+            if not self._finalized:
+                await self.on_done(stop_reason="error")
+        finally:
+            # Every finalize edit that landed replaced the Stop button; this takes
+            # it off a bubble whose edit did not, or that a silent close or a
+            # raising finalize left in place. Its nonce is already retired.
+            await self._clear_stop_button()
         ladder, self._ladder = self._ladder, None
         if ladder is not None:
             await ladder.close()
@@ -1491,6 +1584,20 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.discord.renderer_approval import (  # noqa: F401
         _APPROVAL_TIMEOUT_S,
+        _ASCII,
+        _CUT_MARKER,
+        _HIDDEN,
+        _INPUT_CHARS,
+        _LINE_CHARS,
+        _LINE_MAX,
+        _NAME_MAX,
+        _break_backtick_pairs,
+        _cut,
+        _inline,
+        _literal_scan,
+        _Scan,
+        _shown,
+        _tag_spans,
     )
     from kiro_crew.discord.renderer_components import (  # noqa: F401
         _BUTTON_LABEL_CHARS,
@@ -1501,12 +1608,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FULL_CHOICES_MAX,
         _MAX_ACTION_ROWS,
         _MAX_BUTTONS,
+        _STOP_TURNS,
+        _STOP_TURNS_LOCK,
+        _STOP_TURNS_MAX,
         _STYLE_PRIMARY,
         _STYLE_SECONDARY,
+        STOP_PREFIX,
         _choice_ref,
         _remember_full_choice,
         build_model_components,
         full_choice_text,
+        stop_turn_target,
     )
     from kiro_crew.discord.renderer_status import (  # noqa: F401
         _TYPING_REFRESH_S,

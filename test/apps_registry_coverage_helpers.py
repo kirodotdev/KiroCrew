@@ -165,7 +165,7 @@ def _fake_sandbox(monkeypatch, procs):
         spawned.append(list(argv))
         return queue.pop(0) if queue else _FakeProc()
 
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (list(cmd), None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **kwargs: (list(cmd), None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: list(cmd))
     monkeypatch.setattr(registry, "create_subprocess_limited", _spawn)
     return spawned

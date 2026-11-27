@@ -364,9 +364,10 @@ class _Child:
         resolver the caller is the event loop, and a ``Popen`` there is a loop freeze
         per empty slot.  Non-blocking: a child mid-request holds the lock and is
         skipped.  A slot is left empty only while the pool's bounded list of
-        killed-but-unexited children is full.  A spawn that raises
-        leaves the slot empty and the ``OSError`` in ``spawn_error`` for the executor
-        to report to its callers.
+        killed-but-unexited children is full.  A spawn that raises leaves the slot
+        empty and the exception in ``spawn_error`` (a non-``OSError`` wrapped in one)
+        for the executor to report to its callers.  Any exception counts: one escaping
+        here would end the reaper thread, the pool's only spawn site, for good.
         """
         if not self._lock.acquire(blocking=False):
             return False
@@ -383,10 +384,14 @@ class _Child:
                 return False
             try:
                 self.proc = self._spawn()
-            except OSError as exc:
-                # Cannot spawn here (a hardened host, a broken venv): the slot stays
-                # empty and the executor reports the failure to its callers.
-                self.spawn_error = exc
+            except Exception as exc:
+                # Cannot spawn here: the slot stays empty and the executor reports the
+                # failure.  Callers treat only an ``OSError`` as "no child can be
+                # started", so another type is wrapped to reach that same path.
+                if isinstance(exc, OSError):
+                    self.spawn_error = exc
+                else:
+                    self.spawn_error = OSError(f"{type(exc).__name__}: {exc}")
                 return False
             self.spawn_error = None
             return True
@@ -1074,10 +1079,16 @@ class SubprocessPoolExecutor(Executor):
         docstring measures (two extra GIL handoffs per answer), accepted here
         because the alternative is a caller blocked until the reaper fires and a
         wedge that is never classified as a timeout -- on the resolver that meant
-        the stall cooldown never opened on Windows.  A wedge at the deadline is
-        sampled (``None`` off Linux), the child is killed so the blocked read sees
-        EOF, and the caller returns AT the deadline: it never waits for the reader's
-        own cleanup, which runs on the reader thread when the EOF arrives.  The slot
+        the stall cooldown never opened on Windows.  The reader can deliver the
+        child's answer after the timed wait's own last check and before this handler
+        runs, which under GIL load in this process can be seconds; that answer is
+        returned, or the child's fault raised, as before the deadline -- the analogue
+        of ``_read_exactly`` reading a frame already in the pipe.  An answer still in
+        the pipe that the reader has not delivered is not seen.  Only a reader with
+        no answer is a wedge: it is sampled (``None`` off Linux), the child is killed
+        so the blocked read sees EOF, and the caller returns AT the deadline: it
+        never waits for the reader's own cleanup, which runs on the reader thread
+        when the EOF arrives.  The slot
         is reported as :class:`_ReaderLost` so ``call_op`` retires it and leases a
         fresh one, rather than handing the next caller a slot whose lock the reader
         may still hold.
@@ -1086,10 +1097,12 @@ class SubprocessPoolExecutor(Executor):
         try:
             return future.result(timeout=max(0.0, deadline - time.monotonic()))
         except FuturesTimeoutError:
-            proc = child.proc
-            sampled = proc_syscall(proc.pid) if proc is not None else None
-            child.kill_async()
-            raise _ReaderLost(proc, sampled) from None
+            if not future.done():
+                proc = child.proc
+                sampled = proc_syscall(proc.pid) if proc is not None else None
+                child.kill_async()
+                raise _ReaderLost(proc, sampled) from None
+        return future.result()
 
     def submit_op(self, op: int, payload: bytes) -> Future[bytes]:
         """Run *op* on a child; the future raises :class:`SubprocessPoolUnavailable` on fault.

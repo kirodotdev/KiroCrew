@@ -7,6 +7,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from kiro_crew.instances import run_marker
@@ -18,6 +19,28 @@ _TIMEOUT_SECS = 10  # endpoint returns immediately after starting execution
 
 #: HTTP status the run endpoint answers when the job already has a run in flight.
 ALREADY_RUNNING_STATUS = 409
+
+#: ``code`` of the run endpoint's 404 for a job that ran and was then removed.
+RAN_AND_REMOVED_CODE = "job_removed_after_run"
+_NOT_FOUND_BODY_BYTES = 4096
+
+
+def _not_found_message(job_id: str, err: urllib.error.HTTPError) -> str:
+    """The 404 line, naming the run when the gateway says the job ran and was removed."""
+    try:
+        body = json.loads(err.read(_NOT_FOUND_BODY_BYTES))
+    except (OSError, ValueError, TypeError, http.client.HTTPException):
+        body = None
+    ran_at = None
+    if isinstance(body, dict) and body.get("code") == RAN_AND_REMOVED_CODE:
+        ran_at = body.get("last_run_at")
+    if not isinstance(ran_at, (int, float)) or isinstance(ran_at, bool) or ran_at <= 0:
+        return f"Job not found: {job_id}"
+    try:
+        when = datetime.fromtimestamp(ran_at).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    except (OverflowError, OSError, ValueError):
+        return f"Job not found: {job_id}"
+    return f"Job not found: {job_id} (it already ran at {when} and was removed)"
 
 
 def trigger_cron_job(job_id: str, port: int, secret_path: Path) -> tuple[bool, str]:
@@ -103,7 +126,7 @@ def trigger_cron_job_status(
             return False, f"Error: {body.get('error', 'unknown')}", None
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            return False, f"Job not found: {job_id}", e.code
+            return False, _not_found_message(job_id, e), e.code
         reason = http_error_reason(e)
         if reason:
             return False, f"Error: HTTP {e.code}: {reason}", e.code

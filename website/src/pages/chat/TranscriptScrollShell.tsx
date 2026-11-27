@@ -22,6 +22,7 @@ import { Loader } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { afterSlide, forgetAfterSlide, holdReadingPosition, markSlideSettling, onReleaseReadingPosition, slideHeld, watchPanelSlide } from '../../utils/panelSlide'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
+import { TranscriptLiveRegion } from './TranscriptLiveRegion'
 
 /** Inherited custom property carrying the scroller's usable width in px, so a
  *  descendant that may outgrow the reading column (a top-level assistant table,
@@ -62,9 +63,13 @@ function usePaneWidthProperty(scrollerRef: React.RefObject<HTMLDivElement | null
       resting = undefined
       el.style.setProperty(PANE_WIDTH_PROPERTY, `${el.clientWidth}px`)
     }
-    publish()
-    if (typeof ResizeObserver === 'undefined') return
+    if (typeof ResizeObserver === 'undefined') { publish(); return }
+    // The first width comes from the observer's first delivery, which runs
+    // after the frame's layout: reading `clientWidth` here would force a
+    // layout of the page inside the commit that opens a session.
+    let first = true
     const observer = new ResizeObserver(() => {
+      if (first) { first = false; publish(); return }
       // While a side panel slides (panelSlide), only the final width is
       // published: each change restyles the whole transcript.
       if (slideHeld()) { clearTimeout(resting); afterSlide(publish); return }
@@ -218,6 +223,8 @@ function useSlideAnchor(scrollerRef: React.RefObject<HTMLDivElement | null>): vo
 const WIDTH_BUCKET_STEP = 16
 const WIDTH_SETTLE_MS = 200
 const bucketWidth = (px: number) => Math.round(px / WIDTH_BUCKET_STEP) * WIDTH_BUCKET_STEP
+const publishedBucket = (el: HTMLElement) =>
+  bucketWidth(Number.parseFloat(el.style.getPropertyValue(PANE_WIDTH_PROPERTY)))
 
 /** One width scope for both transcript hosts. Layout stays live during a drag,
  * but a height may enter the settled cache only when BOTH the pane and its
@@ -231,15 +238,29 @@ export function useTranscriptWidth() {
   const [scroller, bindScroller] = useState<HTMLDivElement | null>(null)
   const [widthBucket, setWidthBucket] = useState(() =>
     bucketWidth(typeof window !== 'undefined' ? window.innerWidth : 944))
+  // Set once the pane's width has been read for this element; until then the
+  // follow-up effect below has nothing to compare against.
+  const [measured, setMeasured] = useState<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
     if (!scroller) return
     const measure = () => setWidthBucket(bucketWidth(scroller.clientWidth))
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
+    if (typeof ResizeObserver === 'undefined') { measure(); setMeasured(scroller); return }
     let timer: ReturnType<typeof setTimeout> | undefined
+    // The first width comes from the observer's first delivery, after the
+    // frame's layout, for the same reason as `usePaneWidthProperty`.
+    let first = true
+    // Settle only on a width the table width has been published at, so the
+    // swap commit can measure and its reseed holds the reader. WebKit can lay
+    // out a new width before any observer callback reports and publishes it,
+    // and a held panel slide publishes at its end with no callback after it.
+    const settle = () => {
+      if (publishedBucket(scroller) === bucketWidth(scroller.clientWidth)) measure()
+      else timer = setTimeout(settle, WIDTH_SETTLE_MS)
+    }
     const observer = new ResizeObserver(() => {
+      if (first) { first = false; measure(); setMeasured(scroller); return }
       clearTimeout(timer)
-      timer = setTimeout(measure, WIDTH_SETTLE_MS)
+      timer = setTimeout(settle, WIDTH_SETTLE_MS)
     })
     observer.observe(scroller)
     return () => {
@@ -247,12 +268,20 @@ export function useTranscriptWidth() {
       clearTimeout(timer)
     }
   }, [scroller])
+  // The pane can move on between the settle and the commit (a sidebar sliding
+  // back in): move to the width the rows show before this commit paints.
+  useLayoutEffect(() => {
+    if (!scroller || measured !== scroller) return
+    const pane = bucketWidth(scroller.clientWidth)
+    if (pane !== widthBucket && publishedBucket(scroller) === pane) setWidthBucket(pane)
+  }, [scroller, widthBucket, measured])
   // No bound element means no settled scope to measure against.
   const canMeasure = useCallback(() => {
-    if (!scroller || scroller.clientWidth <= 0) return false
-    const published = Number.parseFloat(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY))
-    return bucketWidth(scroller.clientWidth) === widthBucket && bucketWidth(published) === widthBucket
-  }, [scroller, widthBucket])
+    // Before the first width read there is no settled scope yet, and asking
+    // `clientWidth` here would force the layout that read waits for.
+    if (!scroller || measured !== scroller || scroller.clientWidth <= 0) return false
+    return bucketWidth(scroller.clientWidth) === widthBucket && publishedBucket(scroller) === widthBucket
+  }, [scroller, widthBucket, measured])
   return { widthBucket, canMeasure, bindScroller }
 }
 
@@ -277,6 +306,7 @@ export default function TranscriptScrollShell({
   spinnerNearTop,
   scrollerStyle,
   headerSpacer = true,
+  announcement,
   aboveRows,
   belowRows,
   onScrollerElement,
@@ -299,6 +329,14 @@ export default function TranscriptScrollShell({
    *  its own title bar (a split pane, the side panel, an embed) turns it off;
    *  its padding travels through `scrollerStyle` instead. */
   headerSpacer?: boolean
+  /** Text for the transcript's one live region, spoken politely when it
+   *  changes. The scroller itself cannot carry `aria-live` (see the element
+   *  below), so a host announcing a settled message passes its text here.
+   *  Empty or omitted stays silent, which is what a host does while a turn is
+   *  still streaming. The host also owns RELEASING it: the text is a second
+   *  copy of the message in the DOM, so leaving it set puts the newest reply
+   *  ahead of the whole transcript in browse order. */
+  announcement?: string
   /** Page content above the rows (the earlier-messages paging bar). */
   aboveRows?: React.ReactNode
   /** Page content below the rows (footer, survey, tail spacer). */
@@ -361,9 +399,26 @@ export default function TranscriptScrollShell({
         overscrollBehavior: 'contain',
       } as React.CSSProperties}
       aria-label={i18nT('pages.chatPage.chat_messages')}
-      aria-live="polite"
+      // DELIBERATELY NOT a live region. A live region announces the subtree
+      // that changed under it, and the rows under this element are
+      // virtualized: VirtualTranscript drops every unmounted row (`if
+      // (!vi.mounted) return null`), so ordinary scrolling inserts and removes
+      // real DOM here. To a screen reader those insertions are
+      // indistinguishable from a new message, so `aria-live` on this element
+      // re-announced rows the reader had already heard every time the window
+      // moved, and re-announced a streaming row on each flush. `aria-relevant`
+      // cannot separate the two cases, because both are additions. New
+      // messages are announced by the one stable live region below, which
+      // windowing never remounts; the label survives for the focus handoff
+      // that lands on this element.
       onScroll={onScroll}
     >
+      {/* The transcript's ONLY live region. Kept outside `children` so the
+          virtualizer can never unmount and remount it — a remount would
+          re-announce text already spoken. `aria-atomic` so a host swapping one
+          settled message for the next reads as one utterance rather than a
+          diff of the two. */}
+      <TranscriptLiveRegion announcement={announcement ?? ''} />
       {/* Header spacer */}
       {headerSpacer && <div className="h-16" />}
       {aboveRows}

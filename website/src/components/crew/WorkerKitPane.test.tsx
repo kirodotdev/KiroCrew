@@ -135,7 +135,13 @@ describe('WorkerKitPane', () => {
     expect(current).toHaveTextContent('Terminal commands that only read still run, except git commands, which are refused too. Its file tools, including write, still work.')
     // The limit comes from an added agent, and the notice says how to lift it.
     expect(current).toHaveTextContent('This comes from blocked commands of an agent added to this bot')
-    expect(current).toHaveTextContent("To lift it, remove those blocked commands from this bot's config file.")
+    // ...by the control that lifts it, in the words its row shows, the config
+    // file only as a second way. This pane also shows outside the Abilities
+    // section (after an enroll), so it never says the control is above.
+    expect(current).toHaveTextContent("To lift it, press Remove on the terminal's blocked commands under Tool settings in this bot's Abilities.")
+    expect(current).toHaveTextContent("Removing them from this bot's config file also works.")
+    expect(current).not.toHaveTextContent('deniedCommands')
+    expect(current).not.toHaveTextContent('above')
     expect(current).not.toHaveTextContent('add the agent again')
     expect(within(within(current).getByTestId('worker-kit-unenforced-current-which')).getAllByRole('listitem', { hidden: true })).toHaveLength(2)
   })
@@ -347,6 +353,17 @@ describe('WorkerKitPane', () => {
     const done = await screen.findByTestId('worker-kit-done')
     expect(done).toHaveTextContent('Added 2 to Pixel.')
     expect(within(done).queryByTestId('worker-kit-open-approvals')).toBeNull()
+    expect(done).not.toHaveTextContent('restart the gateway')
+  })
+
+  it('says a gateway restart is needed when the add answers that its new server waits for one', async () => {
+    mockKit.apply.mockResolvedValue({ member: 'pixel', revision: 'r2', gateway_restart_required: true })
+    renderPane()
+    await previewAdd()
+    fireEvent.click(screen.getByTestId('worker-kit-apply'))
+    expect(await screen.findByTestId('worker-kit-done')).toHaveTextContent(
+      "Added 2 to Pixel. An MCP server this add copied reaches this bot's worker through the gateway only after you restart the gateway (Settings → About → Restart gateway).",
+    )
   })
 
   it('shows an already-present item as skipped, not added', async () => {
@@ -544,5 +561,45 @@ describe('WorkerKitPane', () => {
     await screen.findByRole('option', { name: 'release-bot' })
     fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
     expect(await screen.findByTestId('worker-kit-error')).toHaveTextContent('Only the owner can do this.')
+  })
+
+  const refusal = (detail: string) => new ApiError(409, 'template_restrictions_uncarried', JSON.stringify({
+    error: 'template_restrictions_uncarried', code: 'template_restrictions_uncarried', detail,
+  }))
+
+  it('adds an agent without a write fallbackAction the bot refuses, asking for the same on Add', async () => {
+    mockKit.preview
+      .mockRejectedValueOnce(refusal('toolsSettings.write.fallbackAction'))
+      .mockResolvedValueOnce({
+        ...PREVIEW,
+        changes: [...PREVIEW.changes, { section: 'toolsSettings', id: 'write', change: 'added' }],
+        left_out: ['toolsSettings.write.fallbackAction'],
+      })
+    renderPane()
+    await screen.findByRole('option', { name: 'release-bot' })
+    fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
+    const offer = await screen.findByTestId('worker-kit-without-fallback')
+    expect(screen.getByTestId('worker-kit-add-without-fallback')).toHaveTextContent('Add without auto-run writes')
+    expect(offer).toHaveTextContent('Writes outside its allowed folders will ask first, unless this bot\'s approval mode skips asking.')
+    expect(offer).toHaveTextContent('Or set toolsSettings.write.fallbackAction to deny in the agent\'s file')
+    expect(screen.getByTestId('worker-kit-retry')).toHaveTextContent('Try again after editing')
+    fireEvent.click(screen.getByTestId('worker-kit-add-without-fallback'))
+    await screen.findByTestId('worker-kit-changes')
+    expect(mockKit.preview).toHaveBeenLastCalledWith('pixel', { template: 'release-bot', without_write_fallback: true })
+    expect(screen.getByTestId('worker-kit-left-out')).toHaveTextContent('outside its allowed folders')
+    expect(screen.getAllByTestId('worker-kit-change-name').map(n => n.textContent)).toContain('write (without auto-run writes)')
+    fireEvent.click(screen.getByTestId('worker-kit-apply'))
+    await waitFor(() => expect(mockKit.apply).toHaveBeenLastCalledWith('pixel', {
+      template: 'release-bot', revision: 'rev-1', without_write_fallback: true,
+    }))
+  })
+
+  it('offers no add-without for a refusal about any other setting', async () => {
+    mockKit.preview.mockRejectedValueOnce(refusal('toolsSettings.web_fetch.trusted'))
+    renderPane()
+    await screen.findByRole('option', { name: 'release-bot' })
+    fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
+    expect(await screen.findByTestId('worker-kit-retry')).toHaveTextContent(/^Try again$/)
+    expect(screen.queryByTestId('worker-kit-without-fallback')).toBeNull()
   })
 })

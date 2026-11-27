@@ -63,7 +63,7 @@ export function PublicationMark({ a, onOpen }: { a: Artifact; onOpen: (slug: str
       <Share2
         id={badgeId}
         size={12}
-        className={a.publication.last_error ? 'text-danger shrink-0' : a.publication.notice ? 'text-warn shrink-0' : 'text-ok shrink-0'}
+        className={a.publication.expired ? 'text-muted shrink-0' : a.publication.last_error ? 'text-danger shrink-0' : a.publication.notice ? 'text-warn shrink-0' : 'text-ok shrink-0'}
         aria-label={publicationBadgeLabel(a.publication, providerName)}
       >
         <title>{publicationBadgeLabel(a.publication, providerName)}</title>
@@ -74,9 +74,9 @@ export function PublicationMark({ a, onOpen }: { a: Artifact; onOpen: (slug: str
 
 /** A publication's last sync failure, inline under the card's name. Lifted
  *  above the open button so the hand-off is reachable; its clicks stay here
- *  instead of opening the card. */
+ *  instead of opening the card. None once the copy expired: the badge says so. */
 export function PublicationSyncError({ a }: { a: Artifact }) {
-  if (!a.publication?.last_error) return null
+  if (!a.publication?.last_error || a.publication.expired) return null
   return (
     <span role="presentation" className="relative z-10 block mt-1" onClick={(e) => e.stopPropagation()}>
       {/* The hand-off is on: a library card holds no unsaved input. */}

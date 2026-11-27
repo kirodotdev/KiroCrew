@@ -1,9 +1,10 @@
 """How a native Slack turn answers a tool call and a permission request.
 
 ``_screen_tool_call`` warns and audits a call the provider is already running.
-``_answer_permission_request`` is the enforcing ladder: the hook verdict, the
-``auto_approve_subagent_spawn`` rung (``_should_auto_approve_spawn``), the approval
-mode, per-session Trust and owner YOLO, then the interactive prompt
+``_answer_permission_request`` is the enforcing ladder: the hook verdict's deny, the
+agent spec's own PreToolUse hooks (``channel_spec_hooks``), the hook verdict's
+auto-approve, the ``auto_approve_subagent_spawn`` rung (``_should_auto_approve_spawn``),
+the approval mode, per-session Trust and owner YOLO, then the interactive prompt
 (``_request_approval``) whose click ``handle_interaction`` answers. Every
 ``approve_tool`` and ``reject_tool`` call of the native path is in this module, with
 the steer that tells the model a host refusal was not the person's
@@ -54,11 +55,14 @@ if TYPE_CHECKING:
         _safe_update,
         _SlackTurn,
         add_trusted_session,
+        capabilities_of,
         event_is_spawn_run,
         hook_gate_busy,
         hook_gate_kwargs,
         is_allowed_user,
         is_session_trusted,
+        is_shared_listed,
+        is_shared_user,
         is_yolo_mode,
         logger,
         name_grant,
@@ -66,6 +70,8 @@ if TYPE_CHECKING:
         redact_exfiltration_urls,
         run_in_tool_gate_pool,
         sel,
+        spec_pre_tool_refusal,
+        spec_turn,
         steer_refusal_notice,
         tool_approval_timeout_secs,
         trust_permitted,
@@ -146,7 +152,7 @@ async def _screen_tool_call(turn: _SlackTurn, event: LLMEvent) -> None:
             _flagged_title, _ = redact_exfiltration_urls(event.title)
             _flagged_title, _ = redact_credentials(_flagged_title)
             answer.accumulated += (
-                f"\nWarning: _Tool `{_flagged_title}` flagged by security "
+                f"\n⚠️ _Tool `{_flagged_title}` flagged by security "
                 f"hooks (already executing; cannot be stopped here)._"
             )
             sel().log_tool_invocation(
@@ -156,6 +162,7 @@ async def _screen_tool_call(turn: _SlackTurn, event: LLMEvent) -> None:
                 tool_kind=event.tool_kind,
                 outcome="flagged_unenforceable",
                 error="hook_deny",
+                metadata={"rule_id": tool_result.tier} if tool_result.tier else None,
             )
             return
 
@@ -175,9 +182,10 @@ async def _answer_permission_request(
     """Answer one permission request: True when the person rejected it.
 
     ``_run_turn``'s ``EVENT_PERMISSION_REQUEST`` branch, the enforcing gate, in its
-    order: the hook verdict (an auto-approve by name, or a deny steered and rejected),
-    the ``auto_approve_subagent_spawn`` rung, the approval mode, Trust and YOLO, then
-    the interactive prompt. A rejected prompt ends the stream (``True``).
+    order: a refusal steered and rejected (the hook verdict's deny, then the agent
+    spec's own PreToolUse hooks where Crew runs them), the hook verdict's auto-approve
+    by name, the ``auto_approve_subagent_spawn`` rung, the approval mode, Trust and
+    YOLO, then the interactive prompt. A rejected prompt ends the stream (``True``).
     """
     slack = turn.slack
     channel = turn.channel
@@ -188,14 +196,20 @@ async def _answer_permission_request(
     _agent = turn._agent
     answer = turn.answer
     task = turn.task
-    from kiro_crew import mate_held_rules
+    from kiro_crew import mate_held_rules, web_ask_rule
 
-    # A moved Bot's limit its worker could not carry exactly (``mate_held_rules``):
-    # no rung below approves a call it covers on its own; it reaches the prompt.
-    _held = await asyncio.to_thread(
-        mate_held_rules.held_for, event, session_key=session_key, agent=_agent or ""
-    )
-    # Check tool hooks for auto-approve
+    # A moved Bot's limit its worker could not carry exactly (``mate_held_rules``),
+    # or an organisation's ``ask`` on a KAS web call (``web_ask_rule``): no rung
+    # below approves a call it covers on its own; it reaches the prompt.
+    _held = list(
+        await asyncio.to_thread(
+            mate_held_rules.held_for, event, session_key=session_key, agent=_agent or ""
+        )
+    ) + web_ask_rule.held_phrases(event)
+    # The security gate's verdict first, then the agent spec's own PreToolUse hooks
+    # where Crew runs them (``channel_spec_hooks``): a refusal from either outranks
+    # every approval below, the gate's own auto-approve included.
+    tool_result = None
     if context_builder:
         tool_result = await run_in_tool_gate_pool(
             context_builder.hooks.on_tool_call,
@@ -205,90 +219,101 @@ async def _answer_permission_request(
             agent=_agent or "",
             **hook_gate_kwargs(event),
         )
-        if tool_result.action == TOOL_AUTO_APPROVE and not _held:
-            # The hook granted this by NAME (its `auto_approve_tools`
-            # globs, or the read-only allowlist). Honour it only
-            # while each program name in the command still resolves
-            # to the program it appears to name; a shadowed,
-            # agent-tree or unidentified resolution DOWNGRADES to
-            # the remaining rungs below (spawn hook, approval mode,
-            # trust/YOLO, the interactive buttons) — never a hard
-            # block.
-            _ng_refusal = await name_grant.refusal_for_event(event)
-            if _ng_refusal is None:
-                approval_sent = await client.approve_tool(event.request_id)
-                if approval_sent is False:
-                    _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        source="slack",
-                        tool_name=event.title,
-                        tool_kind=event.tool_kind,
-                        outcome=_outcome,
-                        request_id=event.request_id,
-                        **({"metadata": _meta} if _meta else {}),
-                    )
-                    return False
-                Stats().inc_tool_auto_approved()
+    _deny_reason: str | None = None
+    _deny_error = "hook_deny"
+    _deny_meta: dict[str, str] | None = None
+    if tool_result is not None and tool_result.action == TOOL_DENY:
+        _deny_reason = tool_result.reason
+        _deny_meta = {"rule_id": tool_result.tier} if tool_result.tier else None
+    elif capabilities_of(client).crew_fires_spec_hooks:
+        _spec = await spec_turn(client, turn.spec_agent or "")
+        _deny_reason = await spec_pre_tool_refusal(_spec, client, event, session_key)
+        _deny_error = "spec_hook"
+    if _deny_reason is not None:
+        # Audit FIRST, then steer, then reject: the steer and
+        # the reject both await the ACP pipe, and a backend that
+        # stops reading stdin cancels this coroutine at the
+        # turn deadline -- an SEL row sequenced after them
+        # never runs (the chat runner's audit-first rule).
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name=event.title,
+            tool_kind=event.tool_kind,
+            outcome="denied",
+            request_id=event.request_id,
+            error=_deny_error,
+            metadata=_deny_meta,
+        )
+        # A hook deny is a HOST verdict on the call, not the
+        # person's: tell the model so in-band before the reject
+        # hands it kiro-cli's "User denied tool execution".
+        await _steer_host_deny(
+            client,
+            event,
+            _deny_reason,
+            cause=DENY_CAUSE_POLICY,
+            audited=True,
+        )
+        await client.reject_tool(event.request_id)
+        Stats().inc_tool_denial()
+        # event.title is LLM-authored — redact before posting.
+        _blocked_title, _ = redact_exfiltration_urls(event.title)
+        _blocked_title, _ = redact_credentials(_blocked_title)
+        answer.accumulated += f"\n🚫 _Tool `{_blocked_title}` blocked by hooks._"
+        return False
+    if tool_result is not None and tool_result.action == TOOL_AUTO_APPROVE and not _held:
+        # The hook granted this by NAME (its `auto_approve_tools`
+        # globs, or the read-only allowlist). Honour it only
+        # while each program name in the command still resolves
+        # to the program it appears to name; a shadowed,
+        # agent-tree or unidentified resolution DOWNGRADES to
+        # the remaining rungs below (spawn hook, approval mode,
+        # trust/YOLO, the interactive buttons) — never a hard
+        # block.
+        _ng_refusal = await name_grant.refusal_for_event(event)
+        if _ng_refusal is None:
+            approval_sent = await client.approve_tool(event.request_id)
+            if approval_sent is False:
+                _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
                 sel().log_tool_invocation(
                     session_key=session_key,
                     source="slack",
                     tool_name=event.title,
                     tool_kind=event.tool_kind,
-                    outcome="auto_approved",
+                    outcome=_outcome,
                     request_id=event.request_id,
-                    metadata={"reason": "hook_auto_approve"},
+                    **({"metadata": _meta} if _meta else {}),
                 )
                 return False
-            # Once per session for a platform-scope refusal; the audit row
-            # below is still written for every call.
-            if name_grant.should_log_decline(session_key, _ng_refusal):
-                logger.warning(
-                    "declining a hook auto-approve: %s; the request "
-                    "falls through to the Slack handler's normal "
-                    "approval ladder",
-                    _ng_refusal.log_text,
-                )
-            name_grant.log_decline(
-                source="slack",
-                session_key=session_key,
-                event=event,
-                refusal=_ng_refusal,
-                tier="hook_auto_approve",
-                sel_factory=sel,
-            )
-        if tool_result.action == TOOL_DENY:
-            # Audit FIRST, then steer, then reject: the steer and
-            # the reject both await the ACP pipe, and a backend that
-            # stops reading stdin cancels this coroutine at the
-            # turn deadline -- an SEL row sequenced after them
-            # never runs (the chat runner's audit-first rule).
+            Stats().inc_tool_auto_approved()
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
                 tool_name=event.title,
                 tool_kind=event.tool_kind,
-                outcome="denied",
+                outcome="auto_approved",
                 request_id=event.request_id,
-                error="hook_deny",
+                metadata={"reason": "hook_auto_approve"},
             )
-            # A hook deny is a HOST verdict on the call, not the
-            # person's: tell the model so in-band before the reject
-            # hands it kiro-cli's "User denied tool execution".
-            await _steer_host_deny(
-                client,
-                event,
-                tool_result.reason,
-                cause=DENY_CAUSE_POLICY,
-                audited=True,
-            )
-            await client.reject_tool(event.request_id)
-            Stats().inc_tool_denial()
-            # event.title is LLM-authored — redact before posting.
-            _blocked_title, _ = redact_exfiltration_urls(event.title)
-            _blocked_title, _ = redact_credentials(_blocked_title)
-            answer.accumulated += f"\n_Tool `{_blocked_title}` blocked by hooks._"
             return False
+        # Once per session for a platform-scope refusal; the audit row
+        # below is still written for every call.
+        if name_grant.should_log_decline(session_key, _ng_refusal):
+            logger.warning(
+                "declining a hook auto-approve: %s; the request "
+                "falls through to the Slack handler's normal "
+                "approval ladder",
+                _ng_refusal.log_text,
+            )
+        name_grant.log_decline(
+            source="slack",
+            session_key=session_key,
+            event=event,
+            refusal=_ng_refusal,
+            tier="hook_auto_approve",
+            sel_factory=sel,
+        )
 
     # auto_approve_subagent_spawn → auto-approve spawn_run tool calls
     if not _held and _should_auto_approve_spawn(context_builder, event):
@@ -343,9 +368,11 @@ async def _answer_permission_request(
         )
         return False
 
-    # Trust mode (per-session) or YOLO mode (owner-only global) → auto-approve
+    # Trust mode (per-session) or YOLO mode (owner-only global) → auto-approve.
+    # Session Trust is the owner's grant: a shared user's turn still asks.
     _yolo_now = is_yolo_mode()
-    if not _held and (_yolo_now or is_session_trusted(session_key)):
+    _session_trusted = not is_shared_listed(turn.user_id) and is_session_trusted(session_key)
+    if not _held and (_yolo_now or _session_trusted):
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:
             _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
@@ -397,6 +424,7 @@ async def _answer_permission_request(
         event,
         session_key,
         is_dm=channel.startswith("D"),
+        requester=turn.user_id,
     )
     task.resume()
     sel().log_tool_invocation(
@@ -523,8 +551,13 @@ async def _request_approval(
     event: LLMEvent,
     session_key: str = "",
     is_dm: bool = True,
+    requester: str = "",
 ) -> str:
-    """Post approval buttons, wait for click, return 'approved' or 'rejected'."""
+    """Post approval buttons, wait for click, return 'approved' or 'rejected'.
+
+    *requester* is the Slack user whose turn asked, the one person besides the owner
+    whose click may answer the prompt.
+    """
     blocks = _build_approval_blocks(event, is_dm=is_dm)
     # If posting the approval prompt fails, the ACP permission request would
     # otherwise be left unanswered — the subprocess blocks forever and every
@@ -539,7 +572,7 @@ async def _request_approval(
         raise
 
     key = f"{channel}:{approval_ts}"
-    pending = _PendingApproval(provider, event.request_id, session_key)
+    pending = _PendingApproval(provider, event.request_id, session_key, requester=requester)
     _pending_approvals[key] = pending
     approval_timeout = (
         _APPROVAL_TIMEOUT if _APPROVAL_TIMEOUT is not None else tool_approval_timeout_secs()
@@ -614,10 +647,10 @@ async def _request_approval(
     try:
         await slack.delete_message(channel, approval_ts)
     except Exception:
-        status = "Approved" if outcome == _OUTCOME_APPROVED else "Rejected"
+        status = "✅ Approved" if outcome == _OUTCOME_APPROVED else "🚫 Rejected"
         title_safe, _ = redact_exfiltration_urls(event.title)
         title_safe, _ = redact_credentials(title_safe)
-        await _safe_update(slack, channel, approval_ts, f"*{title_safe}* — {status}")
+        await _safe_update(slack, channel, approval_ts, f"🔐 *{title_safe}* — {status}")
 
     return outcome
 
@@ -638,12 +671,14 @@ async def handle_interaction(
     - trust_tool: auto-approve all tools for this session (thread)
     - reject_tool: reject this tool call
 
-    Security: rejects non-owner clicks. Trust requires DM channel
+    Security: only the owner, or a shared user on the prompt their own turn posted,
+    may answer, Trust included; a shared user's Trust needs that live prompt, so a
+    late Trust click stays the owner's. Trust requires DM channel
     (verified via conversations.info by the gateway caller).
     """
 
     # Deny-by-default: reject unless positively confirmed as allowed
-    if not user_id or not is_allowed_user(user_id):
+    if not user_id or not (is_allowed_user(user_id) or is_shared_user(user_id)):
         logger.warning(
             "Rejecting interactive action from unauthorized user %s (action=%s)", user_id, action_id
         )
@@ -658,6 +693,95 @@ async def handle_interaction(
         return None
 
     key = f"{channel}:{msg_ts}"
+
+    # A code channel a shared user opened: they answer its own session's prompts
+    # there, posted in that channel, like the owner. Trust there stays the owner's:
+    # the opener is never a code channel prompt's requester (below).
+    if is_shared_listed(user_id) and action_id != _ACTION_TRUST:
+        from kiro_crew.slack.code_channels.shared_refusal import opener_answers_prompt
+
+        _cc_entry = _linked_approvals.get(key)
+        # The slot that asked and the session its turn ran on: both must be the
+        # channel's own, so a slot relinked to another session answers nothing here.
+        _cc_ids = (
+            (_cc_entry.slot_key or _cc_entry.session_key, _cc_entry.session_key)
+            if _cc_entry
+            else ("", "")
+        )
+        if (
+            _cc_entry is not None
+            and await asyncio.to_thread(opener_answers_prompt, channel, *_cc_ids, user_id)
+            # Asked again with nothing awaited before the answer (the store is loaded
+            # now): a removal, rebind or answer during the read above refuses.
+            and _linked_approvals.get(key) is _cc_entry
+            and opener_answers_prompt(channel, *_cc_ids, user_id)
+        ):
+            return _resolve_linked_click(_cc_entry, key, action_id, user_id, sessions)
+
+    # A shared user (slack.shared_access) answers only the prompt their own turn
+    # posted, Trust included: Trust there widens the same session the owner's would.
+    # Checked before the claim, so a refused click leaves the prompt pending for the
+    # person it belongs to. A linked dashboard slot's prompt names its requester as a
+    # native one does (empty: owner only), and only while its slot's running turn
+    # still names that person. An answered prompt names nobody, so a shared user's
+    # late Trust click is refused here.
+    if is_shared_listed(user_id):
+        from kiro_crew.slack.code_channels.shared_refusal import shared_user_refused_for_slot
+
+        if key in _linked_approvals:
+            # Loads the code-channel store off the loop; everything below is read
+            # after this, with nothing awaited before the answer.
+            await asyncio.to_thread(shared_user_refused_for_slot, "", thread_ts)
+        _linked = _linked_approvals.get(key)
+        _own: Any = _linked or _pending_approvals.get(key)
+        _asker = str(getattr(_own, "requester", "") or "")
+        _cc_slots: tuple[str, ...] = ()
+        if _linked is not None:
+            from kiro_crew.slack.turn_requester import live_card_requester
+
+            _asker = live_card_requester(_linked)
+            # A code channel's or Conductor thread's session is reached as a
+            # requester only by its opener, in its own channel: a session relinked
+            # to another thread keeps its requester, so the card it posts there is
+            # not theirs.
+            _cc_slots = tuple(s for s in (_linked.slot_key, _linked.session_key) if s)
+        # An answer can settle the future before the card's registry entry is removed.
+        # Check after the lookup await, with no await before a Trust grant.
+        _future = getattr(_own, "future", None)
+        if _future is None or _future.done():
+            _asker = ""
+        # Asked again here, with nothing awaited before the answer: the code
+        # channel check above awaits, and a removal during it answers nothing.
+        _refusal = (
+            "shared access ended"
+            if not is_shared_user(user_id)
+            else (
+                "code channel is owner-only"
+                # The opener of the Conductor thread or code channel this card is
+                # in still reaches its own session (requester rule below). Trust
+                # there stays the owner's: no sender, so no opener is admitted.
+                if any(
+                    shared_user_refused_for_slot(
+                        s,
+                        thread_ts,
+                        sender="" if action_id == _ACTION_TRUST else user_id,
+                        channel=channel,
+                    )
+                    for s in _cc_slots
+                )
+                else ("not the requester" if not _asker or _asker != user_id else "")
+            )
+        )
+        if _refusal:
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.interactive.approval",
+                outcome="denied",
+                source="slack",
+                resources=action_id,
+                error=_refusal,
+            )
+            return None
 
     # Linked-dashboard-slot approval: _on_permission_prompt (chat_turn/permission_prompt.py)
     # owns the ACP answer (it is parked on the slot's approval future). Resolve ONLY that
@@ -713,8 +837,9 @@ async def handle_interaction(
         if action_id in (_ACTION_APPROVE, _ACTION_TRUST):
             # Set trust state BEFORE approving (so subsequent tools auto-approve)
             if action_id == _ACTION_TRUST:
-                if not is_allowed_user(user_id):
-                    logger.error("Rejecting trust escalation from non-allowed user %s", user_id)
+                # A shared user reaches here only as this prompt's requester (above).
+                if not (is_allowed_user(user_id) or is_shared_user(user_id)):
+                    logger.error("Rejecting trust escalation from non-owner %s", user_id)
                     sel().log_api_access(
                         caller=user_id,
                         operation="slack.interactive.trust_denied",
@@ -731,7 +856,18 @@ async def handle_interaction(
                     action_id = _ACTION_APPROVE
                 elif pending.session_key:
                     add_trusted_session(pending.session_key, sessions)
-                    logger.info("Trust mode ON for session %s", pending.session_key)
+                    logger.info(
+                        "Trust mode ON for session %s (granted by %s)",
+                        pending.session_key,
+                        user_id,
+                    )
+                    sel().log_api_access(
+                        caller=user_id,
+                        operation="slack.interactive.trust",
+                        outcome="allowed",
+                        source="slack",
+                        resources=pending.session_key,
+                    )
                 else:
                     logger.warning(
                         "No session_key on pending approval %s; approving without trust", key

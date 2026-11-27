@@ -2,7 +2,7 @@
  * Screenshot + computed-token probe for the theme-pack palette gap-fill.
  *
  * `variables.json` requires only `--bg`, `--text` and `--accent`, so a valid
- * pack may declare three of the 56 allowlisted tokens. Everything it omits
+ * pack may declare three of the 61 allowlisted tokens. Everything it omits
  * inherits from `index.css`'s bare `:root`, and that selector carries the DARK
  * palette with no light counterpart — so a pack with a light `--bg` used to
  * paint dark-mode secondary text onto its own light surfaces.

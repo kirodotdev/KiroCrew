@@ -42,8 +42,8 @@ The `crew-log` root is established EAGERLY, and that is what makes the mask non-
 
 | Owner | Holds |
 |---|---|
-| `crew_log/store_paths.py` | the data-home root of each kind and its checked form, a unit's directory and file, segment naming and ordering (`segment_paths`, `oldest_segment`, `newest_segment`), the lock beside the log, `_mkdir_private`, `now_ms`, and the store's one logger with `log_exception_text` |
-| `crew_log/store_segment_reads.py` | reading one segment: the bounded tail window (`_scan_tail`, `_TAIL_WINDOW`), entry iteration, the header line, `read_head`, and `_anchor_exists` |
+| `crew_log/store_paths.py` | the data-home root of each kind and its checked form, a unit's directory and file, segment naming and ordering (`segment_paths`, `oldest_segment`, `newest_segment`), the lock beside the log, the data home resolved once per fold pass (`resolved_home_for_pass`), `_mkdir_private`, `now_ms`, and the store's one logger with `log_exception_text` |
+| `crew_log/store_segment_reads.py` | reading one segment: the bounded tail window (`_scan_tail`, `_TAIL_WINDOW`), entry iteration, the digest of the records a walk framed that the savepoint write re-checks (`ConsumedSpan`), the header line, `read_head`, and `_anchor_exists` |
 | `crew_log/store_cuts.py` | the `.cuts` seqlock (`read_cuts`, `_open_cut`, `_close_cut`) and its durable writes |
 | `crew_log/store_segment_writes.py` | one durable append (`_append_line`, `_append_lines`), its rollback, and the one allowed truncation (`_truncate`) |
 | `crew_log/store_tail_repair.py` | the closers `open(repair=True)` appends to an interrupted tail (`_close_interrupted_tail`, `_open_tail`, `_closer_entries`) and the orphan chunk group it drops |
@@ -137,7 +137,7 @@ Two of these families carry a contract with REQUIRED fields. **Required here is 
 **`crew/report`** -- the answer to a dispatch.
 
 ```json
-{"type":"crew/report","seq":388,"time":1789000000000,"src":"crew:qa","thread":120,
+{"type":"crew/report","seq":388,"time":1789000000000,"src":"gateway","thread":120,
  "ref":{"unit":"session","id":"s-7f3a","from":40,"to":96},
  "data":{"item":"pr-4127","status":"done","credits":0.21,"summary":"merged"}}
 ```
@@ -145,7 +145,7 @@ Two of these families carry a contract with REQUIRED fields. **Required here is 
 | Field | Required | Meaning |
 |---|---|---|
 | `data.item` | yes | The item being reported on. |
-| `data.status` | yes | One of `done`, `blocked`, `failed`, `progress`, `question`. The last is the work board's, and the enum is derived from that writer's own tuple so a status it gains cannot become a refused entry; [crew-types.md](../../reference/crew-log/crew-types.md#crewreport) states why `question` is not folded into `blocked`. |
+| `data.status` | yes | One of `done`, `blocked`, `failed`, `progress`, `question`, `reply`. The last two are the work board's, and the enum is derived from that writer's own tuple so a status it gains cannot become a refused entry; [crew-types.md](../../reference/crew-log/crew-types.md#crewreport) states why `question` is not folded into `blocked`. |
 | `data.credits` | no | Credits the child spent. Absent is not zero. |
 | `data.summary` | no | One sentence. |
 | `ref` | yes | A segment of the child's crew log: the evidence. |
@@ -161,7 +161,7 @@ That choice has a real cost and this is where it is written down: an unthreaded 
 
 The refusal that remains is the evidence one: a report with no citable unit is not written at all, because a claim nothing can check is not a record.
 
-Both of these are one type each, not one per writer. The child's identity is `src`, so two children reporting on one item write the same `type` into one file and are told apart by who signed them.
+Both of these are one type each, not one per writer. The writer signs a report `gateway` and the reporting session is the unit its `ref` cites, so two children reporting on one item write the same `type` into one file and are told apart by that citation.
 
 `ref` on a report is **the one cross-kind bridge a writer takes**: from a crew's log into a session's segment, one level down, in the direction a conductor reads. The pair is symmetric with `subagent/spawned` (section 5): the child's header `thread` points up at the entry that caused it, and that entry's `ref` points down into the child's record.
 
@@ -214,10 +214,12 @@ its types render.
 ### Session, turn
 | Type | `data` | Emitter |
 |---|---|---|
-| `session/opened` | header echo + `resumed`; `model_requested` when a tier resolved one; `previous {sid}` on a crew log created while its slot already had one; `parent {slot, sid?}` on a session another session made through `session_create` | yes |
+| `session/opened` | header echo + `resumed`; `model_requested` when a tier resolved one; `previous {sid}` on a crew log created while its slot already had one; `parent {slot, sid?}` on a session another session made through `session_create`; `class {memory, app?, channel?, workspace?}` | yes |
 | `session/closed` | `{reason}` | yes |
 | `session/adopted` | `{parent, previous_parent?}` — the session was adopted under a new parent, replacing the `session/opened` parent edge | yes |
 | `session/released` | `{previous_parent?}` — the session was released from its parent, retracting the edge | yes |
+| `session/class` | `{memory, app?, channel?, workspace?}` — the session's class changed after its log was opened; written only when it differs from the last one recorded | yes |
+| `session/unrestored` | `{listed, restored, kept}` — the session's tab was listed as open at startup and did not come back | yes |
 | `session/spawned` | `{child {slot}}` — written on the CREATOR's log when `session_create` or `session_fork` commits, so the creating edge is durable before the child's first turn opens its own log | yes |
 | `turn/started` | `{turn, actor, depth, message_seq?, attempt?}` | yes |
 | `turn/refused` | `{turn, actor, reason, depth}` | yes |
@@ -246,12 +248,12 @@ opposite handling. The pair `(turn, attempt)` is therefore the identity a fold g
 
 | Type | `data` | Emitter |
 |---|---|---|
-| `message/received` | `{turn, role, text, source, attachments:[ref]}` | yes |
+| `message/received` | `{turn, role, source, text?, attachments?:[ref], attachments_omitted?, chunks?:[seq], chars?}` | yes |
 | `message/sent` | `{turn, step?, text?, interrupted?, chunks?:[seq], chars?}` — usage rides on `turn/completed` | yes |
-| `message/chunk` | `{turn, step, delta}` — an oversize body's slice | overflow only |
+| `message/chunk` | `{turn, step?, delta}` — an oversize body's slice | overflow only |
 | `message/queued` | `{source, bytes, queued_seq}` — arrived while a turn ran | yes |
 | `request/configured` | `{turn, model, provider, context_window, system?, system_bytes?}` — written on change only | yes |
-| `context/composed` | `{turn, step?, sources:[{kind, chars, tokens}], chars, tokens, tokens_estimated, phase?}` — `phase` is `session_start` or `per_turn` | yes |
+| `context/composed` | `{turn, step?, sources:[{kind, chars, tokens}], chars, tokens, tokens_estimated, phase?, omitted?}` — `phase` is `session_start` or `per_turn` | yes |
 | `context/measured` | `{turn, turn_id?, breakdown?: {schema, categories, model_calls?, total_chars?, compacted?, history?}, ttft?: {total_ms, setup_ms?, model_ms?}}` -- the agent engine's own measurement of the turn, in characters | yes |
 | `step/started` | `{turn, step}` — one model call | yes |
 | `step/completed` | `{turn, step, ms}` | yes |
@@ -265,8 +267,8 @@ every block put in front of the model by its `src/kiro_crew/context_blocks.py` l
 
 | Type | `data` | Emitter |
 |---|---|---|
-| `tool/called` | `{turn, step, call_id, name, server, kind, args_hash?, args_bytes?}` | yes |
-| `tool/completed` | `{turn, step, call_id, status, is_error?, elapsed_ms, result_hash?, result_bytes?}` | yes |
+| `tool/called` | `{turn, step?, call_id, call_index?, name, server, kind, args_hash?, args_bytes?}` | yes |
+| `tool/completed` | `{turn, step?, call_id, call_index?, name, server, status, is_error?, elapsed_ms?, result_hash?, result_bytes?}` | yes |
 | `approval/requested` | `{turn, approval_id, tool?, reason?}` | yes |
 | `approval/decided` | `{turn, approval_id, decision, by?, cause?}` — `decision: "unknown"` is written only by the interrupted-tail repair | yes |
 | `approval/bridged` | `{turn?, approval_id, transport, outcome, reason?, channel?, actor?, owner?}` — one per action a chat app took through the notification bridge, refused ones included; never replaces `approval/decided` | yes |
@@ -291,7 +293,7 @@ and naming a guess is worse than naming nobody.
 | Type | `data` | Emitter |
 |---|---|---|
 | `model/selected` | `{turn?, model, source}` | yes |
-| `compaction/applied` | `{turn, pct_before, pct_after, freed_pct}` | yes |
+| `compaction/applied` | `{pct_before, pct_after, freed_pct}` | yes |
 | `plan/updated` | `{turn, items:[{id, text, state: done \| open}], total?}` — the session's own task list | yes |
 
 ### Ledger
@@ -361,11 +363,11 @@ reader pass them cleanly anyway; they are declared like every other fact.
 | Type | `data` | Emitter |
 |---|---|---|
 | `background/completed` | `{kind: title \| memory_consolidation \| summary \| dynamic_card, model?, provider?, tokens?, credits?, ms?}` | yes |
-| `subagent/spawned` | `{turn?, agent_id, agent?, model?, task?, scope:{memory, lessons, project}}` — no `ref` yet, see below | yes |
+| `subagent/spawned` | `{turn?, attempt?, agent_id, agent?, model?, task?, scope?:{memory, lessons, project}}` — no `ref` yet, see below | yes |
 | `subagent/steered` | `{agent_id, mode: interrupt \| follow_up}` | yes |
 | `subagent/dismissed` | `{agent_id}` — the user cleared that child's card; neither an opener nor a closer | yes |
-| `subagent/completed` | `{agent_id, ms?, credits?}` — no `tokens`, see below | yes |
-| `subagent/failed` | `{agent_id, reason?, outcome: failed \| stopped \| unknown, ms?, credits?}` — `unknown` is written only by the interrupted-tail repair | yes |
+| `subagent/completed` | `{agent_id, ms?, credits?, child_sid?}` — no `tokens`, see below | yes |
+| `subagent/failed` | `{agent_id, reason?, outcome: failed \| stopped \| unknown, ms?, credits?, child_sid?}` — `unknown` is written only by the interrupted-tail repair | yes |
 
 These are the families a single-agent runtime never needs and a gateway does: every token spent on a
 session's behalf, whether a person asked for it or not, is a fact in that session's log attributed to

@@ -64,7 +64,7 @@ async def deliver_spawn_approval(
     fails.
 
     The wait is the SAME deny-by-default one a tool prompt uses
-    (:class:`DiscordApprovalDecider`, ``APPROVAL_TIMEOUT_S``): the press
+    (:class:`DiscordApprovalDecider`, ``agent.tool_approval_timeout_secs``): the press
     resolves through the ``on_interaction`` ``a:`` branch exactly as a tool
     approval does, so a spawn id (``spawn:<agent_id>``) cannot collide with an
     opaque tool id in a registry keyed by ``session_key:request_id``.
@@ -133,13 +133,13 @@ async def deliver_spawn_approval(
                 {
                     "type": 2,
                     "style": _STYLE_SUCCESS,
-                    "label": "Approve",
+                    "label": "✅ Approve",
                     "custom_id": f"a:{rid}:{nonce}:1",
                 },
                 {
                     "type": 2,
                     "style": _STYLE_DANGER,
-                    "label": "Deny",
+                    "label": "🚫 Deny",
                     "custom_id": f"a:{rid}:{nonce}:0",
                 },
             ],
@@ -174,7 +174,7 @@ async def deliver_spawn_approval(
     try:
         posted = await client.send_message(
             channel_id,
-            f"Approve sub-agent spawn?\n```\n{detail}\n```",
+            f"🔐 Approve sub-agent spawn?\n```\n{detail}\n```",
             components=components,
         )
     except Exception:

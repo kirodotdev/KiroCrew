@@ -215,7 +215,7 @@ def test_the_tab_shows_the_tool_step_and_current_step_while_the_turn_runs(harnes
     # message, before the reply exists anywhere.
     assert not seen["disk_assistant"], "probe ran after the reply; it proves nothing"
     tools = _tool_rows(seen["window"])
-    assert [r["content"] for r in tools] == ["🔧 Running: ls -la src"]
+    assert [r["content"] for r in tools] == ["Tool: Running: ls -la src"]
     assert tools[0]["cls"] == "msg msg-tool"
     assert tools[0]["meta"]["tool_call_id"] == TCID
     assert tools[0]["meta"]["purpose"] == "List the source files"
@@ -263,7 +263,7 @@ def test_the_final_refresh_lands_the_reply_without_a_second_step(
     turn = [(r["role"], r["content"]) for r in slot.messages[2:]]
     assert turn == [
         ("user", "what files are there?"),
-        ("tool", "🔧 Running: ls -la src"),
+        ("tool", "Tool: Running: ls -la src"),
         ("assistant", "Let me check the files. There are two files."),
     ]
     disk = [(r["role"], r["content"]) for r in h.log.read_messages(SESSION_KEY)[2:]]
@@ -292,7 +292,7 @@ def test_the_next_sessions_provenance_block_cites_no_tool_step(harness: Any) -> 
     assert steps and steps[0].get("source_thread"), "the step must carry provenance"
     cited = [p["snippet"] for p in h.log.recent_with_provenance(SESSION_KEY)]
     assert cited == ["what files are there?", "Let me check the files. There are two files."]
-    assert not [c for c in cited if c.startswith("🔧")], cited
+    assert not [c for c in cited if c.startswith(("🔧", "Tool:"))], cited
 
 
 def test_a_step_pull_leaves_the_full_pass_its_watermark(harness: Any) -> None:
@@ -497,7 +497,7 @@ def test_a_step_still_queued_at_the_reply_is_dropped_never_written_below_it(
     release = threading.Event()
 
     def slow_append(key: str, role: str, content: str, *a: Any, **k: Any) -> Any:
-        if content == "🔧 Running: first":
+        if content == "Tool: Running: first":
             entered.set()
             release.wait(5)
         return real_append(key, role, content, *a, **k)
@@ -534,7 +534,7 @@ def test_a_step_still_queued_at_the_reply_is_dropped_never_written_below_it(
     asyncio.run(go())
 
     tail = [(r["role"], r["content"]) for r in h.log.read_messages(SESSION_KEY)[2:]]
-    assert tail == [("tool", "🔧 Running: first"), ("assistant", "the reply")]
+    assert tail == [("tool", "Tool: Running: first"), ("assistant", "the reply")]
 
 
 def test_a_step_waiting_on_the_lock_when_abandoned_writes_nothing(

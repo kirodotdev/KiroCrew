@@ -10,7 +10,7 @@ size; that module re-exports every public name here and owns the tables read.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from kiro_crew.acp.kas_hook_mcp import (
@@ -19,28 +19,6 @@ from kiro_crew.acp.kas_hook_mcp import (
     _hook_mcp_resources,
     _names_mcp_tools,
     auto_approved_mcp_servers,
-)
-from kiro_crew.acp.kas_permissions import (
-    _BUILTIN_GATEABLE_CAPABILITIES,
-    _GLOB_METACHARACTERS,
-    _HOOK_CAPABILITIES_BY_TOOL,
-    _MCP_CAPABILITY,
-    _MCP_PREFIX,
-    CAPABILITY_BY_TOOL,
-    CREW_ANSWERED_HOOK_HELD_KEY,
-    HELD_MCP_PREFIX,
-    HOOK_BUILTIN_MATCHER,
-    HOOK_GATEABLE_CAPABILITIES,
-    HOOK_GATED_MCP_PREFIX,
-    HOOK_MCP_TAG,
-    KAS_TOOL_IDS_BY_KIRO_TOOL,
-    KAS_TOOL_MATCH_VOCABULARY,
-    KIRO_TOOL_ALIASES,
-    SPEC_HOOK_TOOL_TAGS,
-    UNPARSEABLE_SHELL_GUARD,
-    WITHHELD_FROM_AUTO_APPROVE,
-    _AuditDecision,
-    _chunked_rules,
 )
 
 # The projection's permission trail is read under this name.
@@ -63,6 +41,9 @@ def hook_gated_capabilities(
     (:data:`HOOK_GATEABLE_CAPABILITIES`): no allow rule reaches them from here, but
     a saved session answer can still decide their calls without a request.
 
+    * A matcher stands for the alternatives the gate reads it as
+      (``hooks._hook_matcher_alternatives``), each read on its own as below and
+      the coverage their union.
     * An empty matcher, or ``*``, covers every tool.
     * ``@builtin`` covers every built-in capability and no MCP; ``@builtin/<glob>``
       covers the built-ins its glob names, read as a plain glob is below but with
@@ -93,8 +74,7 @@ def hook_gated_capabilities(
       name for a built-in tool.
     """
     covered: set[str] = set()
-    for raw in matchers:
-        matcher = raw.strip() if isinstance(raw, str) else ""
+    for matcher in _alternatives(matchers):
         if not matcher or matcher == "*":
             return set(HOOK_GATEABLE_CAPABILITIES)
         lowered = matcher.lower()
@@ -129,6 +109,19 @@ def hook_gated_capabilities(
     return covered
 
 
+def _alternatives(matchers: Iterable[str]) -> Iterator[str]:
+    """Each of *matchers*' alternatives as the gate reads them; a blank matcher is one entry."""
+    # Deferred: this module imports nothing of Crew's, and the hook store's is heavy.
+    from kiro_crew.hooks import _hook_matcher_alternatives
+
+    for raw in matchers:
+        matcher = raw.strip() if isinstance(raw, str) else ""
+        if not matcher:
+            yield ""
+        else:
+            yield from _hook_matcher_alternatives(matcher)
+
+
 def hook_gated_auto_approved(covered: Iterable[str], approved: Iterable[str]) -> set[str]:
     """The entries of *covered* (:func:`hook_gated_capabilities`) that *approved*
     (:func:`auto_approved_capabilities`) still auto-approves.
@@ -154,17 +147,6 @@ def hook_gated_auto_approved(covered: Iterable[str], approved: Iterable[str]) ->
         elif entry in granted:
             out.add(entry)
     return out
-
-
-#: Every tool, tag or capability name this module spells: a matcher naming one of
-#: them names a tool Crew knows, whether or not it is ever auto-approved.
-_SPELLED_TOOL_NAMES: frozenset[str] = (
-    frozenset(CAPABILITY_BY_TOOL)
-    | frozenset(HOOK_GATEABLE_CAPABILITIES)
-    | KAS_TOOL_MATCH_VOCABULARY
-    | WITHHELD_FROM_AUTO_APPROVE
-    | frozenset(SPEC_HOOK_TOOL_TAGS)
-)
 
 
 def _capabilities_named(name: str) -> set[str]:
@@ -403,3 +385,39 @@ def _hook_mcp_server(matcher: str, servers: Iterable[str] | None) -> str | None:
         return None
     matches = [server for server in servers if server.lower() == part.lower()]
     return matches[0] if len(matches) == 1 else None
+
+
+# Imported last: ``kas_permissions`` imports this module's public names on its own
+# last lines, so whichever of the two is imported first finds the other's names bound.
+from kiro_crew.acp.kas_permissions import (  # noqa: E402
+    _BUILTIN_GATEABLE_CAPABILITIES,
+    _GLOB_METACHARACTERS,
+    _HOOK_CAPABILITIES_BY_TOOL,
+    _MCP_CAPABILITY,
+    _MCP_PREFIX,
+    CAPABILITY_BY_TOOL,
+    CREW_ANSWERED_HOOK_HELD_KEY,
+    HELD_MCP_PREFIX,
+    HOOK_BUILTIN_MATCHER,
+    HOOK_GATEABLE_CAPABILITIES,
+    HOOK_GATED_MCP_PREFIX,
+    HOOK_MCP_TAG,
+    KAS_TOOL_IDS_BY_KIRO_TOOL,
+    KAS_TOOL_MATCH_VOCABULARY,
+    KIRO_TOOL_ALIASES,
+    SPEC_HOOK_TOOL_TAGS,
+    UNPARSEABLE_SHELL_GUARD,
+    WITHHELD_FROM_AUTO_APPROVE,
+    _AuditDecision,
+    _chunked_rules,
+)
+
+#: Every tool, tag or capability name this module spells: a matcher naming one of
+#: them names a tool Crew knows, whether or not it is ever auto-approved.
+_SPELLED_TOOL_NAMES: frozenset[str] = (
+    frozenset(CAPABILITY_BY_TOOL)
+    | frozenset(HOOK_GATEABLE_CAPABILITIES)
+    | KAS_TOOL_MATCH_VOCABULARY
+    | WITHHELD_FROM_AUTO_APPROVE
+    | frozenset(SPEC_HOOK_TOOL_TAGS)
+)

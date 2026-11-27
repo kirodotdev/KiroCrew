@@ -12,7 +12,7 @@ import { LIQUID_GLASS_STORAGE_KEY, liquidGlassSeeded, markLiquidGlassSeeded } fr
 import { LookPreview } from './LookPreview'
 import ErrorNotice from './ErrorNotice'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
-import { api } from '../api/client'
+import { api, type KasBundleStatus } from '../api/client'
 import { capRoleOther, clampRoleOther } from '../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../lib/profileOptions'
 import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
@@ -20,10 +20,11 @@ import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import { i18nT } from '../i18n/t'
 import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { RadioChipGroup, radioChip } from './RadioChipGroup'
+import { builtInEngineOn } from './FirstRunSignInHold'
 /**
  * First-run onboarding flow (5 steps) — the Customize chapter plus the feature
- * tour. It is the LAST of the three first-run chapters: Import setup runs first,
- * then the mandatory Privacy chapter (`PrivacyChapter`), then this.
+ * tour. It is the LAST of the two first-run chapters: Import setup runs first,
+ * then this.
  *   1. Pick your look   — centered modal, reuses the real theme picker.
  *   2. About you        — centered modal: role + technical comfort. Persisted
  *                         to dashboard.user_role / dashboard.user_technical_level
@@ -225,9 +226,7 @@ export default function OnboardingFlow({
   initialOpen: boolean
   onComplete: () => void
   // Abandoning the tour early — "Skip all", a popover's "Skip", or Escape. Kept
-  // SEPARATE from onComplete because a skip must still pass through the mandatory
-  // Privacy chapter if that has not happened yet, while finishing the tour with
-  // "Done" cannot possibly need to (Privacy precedes this chapter). Falls back to
+  // apart from onComplete so a host can tell the two exits apart. Falls back to
   // onComplete when the host does not distinguish the two.
   onSkipAll?: () => void
 }) {
@@ -243,6 +242,18 @@ export default function OnboardingFlow({
   } = useTheme()
   const [open, setOpen] = useState(initialOpen)
   const [step, setStep] = useState(() => (initialOpen ? resumedStep() : 1))
+  // The gateway's word, the one the chat's sign-in prompt reads, read only for the
+  // tour's last card: "your agent is ready" is untrue while it says a new chat
+  // would fail for lack of a Kiro sign-in.
+  const kasBundle = useQuery<KasBundleStatus>({
+    queryKey: ['kas-bundle'],
+    queryFn: () => api.kasBundleStatus(),
+    enabled: POPS[step]?.navId === 'chat',
+    retry: false,
+    // Stale at once, so reaching the card refetches past an answer cached earlier.
+    staleTime: 0,
+  })
+  const kiroSignInNeeded = kasBundle.data?.chat_needs_sign_in === true
   const [coords, setCoords] = useState<{ left: number; top: number } | null>(null)
   // The focus trap queries the dialog element. Inside a persistent shell host
   // the dialog is host-owned, so use its ref; standalone we own it locally.
@@ -381,8 +392,8 @@ export default function OnboardingFlow({
     }
   }, [initialOpen])
 
-  // Once the user is onboarded by any path (this flow's finish, the Privacy
-  // chapter's "Skip all", or the server saying so on this or another machine),
+  // Once the user is onboarded by any path (this flow's finish, Import setup's
+  // "Skip all", or the server saying so on this or another machine),
   // the first run is over: a saved step must not resume a later first run.
   useEffect(() => {
     if (onboarded) safeRemoveItem(TOUR_STEP_KEY)
@@ -415,8 +426,8 @@ export default function OnboardingFlow({
   // informed dismissal, never a trap. Succeeding or no-op saves close in one
   // press (the await is a local loopback call, imperceptible).
   //
-  // `skipped` routes the exit: an abandoned tour goes to onSkipAll (which may
-  // still owe the user the Privacy chapter), a finished one to onComplete.
+  // `skipped` routes the exit: an abandoned tour goes to onSkipAll, a finished
+  // one to onComplete.
   const finish = useCallback(async (skipped: boolean) => {
     if (!skipDiscardArmed.current) {
       // Freeze inputs for this await too (same race as Next's save): the
@@ -549,8 +560,8 @@ export default function OnboardingFlow({
     // `savingProfile` IS part of the key: every step-2 control is disabled
     // during the save, so `getFocusable()` is empty and the browser drops focus
     // to <body>. Without re-seating focus when the freeze lifts, the failed-save
-    // path (modal stays open with an error) would leave the Tab trap's
-    // first/last comparisons unmatched and Tab would escape the dialog.
+    // path (modal stays open with an error) would leave focus on <body>,
+    // outside the dialog with no visible ring, until the next Tab re-enters it.
     const focusKey = `${step}:${shellHost?.sectionSlot ? 1 : 0}:${savingProfile ? 1 : 0}`
     if (initialFocusKeyRef.current !== focusKey) {
       initialFocusKeyRef.current = focusKey
@@ -569,8 +580,14 @@ export default function OnboardingFlow({
       if (items.length === 0) return
       const first = items[0]
       const last = items[items.length - 1]
-      const wrapsBackward = e.shiftKey && document.activeElement === first
-      const wrapsForward = !e.shiftKey && document.activeElement === last
+      // Focus outside the dialog (the chat composer behind the scrim) re-enters
+      // it on Tab, unless it sits in another modal, such as a theme pack's
+      // consent dialog, whose own trap owns the key.
+      const active = document.activeElement
+      const outside = !node.contains(active)
+      if (outside && active?.closest('[aria-modal="true"]')) return
+      const wrapsBackward = e.shiftKey && (outside || active === first)
+      const wrapsForward = !e.shiftKey && (outside || active === last)
       // A mid-dialog Tab is the browser's to move, so it is also not the
       // trap's to claim — claiming it would consume legitimate navigation
       // inside the post-composition latch window.
@@ -832,7 +849,7 @@ export default function OnboardingFlow({
         {profileSaveError && (
           <ErrorNotice
             className="mt-3 text-[12.5px]"
-            message={i18nT('components.onboardingFlow.couldn_t_save_your_answers_press_next_to_retry_o')}
+            message={i18nT('components.onboardingFlow.couldn_t_save_your_answers_press_next_to_retry_o').replace(/\s+/g, ' ')}
             testId="onboarding-profile-save-error"
           />
         )}
@@ -856,7 +873,15 @@ export default function OnboardingFlow({
           <GhostWithArm />
         </div>
         <h3 className="text-[18px] font-semibold text-text-strong leading-tight">{i18nT(POP_TITLE_KEY[pop.navId])}</h3>
-        <p className="text-[13px] text-muted mt-2.5 leading-relaxed">{i18nT(POP_BODY_KEY[pop.navId])}</p>
+        <p className="text-[13px] text-muted mt-2.5 leading-relaxed">
+          {pop.navId === 'chat' && kiroSignInNeeded
+            // With the built-in engine on, the chat shows one sign-in strip above
+            // the message box; with it off, the sign-in lives in Settings.
+            ? (kasBundle.data && builtInEngineOn(kasBundle.data)
+              ? i18nT('components.onboardingFlow.pop_chat_body_almost_ready')
+              : i18nT('components.onboardingFlow.pop_chat_body_sign_in_first'))
+            : i18nT(POP_BODY_KEY[pop.navId])}
+        </p>
         <div className="flex items-center mt-[18px]">
           <div className="flex items-center gap-1.5">
             {[0, 1, 2].map(i => (

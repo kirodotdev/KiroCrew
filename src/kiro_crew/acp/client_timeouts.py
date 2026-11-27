@@ -50,6 +50,11 @@ _INIT_TIMEOUT = 240.0  # 4 min — MCP servers can be slow to initialize
 # and ``initialize`` keeps at least the reserve after a slow admission.
 _SCOPE_ADMISSION_RESERVE = 30.0
 _SCOPE_ADMISSION_TIMEOUT = _INIT_TIMEOUT - _SCOPE_ADMISSION_RESERVE
+# How long an ``AcpProcessDied`` during ``initialize`` whose child is not reaped yet
+# (a write that met the closed pipe) waits for the reap before reading it as a death
+# during the start (the runtime's failed-start reap wait,
+# ``AcpRuntime._FAILED_START_REAP_WAIT``).
+_INIT_EXIT_REAP_SECS = 1.0
 # set_mode/set_model: fire-and-forget.  kiro-cli accepts these commands
 # but usually never sends a JSON-RPC response — MCP servers load
 # asynchronously.  Any late responses land in _buffer and are harmlessly

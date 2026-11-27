@@ -109,6 +109,7 @@ const NOTICE_FAMILIES = {
   agent_switch_blocked_channel: { role: 'notice', card: 'notice', tone: 'info' },
   channel_message_not_run: { role: 'notice', card: 'notice', tone: 'info' },
   member_rebind_kept_agent: { role: 'notice', card: 'notice', tone: 'info' },
+  member_harness_elsewhere: { role: 'notice', card: 'notice', tone: 'info' },
   agent_no_tools: { role: 'notice', card: 'notice', tone: 'info' },
   harness_mode_changed: { role: 'notice', card: 'notice', tone: 'info' },
   harness_task_completed: { role: 'notice', card: 'notice', tone: 'info' },
@@ -118,6 +119,7 @@ const NOTICE_FAMILIES = {
   crew_name_undispatchable: { role: 'error', card: 'error' },
   code_channel_worktree_not_ready: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
+  cron_run_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
   queued_message_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
   send_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
@@ -125,6 +127,8 @@ const NOTICE_FAMILIES = {
   eager_spawn_stopped: { role: 'error', card: 'error' },
   turn_failed_before_start: { role: 'error', card: 'error' },
   local_command_failed_before_start: { role: 'error', card: 'error' },
+  permission_auto_rejected_stranded: { role: 'notice', card: 'notice', tone: 'blocked' },
+  permission_auto_rejected_no_security_context: { role: 'notice', card: 'notice', tone: 'blocked' },
   turn_timeout: { role: 'error', card: 'error' },
   turn_timeout_native_pending: { role: 'error', card: 'error' },
   background_turn_abandoned: { role: 'error', card: 'error' },
@@ -135,6 +139,7 @@ const NOTICE_FAMILIES = {
   kas_signed_out: { role: 'error', card: 'error' },
   windows_spawn_blocked: { role: 'error', card: 'error' },
   tools_not_ready: { role: 'error', card: 'error' },
+  resource_wake_budget_paused: { role: 'notice', card: 'notice', tone: 'info' },
 } as const satisfies Record<string, Family>
 
 export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
@@ -207,6 +212,7 @@ const COPY_KEY = {
   agent_switch_blocked_channel: 'pages.chat.gatewayNotice.agent_switch_blocked_channel',
   channel_message_not_run: 'pages.chat.gatewayNotice.channel_message_not_run',
   member_rebind_kept_agent: 'pages.chat.gatewayNotice.member_rebind_kept_agent',
+  member_harness_elsewhere: 'pages.chat.gatewayNotice.member_harness_elsewhere',
   agent_no_tools: 'pages.chat.gatewayNotice.agent_no_tools',
   harness_mode_changed: 'pages.chat.gatewayNotice.harness_mode_changed',
   harness_task_completed: 'pages.chat.gatewayNotice.harness_task_completed',
@@ -216,6 +222,7 @@ const COPY_KEY = {
   crew_name_undispatchable: 'pages.chat.gatewayNotice.crew_name_undispatchable',
   code_channel_worktree_not_ready: 'pages.chat.gatewayNotice.code_channel_worktree_not_ready',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
+  cron_run_read_only: 'pages.chat.gatewayNotice.cron_run_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
   queued_message_dropped: 'pages.chat.gatewayNotice.queued_message_dropped',
   send_dropped: 'pages.chat.gatewayNotice.send_dropped',
@@ -223,6 +230,8 @@ const COPY_KEY = {
   eager_spawn_stopped: 'pages.chat.gatewayNotice.eager_spawn_stopped',
   turn_failed_before_start: 'pages.chat.gatewayNotice.turn_failed_before_start',
   local_command_failed_before_start: 'pages.chat.gatewayNotice.local_command_failed_before_start',
+  permission_auto_rejected_stranded: 'pages.chat.gatewayNotice.permission_auto_rejected_stranded',
+  permission_auto_rejected_no_security_context: 'pages.chat.gatewayNotice.permission_auto_rejected_no_security_context',
   turn_timeout: 'pages.chat.gatewayNotice.turn_timeout',
   turn_timeout_native_pending: 'pages.chat.gatewayNotice.turn_timeout_native_pending',
   background_turn_abandoned: 'pages.chat.gatewayNotice.background_turn_abandoned',
@@ -233,6 +242,7 @@ const COPY_KEY = {
   kas_signed_out: 'pages.chat.gatewayNotice.kas_signed_out',
   windows_spawn_blocked: 'pages.chat.gatewayNotice.windows_spawn_blocked',
   tools_not_ready: 'pages.chat.gatewayNotice.tools_not_ready',
+  resource_wake_budget_paused: 'pages.chat.gatewayNotice.resource_wake_budget_paused',
 } as const satisfies Record<GatewayNoticeToken, string>
 
 /** Copy for a row whose args carry a recovery ordinal (`n` of `max`). */
@@ -258,8 +268,8 @@ const INTERRUPTED_KEY = 'pages.chat.transientNotice.interrupted'
 
 /**
  * Settled copy for a pending token whose cause is not the connection: a
- * throttle is the provider's answer, so its card never reads "Connection
- * restored" or "Connection interrupted".
+ * throttle is an answer, not a dropped connection, so its card never reads
+ * "Connection restored" or "Connection interrupted".
  */
 const SETTLED_KEY = {
   transient_throttle_retrying: {
@@ -566,6 +576,10 @@ const LEGACY: readonly Legacy[] = [
     token: 'remote_crew_read_only',
   },
   {
+    re: /^This cron run's transcript can be read here but not replied to\. Start a new chat to follow up on it\.$/u,
+    token: 'cron_run_read_only',
+  },
+  {
     re: /^⚠\uFE0F? Archiving this tab failed after its running turn was cancelled\. The tab was kept, but that turn did not finish -- re-send to continue\.$/u,
     token: 'archive_failed_turn_cancelled',
   },
@@ -598,6 +612,14 @@ const LEGACY: readonly Legacy[] = [
     token: 'local_command_failed_before_start',
   },
   {
+    re: /^permission auto-rejected \(stranded between turns\): (?<tool>[\s\S]*)$/u,
+    token: 'permission_auto_rejected_stranded',
+  },
+  {
+    re: /^permission auto-rejected \(missing security context\): (?<tool>[\s\S]*)$/u,
+    token: 'permission_auto_rejected_no_security_context',
+  },
+  {
     re: /^⏱\uFE0F? This turn hit the (?<limit>.+?) limit and was stopped\. Work already written to disk is still there — nothing was rolled back\. Send a message to continue from where it stopped\.(?<hint>.*)$/u,
     token: 'turn_timeout',
   },
@@ -625,7 +647,33 @@ const LEGACY: readonly Legacy[] = [
     re: /^capability_tool_limits_unsupported: This (?:crew member's|Bot's) saved capabilities turn off single tools on an MCP server\. The backend its chats run on \((?<setting>[^)]*)\) cannot turn off single tools, so they would be on\. On the member's Capabilities page, turn the whole server off or turn those tools back on, then start a new chat\.$/u,
     token: 'capability_tool_limits_unsupported',
   },
+  {
+    re: /^Resource subscription (?<subscription>\S+) on (?<server>.+?) reached its (?<limit>\d+) wakes for (?<day>\S+) \(UTC\) and is paused until the next UTC day\. Updates meanwhile are folded into one wake after the pause\.$/u,
+    token: 'resource_wake_budget_paused',
+  },
 ]
+
+/**
+ * The lead a notice may open with. Older gateways baked a status glyph into the
+ * text (U+2139 info, U+26A0 warning, U+26D4 no-entry, U+274C cross, U+27F3
+ * retry, U+1F4CC pin, U+23F1 stopwatch); current ones write a word (`Note:`,
+ * `Warning:`, `Blocked:`, `Error:`, `Stopped:`) or nothing. The table above is
+ * written in the glyph form, so the table and the content are both matched with
+ * the lead removed, and one row reads every spelling: saved history keeps the
+ * glyph forever.
+ */
+const NOTICE_LEAD_RE =
+  /^(?:(?:\u2139|\u26A0|\u26D4|\u274C|\u27F3|\u{1F4CC}|\u23F1)\uFE0F*\s*|(?:Note|Warning|Blocked|Error|Stopped):\s*)/u
+const SOURCE_LEAD_RE = /^\^(?:\u2139|\u26A0|\u26D4|\u274C|\u27F3|\u{1F4CC}|\u23F1)(?:\\uFE0F\?)? /u
+const LEGACY_LEADLESS: readonly Legacy[] = LEGACY.map(entry => ({
+  ...entry,
+  re: new RegExp(entry.re.source.replace(SOURCE_LEAD_RE, '^'), entry.re.flags),
+}))
+
+/** `content` without its lead glyph or lead word, if it has one. */
+export function stripNoticeLead(content: string): string {
+  return content.replace(NOTICE_LEAD_RE, '')
+}
 
 /**
  * The KAS signed-out sentences a row carries without their token: rows stored
@@ -660,8 +708,9 @@ function isToken(value: unknown): value is GatewayNoticeToken {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(NOTICE_FAMILIES, value)
 }
 
-function legacyShape(content: string, m?: ChatMessage): Shape | null {
-  for (const entry of LEGACY) {
+function legacyShape(raw: string, m?: ChatMessage): Shape | null {
+  const content = stripNoticeLead(raw)
+  for (const entry of LEGACY_LEADLESS) {
     const match = entry.re.exec(content)
     if (!match) continue
     const token = entry.pendingWithRetryKind && m && isRetryNotice(m) ? entry.pendingWithRetryKind : entry.token
@@ -723,8 +772,8 @@ function copyOf({ token, args }: Shape): string {
 
 /**
  * *message* led by the route the KAS engine took, in plain words, when the row
- * names one: every KAS prompt names the real route
- * (docs/decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md).
+ * names one, where the row is shown as text. The sign-in prompts with a button
+ * name no route (the recorded decision on signed-out sign-in prompts).
  */
 function withKasRoute(args: Args, message: string): string {
   const route =
@@ -808,14 +857,25 @@ function outcomeAfter(messages: readonly ChatMessage[], index: number): Outcome 
 }
 
 /**
- * Copy for a KAS signed-out row drawn with the sign-in button under it, or null
- * for any other row. The row's own copy names the Settings path, for a surface
- * with no button; next to the button, the button is the way.
+ * True for a KAS signed-out row: the one whose fix is Kiro Crew's own sign-in.
+ * Not the launcher form, whose fix is kiro-cli's login (no token is stamped).
  */
-export function kasSignedOutBesideButton(m: ChatMessage): string | null {
+export function isKasSignedOut(m: ChatMessage): boolean {
+  return shapeOf(m)?.token === 'kas_signed_out'
+}
+
+/**
+ * What makes two red notice rows the SAME failure, so a run of them draws as
+ * one card (`errorRuns.ts`): the token and the values its copy reads. `null`
+ * for any other row, and for one whose `kind` or `code` gives it a card of its
+ * own (a sign-in, a usage limit, a turn limit), whose actions belong to it.
+ */
+export function errorNoticeRunKey(m: ChatMessage): string | null {
+  const meta = m.meta as { kind?: unknown; code?: unknown } | undefined
+  if (m.role !== 'error' || m.kind || meta?.kind || meta?.code) return null
   const shape = shapeOf(m)
-  if (shape?.token !== 'kas_signed_out') return null
-  return withKasRoute(shape.args, i18nT('pages.chat.gatewayNotice.kas_signed_out_sign_in_below'))
+  if (!shape || NOTICE_FAMILIES[shape.token].card !== 'error') return null
+  return `${shape.token} ${JSON.stringify(shape.args)}`
 }
 
 /**

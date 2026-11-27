@@ -140,6 +140,12 @@ def probe_host(
     )
 
 
+def configured_choice(cfg: Mapping[str, Any] | None) -> str:
+    """``browser.choice`` from the ``browser`` section; absent or unknown is ``auto``."""
+    choice = str((cfg or {}).get("choice") or CHOICE_AUTO)
+    return choice if choice in CHOICES else CHOICE_AUTO
+
+
 def choose_browser(
     cfg: Mapping[str, Any] | None,
     platform: str | None = None,
@@ -156,9 +162,7 @@ def choose_browser(
     """
     key = platform_key(platform)
     facts = facts if facts is not None else probe_host(platform)
-    choice = str((cfg or {}).get("choice") or CHOICE_AUTO)
-    if choice not in CHOICES:
-        choice = CHOICE_AUTO
+    choice = configured_choice(cfg)
     kiro_headless = BrowserChoice("kiro_chromium", kiro_chromium, True, kiro_profile)
     if choice == CHOICE_HEADLESS:
         return kiro_headless

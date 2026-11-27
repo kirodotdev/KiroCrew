@@ -1,4 +1,4 @@
-import type { PullRequestStatus, PullRequestStatusBatch } from '../types'
+import type { ChatSlot, PullRequestStatus, PullRequestStatusBatch } from '../types'
 
 /**
  * Payload of the `source_status` websocket event: a single pull request whose
@@ -92,4 +92,37 @@ export function applyStatusDelta(
     // leaving it listed would hold the panel on its fast follow-up interval.
     refreshing: batch.refreshing?.filter(url => url !== delta.url),
   }
+}
+
+type SourceLink = NonNullable<ChatSlot['source_links']>[number]
+
+/**
+ * Merge a delta into a fetched source-links list (the sidebar's expanded "+N"
+ * list), returning the same array when no link changed. The Redux slots payload
+ * only holds the budgeted chips, so a delta patched there never reaches the
+ * links behind "+N"; this is how those chips pick up a status the gateway read
+ * after the expand. A delta is the gateway's whole chip status, so one that
+ * carries no `ci` means the rollup is empty and clears the chip's `ci` and
+ * `ciPending`, as `applyStatusDelta` does for the strip. The lifecycle and merge
+ * fields keep their value when absent, since the gateway keeps a settled answer
+ * for them. A delta with no usable field (version skew) is ignored.
+ */
+export function applyStatusDeltaToLinks(
+  links: SourceLink[] | undefined,
+  delta: SourceStatusDelta,
+): SourceLink[] | undefined {
+  if (!delta.state && !delta.ci && !delta.mergeable && !delta.mergeStateStatus) return links
+  if (!links?.some(link => link.url === delta.url)) return links
+  return links.map(link => {
+    if (link.url !== delta.url) return link
+    const next: SourceLink = { ...link }
+    if (delta.state) next.state = delta.state
+    if (delta.mergeable) next.mergeable = delta.mergeable
+    if (delta.mergeStateStatus) next.mergeStateStatus = delta.mergeStateStatus
+    if (delta.ci) next.ci = delta.ci
+    else delete next.ci
+    if (delta.ciPending) next.ciPending = delta.ciPending
+    else delete next.ciPending
+    return next
+  })
 }

@@ -35,6 +35,12 @@ if TYPE_CHECKING:
 
 async def api_teams_config_get(request: web.Request) -> web.Response:
     """GET /api/teams/config — read Teams channel status + config summary."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "teams.config.read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_MICROSOFT_APP_ID,
         CRED_MICROSOFT_APP_PASSWORD,
@@ -136,6 +142,7 @@ async def _validate_teams_app_credentials(
     """
     import aiohttp  # noqa: F811
 
+    from kiro_crew.http_proxy import resolve_proxy  # noqa: F811
     from kiro_crew.teams.client import (  # noqa: F811
         _TOKEN_SCOPE,
         _TOKEN_URL_TMPL,
@@ -147,10 +154,12 @@ async def _validate_teams_app_credentials(
     # teams.client so the pre-store check and the running channel cannot disagree
     # about which authority a blank tenant means.
     authority = tenant_id.strip() or TEAMS_MULTITENANT_AUTHORITY
+    url = _TOKEN_URL_TMPL.format(tenant=authority)
     timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
-            _TOKEN_URL_TMPL.format(tenant=authority),
+            url,
+            proxy=resolve_proxy(url),
             data={
                 "grant_type": "client_credentials",
                 "client_id": app_id,

@@ -4,7 +4,7 @@
  * Serves the isolated capture entry (capture/conductor-mode-needs-input.tsx) with a
  * programmatic Vite dev server on loopback and photographs the REAL
  * ConductorModeCrewPanel at side-panel width: the Status view, then the same view after
- * pressing one offered answer, which fills the stand-in composer. The reads are
+ * pressing one answer button, which fills the stand-in composer. The reads are
  * stubbed inside the entry, so no gateway / kiro-cli / token is involved.
  *
  * Usage (from website/): node capture/shoot-conductor-mode-needs-input.mjs [outDir]
@@ -43,21 +43,16 @@ for (const theme of ['dark', 'light']) {
   const frame = page.locator('[data-testid="capture-frame"]')
   await frame.screenshot({ path: `${OUT}/${PREFIX}-${theme}.png` })
   console.log('wrote', `${OUT}/${PREFIX}-${theme}.png`)
-  const answers = page.locator('[data-testid="conductor-mode-person-ask-answers"]')
-  if (theme === 'dark' && await answers.count()) {
-    await answers.click()
-    await page.getByRole('menuitem', { name: 'Oolong', exact: true }).waitFor()
-    await page.waitForTimeout(300)
-    await page.screenshot({ path: `${OUT}/${PREFIX}-menu.png`, clip: await frame.boundingBox() })
-    console.log('wrote', `${OUT}/${PREFIX}-menu.png`)
-    await page.getByRole('menuitem', { name: 'Oolong', exact: true }).click()
+  const option = page.locator('[data-testid="conductor-mode-person-ask-option"]').first()
+  if (theme === 'dark' && await option.count()) {
+    await option.click()
     await page.waitForTimeout(300)
     await frame.screenshot({ path: `${OUT}/${PREFIX}-pressed.png` })
     console.log('wrote', `${OUT}/${PREFIX}-pressed.png`)
   }
 }
 
-// A crew member on screen: the row offers to open the main chat instead of buttons.
+// A crew member on screen: the answers are listed read-only, with the way back to the main chat.
 await page.goto(`${base}/capture/conductor-mode-needs-input.html?theme=dark&viewing=w-tea`)
 const openMain = page.locator('[data-testid="conductor-mode-person-ask-open-main"]')
 if (await openMain.count() || await openMain.waitFor({ timeout: 15000 }).then(() => true, () => false)) {

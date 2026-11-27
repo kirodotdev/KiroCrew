@@ -181,6 +181,23 @@ def test_a_test_that_catches_the_reintroduced_bug_is_proven(tmp_path: Path) -> N
     assert "PROVEN" in r.stdout
 
 
+def test_a_test_file_with_a_non_ascii_name_is_proven(tmp_path: Path) -> None:
+    """Line output C-quotes ``test_modé.py``, and the quoted spelling is not a
+    test path, so reading it that way reports NOTHING_TO_PROVE."""
+    repo = _repo(tmp_path)
+    (repo / "mod.py").write_text("def last_char(s):\n    return s[len(s) - 1]\n")
+    (repo / "test_modé.py").write_text(
+        "from mod import last_char\n\n\ndef test_last():\n    assert last_char('abc') == 'c'\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "fix off-by-one, test in a non-ASCII file")
+
+    r = _run(repo)
+    assert r.returncode == EXIT_PROVEN, r.stdout + r.stderr
+    assert "test_modé.py" in r.stdout
+
+
 def test_a_test_that_passes_with_the_bug_back_is_not_proven(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     # Same real fix, but the test asserts something the fix does not affect, so it
@@ -551,12 +568,15 @@ def test_an_unmet_pytest_raises_still_counts_as_proof(tmp_path: Path) -> None:
     assert r.returncode == EXIT_PROVEN, r.stdout + r.stderr
 
 
-def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path) -> None:
+@pytest.mark.parametrize("doc", ["README.md", "café.md"])
+def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path, doc: str) -> None:
     """Prose is unfalsifiable, so --per-hunk must not call it uncaught.
 
     This repo mandates same-commit spec updates, so treating a doc hunk as an
     uncaught production hunk would make attribution mode red on every compliant
-    change and bury the real uncaught code hunks.
+    change and bury the real uncaught code hunks. ``café.md`` pins the hunk
+    header: git C-quotes a non-ASCII name there unless quoting is off, and the
+    quoted header names no doc file.
     """
     repo = tmp_path / "docs"
     repo.mkdir()
@@ -564,7 +584,7 @@ def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path) -> None:
     _git(repo, "config", "user.email", "prove@test")
     _git(repo, "config", "user.name", "prove")
     (repo / "mod.py").write_text("def bump(n):\n    return n - 1\n")
-    (repo / "README.md").write_text("bump decrements\n")
+    (repo / doc).write_text("bump decrements\n", encoding="utf-8")
     (repo / "test_mod.py").write_text(
         "from mod import bump\n\n\ndef test_bump():\n    assert bump(3) == 2\n"
     )
@@ -572,7 +592,7 @@ def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path) -> None:
     _git(repo, "commit", "-qm", "base")
     _git(repo, "checkout", "-q", "-b", "feature")
     (repo / "mod.py").write_text("def bump(n):\n    return n + 1\n")
-    (repo / "README.md").write_text("bump increments\n")
+    (repo / doc).write_text("bump increments\n", encoding="utf-8")
     (repo / "test_mod.py").write_text(
         "from mod import bump\n\n\ndef test_bump():\n    assert bump(3) == 4\n"
     )
@@ -581,7 +601,7 @@ def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path) -> None:
     r = _run(repo, "--per-hunk")
     assert r.returncode == EXIT_PROVEN, r.stdout + r.stderr
     # Reported, but as its own bucket -- never as an uncaught production hunk.
-    assert "unprovable: README.md" in r.stdout, r.stdout
+    assert f"unprovable: {doc}" in r.stdout, r.stdout
     assert "uncaught" not in r.stdout, r.stdout
 
 

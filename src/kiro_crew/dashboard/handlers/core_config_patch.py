@@ -20,11 +20,10 @@ from typing import Any
 
 from aiohttp import web
 
-import kiro_crew.config.resolution as _resolution
 from kiro_crew import beacon
 from kiro_crew.config import session_environments as _session_environments
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.config.sections import merge_strands_env_patch
+from kiro_crew.config.sections import DASHBOARD_KEYED_ENV_MAPS, merge_env_patch
 from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.dashboard.body_numbers import body_int
@@ -50,13 +49,17 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
 
 
 def _str_list_problem(value: object, spec: dict) -> str:
-    """Why *value* is not a list *spec* (``max_items``, ``max_item_len``) allows, or ""."""
+    """Why *value* is not a list *spec* (``max_items``, ``max_item_len``, ``item_pattern``)
+    allows, or ""."""
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         return "must be a list of strings"
     if len(value) > spec["max_items"]:
         return f"must be at most {spec['max_items']} items"
     if any(len(item) > spec["max_item_len"] for item in value):
         return f"each item must be at most {spec['max_item_len']} characters"
+    item_pattern = spec.get("item_pattern")
+    if item_pattern and any(not re.fullmatch(item_pattern, item) for item in value):
+        return "an item has the wrong shape"
     return ""
 
 
@@ -71,6 +74,23 @@ _MOVED_CONFIG_FIELDS: dict[str, str] = {
         "reports anything it could not stop."
     ),
 }
+
+
+def _acp_backend_sandbox_refusal(stored: str) -> str:
+    """The launch's refusal of the harness *stored* names, or ``""`` (blocking).
+
+    ``tool_gate.sandbox_floor_refusal`` at the tier a session of that harness starts
+    at, the predicate a session start runs. Runs in a worker thread: it can probe for
+    a sandbox backend.
+    """
+    from kiro_crew.agent_sdk.backends import backend_from_stored
+    from kiro_crew.agent_sdk.tool_gate import (
+        configured_harness_sandbox_mode,
+        sandbox_floor_refusal,
+    )
+
+    backend = str(backend_from_stored(stored))
+    return sandbox_floor_refusal(backend, configured_harness_sandbox_mode(backend))
 
 
 def _beacon_governance_pinned_off() -> bool:
@@ -427,7 +447,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             )
         try:
             value = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):  # a 400-digit integer is valid JSON
             return _deny("must be a number", f"{path_key}={value}")
         if not math.isfinite(value):
             return _deny("must be a finite number", f"{path_key}={value}")
@@ -491,9 +511,6 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         problem = _str_list_problem(value, spec)
         if problem:
             return _deny(problem, path_key)
-        item_pattern = spec.get("item_pattern")
-        if item_pattern and any(not re.fullmatch(item_pattern, item) for item in value):
-            return _deny(f"an item has the wrong shape for {path_key}", path_key)
     elif spec["type"] == "dict":
         # One-level record written ATOMICALLY as a single value, for settings
         # where multiple scalar fields form one verdict and a partial write is
@@ -540,7 +557,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     return _deny(f"{sub_key} must be a number", f"{path_key}={value}")
                 try:
                     sub_val = float(sub_val)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     return _deny(f"{sub_key} must be a number", f"{path_key}={value}")
                 if not math.isfinite(sub_val):
                     return _deny(f"{sub_key} must be a finite number", f"{path_key}={value}")
@@ -585,6 +602,17 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     "code": "shell_not_executable",
                 },
                 status=400,
+            )
+
+    # A harness every session start refuses on this host (an enforced harness whose
+    # credential mask cannot apply here) is refused with the launch's own sentence,
+    # so a save cannot store a choice that fails only at the next session.
+    if path_key == "agent.acp_backend" and value:
+        refusal = await asyncio.to_thread(_acp_backend_sandbox_refusal, value)
+        if refusal:
+            _log_sel("denied", f"{path_key}={value}")
+            return web.json_response(
+                {"error": refusal, "code": "acp_backend_sandbox_refused"}, status=409
             )
 
     # ── Governance: refuse a write an enterprise ceiling has pinned ──
@@ -686,18 +714,18 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # switch and the trust settings give an overlay-owned key. A whole-section
     # (object) value is left alone: the overlay merges INTO it key by key, so the
     # keys it does not name still take effect.
-    # The Strands provider map is a keyed change (see
-    # ``validate_strands_env_patch``), so the overlay question is asked per key it
-    # names: a reference config.local.json supplies would win over the base file
-    # and keep pointing at whatever the change removed or replaced.
-    if path_key == "agent.strands_env" and isinstance(value, dict):
+    # A harness env map is a keyed change (see ``_validate_env_patch``), so the
+    # overlay question is asked per key it names: a reference config.local.json
+    # supplies would win over the base file and keep pointing at whatever the
+    # change removed or replaced.
+    if path_key in DASHBOARD_KEYED_ENV_MAPS and isinstance(value, dict):
         for env_name in value:
-            if await asyncio.to_thread(overlay_pins, "agent", "strands_env", env_name):
+            if await asyncio.to_thread(overlay_pins, *path_key.split("."), env_name):
                 _log_sel("denied", f"{path_key}.{env_name}=overlay_owned")
                 return web.json_response(
                     {
                         "error": (
-                            f"agent.strands_env entry {env_name!r} is set in "
+                            f"{path_key} entry {env_name!r} is set in "
                             "config.local.json, which overrides this setting. Change "
                             "or remove it there."
                         ),
@@ -756,7 +784,6 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                         return data
                     parent = child
                 parent.pop(parts[-1], None)
-                _resolution.drop_retired_section_keys(data)
                 return data
             section = data
             for part in parts[:-1]:
@@ -777,9 +804,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 _check_default_profile_is_saved(
                     {**section, parts[-1]: value}, section.get("default_profile")
                 )
-            if path_key == "agent.strands_env":
+            if path_key in DASHBOARD_KEYED_ENV_MAPS:
                 # A keyed change, merged under the lock with the map saved now.
-                stored = merge_strands_env_patch(section.get(parts[-1]), value)
+                stored = merge_env_patch(section.get(parts[-1]), value)
             if path_key == "dashboard.update_nudge":
                 # This host's clock beside the browser's ``snoozed_until``: the
                 # unattended-apply hold counts from it (update_deferral.py).
@@ -808,9 +835,6 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # does not adopt it away. A failed ack raises OSError and aborts the
             # write, rather than saving a value the next load would delete.
             ack_explicit_write(path_key, value)
-            # This raw write bypasses save(), which is what drops retired keys;
-            # do it here so the load-time "dropped on the next save" holds.
-            _resolution.drop_retired_section_keys(data)
             return data
 
         try:

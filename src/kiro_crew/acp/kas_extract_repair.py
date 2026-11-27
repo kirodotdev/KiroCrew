@@ -292,7 +292,7 @@ def _spawns_kas_relay(provider: object) -> bool:
     """
     from kiro_crew.acp.kas_route import last_spawn_route
 
-    if getattr(provider, "is_kas_backend", False) is not True:
+    if getattr(provider, "is_kas_backend", False) is not True:  # harness-ok: KAS relay extract
         return False
     route = last_spawn_route()
     return route is None or not route.bundle

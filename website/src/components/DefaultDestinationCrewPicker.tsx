@@ -44,32 +44,37 @@ export default function DefaultDestinationCrewPicker({ instances, value }: {
   const shown = save.isPending && typeof save.variables === 'string' ? save.variables : value
 
   return (
-    <div className="flex flex-col gap-1.5 py-2" data-testid="default-destination-crew">
-      <span className="flex items-center gap-1.5 text-[11.5px] font-semibold text-muted">
-        <Send size={12} className="shrink-0" /> {i18nT('pages.settings.instancesPanel.default_destination')}
-      </span>
-      <SearchableSelect
-        aria-label={i18nT('pages.settings.instancesPanel.default_destination')}
-        options={options}
-        value={shown}
-        // Disabled while a save is in flight: a second pick then could match the
-        // cached value and be dropped, leaving the first pick saved.
-        disabled={save.isPending}
-        onChange={v => { if (v !== shown) save.mutate(v) }}
-      />
-      {error !== null ? (
-        // No hand-off: this sits in Settings → Remote Crew beside the add-crew
-        // form, whose unsaved fields an agent chat would navigate away from.
-        // Picking again retries in place.
-        <ErrorNotice
-          variant="inline"
-          title={error ? i18nT('pages.settings.instancesPanel.default_destination_save_failed') : undefined}
-          message={error || i18nT('pages.settings.instancesPanel.default_destination_save_failed')}
-          onDismiss={() => setError(null)}
-          testId="default-destination-crew-error"
-          className="flex-wrap"
+    // A Settings row: name and hint on the left, the select on the right.
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 py-2" data-testid="default-destination-crew">
+      <div className="flex-1 min-w-[200px]">
+        <span className="flex items-center gap-1.5 text-[13px] font-semibold text-text">
+          <Send size={12} className="shrink-0" aria-hidden /> {i18nT('pages.settings.instancesPanel.default_destination')}
+        </span>
+        {error !== null ? (
+          // No hand-off: this sits in Settings → Remote Crew, whose Add Crew
+          // forms hold unsaved fields an agent chat would navigate away from.
+          // Picking again retries in place.
+          <ErrorNotice
+            variant="inline"
+            title={error ? i18nT('pages.settings.instancesPanel.default_destination_save_failed') : undefined}
+            message={error || i18nT('pages.settings.instancesPanel.default_destination_save_failed')}
+            onDismiss={() => setError(null)}
+            testId="default-destination-crew-error"
+            className="flex-wrap"
+          />
+        ) : <span className="block text-[12px] text-muted">{i18nT('pages.settings.instancesPanel.default_destination_hint')}</span>}
+      </div>
+      <div className="w-full sm:w-56">
+        <SearchableSelect
+          aria-label={i18nT('pages.settings.instancesPanel.default_destination')}
+          options={options}
+          value={shown}
+          // Disabled while a save is in flight: a second pick then could match the
+          // cached value and be dropped, leaving the first pick saved.
+          disabled={save.isPending}
+          onChange={v => { if (v !== shown) save.mutate(v) }}
         />
-      ) : <span className="text-[11px] text-muted-strong">{i18nT('pages.settings.instancesPanel.default_destination_hint')}</span>}
+      </div>
     </div>
   )
 }

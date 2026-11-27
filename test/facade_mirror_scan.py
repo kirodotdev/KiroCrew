@@ -23,6 +23,8 @@ import sys
 from collections.abc import Iterable, Iterator, Mapping
 from types import CodeType
 
+import source_corpus
+
 #: The callables that are ``mock.patch`` and its variants, by the dotted name an import
 #: makes them, and where each takes ``create`` by position.
 _PATCH_FORMS: dict[str, int] = {}
@@ -442,6 +444,7 @@ def _namespace_writes(bindings: _Bindings, call: ast.Call) -> tuple[str, list[st
     return None
 
 
+@source_corpus.untraced()
 def patch_events(source: str | ast.Module, facades: Mapping[str, str]) -> list[PatchSite]:
     """Every patch *source* makes, its target resolved through *facades*, in one pass.
 
@@ -905,6 +908,7 @@ def names_by_target(events: Iterable[PatchSite], targets: Iterable[str]) -> dict
     return found
 
 
+@source_corpus.untraced()
 def text_patched_names(text: str, spellings: Mapping[str, str]) -> dict[str, set[str]]:
     """Facade -> the names *text* patches through it, read with regular expressions.
 

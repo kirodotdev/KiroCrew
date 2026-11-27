@@ -1075,3 +1075,31 @@ class TestDeliverScriptResult:
             assert await cb(job) == "quiet"
         orch.dashboard_state.notify.assert_not_called()
         orch.dashboard_state.get_slot.assert_not_called()
+
+
+class TestJobEnvReachesTheRunner:
+    """A script or command job hands its own ``env`` block to the sandboxed runner."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "kind,runner",
+        [("command", "run_command_sandboxed"), ("script", "run_script_sandboxed")],
+    )
+    async def test_the_runner_is_handed_the_job_env(self, kind, runner):
+        orch = _make_orchestrator()
+        job = _job(
+            **{kind: "probes.py:check" if kind == "script" else "echo hi"},
+            env={"K6_ENV": "1"},
+        )
+        seen: list[Any] = []
+
+        def _runner(*args: Any, **_kwargs: Any) -> dict[str, str]:
+            seen.append(args)
+            return {"status": "ok", "output": "hi"}
+
+        async with _cron_cb(orch) as cb:
+            with patch.object(gw, runner, _runner):
+                await cb(job)
+
+        assert len(seen) == 1
+        assert {"K6_ENV": "1"} in seen[0]

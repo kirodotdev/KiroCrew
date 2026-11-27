@@ -186,9 +186,9 @@ describe('useInstanceShortcuts — top-level (Electron)', () => {
   })
 
   it('never claims a digit beyond the advertised registry range (no drift)', async () => {
-    // 8 remotes would make digit 9 a valid pane index — but the shortcuts
+    // 8 remotes would make every digit a valid pane index — but the shortcuts
     // modal only advertises INSTANCE_SHORTCUTS.length chords, and the handler
-    // derives its range from the same registry, so digit 9 must be ignored.
+    // derives its range from the same registry, so the next digit must be ignored.
     const many = Array.from({ length: 8 }, (_, i) => conn({ id: `cd-${i + 1}`, name: `Cloud ${i + 1}`, status: { instance_id: `cd-${i + 1}`, state: 'connected', remote_port: 7777 }, was_connected: true }))
     vi.mocked(api.listInstances).mockResolvedValue(listResp(many))
     const store = createTestStore({
@@ -197,16 +197,21 @@ describe('useInstanceShortcuts — top-level (Electron)', () => {
     renderHookWithProviders(() => useInstanceShortcuts(), { store })
     await loaded()
 
-    expect(INSTANCE_SHORTCUTS.length).toBe(6)
-    const ev = pressDigit(9)
+    // Digit 1 is the local pane, so digit d is remote d - 1; the 8 remotes above
+    // make every digit up to 9 a valid pane index, and the registry must stop short.
+    const last = INSTANCE_SHORTCUTS.length
+    expect(last).toBeGreaterThan(1)
+    expect(last).toBeLessThan(9)
+    const ev = pressDigit(last + 1)
     expect(store.getState().instances.activeId).toBeNull()
     expect(ev.defaultPrevented).toBe(false)
     // ...while the last advertised digit still works.
-    vi.mocked(api.connectInstance).mockResolvedValue({ instance_id: 'cd-5', state: 'connected', local_port: 7778, token: 't5' })
-    pressDigit(6)
-    expect(store.getState().instances.activeId).toBe('cd-5')
+    const lastId = `cd-${last - 1}`
+    vi.mocked(api.connectInstance).mockResolvedValue({ instance_id: lastId, state: 'connected', local_port: 7778, token: 't5' })
+    pressDigit(last)
+    expect(store.getState().instances.activeId).toBe(lastId)
     // The cold tab reconnects; wait for the warm entry it writes before the test ends.
-    await waitFor(() => expect(store.getState().instances.warm['cd-5']).toEqual({ port: 7778, token: 't5' }))
+    await waitFor(() => expect(store.getState().instances.warm[lastId]).toEqual({ port: 7778, token: 't5' }))
   })
 
   it('does nothing when shortcuts are globally disabled', async () => {
@@ -321,7 +326,6 @@ describe('useInstanceShortcuts — embedded pane (relay)', () => {
 describe('useInstanceShortcuts — relay Crew tabs', () => {
   let chord: ((e: { type: string; endpointId: string; index: number }) => void) | null = null
   beforeEach(() => {
-    localStorage.setItem('mc-relay-crew-pane', '1')
     chord = null
     ;(window as unknown as { relayCrewAPI?: unknown }).relayCrewAPI = {
       openPane: vi.fn(async () => ({ ok: true })),

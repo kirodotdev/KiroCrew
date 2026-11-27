@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -126,6 +127,10 @@ def _orch_attrs_consumed(channel_type: str) -> set[str]:
 _HOIST_EXEMPT: dict[str, frozenset[str]] = {
     # ``getattr(orch, "_weixin_home", "") or str(data_home())``.
     "weixin": frozenset({"_weixin_home"}),
+    # ``getattr(orch, "_feishu_sdk_install_task", None)``: the one-per-start
+    # SDK install handle. A hoist would reset it on ``restart_channel`` and
+    # let a second install start.
+    "feishu": frozenset({"_feishu_sdk_install_task"}),
 }
 
 
@@ -843,6 +848,77 @@ class TestSlackApplierReconciles:
         orch._open_channels = {"C_OPEN_OLD"}
         return orch
 
+    @pytest.mark.parametrize(
+        "changed", ["slack.channels", "slack.channels.C1.agent", "slack.reactions"]
+    )
+    def test_only_channel_reloads_retire_stale_marks(self, changed):
+        from kiro_crew.config.loader import config_path
+
+        orch = self._orch()
+        path = config_path()
+        doc = {"slack": {"channels": {"C1": {"agent": "research", "shared_agent": "other"}}}}
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        # The first load of a new file rewrites it once through the locked writer,
+        # which deletes the stale mark. Put it back the way a hand edit would.
+        KiroCrewConfig.load()
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["slack"]["channels"]["C1"]["shared_agent"] = "other"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        cfg = KiroCrewConfig.load()
+        live.watch().prime(cfg)
+        assert (
+            "shared_agent"
+            in json.loads(path.read_text(encoding="utf-8"))["slack"]["channels"]["C1"]
+        )
+
+        asyncio.run(orch._on_slack_config_change(_change(cfg, changed)))
+
+        entry = json.loads(path.read_text(encoding="utf-8"))["slack"]["channels"]["C1"]
+        assert ("shared_agent" not in entry) == changed.startswith("slack.channels")
+        assert entry["agent"] == "research"
+
+    def test_a_degraded_channel_reload_does_not_retire_marks(self):
+        from kiro_crew.config.loader import config_path
+
+        orch = self._orch()
+        path = config_path()
+        path.write_text(
+            '{"slack":{"channels":{"C1":{"agent":"B","shared_agent":"A"}}}}', encoding="utf-8"
+        )
+        before = path.read_bytes()
+        cfg = _cfg_with("slack", degraded=frozenset({"slack"}))
+        with pytest.raises(live.ConfigDeferred):
+            asyncio.run(orch._on_slack_config_change(_change(cfg, "slack.channels")))
+        assert path.read_bytes() == before
+
+    def test_a_retire_write_does_not_make_the_watcher_write_again(self):
+        from kiro_crew.config.loader import config_path
+
+        orch = self._orch()
+        path = config_path()
+        path.write_text(
+            '{"slack":{"channels":{"C1":{"agent":"A","shared_agent":"A"}}}}', encoding="utf-8"
+        )
+        watcher = live.watch()
+        watcher.prime(KiroCrewConfig.load())
+        watcher.subscribe("slack", callback=orch._on_slack_config_change)
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["slack"]["channels"]["C1"]["agent"] = "B"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+
+        async def reload_twice():
+            assert await watcher.refresh_now() is not None
+            assert (
+                "shared_agent"
+                not in json.loads(path.read_text(encoding="utf-8"))["slack"]["channels"]["C1"]
+            )
+            before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+            await watcher.refresh_now()
+            assert path.read_bytes() == before
+            assert path.stat().st_mtime_ns == mtime
+
+        asyncio.run(reload_twice())
+
     def test_tracking_channels_are_reconciled_in_place(self, monkeypatch):
         orch = self._orch()
         tracked = orch._tracking_channels
@@ -1161,8 +1237,8 @@ class TestChannelRestartRequired:
     def test_a_restart_marked_field_requires_a_restart(self):
         from kiro_crew.config.schema import requires_restart
 
-        assert requires_restart("slack.command") is True
-        assert channel_restart_required("slack", ["command"]) is True
+        assert requires_restart("whatsapp.db_path") is True
+        assert channel_restart_required("whatsapp", ["db_path"]) is True
 
     def test_a_live_field_does_not(self):
         assert channel_restart_required("slack", ["open_channels"]) is False
@@ -1188,7 +1264,7 @@ class TestChannelRestartRequired:
         assert channel_restart_required("whatsapp", ["db_path"]) is True
 
     def test_a_mixed_save_requires_a_restart_if_any_field_does(self):
-        assert channel_restart_required("slack", ["open_channels", "command"]) is True
+        assert channel_restart_required("whatsapp", ["session_folder", "db_path"]) is True
 
     def test_an_env_write_always_requires_a_restart(self):
         assert channel_restart_required("whatsapp", [], env_updates={"WA_TOKEN": "x"}) is True
@@ -1507,11 +1583,31 @@ class TestCredentialChangeRestartsChannel:
         ), "the credential path is deferred for retry, not dropped"
 
 
+class TestSlackCommandIsLive:
+    """``slack.command`` needs no restart: the router answers every manifest
+    name, and the applier refreshes the name help text and the Home tab show."""
+
+    def test_the_settings_page_promises_no_restart(self):
+        assert channel_restart_required("slack", ["command"]) is False
+
+    def test_the_applier_refreshes_the_command_without_a_restart_notice(self, caplog):
+        import logging
+
+        orch = _make_orchestrator()
+        orch.slack_command = "kirocrew"
+        cfg = KiroCrewConfig()
+        cfg.slack.command = "kirocrew-alice"
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(orch._on_slack_config_change(_change(cfg, "slack.command")))
+        assert orch.slack_command == "kirocrew-alice"
+        assert not [r for r in caplog.records if "slack.command" in r.getMessage()]
+
+
 class TestSlackCredentialChangeWarns:
     def test_a_slack_token_change_logs_a_restart_needed_notice(self, caplog):
         """Slack's socket is host-managed, so a .env token change cannot be applied
         live; the applier tells the operator a restart is needed (the honest
-        fallback), the same shape as slack.command."""
+        fallback)."""
         import logging
 
         orch = _make_orchestrator()

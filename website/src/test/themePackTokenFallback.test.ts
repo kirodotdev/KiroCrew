@@ -5,7 +5,7 @@ import { readIndexCss } from './indexCssSource'
 
 /**
  * `variables.json` requires only `--bg`, `--text` and `--accent`, so a valid pack
- * can declare three of the 56 allowlisted tokens. The rest inherit from
+ * can declare three of the 61 allowlisted tokens. The rest inherit from
  * `index.css`'s bare `:root`, which carries the DARK palette and has no light
  * counterpart — so a pack with a light `--bg` used to render dark-mode secondary
  * text on its own light surfaces. These tests pin the gap-fill that replaces that
@@ -432,3 +432,20 @@ describe('buildCustomThemeCss — tokens a pack omits are derived, not inherited
 
 
 
+
+describe('buildCustomThemeCss — the glass band is set by the pack, never derived', () => {
+  it('emits a declared --glass-band-plain in its own block', () => {
+    const pack = {
+      ...minimalLightPack,
+      dark: { ...minimalLightPack.dark, '--glass-band-plain': 'rgba(214, 232, 196, 0.22)' },
+      light: { ...minimalLightPack.light, '--glass-band-plain': '#f4f8ee' },
+    } as unknown as CustomThemeData
+    const css = buildCustomThemeCss('pack', pack)
+    expect(block(css, 'light')).toContain('--glass-band-plain:#f4f8ee')
+    expect(block(css, 'dark')).toContain('--glass-band-plain:rgba(214, 232, 196, 0.22)')
+  })
+
+  it('emits no --glass-band-plain when the pack omits it', () => {
+    expect(buildCustomThemeCss('pack', minimalLightPack)).not.toContain('--glass-band-plain')
+  })
+})

@@ -21,6 +21,29 @@ target token rather than the body's in-progress colour transition. Before CSS
 supplies a token, the HTML boot colour remains in place. Browsers decide whether
 and where to use this hint; it does not change the page's colours.
 
+## A relay Crew in front
+
+A relay Crew's pane fills the desktop window under the local top bar, so the
+local dashboard around it (the top bar, the rail, anything docked, menus) takes
+that Crew's mode while it is in front, as an SSH Crew's header does by being the
+pane's own. The Windows caption buttons follow it too: the dashboard pushes its
+painted mode (`setTitleBarOverlayTheme`), and the shell stores it on that
+window only (`_mcCaptionMode`, `runtime/window/chrome.js`), so a zoom step or a
+focus re-sync repaints the stored mode, no other window takes it, and
+`nativeTheme.themeSource` keeps the person's own. The shell reads the pane page's `data-mode`
+when the pane shows and again on each theme colour change
+(`did-change-theme-color`; the colour itself, a palette's background, is not
+read as a mode), and tells the dashboard only whether it is dark;
+`RelayCrewPaneHost` sets `hooks/themeModeOverride.ts` once the pane's page has
+drawn (before that its colour is the boot page's), and `useTheme` paints that
+mode over the person's own, and publishes it as the context's `theme`, without
+saving it. Only the caption push carries that mode to the shell; the native
+theme and the splash accent keep the person's own: the splash accent is not
+reported meanwhile, and a Scheduled preference is handed to the shell as the
+own resolved mode (`data-mode-pref`), since the shell reads `data-mode` for that
+preference. Local, or a pane closing, clears
+it. Only the mode follows, not the palette.
+
 ## Capability Tiers
 
 `theme.json` MUST declare `"formatVersion": 1` (required integer major,
@@ -37,12 +60,24 @@ and an appearance pack's `manifest.json`) are read with
 editor that writes one (Windows Notepad does) must not turn a valid hand-edited
 file into "not valid JSON" or drop the pack from the list.
 
+A pack's text files (`persona.md`, `styles/overrides.css`, overlay and top-bar
+HTML) are read as bytes and checked with `user_json.wide_bom_reason` before they
+are decoded. A file saved as UTF-16 or UTF-32 (Windows PowerShell 5.1's `>` writes
+UTF-16LE with a mark), marked or, for UTF-16, unmarked, is refused at install with
+`<file>: it is saved as UTF-16; re-save it as UTF-8`. Re-reading a pack that is
+already installed (the theme-detail route) does not apply the refusal, so a pack
+that predates it keeps loading. Decoding it as UTF-8 would
+hand the validators a NUL after every character, so `persona.md` would be refused
+for wording it contains and `overrides.css` would install with no effect. UTF-8
+with or without a mark keeps installing. The asset descriptor does not surface
+`personaInfo` for such a file.
+
 `theme.json` also declares a `level` (0/1/2) that gates which asset categories
 a pack may ship. Validation is tier-scaled to payload trust.
 
 | Tier | `level` | Surface unlocked |
 |---|---|---|
-| **L0 Color** | 0 | the 60 theme CSS variables (dark + light) only |
+| **L0 Color** | 0 | the 61 theme CSS variables (dark + light) only |
 | **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome, splash), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
 | **L2 Experience** | 2 | + `overlays/` + `topbar/` sandboxed HTML, `audio/`, `persona.md` |
 
@@ -266,6 +301,16 @@ dashboard load into header-only round trips.
   `pointer-events: none` on it. Routes without the shell (`/popout/`, `/embed/`)
   have no behind slot and skip `behind` overlays, since nothing there would
   cover them.
+- **The composer stays uncovered** — the decor slot carries a `clip-path`
+  with a hole for each box marked `data-guide-keep-clear` (the chat
+  composer and the notice rows each composer host draws beside it), so an `above` overlay, a pack's or a registered theme's, is cut
+  where it meets the composer at every width and looks tucked behind it
+  (`website/src/lib/themeDecorKeepClear.ts`). The clip is on the slot, so an
+  overlay cannot opt out of it. It is measured only while the slot holds a
+  decoration, and only on a window resize, a marked box or one of its
+  containers resizing (how a box that moves at the same size is seen), or a
+  marked box coming or going; a reply streaming into the transcript does not
+  re-measure.
 - **Locked CSP** — overlay/topbar responses carry a fixed
   `Content-Security-Policy` including a `sandbox` directive; asset responses
   carry `X-Content-Type-Options: nosniff` and a content-type allowlist.
@@ -339,7 +384,12 @@ dashboard load into header-only round trips.
   which is never in the picker beside it. Like an overlays-only pack it shows
   them without asking, and the Experience section lists Overlays alone for it;
   turned off, the shell unmounts those overlays (`App.tsx`). Its top-bar
-  elements and its own CSS are not part of it.
+  elements and its own CSS are not part of it. The overlays portal into the
+  shell's decor slot, as a pack's do (the slot is click-through, so a part
+  that must take clicks, such as a close button, sets `pointer-events: auto`
+  on itself), and they also unmount while a remote
+  Crew is shown: they follow this dashboard's theme, and the remote pane
+  draws its own theme's overlays.
 
   **Consent gate (what it actually guarantees — and what it does not).** The
   persona grant is a separate key, `mc-theme-consent-<slug>`, holding
@@ -417,6 +467,7 @@ dashboard load into header-only round trips.
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
 | Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Mode switch (Auto / Light / Dark / Scheduled, with Scheduled's two times) + single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona), or a registered theme's Overlays alone, as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
 | Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
+| Adopted-app class safelist | `website/src/tailwind-adopted-app-classes.css` | Generated by `website/scripts/gen-adopted-app-classes.mjs` from every `adoption-pins.json` row (the pinned tree's `ui/src/` and the wheel copy under `website/src/apps/<name>/`): one `@source inline` candidate per Tailwind utility an adopted former built-in's bundle uses, imported by `index.css`'s Tailwind header so the sheet keeps those utilities after the wheel copy is deleted. Append-only, regenerated when the pin table changes, and pinned by `adoptedAppClassSafelist.test.ts`. Contract: theming-contract.md, *Adopted apps' utilities*. |
 
 ### Mode preference
 

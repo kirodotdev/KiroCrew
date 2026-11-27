@@ -3,8 +3,8 @@ title: Pluggable agent model providers
 status: draft
 author: ptias
 created: 2026-08-07
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 1872
 implementation-prs: []
 tracking-issues: [1693]
@@ -16,7 +16,10 @@ superseded-by: []
 - Status: draft — **this RFC recommends that Kiro Crew support provider choice
   for the agent model, and asks the maintainers to amend the "Other providers"
   rule in [`docs/system-specs/oss-fork-boundaries.md`](../system-specs/oss-fork-boundaries.md) accordingly.** Harness choice already ships
-  through `agent.acp_backend`; this RFC is about the model provider beneath it. No design is proposed here: the shape of
+  through `agent.acp_backend`; this RFC is about the model provider beneath it. Since
+  [#26559](https://github.com/kirodotdev/KiroCrew/pull/26559) the Strands harness alone
+  takes a model provider (`agent.strands_provider`, `acp/harness/strands.py`);
+  `agent.provider` is still fixed to `acp` and the "Other providers" rule is unchanged. No design is proposed here: the shape of
   the seam is a separate discussion, and deliberately out of scope so the
   direction can be settled on its own merits.
 - Author: ptias

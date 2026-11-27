@@ -232,6 +232,8 @@ describe('ArtifactDetailPage companion chat', () => {
     expect(slot).toBe('slot-new')
     expect(content).toContain('cr-queue')
     expect(content).toContain('artifact_get_comments')
+    // The count above leaves out resolved threads, so the read it names must too.
+    expect(content).toContain('exclude_resolved=true')
     expect(opts).toEqual({
       source: 'artifact-companion', ephemeral: true, maxAge: 3600,
     })

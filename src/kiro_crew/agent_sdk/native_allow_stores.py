@@ -61,11 +61,18 @@ def _claude(name: str) -> NativeAllowStore:
     return NativeAllowStore(f".claude/{name}", (("CLAUDE_CONFIG_DIR", name), ("CLAUDE_HOME", name)))
 
 
-def _goose(name: str) -> NativeAllowStore:
-    # goose reads GOOSE_PATH_ROOT first (``acp.harness.goose.goose_config_dir``).
-    return NativeAllowStore(
-        f".config/goose/{name}",
-        (("GOOSE_PATH_ROOT", f"config/{name}"), ("XDG_CONFIG_HOME", f"goose/{name}")),
+def _goose(name: str) -> tuple[NativeAllowStore, ...]:
+    # goose reads GOOSE_PATH_ROOT first (``acp.harness.goose.goose_config_dir``), else
+    # ~/.config/goose on POSIX and, through its ``etcetera`` Windows app strategy,
+    # %APPDATA%\Block\goose\config on Windows.
+    overrides = (
+        ("GOOSE_PATH_ROOT", f"config/{name}"),
+        ("XDG_CONFIG_HOME", f"goose/{name}"),
+        ("APPDATA", f"Block/goose/config/{name}"),
+    )
+    return tuple(
+        NativeAllowStore(f"{home}/{name}", overrides)
+        for home in (".config/goose", "AppData/Roaming/Block/goose/config")
     )
 
 
@@ -77,7 +84,7 @@ NATIVE_ALLOW_STORES: Mapping[str, tuple[NativeAllowStore, ...]] = {
     ACP_BACKEND_CLAUDE: (_claude("settings.json"), _claude("settings.local.json")),
     # permission.yaml: tools under user.always_allow run without a permission request.
     # config.yaml: its extensions block decides what starts at the next spawn.
-    ACP_BACKEND_GOOSE: (_goose("permission.yaml"), _goose("config.yaml")),
+    ACP_BACKEND_GOOSE: (*_goose("permission.yaml"), *_goose("config.yaml")),
     ACP_BACKEND_OPENCODE: tuple(
         NativeAllowStore(f".config/opencode/{name}", (("XDG_CONFIG_HOME", f"opencode/{name}"),))
         for name in ("opencode.json", "opencode.jsonc", "config.json")

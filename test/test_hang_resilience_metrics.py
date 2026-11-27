@@ -107,8 +107,11 @@ def test_dropped_frame_emits_method_class(recorded):
     rt._note_dropped_frame("s-x", "session/request_permission")
     rt._note_dropped_frame("s-x", "session/update")
     rt._note_dropped_frame("s-x", "weird/method")
+    rt._note_dropped_frame("s-x", "session/update", replay=True)
     classes = [a["method_class"] for n, a in recorded if n == metric_events.DROPPED_FRAMES]
-    assert classes == ["permission", "update", "other"]
+    assert classes == ["permission", "update", "other", "replay"]
+    # A load's own replay is not a frame lost on its way to a session.
+    assert rt.unrouted_child_frames() == 2
 
 
 def test_handle_reject_emits_child_permission_denied(recorded):

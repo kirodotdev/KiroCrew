@@ -64,7 +64,10 @@ _CRON_POSTTOKEN_CONTINUE_MSG = _TRANSIENT_CONTINUE_MSG
 
 def _defer_cron_before_dispatch(job: CronJob, reason: str) -> None:
     """Retain an undispatched run without counting success or failure."""
-    job.clear_carried_result()
+    # Scoped as close_run's result-less clear: a message job keeps
+    # ``last_result``, the "do NOT repeat" context the next run carries.
+    if job.command or job.script:
+        job.clear_carried_result()
     job.last_status = "error"
     job.last_error = reason
     job.run_never_started = True
@@ -472,6 +475,7 @@ async def _cron_stream_with_posttoken_resume(
     steps).
     """
     from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+    from kiro_crew.session_directive import strip_quoted_markers
 
     _refuse_person_only = person_only_directive_refuser(
         stream_kwargs.get("session_key", ""), directive_refusals
@@ -498,7 +502,8 @@ async def _cron_stream_with_posttoken_resume(
                 on_event=_refuse_person_only,
                 **stream_kwargs,
             )
-            return preserved + text, carried_credits
+            # A directive tool result the reply quotes is protocol, not the run's result.
+            return strip_quoted_markers(preserved + text), carried_credits
         except Exception as exc:
             partial = "".join(parts)
             if _resume_used:

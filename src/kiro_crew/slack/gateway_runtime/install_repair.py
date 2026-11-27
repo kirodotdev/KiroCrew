@@ -62,8 +62,8 @@ async def _pinned_kiro_cli(purpose: str) -> str | None:
     ``KIROCREW_KIRO_BIN``, with the inherited ``PATH`` excluded.
 
     That set does not cover every install: a system-wide one outside
-    ``known_kiro_cli_dirs`` — a root-owned ``/usr/local/bin`` on Linux — is
-    refused here while sessions keep launching it off ``PATH``. Refusing is the
+    ``known_kiro_cli_dirs`` — say ``/opt/kiro/bin`` — is refused here while
+    sessions keep launching it off ``PATH``. Refusing is the
     right default for a spawn with no operator present, but being SILENT about
     it is not: the resulting host never auto-updates and never warns it is
     outdated, with nothing in the log to say why. Hence the warning naming the
@@ -170,7 +170,7 @@ async def _check_missing_deps(self: GatewayOrchestrator) -> None:
     from kiro_crew.platform.update_provider import _start_installer
 
     logger.warning("Missing deps %s — installing directly", missing)
-    print(f"Installing missing dependencies: {', '.join(missing)}")
+    print(f"👻 Installing missing dependencies: {', '.join(missing)}")
     # Through `_start_installer`: a cancel inside a bare spawn await kills pip's
     # pid alone, before the cancel arm below has a process to group-kill.
     proc = await _start_installer(
@@ -198,7 +198,7 @@ async def _check_missing_deps(self: GatewayOrchestrator) -> None:
     except (TimeoutError, asyncio.TimeoutError):
         await self._kill_startup_child(proc)
         await self._reap_startup_child(proc)
-        print("Error: pip install timed out — run manually: kirocrew update")
+        print("❌ pip install timed out — run manually: kirocrew update")
         logger.error("Dep repair timed out after %.0fs", self._DEP_INSTALL_TIMEOUT_SECS)
         return
     except asyncio.CancelledError:
@@ -210,9 +210,9 @@ async def _check_missing_deps(self: GatewayOrchestrator) -> None:
     if proc.returncode == 0:
         # Invalidate import caches so the new packages are found
         importlib.invalidate_caches()
-        print("Dependencies installed")
+        print("✅ Dependencies installed")
     else:
-        print("Error: pip install failed — run manually: kirocrew update")
+        print("❌ pip install failed — run manually: kirocrew update")
         # pip stderr can echo an index URL with embedded credentials
         # (https://user:token@private-index/...), so redact before the
         # volume cap: truncating first can bisect a token, and half a token
@@ -275,7 +275,7 @@ async def _check_console_script(self: GatewayOrchestrator) -> None:
     from kiro_crew.platform.update_provider import _start_installer
 
     logger.warning("kirocrew console script missing/not executable at %s — reinstalling", script)
-    print("Repairing kirocrew install (console script missing)…")
+    print("👻 Repairing kirocrew install (console script missing)…")
     # Run the stdlib-only module by absolute file path: the target venv may
     # not currently contain an importable kiro_crew package. A dedicated
     # child session lets cancellation own pip and its build descendants.
@@ -318,7 +318,7 @@ async def _check_console_script(self: GatewayOrchestrator) -> None:
         # of a silent no-op, leaving the pre-existing manual path. The typed
         # ``kind``/``detail`` are logged rather than an inferred English
         # guess: this PR exists to make this failure class diagnosable.
-        print("Error: kirocrew reinstall skipped (no sandbox available) — run: kirocrew update")
+        print("❌ kirocrew reinstall skipped (no sandbox available) — run: kirocrew update")
         logger.error(
             "Console-script repair skipped: sandbox unavailable (kind=%s): %s — "
             "refusing to run the project venv interpreter unsandboxed",
@@ -347,7 +347,7 @@ async def _check_console_script(self: GatewayOrchestrator) -> None:
         except (TimeoutError, asyncio.TimeoutError):
             await self._kill_startup_child(proc)
             await self._reap_startup_child(proc)
-            print("Error: kirocrew reinstall timed out — run manually: kirocrew update")
+            print("❌ kirocrew reinstall timed out — run manually: kirocrew update")
             logger.error(
                 "Console-script reinstall timed out after %.0fs",
                 self._DEP_INSTALL_TIMEOUT_SECS,
@@ -367,10 +367,10 @@ async def _check_console_script(self: GatewayOrchestrator) -> None:
         )
         detail, _ = redact_exfiltration_urls(detail)
         detail, _ = redact_credentials(detail)
-        print("Error: kirocrew reinstall failed — run manually: kirocrew update")
+        print("❌ kirocrew reinstall failed — run manually: kirocrew update")
         logger.error("Console-script reinstall failed: %s", detail[:500])
     else:
-        print("kirocrew console script restored")
+        print("✅ kirocrew console script restored")
 
 
 def _schedule_console_script_repair(self: GatewayOrchestrator) -> asyncio.Task[None]:
@@ -476,7 +476,7 @@ async def _warn_if_kiro_cli_outdated(self: GatewayOrchestrator) -> None:
             if version is not None and version[:2] < (1, 26):
                 major, minor = version[0], version[1]
                 print(
-                    f"Warning: kiro-cli {major}.{minor} is outdated (1.26+ required). "
+                    f"⚠️  kiro-cli {major}.{minor} is outdated (1.26+ required). "
                     "Update kiro-cli, or use the default claude-agent-acp backend."
                 )
     except Exception:

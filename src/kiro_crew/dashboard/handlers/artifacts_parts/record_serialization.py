@@ -108,10 +108,16 @@ def _serialize(art: Any, *, include_content: bool = False, state: Any = None) ->
     if isinstance(out.get("tags"), list):
         out["tags"] = [_redact_text(t) if isinstance(t, str) else t for t in out["tags"]]
     if include_content and out.get("content"):
-        cleaned = out["content"]
+        original = out["content"]
+        cleaned = original
         cleaned, _ = redact_exfiltration_urls(cleaned)
         cleaned, _ = redact_credentials(cleaned)
         out["content"] = cleaned
+        # Says the shown content is not the stored content, so an editor that
+        # saves what it shows (a canvas autosaves the whole document) must not
+        # write the placeholders back over what they hide.
+        if cleaned != original:
+            out["content_redacted"] = True
     # Live-resolve the originating session's current title for the Source column.
     # Only set when we can resolve (session present, or gone -> "(deleted
     # session)"); when there's no originating session the key is absent and the
@@ -127,6 +133,9 @@ def _serialize(art: Any, *, include_content: bool = False, state: Any = None) ->
     pub = out.get("publication")
     if isinstance(pub, dict) and isinstance(pub.get("last_error"), str) and pub["last_error"]:
         pub["last_error"] = _redact_text(pub["last_error"])
+    # Read-time, by this gateway's clock, so the page and the publish route agree.
+    if isinstance(pub, dict) and art.publication is not None:
+        pub["expired"] = art.publication.is_expired()
     if isinstance(out.get("webapp_metadata"), dict):
         out["webapp_metadata"] = _redact_webapp_metadata(out["webapp_metadata"])
     # Image block: ``alt`` and ``original_filename`` are derived from markdown the

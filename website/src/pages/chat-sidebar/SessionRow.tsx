@@ -4,7 +4,7 @@
  *  (./rows) and its one `actions` object; the row's memo compares both. */
 import { useRef, useEffect, useState, memo, useMemo, useContext, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, Split, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical, Moon, Zap } from 'lucide-react'
+import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, Split, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical, Moon } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector, type RootState } from '../../store'
@@ -37,6 +37,7 @@ import { isMemoryWait, queuedWaitText } from '../chat/subagentQueuedReason'
 import { focusSiblingSessionRow } from '../chat/sessionRowNav'
 import { fmtRelativeTime, slotActivityTs } from '../chat/sessionOrder'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { useKeyboardLayout } from '../../hooks/useNavShortcutHint'
 import { deriveAutomationStatus, MONITOR_STATUS_KEYS } from '../../monitoring/automation'
 import MonitorRadar from '../../components/MonitorRadar'
 import { i18nT } from '../../i18n/t'
@@ -49,12 +50,13 @@ import { sameRowView, type SessionRowView } from './rows'
 import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
-import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
-import { SessionSourceChips } from './SessionSourceChips'
+import { DisclosureChevron, isOpenInTabModifierClick, reclickDoubleClick, reclickPanelTitle, reclickTogglesPanel } from './chrome'
+import { useRowStatus } from './rowStatus'
+import { SessionStatusLinksLine } from './SessionLinksLine'
 import { useSessionCardLines, cardLineClass } from './cardLines'
 import { RowTrailingMeta, SearchHitTail } from './searchHits'
 import { connectedChannelLinks } from './connectedChannelLinks'
-import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
+import { ConductorModeTitleMark } from '../../components/crew/CrewModeMarks'
 import { crewRootOf } from '../../lib/crewMode'
 import { summarizeCrewWorkers, crewRowCounts } from '../../lib/crewWorkers'
 import { CrewRowAttention, crewRowTooltip } from './CrewRowCounts'
@@ -218,14 +220,10 @@ interface SessionRowActions {
   /** Stage a reference to a session in the active chat's composer — the same
    *  callback the drag-into-the-composer drop fires. The row menu's "Reference
    *  in chat" item calls it for THIS row's session after the row has checked
-   *  `sessionRefBlockReason`; `canStageSessionRef` gates whether a composer
-   *  exists to stage into at all. Undefined on a surface with no chat pane
-   *  (the embed sessions list), which hides the item. */
+   *  `sessionRefBlockReason`; `SessionRefStageContext` gates whether a
+   *  composer exists to stage into at all. Undefined on a surface with no chat
+   *  pane (the embed sessions list), which hides the item. */
   onDropSessionRef?: (ref: { key: string; title: string; messages?: number }) => void
-  /** Whether a composer exists to stage a session reference into (not split
-   *  view, an active slot present). The row combines it with the per-row block
-   *  reason to decide whether to offer "Reference in chat". */
-  canStageSessionRef?: boolean
 }
 
 interface SessionRowProps {
@@ -257,7 +255,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
   // The server's groups (the worker list API), so the row, the panel and the
   // breadcrumb agree. Only what needs attention is drawn (CrewRowAttention); the
   // full counts live in the tooltip. A failed poll says so in the status line.
-  const { lastWorkers, failed, paused } = useCrewWorkerSummary(root)
+  const { lastWorkers, failed, paused, closedOmitted } = useCrewWorkerSummary(root)
   const { groups, done, total } = summarizeCrewWorkers(lastWorkers ?? [])
   const rowCounts = crewRowCounts(groups)
   const running = rowCounts.find(c => c.bucket === 'working')?.count ?? 0
@@ -289,7 +287,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
   const member = longest ? lastWorkers?.find(w => w.key === longest.worker) : undefined
   const stalledForMs = longest ? Date.now() - longest.since : 0
   const stalledName = member?.title || member?.agent || longestSlot || i18nT('commandCenter.worker_untitled')
-  const title = crewRowTooltip(total, rowCounts, stall.stalled, needsYou)
+  const title = crewRowTooltip(total + closedOmitted, rowCounts, stall.stalled, needsYou)
   // Finished only when the main chat is settled too, and, with a ledger, the gateway's run verdict says done.
   const allDone = (work?.run ? work.run.settled === 'done' : total > 0 && done === total) && !own
   // An interrupted turn or a stalled goal loop of the main chat is said first.
@@ -302,7 +300,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
       {failed && own && <CrewStateWord kind={own.kind} title={own.title} />}
       {!failed && ownFirst && <CrewStateWord kind={ownFirst.kind} title={ownFirst.title} />}
       {failed ? (
-        <ErrorNotice variant="inline" askAgent className="min-w-0" messageClassName="truncate" message={i18nT('commandCenter.workers_error')} />
+        <ErrorNotice variant="inline" askAgent className="min-w-0" messageClassName="truncate" messageTooltip={i18nT('commandCenter.workers_error')} message={i18nT('commandCenter.workers_error')} />
       ) : (
         <CrewRowAttention needsYou={needsYou} stalled={stall.stalled} running={running} done={allDone} paused={paused}
           stalledName={stall.stalled > 0 ? stalledName : undefined} stalledForMs={stall.stalled > 0 ? stalledForMs : undefined} title={title} />
@@ -313,11 +311,15 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
 
 export const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) {
   const {
-    slot: s, showDivider, scope, navScope, holdContainer, isActive, isSidebarActiveSlot, isCrewParent, crewWindowCovers, isOut, isPinned, isUnread, isRunning,
+    slot: s, dividerNext, scope, navScope, holdContainer, crewWindowCovers, isOut, isPinned, isRunning,
     recent, subagentCount, subagentApprovalCount, digitBadge,
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
+  // From the row-status store: only a row whose answer flips re-renders on a chat switch.
+  const { isActive, isSidebarActiveSlot, reclickPanel, isCrewParent, isUnread, nextIsActive } = useRowStatus(s, dividerNext)
+  // No divider touches the open row: its highlight separates it.
+  const showDivider = dividerNext !== null && !isActive && !nextIsActive
   // A Crew Mode root (stamped by the gateway, `crew_mode.stamp_rows`) is drawn as
   // the crew card: ghost badge, gradient eyebrow and its workers' summary. Only a
   // local row: a peer row's stamps describe another gateway's tree.
@@ -365,14 +367,14 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const {
     connected, mode, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
     recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort,
-    guideOnRowControl, showUnreadDot, manualReorderOff,
+    guideOnRowControl, showUnreadDot, expandLinkedItems, manualReorderOff,
   } = view.shell
   const {
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
     slotRenameEnterRef, renameOfflineSlot, renameOfflineScope,
     onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession,
-    openElsewhere, toggleConductor, onDropSessionRef, canStageSessionRef,
+    openElsewhere, toggleConductor, onDropSessionRef,
   } = actions
   // A LOCAL row whose surface this page does not render goes where it lives: click
   // and Enter land here instead of `switchSlot`, and every local-only affordance
@@ -416,10 +418,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // peer row never reads slot-scoped LOCAL state under its raw key (the gateways do
   // not share a key namespace, and deterministic keys can be byte-identical).
   const localSlotKey = view.localKey
-  // memo() bails out of the provider-level repaint, so the row subscribes to
-  // catalog loads directly (same contract as the ChatSidebar shell) — its
-  // i18nT strings must re-translate even when no prop moves.
+  // memo() skips the provider repaint, so the row follows catalog loads and the keyboard layout itself.
   const langGen = useLanguageGeneration()
+  useKeyboardLayout()
   const dispatch = useAppDispatch()
   const ime = useImeGuard()
   const simplifiedToolNames = useSimplifiedToolNames()
@@ -1262,14 +1263,15 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       closeNeutral: releaseLocally,
       // "Reference in chat": stage a link to THIS session in the active chat's
       // composer, the discoverable form of the drag gesture. Offered only when a
-      // composer exists (`canStageSessionRef`) and this session may be referenced
+      // composer exists (`SessionRefStageContext`, read by the open menu) and
+      // this session may be referenced
       // into it — `sessionRefBlockReason` refuses an incognito/temporary target
       // and the already-active session (a self-reference). A foreign (peer) row's
       // slot is owned elsewhere and stages nothing, so it is withheld there too.
       // `crewWindowCovers` withholds it on EVERY row while a crew window covers
       // the pane: the active composer is then hidden under an opaque cover, so a
       // staged ref would land where the user cannot see it (the no-visible-
-      // composer case `canStageSessionRef` guards, which stays true here because
+      // composer case `SessionRefStageContext` guards, which stays true here because
       // activeSlot is still set). Re-decided at click time from the SAME pure
       // function the drop zone uses, so the offer and the handler cannot drift.
       // `isSidebarActiveSlot` is the raw key===activeSlot test (a per-row view
@@ -1278,7 +1280,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       // self-reference the drop zone refuses. Carried in the view, not
       // `rowActions`, so a chat switch re-renders only the rows whose answer
       // flips. Fires the same callback the drop does, with the row's snapshot.
-      onReferenceInChat: onDropSessionRef && canStageSessionRef && !foreignRow && !crewWindowCovers
+      onReferenceInChat: onDropSessionRef && !foreignRow && !crewWindowCovers
         && !sessionRefBlockReason({ key: rowKey, activeSlot: isSidebarActiveSlot ? rowKey : null, memoryMode: s.memory_mode })
         ? () => onDropSessionRef({
             key: rowKey,
@@ -1286,7 +1288,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             messages: s.messages,
           })
         : undefined,
-    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel, onDropSessionRef, canStageSessionRef, foreignRow, crewWindowCovers, isSidebarActiveSlot, s.memory_mode, s.messages])
+    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel, onDropSessionRef, foreignRow, crewWindowCovers, isSidebarActiveSlot, s.memory_mode, s.messages])
     const rowActions = useMemo(() => (void langGen, !renamingHere && !foreignRow ? (isMobile ? (
       // In flow, not absolute: the phone ⋮ is always drawn, so the content
       // column must end before it. Absolutely placed, the column ran to the
@@ -1308,13 +1310,15 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       // The open session's row shows its actions only while a guide step
       // points at one (sessions.row-menu resolves to the open row's copy).
       // No `title` here: IconButton then shows each aria-label as an instant tip.
-      <IconButtonGroup className={`absolute top-1/2 -translate-y-1/2 right-1.5 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100 ${isActive && guideOnRowControl ? '!opacity-100' : ''}`}>
+      // Anchored to the top, over the meta and title lines: centred, its 28px
+      // reached into the status line and took a press aimed at the links count.
+      <IconButtonGroup className={`absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100 ${isActive && guideOnRowControl ? '!opacity-100' : ''}`}>
         <DropdownMenu guideScope="menu:sessions.row-menu">
           <DropdownMenuTrigger asChild>
             <IconButton aria-label={i18nT('pages.chatSidebar.more_options')} {...uiLocation('sessions.row-menu')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-            <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
+            <SessionActionsMenu variant="dropdown" {...rowMenuProps} onDuplicate={() => onDuplicate(rowKey)} />
           </DropdownMenuContent>
         </DropdownMenu>
         <IconButton variant="accent" aria-label={i18nT('pages.chatSidebar.duplicate')} {...uiLocation('sessions.row-duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><Split size={12} /></IconButton>
@@ -1333,9 +1337,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     ), [renamingHere, foreignRow, isMobile, isActive, guideOnRowControl, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeReachLabel, releaseLocally, rowKey, langGen])
     const rowContextMenuContent = useMemo(() => (void langGen, !foreignRow ? (
       <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-        <SessionActionsMenu variant="context" {...rowMenuProps} />
+        <SessionActionsMenu variant="context" {...rowMenuProps} onDuplicate={() => onDuplicate(rowKey)} />
       </ContextMenuContent>
-    ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, langGen])
+    ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, onDuplicate, rowKey, langGen])
     return (
       // A drop target in its own order: a pinned row takes pinned drags (the
       // pinned order), an unpinned row unpinned ones (the manual order, in any
@@ -1407,7 +1411,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
               ? i18nT('pages.chatSidebar.opens_here_runs_on_instance', { name: peerName })
               : onOpenElsewhere
                 ? i18nT('pages.chatSidebar.opens_on_members_page')
-                : undefined
+                : reclickPanel && !isMobile ? reclickPanelTitle() : undefined
           }
           {...offlineProps(connected, i18nT('utils.offline.switch_sessions'))}
           role="button"
@@ -1493,6 +1497,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             onOpenSlotInNewTab(s.key, { background: true })
           }) : undefined}
           onClick={e => {
+            if (reclickTogglesPanel(e, reclickPanel && !isMobile && connected && !foreignRow && !isRenaming)) { onSelectSlot?.(s.key); return } // the open chat: side panel (see chrome)
             // A browser emits two click events before dblclick. Let the first
             // select an inactive session, but do not fetch it a second time
             // before the title's double-click handler opens rename.
@@ -1533,7 +1538,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             onSelectSlot?.(s.key)
           }}
           onDoubleClick={e => {
-            if (foreignRow) return
+            if ((e.target as HTMLElement).closest?.('[data-session-title]')) reclickDoubleClick(); if (foreignRow) return
             if (!(e.target as HTMLElement).closest?.('[data-session-title]')) return
             if (renamingHere) return
             e.preventDefault()
@@ -1622,9 +1627,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <span className="mt-2.5 mr-0.5 w-4 h-4 shrink-0" aria-hidden="true" />
           ))}
           {/* The `:has` rule hides the title line below while a crewmate head (`MemberRowHead`),
-              which already carries the name, is drawn on the first line. Not while
-              renaming: the rename box lives in that title line. */}
-          <div className={`flex-1 min-w-0 overflow-hidden ${renamingHere ? '' : '[&:has([data-member-head])>[data-session-title]]:hidden'}`}>
+              which already carries the name, is drawn on the first line. Not while renaming: the
+              rename box lives in that title line. */}
+          <div className={`relative flex-1 min-w-0 overflow-x-clip ${renamingHere ? '' : '[&:has([data-member-head])>[data-session-title]]:hidden'}`}>
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
                 *  AnimatePresence trees each paid child-diffing bookkeeping on
@@ -1633,12 +1638,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  framer-only (no new CSS @keyframes). */}
               {/* A crewmate's own thread has no agent chip (its title is the name), so the
                 *  line starts at the Members-page chip with no placeholder gap before it. */}
-              {/* A Crew Mode root names the mode, not the conductor behind it: the
-                *  conductor is Crew Mode's to choose and may be swapped. The bolt sits
-                *  inline on this line rather than as a badge before the title, so the
-                *  title keeps the row's full width. */}
-              {crewRoot && <Zap size={12} aria-hidden="true" className="inline-block shrink-0 conductor-mode-accent" />}
-              {crewRoot && <CrewEyebrow active={crewWorking} />}
+              {/* A Conductor mode root wears its coloured bolt where every other
+                *  row names its agent, so each row's title starts at the same x
+                *  and the mode is read in the slot that says who runs the chat. */}
+              {memberTitle === null && crewRoot && <ConductorModeTitleMark />}
               {/* A code-channel row's agent name gives way first, so the Slack
                 *  mark and the time keep their room; other rows keep `shrink-0`. */}
               {memberTitle === null && !crewRoot && (
@@ -1918,24 +1921,17 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 is unread with nothing said yet still renders the line, because the
                 dot IS the content then. A crew card's workers summary takes the
                 tail's place (ONE line); a search's snippet stands in for the tail. */}
-            {crewRoot
-              // A conductor mode row shows only what needs attention (counts in the tooltip), else the usual tail.
-              ? <CrewRootSummaryLine root={s.key} fallback={<SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />} own={crewOwnState} work={s.crew_work} dot={unreadDot}
-                  // What the main chat itself holds for the person: an approval, a question, a
-                  // spawn approval, or an armed loop asking (a ledger item on the person is counted from `crew_work`).
-                  rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
-              : <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />}
-            {s.source_links && s.source_links.length > 0 && (
-              <SessionSourceChips
-                slotKey={s.key}
-                links={s.source_links}
-                total={s.source_links_total}
-                connected={connected}
-                isActive={isActive}
-                onOpenSource={onOpenSource}
-                onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true })); onSelectSlot?.(s.key) }}
-              />
-            )}
+            <SessionStatusLinksLine
+              status={crewRoot
+                // A conductor mode row shows only what needs attention (counts in the tooltip), else the usual tail.
+                ? <CrewRootSummaryLine root={s.key} fallback={<SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />} own={crewOwnState} work={s.crew_work} dot={unreadDot}
+                    // What the main chat itself holds for the person: an approval, a question, a
+                    // spawn approval, or an armed loop asking (a ledger item on the person is counted from `crew_work`).
+                    rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
+                : <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />}
+              // A session whose chips are turned off shows no linked-items count and no chips.
+              slotKey={s.key} links={s.source_links_off ? undefined : s.source_links} total={s.source_links_total} defaultOpen={expandLinkedItems} connected={connected} isActive={isActive} onOpenSource={onOpenSource}
+              onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true })); onSelectSlot?.(s.key) }} />
             {/* No tag chips here: every tag renders in the meta line above as
              *  tinted `· name` text. A chip row would print each tag twice. */}
           </div>

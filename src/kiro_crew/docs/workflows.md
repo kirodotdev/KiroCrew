@@ -61,6 +61,15 @@ finishes. Typing `/workflow ` in the chat box also opens a menu of the saved
 workflows; picking one fills in `/workflow <name> ` for you to add the input
 and send.
 
+Kiro Crew also ships built-in workflows, listed with the saved ones. They are
+read-only: you can run one by name but not change or remove it, and no saved
+workflow can take its name. To change one, save a copy under a new name.
+`/workflow ci-red-triage <pr> [repo folder] [base branch]` is the first: it
+reads a pull request's red CI checks, sorts each into PR, main, flake, infra
+or timeout, and names the next step for each. Its steps are told only to
+read, never to edit, push, rerun or comment; they still run with the normal
+agent tools, sandbox and approval rules.
+
 ## What comes back
 
 Credentials, inside URLs too, are stripped from every workflow
@@ -84,4 +93,4 @@ Seatbelt sandbox; turning the sandbox off is not a recovery path.
 
 - [Subagents](subagents.md): parallel fan-out when the work needs no phases or restarts
 - [Task runner](task-runner.md): autonomous multi-step execution from a spec file
-- [Dashboard](dashboard.md): the chat side panel and the Capabilities tabs
+- [Dashboard](dashboard.md): the chat side panel and the Customize tabs

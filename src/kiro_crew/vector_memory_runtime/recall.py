@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Callable
 from kiro_crew import memory_recall_filters as recall_filters
 from kiro_crew import memory_v2
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE, enter_work_phase
+from kiro_crew.vector_memory_runtime import embedding as _embedding
 from kiro_crew.vector_memory_runtime import episodic_search as _episodic_search
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery, _RecallSpaceChanged
@@ -143,7 +144,7 @@ def recall(
         signature = store.recorded_embedding_space()
     enter_work_phase("embed")
     vector = (
-        store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
         if query_text.strip() and cap > 0 and store.embed_fn
         else None
     )
@@ -206,7 +207,9 @@ def recall_once(
             evidence["filters"] = filters.describe()
         if store.algorithm_version == "v2":
             evidence["operating_point"] = v2_operating_point(
-                store.recorded_embedding_space(), embed_fn=store.embed_fn
+                store.recorded_embedding_space(),
+                embed_fn=store.embed_fn,
+                instructed=_embedding.query_is_instructed(query.vector),
             )
         return evidence
 
@@ -331,11 +334,11 @@ def recall_once(
     # is shortened behind an in-text marker rather than dropped: an empty block
     # reads the same as "no lesson matched", exactly when the best match is the
     # long one. That needs the share to hold the block's frame, the marker and
-    # one character of text: 159 characters for one in-scope lesson (a cap of
-    # 477), and from 215 once the counts line appears (a cap of 645), one more
+    # one character of text: 239 characters for one in-scope lesson (a cap of
+    # 717), and from 295 once the counts line appears (a cap of 885), one more
     # per extra digit in the counts. A query with no recall terms orders the
     # block "most recent" instead of "most relevant", two characters shorter,
-    # so that floor is 213 (a cap of 639). Below that the block is omitted.
+    # so that floor is 293 (a cap of 879). Below that the block is omitted.
     if len(lessons) > lessons_share:
         lessons = _lessons.truncate_explicit_lessons(lessons, lessons_share)
     remainder = cap - len(lessons)

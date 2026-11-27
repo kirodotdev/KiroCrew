@@ -39,6 +39,7 @@ import {
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import type { LibraryApp } from './useAppsData'
+import { isMarketSourced } from '../../components/appstore/types'
 import { guidePick, guidePickAlias, guidePickControl, guidePickOf } from '../../uiLocations/targetRegistry'
 import { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
@@ -245,7 +246,7 @@ export default function LaunchpadTile({
                 <ArrowUp size={12} aria-hidden /> {i18nT('components.appstore.installedAppCard.update')}
               </DropdownMenuItem>
             )}
-            {app.lifecycle === 'gateway' && !app.updateAvailable && !disabled && (
+            {app.lifecycle === 'gateway' && !app.updateAvailable && !disabled && !isMarketSourced(app) && (
               <DropdownMenuItem
                 disabled={actionInFlight}
                 title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}

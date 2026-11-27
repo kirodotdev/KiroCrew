@@ -59,6 +59,7 @@ from kiro_crew.memory_stores import (
     resolve_store_path,
 )
 from kiro_crew.owner_only_files import owner_only_opener, prepare_owner_only_sqlite
+from kiro_crew.sqlite_uri import read_only_uri
 
 logger = logging.getLogger(__name__)
 
@@ -154,19 +155,6 @@ def _sandboxed_backup_hint(exc: BaseException | None) -> str | None:
     )
 
 
-def _read_only_uri(path: Path) -> str:
-    """A read-only SQLite URI for *path*, percent-escaped.
-
-    ``as_uri()`` rather than interpolating the path into ``file:...``: a filename
-    containing ``?`` or ``#`` is otherwise parsed as the start of the URI's query or
-    fragment, truncating the path so the connection opens a DIFFERENT database. Store
-    names are shape-validated, but ``KIROCREW_HOME`` is operator-chosen, so the
-    truncation is reachable through the data home. One helper because two spellings of
-    one URI is how they diverge.
-    """
-    return f"{path.absolute().as_uri()}?mode=ro"
-
-
 def backup_store(db_path: Path, *, now: datetime | None = None) -> Path | None:
     """Copy *db_path* consistently into its backup directory. ``None`` if there is nothing.
 
@@ -207,7 +195,7 @@ def backup_store(db_path: Path, *, now: datetime | None = None) -> Path | None:
     dst: sqlite3.Connection | None = None
     try:
         # Read-only URI so a backup can never be the thing that writes to the store.
-        src = sqlite3.connect(_read_only_uri(db_path), uri=True)
+        src = sqlite3.connect(read_only_uri(db_path), uri=True)
         # Created 0600 before SQLite opens it, so the populated copy is never
         # readable by others, not even before the restrict_to_owner below.
         prepare_owner_only_sqlite(partial)
@@ -226,7 +214,7 @@ def backup_store(db_path: Path, *, now: datetime | None = None) -> Path | None:
         # real one is deleted to make room -- so the operator loses their last
         # restorable copy at the moment they reach for it. The restore path already
         # checks; checking only there is checking at the wrong end.
-        with closing(sqlite3.connect(_read_only_uri(partial), uri=True)) as probe:
+        with closing(sqlite3.connect(read_only_uri(partial), uri=True)) as probe:
             if probe.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise MemoryBackupFailed(f"the staged copy of {db_path} failed its integrity check")
         platform_compat.restrict_to_owner(partial)
@@ -543,7 +531,7 @@ def restore_from_backup(backup: Path, store: str = DEFAULT_MEMORY_STORE) -> Path
             prepare_owner_only_sqlite(stage)  # 0600 before the copy lands in it
             try:
                 with (
-                    closing(sqlite3.connect(_read_only_uri(backup), uri=True)) as src,
+                    closing(sqlite3.connect(read_only_uri(backup), uri=True)) as src,
                     closing(sqlite3.connect(str(stage))) as dst,
                 ):
                     try:
@@ -568,7 +556,7 @@ def restore_from_backup(backup: Path, store: str = DEFAULT_MEMORY_STORE) -> Path
                     # header; left that way, the probe below would leave
                     # `restore-*.db-wal`/`-shm` behind once activation renames the stage.
                     dst.execute("PRAGMA journal_mode=DELETE").fetchone()
-                with closing(sqlite3.connect(_read_only_uri(stage), uri=True)) as probe:
+                with closing(sqlite3.connect(read_only_uri(stage), uri=True)) as probe:
                     if probe.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                         raise ValueError("Staged backup fails its integrity check")
                     _require_v1_restore_database(probe, store)
@@ -704,7 +692,7 @@ def _quarantine_invalid_v1_pending(db_path: Path, out: Path) -> bool:
         )
     # mode=ro refuses an absent file, rather than manufacturing empty memory.
     try:
-        with closing(sqlite3.connect(_read_only_uri(db_path), uri=True)) as db:
+        with closing(sqlite3.connect(read_only_uri(db_path), uri=True)) as db:
             _require_v1_restore_database(db, name)
             if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ValueError(

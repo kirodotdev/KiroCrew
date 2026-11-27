@@ -7,8 +7,9 @@ staged beside the running install (by the scheduler, or by an approved in-app
 wheel), or the running install's served assets are gone, and a person decides when
 to restart. The dashboard reads the note through
 the status frame (``update_restart_ready*``) and shows it on the update pill and
-in the update dialog; the next user stop or restart, or a fresh start, is what
-brings the new version in.
+in the update dialog, and a diagnostics bundle it collects compares the staged
+version with the running one while a restart would still run it; the next user
+stop or restart, or a fresh start, is what brings the new version in.
 
 The note is process-global and in memory on purpose: a restart replaces the
 process, and with it the reason the note exists.

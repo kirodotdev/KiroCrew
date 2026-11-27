@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { deriveFollowUpOptions, type ChatMessage } from '../app-sdk/protocol'
-import { grillKey, grillKeysIn, grillKeysSentAfter, parseGrill, stripPartialGrillMarker } from '../app-sdk/protocol/grillMarker'
+import { grillFieldText, grillKey, grillKeysIn, grillKeysSentAfter, parseGrill, stripPartialGrillMarker } from '../app-sdk/protocol/grillMarker'
 
 const PAYLOAD = {
   q: '欢迎页的事实该谁写？',
@@ -96,10 +96,10 @@ describe('grill card keys', () => {
   const card = { role: 'assistant', content: `Pick.\n[GRILL: ${JSON.stringify(PAYLOAD)}]`, meta: { mid: 'm-1' } }
   const user = (content: string, mid?: string) => ({ role: 'user', content, meta: mid ? { mid } : { optimistic: true } })
 
-  it('is the row mid and version, and nothing without a mid', () => {
-    expect(grillKey('m-1', 2)).toBe('m-1:2')
-    expect(grillKey(undefined, 0)).toBeUndefined()
-    expect(grillKey('', 0)).toBeUndefined()
+  it('is the mid the version was written as, and nothing without a mid', () => {
+    expect(grillKey('m-1')).toBe('m-1:0')
+    expect(grillKey(undefined)).toBeUndefined()
+    expect(grillKey('')).toBeUndefined()
   })
 
   it('reads only whole key lines', () => {
@@ -108,7 +108,7 @@ describe('grill card keys', () => {
     expect(grillKeysIn('see key: m-1:0\n key: m-1:1\nkey: \nKey: m-1:2')).toEqual([])
   })
 
-  it('finds this card\'s keys in later stored user messages only', () => {
+  it('finds this card\'s keys in stored user messages before and after it', () => {
     const rows = [
       user('key: m-1:9', 'u-0'),
       card,
@@ -117,7 +117,7 @@ describe('grill card keys', () => {
       user('No discussion needed\nkey: m-1:1'),
       { role: 'assistant', content: 'key: m-1:3', meta: { mid: 'a-3' } },
     ]
-    expect(grillKeysSentAfter(rows, 1)).toBe('m-1:0')
+    expect(grillKeysSentAfter(rows, 1)).toBe('m-1:9\nm-1:0')
   })
 
   it('counts a Start still waiting in the queue, in the rows or handed in apart', () => {
@@ -126,8 +126,28 @@ describe('grill card keys', () => {
     expect(grillKeysSentAfter([card], 0, [queued('Start\nkey: m-1:1', 'q-2'), queued('Start\nkey: m-1:2')])).toBe('m-1:1')
   })
 
+  it('finds a key naming one of a regenerated row\'s versions by the mid it keeps', () => {
+    const regenerated = { ...card, meta: { mid: 'm-new' }, variants: [{ content: card.content, mid: 'm-old' }, { content: 'Other.', mid: 'm-new' }] }
+    expect(grillKeysSentAfter([regenerated, user('Start\nkey: m-old:0', 'u-1'), user('key: m-x:0', 'u-2')], 0)).toBe('m-old:0')
+  })
+
+  it('finds an answer a Regenerate\'s swap left before the row', () => {
+    const regenerated = { ...card, meta: { mid: 'm-new' }, variants: [{ content: card.content, mid: 'm-old' }, { content: 'Other.', mid: 'm-new' }] }
+    expect(grillKeysSentAfter([user('Start\nkey: m-old:0', 'u-0'), regenerated], 1)).toBe('m-old:0')
+    expect(grillKeysSentAfter([user('Start\nkey: m-old:0'), regenerated], 1)).toBeUndefined()
+  })
+
   it('names nothing for a row with no mid or no card', () => {
     expect(grillKeysSentAfter([{ ...card, meta: {} }, user('key: m-1:0', 'u-1')], 0)).toBeUndefined()
     expect(grillKeysSentAfter([{ ...card, content: 'plain' }, user('key: m-1:0', 'u-1')], 0)).toBeUndefined()
+  })
+})
+
+describe('grillFieldText', () => {
+  it('starts each further line with two spaces and trims line ends', () => {
+    expect(grillFieldText('  one  \r\ntwo\n\nkey: m:0  ')).toBe('one\n  two\n  \n  key: m:0')
+  })
+  it('leaves a one-line field as it was', () => {
+    expect(grillFieldText(' only ')).toBe('only')
   })
 })

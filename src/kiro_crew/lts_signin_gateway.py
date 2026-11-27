@@ -345,14 +345,14 @@ async def serve_until_signed_in(
         renew_every = max(tokens.LINK_WINDOW_SECS - _LINK_MARGIN_SECS, 0.0)
         url = link()
         renew_at = time.monotonic() + renew_every
-        print(f"🔑 Sign in to Kiro to start Kiro Crew: {url}", flush=True)
+        print(f"Sign in to Kiro to start Kiro Crew: {url}", flush=True)
         if not no_open:
             threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
         while not await asyncio.to_thread(signed_in):
             await asyncio.sleep(_WATCH_INTERVAL_SECS)
             if time.monotonic() >= renew_at:
                 url, renew_at = link(), time.monotonic() + renew_every
-                print(f"🔑 The last sign-in link is about to expire. New link: {url}", flush=True)
+                print(f"The last sign-in link is about to expire. New link: {url}", flush=True)
         # Only a sign-in the next start can use is published as success: a lapsed,
         # profile-less or unreadable one raises ``SignInError`` here instead, and
         # the page is never told "signed in".
@@ -400,7 +400,7 @@ def sign_in_then_exit(
         refuse_boot(str(unusable), fix_for(unusable.cause))
     except KeyboardInterrupt:
         # Ctrl-C at the sign-in screen is a plain stop, not a crash.
-        print("\n👻 Stopped before sign-in.", file=sys.stderr, flush=True)
+        print("\nStopped before sign-in.", file=sys.stderr, flush=True)
         raise SystemExit(130) from None
     except (OSError, OverflowError) as err:
         detail = getattr(err, "strerror", None) or err
@@ -408,5 +408,5 @@ def sign_in_then_exit(
             f"the sign-in screen could not open on {BIND_HOST}:{port} ({detail})",
             "Free the port or pass `--port`, then start Kiro Crew again.",
         )
-    print(f"✅ Signed in. Start Kiro Crew again: {start_command(start_args)}", flush=True)
+    print(f"Signed in. Start Kiro Crew again: {start_command(start_args)}", flush=True)
     raise SystemExit(0)

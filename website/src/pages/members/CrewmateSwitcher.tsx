@@ -333,7 +333,9 @@ export default function CrewmateSwitcher({
                     if (!on) onPick(m.name)
                   }}
                   className={cn(
-                    'flex items-center gap-2.5 w-full px-2.5 py-2 rounded-xl text-left transition-colors cursor-pointer',
+                    // The focus ring is drawn inside the row: the list scrolls, and its
+                    // scroller clips a ring drawn outside a full-width row.
+                    'flex items-center gap-2.5 w-full px-2.5 py-2 rounded-xl text-left transition-colors cursor-pointer focus-visible:outline-offset-[-2px]',
                     onToggleStar && 'pr-8',
                     on ? 'bg-accent-subtle' : 'hover:bg-bg-hover',
                   )}

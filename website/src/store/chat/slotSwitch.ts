@@ -6,19 +6,20 @@
 import { createAction, createAsyncThunk, type ActionReducerMapBuilder } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import type { ChatMessage } from '../../types'
-import { emitSlotRead } from '../../lib/slotReadRelay'
+import { emitSlotRead, newerTs, newestServerRowTs } from '../../lib/slotReadRelay'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
 import { armConfirmedCloseHold, markSlotRead, confirmOrphanUnread, removeSlotOptimistic } from '../dashboardSlice'
 import { slotLastTsOf } from '../slotLastTs'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { recentErrors, recordError, redactSecrets, type ErrorReport } from '../../utils/errorReport'
 import { chatSlotDetailPath } from '../../api/chatSlotPaths'
 import { asFrontRead } from '../../api/readGate'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, pageRegressesSupersededSteer, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, queueAfterSupersededDrain, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
+import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, pageAnswersLocalPrompt, pageRegressesSupersededSteer, rowIdentities, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, queueAfterSupersededDrain, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
 import { keepPendingCoordinatorApprovals } from './coordinatorApprovals'
@@ -75,8 +76,11 @@ import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
  *    are the page's own (a late `?sid=` recovery, a forwarded nav intent), and
  *    those must never count as the user having looked.
  *  - `leaveSplit`: this open must replace Split View with the requested
- *    session, because the grid may not contain it. */
-export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean; automatic?: boolean; requestSeq?: number; gesture?: boolean; leaveSplit?: boolean }
+ *    session, because the grid may not contain it.
+ *  - `quietOnMissing`: with `announceOnMissing`, a 404 raises no notice and
+ *    evicts nothing, because the caller checks the closed-session history
+ *    itself (an in-app session link). Other failures are still announced. */
+export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean; automatic?: boolean; requestSeq?: number; gesture?: boolean; leaveSplit?: boolean; quietOnMissing?: boolean }
 
 /** The slot key of a `switchSlot` argument, in either spelling. Non-object
  *  values pass through untouched: a hand-rolled test dispatch can omit
@@ -190,6 +194,12 @@ export function switchSlotNoticeCopy(kind: 'gone' | 'failed' | 'closed', name: s
 export const setSwitchSlotGone = createAction<{ name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport }>('chat/setSwitchSlotGone')
 export const clearSwitchSlotGone = createAction('chat/clearSwitchSlotGone')
 
+/** The name a switch-failure notice gives a session: the one its Sessions row shows. */
+function slotNoticeName(state: RootState, key: string): string | undefined {
+  const slot = state.dashboard?.slots?.find(s => s.key === key)
+  return slot ? sessionDisplayTitle(slot) : undefined
+}
+
 export const switchSlot = createAsyncThunk<
   Awaited<ReturnType<typeof fetchSlotDetail>>,
   SwitchSlotArg,
@@ -275,10 +285,10 @@ export const switchSlot = createAsyncThunk<
         // badges for messages nobody displayed. `pending` assigns activeSlot
         // atomically before this thunk body runs, so a superseded request
         // observes someone else's key here.
-        if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
+        if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, newerTs(_newestSlotTs(), newestServerRowTs(walked.messages)))
         return { ...walked, comparableTotal: first.total }
       }
-      if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
+      if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, newerTs(_newestSlotTs(), newestServerRowTs(first.messages)))
       return first
     } catch (e) {
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,
@@ -310,11 +320,14 @@ export const switchSlot = createAsyncThunk<
         // round-trip, and the next authoritative slots write reconciles either
         // way.
         const announce = typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
+        if (typeof arg === 'object' && arg !== null && arg.quietOnMissing === true && isMissingSlotError(payload)) {
+          return rejectWithValue(payload)
+        }
         if (announce && isMissingSlotError(payload)) {
           // Read BEFORE the eviction below removes the row. Optional-chained
           // like the other dashboard reads in this thunk: a partial preloaded
           // test state can omit the slice.
-          const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
+          const name = slotNoticeName(getState() as RootState, key)
           const chat = (getState() as RootState).chat
           // The announcement is ESCAPES-ONLY: re-activating the session the
           // user is already in (the live-claimed origin names the gone key)
@@ -387,7 +400,7 @@ export const switchSlot = createAsyncThunk<
           // notice belonging to the user's current gesture with one about a
           // click they already moved past.
           if ((getState() as RootState).chat.slotSwitchRequestId === requestId) {
-            const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
+            const name = slotNoticeName(getState() as RootState, key)
             dispatch(setSwitchSlotGone({
               name: name ?? '',
               kind: 'failed',
@@ -404,7 +417,7 @@ export const switchSlot = createAsyncThunk<
       // cannot overwrite the current gesture's notice.
       if (typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
           && (getState() as RootState).chat.slotSwitchRequestId === requestId) {
-        const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
+        const name = slotNoticeName(getState() as RootState, key)
         dispatch(setSwitchSlotGone({
           name: name ?? '',
           kind: 'failed',
@@ -554,6 +567,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       const { key, messages: fetchedMessages, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
+      if (state.slotOpenFailed === key) state.slotOpenFailed = null
       // The user's open of this session has landed (see `ChatState.userOpen`):
       // only its own gesture load, never a plain switch that superseded it.
       const openArg = action.meta?.arg
@@ -644,6 +658,38 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         existing.slice(liveFrom).filter(m => m.role === 'user' && typeof m.meta?.sendId === 'string' && m.meta.sendId),
         preserved,
       )
+      // A page streaming row at or past the replay floor already folds every
+      // chunk this tab applied. The tab's own trailing streaming row can hold
+      // less: an open with no cached copy starts it at the first chunk after
+      // the open, and a cached copy stops growing while its chat is off screen.
+      // That row keeps its place (reasoning sits above it) and takes the page
+      // row's text, as in `hydrateSlotMessages` (#38617).
+      if (lastLocal?.role === 'streaming') {
+        const pageSeq = snapshotChunkSeq(messages)
+        const floor = floorForGen(state.lastChunkSeq, state.lastChunkGen, snapshotChunkGen(messages))
+        const pageRow = pageSeq !== undefined && (floor === undefined || pageSeq >= floor)
+          ? messages.findLast(m => m.role === 'streaming')
+          : undefined
+        if (pageRow) {
+          lastLocal.content = pageRow.content
+          lastLocal.rawText = pageRow.content
+        }
+      }
+      // A cached partial the tab never saw end: its chat was off screen when the
+      // turn finished, and the socket that would have carried the rest was down.
+      // It has no row identity (only the server's own reply frame brings a
+      // `mid`), and a slots snapshot that idled the slot may already have
+      // finalized it to `assistant`. When the server reports the slot idle, no
+      // chunk arrived during this fetch, and the page already answers the
+      // prompt the partial replies to, the page is the newer record of that
+      // turn. Re-attaching the partial below would append the frozen fragment
+      // after the page's finished reply.
+      const staleLocalPartial = !!lastLocal
+        && (lastLocal.role === 'streaming' || lastLocal.role === 'assistant')
+        && rowIdentities(lastLocal).length === 0
+        && !reportedRunning
+        && !state._wsChunkedDuringFetch
+        && pageAnswersLocalPrompt(state.messages, preserved)
       let next: ChatMessage[]
       if (
         state._wsChunkedDuringFetch
@@ -657,6 +703,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         && (lastLocal.role === 'assistant' || lastLocal.role === 'streaming')
         && !!lastLocal.content && lastLocal.content.length > 0
         && !serverHasLastLocal
+        && !staleLocalPartial
       ) {
         // The HTTP fetch resolved with a history that predates the reply we
         // already finalized locally (via applyNonActiveFrame while this slot
@@ -905,6 +952,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // The run mirrors stay as they are: they describe the selected chat's
       // run, which `pending` seeded and live frames keep current, so a turn
       // still running there keeps its Stop.
+      state.slotOpenFailed = target
       state.messages = []
       setPagingCursor(state, false, 0)
       state.slotLoading = false

@@ -1,4 +1,4 @@
-"""Chat runtime sharing inside one session tree (Ultra Mode trees and Bot trees).
+"""Chat runtime sharing inside one session tree (conductor-mode trees and Bot trees).
 
 Each rule below has a test that reddens without it:
 
@@ -607,7 +607,7 @@ def test_a_backend_that_never_shares_reads_no_tree_and_no_member_record():
     assert walked == [] and scope_reads == 0
 
 
-def test_an_ultra_mode_worker_is_placed_in_its_lead_s_tree():
+def test_a_conductor_mode_worker_is_placed_in_its_lead_s_tree():
     worker = _resolve(_Provider(WORKER_A, member=False), roots={WORKER_A: LEAD})
     assert worker is not None
     assert worker.key.tree_root == LEAD

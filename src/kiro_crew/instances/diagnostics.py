@@ -5,7 +5,9 @@ When an instance won't connect or self-heal gives up, run a small set of probes
 the actionable cause instead of a generic "tunnel error":
 
     1. SSH reachable?            ``ssh <host> true``        → no  ⇒ ssh_unreachable
+                                 (ssh can't be spawned)        ⇒ ssh_client_missing
     2. Remote dashboard up?      ``ssh <host> curl …:RP``   → no  ⇒ remote_down
+                                 (ssh can't be spawned)        ⇒ ssh_client_missing
     3. Local forward reachable?  TCP connect 127.0.0.1:LP   → no  ⇒ tunnel_down
     else                                                          ⇒ ok
 
@@ -28,17 +30,25 @@ from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
 # `_send_over_ssm` is imported rather than re-spelled so this rung's SSM dispatch
 # cannot drift from the mint path's on the inner/outer timeout pair -- the same
 # reason `_build_ssh_argv` is shared with the SSH rung rather than rebuilt here.
-from kiro_crew.instances.ssm_token_mint import _send_over_ssm
+from kiro_crew.instances.ssm_token_mint import (
+    NOT_INSTALLED_REASON,
+    USER_UNKNOWN_REASON,
+    _send_over_ssm,
+)
 from kiro_crew.instances.token_mint import (
     REMOTE_BIN_CANDIDATES,
     _build_ssh_argv,
     custom_remote_bin,
+    refused_plugin_message,
+    spawn_one_shot_ssh,
     ssh_spawn_argv_env,
 )
 from kiro_crew.instances.validation import (
     SshValidationError,
+    SsmTargetUnresolvedError,
     SsmValidationError,
     split_ecs_target,
+    split_ssm_resolver,
     validate_aws_profile,
     validate_aws_region,
     validate_remote_bin,
@@ -47,6 +57,7 @@ from kiro_crew.instances.validation import (
     validate_ssm_target,
 )
 from kiro_crew.platform_compat import kill_and_reap
+from kiro_crew.sandbox import SandboxUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +76,9 @@ _SSM_REMOTE_PROBE_TIMEOUT_SECS = 60.0
 # Diagnosis codes (stable strings the UI can map to copy/icons).
 OK = "ok"
 SSH_UNREACHABLE = "ssh_unreachable"
+# The local ssh child could not be spawned (no OpenSSH client on the gateway's
+# PATH), so nothing reached the host: the broken link is this machine.
+SSH_CLIENT_MISSING = "ssh_client_missing"
 REMOTE_DOWN = "remote_down"
 TUNNEL_DOWN = "tunnel_down"
 NOT_CONNECTED = "not_connected"
@@ -79,6 +93,11 @@ SSM_UNREACHABLE = "ssm_unreachable"
 # registered, or the wrong account/region looks like, as distinct from a node
 # that is listed but whose agent is offline.
 SSM_TARGET_MISSING = "ssm_target_missing"
+# SSM rung before the first: the row's asg:/param: target could not be looked up
+# as exactly one instance id (no such group or parameter, none or several
+# InService instances, a value that is no instance id, a refused read). It points
+# at the group or whatever publishes the parameter, not at the agent or network.
+SSM_TARGET_UNRESOLVED = "ssm_target_unresolved"
 # SSM second-rung failures the probe's own output tells apart from a gateway that
 # is simply not running, each worded with the crew setting that fixes it: the
 # AWS profile is refused ssm:SendCommand on the instance; sudo knows no Remote
@@ -92,6 +111,9 @@ REMOTE_WRONG_PORT = "remote_wrong_port"
 _REASONS = {
     OK: "All checks passed — SSH, remote dashboard, and local forward are healthy.",
     SSH_UNREACHABLE: "Can't SSH to the host (check SSH access or the host alias).",
+    SSH_CLIENT_MISSING: "The local ssh client couldn't be started: the OpenSSH client isn't "
+    "installed on this machine or isn't on the gateway's PATH. Install it (on Windows, the "
+    "optional OpenSSH Client feature), then reconnect.",
     REMOTE_DOWN: "SSH works but the remote Kiro Crew dashboard isn't responding (is the "
     "remote gateway running?).",
     TUNNEL_DOWN: "SSH and the remote dashboard are up, but the local forward isn't "
@@ -110,6 +132,15 @@ _REASONS = {
     "with SSM (agent running, instance profile granting AmazonSSMManagedInstanceCore).",
 }
 
+# ``ssm_target_missing`` for an asg:/param: target. The id came from the lookup,
+# so the remedy is never to type a fixed id over the resolver.
+_RESOLVED_TARGET_MISSING = (
+    "SSM lists no managed node with {target}, the id this crew's SSM target names now, in "
+    "this AWS account and region. If the instance is new, wait until its agent registers "
+    "with SSM (instance profile granting AmazonSSMManagedInstanceCore); if a parameter "
+    "holds an old id, update the parameter. Otherwise check the AWS profile and region."
+)
+
 # SSM variants of the shared rungs, worded for the SSM transport so the UI copy
 # never tells an SSM user to "check SSH access".
 _SSM_REASONS = {
@@ -123,10 +154,8 @@ _SSM_REASONS = {
     SSM_ACCESS_DENIED: "Your AWS profile isn't allowed to run commands on this instance over "
     "SSM (ssm:SendCommand was denied). A crew over SSM needs ssm:StartSession, ssm:SendCommand "
     "and ssm:GetCommandInvocation on this instance: add them to the profile's IAM policy.",
-    SSM_USER_UNKNOWN: "User {user} doesn't exist on this instance. Ubuntu images use ubuntu. "
-    "Set Remote user in Edit settings.",
-    REMOTE_NOT_INSTALLED: "Kiro Crew isn't installed for user {user} on this instance. Run the "
-    "install there as that user, or set Remote kirocrew path in Edit settings.",
+    SSM_USER_UNKNOWN: USER_UNKNOWN_REASON,
+    REMOTE_NOT_INSTALLED: NOT_INSTALLED_REASON,
     REMOTE_WRONG_PORT: "A Kiro Crew gateway is listening on port {found}, not {port}. Set "
     "Remote port to {found} in Edit settings.",
 }
@@ -255,23 +284,22 @@ async def _run_ok(argv: list[str], timeout: float) -> bool:
     Spawned through :func:`ssh_spawn_argv_env` like every other ssh child, so a
     ``ProxyCommand`` host probes the same under a GUI-launched gateway as the
     tunnel it is diagnosing.
+
+    A child that cannot be spawned raises its ``OSError`` rather than reading as
+    "ssh ran and failed".
     """
     argv, env = await asyncio.to_thread(ssh_spawn_argv_env, argv)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=env,
-        )
-    except OSError:
-        return False
+    proc = await spawn_one_shot_ssh(
+        argv,
+        env,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
     try:
         await asyncio.wait_for(proc.wait(), timeout=timeout)
     except asyncio.TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+        await kill_and_reap(proc)
         return False
     except asyncio.CancelledError:
         # A cancelled diagnosis (an instance edit, a gateway shutdown) must not
@@ -284,24 +312,21 @@ async def _run_ok(argv: list[str], timeout: float) -> bool:
 async def _run_stdout(argv: list[str], timeout: float) -> str | None:
     """Run the ssh *argv*, return decoded stdout on exit 0, else None.
 
-    Same spawn env as :func:`_run_ok`.
+    Same spawn env as :func:`_run_ok`, and like it a spawn failure raises its
+    ``OSError`` rather than returning None.
     """
     argv, env = await asyncio.to_thread(ssh_spawn_argv_env, argv)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=env,
-        )
-    except OSError:
-        return None
+    proc = await spawn_one_shot_ssh(
+        argv,
+        env,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
     try:
         stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+        await kill_and_reap(proc)
         return None
     except asyncio.CancelledError:
         await kill_and_reap(proc)
@@ -334,12 +359,28 @@ async def diagnose_instance(
 
     probes: list[dict] = []
 
-    ssh_ok = await _probe_ssh(ssh_host, connect_timeout_secs)
+    try:
+        ssh_ok = await _probe_ssh(ssh_host, connect_timeout_secs)
+    except OSError:
+        probes.append({"name": "ssh", "ok": False})
+        return DiagnosisResult(SSH_CLIENT_MISSING, _REASONS[SSH_CLIENT_MISSING], probes)
     probes.append({"name": "ssh", "ok": ssh_ok})
     if not ssh_ok:
-        return DiagnosisResult(SSH_UNREACHABLE, _REASONS[SSH_UNREACHABLE], probes)
+        reason = _REASONS[SSH_UNREACHABLE]
+        refused = await asyncio.to_thread(refused_plugin_message)
+        if refused:
+            # This step sees no ssh stderr, so the plugin is only a possible cause.
+            reason += (
+                " If this host's ssh config runs session-manager-plugin in a ProxyCommand,"
+                f" this is the cause: {refused}"
+            )
+        return DiagnosisResult(SSH_UNREACHABLE, reason, probes)
 
-    remote_ok = await _probe_remote_dashboard(ssh_host, remote_port, connect_timeout_secs)
+    try:
+        remote_ok = await _probe_remote_dashboard(ssh_host, remote_port, connect_timeout_secs)
+    except OSError:
+        probes.append({"name": "remote_dashboard", "ok": False})
+        return DiagnosisResult(SSH_CLIENT_MISSING, _REASONS[SSH_CLIENT_MISSING], probes)
     probes.append({"name": "remote_dashboard", "ok": remote_ok})
     if not remote_ok:
         return DiagnosisResult(REMOTE_DOWN, _REASONS[REMOTE_DOWN], probes)
@@ -382,12 +423,18 @@ async def _probe_ssm_managed(ssm_target: str, profile: str = "", region: str = "
     whose agent never registered, or the wrong account/region); or :data:`_NODE_UNREACHABLE` for everything else --
     agent offline, an IAM denial, a timeout -- all of which are "the SSM path
     can't reach the target".
+
+    Raises :class:`~kiro_crew.sandbox.SandboxUnavailableError` when this host's
+    own sandbox refused to start ``aws``: no SSM call ran, so the answer is not
+    "unreachable".
     """
     try:
         status = await asyncio.wait_for(
             asyncio.to_thread(cloud_ssm.managed_node_ping_status, ssm_target, profile, region),
             timeout=_SSM_PING_TIMEOUT_SECS,
         )
+    except SandboxUnavailableError:
+        raise
     except Exception:  # timeout, AWSError, dispatch failure — all "unreachable"
         return _NODE_UNREACHABLE
     if status == "Online":
@@ -522,6 +569,7 @@ async def diagnose_instance_ssm(
 ) -> DiagnosisResult:
     """SSM-transport diagnosis ladder — the SSM sibling of :func:`diagnose_instance`.
 
+        0. Resolver names one id?  ``asg:``/``param:`` lookup         → no ⇒ ssm_target_unresolved
         1. SSM node reachable?     ``describe-instance-information`` → no ⇒ ssm_unreachable,
                                    or ssm_target_missing when SSM lists no such node
         2. Remote dashboard up?    ``send-command`` + curl :RP        → no ⇒ remote_down,
@@ -531,11 +579,13 @@ async def diagnose_instance_ssm(
         else                                                              ⇒ ok
 
     Validates the SSM params first; an invalid target short-circuits to UNKNOWN
-    with a clear reason rather than dispatching an AWS call. All probes are
+    with a clear reason rather than dispatching an AWS call. Rung 0 runs only for
+    a resolver target, and its lookup's own message is the reason. All probes are
     read-only.
     """
+    resolver = split_ssm_resolver(ssm_target or "")
     try:
-        target = validate_ssm_target(ssm_target)
+        target = "" if resolver else validate_ssm_target(ssm_target)
         profile = validate_aws_profile(aws_profile)
         region = validate_aws_region(aws_region)
         run_as = validate_ssm_run_as(ssm_run_as)
@@ -545,9 +595,45 @@ async def diagnose_instance_ssm(
 
     probes: list[dict] = []
 
-    node = await _probe_ssm_managed(target, profile, region)
+    if resolver:
+        # The same lookup a connect makes, so the ladder walks the instance a
+        # connect would dial; what it finds is never stored.
+        kind, name = resolver
+        try:
+            target = validate_ssm_target(
+                await asyncio.wait_for(
+                    asyncio.to_thread(cloud_ssm.resolve_ssm_target, kind, name, profile, region),
+                    timeout=_SSM_PING_TIMEOUT_SECS,
+                )
+            )
+        except SandboxUnavailableError as e:
+            # The hub's own sandbox refused to start `aws`: no lookup ran.
+            probes.append({"name": "ssm_target_resolver", "ok": False})
+            return DiagnosisResult(UNKNOWN, str(e), probes)
+        except SsmTargetUnresolvedError as e:
+            probes.append({"name": "ssm_target_resolver", "ok": False})
+            return DiagnosisResult(SSM_TARGET_UNRESOLVED, str(e), probes)
+        except Exception as e:  # a timeout, or `aws` failing to start
+            probes.append({"name": "ssm_target_resolver", "ok": False})
+            return DiagnosisResult(
+                SSM_TARGET_UNRESOLVED,
+                f"could not look up {ssm_target!r}: {str(e) or type(e).__name__}",
+                probes,
+            )
+        probes.append({"name": "ssm_target_resolver", "ok": True})
+
+    try:
+        node = await _probe_ssm_managed(target, profile, region)
+    except SandboxUnavailableError as e:
+        # The local sandbox, not SSM or IAM, is what failed: say so.
+        probes.append({"name": "ssm_managed_node", "ok": False})
+        return DiagnosisResult(UNKNOWN, str(e), probes)
     probes.append({"name": "ssm_managed_node", "ok": node == _NODE_ONLINE})
     if node == _NODE_MISSING:
+        if resolver:
+            return DiagnosisResult(
+                SSM_TARGET_MISSING, _RESOLVED_TARGET_MISSING.format(target=target), probes
+            )
         return DiagnosisResult(SSM_TARGET_MISSING, _REASONS[SSM_TARGET_MISSING], probes)
     if node != _NODE_ONLINE:
         return DiagnosisResult(SSM_UNREACHABLE, _REASONS[SSM_UNREACHABLE], probes)
@@ -630,7 +716,11 @@ async def diagnose_instance_fargate(
 
     probes: list[dict] = []
 
-    ready, reason = await _probe_task_exec_ready(cluster, task_id, profile, region)
+    try:
+        ready, reason = await _probe_task_exec_ready(cluster, task_id, profile, region)
+    except SandboxUnavailableError as e:
+        probes.append({"name": "task_exec_ready", "ok": False})
+        return DiagnosisResult(UNKNOWN, str(e), probes)
     probes.append({"name": "task_exec_ready", "ok": ready})
     if not ready:
         return DiagnosisResult(SSM_UNREACHABLE, reason, probes)

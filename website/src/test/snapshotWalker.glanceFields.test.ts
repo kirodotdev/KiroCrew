@@ -307,9 +307,9 @@ describe('the walker treats white space as a regular expression does', () => {
       .filter(Boolean)
       .join(' ')
 
-  it('the table holds the 25 characters a regular expression matches and none that it does not', () => {
-    expect(SPACE_CODES).toHaveLength(25)
-    for (const c of SPACE_CODES) expect(/\s/.test(String.fromCharCode(c)), hex(c)).toBe(true)
+  it('the table holds every BMP character a regular expression matches and none that it does not', () => {
+    const matched = Array.from({ length: 0x10000 }, (_, c) => c).filter((c) => /\s/.test(String.fromCharCode(c)))
+    expect([...SPACE_CODES].sort((a, b) => a - b).map(hex)).toEqual(matched.map(hex))
     for (const c of NOT_SPACE_CODES) expect(/\s/.test(String.fromCharCode(c)), hex(c)).toBe(false)
   })
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import i18next from 'i18next'
 import '../i18n/all'
 import { i18nT } from '../i18n/t'
@@ -173,6 +173,16 @@ describe('BrowserLiveCard faces', () => {
     expect(writes.claim).toHaveBeenCalledWith(S)
   })
 
+  it('login_needed: the sign-in banner\'s Take over has a resting fill and a strong edge on its tint', () => {
+    act(() => browserLiveStore.applyEvent(ev({ state: 'login_needed' })))
+    render(card())
+    const banner = screen.getByText(i18next.t('pages.chat.browserLiveCard.take_over_to_sign_in')).closest('[role="status"]') as HTMLElement
+    const takeOver = within(banner).getByRole('button', { name: i18next.t('pages.chat.browserLiveCard.take_over') })
+    expect(takeOver).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(takeOver).not.toHaveClass('bg-transparent')
+    expect(takeOver).not.toHaveClass('border-border')
+  })
+
   it('done: one line with the host, the step count, the browser, Replay and Last frame', () => {
     act(() => {
       browserLiveStore.applyEvent(ev())
@@ -257,6 +267,12 @@ describe('anchors and the tool-row test', () => {
     // (regression: the card never mounted for a live turn because this read false).
     expect(isBrowserToolMessage({ role: 'tool', content: '🔧 @kirocrew-core/browser', cls: '', meta: { mcp_server: 'kirocrew-core' } })).toBe(true)
     expect(isBrowserToolMessage({ role: 'tool', content: '🔧 @kirocrew-core/browser', cls: '', meta: { tool_name: 'kirocrew-core___browser' } })).toBe(true)
+    // opencode has no _meta identity and fuses the title; Crew's own server is accepted.
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 kirocrew-core_browser', cls: '' })).toBe(true)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 kirocrew-core___browser', cls: '' })).toBe(true)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 kirocrew-core_browser_history', cls: '' })).toBe(false)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 kirocrew-core_open_browser', cls: '' })).toBe(false)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 other-server_browser', cls: '' })).toBe(false)
     expect(isBrowserToolMessage({ role: 'tool', content: '🔧 @kirocrew-core/browser_history', cls: '' })).toBe(false)
     expect(isBrowserToolMessage({ role: 'tool', content: '🔧 @kirocrew-core/open_browser', cls: '' })).toBe(false)
     expect(isBrowserToolMessage({ role: 'tool', content: '🔧 browser_harness_x', cls: '' })).toBe(false)
@@ -294,6 +310,13 @@ describe('TurnBlock mounts the card', () => {
     expect(cards).toHaveLength(1)
     const order = Array.from(container.querySelectorAll('[data-testid^="row-"], [data-testid="browser-live-card"]')).map(e => e.getAttribute('data-testid'))
     expect(order).toEqual(['row-tc-1', 'row-tc-2', 'row-tc-3', 'browser-live-card', 'row-tc-4'])
+  })
+
+  it('mounts on an opencode fused row, which carries no trusted name', () => {
+    act(() => browserLiveStore.applyEvent(ev()))
+    const fused: TurnItem = { kind: 'single', msg: { role: 'tool', content: '🔧 kirocrew-core_browser', cls: '', ts: String(Math.floor(Date.now() / 1000)), meta: { tool_call_id: 'tc-fused' } }, idx: 0 } // flake-ok: the settled-turn binding compares the row clock with the record's client clock (±120 s)
+    render(<TurnBlock turn={turn([fused])} renderItem={renderItem} browserLiveSessionKey={S} />)
+    expect(screen.getAllByTestId('browser-live-card')).toHaveLength(1)
   })
 
   it('not at all without a session key, nor for a turn with no browser call', () => {

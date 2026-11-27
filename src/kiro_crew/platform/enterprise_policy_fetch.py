@@ -97,8 +97,9 @@ _CONFIG_FIELDS = ("key", "value", "source", "composeBehavior")
 #: ``t3``: the boot block does not carry ``allow_terminal``. ``t4``: the KGL batch-1 terms
 #: ``harness_use``, ``app_use`` and ``script_hook`` are read, and ``skill``, ``mcp`` and
 #: ``subagent`` also say what may be installed. ``t5``: a named ``skill`` deny lands
-#: as the skill names, not as skill install off.
-TRANSLATION_REVISION = "t5"
+#: as the skill names, not as skill install off. ``t6``: an ``ask`` on ``web_fetch`` or
+#: ``web_search`` lands in ``unattended_web_tools``.
+TRANSLATION_REVISION = "t6"
 
 
 def _sign_in_remedy() -> str:

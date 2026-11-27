@@ -13,6 +13,7 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,8 +21,9 @@ from kiro_crew import cli, cli_doctor
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_dir
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.execution_context import resolve_member_execution
-from kiro_crew.members import dm_binding_path, write_dm_binding
+from kiro_crew.members import dm_binding_path, validate_slug, write_dm_binding
 from kiro_crew.memory import PREFERENCES_FILE, PROJECTS_FILE
 from kiro_crew.memory_stores import (
     LEGACY_MEMBER_MANIFEST,
@@ -695,3 +697,35 @@ def test_the_gateway_memory_worker_captures_schedules_after_the_store_upgrade() 
         < source.index("migrate_legacy_member_schedules(data_home())")
         < source.index("apply_pending_member_restores(")
     )
+
+
+class TestDeviceStemMemberIds:
+    """A member id names the ``members/<id>`` directory, and a Windows device stem is
+    no directory there. A create suffixes away from one; the upgrade keeps the slug
+    its live member's records are already keyed by."""
+
+    @staticmethod
+    def _empty_config() -> SimpleNamespace:
+        return SimpleNamespace(agents={}, memory_stores={})
+
+    @pytest.mark.parametrize("name", [*sorted(WINDOWS_DEVICE_STEMS), "Nul", "CON", "LPT9"])
+    def test_a_create_never_allocates_a_device_stem(self, name: str) -> None:
+        member_id = memory_stores._allocate_member_id(self._empty_config(), name)
+
+        assert member_id not in WINDOWS_DEVICE_STEMS
+        assert member_id.startswith(f"{name.lower()}-")
+        assert validate_slug(member_id) == member_id
+
+    @pytest.mark.parametrize(("name", "expected"), [("Atlas", "atlas"), ("com10", "com10")])
+    def test_a_create_keeps_an_ordinary_slug_unsuffixed(self, name: str, expected: str) -> None:
+        assert memory_stores._allocate_member_id(self._empty_config(), name) == expected
+
+    def test_the_upgrade_keeps_a_live_members_device_stem_slug(self) -> None:
+        """``provision_member_memory(upgrade=True)`` and ``migrate_legacy_member_stores``
+        allocate with ``refuse_damaged=False``: a legacy ``Nul`` already keys its records
+        by ``nul``, so re-slugging it would strand its rules, activity and DM binding."""
+        member_id = memory_stores._allocate_member_id(
+            self._empty_config(), "Nul", refuse_damaged=False
+        )
+
+        assert member_id == "nul"

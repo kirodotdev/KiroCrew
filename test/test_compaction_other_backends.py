@@ -45,6 +45,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
@@ -567,7 +568,7 @@ class TestTheInlineCompletionLivesOnTheSeam:
         compaction completed that nothing ever ran; withholding it leaves them on
         the arm they were on before the capability existed.
         """
-        handle = AcpSessionHandle.__new__(AcpSessionHandle)
+        handle = bare_session_handle(runtime=None)
         assert handle._compacts_inline() is False
 
     def test_the_arm_is_on_the_wait_not_on_compact(self) -> None:

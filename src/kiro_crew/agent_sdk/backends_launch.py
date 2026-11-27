@@ -152,6 +152,10 @@ class SelfServedLaunch:
     sentence is what stops the wrong install. It is appended to the shared not-found
     message rather than replacing it.
 
+    ``install_dirs`` are the folders the harness's own installer puts the binary in
+    and adds to PATH only for new shells, so a gateway started before the install
+    never sees them on PATH. ``{home}`` is the user's home. Searched after PATH.
+
     Frozen because the table is module state every spawn reads: a mutation from one
     session would follow every session after it.
     """
@@ -163,6 +167,7 @@ class SelfServedLaunch:
     install_command: str
     protocol_version: int
     missing_hint: str
+    install_dirs: tuple[str, ...] = ()
 
     @property
     def spawn_label(self) -> str:
@@ -190,7 +195,15 @@ COPILOT_VERIFIED_VERSION = "1.0.100"
 STRANDS_VERIFIED_VERSION = "0.2.4"
 #: The Python packages the Strands CLI's project worker imports, at the versions the
 #: gate was measured on. Installed into the project environment Crew runs Strands in.
-STRANDS_PYTHON_REQUIREMENT = "strands-harness==0.3.3"
+#: strands-harness loads each provider's SDK only through its own extra, so the
+#: requirement carries one extra for every ``agent.strands_provider`` but ``bedrock``
+#: (``openai`` serves both ``openai`` and ``bedrock-mantle``, ``gemini`` serves
+#: ``google``).
+STRANDS_PYTHON_REQUIREMENT = "strands-harness[anthropic,gemini,litellm,ollama,openai]==0.3.3"
+#: botocore's CRT extra, installed beside it: boto3's credential chain refuses an AWS
+#: profile using the ``login`` provider without it, and the worker dies before it
+#: loads the gate.
+STRANDS_PYTHON_CRT_REQUIREMENT = "botocore[crt]"
 #: The CLI's own ``engines.node`` floor.
 STRANDS_NODE_FLOOR = (22, 0, 0)
 
@@ -229,6 +242,8 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
         install_command="npm i -g opencode-ai@1",
         protocol_version=1,
         missing_hint="No adapter package is needed: this harness serves ACP itself.",
+        # The folder OpenCode's own installer (opencode.ai/install) uses.
+        install_dirs=("{home}/.opencode/bin",),
     ),
     ACP_BACKEND_GOOSE: SelfServedLaunch(
         label="goose",

@@ -58,6 +58,7 @@ vi.mock('../../hooks/useTheme', async (importOriginal) => ({
 
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
+import { refreshOnce, __resetRefreshOnceForTests } from '../../api/refreshOnce'
 import { store } from '../../store'
 import { setActiveSlot, setPendingInput } from '../../store/chatSlice'
 import { PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
@@ -318,6 +319,15 @@ describe('top bar', () => {
     expect(within(pill).getAllByRole('button')).toHaveLength(1)
     // The streak words fold with the feedback labels on a narrow top bar; the ring stays.
     expect(within(pill).getByTestId('milestones-streak').className).toContain('tb-drop-feedback-label')
+  })
+
+  it('shows its name as an in-page hint, since the desktop drag band never paints a title', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesPill />)
+    const button = await screen.findByTestId('milestones-indicator')
+    expect(button.getAttribute('title')).toBeNull()
+    act(() => { button.focus() })
+    expect((await screen.findByRole('tooltip')).textContent).toBe('Explore: 1 of 7 features tried, 4-day streak')
   })
 })
 
@@ -1064,6 +1074,31 @@ describe('a failed read', () => {
     expect(screen.getByTestId('milestones-indicator')).toBeTruthy()
     expect(screen.getByTestId('milestones-sheet')).toBeTruthy()
     await act(async () => { answer(payload()) })
+  })
+})
+
+describe('a first read refused because the sign-in ran out', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    __resetRefreshOnceForTests()
+  })
+
+  it('reads once more after the renewal that refusal started has answered, and the dot shows', async () => {
+    let renewed: (status: number) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { renewed = status => resolve(new Response('{}', { status })) })))
+    const read = vi.spyOn(api, 'milestones')
+      // What `checkSessionExpired` does on that 403: start the renewal, hand the refusal back.
+      .mockImplementationOnce(() => { void refreshOnce(); return Promise.reject(new ApiError(403, 'Token required', '', true)) })
+      .mockResolvedValue(payload())
+    renderWith(<MilestonesIndicator />)
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1))
+    await act(async () => {})
+    // Held: a second read sent now would carry the same lapsed sign-in.
+    expect(read).toHaveBeenCalledTimes(1)
+
+    await act(async () => { renewed(200) })
+    expect(await screen.findByTestId('milestones-ring-dot')).toBeTruthy()
+    expect(read).toHaveBeenCalledTimes(2)
   })
 })
 

@@ -33,6 +33,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import _dispatch
 from kiro_crew.acp.client import AcpClient
@@ -578,7 +579,7 @@ def _bare_handle(backend: str = ACP_BACKEND_CODEX) -> Any:
     one needs a runtime with a live process. The backend is read off the RUNTIME
     (``self._runtime.acp_backend``), which is the seam the method actually uses.
     """
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle()
     handle._runtime = SimpleNamespace(acp_backend=backend)
     handle._session_id = "s-1"
     handle._codex_compaction_pending = False

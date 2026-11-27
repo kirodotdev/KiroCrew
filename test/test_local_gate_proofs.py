@@ -640,6 +640,18 @@ def test_the_node_probes_run_where_and_as_the_command_will(gate, node_world, tmp
     ]
 
 
+def test_a_node_launched_vitest_pass_is_dropped_when_node_packages_change(
+    gate, node_world, tmp_path
+) -> None:
+    """The frontend runner starts vitest with ``node`` itself, so ``node`` names a
+    Node command too: a pass must not outlive a changed ``node_modules``."""
+    cmd = [str(tmp_path / "shims" / "node"), "./node_modules/vitest/vitest.mjs", "run"]
+    _store(gate, tmp_path).record(cmd, node_world.cwd)
+    assert _store(gate, tmp_path).age(cmd, node_world.cwd) == 0.0
+    node_world.lock.write_text('{"vitest": "2.2.0"}', encoding="utf-8")
+    assert _store(gate, tmp_path).age(cmd, node_world.cwd) is None
+
+
 def test_a_python_command_never_probes_node(gate, node_world, tmp_path) -> None:
     _store(gate, tmp_path).age(_CMD, _REPO_ROOT)
     assert node_world.calls == [] and node_world.which_paths == []

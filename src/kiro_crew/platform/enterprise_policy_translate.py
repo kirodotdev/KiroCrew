@@ -78,6 +78,10 @@ install parts merge into the one ``capabilities.extension_install`` gate, by kin
 (``skill:``, ``mcp:``, ``agent:``), in :func:`_install_gate`. A scope-less allow, and an
 ``allow all`` or ``allow builtin`` copied onto them, grants install of that kind (RFC
 D13). Plugin sync has no term and stays off.
+
+The ``web_fetch`` and ``web_search`` terms are KAS's to enforce. Only an ``ask`` on
+either is read, into ``unattended_web_tools`` (:func:`web_ask_ruleset`), so trust
+never answers the question KAS asks for it.
 """
 
 from __future__ import annotations
@@ -1023,10 +1027,36 @@ def sandbox_floor(configuration: Sequence[Mapping[str, Any]]) -> Optional[str]:
     return strictest
 
 
+def web_ask_ruleset(rules: List[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The ``unattended_web_tools`` ruleset: the web terms an ``ask`` rule names, denied.
+
+    KAS enforces ``web_fetch`` and ``web_search`` itself (RFC D8), so Crew reads only
+    whether an ``ask`` rule names one, directly or through ``all`` or ``builtin``, to
+    keep trust from answering KAS's question (``kiro_crew.web_ask_rule``). A rule's
+    ``match``, ``exclude`` and ``when`` are not read: any ``ask`` on a term reaches a
+    person for every call of it, which only asks more. ``allow`` and ``deny`` are KAS's
+    to apply. ``None`` when no ``ask`` rule names either term.
+    """
+    from kiro_crew.agent_sdk.kas_capabilities import meta_capability_expansion
+    from kiro_crew.web_ask_rule import TERMS
+
+    asked: set[str] = set()
+    for rule in rules:
+        if rule.get("effect") != "ask":
+            continue
+        capability = rule.get("capability")
+        reached = meta_capability_expansion(capability) if isinstance(capability, str) else None
+        asked.update(term for term in TERMS if term == capability or term in (reached or ()))
+    if not asked:
+        return None
+    return {"mode": MODE_DENY, "deny": [term for term in TERMS if term in asked]}
+
+
 def translate(policy: str, configuration: Sequence[Mapping[str, Any]] = ()) -> Dict[str, Any]:
     """Translate a Trust V2 *policy* and the reply's *configuration* into a Crew policy
     document, or raise."""
-    rules = _with_meta(_rules(policy))
+    raw_rules = _rules(policy)
+    rules = _with_meta(raw_rules)
     doc = neutral_document()
     floor = sandbox_floor(configuration)
     if floor is not None:
@@ -1039,6 +1069,7 @@ def translate(policy: str, configuration: Sequence[Mapping[str, Any]] = ()) -> D
                 continue
             _place(doc, target.path, _control(rules, capability, target))
     _place(doc, _INSTALL_PATH, _install_gate(rules, install))
+    _place(doc, ("unattended_web_tools",), web_ask_ruleset(raw_rules))
     return doc
 
 

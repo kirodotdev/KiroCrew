@@ -62,6 +62,7 @@ from kiro_crew.agent_files import (
 from kiro_crew.mcp_gateway.overlay_prune import prune_stale_json
 from kiro_crew.mcp_gateway.rewriter_launch import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
 from kiro_crew.mcp_gateway.rewriter_overlay import _source_sig
+from kiro_crew.members import is_single_path_component
 
 # Logged under the rewriter's logger so an operator reading one pass reads one stream.
 logger = logging.getLogger("kiro_crew.mcp_gateway.rewriter")
@@ -95,6 +96,7 @@ class MateSources:
 
     files: tuple[Path, ...] = ()
     complete: bool = True
+    declared_incomplete: bool = False
 
 
 def governance_agents(identity: str) -> tuple[str, ...] | None:
@@ -119,9 +121,8 @@ def governance_agents(identity: str) -> tuple[str, ...] | None:
     return (MATE_WORKER_AGENT, identity)
 
 
-def _is_file_id(name: str) -> bool:
-    """Whether *name* names one file in a folder rather than a path."""
-    return bool(name) and "/" not in name and "\\" not in name and name not in (".", "..")
+#: Whether a name names one file in a folder rather than a path: the shared rule.
+_is_file_id = is_single_path_component
 
 
 def mate_dir_refused(target: Path) -> bool:
@@ -223,7 +224,7 @@ def list_mate_sources(mate_dir: Path) -> MateSources:
         logger.warning(
             "crewmate folder %s is a symlink or not a folder; no crewmate overlays", mate_dir
         )
-        return MateSources()
+        return MateSources(declared_incomplete=True)
     try:
         listing = iter_agent_spec_files_strict(mate_dir)
     except OSError as exc:
@@ -234,11 +235,13 @@ def list_mate_sources(mate_dir: Path) -> MateSources:
     from kiro_crew.mate_config import MateConfigError, crewmate_file_on_record
 
     taken: list[Path] = []
+    declared_incomplete = False
     for path in listing:
-        if is_mate_service_agent(path.stem):
-            continue
         if not _is_plain_file(path):
             logger.warning("crewmate file %s is a symlink or not a file; no overlay for it", path)
+            declared_incomplete = True
+            continue
+        if is_mate_service_agent(path.stem):
             continue
         try:
             on_record = crewmate_file_on_record(path.stem)
@@ -252,7 +255,7 @@ def list_mate_sources(mate_dir: Path) -> MateSources:
             )
             continue
         taken.append(path)
-    return MateSources(tuple(taken))
+    return MateSources(tuple(taken), declared_incomplete=declared_incomplete)
 
 
 def establish_mate_sources(mate_dir: Path) -> tuple[MateSources, dict[str, Any]]:
@@ -290,6 +293,7 @@ class MatePass:
     written: set[str] = field(default_factory=set)
     results: dict[str, int] = field(default_factory=dict)
     incomplete: bool = False
+    declared_incomplete: bool = False
 
 
 def rewrite_mate_overlays(
@@ -311,7 +315,7 @@ def rewrite_mate_overlays(
     writes it to the given path, returning its wrapped-server count or ``None``
     when the write failed.
     """
-    out = MatePass(incomplete=not sources.complete)
+    out = MatePass(incomplete=not sources.complete, declared_incomplete=sources.declared_incomplete)
     target_dir = mate_overlay_dir(overlay_dir)
     if mate_dir_refused(target_dir):
         # Nothing is written into, or pruned from, a folder that is not ours.
@@ -371,6 +375,7 @@ def _write_each(
                 path.stem,
                 identity,
             )
+            out.declared_incomplete = True
             continue
         shadowed = _shadowed_by_agent(agents_dir, path.stem)
         if shadowed is None:
@@ -403,6 +408,7 @@ def _write_each(
                 path.stem,
                 first,
             )
+            out.declared_incomplete = True
             continue
         try:
             spec = read_agent_spec_strict(path, operation="mcp_overlay_rewrite", source="unknown")
@@ -414,9 +420,11 @@ def _write_each(
             # cached, so the next one retries.
             logger.warning("crewmate file %s unreadable (%s); no overlay for it", path, exc)
             out.incomplete = out.incomplete or not isinstance(exc, ValueError)
+            out.declared_incomplete = True
             continue
         if not isinstance(spec, dict):
             logger.warning("crewmate file %s is not an agent spec; no overlay for it", path)
+            out.declared_incomplete = True
             continue
         claimed.setdefault(overlay_name.casefold(), overlay_name)
         # The file's own ``name`` is not trusted for the identity: it is the id.

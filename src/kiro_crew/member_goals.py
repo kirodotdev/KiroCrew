@@ -22,8 +22,8 @@ now is not part of it: that is the crewmate's work ledger.
   A reading is free text: a number ("27", "80%") or a short qualitative note.
 * ``schedules`` -- the four check-in switches (Daily Goal Reminder, Weekly
   report, Monthly review, Heartbeat), the one shared time of day, the weekday,
-  the day of the month and the heartbeat's interval in minutes; the gateway
-  schedules they drive are owned by :mod:`kiro_crew.dashboard.goal_reminder`.
+  the day of the month, the heartbeat's interval in minutes and active hours;
+  the gateway schedules they drive are owned by :mod:`kiro_crew.dashboard.goal_reminder`.
 * ``reports`` -- pointers to the newest weekly reports and monthly reviews, each
   saved as an artifact under ``Crewmates/<name>/Reports``.
 
@@ -69,7 +69,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import dashboard_frame, member_records, platform_compat
+from kiro_crew import dashboard_frame, member_goals_hours, member_records, platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import data_home
@@ -300,6 +300,8 @@ def default_schedules() -> dict[str, Any]:
         "month_day": DEFAULT_MONTH_DAY,
         CADENCE_HEARTBEAT: False,
         "interval": DEFAULT_HEARTBEAT_INTERVAL,
+        "active_from": member_goals_hours.ACTIVE_HOURS_ALL_DAY[0],
+        "active_to": member_goals_hours.ACTIVE_HOURS_ALL_DAY[1],
     }
 
 
@@ -489,6 +491,7 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
             out["month_day"] = day
         if is_heartbeat_interval(sched.get("interval")):
             out["interval"] = sched["interval"]
+        out["active_from"], out["active_to"] = member_goals_hours.active_hours(sched)
     reports = data.get("reports")
     if isinstance(reports, list):
         rec["reports"] = [
@@ -1300,14 +1303,16 @@ def interval_label(minutes: Any) -> str:
     return f"{value} min" if value < 60 else f"{value // 60} hr"
 
 
-def wakes_per_day(minutes: Any) -> int:
-    """The most wakes a heartbeat at *minutes* makes in a day: 48, 24, 12 or 6.
+def wakes_per_day(minutes: Any, hours: Any = None) -> int:
+    """The most wakes a heartbeat at *minutes* makes in a day inside *hours*.
 
     The bound the user consents to on the card, matching the Goals tab's
-    ``wakesPerDay``. A value off the list reads as the default.
+    ``wakesPerDay``: 48, 24, 12 or 6 over the whole day (the default, and any
+    *hours* pair that is not a window). A value off the list reads as the default.
     """
     value = minutes if is_heartbeat_interval(minutes) else DEFAULT_HEARTBEAT_INTERVAL
-    return (24 * 60) // value
+    start, end = member_goals_hours.window(hours)
+    return -(-(end - start) * 60 // value)
 
 
 def interval_choices() -> str:
@@ -1336,6 +1341,7 @@ def is_heartbeat_interval(value: Any) -> bool:
 
 def _validate_schedules(changes: Any) -> None:
     allowed = {*CADENCES, "time", "timezone", "weekday", "month_day", "interval"}
+    allowed |= {"active_from", "active_to"}
     if not isinstance(changes, dict) or not changes or set(changes) - allowed:
         raise GoalError("invalid_schedule", "give switches or timing to change")
     for cadence in CADENCES:
@@ -1360,6 +1366,8 @@ def _validate_schedules(changes: Any) -> None:
             "invalid_interval",
             "interval must be one of " + ", ".join(str(m) for m in HEARTBEAT_INTERVALS),
         )
+    if (why := member_goals_hours.hours_error(changes)) is not None:
+        raise GoalError("invalid_active_hours", why)
 
 
 def set_schedules(
@@ -1374,10 +1382,11 @@ def set_schedules(
 
     *changes* holds any of ``daily``/``weekly``/``monthly``/``heartbeat``
     (bool), ``time`` (``HH:MM``), ``timezone`` (IANA name), ``weekday`` (0-6,
-    0 = Sunday), ``month_day`` (1-28) and ``interval`` (the heartbeat's minutes,
-    one of :data:`HEARTBEAT_INTERVALS`). Turning any switch on needs a goal
-    (``no_goal``). Only the owner's route and an applied card call this, so the
-    crewmate never turns a switch on by itself.
+    0 = Sunday), ``month_day`` (1-28), ``interval`` (the heartbeat's minutes,
+    one of :data:`HEARTBEAT_INTERVALS`) and ``active_from``/``active_to`` (its
+    active hours, :func:`kiro_crew.member_goals_hours.hours_error`). Turning any
+    switch on needs a goal (``no_goal``). Only the owner's route and an applied
+    card call this, so the crewmate never turns a switch on by itself.
     When supplied, *expected* covers every written field and is compared under
     the write lock; omitted fields stay untouched. With *held_is_done* (a goal
     card's Undo only) a write whose *changes* already hold succeeds without
@@ -1403,6 +1412,8 @@ def set_schedules(
             raise GoalError("changed_meanwhile", "the check-ins were changed since this was shown")
         if not has_goal(rec) and any(changes.get(c) is True for c in CADENCES):
             raise GoalError("no_goal", "set a goal before turning a check-in on")
+        if (why := member_goals_hours.hours_error(changes, rec["schedules"])) is not None:
+            raise GoalError("invalid_active_hours", why)
         rec["schedules"].update(changes)
         return copy.deepcopy(rec)
 

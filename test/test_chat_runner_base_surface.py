@@ -348,7 +348,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_folder_steering_turn",
             "function",
-            "(slot: 'Any', execution_context: 'Any', *, context_is_new: 'bool', provider_has_history: 'bool', needs_reinjection: 'bool') -> 'bool'",
+            "(slot: 'Any', execution_context: 'Any', *, context_is_new: 'bool', needs_reinjection: 'bool') -> 'bool'",
         ),
         (
             "_read_and_tighten_turn_execution",
@@ -402,7 +402,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_attach_turn_stats",
             "function",
-            "(slot: \"'_ChatSlot'\", elapsed_ms: 'int', credits: 'float', cost_usd: 'float', turn_boundary: 'int' = 0, model: 'str' = '', ttft_ms: 'int' = 0, turn_start_mid: 'str | None' = None, retries: 'int' = 0, cache_rewrite: 'bool' = False) -> 'bool'",
+            "(slot: \"'_ChatSlot'\", elapsed_ms: 'int', credits: 'float', cost_usd: 'float', turn_boundary: 'int' = 0, model: 'str' = '', ttft_ms: 'int' = 0, turn_start_mid: 'str | None' = None, retries: 'int' = 0, cache_rewrite: 'bool' = False, cache_likely: 'bool' = False) -> 'bool'",
         ),
         (
             "_context_usage_payload",
@@ -422,7 +422,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_emit_turn_metric",
             "function",
-            "(duration_ms: 'int | float | None', stop_reason: 'str | None', slot_key: 'str', *, elapsed_ms: 'int | float | None' = None, exhausted: 'bool' = False, usage: 'object' = None, model: 'str' = '', provider: 'str' = '', harness: 'str' = 'unknown', trigger: 'str' = 'other') -> 'None'",
+            "(duration_ms: 'int | float | None', stop_reason: 'str | None', slot_key: 'str', *, elapsed_ms: 'int | float | None' = None, exhausted: 'bool' = False, usage: 'object' = None, model: 'str' = '', provider: 'str' = '', harness: 'str' = 'unknown', trigger: 'str' = 'other', owning_app: 'str' = '') -> 'None'",
         ),
         (
             "_emit_recovery_outcome",
@@ -432,7 +432,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "turn_stats_meta",
             "function",
-            "(elapsed_ms: 'int', credits: 'float', cost_usd: 'float', model: 'str' = '', *, cache_rewrite: 'bool' = False) -> 'dict[str, Any] | None'",
+            "(elapsed_ms: 'int', credits: 'float', cost_usd: 'float', model: 'str' = '', *, cache_rewrite: 'bool' = False, cache_likely: 'bool' = False) -> 'dict[str, Any] | None'",
         ),
         ("_MAX_MODEL_ID_LEN", "value", "int"),
         (

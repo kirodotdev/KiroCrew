@@ -3,8 +3,8 @@ title: Per-chat backend selection — a dashboard chat picks the harness it runs
 status: draft
 author: billygerhard
 created: 2026-10-12
-last-audited: 2026-10-12
-audited-at: c4c51aac52
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 19438
 implementation-prs: []
 tracking-issues: [13892]

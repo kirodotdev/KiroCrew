@@ -20,6 +20,7 @@ import sys
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.pod import launchd
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
@@ -27,6 +28,10 @@ from kiro_crew.pod.config import PodConfig
 # The real spawn primitive, captured before any test patches
 # ``subprocess.run`` (the stubs patch the shared module attribute).
 _REAL_RUN = subprocess.run
+
+# Where the trusted lookup is faked to find each tool, on any CI host.
+_TRUSTED_JOURNALCTL = "/usr/bin/journalctl"
+_TRUSTED_LAUNCHCTL = "/bin/launchctl"
 
 # What a failed boot logs for a worktree under a non-ASCII directory.
 _NON_ASCII = "FATAL: no built dist under /opt/projet-José/wörk/ü"
@@ -53,7 +58,7 @@ def _journalctl_kwargs(cfg: PodConfig, monkeypatch) -> dict:
     seen: list[dict] = []
 
     def fake_run(argv, **kwargs):
-        assert argv[0] == "journalctl"
+        assert argv[0] == _TRUSTED_JOURNALCTL
         seen.append(kwargs)
         return subprocess.CompletedProcess(args=argv, returncode=0, stdout=_NON_ASCII + "\n")
 
@@ -61,6 +66,7 @@ def _journalctl_kwargs(cfg: PodConfig, monkeypatch) -> dict:
         mp.setattr(rt, "IS_MACOS", False)
         mp.setattr(rt, "IS_WINDOWS", False)
         mp.setattr(rt, "require_systemd", lambda: None)
+        mp.setattr(platform_compat, "trusted_system_bin", lambda _name: _TRUSTED_JOURNALCTL)
         mp.setattr(rt.subprocess, "run", fake_run)
         assert rt.recent_journal(cfg, "smoke", 30) == _NON_ASCII + "\n"
     assert len(seen) == 1
@@ -71,12 +77,13 @@ def _launchctl_kwargs(monkeypatch) -> dict:
     seen: list[dict] = []
 
     def fake_run(argv, **kwargs):
-        assert argv[0] == "launchctl"
+        assert argv[0] == _TRUSTED_LAUNCHCTL
         seen.append(kwargs)
         return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 
     with monkeypatch.context() as mp:
         mp.setattr(launchd, "require_backend", lambda: None)
+        mp.setattr(platform_compat, "trusted_system_bin", lambda _name: _TRUSTED_LAUNCHCTL)
         mp.setattr(launchd.subprocess, "run", fake_run)
         launchd.launchctl("print", "gui/501")
     assert len(seen) == 1

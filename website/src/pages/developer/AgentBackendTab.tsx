@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { Check, CircleHelp, TriangleAlert, X } from 'lucide-react'
 
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeBlocksUse, agentChoiceSaved, configuredAcpBackend, DEFAULT_ACP_BACKEND, mcpWholeServerDeny, setupMarkerErrorBody, setupMarkerErrorMessage } from '../../api/acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, agentChoiceSaved, configuredAcpBackend, DEFAULT_ACP_BACKEND, mcpWholeServerDeny, setupMarkerErrorBody, setupMarkerErrorMessage } from '../../api/acpBackend'
 import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -12,21 +12,24 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Badge, Btn } from '../../components/ui'
 import {
   AgentDetailActions,
-  AgentInstallDetail,
-  AgentPickerRow,
   AgentStatusBadge,
 } from '../../components/agentHarness'
 import { SettingsCard } from '../../components/settings'
 import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
-import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroAccountStatusLine } from './KiroAccountStatusLine'
+import { KasBundleCard, KasEngineDeepLink } from './KasBundleCard'
 import { OrchestratorMemoryDeepLink, OrchestratorMemoryToggle } from './OrchestratorMemoryToggle'
 import { StrandsSetupCard } from './StrandsSetupCard'
+import { DeepSeekKeyCard } from './DeepSeekKeyCard'
 import { MCP_SERVERS_HREF } from '../connections/connectionsLinks'
 import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
 import { HarnessLogo } from '../../components/HarnessLogo'
+import { harnessList, stable } from '../../components/agentHarness/harnessList'
+import { HarnessPickerList } from '../../components/agentHarness/HarnessPickerList'
+import { HarnessInstallDetail } from '../../components/agentHarness/HarnessInstallDetail'
+import { KIRO_PREREQUISITE_KEY } from '../../hooks/useKiroPrerequisite'
 import type { CrewmateHarnessReadout } from '../../api/client'
 
 /** The config field the switch owns. Also the schema path the options are gated on. */
@@ -34,35 +37,12 @@ const CONFIG_KEY = 'agent.acp_backend'
 
 /** Backend ids in the config vocabulary the schema, probe rows and PATCH share. */
 const KIRO = ACP_BACKEND_KIRO
+/** Kiro CLI's install guide: the same page as `OFFICIAL_INSTALL_DOCS_URL` (kiro_prerequisite_status.py). */
 const CLAUDE = 'claude'
 const KAS = ACP_BACKEND_KAS
 const STRANDS = 'strands'
+const DEEPSEEK = 'deepseek'
 
-/**
- * The agents this frontend has a translated name and an icon for.
- *
- * A FLOOR for what the panel renders, never a ceiling — see `candidates`. Every id
- * here is a core agent the server always knows, so listing them costs nothing and
- * keeps the control populated while the schema and probe queries are still in
- * flight. An agent absent from this list still gets a row once a server answer
- * names it, labelled with its `policy_id`.
- */
-const NAMED = [KAS, KIRO, CLAUDE]
-
-/**
- * The harnesses listed first, in this order; the rest follow by `policy_id`. KAS
- * leads because it is the default, and Strands sits directly under the two Kiro
- * harnesses by the owner's ruling.
- */
-const PINNED_ORDER = [KAS, KIRO, STRANDS]
-
-/**
- * The harnesses that never carry the Experimental tag: the default a new install
- * runs (`DEFAULT_ACP_BACKEND`) and Kiro CLI, the all-supported governance floor.
- * Only the default gets the Recommended tag; keying it on the constant keeps the
- * page from naming a different harness than the one a new user is on.
- */
-const stable = (value: string) => value === DEFAULT_ACP_BACKEND || value === KIRO
 
 /**
  * The tool-approval mechanism that means nothing establishes how a harness asks.
@@ -366,6 +346,8 @@ export function AgentBackendTab() {
    */
   const [stripError, setStripError] = useState<{ backend: string; message: string } | null>(null)
   const schema = useConfigSchema()
+  // Platform facts for the Kiro CLI install commands; the same entry the setup gate reads.
+  const prereqQ = useQuery({ queryKey: KIRO_PREREQUISITE_KEY, queryFn: () => api.kiroPrerequisite(), staleTime: 60_000 })
   const inRouter = useInRouterContext()
 
   const cfgQ = useQuery<{ agent?: { acp_backend?: string } }>({
@@ -388,7 +370,7 @@ export function AgentBackendTab() {
    * cheaper than the answer it re-reads, and the endpoint is a resolver read behind
    * that TTL cache rather than a fresh shell-out per request.
    */
-  const probeQ = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>({
+  const probeQ = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; kiro_cli_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>({
     queryKey: ['acpBackends'],
     queryFn: () => api.acpBackends(),
     retry: false,
@@ -413,6 +395,7 @@ export function AgentBackendTab() {
    */
   const applyBackendSwitchSideEffects = () => {
     qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    qc.invalidateQueries({ queryKey: ['kas-login-sources'] })
     // The model list is the NEW backend's now. `/api/models` re-reads
     // `agent.acp_backend` on every call, so the server side needs no restart;
     // only the frontend cache did, because `['available-models']` is refetched
@@ -473,7 +456,7 @@ export function AgentBackendTab() {
    * survives inside the poll's TTL window.
    */
   const spliceProbeRow = (row: AcpBackendProbe) =>
-    qc.setQueryData<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>(['acpBackends'], prev =>
+    qc.setQueryData<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; kiro_cli_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>(['acpBackends'], prev =>
       prev
         ? {
             // The response's other fields (the Kiro CLI → Kiro Agent flag) are
@@ -593,114 +576,12 @@ export function AgentBackendTab() {
    */
   const selectable = schema?.get(CONFIG_KEY)?.enum
 
-  /**
-   * This machine's verdict for one backend, or `undefined` when there is none —
-   * query in flight, 403, 404, an outright failure, or a row the payload omits.
-   * Every caller below treats `undefined` as "say nothing, gate nothing".
-   */
-  const probe = (value: string): AcpBackendProbe | undefined =>
-    probeQ.data?.backends.find(b => b.id === value)
+  // The list logic is shared with first-run setup (components/agentHarness/harnessList.ts).
+  const {
+    probe, buildExcluded, offered, rows, notInstalled, needsRestart, cannotUse,
+    nameOf, sandboxRefusalLine, status,
+  } = harnessList({ backends: probeQ.data?.backends, selectable, current })
 
-  /**
-   * Not selectable = this build or the live policy will not serve it. Read from the
-   * schema first, since that is the set the PATCH validates against; the probe's own
-   * `selectable` is the same fact from the same source, so it is honoured too and the
-   * two cannot disagree in a way that lets a dead switch look live. Both fall open
-   * when absent, so an in-flight query or a 403 hides nothing.
-   */
-  const unavailable = (value: string) =>
-    (selectable ? !selectable.includes(value) : false) || probe(value)?.selectable === false
-
-  /**
-   * Known to the core, and never on offer from this BUILD — as opposed to denied by
-   * this deployment's policy.
-   *
-   * The two look identical through `selectable` alone, and they are not the same
-   * thing to a reader: a policy denial is not theirs to fix and is hidden, while a
-   * build exclusion is a standing fact about the agent that its own tool-approval
-   * line explains. `offered_by_build` is what tells them apart, and it is read
-   * together with `unavailable` so a payload that somehow said both would defer to
-   * selectability rather than hiding a live option.
-   */
-  const buildExcluded = (value: string) =>
-    probe(value)?.offered_by_build === false && unavailable(value)
-
-  /**
-   * Every agent id this panel could render, from the SERVER rather than a literal.
-   *
-   * This used to be `[KIRO, CLAUDE, KAS]`, which quietly made the panel the last
-   * hard-coded copy of the selectable list — the very thing
-   * `register_selectable_backend` exists to retire. Filtering a literal by the live
-   * schema narrows correctly but can never WIDEN, so an agent an edition registered
-   * was selectable on the wire, valid to PATCH, present in the probe payload, and
-   * absent from this control. The module note above already promised the opposite
-   * ("a build that ships another agent lights it up here with no frontend change");
-   * this is what makes that true.
-   *
-   * Union of the schema enum and the probe payload, because the two answer different
-   * questions and either can be in flight: the enum is what PATCH accepts, the probe
-   * is every id the core knows (including ones this build cannot select, which
-   * `unavailable` then drops).
-   *
-   * `NAMED` is unioned in as a FLOOR, not a ceiling, and the distinction is the whole
-   * fix. As a ceiling it capped the panel at three ids forever. As a floor it only
-   * guarantees the core agents still have rows when neither query has answered —
-   * which the loading behaviour requires, since hiding a row on absent information is
-   * the same mistake as disabling one. `current` joins for the same reason: the saved
-   * value must always have a row.
-   *
-   * Sorted rather than left in arrival order: `PINNED_ORDER` first, then
-   * everything else by `policy_id`. Set iteration order would
-   * otherwise follow whichever query resolved first and reshuffle the list.
-   */
-  const candidates = Array.from(
-    new Set<string>([
-      ...NAMED,
-      current,
-      ...(selectable ?? []),
-      ...(probeQ.data?.backends ?? []).map(b => b.id),
-    ]),
-  ).sort((a, b) => {
-    const pa = PINNED_ORDER.indexOf(a)
-    const pb = PINNED_ORDER.indexOf(b)
-    if (pa !== pb) return pa === -1 ? 1 : pb === -1 ? -1 : pa - pb
-    // Byte order, not `localeCompare`/`compareText`: these are machine identifiers,
-    // and the point of the sort (see above) is to reproduce the order the probe
-    // endpoint already returned them in. A collator reads the READER's locale, so
-    // the same deployment would order the rows differently per browser -- the
-    // between-render reshuffle this sort exists to prevent, just keyed on locale
-    // instead of query timing.
-    const ka = probe(a)?.policy_id || a
-    const kb = probe(b)?.policy_id || b
-    if (ka === kb) return 0
-    return ka < kb ? -1 : 1
-  })
-
-  /**
-   * The agents this panel can SWITCH TO.
-   *
-   * An agent the deployment may not select is HIDDEN, not shown dead. Advertising a
-   * forbidden option invites the reader to find out how to enable it, and under a
-   * managed policy there is nothing they can do — the answer is not on their machine.
-   *
-   * `current` is always kept, whatever the verdict. The backend degrades a denied
-   * persisted value to the floor on load, so this should not arise; if it ever does,
-   * a control that lists no active harness is a worse failure than one extra row.
-   */
-  const offered = candidates.filter(value => value === current || !unavailable(value))
-
-  /**
-   * The agents this panel LISTS, which is a wider set than it offers.
-   *
-   * Every offered agent, plus the ones this build never offers at all. Those get a
-   * row and no Use button: the core knows them well enough for a governance rule to
-   * name one, and an operator asking "why can I not pick that?" is asking about a
-   * fact the detail already carries. Hiding them answers the question with silence,
-   * and offering them would be a switch whose PATCH is refused.
-   *
-   * Deployment-denied agents stay out — that is `offered`'s rule and it is unchanged.
-   */
-  const rows = candidates.filter(value => offered.includes(value) || buildExcluded(value))
 
   /**
    * The row whose detail is on screen.
@@ -717,29 +598,6 @@ export function AgentBackendTab() {
         ? current
         : (rows[0] ?? current)
 
-  /**
-   * Installed === 'missing' is the only verdict that disables. `'unknown'` and an
-   * absent row explicitly do not: see the header comment on why an optimistic
-   * disable is the more expensive mistake.
-   */
-  const notInstalled = (value: string) => probe(value)?.installed === 'missing'
-  /**
-   * Installed on disk, but this gateway process cached its absence and cannot
-   * spawn it until the cache is dropped. Disabling is right here even though the
-   * binary IS present: the click would reach a spawn that fails. This is the one
-   * case where a positive install verdict still gates the control — and the one the
-   * **Check again** button exists to clear without a restart.
-   */
-  const needsRestart = (value: string) => probe(value)?.restart_required === true
-  /**
-   * The probe row's own verdict, shared with first-run setup (`acpProbeBlocksUse`),
-   * so the two screens cannot disagree on what a row means. It includes the row's
-   * `selectable: false`, but that never disables a rendered button here: an
-   * unselectable agent is filtered out of `offered` or shown build-excluded with no
-   * Use button at all, so the only reasons a rendered button is dead are ones the
-   * user can act on — install the binary, or re-check.
-   */
-  const cannotUse = (value: string) => acpProbeBlocksUse(probe(value))
 
   /**
    * A standing caveat about the harness itself, independent of whether it is
@@ -966,21 +824,6 @@ export function AgentBackendTab() {
   const mcpSettingLine = (value: string, id: string): string =>
     MCP_CONCERN_LABEL[id]?.(nameOf(value)) ?? id
 
-  /**
-   * A label for any listed id, known to this frontend or not.
-   *
-   * The fallback is the server's `policy_id`, which exists precisely to be a
-   * human-readable wire name (`acp_backends.POLICY_ID_BY_BACKEND`) — it is what a
-   * governance rule spells, so it is already a word rather than an internal token.
-   * Untranslated, and that is the deliberate trade: a registered agent rendering
-   * under its policy name is legible, whereas a missing display name
-   * renders a row with no text at all. A core agent that ships selectable gets a
-   * real translated entry in the shared helper; this keeps a plugin-registered one usable until
-   * then.
-   *
-   * KIRO is always named by the shared helper, before the policy-id fallback.
-   */
-  const nameOf = (value: string): string => acpBackendName({ id: value, policy_id: probe(value)?.policy_id })
 
   /** The harness's own brand mark, or the generic one for an agent with none here. */
   const iconOf = (value: string): React.ReactNode => <HarnessLogo id={value} size={14} />
@@ -1109,71 +952,6 @@ export function AgentBackendTab() {
   const runsWithoutAsking = (value: string): boolean =>
     probe(value)?.tool_approval === APPROVAL_UNVERIFIED || value === CLAUDE
 
-  /**
-   * The one status sentence a harness carries, derived rather than authored per agent.
-   *
-   * The order is strict, because the reasons are not equally actionable. A
-   * build-excluded agent comes first: nothing about installing or re-checking is
-   * worth telling someone about an option this build will never offer, and the
-   * detail's folded tool-approval line says why. `missing` comes next because
-   * it is the line that tells the user what to DO, and it names the components
-   * without the command — the command gets its own copyable block, so folding it
-   * into a sentence would put the one string an operator has to run somewhere they
-   * cannot click. `unknown` follows and must never read as missing; it reports a
-   * failed check, not an absent binary. Only then do the default/experimental lines
-   * apply. `DEFAULT_ACP_BACKEND` gets the default sentence; Kiro CLI is stable but
-   * not the default, so it says only what the probe measured; anything else gets
-   * `Experimental` rather than a claim.
-   *
-   * Rendered as the row's screen-reader text as well as in the strip, which is what
-   * lets the row's single glyph stay a glyph: the state is a WORD somewhere for
-   * every row, not a shape a reader has to decode. `named` marks a sentence that
-   * already names the agent, so the hidden block does not lead it with the name too.
-   */
-  const status = (value: string): { text: string; named?: boolean } => {
-    const row = probe(value)
-    if (buildExcluded(value)) return { text: i18nT('pages.developer.agentBackendTab.not_offered_by_this_build') }
-    if (row?.installed === 'missing' && row.found_version)
-      return {
-        text: i18nT('components.kiroPrerequisiteGate.agent_wrong_version_detail', {
-          name: nameOf(value),
-          version: row.found_version,
-        }),
-        named: true,
-      }
-    if (row?.installed === 'missing')
-      return {
-        text: i18nT('pages.developer.agentBackendTab.missing_components', {
-          components: fmtList(row.missing_components, { style: 'narrow' }),
-        }),
-      }
-    // The check failed, and the SECOND half of that sentence is what UX blocked on:
-    // the switch deliberately stays live here, and a bright Use button under a
-    // "could not check" line reads as a mistake the reader refuses to touch. The
-    // reasoning was in this file's own header, where no user will ever see it.
-    if (row?.installed === 'unknown')
-      return { text: i18nT('pages.developer.agentBackendTab.install_check_failed_can_still_switch') }
-    // AFTER the missing/unknown lines and BEFORE the descriptor lines: this row
-    // has a positive install verdict, so it would otherwise fall through to
-    // `Experimental` and say nothing about why the switch is dead.
-    // Names the cheap remedy, which is the button directly beside this line, before
-    // the gateway restart. The SAME sentence first-run setup shows for this state:
-    // the two screens are built from one picker, and two remedies for one state
-    // ("Settings > About" here, "that host" there) read as two different problems.
-    if (row?.restart_required)
-      return {
-        text: i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', {
-          name: nameOf(value),
-        }),
-        named: true,
-      }
-    if (value === DEFAULT_ACP_BACKEND) return { text: i18nT('pages.developer.agentBackendTab.default_harness') }
-    if (stable(value))
-      return row?.installed === 'installed'
-        ? { text: i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name: nameOf(value) }), named: true }
-        : { text: '' }
-    return { text: i18nT('pages.developer.agentBackendTab.experimental') }
-  }
 
   /**
    * Highlight *value*. Nothing else: the strip error is keyed by backend.
@@ -1197,9 +975,11 @@ export function AgentBackendTab() {
   const busy = patchMut.isPending || recheckMut.isPending
   // Every state the re-check can help with, and only those. A build-excluded harness
   // is not one: nothing this machine holds is why it is not on offer, so a button
-  // that re-measured the machine would answer a question nobody asked.
+  // that re-measured the machine would answer a question nobody asked. Nor is a
+  // sandbox refusal: no install the re-check finds makes that harness start here.
   const canRecheck =
     !buildExcluded(shown) &&
+    !shownProbe?.sandbox_refusal &&
     (notInstalled(shown) || needsRestart(shown) || shownProbe?.installed === 'unknown')
 
   /**
@@ -1210,7 +990,10 @@ export function AgentBackendTab() {
    * The order is strict, because the reasons are not equally actionable. A
    * build-excluded agent comes first: nothing about installing or re-checking is
    * worth telling someone about an option this build will never offer, and the
-   * folded tool-approval line below says why. `missing` comes next because it
+   * folded tool-approval line below says why. A sandbox refusal is next, for the
+   * same reason: every session start refuses the harness on this host, so an
+   * install command or a "can still switch" line would send the reader to a
+   * remedy that cannot help. `missing` comes next because it
    * is the block that tells the user what to DO — the install command, copyable,
    * and what to press afterwards. `unknown` follows and must never read as
    * missing; it reports a failed check, and says the switch stays live, because
@@ -1235,13 +1018,32 @@ export function AgentBackendTab() {
           {i18nT('pages.developer.agentBackendTab.not_offered_by_this_build')}
         </p>
       )
-    if (row?.installed === 'missing') return <AgentInstallDetail name={name} probe={row} />
+    if (row?.sandbox_refusal)
+      return <p className="text-[13px] leading-relaxed text-text">{sandboxRefusalLine(value)}</p>
+    if (row?.installed === 'missing')
+      return (
+        <>
+          <HarnessInstallDetail value={value} name={name} probe={row} prerequisite={prereqQ.data} />
+          {/* A `useQuery` failure, so `ErrorNotice`: without the platform the
+              Kiro CLI detail shows every install command, so only its precision is
+              lost. Only that row reads it. Nothing on this row is unsaved, so the
+              agent may take it. */}
+          <ErrorNotice
+            className="mt-3"
+            message={value === KIRO && prereqQ.isError ? i18nT('components.kiroPrerequisiteGate.could_not_check_kiro_cli') : null}
+            askAgent
+            footer={value === KIRO && prereqQ.isError ? (
+              <Btn type="button" onClick={() => void prereqQ.refetch()}>{i18nT('components.kiroPrerequisiteGate.try_again')}</Btn>
+            ) : undefined}
+          />
+        </>
+      )
     // A failed probe, so `ErrorNotice`.
     if (row?.installed === 'unknown')
       return (
         <>
-          {/* No hand-off: this detail can also hold the Strands setup card,
-              whose model and sign-in drafts are not saved yet, and the
+          {/* No hand-off: this detail can also hold the Strands setup card or
+              the DeepSeek key card, whose drafts are not saved yet, and the
               hand-off's navigation to the chat would discard them. */}
           <ErrorNotice
             message={i18nT('pages.developer.agentBackendTab.install_check_failed_can_still_switch')}
@@ -1536,6 +1338,7 @@ export function AgentBackendTab() {
       {/* Rendered only under a router: the panel is also rendered bare, in tests
           and captures, where there is no URL to read. */}
       {inRouter && <OrchestratorMemoryDeepLink onOpen={() => highlightRow(KAS)} />}
+      {inRouter && <KasEngineDeepLink onOpen={() => highlightRow(KAS)} />}
       {/* A stored Kiro CLI pick that sessions run on KAS: kiro-cli now serves its
           v3 (KAS) engine, and the server resolves the pick there
           (`agent_sdk.backends.KIRO_SELECTION_BACKEND`). The list below already
@@ -1598,33 +1401,31 @@ export function AgentBackendTab() {
             browser supplies the keyboard (one tab stop, arrows move check and focus
             together). Checking a row is looking at it; the config changes only
             through the detail's own Use button. */}
-        <fieldset className="mx-0 space-y-2 border-none p-0">
-          <legend className="sr-only">
-            {i18nT('components.kiroPrerequisiteGate.other_agents_list_label')}
-          </legend>
-          {rows.map(value => {
+        <HarnessPickerList
+          ids={rows}
+          group={GROUP_NAME}
+          legend={i18nT('components.kiroPrerequisiteGate.other_agents_list_label')}
+          selectedId={shown}
+          onSelect={highlightRow}
+          label={nameOf}
+          detailId={() => DETAIL_ID}
+          detailTestId="agent-harness-detail"
+          row={(value, selected) => {
             const row = probe(value)
-            const selected = value === shown
             const isCurrent = value === current
-            // The saved Kiro CLI setting, while sessions run it on Kiro Agent. Use
-            // on this row would save the value that is already saved.
-            const savedPickRunsElsewhere = value === KIRO && kiroPickRunsOnKas
-            return (
-              <AgentPickerRow
-                key={value}
-                id={value}
-                group={GROUP_NAME}
-                label={nameOf(value)}
-                selected={selected}
-                onSelect={() => highlightRow(value)}
-                icon={
+            // New sessions run on Kiro Agent, and a Kiro CLI pick would run there
+            // too, so Use on this row would change nothing new sessions run.
+            const kiroRowRunsOnKas =
+              value === KIRO && current === KAS && probeQ.data?.kiro_cli_runs_on_kas === true
+            return {
+                icon: (
                   <span className="flex shrink-0 items-center text-muted" aria-hidden="true">
                     {iconOf(value)}
                   </span>
-                }
-                current={isCurrent}
-                describedBy={rowStatusId(value)}
-                status={
+                ),
+                current: isCurrent,
+                describedBy: rowStatusId(value),
+                status: (
                   <span className="flex shrink-0 items-center gap-2">
                     {/* Which backend is IN USE, as a word and not a mark: with the
                         badge beside it, "Installed" would otherwise stand for two
@@ -1656,14 +1457,12 @@ export function AgentBackendTab() {
                         probe={row}
                         blocked={false}
                         notOffered={buildExcluded(value)}
+                        refused={row.sandbox_refusal}
                       />
                     )}
                   </span>
-                }
-                detailId={DETAIL_ID}
-                detailTestId="agent-harness-detail"
-              >
-                {selected && (
+                ),
+                detail: selected && (
                   <>
                     {/* The state, first. `STRIP_ID` is what the Use button describes
                         itself with, so the reason a dead button is dead is the one
@@ -1685,9 +1484,10 @@ export function AgentBackendTab() {
                         switched anything yet. One sentence, directly above the
                         button, names the from and the to. Absent on the running row
                         (there is no button), on a harness this build never
-                        offers (same), and on the saved Kiro CLI setting that runs
-                        on Kiro Agent, which says that instead. */}
-                    {savedPickRunsElsewhere && (
+                        offers (same), on one this host refuses (no switch), and on
+                        the Kiro CLI row while new sessions run on Kiro Agent and a
+                        Kiro CLI pick would too, which says that instead. */}
+                    {kiroRowRunsOnKas && (
                       <p
                         data-testid="kiro-row-runs-on-kas"
                         className="text-[12px] leading-relaxed text-muted"
@@ -1695,7 +1495,7 @@ export function AgentBackendTab() {
                         {i18nT('pages.developer.agentBackendTab.kiro_row_runs_on_kas')}
                       </p>
                     )}
-                    {!buildExcluded(value) && !isCurrent && !savedPickRunsElsewhere && (
+                    {!buildExcluded(value) && !row?.sandbox_refusal && !isCurrent && !kiroRowRunsOnKas && (
                       <p className="mb-0 text-[12px] leading-relaxed text-muted">
                         {i18nT('pages.developer.agentBackendTab.use_switches_new_sessions', {
                           current: nameOf(current),
@@ -1705,13 +1505,14 @@ export function AgentBackendTab() {
                     )}
                     {/* The only control that switches anything. ABSENT rather than
                         dead for the harness already in use (the row says so) and for
-                        a harness this build never offers: a PATCH the wire refuses is
-                        not a button. Check again only where a re-check can change the
+                        a harness this build never offers. A harness this host refuses
+                        keeps a disabled button, described by the status strip that
+                        says why. Check again only where a re-check can change the
                         verdict. */}
                     <AgentDetailActions
                       name={nameOf(value)}
                       onUse={
-                        !buildExcluded(value) && !isCurrent && !savedPickRunsElsewhere
+                        !buildExcluded(value) && !isCurrent && !kiroRowRunsOnKas
                           ? () => {
                               // A PATCH writing the value already stored still
                               // resolves, which would run `onSuccess` and reset the
@@ -1743,6 +1544,11 @@ export function AgentBackendTab() {
                         onDismiss={() => setStripError(null)}
                       />
                     )}
+                    {value === KAS && offered.includes(KAS) && (
+                      <ErrorBoundary scope="developer-kas-engine" fallback={null}>
+                        <KasBundleCard kiroPickRunsOnKas={kiroPickRunsOnKas} />
+                      </ErrorBoundary>
+                    )}
                     {value === KAS && offered.includes(KAS) && <OrchestratorMemoryToggle />}
                     {/* Whether the Kiro sign-in this harness runs as is stored, and
                         the way to the Kiro account tab that manages it. Offered
@@ -1758,13 +1564,17 @@ export function AgentBackendTab() {
                         <StrandsSetupCard />
                       </ErrorBoundary>
                     )}
+                    {value === DEEPSEEK && (
+                      <ErrorBoundary scope="developer-deepseek-key" fallback={null}>
+                        <DeepSeekKeyCard />
+                      </ErrorBoundary>
+                    )}
                     {facts(value)}
                   </>
-                )}
-              </AgentPickerRow>
-            )
-          })}
-        </fieldset>
+                ),
+            }
+          }}
+        />
 
         {/* Every row's state as a WORD, for a reader who gets no badge at all.
             Hidden, outside the rows, and one per row rather than one for the shown

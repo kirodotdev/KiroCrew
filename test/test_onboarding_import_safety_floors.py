@@ -38,6 +38,7 @@ from source_corpus import parsed_candidates, src_root
 from kiro_crew import onboarding_apply, onboarding_plan, onboarding_scan, onboarding_sources
 from kiro_crew.cron import CronService
 from kiro_crew.onboarding_sources import hermes as hermes_source
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING
 from kiro_crew.vector_memory import VectorMemoryStore
 
 # Keep apply_import's MCP sidecar lock off the real ~/.kiro/settings (see the
@@ -445,17 +446,33 @@ class TestConservativeParsingRegressions:
         assert data.get("mcpServers", {}).get("docs", {}).get("command") == "docs-mcp"
 
     def test_yaml_malformed_config_degrades_to_diagnostic(self, tmp_path: Path) -> None:
-        # Malformed / pathologically nested YAML must degrade to a diagnostic, never
-        # raise out of the off-loop scan (deeply nested flow input raises
-        # RecursionError, which is neither YAMLError nor ValueError).
+        # Pathologically nested YAML must degrade to a diagnostic, never raise out
+        # of the off-loop scan. The top mapping plus MAX_DOCUMENT_NESTING lists is
+        # one collection past the loader's cap.
         anchor = tmp_path / "hermes"
         anchor.mkdir()
         config = anchor / "config.yaml"
-        config.write_text("a: " + "[" * 4000 + "]" * 4000, encoding="utf-8")
+        depth = MAX_DOCUMENT_NESTING
+        config.write_text("a: " + "[" * depth + "]" * depth, encoding="utf-8")
         scan = onboarding_scan._Scan("hermes", tmp_path, tmp_path)
         data = onboarding_scan._read_simple_yaml(config, anchor, scan)
         assert data == {}
         assert any(item["reason"] == "invalid_config" for item in scan.skipped)
+
+    def test_yaml_config_nested_to_the_cap_is_parsed(self, tmp_path: Path) -> None:
+        # The top mapping plus MAX_DOCUMENT_NESTING - 1 lists sits exactly at the cap.
+        anchor = tmp_path / "hermes"
+        anchor.mkdir()
+        config = anchor / "config.yaml"
+        depth = MAX_DOCUMENT_NESTING - 1
+        config.write_text("a: " + "[" * depth + "]" * depth, encoding="utf-8")
+        scan = onboarding_scan._Scan("hermes", tmp_path, tmp_path)
+        data = onboarding_scan._read_simple_yaml(config, anchor, scan)
+        expected: list[object] = []
+        for _ in range(depth - 1):
+            expected = [expected]
+        assert data == {"a": expected}
+        assert not any(item["reason"] == "invalid_config" for item in scan.skipped)
 
     def test_yaml_alias_bomb_is_rejected_fast(self, tmp_path: Path) -> None:
         # A "billion-laughs" YAML alias bomb must be rejected at parse time rather

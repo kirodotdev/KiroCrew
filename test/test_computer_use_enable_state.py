@@ -36,6 +36,7 @@ from kiro_crew.computer_use.types import (
     PolicyStateError,
 )
 from kiro_crew.config import loader as config_loader
+from kiro_crew.config import loosening_provenance
 
 
 @pytest.fixture
@@ -126,6 +127,79 @@ class TestFailSafeToDisabled:
         # One dispatch should not read the keystone twice.
         assert enable_state.is_enabled({STATE_KEY_ENABLED: True}) is True
         assert enable_state.is_enabled({}) is False
+
+
+class TestByteOrderMarkAndVisibleFailure:
+    """A Windows "UTF-8 with BOM" save reads as saved; an unusable file is named."""
+
+    def test_a_leading_bom_reads_like_the_same_file_without_it(self, state_dir):
+        body = {
+            STATE_KEY_ENABLED: True,
+            STATE_KEY_ALLOWED_APPS: ["notepad"],
+            STATE_KEY_EXTRA_DENIED_APPS: ["regedit"],
+        }
+        (state_dir / STATE_FILE_NAME).write_bytes(b"\xef\xbb\xbf" + json.dumps(body).encode())
+        assert enable_state.load_state() == body
+        assert enable_state.is_enabled() is True
+        assert enable_state.load_state_for_report() == (body, None)
+        policy = enable_state.load_policy_config()
+        assert policy == PolicyConfig.from_state(body)
+        assert policy.allowed_apps and policy.extra_denied_apps
+
+    def test_a_bom_does_not_make_a_string_true_enable(self, state_dir):
+        (state_dir / STATE_FILE_NAME).write_bytes(b'\xef\xbb\xbf{"enabled": "true"}')
+        assert enable_state.is_enabled() is False
+
+    def test_a_second_bom_is_still_unparseable(self, state_dir):
+        (state_dir / STATE_FILE_NAME).write_bytes(b'\xef\xbb\xbf\xef\xbb\xbf{"enabled": true}')
+        assert enable_state.is_enabled() is False
+        assert "could not be parsed" in (enable_state.load_state_for_report()[1] or "")
+
+    def test_an_unusable_file_warns_once_per_version_without_its_contents(self, state_dir, caplog):
+        _write_raw(state_dir, '{"enabled": tr')
+        with caplog.at_level("WARNING", logger=enable_state.logger.name):
+            assert enable_state.load_state() == {}
+            assert enable_state.load_state() == {}
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert STATE_FILE_NAME in warnings[0] and "JSONDecodeError" in warnings[0]
+        assert '"enabled"' not in warnings[0]
+        caplog.clear()
+        _write_raw(state_dir, "[1]")
+        with caplog.at_level("WARNING", logger=enable_state.logger.name):
+            enable_state.load_state()
+        assert any("not a JSON object" in r.getMessage() for r in caplog.records)
+
+    def test_a_usable_read_lets_the_same_breakage_warn_again(self, state_dir, caplog):
+        with caplog.at_level("WARNING", logger=enable_state.logger.name):
+            _write_raw(state_dir, '{"enabled": tr')
+            enable_state.load_state()
+            _write_raw(state_dir, json.dumps({STATE_KEY_ENABLED: False}))
+            enable_state.load_state()
+            _write_raw(state_dir, '{"enabled": tr')
+            enable_state.load_state()
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 2
+
+    def test_an_unreadable_file_is_named_and_stays_disabled(self, state_dir, caplog, monkeypatch):
+        def refuse(*_args, **_kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(loosening_provenance, "reconciled_bytes", refuse)
+        expected = f"{STATE_FILE_NAME} could not be read (PermissionError)"
+        with caplog.at_level("WARNING", logger=enable_state.logger.name):
+            assert enable_state.load_state() == {}
+        [warning] = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert warning.startswith(expected)
+        state, problem = enable_state.load_state_for_report()
+        assert state == {} and problem == warning
+        assert enable_state.is_enabled() is False
+
+    def test_an_absent_file_has_no_problem_and_no_warning(self, state_dir, caplog):
+        with caplog.at_level("WARNING", logger=enable_state.logger.name):
+            assert enable_state.load_state() == {}
+        assert enable_state.load_state_for_report() == ({}, None)
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
 # ──────────────────────────────────────────────────────────────────────────

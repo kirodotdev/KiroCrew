@@ -13,6 +13,8 @@ it retries the switch while the failure is a lock conflict, until its deadline.
 ``keep_wal_on_close``, ``close_keeping_wal`` and ``truncate_wal_before_close`` stop
 a closing connection from deleting a ``-wal`` that another process may still be
 writing through.
+
+``wal_truncated`` empties the ``-wal`` after an erasure and says whether it did.
 """
 
 from __future__ import annotations
@@ -121,6 +123,30 @@ def truncate_wal_before_close(conn: Any) -> None:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
     except Exception:  # best effort: the committed data is already safe in the -wal
         logger.debug("WAL checkpoint before close did not run", exc_info=True)
+
+
+#: Tries, and the pause between them, before :func:`wal_truncated` reports failure.
+WAL_TRUNCATE_ATTEMPTS = 3
+WAL_TRUNCATE_RETRY_SECS = 0.05
+
+
+def wal_truncated(conn: Any, *, sleep: Callable[[float], None] = time.sleep) -> bool:
+    """Truncate *conn*'s WAL, reporting whether it actually happened.
+
+    For an erasure that must not leave deleted rows readable in the ``-wal``.
+    ``PRAGMA wal_checkpoint(TRUNCATE)`` does NOT raise when it cannot proceed: it
+    returns ``(busy, log_pages, checkpointed_pages)`` with ``busy=1``, so a caller
+    that ignores the row reports an erasure it did not perform. A reader outliving
+    ``busy_timeout`` is what makes it busy, so a few short retries clear the
+    ordinary case without weakening the verdict. Errors propagate.
+    """
+    for attempt in range(WAL_TRUNCATE_ATTEMPTS):
+        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if row is None or int(row[0]) == 0:
+            return True
+        if attempt + 1 < WAL_TRUNCATE_ATTEMPTS:
+            sleep(WAL_TRUNCATE_RETRY_SECS)
+    return False
 
 
 def close_keeping_wal(conn: Any) -> None:

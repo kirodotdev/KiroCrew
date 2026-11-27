@@ -3,8 +3,8 @@ title: Crash-only session trust — "Trust this session" survives a restart nobo
 status: draft
 author: billygerhard
 created: 2026-10-01
-last-audited: 2026-10-01
-audited-at: 8ae5dff6ee
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 15903
 implementation-prs: [15894]
 tracking-issues: [15892, 6379]

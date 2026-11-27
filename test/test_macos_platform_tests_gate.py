@@ -307,9 +307,9 @@ class TestARedMacSuiteHoldsPublicationAndNeverABuild:
                 "publish-linux-rpm-arm64",
                 "publish-linux-rpm-x64",
                 "publish-windows-x64",
-                "sign-and-notarize",
-                "sign-and-notarize-arm64",
-                "sign-and-notarize-x64",
+                "publish-macos",
+                "publish-macos-arm64",
+                "publish-macos-x64",
             ]
         )
         # No build job may grow this `needs:`. Gating the builds is what blocked the
@@ -321,11 +321,18 @@ class TestARedMacSuiteHoldsPublicationAndNeverABuild:
             [
                 "version",
                 "build-wheel",
+                "build-platform-wheels",
                 "build-desktop",
                 "build-windows",
                 "dependency-vulnerability-gate",
                 "pod-scenarios",
                 "process-leak-invariant",
+                # Sign + notarize write nothing public (the private signing
+                # bucket and this run's artifacts), so they run beside the
+                # builds; their publish-macos* halves carry the gate.
+                "sign-and-notarize",
+                "sign-and-notarize-arm64",
+                "sign-and-notarize-x64",
             ]
         )
 

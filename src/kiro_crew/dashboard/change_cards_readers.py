@@ -28,6 +28,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from kiro_crew import change_card_catalog as catalog
+from kiro_crew.change_card_mcp_server import KIND_MCP_SERVER
 from kiro_crew.dashboard.change_cards_records import (
     CardError,
     _jsonable,
@@ -115,7 +116,12 @@ _CRON_CONFIG_FIELDS = (
 
 
 def _cron_job_revision(job: Any) -> str:
-    return _revision_digest({k: getattr(job, k, None) for k in _CRON_CONFIG_FIELDS})
+    fields = {k: getattr(job, k, None) for k in _CRON_CONFIG_FIELDS}
+    # The pin joins only when set, so an unpinned job keeps the digest a card stored before it.
+    for key in ("channel_type", "target_id"):
+        if getattr(job, key, None):
+            fields[key] = getattr(job, key)
+    return _revision_digest(fields)
 
 
 def cron_job_revision(job: Any) -> str:
@@ -458,6 +464,11 @@ def comparable_state(kind: str, state: Any) -> Any:
         # flipped since is no conflict for the goal, and the card's own Heartbeat
         # step is a compare-and-set of its own (``expected`` on the schedules route).
         return {k: v for k, v in state.items() if k != "heartbeat"}
+    if kind == catalog.KIND_CREWMATE_CHECK_INS and isinstance(state, dict):
+        # The Heartbeat's active hours are not a field this card sets (the
+        # Schedules tab owns them), so a window moved between preview, apply and
+        # Undo is no conflict; the card still states the bound they give.
+        return {k: v for k, v in state.items() if k != catalog.HEARTBEAT_HOURS_KEY}
     if kind == catalog.KIND_CREWMATE_KEY_RESULTS and isinstance(state, dict):
         out = {k: v for k, v in state.items() if k != KR_RECORDS_KEY}
         records = state.get(KR_RECORDS_KEY)
@@ -641,7 +652,7 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
     The member id is part of the compared snapshot: a crewmate deleted and made
     again under the same name between preview and apply reads as a change.
     """
-    from kiro_crew import member_goals
+    from kiro_crew import member_goals, member_goals_hours
     from kiro_crew import members as members_mod
     from kiro_crew.config.loader import KiroCrewConfig
 
@@ -670,11 +681,18 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
         out["heartbeat"] = {
             "on": bool(rec["schedules"].get(member_goals.CADENCE_HEARTBEAT)),
             "interval": rec["schedules"].get("interval"),
+            "hours": list(member_goals_hours.active_hours(rec["schedules"])),
             "declined": rec.get("heartbeat_offer") == member_goals.HEARTBEAT_OFFER_DECLINED,
         }
     elif kind == catalog.KIND_CREWMATE_CHECK_INS:
         out["has_goal"] = member_goals.has_goal(rec)
         out["schedules"] = {k: rec["schedules"].get(k) for k in catalog.CHECK_IN_FIELDS}
+        # Beside the fields the card may set: the window the Heartbeat already
+        # runs in, so the card's daily bound is the one its schedule will fire.
+        # The card never writes it, so it is neither in ``schedules`` (the fields
+        # its Undo puts back) nor in what the conflict checks compare
+        # (:func:`comparable_state`).
+        out[catalog.HEARTBEAT_HOURS_KEY] = list(member_goals_hours.active_hours(rec["schedules"]))
     else:
         out["has_goal"] = member_goals.has_goal(rec)
         # Only the ids: which goals exist and their numbers. A goal's wording
@@ -756,6 +774,14 @@ def _sync_read_state(
         name = ev0.get("name") or _derive_install_name(p["id"])
         exists = bool(name) and _mcp_exists(name)
         return {"name": name, "exists": exists, "scopes": _mcp_scopes(name) if name else {}}
+    if kind == KIND_MCP_SERVER:
+        from kiro_crew.dashboard.handlers.request_server_page import server_state
+
+        return server_state(p["server"], p)
+    if kind == catalog.KIND_PROJECT_MCP_SERVER:
+        from kiro_crew.change_card_project_mcp import server_snapshot
+
+        return server_snapshot(p)
     if kind == catalog.KIND_MCP_ADD_CUSTOM:
         return {
             "exists": {name: _mcp_exists(name) for name in p["servers"]},
@@ -1008,16 +1034,27 @@ async def undo_survivors(
     return [n for n in names if await asyncio.to_thread(_mcp_scopes, n)]
 
 
-def _connection_grant_fingerprint(slug: str) -> list[int] | None:
-    """``[mtime_ns, size]`` of the provider's token artifact; stats only, never opened."""
-    from kiro_crew import mcp_grant
+def _connection_grant_fingerprint(slug: str) -> list[int] | dict[str, Any] | None:
+    """Which grant the provider holds now; stats and entry digests only, nothing opened.
+
+    ``[mtime_ns, size]`` of kiro-cli's token artifact. While chats run on KAS with
+    sign-ins saved, Crew's grant vault is read too, at the url a KAS chat reads it
+    at (the Connections status view's rule, ``connections.status``), and a sign-in
+    held there makes it ``{"kiroCli": <stamp or None>, "kas": <entry digest>}``, so a
+    new sign-in in either store reads as a different grant.
+    """
+    from kiro_crew import mcp_grant, mcp_grant_kas
+    from kiro_crew.connections.mint_kas import kas_chat_sign_in_urls, kas_signs_in
     from kiro_crew.connections.registry import get_visible_providers
 
     provider = next((p for p in get_visible_providers() if p.get("slug") == slug), None)
     if provider is None:
         return None
     stamp = mcp_grant.grant_fingerprint(str(provider["mcp_url"]))
-    return list(stamp) if stamp is not None else None
+    kiro_cli = list(stamp) if stamp is not None else None
+    vault_url = kas_chat_sign_in_urls([provider]).get(slug) if kas_signs_in() else None
+    saved = mcp_grant_kas.kas_grant_fingerprint(vault_url) if vault_url is not None else None
+    return kiro_cli if saved is None else {"kiroCli": kiro_cli, "kas": saved}
 
 
 async def read_state(
@@ -1054,6 +1091,10 @@ async def read_state(
         }
     if kind == catalog.KIND_CREWMATE_CAPABILITIES:
         return await asyncio.to_thread(_capability_state, app, params)
+    if kind == catalog.KIND_CREWMATE_MEMORY:
+        from kiro_crew.dashboard.member_memory_records import memory_state
+
+        return await memory_state(params, state)
     if kind == catalog.KIND_FOLDER_STEERING:
         folder = await _folder(state, params["folder"])
         if folder is None:
@@ -1191,7 +1232,7 @@ async def _mcp_detail(params: dict[str, Any]) -> dict[str, Any]:
 
         registry = await asyncio.to_thread(_get_registry)
         provider = registry.get(params["provider"])
-        if provider is None or not provider.is_available():
+        if provider is None or not await asyncio.to_thread(provider.is_available):
             return {}
         detail = await asyncio.wait_for(provider.fetch_detail(params["id"]), timeout=8)
     except Exception:
@@ -1242,6 +1283,7 @@ async def read_context(
         catalog.KIND_CREWMATE_GOAL,
         catalog.KIND_CREWMATE_KEY_RESULTS,
         catalog.KIND_CREWMATE_CHECK_INS,
+        catalog.KIND_CREWMATE_MEMORY,
     ):
         return {"label": await asyncio.to_thread(_crewmate_label, p["member"])}
     if kind == catalog.KIND_SETTING_CHANGE:
@@ -1437,6 +1479,7 @@ async def _workflow_state(kind: str, params: dict[str, Any], state: Any) -> dict
         "format": str(definition.get("format") or "python"),
         "revision": definition.get("revision"),
         "content_hash": str(definition.get("content_hash") or ""),
+        "builtin": bool(definition.get("builtin")),
     }
 
 

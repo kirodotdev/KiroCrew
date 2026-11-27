@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { join } from 'node:path'
 import { readSource } from './readSource'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { store } from '../store'
@@ -583,6 +583,34 @@ describe('FileHeaderBreadcrumb right-click menu: the in-app folder row', () => {
     fireEvent.contextMenu(screen.getByRole('group'))
     await screen.findByRole('menuitem', { name: i18nT('components.filePathMenu.copy_path') })
     expect(screen.queryByRole('menuitem', { name: i18nT('components.filePathMenu.show_folder_in_side_panel') })).toBeNull()
+  })
+})
+
+describe('FileHeaderBreadcrumb folder segments open their folder', () => {
+  const path = '/repo/alpha/src/index.ts'
+
+  it('opens each shown folder at its absolute path on click, Enter or Space; the file segment stays text', () => {
+    const onFolderOpen = vi.fn()
+    render(<FileHeaderBreadcrumb filePath={path} onFolderOpen={onFolderOpen} />, { wrapper })
+    const group = screen.getByRole('group')
+    expect(within(group).getAllByRole('button').map(b => b.textContent)).toEqual(['alpha', 'src'])
+    fireEvent.click(within(group).getByRole('button', { name: 'src' }))
+    expect(onFolderOpen).toHaveBeenLastCalledWith('/repo/alpha/src')
+    // The first shown segment opens its absolute path, not one relative to the shown crumbs.
+    fireEvent.keyDown(within(group).getByRole('button', { name: 'alpha' }), { key: 'Enter' })
+    expect(onFolderOpen).toHaveBeenLastCalledWith('/repo/alpha')
+    fireEvent.keyDown(within(group).getByRole('button', { name: 'src' }), { key: ' ' })
+    expect(onFolderOpen).toHaveBeenLastCalledWith('/repo/alpha/src')
+    fireEvent.click(within(group).getByText('index.ts'))
+    expect(onFolderOpen).toHaveBeenCalledTimes(3)
+    // A focused segment still shows the full-path readout for a keyboard user.
+    fireEvent.focus(within(group).getByRole('button', { name: 'alpha' }))
+    expect(screen.getByTestId('file-header-full-path')).toHaveTextContent(path)
+  })
+
+  it('keeps every segment plain text when the host passes no folder handler', () => {
+    render(<FileHeaderBreadcrumb filePath={path} />, { wrapper })
+    expect(within(screen.getByRole('group')).queryAllByRole('button')).toEqual([])
   })
 })
 

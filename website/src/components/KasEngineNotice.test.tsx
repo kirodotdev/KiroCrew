@@ -62,7 +62,7 @@ describe('KasEngineNotice', () => {
     kasBundleStatus.mockRejectedValue(new Error('HTTP 500'))
     renderWithProviders(<KasEngineNotice />)
     const notice = await screen.findByTestId('kas-engine-status-error', {}, CHAINED_QUERY_TIMEOUT)
-    expect(notice.textContent).toMatch(/Could not read the KAS engine status/)
+    expect(notice.textContent).toMatch(/Could not read the built-in engine's status/)
 
   })
 

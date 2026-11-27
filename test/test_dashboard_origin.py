@@ -275,7 +275,7 @@ class TestFormatDashboardUrls:
     def test_local_direct_url(self, _mh: object, _dp: object) -> None:
         lines = format_dashboard_urls("http://localhost:5476", port=5476)
         assert len(lines) == 2
-        assert lines[0] == "👻 Dashboard:"
+        assert lines[0] == "Dashboard:"
         assert "http://localhost:5476" in lines[1]
 
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
@@ -292,7 +292,7 @@ class TestFormatDashboardUrls:
         lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
         assert any("ssh -NL 5476:localhost:5476 myhost" in ln for ln in lines)
         assert any("http://localhost:5476?token=t" in ln for ln in lines)
-        assert "👻 Run 24/7:  kirocrew service install" in lines
+        assert "Run 24/7:  kirocrew service install" in lines
 
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="myhost.internal.example.com")
@@ -397,9 +397,9 @@ class TestFormatDashboardUrls:
             "http://localhost:5476?token=abc", port=5476, with_token=False
         )
         assert lines == [
-            "👻 Dashboard:",
+            "Dashboard:",
             "   http://localhost:5476",
-            "👻 Sign in:   run kirocrew token for a sign-in link",
+            "Sign in:   run kirocrew token for a sign-in link",
         ]
 
     @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 5.6.7.8 5678"})
@@ -409,7 +409,7 @@ class TestFormatDashboardUrls:
         self, _mh: object, _dp: object
     ) -> None:
         lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476, with_token=False)
-        assert "             then open http://localhost:5476" in lines
+        assert "           then open http://localhost:5476" in lines
         assert not any("token=" in ln for ln in lines)
         assert any("kirocrew token" in ln for ln in lines)
 
@@ -419,7 +419,7 @@ class TestFormatDashboardUrls:
         lines = format_dashboard_urls(
             "http://host:5476?token=abc", port=5476, local_only=False, with_token=False
         )
-        assert "👻 Proxy:     https://proxy.devspaces.example.com" in lines
+        assert "Proxy:     https://proxy.devspaces.example.com" in lines
         assert not any("token=" in ln for ln in lines)
 
     @pytest.mark.parametrize(

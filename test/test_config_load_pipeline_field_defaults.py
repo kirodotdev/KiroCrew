@@ -42,6 +42,12 @@ _READ_STAGE_DEPARTURES = {
     ("agent", "crew_panel"): False,
     # Fail closed the same way: a malformed value must not start storing MCP tokens.
     ("agent", "kas_persist_mcp_sign_in"): False,
+    # Fail closed: a malformed relay switch reads as off, never as unset, so it cannot
+    # let a team key start hosting (``config/section_builders._relay_enabled``).
+    ("tunnel", "relay_enabled"): False,
+    # Fail closed: a wrong-typed Region is kept as text so the relay refuses it,
+    # never repaired to "", which would lease from us-east-1.
+    ("tunnel", "relay_lease_region"): "{'not': 'a string'}",
     # Fail closed: a malformed value must not auto-approve conductor sends.
     ("agent", "conductor_own_child_verbs"): False,
     # Fail closed: a malformed value must not move kiro-cli's KAS extract.
@@ -334,11 +340,14 @@ def _move_cases() -> list:
             [
                 (sections.ChannelConfig, "activation", "always"),
                 (sections.ChannelConfig, "agent", "reviewer"),
+                (sections.ChannelConfig, "bot", "helper"),
                 (sections.ChannelConfig, "thread_follow", False),
+                # Kept only beside the agent it names, so the moved default is that agent.
+                (sections.ChannelConfig, "shared_agent", "reviewer"),
             ],
             {"slack": {"channels": {"C1": {}}}},
             lambda c: dataclasses.astuple(c.slack_channels["C1"]),
-            ("always", "reviewer", False),
+            ("always", "reviewer", "helper", False, "reviewer"),
         ),
         _case(
             "workspaces.dir-omitted",
@@ -355,11 +364,12 @@ def _move_cases() -> list:
                 (tailscale, "allowed_logins", ["owner@example.com"]),
                 (tailscale, "pin_scope", "login"),
                 (tailscale, "bind_refresh_chains", False),
+                (tailscale, "https_port", 8443),
                 (tailscale, "keep_awake", False),
             ],
             {"dashboard": {"tailscale": {}}},
             lambda c: dataclasses.astuple(c.dashboard.tailscale),
-            (True, True, ["owner@example.com"], "login", False, False),
+            (True, True, ["owner@example.com"], "login", False, 8443, False),
         ),
         _case(
             "dashboard.tailscale.keep_awake-malformed",

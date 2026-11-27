@@ -315,3 +315,33 @@ async def test_the_hand_off_takes_the_floor_before_it_yields(state, monkeypatch)
     proceed.set()
     await await_until(handed_off, what="the hand-off")
     assert drains == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_cancelled_before_it_runs_hands_off_the_queued_send(
+    state, monkeypatch
+) -> None:
+    """A dispatch cancelled before its first step still hands the queue off.
+
+    An app's own shutdown (a disable, an update, a reload of its backend) commonly
+    cancels the turn tasks it started. A cancel that lands before the dispatch took
+    a step never enters ``_run_chat``, so no exit marks the turn unstarted, and a
+    send queued behind the dispatch waited for a next send that an app-owned slot
+    may never get.
+    """
+    slot = state.get_or_create_slot("w3", app="crew-keyboard")
+    successor = _TurnRecorder()
+    monkeypatch.setattr(chat_runner, "_run_chat", successor)
+
+    slot.task = spawn_guarded_turn(
+        state,
+        slot,
+        state.run_background_turn(slot, chat_runner._run_chat(state, slot, "cancelled")),
+    )
+    assert slot.running is True
+    queue_for_next_turn(state, slot, "queued behind the cancelled turn", turn_actor="app")
+    slot.task.cancel()
+
+    await await_until(successor.ran, what="the queued send's turn")
+    assert successor.messages == ["queued behind the cancelled turn"]
+    assert slot._queue == []

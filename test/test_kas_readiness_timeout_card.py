@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -20,7 +21,7 @@ from kiro_crew.dashboard.chat_turn.recovery import _terminal_error_meta
 
 def _silent_handle() -> AcpSessionHandle:
     """A session whose host never sends a status frame."""
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     handle._session_id = "sess-readiness"
     handle._mcp_report = McpSessionReport()
     handle._mcp_report.begin_session([])

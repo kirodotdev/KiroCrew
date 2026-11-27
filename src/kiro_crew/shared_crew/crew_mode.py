@@ -1,15 +1,14 @@
-"""Which of the mutually exclusive People/setup modes this Crew is in.
+"""Which People/setup mode this Crew is in, and each connection source it has.
 
-A Crew is in exactly one mode, and the People surface, the setup guidance and
-the session list follow it:
+A Crew is in exactly one mode, which the session list and the error state
+follow, and it reports every connection source at once (:func:`sources_view`),
+which the People page shows side by side:
 
 * ``personal``: no team path is configured and nobody but the local operator has
-  been seen. The list hides creator bylines and the All/Mine control, and People
-  shows the setup guidance plus personal Remote Control;
-* ``network``: a network path (Tailscale) is configured, or a
-  person other than the local operator has been seen. People shows each
-  network adapter read-only, pointing to where that network manages access, plus
-  personal Remote Control;
+  been seen. The list hides creator bylines and the All/Mine control;
+* ``network``: a network path (Tailscale or SSM) is configured, this Crew is
+  shared as a team Crew over the Kiro relay, or a person other than the local
+  operator has been seen;
 * ``invalid``: tailnet identity trust is configured but its login allowlist
   could not be read. Team mode is refused (:func:`team_config_problem`, enforced
   by ``lifecycle.team_config_middleware``) and the UI shows an error, never the
@@ -150,14 +149,87 @@ def resolve_mode(
     *,
     others_seen: bool,
     network_identity_unreadable: Optional[bool] = None,
+    relay_team: bool = False,
 ) -> tuple[str, Optional[TeamConfigProblem]]:
-    """The Crew's mode and, for ``invalid``, the problem behind it."""
+    """The Crew's mode and, for ``invalid``, the problem behind it.
+
+    *relay_team* says this Crew is shared as a team Crew over the Kiro relay,
+    which is a team path of its own.
+    """
     problem = team_config_problem(network_identity_unreadable=network_identity_unreadable)
     if problem is not None:
         return MODE_INVALID, problem
-    if network_configured(setup_paths) or others_seen:
+    if network_configured(setup_paths) or relay_team or others_seen:
         return MODE_NETWORK, None
     return MODE_PERSONAL, None
+
+
+#: The connection sources, in the order the People page shows them.
+SOURCE_TAILSCALE = "tailscale"
+SOURCE_SSM = "ssm"
+SOURCE_ORGANIZATION = "organization"
+SOURCE_KIRO_LOGIN = "kiro_login"
+SOURCES: tuple[str, ...] = (SOURCE_TAILSCALE, SOURCE_SSM, SOURCE_ORGANIZATION, SOURCE_KIRO_LOGIN)
+
+_UNAVAILABLE = CapabilityState.UNAVAILABLE.value
+
+
+def sources_view(
+    setup_paths: Mapping[str, Mapping[str, str]],
+    observed: Iterable[Principal],
+    *,
+    relay_team: bool = False,
+    console_offered: bool = False,
+) -> list[dict[str, Any]]:
+    """Every connection source at once: ``{id, state, reason, people}`` each.
+
+    Tailscale and SSM report their setup path's state. ``organization`` is
+    ``available`` only while an organization console manages access
+    (*console_offered*, never in this build). ``kiro_login`` is ``available``
+    while this Crew is shared as a team Crew over the Kiro relay (*relay_team*).
+
+    ``people`` counts the distinct principals this process saw come in through
+    the source, read from the provenance the server derived (:func:`viewer_via`).
+    A person the Tailscale daemon lists who never connected has not come in, and
+    a session creator carries no provenance, so neither is counted. Display only.
+    """
+    counted: dict[str, set[str]] = {source: set() for source in SOURCES}
+    for principal in observed:
+        if principal.kind in (PrincipalKind.UNKNOWN, PrincipalKind.SYSTEM):
+            continue
+        via = viewer_via(principal)
+        if via in counted:
+            counted[via].add(principal.id)
+
+    def _path(name: str) -> tuple[str, str]:
+        row = setup_paths.get(name)
+        if not isinstance(row, Mapping):
+            return _UNAVAILABLE, "not_configured"
+        return str(row.get("state", "") or _UNAVAILABLE), str(row.get("reason", "") or "")
+
+    states = {
+        SOURCE_TAILSCALE: _path(SOURCE_TAILSCALE),
+        SOURCE_SSM: _path(SOURCE_SSM),
+        SOURCE_ORGANIZATION: (
+            (CapabilityState.AVAILABLE.value, "")
+            if console_offered
+            else (_UNAVAILABLE, "not_offered")
+        ),
+        SOURCE_KIRO_LOGIN: (
+            (CapabilityState.AVAILABLE.value, "")
+            if relay_team
+            else (_UNAVAILABLE, "not_configured")
+        ),
+    }
+    return [
+        {
+            "id": source,
+            "state": states[source][0],
+            "reason": states[source][1],
+            "people": len(counted[source]),
+        }
+        for source in SOURCES
+    ]
 
 
 def mode_view(
@@ -169,6 +241,8 @@ def mode_view(
     network_identity_unreadable: Optional[bool] = None,
     creators: Iterable[Principal] = (),
     owner_id: str = "",
+    owner_label: str = "",
+    relay_team: bool = False,
 ) -> dict[str, Any]:
     """The ``GET /api/shared-crew/mode`` body.
 
@@ -178,11 +252,19 @@ def mode_view(
     ``not_offered`` and ``workload_identity_ref`` always ``unavailable`` in
     this build. ``adapters`` reports each network setup path as the gateway
     sees it.
+
+    ``viewer_via`` names the path the viewer came in on (:func:`viewer_via`) and
+    ``owner_label`` the owner's name (``owner.owner_name``), so a teammate's
+    surfaces can say whom to ask. ``sources`` lists every connection source at
+    once (:func:`sources_view`; *relay_team* is the Kiro relay's). Display only:
+    none of these grants or refuses anything.
     """
+    observed = list(observed)
     mode, problem = resolve_mode(
         setup_paths,
         others_seen=others_observed(viewer, observed, creators=creators, owner_id=owner_id),
         network_identity_unreadable=network_identity_unreadable,
+        relay_team=relay_team,
     )
     if problem is not None:
         team = {"state": TEAM_CONFIG_INVALID, **problem.to_dict()}
@@ -199,8 +281,28 @@ def mode_view(
         "team_config": team,
         "console": {"state": "not_offered", "url": ""},
         "adapters": {k: dict(v) for k, v in setup_paths.items() if isinstance(v, Mapping)},
+        "sources": sources_view(setup_paths, observed, relay_team=relay_team),
         "workload_identity_ref": WORKLOAD_UNAVAILABLE,
+        "viewer_via": viewer_via(viewer),
+        "owner_label": owner_label,
     }
+
+
+#: The ``viewer_via`` value for each provenance a person can arrive with.
+_VIA_BY_PROVENANCE = {
+    Provenance.KIRO_RELAY: "kiro_login",
+    Provenance.TAILSCALE_SERVE: "tailscale",
+    Provenance.TAILSCALE_DIRECT: "tailscale",
+    Provenance.TAILSCALE_LISTENER: "tailscale",
+    Provenance.SSM_INVITE: "ssm",
+    Provenance.LOCAL_OPERATOR: "local",
+}
+
+
+def viewer_via(viewer: Principal) -> str:
+    """The path *viewer* reached this Crew on: ``kiro_login``, ``tailscale``,
+    ``ssm``, ``local`` or ``unknown``."""
+    return _VIA_BY_PROVENANCE.get(viewer.provenance, "unknown")
 
 
 def validate_at_startup() -> Optional[TeamConfigProblem]:
@@ -226,13 +328,16 @@ __all__ = [
     "MODE_INVALID",
     "MODE_NETWORK",
     "MODE_PERSONAL",
+    "SOURCES",
     "TeamConfigProblem",
     "WORKLOAD_UNAVAILABLE",
     "mode_view",
     "network_configured",
+    "viewer_via",
     "operator_ids",
     "others_observed",
     "resolve_mode",
+    "sources_view",
     "team_config_problem",
     "validate_at_startup",
 ]

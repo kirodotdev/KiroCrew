@@ -9,6 +9,7 @@ split, and reads a log's entries back.
 
 from __future__ import annotations
 
+import weakref
 from typing import Any
 
 import pytest
@@ -19,18 +20,32 @@ from kiro_crew.crew_log import CrewLog
 SESSION = "s-fold"
 GATEWAY = "gateway"
 
+# Every handle ``_log`` made, held weakly so this set never keeps one alive.
+_handles: weakref.WeakSet[CrewLog] = weakref.WeakSet()
+
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, _floor_monkeypatch):
-    """Every test writes into its own data home, never the live one."""
+    """Every test writes into its own data home, never the live one.
+
+    Teardown releases the write lease of every handle ``_log`` made. A test that
+    keeps ``pytest.raises(...) as excinfo`` has excinfo -> traceback -> its frame
+    -> excinfo as a cycle, and that frame holds its handles, so their leases would
+    otherwise wait for the cyclic collector and still be held in a later test.
+    """
     _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     yield
+    for handle in list(_handles):
+        handle.release_ownership()
+    _handles.clear()
 
 
 def _log(unit_id: str = SESSION, **fields) -> CrewLog:
     fields.setdefault("owner", "raymond")
     fields.setdefault("agent", "kirocrew")
-    return CrewLog.create(lg.KIND_SESSION, unit_id, **fields)
+    handle = CrewLog.create(lg.KIND_SESSION, unit_id, **fields)
+    _handles.add(handle)
+    return handle
 
 
 def _opened(handle: CrewLog, *, resumed: bool = False, model: str = "opus") -> None:

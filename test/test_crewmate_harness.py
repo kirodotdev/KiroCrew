@@ -1520,17 +1520,31 @@ class TestCrewmateHarnesses:
         monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset(selectable))
         assert crewmate_harnesses(_cfg()) == ["claude", "codex", "kas"]
 
-    @pytest.mark.parametrize("harness", ["pi", "deepseek"])
-    def test_a_harness_without_the_worker_kit_is_not_offered_nor_saved(self, monkeypatch, harness):
-        """RFC O6: pi and deepseek run a chat but not a Crew bot's workers, so no pick."""
+    def test_a_harness_without_the_worker_kit_is_not_offered_nor_saved(self, monkeypatch):
+        """RFC O6: deepseek runs a chat but not a Crew bot's workers, so no pick."""
         from kiro_crew.agent_sdk import backends
         from kiro_crew.crewmate_harness import crewmate_harnesses, harness_pin_rejected
 
         monkeypatch.setattr(
-            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude", harness})
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude", "deepseek"})
         )
         assert crewmate_harnesses(_cfg()) == ["claude", "kas"]
-        assert harness_pin_rejected(harness, _cfg()) is not None
+        assert harness_pin_rejected("deepseek", _cfg()) is not None
+
+    def test_pi_carries_the_worker_kit_so_it_is_offered_and_saved(self, monkeypatch):
+        """RFC 5.4: pi's worker capture landed, so a Crew bot's chat and its workers
+        run there and the picker offers it."""
+        from kiro_crew import sandbox
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import crewmate_harnesses, harness_pin_rejected
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude", "pi"})
+        )
+        # A host whose sandbox can confine pi, like the save test below.
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: True)
+        assert crewmate_harnesses(_cfg()) == ["claude", "kas", "pi"]
+        assert harness_pin_rejected("pi", _cfg()) is None
 
     def test_no_offered_harness_lands_on_kas(self):
         """The picker and the pin fallback read one rule: an offered pick runs where picked."""
@@ -1617,18 +1631,36 @@ class TestCrewmateHarnesses:
         assert "kiro" not in worker_harnesses(_cfg(kas_bundle=True))
 
     def test_the_save_accepts_exactly_the_offered_list(self, monkeypatch):
+        from kiro_crew import sandbox
         from kiro_crew.agent_sdk import backends
         from kiro_crew.crewmate_harness import crewmate_harnesses, harness_pin_rejected
 
         monkeypatch.setattr(
             backends, "selectable_backends", lambda: frozenset({"", "kas", "codex", "opencode"})
         )
+        # A host whose sandbox can confine codex; the refusing host is the next test.
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: True)
         cfg = _cfg()
         for stored in crewmate_harnesses(cfg):
             assert harness_pin_rejected(stored, cfg) is None
         assert harness_pin_rejected("", cfg) is None
         for refused in ("kiro", "opencode", "claude"):
             assert "must be one of" in (harness_pin_rejected(refused, cfg) or "")
+
+    def test_a_harness_the_launch_refuses_on_this_host_is_not_saved(self, monkeypatch):
+        """A pin every session start refuses here is refused with that sentence."""
+        from kiro_crew import sandbox
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+        from kiro_crew.crewmate_harness import harness_pin_rejected
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "codex"})
+        )
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: False)
+        cfg = _cfg()
+        assert harness_pin_rejected("codex", cfg) == sandbox_floor_refusal("codex", "auto")
+        assert harness_pin_rejected("kas", cfg) is None
 
 
 class TestSaveRefusesAnUncapableHarness:

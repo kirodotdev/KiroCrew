@@ -11,6 +11,7 @@ import ShortcutsModal, {
   GlobalHotkeyRow,
 } from './ShortcutsModal'
 import { loadChatConfig, saveChatConfig } from '../pages/chat/ChatSettings'
+import { shortcutLabel } from '../hooks/useKeyboardShortcuts'
 
 function renderWithQuery(ui: React.ReactElement) {
   const client = new QueryClient({
@@ -191,6 +192,12 @@ describe('ShortcutsModal & subcomponents', () => {
     expect(ids).toContain('edit-last-message')
     expect(ids).not.toContain('list-indent')
     expect(ids).not.toContain('list-outdent')
+  })
+
+  it('lists no key that stops the running turn: Stop is the button alone', () => {
+    const ids = groupShortcuts('actions', true).map(s => s.id)
+    expect(ids).not.toContain('stop-turn')
+    expect(groupShortcuts('actions', true).map(s => shortcutLabel(s))).not.toContain('Stop generation')
   })
 
   it('handles Escape key: clears search input first, then closes modal', () => {

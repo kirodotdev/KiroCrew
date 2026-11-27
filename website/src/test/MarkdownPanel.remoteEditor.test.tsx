@@ -76,11 +76,22 @@ beforeEach(() => {
 })
 
 describe('Markdown panel ⋯ menu: Open in VS Code', () => {
-  it('links to the file on the SSH host, each path segment encoded', () => {
+  it('links to the file on the SSH host, each path segment encoded, at line 1 so it opens as a file', () => {
     openMenu('/home/u/my notes#1 (copy).md')
     const row = screen.getByRole('menuitem', { name: 'Open in VS Code' })
-    expect(row.getAttribute('href')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/my%20notes%231%20%28copy%29.md')
+    expect(row.getAttribute('href')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/my%20notes%231%20%28copy%29.md:1')
     expect(row.getAttribute('target')).toBeNull()
+  })
+
+  it('ends the link in a line number, so the editor opens the file and not a folder', () => {
+    openMenu('/home/u/a.md')
+    expect(screen.getByRole('menuitem', { name: 'Open in VS Code' }).getAttribute('href')).toMatch(/\/home\/u\/a\.md:1$/)
+  })
+
+  it('opens in Kiro when Kiro is the chosen editor', () => {
+    brandingEnv.remoteEditor = 'kiro'
+    openMenu('/home/u/a.md')
+    expect(screen.getByRole('menuitem', { name: 'Open in Kiro' }).getAttribute('href')).toBe('kiro://vscode-remote/ssh-remote+dev-box/home/u/a.md:1')
   })
 
   it('is not offered while no editor is picked', () => {
@@ -120,7 +131,12 @@ describe('remoteEditorUrl', () => {
   it('builds no link a dot segment could point at another host', () => {
     expect(remoteEditorUrl('vscode', 'dev-box', '/a/../../ssh-remote+other/x')).toBeNull()
     expect(remoteEditorUrl('vscode', 'dev-box', 'relative/x')).toBeNull()
-    expect(remoteEditorUrl('vscode', 'dev-box', '/home/u/.env')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/.env')
+    expect(remoteEditorUrl('vscode', 'dev-box', '/home/u/.env')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/.env:1')
+  })
+
+  it('ends a file link in :1 and leaves a folder link bare, so each opens as what it is', () => {
+    expect(remoteEditorUrl('kiro', 'dev-box', '/home/u/a.md')).toBe('kiro://vscode-remote/ssh-remote+dev-box/home/u/a.md:1')
+    expect(remoteEditorUrl('kiro', 'dev-box', '/home/u/proj', 'dir')).toBe('kiro://vscode-remote/ssh-remote+dev-box/home/u/proj')
   })
 
   it('builds no link for a name the desktop editor-link check refuses', () => {

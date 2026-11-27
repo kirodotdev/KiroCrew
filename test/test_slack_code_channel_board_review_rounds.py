@@ -33,6 +33,7 @@ _pinned_identity = suite._pinned_identity
 publisher_clock = suite.publisher_clock
 slack = suite.slack
 repo = suite.repo
+_repo_template = suite._repo_template
 StepClock = suite.StepClock
 _Harness = suite._Harness
 _Item = suite._Item
@@ -86,7 +87,7 @@ def test_a_board_not_shown_at_send_time_clears_the_sidebar_summary(monkeypatch, 
     monkeypatch.setattr(links, "link_builder", lambda: _link)
     source.set_scope_predicate(lambda st, b: True)
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         return answer
 
     monkeypatch.setattr(publisher, "publish", fake_publish)
@@ -359,7 +360,7 @@ def test_the_board_publish_honours_an_off_channel(monkeypatch):
 
     sent: list = []
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         sent.append(snapshot)
         return "updated"
 
@@ -435,7 +436,7 @@ def test_the_publish_wrapper_hands_the_publisher_the_live_scope_check(monkeypatc
 
     seen: dict = {}
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         seen["admits"] = admits
         return "updated"
 
@@ -707,7 +708,7 @@ def test_a_question_after_a_same_second_decide_waits_on_the_owner_and_pages_them
     snap = source.project(SimpleNamespace(goal="", round=1), [asked], lambda k: model.LIVE_IDLE)
     [row] = snap.rows
     assert row.state == model.WAITING_ON_YOU and row.needs_owner
-    assert "1 waiting on you" in snap.aggregate
+    assert "1 needs you" in snap.aggregate
     agg = model.work_aggregate(snap)
     assert agg["state"] == "waiting" and agg["counts"]["waiting"] == 1
     assert _publish(snap) == "posted"
@@ -1630,7 +1631,7 @@ def _scope_says(monkeypatch, why):
 def _fake_publisher(monkeypatch, body):
     sent: list = []
 
-    async def fake(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         sent.append(snapshot)
         return body(admits)
 

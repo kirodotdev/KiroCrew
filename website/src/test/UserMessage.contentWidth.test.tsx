@@ -78,7 +78,7 @@ describe('the Content Width setting reaches the user bubble', () => {
 
   it('the steer wrapper follows the same cap as the bubble it wraps', () => {
     const { container } = renderBubble({ meta: { steer: true } })
-    const wrapper = container.querySelector('[data-role="user"] .relative')!
+    const wrapper = container.querySelector('[data-role="user"] .relative.w-fit')!
     const bubble = container.querySelector('.message-bubble')!
     expect(wrapper.className).toContain('max-w-full')
     expect(wrapper.className).not.toMatch(PIXEL_CAP)

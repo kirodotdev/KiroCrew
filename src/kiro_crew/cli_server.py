@@ -187,11 +187,13 @@ def _status(args: argparse.Namespace) -> None:
         print("Kiro Crew gateway is running but returned an unexpected response.")
         return
 
-    print(f"Kiro Crew v{__version__}\n")
+    print(f"Kiro Crew v{__version__} 👻\n")
     print(f"  Uptime:      {data.get('uptime', '—')}")
     print(f"  Sessions:    {data.get('sessions', 0)}")
     if data.get("session_map_writes_refused"):
         print(f"  Session map: {data.get('session_map_remedy', '')}")
+    if data.get("entry_port_closed"):
+        print("  Entry port:  closed; restart the gateway to open it again")
     print(f"  Messages:    {data.get('messages', 0)}")
     print(f"  Tool calls:  {data.get('tool_calls', 0)}")
     print(f"  Subagents:   {data.get('subagents', 0)}")
@@ -322,6 +324,7 @@ def _should_reconcile_launchd_launcher() -> bool:
 async def _gateway(
     *,
     no_dashboard: bool = False,
+    headless: bool = False,
     no_crons: bool = False,
     no_tunnel: bool = False,
     no_open: bool = False,
@@ -392,19 +395,20 @@ async def _gateway(
         # config lock guards loop-side handler writers, none of which exist
         # before run_gateway starts serving.
         await asyncio.to_thread(cfg.save)
-        print(f"Created default config: {config_path()}")
+        print(f"👻 Created default config: {config_path()}")
 
     cfg = KiroCrewConfig.load()
-    # Local recording is on by default; a host with no dashboard open is told in
-    # one stderr line, once per install. On a daemon thread, so it neither runs on
+    # Local recording is on by default; the start says so in one stderr line,
+    # once per notice version. On a daemon thread, so it neither runs on
     # the loop nor holds the boot back. Imported here: this module's import list
     # is a frozen facade inventory.
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg, headless=no_dashboard)
+    usage_notice.print_notice_in_background(cfg)
     await run_gateway(
         cfg,
         no_dashboard=no_dashboard,
+        headless=headless,
         no_crons=no_crons,
         no_tunnel=no_tunnel,
         no_open=no_open,
@@ -420,7 +424,7 @@ async def _run_task(args: argparse.Namespace) -> None:
 
     spec_path = Path(args.spec).resolve()
     if not spec_path.exists():
-        print(f"Error: Spec file not found: {spec_path}", file=sys.stderr)
+        print(f"❌ Spec file not found: {spec_path}", file=sys.stderr)
         sys.exit(1)
 
     # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
@@ -432,7 +436,7 @@ async def _run_task(args: argparse.Namespace) -> None:
     cfg = KiroCrewConfig.load()
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg, headless=True)
+    usage_notice.print_notice_in_background(cfg)
     factory = build_provider_factory(cfg)
     sessions = SessionManager(cfg, provider_factory=factory)  # type: ignore[arg-type]
 
@@ -483,11 +487,13 @@ async def _run_task(args: argparse.Namespace) -> None:
     conv_log = ConversationLog()
     conv_log.init()
     lessons = LessonStore()
-    # Constructed on a running loop, so construction-time sync skips itself;
-    # standalone `kirocrew run` has no gateway to own the sync, so run the
-    # explicit seam in a worker thread (mirrors gateway startup). A failed
-    # sync must not gate the task: continue with the skills already on disk.
-    skills = SkillsLoader(install_builtins=False)
+    # Built in a worker thread (the constructor resolves every
+    # `skills.extra_paths` root, which blocks on a slow or network mount) and
+    # without the builtin sync: standalone `kirocrew run` has no gateway to own
+    # it, so run the explicit seam in a worker thread too (mirrors gateway
+    # startup). A failed sync must not gate the task: continue with the skills
+    # already on disk.
+    skills = await asyncio.to_thread(lambda: SkillsLoader(install_builtins=False))
     try:
         await asyncio.to_thread(skills.sync_builtins)
     except Exception:
@@ -549,12 +555,13 @@ async def _run_task(args: argparse.Namespace) -> None:
     await sessions.start_pool()
 
     if fresh:
-        print(f"Running spec (fresh): {spec_path}")
+        print(f"👻 Running spec (fresh): {spec_path}")
     else:
-        print(f"Running spec: {spec_path}")
+        print(f"👻 Running spec: {spec_path}")
     task_name = getattr(args, "name", "")
     # Local: this module's top-level imports are a frozen facade inventory.
     from kiro_crew.hooks import FileTooLargeError
+    from kiro_crew.taskrunner_parts.run_reporting import live_error
 
     try:
         try:
@@ -564,17 +571,17 @@ async def _run_task(args: argparse.Namespace) -> None:
             # refuses, one that is not UTF-8 or too large) and its workspace
             # writes. Reported like the missing-spec case above, not as a
             # traceback; the reason names which.
-            print(f"Error: Could not run {spec_path}: {exc}", file=sys.stderr)
+            print(f"❌ Could not run {spec_path}: {exc}", file=sys.stderr)
             sys.exit(1)
 
         label = result.name or result.task_id
         if result.status == "completed":
-            print(f"\nDone: Task completed — {label} ({len(result.tasks)} steps)")
+            print(f"\n✅ Task completed — {label} ({len(result.tasks)} steps)")
         elif result.status == "failed":
-            print(f"\nError: Task failed ({label}): {result.error}", file=sys.stderr)
+            print(f"\n❌ Task failed ({label}): {live_error(result)}", file=sys.stderr)
             sys.exit(1)
         elif result.status == "cancelled":
-            print("\nWarning: Task cancelled")
+            print("\n⚠️  Task cancelled")
             sys.exit(1)
     finally:
         await sessions.close_all()
@@ -589,13 +596,15 @@ def _service_cmd(args: argparse.Namespace) -> int:
     """
     action = getattr(args, "service_action", None)
     if action == "install":
-        rc = service_controller.install_service()
+        # True / False for --headless / --no-headless, None for neither (keep).
+        headless = getattr(args, "headless", None)
+        rc = service_controller.install_service(headless=headless)
         sel().log_api_access(
             caller="cli",
             operation="service_install",
             outcome="allowed" if rc == 0 else "error",
             source="cli",
-            resources=f"rc={rc}",
+            resources=f"rc={rc} headless={'keep' if headless is None else int(headless)}",
         )
         return rc
     if action == "uninstall":
@@ -741,7 +750,7 @@ def _logs_cmd(args: argparse.Namespace) -> None:
         # password prompt would block forever with no way to cancel.
         if not sys.stdin.isatty():
             print(
-                "Error: Insufficient permissions to read the journal without sudo, "
+                "👻 Insufficient permissions to read the journal without sudo, "
                 "and stdin is not a TTY so sudo can't prompt.\n"
                 "   Add your user to the `systemd-journal` or `adm` group, or run:\n"
                 f"   sudo journalctl -u {unit} -f",
@@ -780,7 +789,7 @@ def _logs_cmd(args: argparse.Namespace) -> None:
     fallback = config_dir() / "gateway.log"
     if not fallback.exists():
         print(
-            "Error: No gateway logs found. Either install the service "
+            "👻 No gateway logs found. Either install the service "
             "(`kirocrew service install`) or start the gateway "
             "(`kirocrew gateway`).",
             file=sys.stderr,
@@ -892,6 +901,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GATEWAY_NOT_LISTENING_HINT,
         _TOKEN_REFUSAL_REMEDIES,
         _TOKEN_REQUEST_TIMEOUT,
+        EMBED_FORWARD_PORT_ENV,
+        _embed_query,
         _emit_session_urls,
         _logout,
         _probe_dashboard_health,
@@ -900,6 +911,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _update_approve,
     )
     from kiro_crew.cli_server_restart import (  # noqa: F401
+        _POLL_EXITED,
+        _POLL_EXPIRED,
+        _POLL_SERVED,
         _READY_DIED,
         _READY_OK,
         _READY_TIMEOUT,
@@ -922,8 +936,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _gateway_log_mark,
         _GatewayLogMark,
         _incumbent_from_lock_holder,
+        _now,
         _own_console_script,
+        _parent_pid,
+        _poll_until_serving,
+        _PollResult,
         _print_applying_update,
+        _print_resume_hint,
         _print_running_cron_runs,
         _print_still_starting,
         _print_token_url,
@@ -967,7 +986,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DETACHED_BRANCH_ORDER,
         _detached_upstream_branch,
         _gateway_holds_update_lock,
+        _head_oid,
+        _is_release_tag,
+        _is_shallow_clone,
         _refresh_agent_config,
+        _release_tag_checkout,
+        _release_update_tag,
+        _remote_refs_present,
+        _report_already_latest,
         _revalidate_gateway_update_check,
         _snapshot_memory_or_exit,
         _untracked_collisions,

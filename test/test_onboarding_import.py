@@ -21,6 +21,7 @@ from __future__ import annotations
 import importlib
 import json
 import sqlite3
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -445,7 +446,10 @@ class TestGeminiSource:
         """
         unstattable = tmp_path / ("z" * 300) / "settings.json"
 
-        if not IS_WINDOWS:
+        if sys.version_info >= (3, 14):
+            # ``Path.exists`` answers False for every OSError from CPython 3.14.
+            assert unstattable.exists() is False
+        elif not IS_WINDOWS:
             with pytest.raises(OSError):
                 unstattable.exists()
 

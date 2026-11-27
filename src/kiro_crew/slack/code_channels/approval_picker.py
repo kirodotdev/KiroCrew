@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.dashboard.approval_inheritance import _RANK
-from kiro_crew.slack.code_channels import surface
+from kiro_crew.slack.code_channels import surface, thread_runtime
 from kiro_crew.slack.code_channels.binding import channel_session, code_channels_on, live_config
 from kiro_crew.slack.code_channels.store import Binding, store
 
@@ -94,7 +94,7 @@ PICKER_LABEL = "*Approval mode*"
 PICKER_PLACEHOLDER = "Choose a mode"
 SET_NOTE = "Approval mode set to *{label}* by <@{user}>."
 UNKNOWN_TEXT = (
-    "Error: `{word}` isn't a mode. Use `/{command} approval normal`, "
+    "❌ `{word}` isn't a mode. Use `/{command} approval normal`, "
     "`/{command} approval reads` or `/{command} approval trust`."
 )
 YOLO_OFF_TEXT = (
@@ -102,7 +102,7 @@ YOLO_OFF_TEXT = (
     "(Kiro Crew calls it YOLO) is off too."
 )
 YOLO_ON_NOTE = (
-    "An override is on: every tool runs without asking in every session, "
+    "⚡ An override is on: every tool runs without asking in every session, "
     "whatever this select shows (Kiro Crew calls this YOLO). Kiro Crew's owner turns "
     "it off with the `yolo off` Slack command or the approval mode picker on the dashboard."
 )
@@ -151,6 +151,36 @@ WORKER_TRUST_CALL_CONFIRM = {
         ),
     },
 }
+#: A Conductor thread has no kickoff select: its Trust is undone from the
+#: conductor's chat in the dashboard, and the card names the thread.
+THREAD_UNDO = "Only Kiro Crew's owner can undo it, from the conductor's chat in the dashboard."
+TRUST_THREAD_LABEL = "Trust this thread"
+#: :data:`TRUST_CALL_CONFIRM` for a Conductor thread's conductor's own card.
+TRUST_THREAD_CONFIRM = {
+    "title": {"type": "plain_text", "text": "Trust this thread?"},
+    "text": {
+        "type": "plain_text",
+        "text": (
+            "This approves this call and puts the whole thread on Trust: tools run "
+            f"without asking for this thread's conductor and for {HELPERS}. {THREAD_UNDO}"
+        ),
+    },
+    "confirm": {"type": "plain_text", "text": TRUST_THREAD_LABEL},
+    "deny": {"type": "plain_text", "text": "Cancel"},
+    "style": "danger",
+}
+#: :data:`WORKER_TRUST_CALL_CONFIRM` for a Conductor thread's worker card.
+WORKER_TRUST_THREAD_CONFIRM = {
+    **TRUST_THREAD_CONFIRM,
+    "text": {
+        "type": "plain_text",
+        "text": (
+            "This approves this helper session's call and puts the whole thread on "
+            "Trust: tools run without asking for this thread's conductor and for "
+            f"{HELPERS}. {THREAD_UNDO}"
+        ),
+    },
+}
 #: The kickoff select applies Normal at once (it only takes grants away). For
 #: Reads or Trust it first replies privately with a button that names the mode:
 #: Block Kit confirms a select as a whole, so its dialog could not say which.
@@ -172,31 +202,41 @@ CONFIRM_TEXT = "Switch this channel to *{label}*? {effect}"
 CONFIRM_BUTTON = "Switch to {label}"
 CONFIRM_KEEP_NOTE = "Ignore this to keep the current mode. The button expires in 10 minutes."
 CONFIRM_STALE_TEXT = (
-    "Blocked: That confirmation has expired or was already used. Pick the mode again in the "
+    "⛔ That confirmation has expired or was already used. Pick the mode again in the "
     "first message."
 )
+#: A repeat click on a used confirmation whose change has landed: the person
+#: most likely pressed twice, so say where the channel is, not "expired".
+CONFIRM_ALREADY_TEXT = "ℹ This channel is already on *{label}*."
+#: What a used confirmation becomes, so its button cannot be pressed again.
+CONFIRM_DONE_TEXT = "✅ Switched this channel to *{label}*."
+CONFIRM_SPENT_TEXT = "This confirmation was used."
 #: Confirmation buttons already pressed (each is good for one click). In memory:
 #: a restart drops it, and the session pin and the age bound still hold then.
 _used_confirms: set[str] = set()
 TRUST_WARNING = (
-    "Warning: <@{user}> put this channel on *Trust*: tools run without asking for the agent "
+    "⚠️ <@{user}> put this channel on *Trust*: tools run without asking for the agent "
     f"and for {HELPERS}. Set *Approval mode* in the "
     "first message back to Normal, or run `/{command} approval normal`, to turn it off."
 )
-FAILED_TEXT = "Warning: Could not change the approval mode: {reason}"
+TRUST_WARNING_THREAD = (
+    "⚠ <@{user}> put this thread on *Trust*: tools run without asking for the conductor "
+    f"and for {HELPERS}. Switch it back to Normal from the conductor's chat in the dashboard."
+)
+FAILED_TEXT = "⚠️ Could not change the approval mode: {reason}"
 NO_SESSION_TEXT = "This channel's session isn't open right now. Try again in a moment."
-NOT_ALLOWED_TEXT = "Blocked: You can't change this channel's approval mode."
-OWNER_ONLY_TEXT = "Blocked: Only Kiro Crew's owner can change this channel's approval mode."
-NOT_THIS_CARD_TEXT = "Blocked: That approval isn't this channel's to trust."
-NOT_LIVE_TEXT = "Blocked: That approval isn't waiting any more, so nothing changed."
+NOT_ALLOWED_TEXT = "⛔ You can't change this channel's approval mode."
+OWNER_ONLY_TEXT = "⛔ Only Kiro Crew's owner can change this channel's approval mode."
+NOT_THIS_CARD_TEXT = "⛔ That approval isn't this channel's to trust."
+NOT_LIVE_TEXT = "⛔ That approval isn't waiting any more, so nothing changed."
 REBOUND_TEXT = (
     "This channel moved to a new session, so nothing changed. Use the channel's latest "
     "kickoff message or `/{command} approval <normal|reads|trust>`."
 )
 #: The same words ``apply_approval_mode`` answers a spent prompt with (its 409).
 STALE_REASON = "the approval is no longer waiting"
-TRUSTED_CARD_TEXT = "Approved, and this channel is now on Trust (<@{user}>)."
-RAN_UNDER_TRUST = "Ran under Trust: <@{user}> put this channel on Trust."
+TRUSTED_CARD_TEXT = "🤝 Approved, and this channel is now on Trust (<@{user}>)."
+RAN_UNDER_TRUST = "🤝 Ran under Trust: <@{user}> put this channel on Trust."
 
 #: Code-channel approval cards the channel's Trust answered and re-wrote in
 #: place, so ``_run_chat``'s cleanup keeps them instead of deleting them.
@@ -280,9 +320,9 @@ def audit_refused_pick(payload: dict[str, Any], reason: str) -> None:
 
 
 def _command(orch: Any = None) -> str:
-    """The app's slash command, as the person types it: the one the router
-    matched (``orch.slack_command``) when an orchestrator is in hand, else
-    ``slack.command``."""
+    """The app's slash command, as shown to the person: ``orch.slack_command``
+    (the live ``slack.command``, refreshed on a config change) when an
+    orchestrator is in hand, else ``slack.command`` read from config."""
     routed = str(getattr(orch, "slack_command", "") or "").strip().lstrip("/")
     if not routed:
         try:
@@ -321,6 +361,8 @@ def approval_block(selected: str) -> dict[str, Any]:
 
 async def _refresh(binding: Binding, note: str = "") -> None:
     """Re-draw the kickoff from the session's real agent and mode (never raises)."""
+    if thread_runtime.is_thread(binding):
+        return  # a Conductor thread has no kickoff to re-draw
     from kiro_crew.slack.code_channels.agent_picker import refresh_kickoff
 
     await refresh_kickoff(binding, note=note)
@@ -493,15 +535,16 @@ async def set_channel_mode(
     slot = channel_session(state, binding)
     if slot is None or (expected_slot is not None and slot is not expected_slot):
         _audit("error", resources, "session unavailable")
-        return ModeResult("unavailable", NO_SESSION_TEXT)
+        return ModeResult("unavailable", thread_runtime.say(binding, NO_SESSION_TEXT))
 
     def _gates_open() -> bool:
         # Synchronous: safe inside apply_approval_mode's commit section.
-        return _channel_open(binding, orch) and agent_picker._sync_gates(orch, binding, user, team)
+        return _channel_open(binding, orch) and _sync_gates(orch, binding, user, team)
 
-    # This request is the channel's latest; a later one (a revoke included)
-    # supersedes it before it commits.
-    intent = _note_intent(channel)
+    # This request is the room's latest (a code channel, or one Conductor
+    # thread); a later one (a revoke included) supersedes it before it commits.
+    room = thread_runtime.room_id(binding)
+    intent = _note_intent(room)
     # A raise also needs the mode it started from: a change from any other
     # surface meanwhile (the dashboard's picker included) voids it.
     seen = current_mode(slot)
@@ -518,32 +561,32 @@ async def set_channel_mode(
             # still the latest: even Trust to Reads cascades a raise to Reads
             # onto inheriting workers on Normal. Normal only takes grants away,
             # so nothing ever blocks it.
-            (not _gated(mode) or (_gates_open() and _is_latest_intent(channel, intent)))
+            (not _gated(mode) or (_gates_open() and _is_latest_intent(room, intent)))
             and _raise_still_from_seen()
             and channel_session(state, binding) is slot
             and (still_live is None or still_live())
         )
 
     yolo_before = _yolo_on()
-    async with _lock(channel):
+    async with _lock(room):
         # The sweep and the grant read the slot's rows on the loop: load a
         # restored session's window off it first (a no-op once loaded).
         if not await agent_picker._load_window(slot):
             _audit("error", resources, "transcript window could not be loaded")
-            return ModeResult("unavailable", NO_SESSION_TEXT)
-        refused = (
-            await agent_picker._still_admitted(orch, binding, user, team) if _gated(mode) else None
-        )
+            return ModeResult("unavailable", thread_runtime.say(binding, NO_SESSION_TEXT))
+        refused = await _still_admitted(orch, binding, user, team) if _gated(mode) else None
         if refused == agent_picker.REBOUND:
             # The channel was rebound to a new session: point at its kickoff.
             _audit("denied", resources, agent_picker.REBOUND)
-            return ModeResult("refused", REBOUND_TEXT.format(command=_command(orch)))
+            return ModeResult(
+                "refused", thread_runtime.say(binding, REBOUND_TEXT.format(command=_command(orch)))
+            )
         if refused:
             _audit("denied", resources, agent_picker.NO_LONGER_ADMITTED)
-            return ModeResult("refused", NOT_ALLOWED_TEXT)
+            return ModeResult("refused", thread_runtime.say(binding, NOT_ALLOWED_TEXT))
         if not _channel_live():
             _audit("denied", resources, STALE_REASON)
-            return ModeResult("refused", NOT_LIVE_TEXT)
+            return ModeResult("refused", thread_runtime.say(binding, NOT_LIVE_TEXT))
         if current_mode(slot) == mode and not _yolo_active():
             # The channel already holds it. A worker a person raised above it
             # is lowered to it; none is raised from here (raises reach workers
@@ -554,11 +597,11 @@ async def set_channel_mode(
             )
             if not fenced:
                 _audit("denied", resources, STALE_REASON)
-                return ModeResult("refused", NOT_LIVE_TEXT)
+                return ModeResult("refused", thread_runtime.say(binding, NOT_LIVE_TEXT))
             _audit("allowed", f"{resources} result=unchanged")
             return ModeResult(
                 "unchanged",
-                f"Note: This channel is already on *{label(mode)}*.{_failed_note(failed)}",
+                f"ℹ️ This channel is already on *{label(mode)}*.{_failed_note(failed)}",
                 partial=bool(failed),
             )
         # Each waiting card's own future, captured before any await, so a card
@@ -582,7 +625,7 @@ async def set_channel_mode(
             for worker in worker_approvals.descendants(state, slot):
                 if not await agent_picker._load_window(worker):
                     _audit("error", resources, "a worker's transcript window could not be loaded")
-                    return ModeResult("unavailable", NO_SESSION_TEXT)
+                    return ModeResult("unavailable", thread_runtime.say(binding, NO_SESSION_TEXT))
             if mode == "trust":
                 for worker in worker_approvals.live_workers(state, slot):
                     claimed += worker_approvals.claim_pending(str(getattr(worker, "key", "")))
@@ -654,22 +697,35 @@ async def set_channel_mode(
         trusted = trusted | frozenset(cascade_swept)
         if not ok and error == STALE_REASON:
             _audit("denied", resources, STALE_REASON)
-            return ModeResult("refused", NOT_LIVE_TEXT)
+            return ModeResult("refused", thread_runtime.say(binding, NOT_LIVE_TEXT))
         if not ok:
             _audit("error", f"{resources} result=refused", error)
-            return ModeResult("refused", FAILED_TEXT.format(reason=error))
+            return ModeResult(
+                "refused", thread_runtime.say(binding, FAILED_TEXT.format(reason=error))
+            )
         _audit("allowed", f"{resources} result=set")
         await _settle_own_cards(binding, [k for k in own_trusted if k != origin_card], user)
         _fenced, failed = await _apply_to_workers(
             state, binding, slot, mode, user, via, gates=_gates_open
         )
     if mode == "trust" and _channel_open(binding, orch):
-        await _post_channel(orch, channel, TRUST_WARNING.format(user=user, command=_command(orch)))
+        await _post_channel(
+            orch,
+            channel,
+            (
+                TRUST_WARNING_THREAD.format(user=user)
+                if thread_runtime.is_thread(binding)
+                else TRUST_WARNING.format(user=user, command=_command(orch))
+            ),
+            thread_runtime.post_thread_ts(binding),
+        )
     await _refresh(binding, note=SET_NOTE.format(label=label(mode), user=user))
     ended = YOLO_OFF_TEXT if yolo_before and not _yolo_on() else ""
     return ModeResult(
         "set",
-        f"This channel is now on *{label(mode)}*.{ended}{_failed_note(failed)}",
+        thread_runtime.say(
+            binding, f"✅ This channel is now on *{label(mode)}*.{ended}{_failed_note(failed)}"
+        ),
         partial=bool(failed),
         trusted_cards=trusted if mode == "trust" else frozenset(),
     )
@@ -682,14 +738,59 @@ def _channel_open(binding: Binding, orch: Any = None) -> bool:
     in progress) and the stored stamp (one already recorded, which lifts the
     fence). The store is read from its loaded snapshot, so nothing blocks here.
     """
+    cfg = live_config(orch)
+    if not thread_runtime.room_runtime_on(binding, cfg, channels_on=code_channels_on):
+        return False
+    if thread_runtime.is_thread(binding):
+        # A Conductor thread: the stored thread still this session's and not
+        # ended, and a room that still admits it.
+        return thread_runtime.thread_open(binding, cfg)
     try:
-        on = code_channels_on(live_config(orch))
-        if not on or binding.channel_id in surface._archived_here:
+        if binding.channel_id in surface._archived_here:
             return False
         current = store().get_binding(binding.channel_id)
     except Exception:
         return False
     return not bool((current or binding).archived_at)
+
+
+def _sync_gates(
+    orch: Any, binding: Binding, user: str, team: str, *, admit_opener: bool = False
+) -> bool:
+    """The synchronous owner gates of *binding*'s room (a code channel's, or a thread's).
+
+    *admit_opener* is a code channel's (its opener may answer a helper's card); a
+    Conductor thread has no opener, so it is the owner's alone.
+    """
+    from kiro_crew.slack.code_channels import agent_picker
+
+    if thread_runtime.is_thread(binding):
+        return thread_runtime.sync_gates(orch, binding, user, team)
+    return agent_picker._sync_gates(orch, binding, user, team, admit_opener=admit_opener)
+
+
+async def _still_admitted(orch: Any, binding: Binding, user: str, team: str) -> str | None:
+    """:func:`.agent_picker._still_admitted` for a code channel; a thread's own for a thread.
+
+    The refusal reason, or None. A thread asks the channels policy and the
+    per-channel ceiling (awaited), then the synchronous gates.
+    """
+    from kiro_crew.slack.code_channels import agent_picker
+
+    if not thread_runtime.is_thread(binding):
+        return await agent_picker._still_admitted(orch, binding, user, team)
+    from kiro_crew.messaging.identity import channel_inbound_permitted
+    from kiro_crew.slack.channel_policy import channel_refusal
+
+    if thread_runtime.live_thread_binding(binding) is None:
+        return agent_picker.REBOUND
+    channel = binding.channel_id
+    if not (
+        await channel_inbound_permitted("slack")
+        and not channel_refusal(channel, operation="slack.code_channel.control", caller=user)
+    ):
+        return agent_picker.NO_LONGER_ADMITTED
+    return None if _sync_gates(orch, binding, user, team) else agent_picker.NO_LONGER_ADMITTED
 
 
 def _raises(mode: str, slot: Any) -> bool:
@@ -745,7 +846,7 @@ def _failed_note(failed: list[str]) -> str:
     if not failed:
         return ""
     shown = ", ".join(failed[:5]) + (f" and {len(failed) - 5} more" if len(failed) > 5 else "")
-    return f" Warning: Couldn't change {len(failed)} running worker(s): {shown}."
+    return f" ⚠️ Couldn't change {len(failed)} running worker(s): {shown}."
 
 
 def _own_pending_cards(binding: Binding, slot: Any) -> dict[str, asyncio.Future[str]]:
@@ -797,7 +898,7 @@ async def _settle_own_cards(binding: Binding, keys: list[str], user: str) -> Non
     Only those (*keys*, kept from the runner's delete): a card answered any
     other way meanwhile is deleted by the runner as it always was.
     """
-    line = RAN_UNDER_TRUST.format(user=user)
+    line = thread_runtime.say(binding, RAN_UNDER_TRUST).format(user=user)
     for key in keys:
         await write_card(binding.channel_id, key.split(":", 1)[1], line)
 
@@ -1079,14 +1180,15 @@ def _still_above(state: Any, worker: Any, mode: str) -> bool:
     return registered and _RANK.get(mode, 3) < _RANK.get(current_mode(worker), -1)
 
 
-async def _post_channel(orch: Any, channel: str, text: str) -> None:
-    """A top-level line in the channel, where the session's replies go, through
-    the code channels' one fixed-notice helper (:func:`.routing._post`)."""
+async def _post_channel(orch: Any, channel: str, text: str, thread_ts: str | None = None) -> None:
+    """A line where the session's replies go (top level in a code channel, the
+    thread for a Conductor thread), through the code channels' one fixed-notice
+    helper (:func:`.routing._post`)."""
     from kiro_crew.slack.code_channels import routing
 
     if getattr(orch, "slack", None) is None or not await surface.outbound_permitted():
         return
-    if not await routing._post(orch, channel, text, None):
+    if not await routing._post(orch, channel, text, thread_ts):
         logger.info("code channel %s: approval notice not posted", channel)
 
 
@@ -1094,17 +1196,25 @@ async def _post_channel(orch: Any, channel: str, text: str) -> None:
 
 
 async def authorize(
-    orch: Any, binding: Binding, user: str, team: str, resources: str
+    orch: Any,
+    binding: Binding,
+    user: str,
+    team: str,
+    resources: str,
+    *,
+    admit_opener: bool = False,
 ) -> str | None:
     """None when *user* may change *binding*'s mode; else the refusal to show.
 
     The code channel's one owner gate (:func:`.agent_picker.authorize`: bound
     workspace, owner, channel and origin admit the bot, not archived), with this
     module's audit rows. ``""`` means refuse silently (a foreign workspace).
+    *admit_opener* (a helper agent card's Approve / Reject only) admits the
+    channel's opener too; the mode itself stays the owner's.
     """
     from kiro_crew.slack.code_channels import agent_picker
 
-    return await agent_picker.authorize(
+    refusal = await agent_picker.authorize(
         orch,
         binding,
         user,
@@ -1113,7 +1223,18 @@ async def authorize(
         audit=_audit,
         not_allowed=NOT_ALLOWED_TEXT,
         owner_only=OWNER_ONLY_TEXT,
+        # A Conductor thread has no opener: its cards are the owner's alone.
+        admit_opener=admit_opener and not thread_runtime.is_thread(binding),
     )
+    if refusal is not None or not thread_runtime.is_thread(binding):
+        return refusal
+    # A Conductor thread adds its own: the switch on, the stored thread still
+    # this session's and not ended, and its room still admitting it (a channel
+    # made public or shared since the start refuses).
+    if not thread_runtime.thread_open(binding, live_config(orch)):
+        _audit("denied", resources, "the Conductor thread is not open")
+        return thread_runtime.say(binding, NOT_ALLOWED_TEXT)
+    return None
 
 
 async def _ephemeral(
@@ -1152,6 +1273,26 @@ def _card_entry(channel: str, msg_ts: str) -> Any | None:
     return _linked_approvals.get(f"{channel}:{msg_ts}")
 
 
+async def _card_thread_binding(
+    channel: str, msg_ts: str, payload: dict[str, Any]
+) -> Binding | None:
+    """The Conductor thread a card at ``channel:msg_ts`` was posted in, or None.
+
+    The card's own ``thread_ts`` (Slack sends it on a threaded message) names the
+    thread; only a stored, not ended thread binding counts. That this card is the
+    thread's conductor's is judged by the caller, as for a code channel's card.
+    """
+    message = payload.get("message") or {}
+    container = payload.get("container") or {}
+    anchor = str(message.get("thread_ts") or container.get("thread_ts") or "")
+    if not anchor or anchor == msg_ts or _card_entry(channel, msg_ts) is None:
+        return None
+    found = await asyncio.to_thread(store().get_thread_binding, channel, anchor)
+    if found is None or not thread_runtime.is_thread(found) or found.ended_at:
+        return None
+    return found
+
+
 async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
     """A click on an approval card's "Trust this channel"; False when the gate is shut.
 
@@ -1162,7 +1303,7 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
     take approves nothing, so a failed escalation is never reported as an
     approval.
     """
-    if not code_channels_on(live_config(orch)):
+    if not thread_runtime.any_runtime_on(live_config(orch)):
         return False
     channel, user, msg_ts, team, _action = _ids(payload)
     resources = f"channel={channel} user={user} via=approval_card message={msg_ts}"
@@ -1171,8 +1312,14 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
         _audit("denied", f"{resources} team_id={team}", "enterprise_origin_mismatch")
         return True
     binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
-    entry = _card_entry(channel, msg_ts) if binding is not None else None
     state = surface.dashboard_state()
+    if binding is None and channel:
+        # A Conductor thread's conductor card: its channel has no channel
+        # binding, so the card's own thread names the binding.
+        binding = await _card_thread_binding(channel, msg_ts, payload)
+    if binding is not None and not thread_runtime.room_runtime_on(binding, live_config(orch)):
+        return False  # this room's own switch is off: not ours to answer
+    entry = _card_entry(channel, msg_ts) if binding is not None else None
     slot = channel_session(state, binding) if binding is not None else None
     from kiro_crew.dashboard.chat_utils import effective_session_key
 
@@ -1185,6 +1332,8 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
         _audit("denied", resources, "not this channel's approval card")
         await _ephemeral(channel, user, NOT_THIS_CARD_TEXT)
         return True
+    # A thread's room reading may have expired: the owner gates below read it.
+    await thread_runtime.prime_room(binding)
     refusal = await authorize(orch, binding, user, team, resources)
     if refusal is not None:
         await _ephemeral(channel, user, refusal)
@@ -1240,11 +1389,9 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
         # very future the card was for; nothing is awaited from here to the
         # resolve.
         resolve = getattr(state, "resolve_slot_approval", None)
-        from kiro_crew.slack.code_channels import agent_picker
-
         if (
             _channel_open(binding, orch)
-            and agent_picker._sync_gates(orch, binding, user, team)
+            and _sync_gates(orch, binding, user, team)
             # Still on Trust: a revoke (from any surface) during the awaits
             # after the grant committed approves nothing by hand.
             and current_mode(slot) == "trust"
@@ -1265,7 +1412,8 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
         "allowed",
         f"{resources} session={entry.session_key} request={request_id} result=approved",
     )
-    await write_card(channel, msg_ts, TRUSTED_CARD_TEXT.format(user=user))
+    trusted = thread_runtime.say(binding, TRUSTED_CARD_TEXT).format(user=user)
+    await write_card(channel, msg_ts, trusted)
     return True
 
 
@@ -1337,7 +1485,7 @@ async def _apply_pick(
     via: str,
     still_live: Callable[[], bool] | None = None,
     expected_slot: Any = None,
-) -> None:
+) -> ModeResult:
     """Change the mode for an authorized pick; say anything short of a clean set."""
     try:
         outcome = await set_channel_mode(
@@ -1358,6 +1506,7 @@ async def _apply_pick(
         await _ephemeral(channel, user, outcome.text)
     if outcome.result != "set":
         await _refresh(binding)
+    return outcome
 
 
 def confirm_blocks(
@@ -1418,7 +1567,7 @@ async def handle_confirm(orch: Any, payload: dict[str, Any]) -> bool:
     if value in _used_confirms:
         # One click per confirmation: a later click on the same message changes nothing.
         _audit("denied", resources, "approval mode confirmation already used")
-        await _ephemeral(channel, user, CONFIRM_STALE_TEXT)
+        await _ephemeral(channel, user, _repeat_click_text(binding, mode))
         return True
     refusal = await authorize(orch, binding, user, team, resources)
     if refusal is not None:
@@ -1427,13 +1576,70 @@ async def handle_confirm(orch: Any, payload: dict[str, Any]) -> bool:
     # Checked again and spent with no await in between: two clicks that both
     # passed the check above cannot both apply, and a mode request made since
     # the confirmation was asked (a revoke included) voids it.
-    if value in _used_confirms or str(_latest_intent(channel)) != intent_seen:
-        _audit("denied", resources, "approval mode confirmation already used or superseded")
+    if value in _used_confirms:
+        _audit("denied", resources, "approval mode confirmation already used")
+        await _ephemeral(channel, user, _repeat_click_text(binding, mode))
+        return True
+    if str(_latest_intent(channel)) != intent_seen:
+        _audit("denied", resources, "approval mode confirmation superseded")
         await _ephemeral(channel, user, CONFIRM_STALE_TEXT)
         return True
     _spend_confirm(value)
-    await _apply_pick(orch, binding, mode, user, team, channel, via="select")
+    outcome = await _apply_pick(orch, binding, mode, user, team, channel, via="select")
+    done = outcome.result in ("set", "unchanged")
+    line = CONFIRM_DONE_TEXT.format(label=label(mode)) if done else CONFIRM_SPENT_TEXT
+    await _settle_confirm(payload, channel, line)
     return True
+
+
+def _repeat_click_text(binding: Binding, mode: str) -> str:
+    """The reply to a second click on a used confirmation.
+
+    Only wording: the click changes nothing either way. Read from the live
+    mode alone, never from what the first click is doing, so a channel lowered
+    on any surface meanwhile always gets the stale reply.
+    """
+    slot = channel_session(surface.dashboard_state(), binding)
+    if slot is not None and current_mode(slot) == mode and not _yolo_active():
+        return CONFIRM_ALREADY_TEXT.format(label=label(mode))
+    return CONFIRM_STALE_TEXT
+
+
+async def _settle_confirm(payload: dict[str, Any], channel: str, line: str) -> None:
+    """Replace the used private confirmation with *line*, dropping its button.
+
+    An ephemeral message can only be rewritten through the click's
+    ``response_url``, so this is a write outside the Slack client: it is a
+    fixed line to the clicker's own message, sent only to Slack's hooks host
+    and only while the ``channels`` policy admits Slack and this channel
+    (the checks the client's ``chat.*`` writes make). Never raises.
+    """
+    response_url = str(payload.get("response_url") or "")
+    if not response_url.startswith("https://hooks.slack.com/"):
+        return
+    from kiro_crew.slack.channel_policy import SlackChannelRefused, require_channel
+
+    try:
+        if not await surface.outbound_permitted():
+            return
+        require_channel(channel)
+        await _post_response_url(
+            response_url,
+            {"replace_original": True, "text": line, "blocks": settled_blocks(line)},
+        )
+    except SlackChannelRefused:
+        return
+    except Exception:
+        logger.debug("code channel confirmation not settled", exc_info=True)
+
+
+async def _post_response_url(url: str, body: dict[str, Any]) -> None:
+    import aiohttp
+
+    from kiro_crew.http_proxy import resolve_proxy
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as sess:
+        await sess.post(url, proxy=resolve_proxy(url), json=body)
 
 
 async def handle_command(

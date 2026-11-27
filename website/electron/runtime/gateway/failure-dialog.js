@@ -138,11 +138,11 @@ function createFailureDialog({
     // offers no way to reach a crew, so a launch that finds nothing can only
     // retry the same state or quit.
     const remoteCrew = noRetry ? null : crewAction;
-    // Client-only mode launched nothing, so there is no launch to diagnose:
+    // Client-only mode runs no gateway, so there is no launch to diagnose:
     // the log on disk belongs to earlier runs, and rendering that tail is what
     // made a state the user asked for read as a crash report. A caller whose
     // launch did write evidence there (the refused port holder's pid and
-    // command) passes `showLog`.
+    // command, and a gateway that then refused that port) passes `showLog`.
     const showLog = configuredShowLog ?? !localGatewayOff;
 
     return new Promise((resolve) => {

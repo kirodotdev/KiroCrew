@@ -189,13 +189,21 @@ def _session_folds(unit: str) -> dict[str, Any]:
         return out
     try:
         from kiro_crew.crew_log import emit as crew_log_emit
-        from kiro_crew.crew_log.projection_session_memo import read_projection
+        from kiro_crew.crew_log.projection_session_memo import (
+            EAGER_SESSION_FOLD_NAMES,
+            fold_session_warm,
+            read_projection,
+        )
 
         if not crew_log_emit.enabled():
             return out
-        timeline = read_projection(unit, "timeline").value
-        approvals = read_projection(unit, "approvals").value
-        tools = read_projection(unit, "tools").value
+        names = ("timeline", "approvals", "tools")
+        if set(names) <= set(EAGER_SESSION_FOLD_NAMES):
+            # One warm pass answers all three, from the same moment of the log.
+            warm = fold_session_warm(unit)
+            timeline, approvals, tools = (warm.projection(name).value for name in names)
+        else:
+            timeline, approvals, tools = (read_projection(unit, name).value for name in names)
     except Exception:
         logger.debug("crew recap: the session's folds could not be read", exc_info=True)
         return out

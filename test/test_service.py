@@ -33,6 +33,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _fake_systemctl,
     _no_host_env_file,
     _no_host_unit_files,
+    _posix_installer_path,
     _restart_settle_without_waiting,
     _systemctl_stub,
 )
@@ -434,6 +435,29 @@ class TestLinuxUnitRendering:
         assert ["sudo", "systemctl", "enable", f"{SERVICE_NAME}.service"] in called
         assert ["sudo", "systemctl", "restart", f"{SERVICE_NAME}.service"] in called
 
+    def test_install_clears_the_start_limit_before_the_restart(self, monkeypatch):
+        """A unit that just crash-looped (203/EXEC after an update) has spent
+        `StartLimitBurst`; the install that repairs it must reset that first, or
+        its restart fails with "Start request repeated too quickly"."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(svc_linux, "UNIT_PATH", Path(f"/etc/systemd/system/{SERVICE_NAME}.service"))
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/usr/local/bin/kirocrew",
+        ), patch("kiro_crew.service.linux.subprocess.run", return_value=ok) as run:
+            svc_linux.install()
+
+        called = [list(c.args[0]) for c in run.call_args_list]
+        reset = ["sudo", "systemctl", "reset-failed", f"{SERVICE_NAME}.service"]
+        restart = ["sudo", "systemctl", "restart", f"{SERVICE_NAME}.service"]
+        assert reset in called
+        assert called.index(reset) < called.index(restart)
+
     def test_install_raises_with_clear_error_when_sudo_install_fails(
         self, monkeypatch
     ):
@@ -560,6 +584,88 @@ class TestLinuxUnitRendering:
         monkeypatch.setenv("USER", "tester")
         monkeypatch.setattr(svc_linux, "trusted_system_bin", lambda _n: None)
         assert svc_linux.linger_warning_for_service_account() is None
+
+    @staticmethod
+    def _linger_host(
+        monkeypatch,
+        *,
+        linger,
+        manager="user@.service",
+        loginctl="/usr/bin/loginctl",
+        uid=1000,
+        rc=0,
+    ):
+        """A host whose logind reports *linger* for ``tester`` (uid 1000); returns the
+        argv of every privileged call the install made."""
+        from kiro_crew.pod import runtime as pod_runtime
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.delenv("SUDO_USER", raising=False)
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(svc_linux, "_current_uid", lambda _u: uid)
+        monkeypatch.setattr(svc_linux, "_linger_enabled", lambda _u: linger)
+        monkeypatch.setattr(svc_linux, "trusted_system_bin", lambda _n: loginctl)
+        monkeypatch.setattr(pod_runtime, "user_manager_unit", lambda _uid: manager)
+        privileged: list[tuple[str, ...]] = []
+
+        def _sudo_run(*argv, **_kw):
+            privileged.append(argv)
+            return subprocess.CompletedProcess(argv, rc, "", "denied" if rc else "")
+
+        monkeypatch.setattr(svc_linux, "_sudo_run", _sudo_run)
+        return privileged
+
+    @pytest.mark.parametrize("linger", [False, None], ids=["reported-off", "not-reported"])
+    def test_install_turns_linger_on_unless_it_is_on(self, monkeypatch, capsys, linger):
+        """The system install already holds root, so it turns linger on itself rather
+        than leaving the account's runtimes to die at its last logout. An account
+        logind does not track (no session) reads as unknown and needs it most."""
+        from kiro_crew.service import apparmor, controller
+        from kiro_crew.service import linux as svc_linux
+        from kiro_crew.service.common import Platform
+
+        privileged = self._linger_host(monkeypatch, linger=linger)
+        monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
+        monkeypatch.setattr(svc_linux, "install", lambda **_kw: apparmor.ProfileOutcome(False, ""))
+        monkeypatch.setattr(controller, "installed_unit_path", lambda: None)
+        assert controller.install_service() == 0
+        assert privileged == [("/usr/bin/loginctl", "enable-linger", "1000")]
+        out = capsys.readouterr().out
+        assert "   linger turned on for tester" in out
+        assert "sudo loginctl disable-linger 1000" in out
+
+    def test_a_failed_enable_names_the_command_to_run(self, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        self._linger_host(monkeypatch, linger=None, rc=1)
+        ok, line = svc_linux.enable_service_account_linger()
+        assert ok is False
+        assert "could not turn linger on for tester (denied)" in line
+        assert "sudo loginctl enable-linger 1000" in line
+
+    @pytest.mark.parametrize(
+        "linger,manager,loginctl,uid",
+        [
+            (True, "user@.service", "/usr/bin/loginctl", 1000),
+            (False, None, "/usr/bin/loginctl", 1000),
+            (None, "user@.service", None, 1000),
+            (False, "user@.service", "/usr/bin/loginctl", None),
+        ],
+        ids=["already-on", "no-per-user-manager", "no-trusted-loginctl", "uid-unresolved"],
+    )
+    def test_linger_is_left_alone_when_it_has_nothing_to_do(
+        self, monkeypatch, linger, manager, loginctl, uid
+    ):
+        """Already on, a host with no per-user manager for linger to keep, no trusted
+        ``loginctl``, or an unresolved uid (the unit then bakes no user bus): no
+        privileged call and nothing printed."""
+        from kiro_crew.service import linux as svc_linux
+
+        privileged = self._linger_host(
+            monkeypatch, linger=linger, manager=manager, loginctl=loginctl, uid=uid
+        )
+        assert svc_linux.enable_service_account_linger() is None
+        assert privileged == []
 
     def test_uninstall_is_idempotent_when_unit_missing(self, tmp_path, monkeypatch):
         from kiro_crew.service import linux as svc_linux

@@ -7,7 +7,7 @@ Source: https://kiro.dev/docs/cli/acp/ (fetched 2026-09-06)
 > `_kiro.dev/mcp/server_init_failure` and `_kiro.dev/agent/switched` rows have no
 > counterpart in upstream's method table; they are measured here and describe Kiro
 > Crew's claude-agent-acp path. A re-fetch must preserve them. Upstream's own
-> table now carries `_session/terminate`, so that row is no longer local-only.
+> table carries `_session/terminate`, so that row is mirrored, not local.
 > Two wire names are corrected locally against what Kiro Crew sends and reads:
 > session updates arrive as the `session/update` notification, and
 > `session/prompt` carries its content blocks in `params.prompt`.
@@ -246,6 +246,12 @@ cap cannot run, so the pin is not set and kiro-cli keeps its default location,
 which inside a spawned process is `<scratch dir>\kiro-log\logs\`. The
 diagnostics bundle probes both the flat and the `logs` level.
 See `agent_scratch.cap_kiro_cli_logs`.
+
+kiro-cli 3.x also writes each process's `kiro.log`, `mcp.log` and `powers.log` to
+`~/.kiro/logs/<UTC stamp>-<pid>/` (`$KIRO_HOME/logs/` when that is set; earlier 3.x
+builds name the folder `<UTC stamp>` alone). The diagnostics bundle and the
+`kiro_cli_logs` tool read `mcp.log` from the three newest of those folders that hold
+a non-empty one, after the `kiro-log` copy.
 
 ```bash
 KIRO_LOG_LEVEL=debug kiro-cli acp

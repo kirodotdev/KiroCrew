@@ -37,7 +37,7 @@ _CALLBACK_DATA_MAX_BYTES = 64
 _BUTTON_LABEL_MAX_CHARS = 80
 _QUERY_LABEL_MAX_CHARS = 100
 _ROUTE_OWNER_REFUSAL = (
-    "This Telegram chat cannot resume a persistent session because session "
+    "🔒 This Telegram chat cannot resume a persistent session because session "
     "resume requires exactly one configured operator in a private DM. Your "
     "message was NOT processed."
 )
@@ -69,21 +69,21 @@ def _picker_owner(user_id: int, chat_id: int, thread_id: int | None) -> str:
 
 class _TelegramResumeSurface:
     owner_refusal = (
-        "/session can resume persistent conversations only from the single "
+        "🔒 /session can resume persistent conversations only from the single "
         "operator's private chat. Configure exactly one telegram.allowed_user_ids entry."
     )
-    choice_owner_refusal = "Session resume is owner-only."
-    choice_expired = "This session picker expired. Run /session again."
+    choice_owner_refusal = "🔒 Session resume is owner-only."
+    choice_expired = "⌛ This session picker expired. Run /session again."
     choice_missing = "That session is no longer available. Run /session again."
     choice_expectation_failed = (
-        "Warning: Couldn't save which conversation this chat is linked to, so the session "
+        "⚠️ Couldn't save which conversation this chat is linked to, so the session "
         "was NOT resumed. Run /session to try again."
     )
     choice_claim_lost = (
-        "Another session just connected here. Run /session again after freeing "
+        "🧵 Another session just connected here. Run /session again after freeing "
         "the current binding."
     )
-    choice_binding_failed = "Warning: Couldn't resume that session. Run /session to try again."
+    choice_binding_failed = "⚠️ Couldn't resume that session. Run /session to try again."
 
     def __init__(
         self,
@@ -119,17 +119,19 @@ class _TelegramResumeSurface:
             else:
                 summary = f"Showing {shown} matching session{'s' if shown != 1 else ''}"
             return (
-                f"Session search\n{summary} for “{label}”, ranked over "
+                f"🔎 Session search\n{summary} for “{label}”, ranked over "
                 "titles and message content."
             )
         if total > PICKER_LIMIT:
             summary = f"Showing {PICKER_LIMIT} of {total} most recent sessions."
         else:
             summary = f"Showing {shown} most recent session{'s' if shown != 1 else ''}."
-        return f"Recent sessions\n{summary}"
+        return f"🧵 Recent sessions\n{summary}"
 
     def choice_success(self, choice: SessionChoice) -> str:
-        return f"Resumed: {choice.title}\n" "Ordinary messages here now continue that conversation."
+        return (
+            f"🔄 Resumed: {choice.title}\n" "Ordinary messages here now continue that conversation."
+        )
 
     async def post_picker(
         self,
@@ -141,7 +143,7 @@ class _TelegramResumeSurface:
             keyboard = _picker_keyboard(nonce, choices)
         except ValueError:
             logger.error("Telegram resume: picker callback payload exceeded the platform cap")
-            await self.say("Warning: Couldn't build the session picker. Run /session again.")
+            await self.say("⚠️ Couldn't build the session picker. Run /session again.")
             return ""
         message_id = await self.client.send_message(
             self.chat_id,

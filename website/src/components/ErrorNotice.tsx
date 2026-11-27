@@ -447,7 +447,9 @@ export default function ErrorNotice({
         {showIcon && <LevelIcon size={14} className="shrink-0" aria-hidden="true" />}
         {title && <strong className={`min-w-0 ${impact === 'minor' ? level.title : 'font-semibold'}`} style={{ overflowWrap: 'anywhere' }}>{title}</strong>}
         <span ref={messageRef} className={`min-w-0 ${messageBelow ? `basis-full text-[11px] font-normal ${body}` : ''}${phoneBelow ? ' grow basis-[calc(100%-2rem)] sm:grow-0 sm:basis-auto' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
-        {handoff && <span className={`inline-flex ${link}`}>{handoff}</span>}
+        {/* shrink-0: the button inside never shrinks, so a wrapper that did
+            would let the hand-off overflow the row; the message wraps instead. */}
+        {handoff && <span className={`inline-flex shrink-0 ${link}`}>{handoff}</span>}
         {!askAgent && handoffHint && (
           <span className="min-w-0 text-[11px] font-normal text-muted" data-testid="error-notice-handoff-hint">{handoffHint}</span>
         )}

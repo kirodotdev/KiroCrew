@@ -71,6 +71,7 @@ from kiro_crew.history_consolidation_span import (
     _PersistenceDisabledMidRun,
     _RunCommitState,
 )
+from kiro_crew.history_files import transcript_stems
 from kiro_crew.history_projection import DISPLAY_ONLY_ROLES
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.lesson_validation import (
@@ -122,6 +123,12 @@ _CONSOLIDATION_STALE_RETRY_SECS = 300.0
 # Seeded sessions (restored from disk after a restart) examined per idle sweep:
 # a large backlog drains a few per heartbeat instead of all at once.
 _SEEDED_PER_SWEEP = 3
+# Idle keys one sweep examines (a stat and a metadata read each, on the event loop).
+# The rest wait their turn: each examined key moves to the back of the queue.
+_IDLE_EXAMINED_PER_SWEEP = 64
+# Passes and off-loop counts in flight at which a sweep starts nothing more, so a
+# backlog of idle sessions drains a few at a time instead of all at once.
+_IDLE_MAX_IN_FLIGHT = 8
 # Oldest transcript the restart seed backfills: older stranded work is left to a
 # manual ``kirocrew consolidate``, so one boot cannot bill a long-idle backlog.
 _SEED_MAX_AGE_SECS = 7 * 86400
@@ -665,9 +672,15 @@ class HistoryConsolidator:
         t.add_done_callback(self._tasks.discard)
 
     def _busy(self, key: str) -> bool:
-        """True when *key*, or any other key naming the same transcript file, is running."""
-        target = self._log._path(key).name
-        return any(self._log._path(running).name == target for running in self._running)
+        """True when *key*, or any other key that can name the same transcript file, is running.
+
+        Decided from the key strings alone, never the disk: it runs on the event loop,
+        once per running key, from every entry point. Two keys whose possible
+        filenames (:func:`transcript_stems`) overlap count as one, so a pass is
+        deferred, never doubled.
+        """
+        stems = set(transcript_stems(key))
+        return any(not stems.isdisjoint(transcript_stems(running)) for running in self._running)
 
     def _transcript_stamp(self, key: str) -> tuple[CacheIdentity, int] | None:
         """Return *key*'s transcript stamp from a stat with no read, or ``None``.
@@ -1005,16 +1018,25 @@ class HistoryConsolidator:
                 self._activity_seeded = True
         now = _time.time()
         seeded_budget = _SEEDED_PER_SWEEP
+        # Both bounds keep one sweep's loop-thread work flat however many sessions
+        # are tracked: each key examined costs a stat and a metadata read here.
+        examine_budget = _IDLE_EXAMINED_PER_SWEEP
         for key, last in list(self._last_activity.items()):
             if now - last < self._history_idle_secs:
                 continue
+            if (
+                examine_budget < 1
+                or len(self._running) + len(self._counting) >= _IDLE_MAX_IN_FLIGHT
+            ):
+                break
             seeded = key in self._seeded_keys
             if seeded:
                 if seeded_budget < 1:
                     continue
                 seeded_budget -= 1
-                # Re-queue at the end so a seed that keeps being skipped cannot starve the rest.
-                self._last_activity[key] = self._last_activity.pop(key)
+            examine_budget -= 1
+            # Re-queue at the end, so the next sweep starts with the keys this one did not reach.
+            self._last_activity[key] = self._last_activity.pop(key)
             # A key whose last count found nothing left is skipped while its transcript's
             # stamp is unchanged, so a finished session costs a stat, not a read, per
             # sweep. The stamp is taken here, before the off-loop count, so a row that
@@ -1207,10 +1229,13 @@ class HistoryConsolidator:
         _consolidate(), and _run_skill_detection() re-checks the sensitive
         guard over its own window.
         """
-        remaining = self._log.unconsolidated_count(key)
+        # Every transcript read here runs in a worker thread: on the loop a read's
+        # retry over a transient OSError cannot pause, so a Windows sharing
+        # violation during another process's metadata rewrite fails every attempt.
+        remaining = await asyncio.to_thread(self._log.unconsolidated_count, key)
         if remaining < 1:
             return True
-        messages = self._log._read_messages(key)
+        messages = await asyncio.to_thread(self._log._read_messages, key)
         if _session_touched_sensitive(messages):
             self._logger.info("consolidate_now skipped for %s: sensitive session", key)
             return True
@@ -1233,7 +1258,7 @@ class HistoryConsolidator:
             outcome = await self._consolidate(key, include_history=True)
             if _no_pass_ran(outcome):
                 return not first_pass
-            after = self._log.unconsolidated_count(key)
+            after = await asyncio.to_thread(self._log.unconsolidated_count, key)
             if after >= remaining:
                 if after > 0:
                     self._logger.warning(

@@ -36,6 +36,10 @@ SCOPEDMAP = "scopedmap"
 # SCOPE_CATALOG key whose deny-mode deny list is force-pinned (un-opt-out-able).
 COMMANDS_SCOPE = "commands"
 
+# SCOPE_CATALOG key of the ordinal that makes a ``commands`` rule judge each command
+# of a shell chain (``evaluator.command_chain_refusal``).
+COMMAND_CHAINS_SCOPE = "command_chains"
+
 
 @dataclass(frozen=True)
 class ScopeSpec:
@@ -122,6 +126,12 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
         profile_always_permitted=("trust", "trust_reads"),
     ),
     "mcp": ScopeSpec(RULESET, matcher="mcp"),
+    # Which KGL web terms (``web_fetch``, ``web_search``) a KAS permission request
+    # may be approved for with no person asked: trust, YOLO or any other
+    # auto-approve. The LTS policy fetch denies a term an ``ask`` rule names, so
+    # that request always reaches the approval card (``kiro_crew.web_ask_rule``).
+    # An absent scope permits both (unchanged behavior).
+    "unattended_web_tools": ScopeSpec(RULESET, matcher="identifier"),
     "apps": ScopeSpec(RULESET, matcher="identifier"),
     # Which app versions may be installed and loaded, as ``<app>@<version>``
     # (``{"mode": "allow", "allow": ["file-explorer@1.*"]}``). Asked by
@@ -130,6 +140,12 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # appendix row "App versions".
     "app_versions": ScopeSpec(RULESET, matcher="identifier"),
     "commands": ScopeSpec(RULESET, matcher="command"),
+    # How a ``commands`` rule reads a shell chain: ``"whole"`` (the reading an
+    # unnamed key keeps) or ``"each"``, which also asks ``commands`` about every
+    # command of the chain at the tool-call gate and for a cron ``command`` body, so
+    # ``git *`` does not admit ``git status && python3 -c x``. Strictest-of, so
+    # either level turns it on and neither turns the other's off.
+    COMMAND_CHAINS_SCOPE: ScopeSpec(ORDINAL, ordinal_scale="command_chains"),
     "filesystem.read": ScopeSpec(RULESET, matcher="path"),
     "filesystem.write": ScopeSpec(RULESET, matcher="path"),
     "folders.read": ScopeSpec(RULESET, matcher="path"),
@@ -180,8 +196,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # the empty string internally, which no identifier matcher can carry.
     #
     # Consulted by ``kiro_crew.agent_backend_governance`` at exactly ONE place: it
-    # recomputes the ``acp_backends`` registry, from ``bootstrap_context`` at boot and
-    # from ``policy_distribution.apply_ceiling`` on every runtime ceiling install.
+    # recomputes the ``acp_backends`` registry from ``bootstrap_context`` at each
+    # process boot (a runtime ceiling install deliberately does not re-run it).
     # Deliberately NOT consulted at provider construction — harness-parity H13 forbids
     # the Kiro construction path gaining a conditional in service of an adapter, and a
     # test asserts ``create_provider_factory`` contains no governance call. The
@@ -220,7 +236,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # for each event of the user's kiro hooks before they are installed. An unnamed
     # ruleset permits every event. Inner ``hooks`` ruleset (``identifier``): which
     # hooks may run, by ``hook_event_governance.hook_policy_name`` -- an agent
-    # spec's hook as ``<agent>/<Event>/<n>``, a Hooks-page hook by its name.
+    # spec's hook as ``<agent>/<Event>/<n>``, a Hooks-page hook by its name -- and,
+    # for a spec hook document with a name of its own, ``hook_stable_name`` too.
     # Queried as ``hooks:<name>``; an unnamed ruleset permits every hook.
     "capabilities.script_hooks": ScopeSpec(
         CAPABILITY,
@@ -326,7 +343,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # Auto-deriving the dashboard's OWN tailnet origin (``dashboard/tailnet.py``,
     # RFC §4). When ``dashboard.tailscale.enabled`` is on, the gateway shells out
     # to the local ``tailscale`` daemon at startup and, on success, puts the
-    # resulting MagicDNS name into the CSRF origin allowlist and the
+    # resulting MagicDNS name into the CSRF origin allowlist (with
+    # ``dashboard.tailscale.https_port`` in the origin when it is not 443) and the
     # DNS-rebinding ``Host`` barrier. A managed fleet frequently may not do
     # either half: some hosts must not invoke the tailnet CLI at all, and — the
     # sharper case — an origin set that only a fleet-controlled ``dashboard.url``

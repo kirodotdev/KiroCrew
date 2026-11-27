@@ -1033,6 +1033,19 @@ def proc_cpu_seconds() -> float:
 _prev_win_sys_cpu: dict[str, float] = {"idle": 0.0, "total": 0.0}
 
 
+def _memory_status() -> "_MemoryStatusEx | None":
+    """One ``GlobalMemoryStatusEx`` reading; ``None`` off Windows or on any failure."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        stat = _MemoryStatusEx()
+        stat.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        return stat if kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)) else None
+    except Exception:
+        return None
+
+
 def system_memory() -> "tuple[int, int] | None":
     """Return (total_bytes, available_bytes) of physical RAM on Windows.
 
@@ -1040,18 +1053,19 @@ def system_memory() -> "tuple[int, int] | None":
     callers read ``/proc/meminfo`` or ``sysctl hw.memsize`` themselves) or on
     any failure, so the caller can fall back.
     """
-    if not IS_WINDOWS:
-        return None
-    try:
+    stat = _memory_status()
+    return None if stat is None else (int(stat.ullTotalPhys), int(stat.ullAvailPhys))
 
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        stat = _MemoryStatusEx()
-        stat.dwLength = ctypes.sizeof(_MemoryStatusEx)
-        if kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-            return int(stat.ullTotalPhys), int(stat.ullAvailPhys)
-        return None
-    except Exception:
-        return None
+
+def system_commit() -> "tuple[int, int] | None":
+    """Return (commit_limit_bytes, commit_available_bytes) on Windows, ``None`` as above.
+
+    ``ullTotalPageFile`` and ``ullAvailPageFile``: the commit limit and what is left
+    before the commit charge reaches it. Windows bounds both by this process's own
+    limit when a Job object sets a lower one.
+    """
+    stat = _memory_status()
+    return None if stat is None else (int(stat.ullTotalPageFile), int(stat.ullAvailPageFile))
 
 
 def system_cpu_percent() -> "float | None":
@@ -1286,6 +1300,33 @@ def _linux_available_mib() -> int:
     except (OSError, IndexError, ValueError):
         return 0
     return 0
+
+
+#: The kernel's memory pressure-stall file (PSI), Linux 4.20 and later.
+_LINUX_MEMORY_PSI_PATH = "/proc/pressure/memory"
+
+
+def linux_memory_psi_full_avg10(path: str = _LINUX_MEMORY_PSI_PATH) -> float | None:
+    """The ``full avg10`` figure of the memory PSI file, or None when unreadable.
+
+    The share of the last 10 seconds in which every runnable task stalled on
+    memory. On a swapless host reclaim stalls begin while ``MemAvailable`` still
+    reads high, because it counts page cache the kernel is already fighting to
+    keep, so this sees the start of thrash earlier. None (an older kernel, macOS,
+    Windows, a malformed line) means "no reading", never "no pressure".
+    """
+    try:
+        with open(path, encoding="ascii") as handle:
+            for line in handle:
+                if not line.startswith("full "):
+                    continue
+                for field in line.split()[1:]:
+                    name, _, value = field.partition("=")
+                    if name == "avg10":
+                        return float(value)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return None
 
 
 def host_total_mib() -> int:

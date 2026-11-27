@@ -19,9 +19,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.apps.builtins.auto_improvement.backend import pr_checks, pr_watchers, store
-
-WAIT_S = 10.0
-
+from kiro_crew.testing.wait import wait_until
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -146,27 +144,37 @@ def _registry(loop: Any, runner: StubRunner, **kwargs: Any) -> pr_watchers.PRWat
 
 
 def _await_status(
-    reg: pr_watchers.PRWatcherRegistry, fp: str, statuses: set[str], timeout: float = WAIT_S
+    reg: pr_watchers.PRWatcherRegistry, fp: str, statuses: set[str]
 ) -> dict[str, Any]:
-    """Poll until the watcher reaches one of ``statuses``. Fails the test on timeout."""
-    deadline = time.monotonic() + timeout
+    """Poll until the watcher reaches one of ``statuses``, under the lost-run bound (D1).
+
+    No per-call ceiling: a pass here is a real ``git clone`` plus several git
+    subprocesses, which a loaded Windows runner (six xdist workers) stretched past a
+    fixed 10 s while the watcher was still mid-pass.
+    """
     snapshot: dict[str, Any] = {}
-    while time.monotonic() < deadline:
+
+    def _reached() -> dict[str, Any]:
+        nonlocal snapshot
         snapshot = reg.status(fp) or {}
-        if snapshot.get("status") in statuses:
-            return snapshot
-        time.sleep(0.02)
-    raise AssertionError(f"watcher never reached {statuses}; last={snapshot}")
+        return snapshot if snapshot.get("status") in statuses else {}
+
+    return wait_until(
+        _reached, describe=lambda: f"watcher never reached {statuses}; last={snapshot}"
+    )
 
 
-def _await_gone(path: Path, timeout: float = WAIT_S) -> None:
-    """Poll until ``path`` is gone. Fails the test on timeout."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not path.exists():
-            return
-        time.sleep(0.02)
-    raise AssertionError(f"{path} was never removed")
+def _await_gone(path: Path) -> None:
+    """Poll until ``path`` is gone, under the lost-run bound (D1)."""
+    wait_until(lambda: not path.exists(), describe=lambda: f"{path} was never removed")
+
+
+def _await_dead(reg: pr_watchers.PRWatcherRegistry, *fps: str) -> None:
+    """Poll until no watcher thread for ``fps`` is alive, under the lost-run bound (D1)."""
+    wait_until(
+        lambda: not any(reg.is_alive(fp) for fp in fps),
+        describe=lambda: f"watcher thread still alive: {[fp for fp in fps if reg.is_alive(fp)]}",
+    )
 
 
 # ── clone isolation: the load-bearing safety control ─────────────────────────
@@ -405,14 +413,7 @@ class TestNudgeLoop:
             max_nudges=5,
             interval_s=0.0,
         )
-        # `WAIT_S * 3`, the same allowance the exhausted-after-one-pass test below
-        # carries and for the same reason: reaching a verdict here is a real `git
-        # clone` plus a full loop pass plus the breach detection, and the default
-        # 10s is sized for one cheap poll. MEASURED as
-        # "watcher never reached {'error'}" on a Windows CI shard that had just run
-        # 12,366 tests. The ceiling is not a race to tune -- it only matters when
-        # the property is broken, so it is generous and still far under `--timeout`.
-        snap = _await_status(reg, "fp-breach", {pr_watchers.STATUS_ERROR}, timeout=WAIT_S * 3)
+        snap = _await_status(reg, "fp-breach", {pr_watchers.STATUS_ERROR})
         assert "re-pointed" in snap["lastNote"]
         assert len(breaches) == 1  # stopped after the breaching pass, not 5 passes
         log = reg.get_log("fp-breach")
@@ -546,9 +547,7 @@ class TestRegistrySurface:
         assert reg.stop("fp-stop") is True
         stopped = reg.status("fp-stop") or {}
         assert stopped["status"] == pr_watchers.STATUS_STOPPED
-        deadline = time.monotonic() + WAIT_S
-        while reg.is_alive("fp-stop") and time.monotonic() < deadline:
-            time.sleep(0.02)
+        _await_dead(reg, "fp-stop")
         assert not reg.is_alive("fp-stop"), "stopped watcher leaked a live thread"
 
     def test_stop_of_an_unknown_fp_is_false(self, loop: Any) -> None:
@@ -567,9 +566,7 @@ class TestRegistrySurface:
         _await_status(reg, "fp-a", {pr_watchers.STATUS_NUDGING})
         _await_status(reg, "fp-b", {pr_watchers.STATUS_NUDGING})
         assert reg.stop_all() == 2
-        deadline = time.monotonic() + WAIT_S
-        while (reg.is_alive("fp-a") or reg.is_alive("fp-b")) and (time.monotonic() < deadline):
-            time.sleep(0.02)
+        _await_dead(reg, "fp-a", "fp-b")
         assert not reg.is_alive("fp-a") and not reg.is_alive("fp-b")
 
     def test_disable_then_enable_relaunches_a_live_watcher(self, loop: Any, scripted: Any) -> None:
@@ -593,9 +590,7 @@ class TestRegistrySurface:
 
         # Disable: exactly what the app-disable hook does.
         assert reg.stop_all() == 1
-        deadline = time.monotonic() + WAIT_S
-        while reg.is_alive("fp-re") and time.monotonic() < deadline:
-            time.sleep(0.02)
+        _await_dead(reg, "fp-re")
         assert not reg.is_alive("fp-re")
         assert (reg.status("fp-re") or {})["status"] == pr_watchers.STATUS_STOPPED
 
@@ -628,9 +623,7 @@ class TestRegistrySurface:
 
         # Operator stop of this one watcher (not a disable).
         assert reg.stop("fp-u") is True
-        deadline = time.monotonic() + WAIT_S
-        while reg.is_alive("fp-u") and time.monotonic() < deadline:
-            time.sleep(0.02)
+        _await_dead(reg, "fp-u")
         assert not reg.is_alive("fp-u")
         assert (reg.status("fp-u") or {})["status"] == pr_watchers.STATUS_STOPPED
         with reg._lock:
@@ -665,9 +658,7 @@ class TestRegistrySurface:
             assert reg._watchers["fp-d2"].stopped_by_disable is True
         # Operator now stops it explicitly; this clears the disable marker.
         assert reg.stop("fp-d2") is True
-        deadline = time.monotonic() + WAIT_S
-        while reg.is_alive("fp-d2") and time.monotonic() < deadline:
-            time.sleep(0.02)
+        _await_dead(reg, "fp-d2")
         with reg._lock:
             assert reg._watchers["fp-d2"].stopped_by_disable is False
 
@@ -960,13 +951,7 @@ class TestCloneLifecycleAndExport:
             max_nudges=3,
             interval_s=0.0,
         )
-        # Three times the file-wide budget, named: this test runs a REAL clone and
-        # then three passes that are each several git subprocesses on Windows-speed
-        # process spawns, on a host shared with five other workers. One full run
-        # in five saw every pass complete ("pass 3/3") with only the exhausted
-        # transition still outstanding at WAIT_S -- a bounded wait asserting too
-        # early, not a stuck watcher.
-        _await_status(reg, "fp-once", {pr_watchers.STATUS_EXHAUSTED}, timeout=WAIT_S * 3)
+        _await_status(reg, "fp-once", {pr_watchers.STATUS_EXHAUSTED})
         assert marks == [False, True, True], "the clone must persist across passes"
 
 

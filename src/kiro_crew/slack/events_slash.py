@@ -44,13 +44,20 @@ from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.blocks import channels_modal, dashboard_link_block, voice_config_modal
 from kiro_crew.slack.code_channels.commands import handle_slash as code_channel_slash
 from kiro_crew.slack.events_queue import _spawn_tracked
-from kiro_crew.slack.handler import describe_grant_lifetime, is_allowed_user, is_owner, slack_cfg
+from kiro_crew.slack.handler import (
+    describe_grant_lifetime,
+    is_allowed_user,
+    is_owner,
+    is_shared_user,
+    slack_cfg,
+)
 from kiro_crew.slack.sessions_view import (
     _build_sessions_blocks,
     _collect_recent_sessions_off_loop,
     _message_surface_limit,
     sessions_include_ended,
 )
+from kiro_crew.slack.shared_access import prime_shared_user
 from kiro_crew.stats import Stats
 
 if TYPE_CHECKING:
@@ -109,9 +116,9 @@ async def _handle_dashboard(
         # block cannot outlast the link it describes.
         link_mins = min(LINK_WINDOW_SECS, session_ttl) // 60
         blks = dashboard_link_block(url, link_mins, session_ttl // 60)
-        await respond("Dashboard link sent to your DMs.", blocks=blks)
+        await respond("🔗 Dashboard link sent to your DMs.", blocks=blks)
     else:
-        await respond("Error: Failed to send dashboard link.")
+        await respond("❌ Failed to send dashboard link.")
 
 
 def _selector_agent_names() -> list[str]:
@@ -134,7 +141,7 @@ async def _handle_agent(
     )
 
     if not is_owner(caller_id):
-        await respond("Blocked: Only the owner can switch agents.")
+        await respond("⛔ Only the owner can switch agents.")
         return
 
     if args:
@@ -143,9 +150,9 @@ async def _handle_agent(
             try:
                 await run_config_write(_set_default_agent, "")
             except ValueError as e:
-                await respond(f"Error: {e}")
+                await respond(f"❌ {e}")
                 return
-            await respond("Reset to default agent.")
+            await respond("🔄 Reset to default agent.")
             return
         # Resolution reads a spec's content; off the loop, like the listing.
         resolved = await asyncio.to_thread(_resolve_agent_name, name)
@@ -153,11 +160,11 @@ async def _handle_agent(
             try:
                 await run_config_write(_set_default_agent, resolved)
             except ValueError as e:
-                await respond(f"Error: {e}")
+                await respond(f"❌ {e}")
                 return
-            await respond(f"Switched to agent: *{resolved}*")
+            await respond(f"🔄 Switched to agent: *{resolved}*")
             return
-        await respond(f"Error: Unknown agent `{name}`. Pick one below:")
+        await respond(f"❌ Unknown agent `{name}`. Pick one below:")
 
     # Show selector dropdown. The listing walks the agents directory and reads
     # every markdown candidate to decide whether it is a spec, so it runs off
@@ -188,13 +195,14 @@ async def _handle_voice(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
     """Open voice config modal with current TTS settings."""
+    from kiro_crew.slack import slash_context  # local: see its docstring
     from kiro_crew.slack.handler import (
         _vc,  # circular import: handler.py imports events.py for command dispatch
     )
 
-    trigger_id = getattr(orch, "_last_trigger_id", "")
+    trigger_id = slash_context.trigger_id.get()
     if not trigger_id:
-        await respond("Error: Missing trigger_id — cannot open modal.")
+        await respond("❌ Missing trigger_id — cannot open modal.")
         return
 
     modal = voice_config_modal(
@@ -213,11 +221,94 @@ async def _handle_voice(
         await orch.slack.views_open(trigger_id=trigger_id, view=modal)
     except Exception:
         logger.exception("Failed to open voice config modal")
-        await respond("Error: Failed to open voice settings modal.")
+        await respond("❌ Failed to open voice settings modal.")
 
 
 register_slash_command("dashboard", _handle_dashboard, "get a dashboard access link")
 register_slash_command("agent", _handle_agent, "switch the active agent")
+
+
+async def _handle_bot(
+    orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
+) -> None:
+    """List the Crew Bots. A thread is put on one by ``!bot <name>`` sent in that thread.
+
+    Slack does not run a slash command typed inside a thread, and its payload names no
+    thread, so this command cannot switch one. It answers where a person looks first.
+    """
+    from kiro_crew.slack.handler import (  # circular import: handler.py imports events.py for command dispatch
+        bots_text,
+        resolve_bot_name,
+    )
+
+    typed = args.strip()
+    if typed and await asyncio.to_thread(resolve_bot_name, typed) is None:
+        await respond(f"❌ Unknown Bot `{typed}`. Crew Bots: {await asyncio.to_thread(bots_text)}")
+        return
+    pick = f"`!bot {typed}`" if typed else "`!bot <name>`"
+    await respond(
+        f"Crew Bots: {await asyncio.to_thread(bots_text)}\n"
+        f"Slack does not run slash commands in a thread. To put a thread on a Bot, "
+        f"send {pick} in that thread. `!bot off` goes back."
+    )
+
+
+async def _handle_conductor(
+    orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
+) -> None:
+    """Start a Conductor thread here: post the goal as a new parent message, then make
+    that message's thread a Conductor thread (``kiro_crew.slack.conductor_thread``).
+
+    Slack does not run a slash command typed inside a thread and names no thread, so
+    an existing thread is made one with ``!conductor`` sent in it. The owner, or a
+    shared user Slack confirms (recorded as the thread's opener); every refusal is
+    ephemeral and posts nothing.
+    """
+    from kiro_crew.dashboard.session_control_parts.code_channel_exemption import published_goal
+    from kiro_crew.slack import conductor_thread, slash_context  # local: see its docstring
+    from kiro_crew.slack.code_channels.binding import live_config, thread_conductor_on
+
+    goal = args.strip()
+    channel, team = slash_context.room.get()
+    if not is_owner(caller_id) and not conductor_thread.opener_for(caller_id):
+        await respond("⛔ Owner-only command.")
+        return
+    if not thread_conductor_on(live_config(orch)):
+        await respond(f"❌ {conductor_thread.OFF_TEXT}")
+        return
+    if not goal:
+        await respond("Usage: `/kirocrew conductor <goal>`")
+        return
+    slack = orch.slack
+    if not channel or slack is None:
+        await respond("❌ Slack did not say where the command was typed.")
+        return
+    # Refused before the parent message is posted, so a refusal leaves nothing behind.
+    why, _room = await conductor_thread.refusal(
+        slack, channel, "", caller_id, "", in_thread=True, new_thread=True, goal=goal
+    )
+    if why:
+        conductor_thread._audit(caller_id, "denied", f"channel={channel}", why)
+        await respond(f"❌ {why}")
+        return
+    try:
+        parent = await slack.post_message(channel, f"Conductor: {published_goal(goal)}")
+    except Exception:
+        logger.debug("conductor parent message not posted", exc_info=True)
+        parent = ""
+    if not parent:
+        await respond("❌ I can't post here. Invite me to the channel, or use my DM.")
+        return
+    started, text = await conductor_thread.start(
+        slack, channel, parent, caller_id, goal, team_id=team, in_thread=True
+    )
+    await respond(text if started else f"❌ {text}")
+
+
+register_slash_command(
+    "conductor", _handle_conductor, "start a Conductor thread here (`!conductor` in a thread)"
+)
+register_slash_command("bot", _handle_bot, "list Crew Bots (`!bot <name>` in a thread switches it)")
 register_slash_command("voice", _handle_voice, "configure TTS voice settings")
 
 
@@ -226,7 +317,7 @@ async def _handle_yolo(
 ) -> None:
     """Toggle YOLO mode on/off/renew."""
     if not is_owner(caller_id):
-        await respond("Blocked: Only the owner can toggle YOLO mode.")
+        await respond("⛔ Only the owner can toggle YOLO mode.")
         return
 
     arg = args.strip().lower()
@@ -236,7 +327,7 @@ async def _handle_yolo(
     slack_yolo = so.is_active() and so.is_cli_launch is not True
     if arg == "on":
         if slack_yolo:
-            await respond(f"YOLO mode is already *ON* ({describe_grant_lifetime()}).")
+            await respond(f"🟢 YOLO mode is already *ON* ({describe_grant_lifetime()}).")
             return
         # Off-loop: activate() writes a SEL event and consults the
         # ``approval_modes`` policy, so running it inline stalls the whole gateway
@@ -250,9 +341,9 @@ async def _handle_yolo(
             # path in ``handler.py``, which must not drift from this one. The verdict
             # is a memory read (pushed at ceiling install), so no thread.
             if not yolo_policy_permits():
-                await respond("YOLO mode is disabled by your organization's policy.")
+                await respond("🔒 YOLO mode is disabled by your organization's policy.")
             else:
-                await respond("Error: Failed to activate YOLO mode (audit system unavailable).")
+                await respond("❌ Failed to activate YOLO mode (audit system unavailable).")
             return
         sel().log_api_access(
             caller=caller_id,
@@ -264,9 +355,10 @@ async def _handle_yolo(
         if orch.dashboard_state:
             orch.dashboard_state.push_slots_update()
         await respond(
-            f"YOLO mode *ON* ({describe_grant_lifetime()})" f" — all tools auto-approved."
+            f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})" f" — all tools auto-approved."
         )
     elif arg == "off":
+        from kiro_crew import kept_grants
         from kiro_crew.slack.handler import (
             disable_yolo,  # circular import: handler.py imports events.py for command dispatch registration
         )
@@ -281,7 +373,10 @@ async def _handle_yolo(
         )
         if orch.dashboard_state:
             orch.dashboard_state.push_slots_update()
-        await respond("YOLO mode *OFF* — tools require approval.")
+        reply = "🔴 YOLO mode *OFF* — tools require approval."
+        if not await kept_grants.settle():  # the answer waits for the disk
+            reply = f"{reply}\n⚠️ {kept_grants.NOT_SAVED}"
+        await respond(reply)
     elif arg == "renew":
         # renew() audits fail-closed with a synchronous SEL write; keep that
         # filesystem I/O off the event loop.
@@ -298,17 +393,17 @@ async def _handle_yolo(
             )
             if orch.dashboard_state:
                 orch.dashboard_state.push_slots_update()
-            await respond(f"YOLO mode *renewed* (auto-expires in {renew_result.ttl // 60}min).")
+            await respond(f"🟢 YOLO mode *renewed* (auto-expires in {renew_result.ttl // 60}min).")
         else:
-            await respond("YOLO mode is not active. Use `on` to activate first.")
+            await respond("🔴 YOLO mode is not active. Use `on` to activate first.")
     else:
         if slack_yolo:
             await respond(
-                f"YOLO mode is currently *ON* ({describe_grant_lifetime()}).\nUsage: `/{orch.slack_command} yolo on|off|renew`"
+                f"YOLO mode is currently *ON 🟢* ({describe_grant_lifetime()}).\nUsage: `/{orch.slack_command} yolo on|off|renew`"
             )
         else:
             await respond(
-                f"YOLO mode is currently *OFF*.\nUsage: `/{orch.slack_command} yolo on|off|renew`"
+                f"YOLO mode is currently *OFF 🔴*.\nUsage: `/{orch.slack_command} yolo on|off|renew`"
             )
 
 
@@ -316,8 +411,10 @@ async def _handle_config(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
     """Open config modal (owner-only) — users and channels."""
+    from kiro_crew.slack import slash_context  # local: see its docstring
+
     if not is_owner(caller_id):
-        await respond("Blocked: Only the owner can change config.")
+        await respond("⛔ Only the owner can change config.")
         return
 
     tracking_ids = list(orch._tracking_channels)
@@ -327,7 +424,7 @@ async def _handle_config(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "Warning: Multi-user access is disabled for security. Only the owner can interact via Slack.",
+                "text": "⚠️ Multi-user access is disabled for security. Only the owner can interact via Slack.",
             },
         },
         {
@@ -353,9 +450,9 @@ async def _handle_config(
         "blocks": blocks,
     }
 
-    trigger_id = getattr(orch, "_last_trigger_id", "")
+    trigger_id = slash_context.trigger_id.get()
     if not trigger_id:
-        await respond("Warning: Cannot open modal — missing trigger_id.")
+        await respond("⚠️ Cannot open modal — missing trigger_id.")
         return
 
     try:
@@ -363,7 +460,7 @@ async def _handle_config(
         await orch.slack.views_open(trigger_id=trigger_id, view=view)
     except Exception:
         logger.exception("Failed to open config modal")
-        await respond("Error: Failed to open config modal.")
+        await respond("❌ Failed to open config modal.")
 
 
 register_slash_command("yolo", _handle_yolo, "toggle YOLO mode (auto-approve tools)")
@@ -375,7 +472,7 @@ async def _handle_allowlist_cmd(
 ) -> None:
     """Multi-user access disabled — user management is blocked."""
     await respond(
-        "Blocked: Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack."
+        "⛔ Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack."
     )
 
 
@@ -437,8 +534,10 @@ async def _handle_channel_cmd(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
     """Open modal showing tracked channels with per-channel activation mode."""
+    from kiro_crew.slack import slash_context  # local: see its docstring
+
     if not is_owner(caller_id):
-        await respond("Blocked: Only the owner can manage tracked channels.")
+        await respond("⛔ Only the owner can manage tracked channels.")
         return
 
     current_ids = sorted(orch._tracking_channels)
@@ -454,16 +553,16 @@ async def _handle_channel_cmd(
     agent_names = await asyncio.to_thread(_get_agent_names)
     modal = channels_modal(channels, agent_names=agent_names)
 
-    trigger_id = getattr(orch, "_last_trigger_id", "")
+    trigger_id = slash_context.trigger_id.get()
     if not trigger_id:
-        await respond("Warning: Cannot open modal — missing trigger_id.")
+        await respond("⚠️ Cannot open modal — missing trigger_id.")
         return
     try:
         assert orch.slack is not None
         await orch.slack.views_open(trigger_id=trigger_id, view=modal)
     except Exception:
         logger.exception("Failed to open channels modal")
-        await respond("Error: Failed to open channels modal.")
+        await respond("❌ Failed to open channels modal.")
 
 
 register_slash_command("users", _handle_allowlist_cmd, "manage allowed users")
@@ -547,7 +646,7 @@ async def _handle_sessions(
         return
 
     blocks = _build_sessions_blocks(rows)
-    await respond("Recent sessions:", blocks=blocks)
+    await respond("\U0001f4cb Recent sessions:", blocks=blocks)
 
 
 register_slash_command("sessions", _handle_sessions, "list recent sessions")
@@ -582,7 +681,7 @@ async def _handle_restart(
             outcome="denied",
             resources=f"user={caller_id}",
         )
-        await respond("Blocked: Only the owner can restart the gateway.")
+        await respond("⛔ Only the owner can restart the gateway.")
         return
 
     if not os.environ.get("INVOCATION_ID"):
@@ -594,7 +693,7 @@ async def _handle_restart(
             resources=f"user={caller_id},reason=no_supervisor",
         )
         await respond(
-            "Blocked: Restart requires a process supervisor (systemd). "
+            "⛔ Restart requires a process supervisor (systemd). "
             "Running in bare mode — restart manually."
         )
         return
@@ -607,7 +706,7 @@ async def _handle_restart(
         resources=f"user={caller_id}",
     )
     try:
-        await respond("Restarting gateway…")
+        await respond("♻️ Restarting gateway…")
     except Exception:
         logger.debug("Restart notification failed", exc_info=True)
     try:
@@ -629,6 +728,10 @@ async def _handle_restart(
                 ),
                 timeout=5.0,
             )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Dashboard state save before restart did not finish within 5.0s; restarting without it"
+        )
     except Exception:
         logger.debug("Dashboard state save before restart failed", exc_info=True)
     # The exit skips the gateway's _shutdown, where the cron service stops: stop
@@ -637,7 +740,9 @@ async def _handle_restart(
     from kiro_crew.cron import stop_cron_before_restart
 
     await stop_cron_before_restart(getattr(orch, "cron_svc", None))
-    # A planned restart: the turns close_all() cuts resume on the next boot.
+    # A planned restart: record the chats with a running turn that close_all() is
+    # about to cut, so the next start tries to resume them, and wait for Owner
+    # approval records still being written.
     from kiro_crew.dashboard import restart_resume
 
     await restart_resume.record_running_slots(orch.dashboard_state)
@@ -727,16 +832,6 @@ def _safe_log(text: str) -> str:
     return text
 
 
-#: A command name the bundled manifest can register: ``/kirocrew`` or
-#: ``/kirocrew-<alias>`` (``slack_manifest.slash_command``). Only these get the
-#: mismatch reply. The alias class is what ``slash_command`` emits, which also
-#: keeps the name safe to echo into the shell line the owner is asked to run.
-_MANIFEST_COMMAND_RE = re.compile(
-    rf"/(?:{re.escape(slack_manifest.DEFAULT_ALIAS)}"
-    rf"|{re.escape(slack_manifest.SLASH_COMMAND_PREFIX)}[a-z0-9_-]+)"
-)
-
-
 async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     """Route ``/kirocrew <sub-command>`` via :data:`SLASH_REGISTRY`.
 
@@ -763,38 +858,29 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
         except Exception:
             logger.debug("slash response_url failed", exc_info=True)
 
-    slash_command = f"/{orch.slack_command}"
     # Slack Code channel commands (/summarize, /wrap-up, /create-pr, and
     # `/kirocrew agent` and `/kirocrew approval` typed in a code channel): answered there while
     # slack.code_channels is on and the install can run it; a pass-through
     # (False) otherwise, so the rest of this function is unchanged.
     if await code_channel_slash(orch, payload, _respond):
         return
-    if cmd != slash_command:
-        if _MANIFEST_COMMAND_RE.fullmatch(cmd):
-            # Slack delivers only commands this app registered, so the app was
-            # created or re-imported from a manifest that names the command
-            # differently from slack.command: re-importing the bundled manifest
-            # into an older install turns /kirocrew into /kirocrew-<alias>.
-            fix = f"kirocrew config set slack.command {cmd[1:]}"
-            logger.warning(
-                "Slash command %s is not the configured %s; run `%s` and restart the gateway",
-                cmd,
-                slash_command,
-                fix,
-            )
-            # Only the owner can make the fix, so only the owner is told.
-            if is_allowed_user(caller_id):
-                _spawn(
-                    _respond(
-                        f"Warning: Kiro Crew is set up for `{slash_command}`, so `{cmd}` did "
-                        f"nothing. To use `{cmd}`, run `{fix}` and restart the gateway."
-                    )
-                )
+    # Slack delivers only commands this app registered, so a /kirocrew or
+    # /kirocrew-<alias> that arrives is this app's own, whichever manifest
+    # created it; slack.command adds a custom name. Anything else is dropped.
+    configured = getattr(getattr(slack_cfg(orch), "slack", None), "command", "")
+    if not slack_manifest.is_app_command(cmd, orch.slack_command, configured):
         return
 
-    # Deny-by-default — only allowed users can invoke slash commands
-    if not is_allowed_user(caller_id):
+    parts = cmd_text.split(maxsplit=1)
+    sub_cmd = parts[0].lower() if parts else ""
+    args = parts[1] if len(parts) > 1 else ""
+
+    # Deny-by-default — only the owner can invoke slash commands. A shared user,
+    # slack.shared_access, drives work by message, and may use the slash command only
+    # to start a Conductor thread (``conductor``), which records them as its opener.
+    if sub_cmd == "conductor" and not is_allowed_user(caller_id):
+        await prime_shared_user(caller_id, orch)
+    if not (is_allowed_user(caller_id) or (sub_cmd == "conductor" and is_shared_user(caller_id))):
         sel().log_api_access(
             caller=caller_id,
             operation="slack.slash_command",
@@ -803,7 +889,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
             resources=cmd_text,
             error="unauthorized sender",
         )
-        _spawn(_respond("Blocked: You are not authorized to use this command."))
+        _spawn(_respond("⛔ You are not authorized to use this command."))
         return
 
     sel().log_api_access(
@@ -815,18 +901,24 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     )
 
     if not (orch.slack and orch._owner_id):
-        _spawn(_respond("Warning: Owner not configured."))
+        _spawn(_respond("⚠️ Owner not configured."))
         return
-
-    parts = cmd_text.split(maxsplit=1)
-    sub_cmd = parts[0].lower() if parts else ""
-    args = parts[1] if len(parts) > 1 else ""
+    # The owner typed a name this app registered: adopt it, so usage replies,
+    # the Home tab and the code-channel pickers name a command that exists even
+    # while slack.command is still the default. A slack.command change sets it.
+    if is_allowed_user(caller_id):
+        orch.slack_command = cmd[1:]
 
     entry = SLASH_REGISTRY.get(sub_cmd)
     if entry is not None:
         handler, _ = entry
-        # Stash trigger_id so modal-opening handlers can use it
-        orch._last_trigger_id = payload.get("trigger_id", "")  # type: ignore[attr-defined]
+        from kiro_crew.slack import slash_context  # local: see its docstring
+
+        # For this command's handler task alone (``slash_context``).
+        slash_context.trigger_id.set(payload.get("trigger_id", ""))
+        slash_context.room.set(
+            (str(payload.get("channel_id") or ""), str(payload.get("team_id") or ""))
+        )
         _spawn(handler(orch, caller_id, args, _respond))
         return
 
@@ -835,7 +927,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     if user_match:
         _spawn(
             _respond(
-                "Blocked: Multi-user access is disabled. Only the owner can use Kiro Crew via Slack."
+                "⛔ Multi-user access is disabled. Only the owner can use Kiro Crew via Slack."
             )
         )
         return
@@ -846,7 +938,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
         channel_id = channel_match.group(1)
         channel_name = channel_match.group(2) or "Secret"
         _spawn(prompt_track_channel(orch.slack, orch._owner_id, channel_id, channel_name))
-        _spawn(_respond(f"Track request sent for #{channel_name or channel_id}."))
+        _spawn(_respond(f"📨 Track request sent for #{channel_name or channel_id}."))
         return
 
     # Unknown sub-command → help

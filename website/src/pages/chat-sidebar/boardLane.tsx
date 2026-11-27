@@ -3,7 +3,8 @@
  *  own folder rows, reorderable per column) and the unfile strip. */
 import { Fragment } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
-import { Plus, X, EyeOff, FolderPlus, MessageSquarePlus, ChevronRight, MoreVertical, Tag as TagIcon, GripVertical, Server } from 'lucide-react'
+import { Plus, X, EyeOff, FolderPlus, MessageSquarePlus, ChevronRight, MoreVertical, Tag as TagIcon, GripVertical, Server, Loader2 } from 'lucide-react'
+import { LIST_BODY_CLS } from '../../components/listShell'
 import { FolderBody } from '../../components/FolderBody'
 import { FolderRail } from '../../components/FolderRail'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -17,7 +18,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import TagManagerList from '../../components/TagManagerList'
 import { DndActiveProbe, DndDroppable } from '../../components/dnd'
 import { collectFolderSubtreeIds, countWithSubfolders } from '../../utils/folderTree'
-import { isMateManaged } from '../../utils/mateFolders'
+import { isEmptyBotSubfolder, isMateManaged } from '../../utils/mateFolders'
 import type { ChatFolder, ChatTag } from '../../types'
 import { SESSION_LANES } from '../chat/sessionLane'
 import { SessionRowWindowScroller } from '../chat/sessionRowWindow'
@@ -42,11 +43,11 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     dropSlotMutation, editName, editScope, editingId, flatView, folderCompare, countSubfolderContents, folderCreateError, folderSortMode,
     folderCreateMountAbsent, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderReorderable,
     folderSubtrees, folders, handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragStart, heldLane,
-    hiddenFolderCount, hideEmptyFolderBody, ime, isActiveRow, isFolderFilteredOut, laneSlots, moveByDrag,
+    hiddenFolderCount, hideEmptyFolderBody, ime, isFolderFilteredOut, laneSlots, moveByDrag,
     nativeSessionDrag, onMenuCloseAutoFocus, onOpenSlotInNewTab, orderedColumns, popoverPos,
     renameCommit, renderFolderCreateError, renderFolderMenuItems, renderSessionRow, reorderColumnsMutation, reportDndActive,
     revealFlash, rootFolders, setBoardError, setColumnEditId, setDerivedHintCol, setEditName, setEditScope,
-    setEditingId, setFilterSortOpen, setFolderModal, setFolderOfflineNotice, setFoldersShelved, sidebarRows, slotFolders,
+    setEditingId, setFilterSortOpen, setFolderModal, setFolderOfflineNotice, setFoldersShelved, sidebarRows, slotFolders, foldersHoldingSessions,
     startsAutomaticSection, stripEdges, tagById, toggleColumnCollapse, unfiledAboveFolders,
     updateColumnMutation } = shell
   // Does any descendant (direct or nested) of `folderId` contain a slot from `slots`?
@@ -80,6 +81,8 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     // A mate's folder is managed for the person: open and collapse only. No
     // menu, rename, new chat, drag, or drop -- the list view's rule.
     const mateManaged = isMateManaged(folder, folders)
+    // An empty Bot sub-folder opens a Delete-only menu; the list view's rule.
+    const botDeletable = mateManaged && isEmptyBotSubfolder(folder, folders, foldersHoldingSessions.has(folder.id))
     // Valid "Move folder to" destinations: everything outside this folder's
     // own subtree (cycle guard). One O(1) lookup, computed once per row.
     const subtreeIds = folderSubtrees.get(folder.id) ?? collectFolderSubtreeIds(folders, folder.id)
@@ -160,7 +163,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
         {/* Only the header opens the folder menu; body rows keep their own
          * menus and the rename input keeps its native editing menu. */}
         <ContextMenu>
-          <ContextMenuTrigger asChild disabled={!!forceCollapsed || mateManaged || (editingId === folder.id && editScope === columnId)}>
+          <ContextMenuTrigger asChild disabled={!!forceCollapsed || (mateManaged && !botDeletable) || (editingId === folder.id && editScope === columnId)}>
         {/* Same rule as the tree row: a column copy with no body has nothing to
          *  toggle, so it is not a control - no button role, no tab stop, no
          *  pointer cursor, no expanded state and no handler. It stays draggable,
@@ -235,7 +238,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
           <span className="text-[10px] text-muted shrink-0">{count}</span>
           {/* List-view parity: an empty folder's row keeps its action cluster
             *  visible (see the note in renderFolderHeader). */}
-          {!mateManaged && !(editingId === folder.id && editScope === columnId) && (
+          {(!mateManaged || botDeletable) && !(editingId === folder.id && editScope === columnId) && (
           <span className={`${emptyBody ? '' : 'opacity-0 '}group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100 transition-opacity flex items-center gap-0.5`}>
             {/* ⋯ menu + a primary "new chat in folder" action, mirroring the
              *  list-view folder header (renderFolderHeader) so board view has
@@ -253,6 +256,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
             {/* Same three-gesture contract as the header New button; the
              *  existing stopPropagation stays so the header click/drag
              *  handlers never see the press. */}
+            {!mateManaged && (
             <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
               onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { columnId, inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false }) }}
               onMouseDown={e => { e.stopPropagation(); if (e.button === 1 && onOpenSlotInNewTab) e.preventDefault() }}
@@ -264,7 +268,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               }) : undefined}
               onKeyDown={e => { e.stopPropagation() }}>
               <MessageSquarePlus size={11} />
-            </button>
+            </button>)}
           </span>
           )}
         </div>
@@ -303,10 +307,8 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
             )}
             {deepChildren.map(cf => renderColumnFolder(cf, columnId, colSlotKeys))}
             {childSlots.map((s, i) => {
-              const isActive = isActiveRow(s)
-              const nextIsActive = isActiveRow(childSlots[i + 1])
-              const showDivider = i < childSlots.length - 1 && !isActive && !nextIsActive
-                && !startsAutomaticSection(childSlots, i + 1)
+              const dividerNext = i < childSlots.length - 1
+                && !startsAutomaticSection(childSlots, i + 1) ? childSlots[i + 1] : null
               // `scope` stays per-folder so the Framer layoutId and the inline
               // rename target remain unique, but the arrow rove is scoped to the
               // COLUMN: a board column's foldered and ungrouped rows are one
@@ -314,7 +316,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               return (
                 <Fragment key={sessionRowIdentity(s)}>
                   {startsAutomaticSection(childSlots, i) && <PinnedSessionDivider />}
-                  {renderSessionRow(s, 1, showDivider, `${folderLaneScope}:${folder.id}`, folderLaneScope, folderHoldContainer)}
+                  {renderSessionRow(s, 1, dividerNext, `${folderLaneScope}:${folder.id}`, folderLaneScope, folderHoldContainer)}
                 </Fragment>
               )
             })}
@@ -719,14 +721,12 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                       // Inert in flat view, which renders no folder block to swap past.
                       const unfiledFirst = unfiledAboveFolders && !flatView
                       const ungroupedRows = ungrouped.map((s, i) => {
-                        const isActive = isActiveRow(s)
-                        const nextIsActive = isActiveRow(ungrouped[i + 1])
-                        const showDivider = i < ungrouped.length - 1 && !isActive && !nextIsActive
-                          && !startsAutomaticSection(ungrouped, i + 1)
+                        const dividerNext = i < ungrouped.length - 1
+                          && !startsAutomaticSection(ungrouped, i + 1) ? ungrouped[i + 1] : null
                         return (
                           <Fragment key={sessionRowIdentity(s)}>
                             {startsAutomaticSection(ungrouped, i) && <PinnedSessionDivider />}
-                            {renderSessionRow(s, 0, showDivider, colLaneScope, colLaneScope, colHoldContainer)}
+                            {renderSessionRow(s, 0, dividerNext, colLaneScope, colLaneScope, colHoldContainer)}
                           </Fragment>
                         )
                       })
@@ -806,5 +806,15 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
           </div>
           </div>
   )
-  return { renderBoardLane }
+  /** The body while a board user's columns are still loading: their lanes are
+   *  not known yet, and the list in their place would be the wrong view. */
+  const renderColumnsLoading = (): React.ReactNode => (
+    <div className={`${LIST_BODY_CLS} flex items-start justify-center`} data-testid="board-columns-loading">
+      <div role="status" className="flex items-center gap-2 px-3 py-4 text-[12px] text-muted">
+        <Loader2 size={14} className="shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+        {i18nT('pages.chatSidebar.loading_board')}
+      </div>
+    </div>
+  )
+  return { renderBoardLane, renderColumnsLoading }
 }

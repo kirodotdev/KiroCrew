@@ -44,8 +44,8 @@ vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentW
 // SidePanel: stub the component (pulls in xterm etc.) but keep the space
 // contract deterministic: threshold = 320 + 560 = 880, reopen at 920.
 vi.mock('../pages/chat/SidePanel', () => ({
-  default: ({ fillWidth, onPutPinInComposer }: { fillWidth?: number; onPutPinInComposer?: (ts: string) => void }) => (
-    <div data-testid="side-panel" data-fill-width={fillWidth ?? ''}>
+  default: ({ fillWidth, extraReserveW, onPutPinInComposer }: { fillWidth?: number; extraReserveW?: number; onPutPinInComposer?: (ts: string) => void }) => (
+    <div data-testid="side-panel" data-fill-width={fillWidth ?? ''} data-extra-reserve-w={extraReserveW ?? ''}>
       {onPutPinInComposer && <button type="button" aria-label="Put in composer" data-testid="put-pin" onClick={() => onPutPinInComposer('pin-ts')} />}
     </div>
   ),
@@ -70,6 +70,9 @@ vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: fa
 // (false) by default, flipped by the mobile describe below.
 let mockIsMobile = false
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mockIsMobile }))
+// jsdom has no layout, so the side panel's on-screen check reads every open
+// panel as zero-size and closes it mid-test; its own spec covers it.
+vi.mock('../hooks/useSidePanelHealth', () => ({ useSidePanelHealth: vi.fn() }))
 
 // --- Stub API ---
 vi.mock('../api/client', () => ({
@@ -409,6 +412,62 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     expect(screen.queryByTestId('action-error')).toBeNull()
     // Same DOM node: the mode change must not tear the panel down (live PTYs).
     expect(after).toBe(before)
+  })
+})
+
+/**
+ * A popped-out session (`/popout/chat`) renders no nav rail and no
+ * session sidebar. Its shell publishes rail width 0, and the page must not
+ * subtract the shared pinned-sidebar width either, or an 832 px pop-out fills
+ * the chat column with an unresizable panel. Its title row also carries the
+ * same open toggle as the main window.
+ */
+describe('ChatPage — activity panel in a popped-out session window', () => {
+  beforeEach(() => { setWindowWidth(832); localStorage.clear(); setRailWidth(0) })
+  afterEach(() => { __resetRailWidth(); document.getElementById('activity-bar-slot')?.remove() })
+
+  function renderPopout() {
+    const store = createTestStore()
+    act(() => {
+      store.dispatch(switchSlot.pending('req-popout', 'slot-popout'))
+      store.dispatch(switchSlot.fulfilled({
+        key: 'slot-popout',
+        messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+        running: false, hasMore: false, total: 1, queue: [],
+      }, 'req-popout', 'slot-popout'))
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <ThemeProvider>
+            <MemoryRouter initialEntries={['/popout/chat/slot-popout?sid=slot-popout']}>
+              <Routes><Route path="/popout/chat/:slug?" element={<ChatPage embedded embedMode="chat" popout />} /></Routes>
+            </MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    return { store }
+  }
+
+  it('shows the Open activity panel toggle in the pop-out title row, and it opens the panel', async () => {
+    const { store } = renderPopout()
+    const btn = await screen.findByLabelText('Open activity panel')
+    expect(store.getState().chat.activityOpen).toBe(false)
+    fireEvent.click(btn)
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(await screen.findByTestId('side-panel')).toBeInTheDocument()
+  })
+
+  it('opens the panel beside the chat with no sidebar reserve, so it stays resizable', async () => {
+    const { store } = renderPopout()
+    act(() => { store.dispatch(toggleActivity()) })
+    const panel = await screen.findByTestId('side-panel')
+    // 832 - rail 0 - sidebar 0 = 832 >= 640: beside, not fill.
+    expect(panel).toHaveAttribute('data-fill-width', '')
+    expect(panel).toHaveAttribute('data-extra-reserve-w', '0')
+    expect(screen.queryByTestId('action-error')).toBeNull()
   })
 })
 

@@ -344,7 +344,7 @@ class TestPrintTokenUrlOffATerminal:
 
         logged = log_path.read_text(encoding="utf-8")
         assert "token=" not in logged
-        assert "Sign in: run kirocrew token for a sign-in link\n" in logged
+        assert "🔑 Sign in: run kirocrew token for a sign-in link\n" in logged
         assert mints == []
 
 

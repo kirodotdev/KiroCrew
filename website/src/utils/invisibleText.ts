@@ -12,6 +12,7 @@
  * the same class of message must yield an empty sidebar preview.
  */
 import type { ChatMessage } from '../types'
+import { extractSteeringAcks } from '../app-sdk/protocol/steering'
 
 const FORMAT_CHARS_RE = /\p{Cf}/gu
 
@@ -36,13 +37,22 @@ export function isInvisibleOnly(text: string): boolean {
  * and the row hosts the typing indicator. A hidden row's `turn_stats` are
  * deliberately dropped with it: a say-nothing cycle's footer stats are noise,
  * and cost accounting lives in the usage panels, not the transcript.
+ *
+ * `drawn` says what the surface would draw besides the text, so a row whose
+ * only content is something that surface hides is hidden too: a quiet turn
+ * that only wrote files leaves a content-less row carrying `file_changes`
+ * (`_attach_file_changes`), which is empty where the file chips are not drawn;
+ * a reply that is only a `[STEERING …]` note is empty where the Steered chip
+ * is not drawn (a policy-block turn, a crewmate's chat).
  */
 export function isHiddenInvisibleAssistantRow(
   m: Pick<ChatMessage, 'role' | 'content' | 'meta' | 'variants'>,
+  drawn: { fileChips?: boolean; steerChip?: boolean } = {},
 ): boolean {
   if (m.role !== 'assistant') return false
   const changes = m.meta?.file_changes
-  if (Array.isArray(changes) && changes.length > 0) return false
-  if (m.variants?.some(v => !isInvisibleOnly(v.content))) return false
-  return isInvisibleOnly(m.content)
+  if (drawn.fileChips !== false && Array.isArray(changes) && changes.length > 0) return false
+  const empty = (text: string) => isInvisibleOnly(drawn.steerChip === false ? extractSteeringAcks(text).cleaned : text)
+  if (m.variants?.some(v => !empty(v.content))) return false
+  return empty(m.content)
 }

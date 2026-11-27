@@ -16,8 +16,11 @@ if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
         PROVIDER_POLLY,
         PROVIDER_SYSTEM,
+        ConfigChange,
+        ConfigDeferred,
         KiroCrewConfig,
         SlackClientOps,
+        _deep_merge,
         _tts_available,
         _vc,
         _voice_reply_fn,
@@ -65,16 +68,26 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     boot. Without that call a dashboard-only gateway (no Slack tokens) never
     restores persisted voice settings — every restart silently resets TTS to
     disabled while the dashboard's settings PUT keeps reporting success.
+
+    Reads the files, not *cfg*: ``voice_reply`` is not a modelled section, and a
+    config object carries only config.json's copy of it, without the
+    config.local.json overlay. A file that does not parse contributes nothing, as
+    the loader treats it at boot.
     """
-    _vr: dict = cfg.raw.get("voice_reply", {}) if (cfg is not None and hasattr(cfg, "raw")) else {}
-    if not _vr:
-        # config.local.json is an overlay whose keys win, as the loader merges it.
-        _vr = read_merged_config_files(config_path(), config_local_path()).get("voice_reply", {})
+    # config.local.json is an overlay whose keys win, as the loader merges it.
+    _adopt_voice_reply(read_merged_config_files(config_path(), config_local_path()))
+
+
+def _adopt_voice_reply(doc: dict) -> None:
+    """Set every ``_vc`` field from *doc*'s ``voice_reply`` (the merged config files)."""
+    _vr: object = doc.get("voice_reply", {})
     if not isinstance(_vr, dict):
         _vr = {}
     _enabled = bool(_vr.get("enabled", False))
-    if _enabled:
-        _vc.global_enabled = True
+    # Assigned both ways: this also runs when the file changes under a running
+    # gateway (``apply_voice_reply_change``), and a stored ``false`` must turn
+    # off a live ``true`` rather than leave it speaking every thread.
+    _vc.global_enabled = _enabled
     _vc.auto_speak = bool(_vr.get("auto_speak", False))
     # All ten string reads in this block go through the same coercion: each is
     # hand-editable JSON that reaches the dashboard's config GET verbatim.
@@ -96,6 +109,29 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     _vc.system_voice = _str_or_default(_vr.get("system_voice"))
     # A malformed tag reads as no preference, like any other hand-edited typo here.
     _vc.language_code = validated_language_code(_vr.get("language_code")) or ""
+
+
+async def apply_voice_reply_change(change: ConfigChange) -> None:
+    """Config-watch applier: re-read ``voice_reply`` into ``_vc`` when the file changes.
+
+    Without it a ``kirocrew config set voice_reply.enabled false`` (or a hand
+    edit) reaches the file but not the running gateway, whose ``_vc`` keeps the
+    value it booted with until a restart. config.json, which every save writes,
+    is read strictly first: one a save has left half-written defers the paths,
+    with ``_vc`` untouched, and the watcher retries them on later ticks, even one
+    whose reload diffs empty. The overlay degrades as the loader degrades it.
+    """
+
+    def _apply() -> None:
+        try:
+            base = read_merged_config_files(config_path(), strict=True)
+        except (OSError, ValueError, RecursionError) as exc:
+            logger.warning("voice_reply reload deferred: config.json unreadable (%s)", exc)
+            raise ConfigDeferred(change.under("voice_reply")) from exc
+        # config.json is not read again: a save truncating it now cannot load defaults.
+        _adopt_voice_reply(_deep_merge(base, read_merged_config_files(config_local_path())))
+
+    await asyncio.to_thread(_apply)
 
 
 async def _safe_voice_reply(
@@ -181,9 +217,9 @@ async def _reply_by_voice(
                 else:
                     hint = "Run `ada credentials update` and ensure `aws` CLI " "is on PATH."
                 if voice_auto_reply:
-                    intro = "Received your voice memo. Replying as text — "
+                    intro = "🔇 Received your voice memo. Replying as text — "
                 else:
-                    intro = "Voice reply requested but "
+                    intro = "🔇 Voice reply requested but "
                 try:
                     await slack.post_ephemeral(
                         channel,

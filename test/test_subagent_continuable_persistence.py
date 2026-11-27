@@ -20,6 +20,11 @@ from kiro_crew.subagent import SubagentInfo
 from kiro_crew.subagent_persistence import create_agent_folder, write_run_agent
 from kiro_crew.testing.wait import async_wait_until, await_until
 
+# Safety-net ceiling for the prune/continuation handshake: the test waits on
+# states, so this only stops a wrong implementation from hanging the run.
+# 30 s is a quarter of the suite's 120 s pytest-timeout (setup.cfg).
+_HANDSHAKE_CEILING_SECS = 30
+
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
@@ -178,7 +183,7 @@ class TestPersistenceGuards:
         ts_path.write_text(json.dumps(ts))
 
         observed_false = threading.Event()
-        allow_claim = threading.Event()
+        refusal_observed = threading.Event()
         continuation_done = threading.Event()
         original_decision = sp._should_defer_tombstone_cleanup
         result: list[SubagentInfo] = []
@@ -186,7 +191,9 @@ class TestPersistenceGuards:
 
         def hold_after_false(**kwargs):  # type: ignore[no-untyped-def]
             observed_false.set()
-            assert allow_claim.wait(timeout=5)
+            # Hold the prune lock until the test has seen the refusal, so a
+            # late continuation still meets the lock instead of a released one.
+            assert refusal_observed.wait(timeout=_HANDSHAKE_CEILING_SECS)
             return original_decision(**kwargs)
 
         def continue_run() -> None:
@@ -204,17 +211,17 @@ class TestPersistenceGuards:
             continuation_thread: threading.Thread | None = None
             try:
                 prune_thread.start()
-                assert observed_false.wait(timeout=5)
+                assert observed_false.wait(timeout=_HANDSHAKE_CEILING_SECS)
 
                 continuation_thread = threading.Thread(target=continue_run)
                 continuation_thread.start()
-                assert continuation_done.wait(timeout=1)
-                assert result[0].error.startswith("conversation_busy")
+                assert continuation_done.wait(timeout=_HANDSHAKE_CEILING_SECS)
+                assert result[0].error.startswith("conversation_busy: retention promotion")
             finally:
-                allow_claim.set()
-                prune_thread.join(timeout=5)
+                refusal_observed.set()
+                prune_thread.join(timeout=_HANDSHAKE_CEILING_SECS)
                 if continuation_thread is not None:
-                    continuation_thread.join(timeout=5)
+                    continuation_thread.join(timeout=_HANDSHAKE_CEILING_SECS)
 
         assert not prune_thread.is_alive()
         assert continuation_thread is not None

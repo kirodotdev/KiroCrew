@@ -56,6 +56,7 @@ from kiro_crew.constants import (
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.tables import render_tables, render_tables_with_metadata
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.option_marker_scan import crosses_line, option_labels
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
     redact_credentials,
@@ -67,13 +68,24 @@ TEXT_CHUNK = "text_chunk"
 THINKING = "thinking"
 TOOL_CALL = "tool_call"
 TOOL_RESULT = "tool_result"  # a tool call reached a terminal outcome (see tool_status)
+TOOL_TITLE = "tool_title"  # a call already announced has its real title now
 PROMPT_CHOICE = "prompt_choice"
 COMPACTION = "compaction"
 DONE = "done"
 STEER_CONSUMED = "steer_consumed"  # kiro-cli folded a mid-turn steer at a boundary
 
 OUTPUT_KINDS = frozenset(
-    {TEXT_CHUNK, THINKING, TOOL_CALL, TOOL_RESULT, PROMPT_CHOICE, COMPACTION, DONE, STEER_CONSUMED}
+    {
+        TEXT_CHUNK,
+        THINKING,
+        TOOL_CALL,
+        TOOL_RESULT,
+        TOOL_TITLE,
+        PROMPT_CHOICE,
+        COMPACTION,
+        DONE,
+        STEER_CONSUMED,
+    }
 )
 
 
@@ -88,7 +100,8 @@ class OutputEvent:
     # tool_call announces it, prompt_choice asks permission for it. Carrying them
     # on the prompt is what lets a renderer name the tool the request is actually
     # about instead of the last one it happened to see.
-    title: str = ""  # tool_call / prompt_choice (display title: derived, or "Running: X")
+    # tool_call / tool_title / prompt_choice (display title: derived, or "Running: X")
+    title: str = ""
     # tool_call: the tool's PROGRAMMATIC identity (`_meta.kiro.toolName`), kept
     # apart from ``title`` because the title is display copy — derived from the
     # arguments, localisable, and free to change — while a renderer's behaviour
@@ -135,8 +148,8 @@ class OutputEvent:
     # tool_call: the text before this call is not complete yet -- its last run
     # is still held and arrives later as a ``continues_segment`` chunk.
     text_held: bool = False
-    # tool_call: the whole (redacted) command when ``title`` is its raw
-    # fallback cut to one line, ``""`` when ``title`` is a derived action.
+    # tool_call / tool_title: the whole (redacted) command when ``title`` is its
+    # raw fallback cut to one line, ``""`` when ``title`` is a derived action.
     raw_title: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -383,6 +396,36 @@ def trusted_mcp_identity(event: object) -> tuple[str, str]:
     if not isinstance(server, str) or not server.strip():
         return "", ""
     return server, tool if isinstance(tool, str) else ""
+
+
+#: Bound on each name an approval prompt's MCP identity line shows, taken BEFORE the
+#: channel's escaping: a kept name runs to 512 characters and escaping can grow it
+#: fourfold, so two unbounded names could pass the 3000 characters Slack allows one
+#: text.
+MCP_IDENTITY_NAME_MAX = 200
+
+
+def mcp_identity_line(server: str, tool: str, fmt: Callable[[str], str] = str) -> str:
+    """The line naming the MCP server and tool an approval prompt asks about, or ``""``.
+
+    *server* and *tool* are :attr:`Renderer.prompt_mcp_identity`, the trusted
+    ``_meta.kiro`` pair, not the title: ``email_send`` on a prompt does not say which
+    server sends the mail, and the model chooses the title. ``""`` when no server is
+    named, so a built-in or unproven call's prompt is unchanged. Each name is
+    stripped, scrubbed like every other string a prompt posts, and cut to
+    :data:`MCP_IDENTITY_NAME_MAX`; only THEN does *fmt* apply the channel's own
+    escaping and styling, so the cut can never split an escape. A blank tool reads
+    ``unnamed tool``. The Slack, Teams, Webex, WhatsApp and Telegram prompts draw
+    their identity line here.
+    """
+    if not server.strip():
+        return ""
+    shown: list[str] = []
+    for name in (server.strip(), tool.strip() or "unnamed tool"):
+        name, _ = redact_exfiltration_urls(name)
+        name, _ = redact_credentials(name)
+        shown.append(fmt(name[:MCP_IDENTITY_NAME_MAX]))
+    return f"MCP tool: {shown[0]} / {shown[1]}"
 
 
 def new_approval_nonce() -> str:
@@ -758,7 +801,7 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
     text = relocate_glued_tail_marker(text)
     match = OPTIONS_RE_TRAILER.search(text)
     if match:
-        choices = [c.strip() for c in match.group("labels").split("|") if c.strip()]
+        choices = option_labels(match.group("labels"))
         return text[: match.start()].rstrip(), choices
     if hide_partial:
         idx = text.rfind("[OPTIONS")
@@ -796,7 +839,7 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
             # that opener was never in flight -- which is why one viability
             # check here beats walking earlier occurrences.
             tail = text[idx + len("[OPTIONS") :]
-            if not tail or tail.startswith(":"):
+            if not tail or (tail.startswith(":") and not crosses_line(tail)):
                 # A LINE-LEADING Markdown wrapper run abutting the fragment is
                 # part of the marker-to-be (``**[OPTIONS: A``): cutting at the
                 # ``[`` alone publishes a stray ``**`` on this frame. Widen the
@@ -1039,6 +1082,19 @@ class Renderer(ABC):
         """
         return None
 
+    async def on_tool_title(self, tool_call_id: str, title: str, raw_title: str = "") -> None:
+        """Rename the card of a call already announced by ``on_tool_call``.
+
+        A backend whose capabilities say ``refines_tool_call_titles`` names a call
+        before its input has streamed ("Read", "Terminal") and sends its real
+        title later; the driver sends that title here when it differs from the
+        one it last sent for the call. ``raw_title`` is as on ``TOOL_CALL``.
+        The default is a no-op, so a renderer that shows no per-call title keeps
+        the first one; one that does renames that call's card in place and opens
+        no new one.
+        """
+        return None
+
     @abstractmethod
     async def on_prompt_choice(
         self,
@@ -1103,6 +1159,8 @@ class Renderer(ABC):
             )
         elif event.kind == TOOL_RESULT:
             await self.on_tool_result(event.tool_call_id, event.tool_status)
+        elif event.kind == TOOL_TITLE:
+            await self.on_tool_title(event.tool_call_id, event.title, event.raw_title)
         elif event.kind == PROMPT_CHOICE:
             self.prompt_mcp_identity = (event.mcp_server, event.tool_name)
             try:

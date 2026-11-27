@@ -271,8 +271,22 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
     # rather than ``config_dir()``: this is a read, and it must not refresh the
     # recovery breadcrumb as a side effect of reporting a path.
     store = default_db_path(cli_doctor.data_home())
-    if store.exists():
+    paired, refused = render._probe_file(store)
+    if paired:
         print(f"  session:     ✅ paired session store at {store}")
+    elif refused is not None:
+        # Not an issue: every agent sandbox hides ``whatsapp/``, so the doctor an
+        # agent runs cannot see a store that is there.
+        print(
+            "  session:     ⚠  could not check the session store "
+            f"({refused.strerror or type(refused).__name__})"
+        )
+        print(f"               Store: {store}")
+        render._print_wrapped(
+            "If this shell runs inside an agent sandbox, the sandbox hides the WhatsApp "
+            "session store: run `kirocrew doctor` from your own terminal to see it. "
+            "Otherwise check the ownership and permissions of that folder."
+        )
     else:
         # Deliberately NOT an issue. Pairing is a QR scan served BY the running
         # gateway, so a freshly enabled channel legitimately has no store yet, and

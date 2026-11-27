@@ -33,7 +33,7 @@ if TYPE_CHECKING:
         deny_app_session_control,
         deny_non_dashboard_caller,
         effective_session_key,
-        exact_trust_pattern,
+        end_approve_for_me,
         grant_deadline,
         logger,
         native_resolution_target,
@@ -442,6 +442,10 @@ async def apply_approval_mode(
             mode=mode,
             resource=slot_key or "",
         )
+    # An explicit pick wins over a kept mode the boot restore has not applied yet.
+    from kiro_crew.dashboard.chat_trust_restart import note_mode_pick
+
+    note_mode_pick(state, slot)
     #: Channels this request turned trusted, so a late refusal can undo just those.
     _granted_channels: list[object] = []
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
@@ -748,6 +752,10 @@ async def apply_approval_mode(
         if not scoped:
             for aid in list(state._approval_futures):
                 fut = state._approval_futures[aid]
+                if (state._pending_approvals.get(aid) or {}).get("person_only"):
+                    # An organisation's ``ask`` on a web call (``web_ask_rule``):
+                    # a trust grant is not a person's answer to it.
+                    continue
                 if not fut.done():
                     state.resolve_approval(aid, True)
                     try:
@@ -765,6 +773,10 @@ async def apply_approval_mode(
                 for ch in mgr._channels.values():
                     for agent in ch.members.values():
                         fut = agent._approval_future
+                        if getattr(agent, "_pending_approval_person_only", False):
+                            # An organisation's ``ask`` on a web call
+                            # (``web_ask_rule``): not a trust grant's to answer.
+                            continue
                         if fut and not fut.done():
                             fut.set_result("approved")
                             try:
@@ -779,6 +791,13 @@ async def apply_approval_mode(
                                     "SEL audit failed for channel bulk approval",
                                     exc_info=True,
                                 )
+
+    # Any mode set through here, from every entry point (the dashboard picker, a
+    # Slack code channel, a crewmate profile, a workflow), ends approve-for-me on
+    # the slots it names, every slot for YOLO or an unnamed request.
+    await end_approve_for_me(
+        state, [slot] if slot is not None and mode != "yolo" else list(state._slots.values())
+    )
 
     # Propagate trust/yolo to session approval policies so subagents inherit.
     #
@@ -797,6 +816,12 @@ async def apply_approval_mode(
         policy = "auto" if trust_reaches_subagents(slot) or yolo else ""
         state.sessions.set_approval_policy(effective_session_key(slot), policy)
 
+    from kiro_crew import kept_grants
+
+    if not await kept_grants.settle():  # the answer waits for the disk
+        state.notify(
+            "safety", "An approval-mode change may not be saved to disk", kept_grants.NOT_SAVED
+        )
     state.push_slots_update()
     return web.json_response({"ok": True, "mode": mode})
 
@@ -831,12 +856,19 @@ def _sweep_pending_approvals(
         # row's window on the event loop (``load_window_off_loop`` is what a
         # reader awaits first), once per such slot on every all-slots grant.
         return
+    from kiro_crew import web_ask_rule
+
     _elicitations = _pending_elicitation_ids(slot)
     for aid, fut in list(slot._approval_futures.items()):
-        if aid in _elicitations or _is_deny_override_card(slot, aid):
-            # A server's own question to the person, or a security-rule
-            # override: a trust tier is not an answer to either, and the card
-            # stays open.
+        if (
+            aid in _elicitations
+            or _is_deny_override_card(slot, aid)
+            or _get_pattern_from_pending(slot, aid, web_ask_rule.CARD_META_KEY)
+        ):
+            # A server's own question to the person, a security-rule override,
+            # or a web call the organisation asks a person about
+            # (``web_ask_rule``): a trust tier is not an answer to any of them,
+            # and the card stays open.
             continue
         if not fut.done():
             # Read while still pending: names the row the frame settles.
@@ -1413,13 +1445,18 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
             if pattern != expected:
                 return _deny_trust_pattern(name, request_id, original_action, "approval_superseded")
+            from kiro_crew.browser_host_trust import grant_pattern, is_host_key
+
+            if grant_ttl is not None and is_host_key(trust_key):  # a site grant has no lifetime
+                return _deny_trust_pattern(name, request_id, original_action, "ttl_unsupported")
             # ``_trusted_patterns`` is the existing fnmatch store.  Escape every
             # metacharacter so an exact grant for ``rm *.tmp`` cannot authorize
-            # ``rm secret.tmp``.
+            # ``rm secret.tmp``; a browser host ``act`` key alone also covers reads
+            # on its host (``browser_host_trust.grant_pattern``).
             record_trust_grant(
                 owner._trusted_patterns,
                 owner._trusted_pattern_deadlines,
-                (exact_trust_pattern(trust_key),),
+                (grant_pattern(trust_key),),
                 _grant_deadline(grant_ttl),
             )
         action = "approved"

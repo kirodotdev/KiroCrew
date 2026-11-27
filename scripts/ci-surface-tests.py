@@ -25,6 +25,10 @@ Usage
 -----
     ci-surface-tests.py --surface backend    # pytest files that must still run
     ci-surface-tests.py --surface frontend   # vitest/electron specs that must run
+    ci-surface-tests.py --surface backend --for-windows   # the list a Windows run gets
+
+``--for-windows`` prints, on any host, the list this script prints on Windows, so
+one job can name the list every Windows shard of a run must hold.
 
 Prints one repo-relative path per line (empty output = nothing needs to run).
 ``--summary`` adds counts on stderr. Exit 2 on a usage/environment error, in
@@ -34,6 +38,7 @@ which case the caller MUST fall back to running the full suite.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import re
 import sys
@@ -46,25 +51,57 @@ from pathlib import Path
 # the packaging/signing inputs, the skills tree or a TS/TSX filename is enough
 # to keep the file in the must-run set. Over-matching only costs CI time.
 # ---------------------------------------------------------------------------
-_BACKEND_FOREIGN = re.compile(
-    r"""
-      website              # the frontend tree, in any quoting/joining style
-    | electron
-    | packaging            # build-desktop.sh, signing entitlements, ...
-    | node_modules
-    | \bskills\b           # repo-root skills/ tree (read by some guards)
-    | \bdocker\b
-    | \.tsx?\b             # a TypeScript filename appearing in an assertion
-    | \.mjs\b
-    | \.plist\b
-    | tsconfig\.json       # the frontend's config file, referenced by bare name
-    | entitlements
-    | \bnpm\b
-    | vitest
-    | playwright
-    """,
-    re.IGNORECASE | re.VERBOSE,
+# One alternative a row: the lower-case literal every match of it starts with,
+# then its pattern. The literal is what lets `_mentions_backend_foreign` find
+# the few places a match can start instead of trying every one.
+_BACKEND_FOREIGN_PARTS = (
+    ("website", r"website"),  # the frontend tree, in any quoting/joining style
+    ("electron", r"electron"),
+    ("packaging", r"packaging"),  # build-desktop.sh, signing entitlements, ...
+    ("node_modules", r"node_modules"),
+    ("skills", r"\bskills\b"),  # repo-root skills/ tree (read by some guards)
+    ("docker", r"\bdocker\b"),
+    (".ts", r"\.tsx?\b"),  # a TypeScript filename appearing in an assertion
+    (".mjs", r"\.mjs\b"),
+    (".plist", r"\.plist\b"),
+    ("tsconfig.json", r"tsconfig\.json"),  # the frontend's config file, by bare name
+    ("entitlements", r"entitlements"),
+    ("npm", r"\bnpm\b"),
+    ("vitest", r"vitest"),
+    ("playwright", r"playwright"),
 )
+_BACKEND_FOREIGN = re.compile(
+    "|".join(f"(?:{pattern})" for _literal, pattern in _BACKEND_FOREIGN_PARTS), re.IGNORECASE
+)
+_BACKEND_FOREIGN_STARTS = tuple(
+    (literal, re.compile(pattern, re.IGNORECASE)) for literal, pattern in _BACKEND_FOREIGN_PARTS
+)
+# The characters outside ASCII that `re.IGNORECASE` matches with an ASCII
+# letter (dotted and dotless i, long s, the Kelvin sign). `str.lower` does not
+# turn each into that letter in place, so a text holding one is searched whole.
+_FOLDS_TO_ASCII = "\u0130\u0131\u017f\u212a"
+
+
+def _mentions_backend_foreign(text: str) -> bool:
+    """`bool(_BACKEND_FOREIGN.search(text))`, found at the places a match can start.
+
+    Every alternative starts with its literal, whatever the case, so a match
+    starts where the lower-cased text holds one. Searching for the literals and
+    trying only the alternative there gives the same answer as trying every
+    alternative at every character, which is what makes the pattern slow on a
+    file with no match.
+    """
+    lowered = text.lower()
+    if len(lowered) != len(text) or any(char in text for char in _FOLDS_TO_ASCII):
+        return bool(_BACKEND_FOREIGN.search(text))
+    for literal, pattern in _BACKEND_FOREIGN_STARTS:
+        at = lowered.find(literal)
+        while at != -1:
+            if pattern.match(text, at):
+                return True
+            at = lowered.find(literal, at + 1)
+    return False
+
 
 # ---------------------------------------------------------------------------
 # What counts as "the other surface" for a FRONTEND (vitest / electron) file.
@@ -126,13 +163,28 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _iter_files(root: Path, rel_dir: str, globs: tuple[str, ...]) -> list[Path]:
+def _iter_files(
+    root: Path, rel_dir: str, globs: tuple[str, ...], ignore_case: bool = False
+) -> list[Path]:
+    """Files under ``rel_dir`` whose name matches one of ``globs``.
+
+    ``ignore_case`` matches the name whatever its case, which is how a glob
+    behaves on Windows; without it the case must match, as on POSIX. Either
+    way the name is matched here and never by ``rglob``, whose case rule
+    follows the host: each list then comes out the same on any host, a Windows
+    shard and the Linux job that names its digest included.
+    """
     base = root / rel_dir
     if not base.is_dir():
         return []
-    found: list[Path] = []
-    for pattern in globs:
-        found.extend(base.rglob(pattern))
+    wanted = [pattern.lower() if ignore_case else pattern for pattern in globs]
+
+    def matches(name: str) -> bool:
+        if ignore_case:
+            name = name.lower()
+        return any(fnmatch.fnmatchcase(name, pattern) for pattern in wanted)
+
+    found = [path for path in base.rglob("*") if matches(path.name)]
     return [p for p in found if p.is_file() and "node_modules" not in p.parts]
 
 
@@ -146,6 +198,8 @@ def _is_cross_surface(path: Path, pattern: re.Pattern[str]) -> bool:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return True
+    if pattern is _BACKEND_FOREIGN:
+        return _mentions_backend_foreign(text)
     return bool(pattern.search(text))
 
 
@@ -177,23 +231,27 @@ def _windows_collect_ignore(root: Path) -> frozenset[str]:
     return frozenset(n for n in names if n)
 
 
-def collect(surface: str) -> list[str]:
-    """Repo-relative paths that must still run for a single-surface diff."""
+def collect(surface: str, for_windows: bool = False) -> list[str]:
+    """Repo-relative paths that must still run for a single-surface diff.
+
+    ``for_windows`` applies the Windows filter below whatever the host is.
+    """
     root = _repo_root()
     must_run: list[str] = []
+    windows = for_windows or _is_windows()
 
     if surface == "backend":
         for rel_dir in _BACKEND_ROOTS:
-            for path in _iter_files(root, rel_dir, _BACKEND_GLOBS):
+            for path in _iter_files(root, rel_dir, _BACKEND_GLOBS, ignore_case=windows):
                 if _is_cross_surface(path, _BACKEND_FOREIGN):
                     must_run.append(path.relative_to(root).as_posix())
     else:
         for rel_dir, globs in _FRONTEND_SPECS:
-            for path in _iter_files(root, rel_dir, globs):
+            for path in _iter_files(root, rel_dir, globs, ignore_case=windows):
                 if _is_cross_surface(path, _FRONTEND_FOREIGN):
                     must_run.append(path.relative_to(root).as_posix())
 
-    if _is_windows():
+    if windows:
         # These paths are consumed as EXPLICIT pytest arguments, and an explicit
         # argument bypasses both `collect_ignore` and the `pytest_ignore_collect`
         # hook -- verified, not assumed. So conftest's Windows exclusion does not
@@ -231,22 +289,34 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also print counts to stderr",
     )
+    parser.add_argument(
+        "--for-windows",
+        action="store_true",
+        help="print the list a Windows run gets, whatever this host is",
+    )
     args = parser.parse_args(argv)
 
-    paths = collect(args.surface)
+    paths = collect(args.surface, for_windows=args.for_windows)
 
     if args.summary:
         root = _repo_root()
+        # Counted by the rule the list above was selected by.
+        loose = args.for_windows or _is_windows()
         if args.surface == "backend":
-            total = sum(len(_iter_files(root, d, _BACKEND_GLOBS)) for d in _BACKEND_ROOTS)
+            total = sum(len(_iter_files(root, d, _BACKEND_GLOBS, loose)) for d in _BACKEND_ROOTS)
         else:
-            total = sum(len(_iter_files(root, d, g)) for d, g in _FRONTEND_SPECS)
+            total = sum(len(_iter_files(root, d, g, loose)) for d, g in _FRONTEND_SPECS)
         print(
             f"{args.surface}: {len(paths)} must-run / {total} total "
             f"({total - len(paths)} provably single-surface, skippable)",
             file=sys.stderr,
         )
 
+    # UTF-8 whatever the host's locale: the list is read back as UTF-8 by the
+    # pytest plugin and hashed as bytes by the job that names its digest. A
+    # Windows shard would otherwise write a non-ASCII path in its code page.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     for rel in paths:
         print(rel)
     return 0

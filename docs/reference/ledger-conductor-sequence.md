@@ -74,7 +74,7 @@ sequenceDiagram
 
 ## Legend
 
-`work_ledger_record` takes exactly one `action` per call, and the seven are `goal`, `create`, `bind`, `decide`, `accept`, `verdict`, and `close`.
+`work_ledger_record` takes exactly one `action` per call, and the seven above are `goal`, `create`, `bind`, `decide`, `accept`, `verdict`, and `close`; with `work_ledger.remote_dispatch` on, an eighth, `retire`, moves a crew-bound item off its crew, from a turn the owner sent only.
 
 **`work_ask_record` records what an item needs from the person.** When the conductor relays an item's question to the person, it loads and calls this deferred tool in the same turn to record what it needs, why only they can do it, each option with what it leads to, and its pick with the reason. The store stamps `written_at`; `decide` and `close` clear the record. The event kind is `ask`, never `decision`, so recording why a question waits never reads as its answer. The warm welcome shows the record as written.
 
@@ -86,7 +86,7 @@ sequenceDiagram
 
 **A `close` may carry the `verdict` it rests on.** The tool then sends the `verdict` write and the `close` write in that order, and does not close when the verdict write is refused. It is one call for the conductor and still two events on the item.
 
-**`accept` is why a `pr` claim is not self-serving.** `accept_batch` is composed from each item's stored `acceptance` alone and deliberately ignores whatever `pr` a worker reported, so a worker cannot point the bar at someone else's green pull request. Promoting the number into the bar is a separate conductor write, made after the conductor has read and checked it, and it refuses to clear the bar rather than accepting an empty condition.
+**`accept` is why a `pr` claim is not self-serving.** `accept_batch` is composed from each item's stored `acceptance` alone and deliberately ignores whatever `pr` a worker reported, so a worker cannot point the bar at someone else's green pull request. Promoting the number into the bar is a separate conductor write, made after the conductor has read and checked it, and it refuses to clear the bar rather than accepting an empty condition. It also clears the item's earlier verdict, so `close state=accepted` waits for a pass on the new bar.
 
 **`verdict` and `state` answer different questions.** `verdict` is the evaluator's reading; `state` is the conductor's disposition, written by `close` as `accepted`, `rejected`, or `abandoned`. An item can hold `verdict: fail` and stay open while the worker retries.
 

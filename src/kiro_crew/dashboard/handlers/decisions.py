@@ -1153,7 +1153,7 @@ def _provider_payload() -> dict:
     """The presets and the preset the config names now. Filesystem IO."""
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.dashboard.handlers.decisions_offers import provider_offers
+    from kiro_crew.dashboard.handlers.decisions_offers import provider_offers, still_sending
     from kiro_crew.dashboard.handlers.decisions_sagemaker import (
         PRESET_SAGEMAKER,
         configured_sagemaker,
@@ -1238,6 +1238,7 @@ def _provider_payload() -> dict:
         # part that governs it ANDed (``decisions_offers``). The picker draws a refused
         # model greyed with the administrator's wording; the PUT refuses it.
         "provider_permitted": offers["provider_permitted"],
+        "still_sending": still_sending(cfg),
     }
 
 

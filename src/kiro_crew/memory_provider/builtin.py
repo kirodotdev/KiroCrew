@@ -59,6 +59,8 @@ _EPISODE_PREFIX = "episode:"
 #: ``jsonl`` is Global V1's lessons file and ``document`` its Markdown memory
 #: (preferences, projects, history); both are authoritative beside the index.
 _SECTIONS = ("lesson", "jsonl", "fact", "episode", "document")
+#: The largest integer the index binds as a ``LIMIT``/``OFFSET`` (SQLite's signed 64 bits).
+_MAX_LIST_OFFSET = 2**63 - 1
 _DOCUMENT_PREFIX = "doc:"
 _JSONL_PREFIX = "lesson:jsonl."
 _HISTORY_PREFIX = "doc:history."
@@ -161,6 +163,21 @@ def written_by_of_meta(meta: Mapping[str, str]) -> dict[str, str] | None:
         return stamp_of(json.loads(meta.get("crew.written_by") or "null"))
     except ValueError:
         return None
+
+
+def _cursor_offset(raw: str) -> int | None:
+    """The offset a list cursor spells, or None when it spells none the index can take.
+
+    ``str.isdigit`` also passes ``"\u00b2"``, which ``int`` refuses, and the index
+    refuses an offset past 64 bits; a longer run is not read at all.
+    """
+    if not raw.isdigit() or len(raw) > len(str(_MAX_LIST_OFFSET)):
+        return None
+    try:
+        offset = int(raw)
+    except ValueError:
+        return None
+    return offset if offset <= _MAX_LIST_OFFSET else None
 
 
 def _lesson_item(row: dict) -> MemoryItem | None:
@@ -297,11 +314,7 @@ def _day_timestamp(day: str) -> float | None:
 
 
 def _document_items(snapshot: dict) -> list[MemoryItem]:
-    """Global V1's Markdown memory: one ``document`` per file, one ``summary`` per day.
-
-    A document longer than the contract's document cap is cut and marked, so a move
-    can see it was not whole; the plan reports it as truncated.
-    """
+    """Global V1's Markdown memory: one ``document`` per file, one ``summary`` per day."""
     items: list[MemoryItem] = []
     for name in _DOCUMENT_NAMES_ORDERED:
         entry = snapshot.get(name) or {}
@@ -563,8 +576,9 @@ class BuiltinMemoryProvider(BlockingProvider):
         section, offset = "lesson", 0
         if cursor:
             name, _, raw = cursor.partition(":")
-            if name in _SECTIONS and raw.isdigit():
-                section, offset = name, int(raw)
+            spelled = _cursor_offset(raw)
+            if name in _SECTIONS and spelled is not None:
+                section, offset = name, spelled
         page = CAPABILITIES.max_page
         while True:
             if section == "lesson" and wanted & LESSON_KINDS:

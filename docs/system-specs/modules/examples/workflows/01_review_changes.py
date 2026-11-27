@@ -1,10 +1,11 @@
 """Example dynamic workflow: review a diff across dimensions, verify each finding.
 
 This is the canonical pipeline pattern, ported from an external agent CLI's
-`Workflow` tool into the proposed Kiro Crew Python DSL. Illustrative only — the
-DSL is not implemented yet.
+`Workflow` tool into the Kiro Crew Python DSL (`src/kiro_crew/workflows/`).
+Illustrative; see this folder's README for what it does on the shipped host.
 
-Run:  workflow run review-changes --args '{"cr": "CR-1234567"}'
+Run:  the `workflow_run` tool with this file as `source` and
+      `args={"cr": "<review id>"}`.
 """
 
 # META must be a pure literal (no calls, no interpolation) — parsed statically.

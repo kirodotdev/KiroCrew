@@ -792,6 +792,13 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(_mod, "_stage_note_text_sync", parked_stage)
+            # This test proves lock ordering between staging, Sync and publish,
+            # not hook handling. The hook scan starts three git processes before
+            # every git call, about 120 for one Sync, which the lost-run ceiling
+            # below would otherwise time. `run_git` carrying the disable flags,
+            # failing closed on a scan error and not firing a hook on commit are
+            # covered in test_git_config_hooks.py.
+            mp.setattr(git_ops, "config_hook_disable_args", lambda *_a, **_kw: [])
             save = real_asyncio.create_task(
                 client.put(
                     "/api/note",
@@ -831,12 +838,10 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
                 # so the save-await is not racing git work on a slow runner.
                 # Both drains are fail-safes against a genuine deadlock, not
                 # races to run out on, so their budget is the file's measured
-                # lost-run ceiling rather than a tight bound: on a loaded host
-                # the whole chain's worker-thread git calls queue behind
-                # whatever else holds the shared `to_thread` executor, and a
-                # tight budget measures the runner (flake class 2, see
-                # testing-conventions.md). Named, so a starved executor reads
-                # as itself and not as a bare timeout.
+                # lost-run ceiling rather than a tight bound: the chain runs a
+                # real fetch, merge and push, and a tight budget measures the
+                # runner (flake class 2, see testing-conventions.md). Named, so
+                # an unfinished chain reads as itself and not as a bare timeout.
                 try:
                     if sync is not None:
                         sync_status, sync_body = await real_asyncio.wait_for(
@@ -847,8 +852,8 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
                     )
                 except TimeoutError:
                     raise AssertionError(
-                        "the released sync/save chain never completed; a starved "
-                        "shared to_thread executor holds its git work (flake class 2)"
+                        "the released sync/save chain's real git work did not finish "
+                        "within the lost-run ceiling (_BARRIER_LOST_RUN_SEC)"
                     ) from None
             assert sync is not None
             assert sync_status == 200, sync_body

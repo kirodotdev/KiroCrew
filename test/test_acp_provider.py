@@ -1051,7 +1051,7 @@ class TestStartKiroRuntimeResume:
         assert runtime.load_session.await_count == 1
         assert runtime.create_session.await_count == 1
         assert provider._client._handle is handle
-        assert provider._client.resumed is False
+        assert (provider._client.resumed, provider._resume_refused_sid) == (False, "")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("backend", "required"), [("", False), ("kas", True)])
@@ -1067,7 +1067,7 @@ class TestStartKiroRuntimeResume:
     @pytest.mark.asyncio
     async def test_a_kas_load_that_restored_nothing_replays_history(self):
         """The refused load is the record-missing case: fresh session, history replay."""
-        from kiro_crew.acp.session_handle import AcpRuntimeError
+        from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored
 
         provider = self._kiro_provider()
         provider._client.backend = "kas"
@@ -1075,13 +1075,13 @@ class TestStartKiroRuntimeResume:
             provider,
             "abc-123",
             file_exists=True,
-            load_raises=AcpRuntimeError("session/load of abc-123 replayed no earlier turn"),
+            load_raises=AcpResumeNotRestored("session/load of abc-123 replayed no earlier turn"),
         )
         assert runtime.load_session.await_count == 1
         assert runtime.create_session.await_count == 1
         assert provider._client._handle is handle
         assert provider._client.resumed is False
-        assert provider._history_replay_needed is True
+        assert (provider._history_replay_needed, provider._resume_refused_sid) == (True, "abc-123")
 
     @pytest.mark.asyncio
     async def test_non_default_model_applied_to_runtime_session(self):
@@ -1561,7 +1561,7 @@ class TestLoadSessionWithRetry:
         )
         with patch("kiro_crew.providers.acp.asyncio.sleep", new=AsyncMock()) as sleep_mock:
             got = await provider._load_session_with_retry(rt, "/s.json", "sid", None, None)
-        assert got is None
+        assert (got, provider._resume_refused_sid) == (None, "")  # a lock is not a refusal
         assert rt.load_session.await_count == _RESUME_MAX_ATTEMPTS
         assert sleep_mock.await_count == _RESUME_MAX_ATTEMPTS - 1
 

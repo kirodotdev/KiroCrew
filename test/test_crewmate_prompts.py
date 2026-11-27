@@ -34,6 +34,7 @@ SRC = ROOT / "src" / "kiro_crew"
 ASSEMBLERS: tuple[str, ...] = (
     "context_assembly/member.py",
     "mate_worker.py",
+    "mate_worker_conducts.py",
     "dashboard/goal_reminder.py",
     "dashboard/goal_setup.py",
     "dashboard/mate_thread_wakes.py",
@@ -306,6 +307,69 @@ def test_the_chip_guidance_offers_only_what_the_mate_can_do() -> None:
         assert word in prompt.split("no internal word:", 1)[1], word
 
 
+def test_the_bot_speaks_as_one_bot_and_owns_its_workers_work() -> None:
+    """To the user there is one Bot: its workers are part of it, so it never says it
+    cannot do a task, and no message names its inner parts."""
+    words = " ".join(_conductor_prompt().split())
+    assert 'From the user\'s perspective, you are a single "bot"--that is all they know.' in words
+    assert "any work performed by a worker is also work performed by you." in words
+    assert '"I will handle this and report back to you"' in words
+    # The promise covers work a worker can do; a blocked task is still said plainly.
+    assert "This is about work a worker can do. When a rule blocks a task" in words
+    tail = words.split("Nothing else you write to the user says", 1)[1]
+    for word in ("worker", "session", "dispatch"):
+        assert word in tail.split(".", 1)[0], word
+
+
+#: A Bot's inner parts, which nothing it says to the user names.
+_INNER_PART = re.compile(r"\b(workers?|helpers?|sessions?|dispatch)\b", re.I)
+#: An instruction to say something to the user ("before you tell the user" is a
+#: condition on the Bot's own step, not something it says).
+_SAY_TO_USER = re.compile(
+    r"(?<!before you )\b(?:(?:tell|inform|ask|let|explain to|say to) (?:the user|them)|show them how)\b",
+    re.I,
+)
+#: Pieces whose inner-part words, after the instruction, describe what happens
+#: rather than what the Bot says.
+_SAYS_NO_INNER_PART_EXEMPT = {
+    # "Tell the user what needs fixing; once it is fixed, a new worker session
+    # starts the server again." The instruction ends at the semicolon.
+    "dispatch.worker_unusable",
+}
+
+
+def _inner_parts_the_bot_is_told_to_say(pieces: dict[str, str]) -> list[str]:
+    found = []
+    for key, text in pieces.items():
+        if key in _SAYS_NO_INNER_PART_EXEMPT:
+            continue
+        for sentence in re.split(r"(?<=\.)\s+", " ".join(text.split())):
+            for ask in _SAY_TO_USER.finditer(sentence):
+                hit = _INNER_PART.search(sentence[ask.end() :])
+                if hit:
+                    found.append(f"{key}: {hit.group(0)!r} in {sentence[:120]!r}")
+    return found
+
+
+def test_no_piece_tells_the_bot_to_name_its_inner_parts_to_the_user() -> None:
+    """The one-Bot rule says nothing the Bot writes names a worker, helper, session
+    or dispatch; a piece sent on the same turn that tells it to say one would give
+    it two orders it cannot both follow."""
+    assert _inner_parts_the_bot_is_told_to_say(_all_pieces()) == []
+
+
+def test_the_inner_part_check_sees_a_piece_that_names_one() -> None:
+    """Positive control: the old upgrade wording is reported."""
+    old = {
+        "upgrade_notice": "Tell the user this in everyday words: that work you take "
+        "on now goes to your worker."
+    }
+    assert _inner_parts_the_bot_is_told_to_say(old) == [
+        "upgrade_notice: 'worker' in 'Tell the user this in everyday words: that work you "
+        "take on now goes to your worker.'"
+    ]
+
+
 def test_no_piece_carries_an_example_chip_with_jargon() -> None:
     """An example [OPTIONS:] line in a prompt is copied verbatim by the model."""
     offenders = []
@@ -363,18 +427,22 @@ def test_the_patrol_piece_names_the_gated_ledger_watch_band_and_renewal() -> Non
     assert "the [Worker report] turns stay your patrol" in text
 
 
-def test_both_conductors_send_one_final_report_before_they_stop_the_patrol() -> None:
-    """Bot and conductor mode end a patrol the same way: the final report first, the stop
-    in a later step, and no bound for the model to pick (rfc-permanent-patrol.md)."""
+def test_both_conductors_send_one_final_report_and_leave_the_stop_to_the_gateway() -> None:
+    """Bot and conductor mode end a patrol the same way: the final report in the turn
+    that closes the last item, the gateway's own stop after it, and no bound for the
+    model to pick (rfc-permanent-patrol.md)."""
     from kiro_crew import agent
     from kiro_crew.context_assembly import member
 
     bot = " ".join(member.ledger_rules_block("conductor.patrol").split())
     root = " ".join(agent._CONDUCTOR_SYSTEM_PROMPT.split())
     for text in (bot, root):
-        report = text.index("First send the user ONE final report")
-        stop = text.index("Then, in a later step, stop the loop with `autonudge_stop`")
-        assert report < stop
+        report = text.index("in the turn that closes the last item, send the user ONE final report")
+        gateway = text.index("the gateway ends your patrol itself")
+        assert report < gateway
+        # Only a user's stop with items still open is a separate step.
+        user_stop = text.index("When the user says stop while items are open")
+        assert gateway < user_stop < text.index("stop the loop with `autonudge_stop`")
         assert "The final report is your last message to the user." in text
         assert "Pass no `interval_secs`, no `max_cycles` and no `max_runtime_secs`" in text
         assert "mode=renew" not in text
@@ -656,3 +724,11 @@ def test_how_you_work_tells_the_bot_to_close_a_finished_one_off_worker() -> None
     assert "never close a worker that waits on the user" in words.lower()
     # The report turn names the worker's key, so the Bot can close it directly.
     assert "{key}" in crewmate_prompts.text("worker_report.session")
+
+
+def test_how_you_work_tells_the_bot_not_to_wait_in_its_own_thread() -> None:
+    """Every tool call in the Bot's thread rereads that whole thread, so a
+    sleep loop there costs far more than the same wait on a worker."""
+    words = " ".join(crewmate_prompts.text("conductor.how_you_work").split())
+    assert "Never wait here with `sleep` or the `wait` tool" in words
+    assert "Hand the wait to a worker or a babysit loop" in words

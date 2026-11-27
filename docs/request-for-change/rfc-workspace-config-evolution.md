@@ -3,8 +3,8 @@ title: Config System, Named Memory Stores & Plugin Architecture
 status: partial
 author: KiroCrew contributors
 created: 2026-03-25
-last-audited: 2026-08-03
-audited-at: 0ab6ed48
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: []
 tracking-issues: []

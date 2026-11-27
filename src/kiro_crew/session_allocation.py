@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew import keepalive_route as _keepalive_route
+from kiro_crew.agent_sdk.kas_default_model import serve_kiro_cli_default_model
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
@@ -44,6 +45,7 @@ from kiro_crew.session_allocation_parts.errors import (
     SessionClosingError,
     SessionEndingError,
 )
+from kiro_crew.session_idle_clock import turn_was_automated
 from kiro_crew.session_lifecycle import adopt_parked_queue
 from kiro_crew.start_priority import PrioritySemaphore, StartPriority
 
@@ -252,6 +254,10 @@ class SessionRegistryState:
     #: their spawn door and started itself: each stands down at that door
     #: (``SpeculativeResumeRefused``). Removed with the announcement.
     superseded_speculative_starts: set[object] = field(default_factory=set)
+    #: Per key, the sid a resume prefetch saw its KAS ``session/load`` refuse
+    #: (``AcpResumeNotRestored``): a later prefetch of that sid is refused before it
+    #: starts a process. In memory only; registering a session for the key drops it.
+    refused_resume_sids: dict[str, str] = field(default_factory=dict)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration
@@ -1075,6 +1081,21 @@ class SessionAllocationService:
         assert won_race_session is session
         await session.semaphore.acquire()
         session.turn_owner = asyncio.current_task()
+        try:
+            # On KAS an unpinned step starts on kiro-cli's chat.defaultModel. Under
+            # the turn semaphore, so no other claimant runs a turn before it lands.
+            await serve_kiro_cli_default_model(
+                runtime,
+                handle,
+                cwd,
+                lambda: owner._cfg.acp_effective_model(
+                    agent or getattr(runtime, "_agent", "") or None, None
+                ),
+            )
+        except BaseException:
+            # Gives the permit back unless a teardown during the call already did.
+            self._release_reacquired(key, session)
+            raise
         return session.provider, True, False
 
     def record_success(self, key: str) -> None:
@@ -1288,6 +1309,9 @@ class SessionAllocationService:
                 # acquired. A run that never returns still goes stale and is
                 # reaped; a run working between tasks is not mistaken for one.
                 session.last_used = time.monotonic()
+                # Read in the releasing turn's own context, where its entry point
+                # declared who started it; the idle sweep picks the timeout from it.
+                session.last_turn_automated = turn_was_automated()
                 # Every surface ends a turn here, so this is the one point that
                 # sees a channel turn finish without knowing its transport
                 # (``on_session_released``). The observer only schedules work; a
@@ -1360,6 +1384,11 @@ class SessionAllocationService:
             session.queue.append((msg_ts, text, kwargs))
             return True
         return False
+
+    def has_queued(self, key: str) -> bool:
+        """Read whether a folded session has queued entries without consuming them."""
+        session = self._sessions.get(self._owner._fold_key(key))
+        return bool(session and session.queue)
 
     def dequeue(self, key: str) -> tuple[str, str, dict[str, Any]] | None:
         key = self._owner._fold_key(key)
@@ -1623,6 +1652,7 @@ class SessionAllocationService:
 #: The allocation owner modules, lowest layer first.
 _ALLOCATION_OWNERS: tuple[str, ...] = (
     "kiro_crew.session_allocation_parts.errors",
+    "kiro_crew.session_allocation_parts.cold_start_reads",
     "kiro_crew.session_allocation_parts.companions",
     "kiro_crew.session_allocation_parts.memory_policy",
     "kiro_crew.session_allocation_parts.eviction",

@@ -458,3 +458,81 @@ async def test_a_real_reload_after_the_start_audits_exactly_its_diff(
     (call,) = audit.log_api_access.call_args_list
     assert call.kwargs["outcome"] == "allow_list_changed"
     assert call.kwargs["resources"] == "added=1 removed=0 size=2"
+
+
+class TestAutomaticSdkInstall:
+    """An enabled channel whose SDK is missing from the desktop bundle is not left off.
+
+    A user who already has Feishu on gets the SDK installed and the channel
+    started without a Settings visit.
+    """
+
+    @staticmethod
+    def _missing_sdk(monkeypatch, *, supported: bool, install) -> list[str]:
+        import kiro_crew.feishu.gateway as gw
+
+        calls: list[str] = []
+        monkeypatch.setattr(gw, "LarkClient", MagicMock(side_effect=ImportError("lark_oapi")))
+        monkeypatch.setattr(gw, "FeishuDispatcher", MagicMock())
+        monkeypatch.setattr(gw.sdk_extras, "install_supported", lambda extra: supported)
+
+        def _install(extra: str):
+            calls.append(extra)
+            return install(extra)
+
+        monkeypatch.setattr(gw.sdk_extras, "install_extra", _install)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_installs_then_starts_the_channel(self, monkeypatch) -> None:
+        installs = self._missing_sdk(monkeypatch, supported=True, install=lambda extra: None)
+        restart = AsyncMock()
+        orch = _orch(restart_channel=restart)
+        assert await maybe_start_feishu(orch) is None
+        await asyncio.wait_for(orch._feishu_sdk_install_task, default_timeout())
+        assert installs == ["feishu"]
+        restart.assert_awaited_once_with("feishu")
+
+    @pytest.mark.asyncio
+    async def test_outside_the_desktop_app_nothing_is_installed(self, monkeypatch) -> None:
+        installs = self._missing_sdk(monkeypatch, supported=False, install=lambda extra: None)
+        restart = AsyncMock()
+        orch = _orch(restart_channel=restart)
+        await maybe_start_feishu(orch)
+        await asyncio.wait_for(orch._feishu_sdk_install_task, default_timeout())
+        assert installs == []
+        restart.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_install_does_not_start_the_channel(self, monkeypatch) -> None:
+        import kiro_crew.feishu.gateway as gw
+
+        def _fail(extra: str):
+            raise gw.sdk_extras.InstallError("offline")
+
+        installs = self._missing_sdk(monkeypatch, supported=True, install=_fail)
+        restart = AsyncMock()
+        orch = _orch(restart_channel=restart)
+        await maybe_start_feishu(orch)
+        await asyncio.wait_for(orch._feishu_sdk_install_task, default_timeout())
+        assert installs == ["feishu"]
+        restart.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_attempt_per_start(self, monkeypatch) -> None:
+        installs = self._missing_sdk(monkeypatch, supported=True, install=lambda extra: None)
+        orch = _orch(restart_channel=AsyncMock())
+        await maybe_start_feishu(orch)
+        first = orch._feishu_sdk_install_task
+        await maybe_start_feishu(orch)
+        assert orch._feishu_sdk_install_task is first
+        await asyncio.wait_for(first, default_timeout())
+        assert installs == ["feishu"]
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_channel_installs_nothing(self, monkeypatch) -> None:
+        installs = self._missing_sdk(monkeypatch, supported=True, install=lambda extra: None)
+        orch = _orch(_feishu_enabled=False, restart_channel=AsyncMock())
+        await maybe_start_feishu(orch)
+        assert not hasattr(orch, "_feishu_sdk_install_task")
+        assert installs == []

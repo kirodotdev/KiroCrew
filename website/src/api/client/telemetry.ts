@@ -93,11 +93,29 @@ export type UiControl =
   | 'followup_add_session'
   | 'followup_skip'
 
+/** One app view the dashboard reports (POST /api/telemetry/app-view). The server
+ *  resolves the app's public id and version from `app` itself and counts any
+ *  other `surface` as `other`; mirrors `APP_OPENED_SURFACE_VALUES` and
+ *  `APP_FOREGROUND_SURFACE_VALUES` in `src/kiro_crew/metrics/feature_usage.py`. */
+export type AppViewReport =
+  | { app: string; surface: 'page' | 'popout' | 'desktop'; event: 'opened' }
+  | { app: string; surface: 'page' | 'popout'; event: 'foreground'; seconds: number }
+
 export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: ClientTransport) {
   const usageReadouts = {
     /** Count one click on an agent-rendered control (POST
      *  /api/telemetry/ui-control, 204). Only the control's kind is sent. */
     reportUiControlClick: (control: UiControl) => post('/api/telemetry/ui-control', { control }),
+    /** Count one app open or one foreground span (POST /api/telemetry/app-view,
+     *  owner only, 204). `keepalive`, so a span sent from `pagehide` outlives the
+     *  page; the body is well under the browser's keepalive cap. */
+    reportAppView: (report: AppViewReport) =>
+      fetch('/api/telemetry/app-view', {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' },
+        body: JSON.stringify(report),
+      }),
     /** The five session folds of a crew log, keyed by name, in ONE request.
      *
      *  The batch route is what makes the answer coherent: it resolves the session
@@ -163,6 +181,12 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
      *  left the 30 kept turns. */
     telemetryContextTurn: (slot: string, turn: number) =>
       fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot) + '&turn=' + encodeURIComponent(String(turn))).then(j),
+    /** The text one turn sent the agent, secrets masked; the dashboard owner only.
+     *  403 `owner_only` for anyone else, 404 `not_kept` once the gateway no longer
+     *  holds it (newest turns only, in memory, none for a restricted chat), 404
+     *  `too_long` when the prompt was over the gateway's size cap and never kept. */
+    telemetryPromptAsSent: (slot: string, turn: number): Promise<{ text: string }> =>
+      fetch('/api/telemetry/prompt-as-sent?slot=' + encodeURIComponent(slot) + '&turn=' + encodeURIComponent(String(turn))).then(j),
     /** Per-turn usage rows for one session — the Spend table's drill-down.
      *  Same always-written row store as the context trace; the dashboard reads
      *  every row (the endpoint's app-ownership filter applies to app callers).

@@ -299,6 +299,31 @@ def served_provider_label(provider: object) -> str | None:
         return None
 
 
+#: A skill whose detail lives in a second skill, and that second skill. ``living-ui``
+#: sends an author to ``living-ui-blocks`` for its helper code, which a crewmate
+#: with no file tool reads only by key, so a scope that maps the first maps both.
+_COMPANION_SKILLS = {"living-ui": "living-ui-blocks"}
+
+
+def with_companion_skills(globs: list[str]) -> list[str]:
+    """*globs* plus the companion of every skill a glob names by its ``SKILL.md``.
+
+    A glob keeps the separator it was written with: a home-relative mapping on
+    Windows expands with ``\\``, so both separators are matched, and the
+    companion is spelled with the one the glob used.
+    """
+    out = list(globs)
+    for glob in globs:
+        for skill, companion in _COMPANION_SKILLS.items():
+            for sep in ("/", "\\"):
+                tail = f"{sep}{skill}{sep}SKILL.md"
+                if glob.endswith(tail):
+                    extra = f"{glob[: -len(tail)]}{sep}{companion}{sep}SKILL.md"
+                    if extra not in out:
+                        out.append(extra)
+    return out
+
+
 # This is called on the discovery/expansion worker, never on the event loop.
 def session_skill_globs(
     session_key: str,
@@ -318,10 +343,10 @@ def session_skill_globs(
 
     execution = read_session_execution(session_key) if session_key else None
     template = execution.template_id if execution and execution.template_id else fallback_agent
-    from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
+    from kiro_crew.context import label_inherits_kiro_defaults
     from kiro_crew.skill_scope_pin import pinned_skill_globs
 
-    inherit = provider_type == PROVIDER_ACP
+    inherit = label_inherits_kiro_defaults(provider_type)
     pinned = pinned_skill_globs(
         session_key, project_dir=project_dir, strict=True, inherit_defaults=inherit
     )
@@ -336,4 +361,6 @@ def session_skill_globs(
             session_key=session_key,
         )
     )
-    return None if template in WHOLE_CATALOG_TEMPLATES and not mapped else mapped
+    if template in WHOLE_CATALOG_TEMPLATES and not mapped:
+        return None
+    return with_companion_skills(mapped)

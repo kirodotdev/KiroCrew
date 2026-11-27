@@ -519,6 +519,13 @@ export interface MemoryRecallRecord {
    * whoever removed it.
    */
   jevKeys: string[]
+  /**
+   * The memories of `jevKeys` Jev was never asked about (past the menu cap, or with
+   * an id the menu refused). They stay in the recall because nobody may drop them,
+   * so they are not Jev's choice. Empty on a failed record, where Jev chose nothing,
+   * and on an older record that did not name them.
+   */
+  unaskedKeys: string[]
   /** Jev kept every recalled memory. */
   agree: boolean
   /**
@@ -593,6 +600,7 @@ export function readMemoryRecallRecord(raw: unknown): MemoryRecallRecord | null 
     store,
     baselineKeys,
     jevKeys,
+    unaskedKeys: error ? [] : (asNames(root.unasked_keys) ?? []),
     agree: sameSet(baselineKeys, jevKeys),
     p,
     charsSaved: asCount(root.chars_saved),

@@ -110,8 +110,8 @@ function createUpdateArm({ store, now = () => Date.now() }) {
   /**
    * Remember whether a security policy provider governed this install's updates
    * the last time the app knew. The verdict arrives from the dashboard, so a
-   * start-time apply, which runs before any window exists, can only read the
-   * last one. Written on change only.
+   * start-time apply, which runs before the main window exists, can only read
+   * the last one. Written on change only.
    */
   function recordGoverned(governed) {
     const next = governed === true;

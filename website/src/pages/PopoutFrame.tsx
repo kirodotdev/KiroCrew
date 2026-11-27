@@ -6,6 +6,7 @@ import ChatPage from './ChatPage'
 
 import { i18nT } from '../i18n/t'
 import { slotRowByKey } from '../store/slotIndex'
+import { isUntitledSession } from '../utils/sessionDisplayTitle'
 
 /**
  * The window shell for a popped-out chat session (`/popout/chat/:slug?sid=…`).
@@ -32,7 +33,7 @@ export default function PopoutFrame() {
   // Reflect the session in the window/taskbar title so multiple popouts are
   // distinguishable at the OS level.
   useEffect(() => {
-    const label = title && title !== sid ? title : i18nT('pages.popoutFrame.session')
+    const label = title && !isUntitledSession({ key: sid, title }) ? title : i18nT('pages.popoutFrame.session')
     document.title = i18nT('pages.popoutFrame.window_title', { label })
   }, [sid, title])
 

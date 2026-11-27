@@ -25,6 +25,7 @@ from session_storage_helpers import (  # noqa: F401 -- fixtures are requested by
 
 from kiro_crew import platform_compat, session_storage
 from kiro_crew.session_storage import SessionStorageError
+from kiro_crew.testing.links import make_dir_link
 
 
 def _locked_unlink(self: platform_compat.PinnedDirectory, name: str) -> None:
@@ -78,7 +79,9 @@ class TestEmptyTrashRemoval:
         assert planted.is_file(), "a file that took a link's name must not be unlinked"
         assert planted.read_bytes() == b"ONLY COPY"
 
-    def test_deletes_only_what_the_manifest_names(self, stores: tuple[Path, Path]) -> None:
+    def test_deletes_only_what_the_manifest_names(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Files are named by the manifest, never discovered by walking the batch.
 
         On Windows os.path.islink is False for a junction, so os.walk would descend into
@@ -95,18 +98,59 @@ class TestEmptyTrashRemoval:
         outside.mkdir()
         victim = outside / "keep.jsonl"
         victim.write_bytes(b"NOT THE TRASH")
-        # A LINKED DIRECTORY inside the batch. Note it does not trip the
-        # unlisted-file guard: that guard walks for files, and a link to a
-        # directory is not one -- which is precisely why the delete must not be the
-        # thing that decides whether to descend.
-        (staged / "link").symlink_to(outside, target_is_directory=True)
+        # A LINKED DIRECTORY inside the batch, planted once the unlisted-file guard has
+        # passed: one there before it is reported and keeps the batch. After it, only
+        # the delete stands between the link and the files it points at, which is why
+        # the delete must not be the thing that decides whether to descend.
+        real_unlisted = session_storage._unlisted_files
+        planted: list[bool] = []
+
+        def _screen_then_plant(target: Path) -> list[Path]:
+            found = real_unlisted(target)
+            (staged / "link").symlink_to(outside, target_is_directory=True)
+            planted.append(True)
+            return found
+
+        monkeypatch.setattr(session_storage, "_unlisted_files", _screen_then_plant)
 
         freed = session_storage.empty_trash([batch.batch_id])
 
+        assert planted == [True], "the link must land inside the window under test"
         assert freed >= 64
         assert not staged.exists(), "the batch itself is still removed"
         assert victim.read_bytes() == b"NOT THE TRASH"
         assert outside.is_dir()
+
+    @pytest.mark.parametrize("walk", ["fwalk", "walk"])
+    def test_an_unlisted_link_to_a_directory_keeps_the_batch(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, walk: str
+    ) -> None:
+        """Both walks list a link to a directory with the directories, not the files.
+
+        So the guard reads it there, or the batch looks fully accounted for and the delete
+        unlinks an entry nothing lists. ``walk`` hides ``os.fwalk`` so the fallback runs
+        on every host; on Windows, where it is the only branch, the link is a junction.
+        """
+        if walk == "fwalk" and getattr(os, "fwalk", None) is None:
+            pytest.skip("this platform has no os.fwalk")
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+        )
+        staged = session_storage.trash_root() / batch.batch_id
+        target = kiro_home.parent / "linked"
+        target.mkdir()
+        link = staged / "link"
+        make_dir_link(link, target)
+        if walk == "walk":
+            monkeypatch.setattr(session_storage.os, "fwalk", None, raising=False)
+
+        assert session_storage._unlisted_files(staged) == [link]
+        skips: list[str] = []
+        assert session_storage.empty_trash([batch.batch_id], on_skip=skips.append) == 0
+        assert skips == [session_storage.SKIP_UNLISTED_FILES]
+        assert platform_compat.is_link_or_junction(link)
 
     @pytest.mark.parametrize(
         "rel",
@@ -688,13 +732,15 @@ class TestEmptyTrashRemoval:
         assert (elsewhere / session_storage.MANIFEST_NAME).is_file()
 
     def test_a_swapped_directory_component_is_refused_not_followed(
-        self, stores: tuple[Path, Path]
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A staged directory that is a link is not followed into a live store.
 
         The outcome half of the guard above. Pre-swapped rather than raced, so it
         pins the behaviour for a batch that ALREADY holds a link where a directory
         belongs; the race itself is closed structurally by never re-resolving a path.
+        The swap lands once the unlisted-file guard has passed: a link there before it
+        is reported and keeps the batch, so the delete would never be reached.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "aaaa1111", log_bytes=32, age_days=40)
@@ -716,11 +762,21 @@ class TestEmptyTrashRemoval:
         for rel in listed:
             victim = elsewhere / PurePosixPath(rel).name
             victim.write_bytes(b"LIVE DATA")
-        shutil.rmtree(holder)
-        holder.symlink_to(elsewhere, target_is_directory=True)
+        real_unlisted = session_storage._unlisted_files
+        swapped: list[bool] = []
+
+        def _screen_then_swap(target: Path) -> list[Path]:
+            found = real_unlisted(target)
+            shutil.rmtree(holder)
+            holder.symlink_to(elsewhere, target_is_directory=True)
+            swapped.append(True)
+            return found
+
+        monkeypatch.setattr(session_storage, "_unlisted_files", _screen_then_swap)
 
         session_storage.empty_trash([batch.batch_id])
 
+        assert swapped == [True], "the swap must land inside the window under test"
         for rel in listed:
             assert (
                 elsewhere / PurePosixPath(rel).name

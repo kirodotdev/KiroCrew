@@ -41,6 +41,7 @@ vi.mock('../../store', () => ({
   useAppStore: () => ({ getState: () => storeState }),
 }))
 vi.mock('../../store/chatSlice', () => ({
+  selectSlotStreamState: () => 'idle',
   createSlot: (arg: unknown) => ({ type: 'createSlot', arg }),
   setPendingInput: (text: string) => ({ type: 'setPendingInput', text }),
   // Mirrors the real thunk's `SwitchSlotArg`: a bare key, or an options object whose
@@ -1589,6 +1590,55 @@ describe('Crew Mode workers stay out of the Command Bar (edge review R1 X3)', ()
     }
     mount()
     const row = screen.getAllByRole('option').find(o => (o.textContent ?? '').includes('Worker of a closed crew'))
+    expect(row?.textContent).toContain('Approve')
+  })
+})
+
+describe("A Bot session's wait rides on its Bot in Needs You (#41359)", () => {
+  it('lifts the Bot thread while one of its sessions waits on an approval, and opens the Bot', async () => {
+    // The session leaves the person's list while its Bot thread is live, so the
+    // Bot's row carries the wait (`mateWaitingThreads`). Red without the carrier:
+    // the Bot thread owes nothing itself and the session is not a row.
+    storeState.dashboard = {
+      slots: [
+        { key: 'member-scout', mode: 'member', agent: 'scout', messages: 3 },
+        { key: 'scout-run', title: 'Scout dispatched run', mate_root: 'member-scout', pending_approval: true, messages: 2 },
+        { key: 'member-quiet', mode: 'member', agent: 'quiet', messages: 1 },
+      ],
+      unreadSlots: [],
+    }
+    const onClose = mount()
+    const options = screen.getAllByRole('option')
+    const lifted = options.find(o => (o.textContent ?? '').includes('scout') && (o.textContent ?? '').includes('Answer'))
+    expect(lifted?.textContent).toContain('Waiting on your reply')
+    expect(options.map(o => o.textContent ?? '').join('\n')).not.toContain('Scout dispatched run')
+    const quiet = options.find(o => (o.textContent ?? '').includes('quiet'))
+    expect(quiet?.textContent ?? '').not.toContain('Answer')
+    fireEvent.mouseDown(lifted!)
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/members?member=scout'))
+    await waitFor(() => expect(onClose).toHaveBeenCalled())
+  })
+
+  it('does not lift an idle session whose key is an inherited object property', () => {
+    // `mateWaitingThreads` returns a map; a key like `constructor` must not read as waiting.
+    storeState.dashboard = {
+      slots: [{ key: 'constructor', title: 'Plain idle chat', messages: 2 }],
+      unreadSlots: [],
+    }
+    mount()
+    const row = screen.getAllByRole('option').find(o => (o.textContent ?? '').includes('Plain idle chat'))
+    expect(row?.textContent ?? '').not.toContain('Answer')
+  })
+
+  it("keeps a closed Bot thread's session in Needs You with its own Approve pill", () => {
+    storeState.dashboard = {
+      slots: [
+        { key: 'scout-run', title: 'Scout dispatched run', mate_root: 'member-gone', pending_approval: true, messages: 2 },
+      ],
+      unreadSlots: [],
+    }
+    mount()
+    const row = screen.getAllByRole('option').find(o => (o.textContent ?? '').includes('Scout dispatched run'))
     expect(row?.textContent).toContain('Approve')
   })
 })

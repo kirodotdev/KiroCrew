@@ -8,12 +8,15 @@ import type { ArtifactPublication, PublishProviderDescriptor } from '../types'
  * The accessible label and tooltip of the library's publication badge, shared by
  * the gallery card and the table row so the two never drift.
  *
- * A sync issue or a notice keeps its own wording. Otherwise the badge names the
+ * An expired publication says so: its link no longer works, so neither a sync
+ * issue nor a notice describes it any more. Otherwise a sync issue or a notice
+ * keeps its own wording, and the badge names the
  * destination (`providerName`, the provider's own `display_name`) with the
  * visibility, and falls back to the provider-neutral "Published (<visibility>)"
  * when no name is known.
  */
 export function publicationBadgeLabel(pub: ArtifactPublication, providerName?: string): string {
+  if (pub.expired) return i18nT('pages.artifactsPage.expired')
   if (pub.last_error) return i18nT('pages.artifactsPage.published_sync_issue')
   if (pub.notice) {
     return i18nT(publishNoticeKey({

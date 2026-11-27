@@ -236,6 +236,27 @@ class TestTheReaderAnswersForTheShapeAMonitorActuallyStores:
             for target in targets
         )
 
+    def test_a_brief_spelling_the_slug_in_another_case_is_accepted(self) -> None:
+        """GitHub slugs are case-insensitive, so the lowercased URL is the watched PR.
+
+        Both shapes a monitor stores: the canonical shorthand, and the URL a
+        structured monitor keeps. A different number is still another pull request.
+        """
+        kind, watched = self._stored()
+        lowered = "https://github.com/kirodotdev/kirocrew/pull/12787"
+        observation = {"target": watched.lower(), "kind": kind}
+        assert judge.pr_observation_is_about(
+            lowered, monitor_kind=kind, monitor_target=watched, observation=observation
+        )
+        assert judge.pr_observation_is_about(
+            lowered,
+            monitor_kind="github_pull_request",
+            monitor_target="https://github.com/kirodotdev/KiroCrew/pull/12787",
+        )
+        assert not judge.pr_observation_is_about(
+            lowered.replace("12787", "12788"), monitor_kind=kind, monitor_target=watched
+        )
+
 
 class TestAgeParsing:
     """Ages decide what gets DROPPED at the cap, so the real row shape must parse.

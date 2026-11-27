@@ -28,8 +28,9 @@ import { isChatPageSurface } from '../../utils/channelOrigin'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import { isSafeReload } from '../../lib/safeReload'
 import { useFeaturePreviewLockSettled } from '../../utils/editionLocks'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { PANE_SLOT_HINT_PARAM, relayActiveSlotToParent } from '../../lib/paneLastSlot'
+import { withoutSpentCrewLink } from '../../lib/crewDeepLink'
 import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessionUrlHistory'
 import { sessionShortNameFrom, shortNameMatches, type ShortNameMatch } from '../../utils/sessionKeys'
 import { toSlug } from '../../utils/shareUrl'
@@ -392,6 +393,9 @@ export function useChatPageSessionController({
   const [sidError, setSidError] = useState('')
   const [newSlotFailed, setNewSlotFailed] = useState(false)
   const [highlightTs, setHighlightTs] = useState<string | null>(null)
+  // The row another surface sent the reader to (Search all chats, `?msg=`): its
+  // own state, so the turn stepper's and the pins' flash never wear its look.
+  const [landedTs, setLandedTs] = useState<string | null>(null)
   const [appSlotLaunch, setAppSlotLaunch] = useState<ChatLaunchOptions | null>(null)
   const appSlotLaunchRef = useRef<ChatLaunchOptions | null>(null)
   // A launch whose target is not in the session list yet, and the session that
@@ -1086,7 +1090,7 @@ export function useChatPageSessionController({
       setSidMatches(mine)
       // Name the full key before activating it: URL sync stays held until
       // `activeSlot` equals `?sid=`, and a short name never does.
-      const next = new URLSearchParams(searchParamsRef.current)
+      const next = withoutSpentCrewLink(new URLSearchParams(searchParamsRef.current))
       next.set('sid', target.key)
       next.delete('slot')
       navigate({ pathname: locationPathname, search: `?${next}`, hash: locationHash }, { replace: true })
@@ -1114,7 +1118,7 @@ export function useChatPageSessionController({
         // that never showed. URL sync then normalizes the slug.
         const viewing = store.getState().chat.activeSlot
         if (viewing && viewing !== target.key) {
-          const back = new URLSearchParams(searchParamsRef.current)
+          const back = withoutSpentCrewLink(new URLSearchParams(searchParamsRef.current))
           back.set('sid', viewing)
           back.delete('slot')
           navigate({ pathname: locationPathname, search: `?${back}`, hash: locationHash }, { replace: true })
@@ -1192,7 +1196,7 @@ export function useChatPageSessionController({
     const slot = filteredSlots.find(s => s.key === activeSlot)
     const slug = slot?.title && !isUntitledSession(slot) ? toSlug(slot.title) : ''
     const expectedPath = `${basePath}${slug ? '/' + slug : ''}`
-    const next = new URLSearchParams(sp)
+    const next = withoutSpentCrewLink(new URLSearchParams(sp))
     next.set('sid', activeSlot)
     next.delete('slot')
     next.delete('prefill')
@@ -1444,7 +1448,7 @@ export function useChatPageSessionController({
       // tab and popout rewrites it on each slots frame, so once this window has
       // shown a chat, its own recency stack decides where it lands.
       const recent = hadActiveSlotRef.current ? (slotHistoryRef.current ?? []).filter(k => eligibleKeys.has(k)).pop() : undefined
-      const saved = hadActiveSlotRef.current ? null : localStorage.getItem(slotStorageKey)
+      const saved = hadActiveSlotRef.current ? null : safeGetItem(slotStorageKey)
       const hint = slotHintRef.current
       slotHintRef.current = null
       // The hub's hint is the page's own pick too, so it never lands on a
@@ -1509,6 +1513,7 @@ export function useChatPageSessionController({
     appSlotLaunch,
     setAppSlotLaunch,
     highlightTs,
+    landedTs,
     launchedDraftInteracted,
     initialMidRef,
     initialMsgRef,
@@ -1520,6 +1525,7 @@ export function useChatPageSessionController({
     selectSessionTab,
     sessionTabs,
     setHighlightTs,
+    setLandedTs,
     setNewSlotFailed,
     setSidError,
     sidError,

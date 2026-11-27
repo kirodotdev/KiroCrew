@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, type ComponentProps } from 'react'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Check, AlertTriangle, Plus, X, Lock, RefreshCw } from 'lucide-react'
@@ -18,14 +18,60 @@ import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredB
 import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeDraft } from './SlackCodePanel'
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
 import { forgetSlackInstallReading } from './SlackManifestUpdate'
+import { lazyRetry } from '../../components/lazyRetry'
+import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
+import { connectionCardHref } from '../connections/connectionsLinks'
+import type { SlackOwnerClaimProps } from './SlackOwnerClaim'
+// Its own chunk, for the same budget reason as SlackSharedAccess below. A failed
+// load shows an inline notice with Try again; the manual member-ID field beside
+// it still works. No hand-off: this form holds unsaved fields.
+const SlackOwnerClaim = lazyRetry<SlackOwnerClaimProps>(
+  () => import('./SlackOwnerClaim').then(m => ({ default: m.SlackOwnerClaim })),
+  {
+    layout: 'inline',
+    title: () => i18nT('pages.settings.slackOwnerClaim.load_failed'),
+    scope: 'slack-owner-claim',
+    askAgent: false,
+  },
+)
+import type { SlackSetupWizard as SlackSetupWizardType } from './SlackSetupWizard'
+// Its own chunk: only the Slack panel draws this section, and inside the Settings
+// page chunk it put that chunk over its size budget. A failed load shows a notice
+// with Try again in its place and leaves the rest of the form mounted. `inline`:
+// one line whose raw chunk error is read out and shown on hover, never printed.
+// No hand-off: the Slack settings form around this section holds unsaved fields.
+const SlackSharedAccess = lazyRetry<object>(
+  () => import('./SlackSharedAccess').then(m => ({ default: m.SlackSharedAccess })),
+  {
+    layout: 'inline',
+    title: () => i18nT('pages.settings.slackSharedAccess.load_failed'),
+    scope: 'slack-shared-access',
+    askAgent: false,
+  },
+)
+// Its own chunk too: a one-time setup flow. A failed load shows a notice with
+// Try again in the wizard's place; the panel's own form stays below it.
+// No hand-off: the Slack settings form below holds unsaved fields.
+const SlackSetupWizard = lazyRetry<ComponentProps<typeof SlackSetupWizardType>>(
+  () => import('./SlackSetupWizard').then(m => ({ default: m.SlackSetupWizard })),
+  {
+    layout: 'block',
+    title: () => i18nT('pages.settings.slackWizard.load_failed'),
+    scope: 'slack-setup-wizard',
+    askAgent: false,
+  },
+)
+
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Slack"
-const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
+const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/slack-setup.md'
 
 type Draft = {
   owner_id: string
   command: string
   allowed_enterprise_ids: string[]
+  /** `slack.tracking_channels` IDs; saved as adds and removes against the seed. */
+  tracking_channels: string[]
   reactions_enabled: boolean
   show_thinking: boolean
   /** Whether Slack files its sessions in a folder at all (off = unfiled). */
@@ -34,7 +80,7 @@ type Draft = {
   session_folder: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions: boolean
-  /** List conversations that start in Slack in the session list (on by default). */
+  /** List conversations that start in Slack in the session list (off by default). */
   show_in_session_list: boolean
   /** Slack Code: the registered switches and the code-channel defaults. */
   code: SlackCodeDraft
@@ -45,6 +91,7 @@ function draftFrom(c: SlackConfigData): Draft {
     owner_id: c.owner_id,
     command: c.command,
     allowed_enterprise_ids: [...c.allowed_enterprise_ids],
+    tracking_channels: [...(c.tracking_channels ?? [])],
     reactions_enabled: c.reactions_enabled,
     show_thinking: c.show_thinking,
     // A configured name IS the on-state — the backend has one field, where ""
@@ -52,8 +99,8 @@ function draftFrom(c: SlackConfigData): Draft {
     session_folder_on: !!c.session_folder,
     session_folder: c.session_folder ?? '',
     auto_link_sessions: !!c.auto_link_sessions,
-    // Absent (an older gateway) reads as on, the gateway's own default.
-    show_in_session_list: c.show_in_session_list !== false,
+    // Only a real `true` reads as on: absent is off, the gateway's own default.
+    show_in_session_list: c.show_in_session_list === true,
     code: slackCodeDraftFrom(c),
   }
 }
@@ -143,7 +190,7 @@ function reconnectRefusal(e: unknown): string {
 type ReconnectOutcome = { connected: true } | { connected: false; message: string }
 
 /** Editor for a list of plain string IDs (channels, enterprise orgs, user IDs, emails). */
-export function TagListEditor({ label, description, hint, values, placeholder, onChange, validate, readOnly }: {
+export function TagListEditor({ label, description, hint, values, placeholder, onChange, validate, readOnly, onPendingChange }: {
   label: string
   description?: string
   /** An info tip beside the label, for prose that explains what the list IS;
@@ -154,9 +201,25 @@ export function TagListEditor({ label, description, hint, values, placeholder, o
   onChange: (next: string[]) => void
   validate?: (v: string) => boolean
   readOnly?: boolean
+  /** Told when the add box gains typed-but-not-added text (true) and when it
+   *  loses it again (false), by clearing, by Add, or by this editor unmounting.
+   *  That text lives only here, so a parent that guards unsaved edits needs it. */
+  onPendingChange?: (hasPending: boolean) => void
 }) {
   const [draft, setDraft] = useState('')
   const [err, setErr] = useState('')
+  const hasPending = !!draft.trim()
+  const pendingCb = useRef(onPendingChange)
+  useEffect(() => { pendingCb.current = onPendingChange }, [onPendingChange])
+  const reportedPending = useRef(false)
+  useEffect(() => {
+    if (reportedPending.current === hasPending) return
+    reportedPending.current = hasPending
+    pendingCb.current?.(hasPending)
+  }, [hasPending])
+  useEffect(() => () => {
+    if (reportedPending.current) pendingCb.current?.(false)
+  }, [])
   const ime = useImeGuard()
   const add = () => {
     const v = draft.trim()
@@ -223,13 +286,21 @@ export function SlackPanel() {
     // object and clobber unsaved edits via the sync effect below.
     refetchOnWindowFocus: false,
   })
+  // The Slack card under Settings → Connections exists only while that gallery is on.
+  const connectionsUi = useConnectionsUiEnabled()
 
   const [draft, setDraft] = useState<Draft | null>(null)
   const [botToken, setBotToken] = useState('')
   const [appToken, setAppToken] = useState('')
   const [botClear, setBotClear] = useState(false)
   const [appClear, setAppClear] = useState(false)
-  const [formKey, setFormKey] = useState(0)  // bump to remount secret fields after save
+  // Bump to remount that secret field after a save.
+  const [botKey, setBotKey] = useState(0)
+  const [appKey, setAppKey] = useState(0)
+  // The save's onSuccess reads the token fields as they are when it lands,
+  // not as they were when the request started.
+  const secretsRef = useRef({ botToken, appToken })
+  useEffect(() => { secretsRef.current = { botToken, appToken } }, [botToken, appToken])
   const [saved, setSaved] = useState(false)
   const [restartHint, setRestartHint] = useState(false)
   // Sticky until a reconnect succeeds: a later config-only save must not hide
@@ -250,7 +321,7 @@ export function SlackPanel() {
   // Public manifest template + one-click Slack create URL (no secrets).
   const manifestQ = useQuery({
     queryKey: ['slack-manifest'],
-    queryFn: api.getSlackManifest,
+    queryFn: () => api.getSlackManifest(),
     staleTime: Infinity,
     retry: false,
   })
@@ -287,28 +358,44 @@ export function SlackPanel() {
     setTimeout(() => setManifestCopied(false), 1500)
   }, [currentManifest])
   const [error, setError] = useState('')
+  // Opt-in: only the "Setup wizard" button opens it, so with it closed the
+  // panel is exactly the default setup path it was. Once open it stays open
+  // through the last step (which comes after the connection) until Close.
+  const [wizardOpen, setWizardOpen] = useState(false)
 
-  // Sync the local draft when server config arrives. Guarded so only the
-  // initial load and post-save invalidation reseed it — a background refetch
-  // must not discard in-progress edits (including a just-pasted token).
+  // Sync the local draft when server config first arrives. Only the initial
+  // load seeds it: a background refetch or a save's invalidation must not
+  // discard in-progress edits (including a just-pasted token).
   const syncArmed = useRef(true)
-  // What the Slack Code draft was seeded from. The save sends only the fields
-  // that differ from THIS snapshot, not from the latest refetch: a background
-  // refetch that picks up a CLI edit leaves the draft as it was, so comparing
-  // against the refreshed data would send the stale draft value and undo it.
+  // What the Slack Code draft was seeded from on load, then what each save
+  // sent. The save sends only the fields that differ from THIS snapshot, not
+  // from the latest refetch: a background refetch that picks up a CLI edit
+  // leaves the draft as it was, so comparing against the refreshed data would
+  // send the stale draft value and undo it.
   const codeBaseline = useRef<SlackCodeDraft | null>(null)
+  // The owner ID the draft was seeded from (then the one a save sent), for the
+  // same reason: the save sends the owner only when the field was edited, so a
+  // save that lands while "Claim in Slack" confirms cannot write the old value back.
+  const ownerBaseline = useRef('')
+  // The tracked channels the draft was seeded from, then the list each save
+  // sent: the save sends only what was added and removed here, so a channel
+  // added in Slack (/kirocrew channels) since this page loaded is not removed
+  // by a save of the older list.
+  const trackingBaseline = useRef<string[]>([])
   useEffect(() => {
     if (data && syncArmed.current) {
       syncArmed.current = false
       const seeded = draftFrom(data)
       codeBaseline.current = seeded.code
+      ownerBaseline.current = seeded.owner_id.trim()
+      trackingBaseline.current = seeded.tracking_channels
       setDraft(seeded)
       setBotToken(''); setAppToken(''); setBotClear(false); setAppClear(false)
     }
   }, [data])
 
   const saveMut = useMutation({
-    mutationFn: (body: Partial<SlackConfigSave>) => api.saveSlackConfig(body),
+    mutationFn: ({ body }: { body: Partial<SlackConfigSave>; code: SlackCodeDraft; tracking: string[] }) => api.saveSlackConfig(body),
     onError: (e: unknown) => {
       // The API client throws with the raw response body; extract the
       // server's error field (e.g. "bot_token rejected by Slack
@@ -326,7 +413,7 @@ export function SlackPanel() {
       // leaves a quiet form that reads as saved.
       setError(msg)
     },
-    onSuccess: (res, vars) => {
+    onSuccess: (res, { body: vars, code, tracking }) => {
       setSaved(true)
       setRestartHint(!!res.restart_required)
       if (res.reconnect_required) {
@@ -341,8 +428,29 @@ export function SlackPanel() {
       }
       setVerifyWarning(res.verify_warning || '')
       setTokensVerified(!!(vars.bot_token || vars.app_token) && !res.verify_warning)
-      syncArmed.current = true
-      setFormKey(k => k + 1)
+      codeBaseline.current = code
+      trackingBaseline.current = tracking
+      if (vars.owner_id !== undefined) ownerBaseline.current = vars.owner_id
+      // Not re-arming the draft sync: the server took the values we sent, and
+      // a reseed would overwrite any field edited while the save was in
+      // flight. Only the tokens just sent are cleared, and only while the
+      // field still holds what was sent.
+      const s = secretsRef.current
+      const nextBot = vars.bot_token && s.botToken.trim() === vars.bot_token ? '' : s.botToken
+      const nextApp = vars.app_token && s.appToken.trim() === vars.app_token ? '' : s.appToken
+      setBotToken(nextBot)
+      setAppToken(nextApp)
+      if (vars.bot_token_clear) setBotClear(false)
+      if (vars.app_token_clear) setAppClear(false)
+      // Collapse each token field to its stored preview unless it holds a token
+      // typed since; a pending removal survives (`cleared` is held here).
+      if (!nextBot) setBotKey(k => k + 1)
+      if (!nextApp) setAppKey(k => k + 1)
+      // A blank folder name was saved as the channel's own name: show that,
+      // unless the field was cleared after a named folder was sent.
+      setDraft(d => (d && d.session_folder_on && !d.session_folder.trim() && vars.session_folder === CHANNEL_NAME
+        ? { ...d, session_folder: vars.session_folder }
+        : d))
       setTimeout(() => setSaved(false), 6000)
       qc.invalidateQueries({ queryKey: ['slack-config'] })
       // The manifest renders for the saved Slack Code switches, so a save can
@@ -388,10 +496,20 @@ export function SlackPanel() {
   const handleSave = useCallback(() => {
     if (!draft) return
     setError('')
+    const owner = draft.owner_id.trim()
+    const trackAdd = draft.tracking_channels.filter(c => !trackingBaseline.current.includes(c))
+    const trackRemove = trackingBaseline.current.filter(c => !draft.tracking_channels.includes(c))
+    const base = codeBaseline.current ?? draft.code
+    // config.local.json sets "Always use conductor mode", or may: never send it.
+    const conductorLocked = (data?.code_channel_conductor_mode_overlay_state ?? 'absent') !== 'absent'
+    // The same for helper agents, read from the latest config like the card's lock.
+    const dispatchLocked = data?.code_channel_dispatch_overlay === true
     const payload: Partial<SlackConfigSave> = {
-      owner_id: draft.owner_id.trim(),
+      ...(owner !== ownerBaseline.current ? { owner_id: owner } : {}),
       command: draft.command.trim(),
       allowed_enterprise_ids: draft.allowed_enterprise_ids,
+      ...(trackAdd.length ? { tracking_channels_add: trackAdd } : {}),
+      ...(trackRemove.length ? { tracking_channels_remove: trackRemove } : {}),
       reactions_enabled: draft.reactions_enabled,
       show_thinking: draft.show_thinking,
       // Off sends "" (the field's off-state); on with a blank name falls back
@@ -399,27 +517,27 @@ export function SlackPanel() {
       session_folder: draft.session_folder_on ? (draft.session_folder.trim() || CHANNEL_NAME) : '',
       auto_link_sessions: draft.auto_link_sessions,
       show_in_session_list: draft.show_in_session_list,
-      ...(codeBaseline.current
-        ? slackCodePayload(
-          draft.code,
-          codeBaseline.current,
-          // config.local.json sets "Always use conductor mode", or may: never send it.
-          (data?.code_channel_conductor_mode_overlay_state ?? 'absent') !== 'absent',
-        )
-        : {}),
+      ...slackCodePayload(draft.code, base, conductorLocked, dispatchLocked),
     }
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
     if (appClear) payload.app_token_clear = true
     else if (appToken.trim()) payload.app_token = appToken.trim()
-    saveMut.mutate(payload)
-  }, [draft, botToken, appToken, botClear, appClear, saveMut, data?.code_channel_conductor_mode_overlay_state])
+    // What the save stores: a locked switch the payload leaves out keeps its saved value.
+    const code = {
+      ...draft.code,
+      conductorMode: conductorLocked ? base.conductorMode : draft.code.conductorMode,
+      dispatch: dispatchLocked ? base.dispatch : draft.code.dispatch,
+    }
+    saveMut.mutate({ body: payload, code, tracking: draft.tracking_channels })
+  }, [draft, botToken, appToken, botClear, appClear, saveMut, data?.code_channel_conductor_mode_overlay_state, data?.code_channel_dispatch_overlay])
 
   if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.slackPanel.loading_slack_config')}</p>
   // Nothing to lose here: the form is not mounted in this branch.
   if (isError || !data || !draft) return <ErrorNotice className="m-4" message={i18nT('pages.settings.slackPanel.cannot_load_slack_config_is_the_gateway_running')} askAgent />
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
+  const showWizard = wizardOpen
   const ro = data.read_only
   // A click's own outcome (or one in flight) replaces the recorded reading:
   // both describe the same connection, and two notices read as two problems.
@@ -434,7 +552,13 @@ export function SlackPanel() {
   )
 
   return (
-    <>
+    // Placeholders here are sample IDs (U0123ABC456, E0123ABC456) that look
+    // like real values. The app-wide placeholder colour is --muted, the
+    // secondary-text token, which in light themes sits close to typed text, so
+    // a sample read as a saved ID. 75% of --muted keeps 3:1 on the field in
+    // every built-in palette (SlackPanel.placeholderTone.test.ts) and is clearly
+    // lighter than typed text. `contents` keeps the layout identical.
+    <div className="contents [&_:is(input,textarea)::placeholder]:text-muted/75">
       {/* ── Header ── */}
       <div className="flex items-start gap-3 mb-1 mt-1">
         <div className="w-9 h-9 rounded-lg bg-bg-elevated border border-border flex items-center justify-center flex-none">
@@ -446,10 +570,32 @@ export function SlackPanel() {
             <StatusBadge config={data} />
             {/* Hidden on read-only remote sessions, like Save: the route is local-only. */}
             {!ro && reconnectBtn('slack-reconnect')}
+            {/* Local only too: every step of the wizard saves or reconnects. */}
+            {!ro && !showWizard && (
+              <Btn data-testid="slack-wizard-open" className="shrink-0" onClick={() => setWizardOpen(true)}>
+                {i18nT('pages.settings.slackWizard.title')}
+              </Btn>
+            )}
           </div>
           <p className="text-[12px] text-muted mt-1">
             {i18nT('pages.settings.slackPanel.talk_to_your_agents_from_slack_over_socket_mode')}
           </p>
+          {/* Slack's MCP tools are a separate sign-in from this bot, made on the
+              Slack card under Settings → Connections. A new tab, so this form and
+              its unsaved fields stay put; the tab shares this session's cookie. */}
+          {connectionsUi && (
+            <p className="text-[12px] text-muted mt-1">
+              {i18nT('pages.settings.slackPanel.slack_tools_hint')}{' '}
+              <a
+                data-testid="slack-connections-link"
+                href={connectionCardHref('slack')}
+                target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-accent hover:underline"
+              >
+                {i18nT('pages.settings.slackPanel.slack_tools_link')} <ExternalLink size={12} />
+              </a>
+            </p>
+          )}
           {/* No hand-off: `botToken` / `appToken` (SecretField drafts, never
               persisted) and the unsaved `draft` (owner id, enterprise allow-list,
               command, session folder) live in this panel's local state —
@@ -482,22 +628,54 @@ export function SlackPanel() {
         </div>
       )}
 
-      {/* ── Credentials guide ── */}
+      {/* ── Setup wizard: the same writes as the form below, one step per screen ── */}
+      {showWizard && (
+        <SlackSetupWizard
+          data={data}
+          describeConnectError={describeConnectError}
+          orgGuideUrl={manifestQ.data?.org_guide_url}
+          // The wizard stores tokens itself and reports the plain fields it
+          // saved: the form takes only those, so a later form save cannot send
+          // a stale owner or command back, and unsaved edits elsewhere stay.
+          onSaved={saved => {
+            if (saved.owner_id !== undefined) ownerBaseline.current = saved.owner_id
+            setDraft(d => (d ? { ...d, ...saved } : d))
+          }}
+          renderOwnerClaim={onClaimed => (
+            <SlackOwnerClaim config={data} onOwnerChange={id => {
+              ownerBaseline.current = id
+              upd({ owner_id: id })
+              onClaimed(id)
+            }} />
+          )}
+          onClose={() => setWizardOpen(false)}
+        />
+      )}
+
+      {/* ── Credentials guide ── always shown (Copy manifest YAML and the setup
+          guide stay reachable); only its Create link steps aside while the
+          wizard is open, since two Create buttons would make a second app. */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.get_your_credentials')}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">
-            {i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest', { alias: manifestQ.data?.alias ?? 'you' })}
+            {/* While the wizard is open it is the one Create step, named after the
+                user's alias; this card must not name a different app. */}
+            {showWizard
+              ? i18nT('pages.settings.slackWizard.card_while_open')
+              : i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest', { alias: manifestQ.data?.alias ?? 'you' })}
           </p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
-            <a
-              href={currentManifest?.create_url ?? '#'}
-              tabIndex={currentManifest ? undefined : -1}
-              target="_blank" rel="noopener noreferrer"
-              aria-disabled={!currentManifest}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all ${currentManifest ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover' : 'border-border text-muted pointer-events-none'}`}
-            >
-              {i18nT('pages.settings.slackPanel.create_slack_app')} <ExternalLink size={13} />
-            </a>
+            {!showWizard && (
+              <a
+                href={currentManifest?.create_url ?? '#'}
+                tabIndex={currentManifest ? undefined : -1}
+                target="_blank" rel="noopener noreferrer"
+                aria-disabled={!currentManifest}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all ${currentManifest ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover' : 'border-border text-muted pointer-events-none'}`}
+              >
+                {i18nT('pages.settings.slackPanel.create_slack_app')} <ExternalLink size={13} />
+              </a>
+            )}
             <Btn onClick={() => { void copyManifest() }} disabled={!currentManifest}>
               {manifestCopied ? <><Check size={13} /> {i18nT('pages.settings.slackPanel.copied')}</> : i18nT('pages.settings.slackPanel.copy_manifest_yaml')}
             </Btn>
@@ -522,13 +700,16 @@ export function SlackPanel() {
       <SettingsSection title={i18nT('pages.settings.slackPanel.required')}>
         <SettingsCard index={1}>
           <SecretField
-            key={`bot-${formKey}`}
+            key={`bot-${botKey}`}
             label={i18nT('pages.settings.slackPanel.slack_bot_token')}
             description={i18nT('pages.settings.slackPanel.from_oauth_permissions_after_installing_your_sla')}
             placeholder={i18nT('pages.settings.slackPanel.paste_slack_bot_token_xoxb')}
             isSet={data.bot_token_set}
             preview={data.bot_token_preview}
             readOnly={ro}
+            // A value still pending (typed during a save) stays in the editor,
+            // even once the refetch reports a stored credential.
+            editing={botToken ? true : undefined}
             value={botToken}
             onChange={setBotToken}
             cleared={botClear}
@@ -536,13 +717,16 @@ export function SlackPanel() {
             setupLink={{ href: SETUP_GUIDE, label: i18nT('pages.settings.slackPanel.where_to_find_the_bot_token') }}
           />
           <SecretField
-            key={`app-${formKey}`}
+            key={`app-${appKey}`}
             label={i18nT('pages.settings.slackPanel.slack_app_token')}
             description={i18nT('pages.settings.slackPanel.app_level_token_required_for_socket_mode_starts')}
             placeholder={i18nT('pages.settings.slackPanel.paste_slack_app_token_xapp')}
             isSet={data.app_token_set}
             preview={data.app_token_preview}
             readOnly={ro}
+            // A value still pending (typed during a save) stays in the editor,
+            // even once the refetch reports a stored credential.
+            editing={appToken ? true : undefined}
             value={appToken}
             onChange={setAppToken}
             cleared={appClear}
@@ -569,6 +753,7 @@ export function SlackPanel() {
       {/* ── Identity & access ── */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.identity_access')}>
         <SettingsCard index={3}>
+          <SlackOwnerClaim config={data} onOwnerChange={id => { ownerBaseline.current = id; upd({ owner_id: id }) }} />
           <SettingsInput
             label={i18nT('pages.settings.slackPanel.owner_slack_member_id')}
             description={i18nT('pages.settings.slackPanel.the_one_member_who_can_always_interact_with_the')}
@@ -586,6 +771,24 @@ export function SlackPanel() {
             validate={v => /^[ET][A-Z0-9]+$/.test(v)}
             readOnly={ro}
           />
+          {/* Where the agent may post, react, pin and read. The refusal for an
+              untracked channel names this row (slack/tracked_channels.py), so
+              keep the label and that text together. */}
+          <TagListEditor
+            label={i18nT('pages.settings.slackPanel.tracked_channels')}
+            description={i18nT('pages.settings.slackPanel.tracked_channels_summary')}
+            hint={i18nT('pages.settings.slackPanel.tracked_channels_hint')}
+            values={draft.tracking_channels}
+            placeholder={i18nT('pages.settings.slackPanel.c0123abc456')}
+            onChange={v => upd({ tracking_channels: v })}
+            validate={v => /^[CG][A-Z0-9]{2,}$/.test(v)}
+            readOnly={ro}
+          />
+          {/* Off by default: lets the people listed here drive this Crew as the
+              owner. Applies on its own, outside the Save below. Its own row of the
+              card, so a failed load's one-line notice sits in a padded row; hidden
+              while the section renders nothing. */}
+          <div className="empty:hidden"><SlackSharedAccess /></div>
         </SettingsCard>
       </SettingsSection>
 
@@ -633,7 +836,8 @@ export function SlackPanel() {
             />
           </div>
           {/* Whether conversations that start in Slack are listed in the session
-              list. On by default; off leaves them out of the list only. */}
+              list. Off by default, which leaves them out of the list only; on,
+              with no folder set below, files new ones in a "Slack" folder. */}
           <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.slackPanel.show_in_session_list')}
@@ -645,12 +849,13 @@ export function SlackPanel() {
               configKey="slack.show_in_session_list"
             />
           </div>
-          {/* Optional per-channel session filing. Off by default: Slack
-              conversations stay unfiled in the sidebar, as before. */}
+          {/* A folder of the person's choosing. Off, listed Slack conversations
+              go into the zero-config "Slack" folder (`slack_session_list.py`),
+              so the switch reads as "a different folder", not "file at all". */}
           <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
-              label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-              hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+              label={i18nT('pages.settings.slackPanel.session_folder_custom')}
+              hint={i18nT('pages.settings.slackPanel.session_folder_custom_desc')}
               checked={draft.session_folder_on}
               onChange={v => upd({ session_folder_on: v })}
               disabled={ro}
@@ -705,11 +910,11 @@ export function SlackPanel() {
           </span>
         )}
         {/* No hand-off: `botToken` / `appToken` (SecretField drafts, never
-            persisted — `formKey` even remounts them after a successful save) and
+            persisted — a successful save clears the ones it sent) and
             the unsaved `draft` are exactly what a failed save did not store; the
             hand-off unmounts this panel and would lose them. */}
         <ErrorNotice message={error} variant="inline" />
       </div>}
-    </>
+    </div>
   )
 }

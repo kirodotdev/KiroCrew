@@ -51,6 +51,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _pathcheck import (  # noqa: E402
     open_media_input,
     read_json_input,
+    require_output_support,
     safe_open_output,
     safe_output_path,
 )
@@ -371,6 +372,10 @@ def main() -> int:
     ap.add_argument("--aws-profile", default="")
     ap.add_argument("--aws-region", default="")
     args = ap.parse_args()
+    # Every output below goes through safe_open_output, which refuses on a host
+    # without directory descriptors. Refuse here, before any speech call is made
+    # or any clip is published.
+    require_output_support()
 
     spec = read_json_input(args.script)
     gap = float(spec.get("gap", 0.4))

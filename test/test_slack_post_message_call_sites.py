@@ -77,6 +77,11 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "shared_crew/turn_gate.py": (1, "fixed capacity note for a message fair admission refused"),
     "slack/allowlist.py": (1, "access-request DM to an allowlist approver"),
+    "slack/channel_handler.py": (
+        1,
+        "one helper for a Channel Bot's or Channel Conductor's fixed notices and the"
+        " owner's !channel agent replies",
+    ),
     "slack/code_channels/board/publisher.py": (
         1,
         "work board's needs-you reply: needs_you_text escapes already-redacted row fields, "
@@ -86,11 +91,18 @@ BASELINE: dict[str, tuple[int, str]] = {
         1,
         "one helper for a code channel's fixed notices: kickoff, refusals, hand-off line",
     ),
-    "slack/events.py": (5, "!stop and !restart notices and the not-authorized refusal"),
+    "slack/conductor_thread.py": (
+        4,
+        "a Conductor thread's fixed notices: started (a thread's or a channel's),"
+        " ended, a one-way refusal",
+    ),
+    "slack/events.py": (4, "!stop and !restart notices and the not-authorized refusal"),
+    "slack/events_inbound.py": (1, "the fixed !stop notice helper, moved out of events.py"),
+    "slack/events_slash.py": (1, "the /kirocrew conductor parent message, a defused goal line"),
     "slack/files.py": (1, "notes for images Slack refused to upload"),
     "slack/gateway_runtime/cron_delivery.py": (
-        1,
-        "overflow parts of a cron result after its first message",
+        3,
+        "overflow parts of a cron result, and a reminder's rendered parts",
     ),
     "slack/gateway_runtime/cron_failure.py": (
         1,
@@ -108,17 +120,24 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/gateway_runtime/subagent_wiring.py": (1, "owner DM with a subagent notice"),
     "slack/handler_runtime/commands.py": (
-        78,
+        94,
         "slash and text command replies: fixed status and help text, the"
-        " channel-agent link refusal, and the !channel config-save refusal",
+        " channel-agent link refusal, the !channel and !voice global"
+        " config-save refusals, the !voice global usage reply, the !bot"
+        " list and its refusals, the !ta memory-binding refusals, the"
+        " !conductor refusal and the"
+        " Conductor-thread lock on !bot, the fixed !trust reply, and the"
+        " !bot join, leave and refusal notices for a Bot's own chat, its"
+        " failed-leave notice, the refusal of another Bot in it and its fixed"
+        " owner-only refusal, and the fixed reply to a shared user's !channel agent",
     ),
     "slack/handler_runtime/delivery.py": (
         5,
         "turn answer, its parts, and redaction and failure notices",
     ),
     "slack/handler_runtime/dispatch.py": (
-        9,
-        "command and hook replies, status and permission notices",
+        10,
+        "command and hook replies, status and permission notices, the shared-user refusal",
     ),
     "slack/handler_runtime/inbound.py": (
         4,
@@ -152,16 +171,28 @@ BASELINE: dict[str, tuple[int, str]] = {
         "stop and reset notices, resume label, new-session greeting",
     ),
     "slack/interactions_settings.py": (2, "allowlist approved and denied DMs"),
+    "slack/midturn.py": (
+        2,
+        "fixed notices: the hint for a bare !queue / !steer, and a linked hand-off refusal",
+    ),
+    "slack/owner_claim.py": (1, "fixed welcome DM to a newly confirmed owner"),
     "slack/renderer.py": (
-        6,
-        "the channel renderer: placeholders, answer parts, fallback and notices",
+        2,
+        "the channel renderer: options fallback and notices",
     ),
     "slack/renderer_stream_debt.py": (
         1,
         "the renderer's fixed delivery-debt notice when its stream append is refused",
     ),
+    "slack/renderer_thinking.py": (
+        1,
+        "the renderer's Thinking reply, posted above the answer before it opens",
+    ),
     "slack/transport.py": (1, "the Slack transport adapter: forwards content the caller rendered"),
-    "slack/transport_dispatch.py": (4, "hook reply, stats, ping and transport error text"),
+    "slack/transport_dispatch.py": (
+        5,
+        "hook reply, stats, ping, transport error text and the shared-user refusal",
+    ),
 }
 
 

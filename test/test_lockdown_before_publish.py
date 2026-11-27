@@ -24,6 +24,7 @@ from __future__ import annotations
 import functools
 import importlib.util
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -846,10 +847,13 @@ def _record_final_path_presence(final_path_of):
     from kiro_crew import platform_compat
 
     seen: list[bool] = []
+    test_thread = threading.get_ident()
     real = platform_compat.restrict_to_owner
 
     def _recording(path, *args, **kwargs):
-        seen.append(Path(final_path_of()).exists())
+        # This thread only: the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            seen.append(Path(final_path_of()).exists())
         return real(path, *args, **kwargs)
 
     return seen, _recording

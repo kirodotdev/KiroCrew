@@ -164,7 +164,7 @@ async def _consume_picker(
         await self.client.edit_message(
             cb.chat_id,
             cb.message_id,
-            f"This {noun} list is no longer active — send {command} again.",
+            f"⌛ This {noun} list is no longer active — send {command} again.",
             reply_markup={"inline_keyboard": []},
         )
         return None
@@ -265,9 +265,9 @@ async def _apply_model(
     # path before it consults ``model=``. With nothing live the next message
     # starts the session, so it genuinely lands then; with a session already
     # up, only a fresh conversation picks it up.
-    deferred = f"Model set to {label} — it applies to your next message."
+    deferred = f"✅ Model set to {label} — it applies to your next message."
     next_new = (
-        f"Model set to {label} — this conversation keeps its current "
+        f"✅ Model set to {label} — this conversation keeps its current "
         f"model; the switch applies to your next one (/new)."
     )
     # Auto has no ACP id meaning "let the backend choose", so it can only be
@@ -276,7 +276,7 @@ async def _apply_model(
     if not model_id:
         if not store_route_preference:
             return (
-                "Warning: Auto can only be selected when starting a new Telegram "
+                "⚠️ Auto can only be selected when starting a new Telegram "
                 "conversation; the resumed session was not changed."
             )
         return next_new if live else deferred
@@ -294,11 +294,11 @@ async def _apply_model(
             if store_route_preference:
                 return deferred
             return (
-                f"Warning: Couldn't switch this conversation to {label} — the resumed "
+                f"⚠️ Couldn't switch this conversation to {label} — the resumed "
                 f"session was not changed."
             )
         return (
-            f"Model set to {label}, but a reply is still running — this "
+            f"✅ Model set to {label}, but a reply is still running — this "
             f"conversation keeps its current model; the switch applies to "
             f"your next one (/new)."
         )
@@ -323,12 +323,11 @@ async def _apply_model(
             else "the resumed session was not changed."
         )
         return (
-            f"Warning: Couldn't switch this conversation to {label} "
-            f"({type(exc).__name__}) — {suffix}"
+            f"⚠️ Couldn't switch this conversation to {label} " f"({type(exc).__name__}) — {suffix}"
         )
     finally:
         self.sessions.release(target_key)
-    return f"Now using {label}."
+    return f"✅ Now using {label}."
 
 
 def _installed_agent_names() -> list[str]:
@@ -536,7 +535,7 @@ async def _apply_agent(
             # Picked explicitly while only the pinned default runs it: kept past the
             # next rotation, with the key unchanged.
             self._agent_picks.set(route, agent_id)
-        return f"Note: Already using {label}."
+        return f"ℹ️ Already using {label}."
     outcome = switch_channel_agent(
         self._agent_picks,
         route,
@@ -547,12 +546,12 @@ async def _apply_agent(
     )
     if outcome == "busy":
         return (
-            f"Still working on your last message — send /agent again once "
+            f"⏳ Still working on your last message — send /agent again once "
             f"it finishes to switch to {label}."
         )
     if outcome == "fresh":
-        return f"Agent set to {label}."
+        return f"✅ Agent set to {label}."
     return (
-        f"Agent set to {label} — this leaves the current conversation. "
+        f"✅ Agent set to {label} — this leaves the current conversation. "
         f"Switch back to return to it."
     )

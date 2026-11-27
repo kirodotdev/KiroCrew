@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
@@ -166,6 +166,12 @@ class TestCommandDispatchTable:
         ("text", "handler", "args", "kwargs"),
         [
             ("/compact", "_handle_compact", (_ROUTE, 7), {"session_key": None}),
+            (
+                "/compact keep the API decisions",
+                "_handle_compact",
+                (_ROUTE, 7),
+                {"session_key": None, "focus": "keep the API decisions"},
+            ),
             ("/link", "_handle_link", (_ROUTE, 7), {"resumed_key": None}),
             ("/unlink", "_handle_unlink", (_ROUTE, 7), {}),
             ("/stop", "_handle_stop", (_ROUTE, 7), {"origin": "ORIGIN", "session_key": None}),
@@ -268,13 +274,49 @@ class TestCommandDispatchTable:
         mocks["_handle_cron"].assert_not_awaited()
 
 
+class TestCompactFocus:
+    """``/compact <text>`` hands the cleaned text to the compaction; a bare one sends nothing."""
+
+    @staticmethod
+    def _run(text: str) -> tuple[AsyncMock, Any]:
+        d, cli, sess = _dispatcher({7})
+        compact = AsyncMock()
+        sess._gp.compact = compact
+        asyncio.run(d.handle_message(_dm(text)))
+        return compact, cli
+
+    def test_the_text_after_the_command_reaches_compact(self) -> None:
+        compact, cli = self._run("/compact keep the API decisions")
+        assert compact.await_args_list == [call("keep the API decisions")]
+        assert cli.edits[-1][1].endswith("Context compacted.")
+
+    def test_a_bare_compact_sends_exactly_what_it_always_did(self) -> None:
+        compact, _cli = self._run("/compact")
+        assert compact.await_args_list == [call()]
+
+    def test_a_blank_argument_is_a_bare_compact(self) -> None:
+        compact, _cli = self._run("/compact   \n  ")
+        assert compact.await_args_list == [call()]
+
+    def test_whitespace_collapses_and_a_long_focus_is_cut(self) -> None:
+        compact, _cli = self._run("/compact keep\n  the\tAPI   decisions")
+        assert compact.await_args_list == [call("keep the API decisions")]
+        compact, _cli = self._run("/compact " + "x" * 2000)
+        assert compact.await_args_list == [call("x" * 500)]
+
+    def test_the_reply_never_claims_the_focus_was_used(self) -> None:
+        _compact, cli = self._run("/compact keep the API decisions")
+        assert "keep the API decisions" not in " ".join(text for text, _ in cli.sent)
+        assert "keep the API decisions" not in " ".join(edit[1] for edit in cli.edits)
+
+
 class TestCommandReplies:
     """The exact replies of the commands the dispatcher answers itself."""
 
     _ROUTE = ("direct", "7")
     _KEY = "telegram:kirocrew:direct:7"
     _RELEASE = (
-        "Warning: Could not leave the resumed session safely, so nothing changed. "
+        "⚠️ Could not leave the resumed session safely, so nothing changed. "
         "Try again before sending another message."
     )
 
@@ -285,13 +327,13 @@ class TestCommandReplies:
         reserved: list[str] = []
         sess.reserve_generation = lambda key: reserved.append(key)  # type: ignore[attr-defined]
         asyncio.run(d.handle_message(_dm("/new")))
-        assert cli.sent == [("New conversation started.", None)]
+        assert cli.sent == [("✅ New conversation started.", None)]
         assert reserved == ["telegram:kirocrew:direct:7:gen1"]
 
         d, cli, sess = _dispatcher({7})
         asyncio.run(d.handle_message(_dm("/new")))
         assert cli.sent[-1][0] == (
-            "New conversation started.\nWarning: The new conversation could not be saved for restart."
+            "✅ New conversation started.\n⚠️ The new conversation could not be saved for restart."
         )
 
         d, cli, sess = _dispatcher({7})
@@ -299,7 +341,7 @@ class TestCommandReplies:
         leave = AsyncMock(return_value="dashboard:chat-1")
         d._session_resume.leave_resumed_session = leave  # type: ignore[method-assign]
         asyncio.run(d.handle_message(_dm("/new")))
-        assert cli.sent == [("New conversation started — left the resumed session.", None)]
+        assert cli.sent == [("✅ New conversation started — left the resumed session.", None)]
         assert leave.await_args.args == (7, None)
 
         d, cli, sess = _dispatcher({7})
@@ -319,7 +361,7 @@ class TestCommandReplies:
 
         _d, cli, sess = _run(lambda d, cli, sess: setattr(sess, "_busy", True))
         assert cli.sent == [
-            ("Still working on your last message — try /compact once it finishes.", None)
+            ("⏳ Still working on your last message — try /compact once it finishes.", None)
         ]
         _d, cli, sess = _run(lambda d, cli, sess: setattr(sess, "_has", False))
         assert cli.sent == [("No active session to compact.", None)] and sess.acquired == []
@@ -327,13 +369,13 @@ class TestCommandReplies:
         assert cli.sent == [("No active session to compact.", None)]
         assert sess.released == [self._KEY]
         _d, cli, sess = _run(lambda d, cli, sess: None)
-        assert cli.sent[0][0] == "Compacting context…"
-        assert cli.edits[-1] == (101, "Context compacted.", None)
+        assert cli.sent[0][0] == "🔄 Compacting context…"
+        assert cli.edits[-1] == (101, "✅ Context compacted.", None)
 
         for result, text in (
-            ({"type": "failed", "summary": "disk"}, "Error: Compaction failed: disk"),
-            ({"type": "failed"}, "Error: Compaction failed."),
-            ({"type": "timeout"}, "Warning: Compaction timed out."),
+            ({"type": "failed", "summary": "disk"}, "❌ Compaction failed: disk"),
+            ({"type": "failed"}, "❌ Compaction failed."),
+            ({"type": "timeout"}, "⚠️ Compaction timed out."),
         ):
 
             async def _wait(timeout: float = 0.0, result: dict = result) -> dict:
@@ -348,30 +390,28 @@ class TestCommandReplies:
             raise RuntimeError("wedged")
 
         _d, cli, sess = _run(lambda d, cli, sess: setattr(sess._gp, "compact", _boom))
-        assert cli.edits[-1][1] == "Error: Compaction failed unexpectedly."
+        assert cli.edits[-1][1] == "❌ Compaction failed unexpectedly."
         assert sess.discarded == [self._KEY] and sess.destroyed == []
 
         def _no_status(d: Any, cli: Any, sess: Any) -> None:
             real_send = cli.send_message
 
             async def _send(chat_id: int, text: str, **kw: Any) -> Any:
-                if text.startswith("Compacting"):
+                if text.startswith("🔄"):
                     return None
                 return await real_send(chat_id, text, **kw)
 
             cli.send_message = _send
 
         _d, cli, sess = _run(_no_status)
-        assert cli.sent[-1][0] == "Context compacted." and cli.edits == []
+        assert cli.sent[-1][0] == "✅ Context compacted." and cli.edits == []
 
     def test_link_and_unlink_replies(self) -> None:
         from kiro_crew.messaging.session_resume import ResumeReleaseError
 
         d, cli, sess = _dispatcher({7})
         asyncio.run(d._handle_link(self._ROUTE, 7, resumed_key="dashboard:x"))
-        assert cli.sent == [
-            ("Warning: A resumed session is active here. Send /unlink first.", None)
-        ]
+        assert cli.sent == [("⚠️ A resumed session is active here. Send /unlink first.", None)]
         assert sess.mirror_links == {}
 
         d, cli, sess = _dispatcher({7})
@@ -379,7 +419,9 @@ class TestCommandReplies:
             return_value="dashboard:chat-1"
         )
         asyncio.run(d._handle_unlink(self._ROUTE, 7))
-        assert cli.sent == [("Left the resumed session. Back to your Telegram conversation.", None)]
+        assert cli.sent == [
+            ("✅ Left the resumed session. Back to your Telegram conversation.", None)
+        ]
         assert sess.mirror_opt_outs == set()
 
         d, cli, sess = _dispatcher({7})
@@ -408,11 +450,11 @@ class TestCommandReplies:
         d, cli, sess = _dispatcher({7})
         sess._busy = True
         asyncio.run(d.handle_message(_dm("/stop")))
-        assert cli.sent == [("Stopped.", None)]
+        assert cli.sent == [("🛑 Stopped.", None)]
 
         d, cli, sess = _dispatcher({7})
         asyncio.run(d.handle_message(_dm("/stop")))
-        assert cli.sent == [("Nothing was running — queue cleared.", None)]
+        assert cli.sent == [("🛑 Nothing was running — queue cleared.", None)]
         assert sess._gp.cancelled == 0
 
         d, cli, sess = _dispatcher({7})
@@ -460,7 +502,7 @@ class TestCommandReplies:
             reply_to_message_id=5,
         )
         asyncio.run(d.handle_message(stop_reply))
-        assert sess._gp.cancelled == 2 and cli.sent[-1] == ("Stopped.", None)
+        assert sess._gp.cancelled == 2 and cli.sent[-1] == ("🛑 Stopped.", None)
 
     def test_a_topic_stop_answers_in_its_topic(self) -> None:
         d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-100999])

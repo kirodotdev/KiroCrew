@@ -37,7 +37,7 @@ from kiro_crew.executors import (
     run_in_embed_pool,
 )
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
-from kiro_crew.llm_helpers import save_conversation_turn_off_loop
+from kiro_crew.llm_helpers import record_interaction_event, save_conversation_turn_off_loop
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, turn_ceiling
 from kiro_crew.messaging.dashboard_live import DashboardLiveRenderer, TeeRenderer
@@ -79,11 +79,13 @@ from kiro_crew.slack.handler import (
     _thread_agents,
     get_dashboard_state,
     get_orch_cfg,
+    is_shared_listed,
     is_slack_session_trusted,
     is_thread_temporary,
     maybe_apply_privacy_modifiers,
     maybe_handle_keyword_command,
     maybe_route_linked_thread,
+    shared_user_refused_for_session,
     track_background_task,
 )
 from kiro_crew.slack.renderer import PARTIAL_TURN_MARKER
@@ -91,6 +93,7 @@ from kiro_crew.slack.renderer import SlackApprovalDecider
 from kiro_crew.slack.renderer import SlackApprovalDecider as _APPROVAL_REGISTRY
 from kiro_crew.slack.renderer import SlackRenderer, _display_safe
 from kiro_crew.slack.script_hooks import runs_script_hooks
+from kiro_crew.slack.shared_access import SHARED_OWNER_ONLY_TEXT, shared_command_refused
 from kiro_crew.slack.thread_parent import (
     ThreadParent,
     fetch_thread_parent,
@@ -134,7 +137,7 @@ _DEFAULT_KIROCREW_AGENT = "kirocrew"
 
 #: Generic reply for a failed transport turn whose error text is not meant for
 #: the user (see ``_transport_error_text``).
-_TRANSPORT_ERROR_TEXT = "Error: Something went wrong (transport path). Please try again."
+_TRANSPORT_ERROR_TEXT = "🔧 Something went wrong (transport path). Please try again."
 
 #: Longest error detail posted to Slack, the cap the native path applies to its
 #: ``UnknownMemoryStore`` refusal.
@@ -163,7 +166,7 @@ def _transport_error_text(exc: BaseException) -> str:
 
     A classified backend ``AcpError`` (see ``is_user_worded_failure``) carries a
     user-readable reason, for example a usage limit that retrying cannot fix, so
-    that reason is shown under the same ``Error:`` prefix the native path uses. The
+    that reason is shown under the same ``❌`` prefix the native path uses. The
     message can still quote a host path or a credential from the backend, so it
     goes through the same redaction and length cap as the ``UnknownMemoryStore``
     refusal. Every other failure, including an unclassified ``AcpError``, keeps
@@ -172,7 +175,7 @@ def _transport_error_text(exc: BaseException) -> str:
     if isinstance(exc, (UnknownMemoryStore, EmbedAdmissionTimeout)):
         return _redacted_error_detail(exc)
     if is_user_worded_failure(exc):
-        return f"Error: {_redacted_error_detail(exc)}"
+        return f"❌ {_redacted_error_detail(exc)}"
     return _TRANSPORT_ERROR_TEXT
 
 
@@ -315,6 +318,7 @@ async def handle_message_transport(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     spool_text: str | None = None,
     spool_attachments: int = 0,
+    spool_attachment_names: tuple[str, ...] = (),
     had_voice_input: bool = False,
 ) -> None:
     """Drive a Slack message through the new transport path end-to-end.
@@ -322,8 +326,9 @@ async def handle_message_transport(
     ``start_priority``: as for ``handler.handle_message`` (rule:
     ``kiro_crew.start_priority``).
 
-    ``spool_text`` / ``spool_attachments``: as for ``handler.handle_message`` --
-    the pre-ingestion message the shutdown spool records instead of *text*.
+    ``spool_text`` / ``spool_attachments`` / ``spool_attachment_names``: as for
+    ``handler.handle_message`` -- the pre-ingestion message the shutdown spool
+    records instead of *text*, and the names of its files.
 
     ``had_voice_input``: as for ``handler.handle_message`` -- the message carried a
     transcribed voice memo, answered in kind under ``voice_reply.auto_reply_to_voice``.
@@ -425,7 +430,7 @@ async def handle_message_transport(
                     continue
                 _hydrate_conv_flags(sessions, candidate_key)
                 logger.info(
-                    "Slack thread %s owned by %s (at %s) — routing there",
+                    "🔗 Slack thread %s owned by %s (at %s) — routing there",
                     session_key,
                     candidate_key,
                     stage,
@@ -468,6 +473,7 @@ async def handle_message_transport(
         thread_id=reply_ts,
         message_id=msg_ts,
         attachments_dropped=spool_attachments,
+        attachment_names=spool_attachment_names,
     )
     if not await admit_inbound_callback(
         sessions,
@@ -501,7 +507,23 @@ async def handle_message_transport(
     # Shared with native handle_message so a thread linked via
     # /kirocrew link-to-dashboard routes into its dashboard slot (with the same
     # auth recheck + bang fall-through) instead of spawning a fresh session.
-    if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
+    # A shared user (slack.shared_access) sends no harness `/` command and no
+    # privacy modifier; refused before the linked-thread hand-off, as on native.
+    # Judged on what the user typed, not the ingested text (see handle_message).
+    if shared_command_refused(user_id, inbound_text):
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.owner_command",
+            outcome="denied",
+            source="slack",
+            resources=channel,
+            error="shared user command",
+        )
+        await slack.post_message(channel, SHARED_OWNER_ONLY_TEXT, reply_ts)
+        return
+    if await maybe_route_linked_thread(
+        text, session_key, user_id, channel, slack, reply_ts, had_voice_input=had_voice_input
+    ):
         return
 
     # ── Hook: auto-reply before touching the LLM (mirrors native) ──
@@ -527,7 +549,8 @@ async def handle_message_transport(
 
     # ── Quick shortcuts (no session needed) ──
     _lower = text.strip().lower()
-    if _lower == "status":
+    # Owner-only: the counts are the host's (slack.shared_access).
+    if _lower == "status" and not is_shared_listed(user_id):
         # Use the platform identity seam (native migrated to this) rather than
         # importing the OSS SSO stub directly — keeps the CPP boundary intact
         # and returns the real SSO line under the enterprise companion context.
@@ -670,7 +693,7 @@ async def handle_message_transport(
         # kiro-cli to warm up. on_turn_start is idempotent (the driver's later
         # call no-ops). ──
         decider = (
-            SlackApprovalDecider(session_key=session_key)
+            SlackApprovalDecider(session_key=session_key, requester=user_id)
             if approval_mode == APPROVAL_INTERACTIVE
             else None
         )
@@ -719,6 +742,10 @@ async def handle_message_transport(
                 raise
             if sessions.get_session_for_thread(reply_ts) == owner_before_memory:
                 break
+        # The owner may have linked this thread to a code channel's session since the
+        # linked-thread check ran: a shared user's turn never runs there.
+        if await shared_user_refused_for_session(user_id, session_key, reply_ts, channel):
+            return
         if decider is not None:
             # The decider was constructed with the pre-reroute key, and that key
             # is what maps a human's Trust click back to a session. Leaving it
@@ -745,13 +772,16 @@ async def handle_message_transport(
         # kiro_agent as the mode, its name as crew_agent, its workspace as cwd
         # (slack/channel_crew.py). Only when the selected agent IS the channel's
         # binding -- a thread value equal to it is that binding restored from the
-        # transcript header by ``_hydrate_thread_overrides`` -- and the session is
-        # Slack's own: a dashboard-linked session keeps its slot's project.
+        # transcript header by ``_hydrate_thread_overrides`` -- or the thread's own
+        # agent (``!bot`` puts a thread on a Crew Bot; a name that is no
+        # ``config.agents`` key resolves to nothing and passes through), and the
+        # session is Slack's own: a dashboard-linked session keeps its slot's project.
         # ``_agent`` stays the record's name for the transcript header; the
         # context builder takes the record's template (``context_template``).
         _channel_crew = (
-            await asyncio.to_thread(resolve_channel_crew, agent_override)
-            if agent_override and _agent == agent_override and is_slack_born(session_key)
+            await asyncio.to_thread(resolve_channel_crew, _agent)
+            if _agent in (_thread_agents.get(session_key), agent_override)
+            and is_slack_born(session_key)
             else None
         )
         _context_agent = await asyncio.to_thread(context_template, _agent, _channel_crew)
@@ -972,6 +1002,12 @@ async def handle_message_transport(
                 )
             if _logged_user_turn:
                 await _refresh_dashboard_tab(session_key)
+        if _logged_user_turn or not conversation_log or _is_slack_restricted(session_key):
+            # The question is on disk, or this turn keeps no transcript: a message
+            # steered in from here on is written after it (``slack/midturn.py``).
+            from kiro_crew.slack import midturn
+
+            midturn.open_transcript(session_key if _logged_user_turn else "")
 
         # ── Build message with context ──
         if context_builder:
@@ -1072,8 +1108,11 @@ async def handle_message_transport(
             # Per-session Trust (set via the Trust button) auto-approves all
             # subsequent tools for THIS session, mirroring native. Checked per
             # permission request so a mid-turn Trust click takes effect for the
-            # remaining tools in the same turn.
-            auto_approve_session=lambda: is_slack_session_trusted(session_key),
+            # remaining tools in the same turn. The grant is the owner's: a shared
+            # user's turn in a trusted thread still asks.
+            auto_approve_session=lambda: (
+                not is_shared_listed(user_id) and is_slack_session_trusted(session_key)
+            ),
             # PreToolUse deny/auto gate (runs before the ladder in TurnDriver;
             # a DENY is un-overridable by auto/trust/YOLO).
             tool_gate=_tool_gate,
@@ -1214,6 +1253,9 @@ async def handle_message_transport(
         _turn_landed = driver_turn_landed(driver)
         if _turn_landed:
             note_turn_landed(sessions, session_key)
+            # Per-interaction telemetry, on the landed verdict alone: a Stop
+            # or a stream with no completion returns normally but did not land.
+            record_interaction_event(client, session_key, "slack")
         if _unfinished:
             Stats().inc_message_failed()
         else:
@@ -1446,6 +1488,7 @@ async def handle_message_transport(
                     thread_id=reply_ts,
                     message_id=msg_ts,
                     attachments_dropped=spool_attachments,
+                    attachment_names=spool_attachment_names,
                 ),
             )
         with contextlib.suppress(Exception):

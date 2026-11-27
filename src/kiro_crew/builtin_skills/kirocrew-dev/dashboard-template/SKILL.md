@@ -52,8 +52,8 @@ test directory. The scaffold writes all four and prints line 5 for you to paste.
 1. **Name the question the page answers, in one sentence a person would ask.** "How much
    of this goal is settled, and what is waiting on me." Not "a board of metrics". If you
    cannot write the sentence, you do not yet know which fold to read.
-2. **Pick the fold.** Take one of the advertised folds in `FOLDS.md` (not the
-   *(internal)* `class` fold, which `--fold` still accepts). A new fold is the exception and needs
+2. **Pick the fold.** Take one of the advertised folds in `FOLDS.md` (not one of the
+   *(internal)* folds, such as `class`, which `--fold` still accepts). A new fold is the exception and needs
    its own justification section in the pull request body, because a fold is a durable
    projection of the append-only log and every reader pays for it.
 3. **Write the field list.** One token per value: `name:str|unsaid` for text, or
@@ -179,8 +179,9 @@ The frame, as `CrewDynamicDashboard.tsx` and `widgetSrcdoc.ts` build it:
 - No link can leave the frame. A page asks the host instead:
   `parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*')`. The host
   (`useFrameLinkBridge`) opens it only from its own frame, only right after a click or
-  key press in that frame, in a new tab, for an `http(s)` URL or a dashboard path
-  such as `/artifacts/<slug>` or `/chat?sid=<key>`. A click it cannot tie to the
+  key press in that frame, for an `http(s)` URL or a dashboard path such as
+  `/artifacts/<slug>` or `/chat?sid=<key>`. A web URL opens in a new tab; a
+  dashboard page opens in place in the dashboard. A click it cannot tie to the
   frame gets an "Open <host>" button instead. Other schemes drop, and so does a
   post with no click, so post it from a click handler, never on a timer.
 

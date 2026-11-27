@@ -15,6 +15,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard import chat_handlers, chat_merge_back, chat_persistence
 from kiro_crew.dashboard.chat_merge_back import (
     MERGE_NOTE_SOURCE,
@@ -297,7 +299,13 @@ async def _run_turn(
         yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="noted")
         yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
 
-    client = MagicMock(is_kiro_backend=True, stream=stream, stream_command=stream, exit_code=None)
+    client = MagicMock(
+        is_kiro_backend=True,
+        capabilities=capabilities_for(ACP_BACKEND_KIRO),
+        stream=stream,
+        stream_command=stream,
+        exit_code=None,
+    )
     client.context_usage_pct = MagicMock(return_value=10.0)
     client.shutdown = AsyncMock()
     state.sessions.get_or_create = AsyncMock(return_value=(client, False, False))

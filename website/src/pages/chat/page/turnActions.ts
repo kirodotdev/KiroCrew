@@ -1,7 +1,8 @@
 import { useState, useCallback, useMemo, useEffect, useRef, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../../store'
-import { isHiddenInvisibleAssistantRow, isRetractedSteerRow } from '../../../utils/invisibleText'
+import { isRetractedSteerRow } from '../../../utils/invisibleText'
+import { isHiddenReplyAt } from '../../../app-sdk/turnPolicyBlock'
 import { appendSlotMessage, selectSendConfirmed, resolveOptimisticSteer } from '../../../store/chatSlice'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../../../chat-core/transport/steerReceipt'
@@ -38,6 +39,7 @@ export const REFUSED_PRESS_TITLE_KEYS = {
   fork: 'pages.chatPage.could_not_fork_session',
   fresh_session: 'pages.chatPage.could_not_start_fresh_session',
   repair_images: 'pages.chatPage.could_not_repair_images',
+  edit_resend: 'pages.chatPage.could_not_edit_and_resend',
 } as const
 
 export type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
@@ -313,10 +315,19 @@ export function useRegenerate({
       // System-notice rows (compaction / session reload) are passed over too:
       // they draw a system card, not a reply, so hosting Regenerate/variant
       // switching on them would target the wrong row.
-      if (messages[i].role === 'assistant' && !isHiddenInvisibleAssistantRow(messages[i]) && !isSystemNoticeRow(messages[i])) return i
+      if (messages[i].role === 'assistant' && !isHiddenReplyAt(messages[i], messages, i) && !isSystemNoticeRow(messages[i])) return i
     }
     return -1
   }, [messages])
+  // A press re-runs the newest turn (handleRegenerate's boundary below), so only
+  // a reply inside it carries Regenerate: when that turn's only reply is hidden, no row does.
+  const regenerateIdx = useMemo(() => {
+    for (let i = messages.length - 1; i > lastTextIdx; i--) {
+      const m = messages[i]
+      if (!isRetractedSteerRow(m) && (m.role === 'user' || injectOpensTurn(m))) return -1
+    }
+    return lastTextIdx
+  }, [messages, lastTextIdx])
   const [regenerating, setRegenerating] = useState(false)
   useEffect(() => { setRegenerating(false) }, [activeSlot])
   // Clear typing dots as soon as streaming starts
@@ -410,6 +421,6 @@ export function useRegenerate({
     })
   }, [activeSlot, regenerating, slotRunning, activeSlotRemoteBound, messagesRef, showRefusedPress])
   return {
-    lastTextIdx, regenerating, setRegenerating, handleRegenerate, replacingMids,
+    lastTextIdx, regenerateIdx, regenerating, setRegenerating, handleRegenerate, replacingMids,
   }
 }

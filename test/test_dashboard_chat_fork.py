@@ -13,6 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_app_with_agent_routes, _make_state
 from redaction_structured_cases import github_classic
 
+from kiro_crew.dashboard.chat_persistence import DeleteWitness
 from kiro_crew.dashboard.slot_buffers import (
     MAX_FORK_PARENT_KEY_CHARS,
     MERGED_FROM_MAX_CREATED_AT_CHARS,
@@ -689,7 +690,10 @@ class TestForkSlot:
 
         with (
             patch("kiro_crew.dashboard.chat_fork.slot_history_key", return_value="dashboard:src"),
-            patch("kiro_crew.dashboard.chat_fork.session_was_deleted", return_value=False),
+            patch(
+                "kiro_crew.dashboard.chat_fork.session_delete_witness",
+                return_value=DeleteWitness.PRESENT,
+            ),
         ):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/src/fork", json={})

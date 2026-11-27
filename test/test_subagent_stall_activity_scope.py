@@ -35,7 +35,7 @@ from kiro_crew.testing.wait import finished
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
 # Ancient wall-clock stamp: any refresh replaces it with ~time.time(), so
 # "unchanged" cannot be satisfied by an accidental re-write.

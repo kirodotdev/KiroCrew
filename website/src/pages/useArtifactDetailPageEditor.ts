@@ -23,6 +23,7 @@ import type { PierreEditorHandle } from '../pierre'
 
 import { i18nT } from '../i18n/t'
 import { usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
+import { flushCanvas } from '../components/canvas/canvasPending'
 import type {
   ArtifactDetailPageStateRead, ArtifactDetailPageDocumentRead,
 } from './useArtifactDetailPageDocument'
@@ -458,6 +459,13 @@ export function useArtifactDetailPageEditor({
     setSaving(true)
     setSaveError(null)
     try {
+      // A canvas's last edits may still be waiting on its autosave: send them
+      // first, so the version holds what the screen shows. One that cannot be
+      // saved is not snapshotted under the stored content's name.
+      if (!(await flushCanvas(artifact.slug))) {
+        setSaveError(i18nT('pages.artifactDetailPage.snapshot_failed'))
+        return
+      }
       // No content field — backend reads live state and snapshots it.
       await api.updateArtifact(artifact.slug, { snapshot: true })
       await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })

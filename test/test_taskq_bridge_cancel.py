@@ -1,9 +1,9 @@
 """The claimed-not-started probe a parent-end teardown asks before it reaps a run.
 
-``taskq_row_is_claimed_unstarted_async`` (``admission/taskq_bridge_cancel.py``) answers True
-only for a row the store holds as ``admitted``: claimed, its claimer between the claim and the
-registration. Every other answer -- queued, started, missing, unreadable -- is False, because
-the teardown spares a run only on positive evidence. An unreadable store is read again on the
+``taskq_unstarted_claim_generation_async`` (``admission/taskq_bridge_cancel.py``) answers the
+claim's generation only for a row the store holds as ``admitted``: claimed, its claimer between
+the claim and the registration. Every other answer -- queued, started, missing, unreadable -- is
+None, because the teardown spares a run only on positive evidence. An unreadable store is read again on the
 durable sweep's bound before the probe gives up.
 """
 
@@ -39,8 +39,8 @@ def _bridge(store: object) -> types.SimpleNamespace:
     return types.SimpleNamespace(taskq_store=lambda: store)
 
 
-def _probe(bridge: object, agent_id: str) -> bool:
-    return asyncio.run(_TaskqBridgeMixin.taskq_row_is_claimed_unstarted_async(bridge, agent_id))
+def _probe(bridge: object, agent_id: str) -> int | None:
+    return asyncio.run(_TaskqBridgeMixin.taskq_unstarted_claim_generation_async(bridge, agent_id))
 
 
 class _UnreadableStore:
@@ -72,8 +72,9 @@ def test_a_claimed_row_that_has_not_started_is_claimed(tmp_path) -> None:
     try:
         store.accept([_row("adm1")])
         assert store.claim("adm1") is not None
-        assert store.get("adm1").state == taskq.ADMITTED
-        assert _probe(_bridge(store), "adm1") is True
+        claimed = store.get("adm1")
+        assert claimed.state == taskq.ADMITTED and claimed.generation > 0
+        assert _probe(_bridge(store), "adm1") == claimed.generation
     finally:
         store.close()
 
@@ -83,19 +84,19 @@ def test_a_queued_row_and_a_missing_row_are_not_claimed(tmp_path) -> None:
     try:
         store.accept([_row("q1")])
         assert store.get("q1").state == taskq.QUEUED
-        assert _probe(_bridge(store), "q1") is False
-        assert _probe(_bridge(store), "never-accepted") is False
+        assert _probe(_bridge(store), "q1") is None
+        assert _probe(_bridge(store), "never-accepted") is None
     finally:
         store.close()
 
 
 def test_no_store_means_no_claim() -> None:
-    assert _probe(_bridge(None), "any") is False
+    assert _probe(_bridge(None), "any") is None
 
 
 def test_a_started_row_is_not_claimed() -> None:
     started = types.SimpleNamespace(state=taskq.RUNNING)
-    assert _probe(_bridge(_UnreadableStore(0, started)), "run1") is False
+    assert _probe(_bridge(_UnreadableStore(0, started)), "run1") is None
 
 
 @pytest.mark.usefixtures("no_backoff")
@@ -104,7 +105,7 @@ def test_an_unreadable_store_is_read_again_then_answers_not_claimed(
 ) -> None:
     store = _UnreadableStore(failures=cancel_owner._STATE_READ_ATTEMPTS)
     caplog.set_level(logging.WARNING, logger=_ADMISSION_LOGGER)
-    assert _probe(_bridge(store), "adm1") is False
+    assert _probe(_bridge(store), "adm1") is None
     assert store.reads == cancel_owner._STATE_READ_ATTEMPTS
     warned = [
         r
@@ -118,9 +119,9 @@ def test_an_unreadable_store_is_read_again_then_answers_not_claimed(
 def test_a_read_that_fails_once_answers_from_the_next_read(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    admitted = types.SimpleNamespace(state=taskq.ADMITTED)
+    admitted = types.SimpleNamespace(state=taskq.ADMITTED, generation=3)
     store = _UnreadableStore(failures=1, rec=admitted)
     caplog.set_level(logging.WARNING, logger=_ADMISSION_LOGGER)
-    assert _probe(_bridge(store), "adm1") is True
+    assert _probe(_bridge(store), "adm1") == 3
     assert store.reads == 2
     assert [r for r in caplog.records if r.name == _ADMISSION_LOGGER] == []

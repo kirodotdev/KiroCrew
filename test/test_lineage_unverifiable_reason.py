@@ -389,8 +389,8 @@ def test_every_lineage_refusal_builds_its_sentence_from_the_cause() -> None:
     """Each writer builds its body from the exception, so no site can fall back
     to a fixed "retry" sentence for a cause a retry cannot clear."""
     bodies = _lineage_bodies()
-    # crew create, both crew-update paths, the default-agent write, publish, reset.
-    assert len(bodies) == 6, bodies
+    # crew create, both crew-update paths, the default-agent write, fork, publish, reset.
+    assert len(bodies) == 7, bodies
     for where, line, node in bodies:
         keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
         assert keys == {"error", "code"}, f"{where}:{line}"

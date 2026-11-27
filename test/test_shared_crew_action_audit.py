@@ -56,8 +56,9 @@ def events(monkeypatch) -> list[Any]:
 
 
 async def _drain() -> None:
-    while audit._pending_audits:
-        await asyncio.gather(*list(audit._pending_audits))
+    # A finished task leaves the set only on a later loop turn, so wait on unfinished ones.
+    while pending := [t for t in audit._pending_audits if not t.done()]:
+        await asyncio.gather(*pending)
 
 
 def _by_outcome(events: list[Any]) -> list[Any]:

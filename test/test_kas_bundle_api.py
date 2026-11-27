@@ -56,6 +56,10 @@ def cfg(monkeypatch):
     # The machine running the tests is not the host under test: a CI runner or a
     # dev box on an old glibc must not change what status reports.
     monkeypatch.setattr(kas_bundle, "require_loadable_host", lambda: None)
+    # Nor may the runner's own build stamp decide what the build prefers.
+    from kiro_crew.acp import kas_build_default
+
+    monkeypatch.setattr(kas_build_default, "kas_bundle_preferred_by_build", lambda: False)
     return agent
 
 
@@ -81,7 +85,53 @@ async def test_status_reports_the_pin_and_nothing_installed(cfg, monkeypatch):
         "error": "",
         "host_unsupported": "",
         "route": None,
+        "chat_needs_sign_in": False,
+        "engine_choice": "kiro_cli",
+        "choice_saved": False,
+        "sign_in_moves_to_engine": False,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("declared", "saved", "routed", "choice"),
+    [
+        (False, False, True, "engine"),
+        (False, False, False, "kiro_cli"),
+        (True, False, True, "kiro_cli"),
+        (True, True, False, "engine"),
+    ],
+    ids=["unset-on-engine", "unset-on-relay", "saved-off-wins", "saved-on-wins"],
+)
+async def test_status_reports_the_engine_choice(cfg, monkeypatch, declared, saved, routed, choice):
+    """A saved value always wins; unset, the choice is the route the next spawn takes,
+    so the card never shows the engine while chats run on kiro-cli."""
+    from kiro_crew.acp import kas_route
+    from kiro_crew.config import loader_document
+
+    cfg.kas_bundle = saved
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(loader_document, "kas_bundle_declared", lambda: declared)
+    monkeypatch.setattr(kas_bundle, "kas_route", lambda *a, **k: kas_route.KasRoute(bundle=routed))
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest()))
+    assert (body["engine_choice"], body["choice_saved"]) == (choice, declared)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("owner", "moves", "lacks", "expected"),
+    [(True, True, False, True), (False, True, False, False), (True, True, True, False)],
+    ids=["owner", "non-owner", "blocking-sign-in-wins"],
+)
+async def test_status_says_when_one_sign_in_moves_chats_to_the_engine(
+    cfg, monkeypatch, owner, moves, lacks, expected
+):
+    cfg.acp_backend = "kas"
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(kas_bundle, "bundle_route_lacks_sign_in", lambda: lacks)
+    monkeypatch.setattr(kas_bundle, "crew_sign_in_moves_to_bundle", lambda: moves)
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest(owner=owner)))
+    assert body["sign_in_moves_to_engine"] is expected
 
 
 def _glibc_too_old():
@@ -136,6 +186,45 @@ async def test_status_skips_the_host_check_once_an_engine_is_installed(cfg, monk
     )
     body = _body(await handler.api_kas_bundle_status(_FakeRequest()))
     assert body["host_unsupported"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend", "owner", "lacks", "expected"),
+    [
+        ("kas", True, True, True),
+        ("kas", True, False, False),
+        ("kas", False, True, False),
+        ("claude", True, True, False),
+    ],
+    ids=["kas-owner-signed-out", "kas-owner-signed-in", "non-owner", "other-harness"],
+)
+async def test_status_says_when_a_new_chat_needs_crews_sign_in(
+    cfg, monkeypatch, backend, owner, lacks, expected
+):
+    """Only the gateway decides, and only for the owner, who can sign in."""
+    cfg.acp_backend = backend
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(kas_bundle, "bundle_route_lacks_sign_in", lambda: lacks)
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest(owner=owner)))
+    assert body["chat_needs_sign_in"] is expected
+
+
+@pytest.mark.asyncio
+async def test_the_install_reply_carries_the_sign_in_need_too(cfg, monkeypatch):
+    """The dashboard stores this reply in the status's cache entry, so a reply
+    without the field would hide the chat's sign-in while one is in progress."""
+    cfg.acp_backend = "kas"
+    release = threading.Event()
+    monkeypatch.setattr(kas_bundle, "install_pinned", lambda *a, **k: release.wait(5))
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(kas_bundle, "bundle_route_lacks_sign_in", lambda: True)
+    app = {"state": _FakeState()}
+    resp = await handler.api_kas_bundle_install(_FakeRequest(app))
+    release.set()
+    await app[handler._STATE_KEY]["task"]
+    assert resp.status == 202
+    assert _body(resp)["chat_needs_sign_in"] is True
 
 
 @pytest.mark.asyncio
@@ -203,6 +292,54 @@ async def test_install_is_owner_only(cfg, monkeypatch):
     resp = await handler.api_kas_bundle_install(_FakeRequest(owner=False))
     assert resp.status == 403
     assert _body(resp)["code"] == "owner_only"
+
+
+def _request_as(user, *, app=""):
+    """A request from *user* while ``U_OWNER`` is the configured owner."""
+    req = _FakeRequest()
+    req.app["state"].owner_id = "U_OWNER"
+    req._items = {"app": app, "user": user} if app is not None else {}
+    return req
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subject", ["local-app", "local-startup"])
+async def test_a_session_from_before_the_owner_is_told_to_sign_in_again(cfg, monkeypatch, subject):
+    # Signed in before an owner was configured: still refused, and the refusal is the
+    # 401 the other owner gates give it, so the dashboard asks for a new sign-in.
+    monkeypatch.setattr(
+        kas_bundle, "install_pinned", lambda *a, **k: pytest.fail("a stale session installed")
+    )
+    req = _request_as(subject)
+    resp = await handler.api_kas_bundle_install(req)
+    assert resp.status == 401
+    assert _body(resp)["code"] == "stale_session_reauth"
+    assert handler._STATE_KEY not in req.app
+
+
+@pytest.mark.asyncio
+async def test_with_an_owner_configured_only_the_owner_installs(cfg, monkeypatch):
+    # Another user, an app token and a caller with no credential keep 403
+    # ``owner_only``; the owner's own new session starts the install.
+    calls = []
+    monkeypatch.setattr(
+        kas_bundle,
+        "install_pinned",
+        lambda base_url, **k: calls.append(base_url)
+        or SimpleNamespace(version=KAS_PIN_VERSION, root="/engines/kas"),
+    )
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    for user, app in (("U_SOMEONE_ELSE", ""), ("U_OWNER", "some-app"), ("", None)):
+        resp = await handler.api_kas_bundle_install(_request_as(user, app=app))
+        assert resp.status == 403
+        assert _body(resp)["code"] == "owner_only"
+    assert calls == []
+
+    req = _request_as("U_OWNER")
+    resp = await handler.api_kas_bundle_install(req)
+    assert resp.status == 202
+    await req.app[handler._STATE_KEY]["task"]
+    assert calls == ["https://h.test"]
 
 
 @pytest.mark.asyncio

@@ -211,6 +211,10 @@ async def test_the_sign_in_api_needs_the_owner_token() -> None:
         assert (await client.get("/api/health")).status == 200
         assert (await client.get("/api/kas-login")).status in (401, 403)
         assert (await client.get("/api/kiro-prerequisite")).status in (401, 403)
+        # The sign-in screen's own status read passes the owner gate.
+        resp = await client.get("/api/kas-login", cookies=_owner_cookie(port))
+        assert resp.status == 200
+        assert "authenticated" in await resp.json()
         resp = await client.get("/api/kiro-prerequisite", cookies=_owner_cookie(port))
         assert resp.status == 200
         body = await resp.json()
@@ -545,6 +549,34 @@ def test_cli_the_sign_in_screen_takes_the_gateway_lock(
     gateway.assert_not_called()
 
 
+def test_cli_a_refused_sign_in_lock_names_who_owns_the_files(
+    lts: None,
+    signed_out: list[bool],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from kiro_crew import cli, data_home_owner
+    from kiro_crew.gateway_lock import LockFileError
+
+    found = data_home_owner.DataHomeAccess(
+        home=str(tmp_path), foreign=(str(tmp_path / "config.json"),), owner="root"
+    )
+    monkeypatch.setattr(data_home_owner, "check_data_home", lambda home: found)
+    lock_cls = MagicMock()
+    lock_cls.return_value.acquire.side_effect = LockFileError(
+        tmp_path, f"could not open {tmp_path / 'gateway.lock'}: Permission denied"
+    )
+    monkeypatch.setattr(cli, "GatewayLock", lock_cls)
+    exit_, _boots, gateway = _cli_gateway(monkeypatch, tmp_path, "--no-open")
+    assert exit_.code == 1
+    assert signin.serve_until_signed_in.served == []  # type: ignore[attr-defined]
+    gateway.assert_not_called()
+    err = capsys.readouterr().err
+    assert found.explain() in err
+    assert err.index("could not open") < err.index(found.explain())
+
+
 def test_cli_a_second_start_on_a_served_sign_in_screen_points_at_its_link(
     lts: None,
     signed_out: list[bool],
@@ -588,7 +620,7 @@ def test_cli_a_second_start_on_a_served_sign_in_screen_points_at_its_link(
     assert "KIROCREW_HOME" in err
 
 
-@pytest.mark.parametrize("flag", ["--test-mode", "--json-ready"])
+@pytest.mark.parametrize("flag", ["--test-mode", "--json-ready", "--headless"])
 def test_cli_test_and_scripted_starts_still_exit(
     lts: None,
     signed_out: list[bool],
@@ -600,6 +632,7 @@ def test_cli_test_and_scripted_starts_still_exit(
     assert exit_.code == lts_boot.EXIT_CODE
     assert boots == [1]
     gateway.assert_not_called()
+    assert signin.serve_until_signed_in.served == []  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize("port", ["abc", "99999"])
@@ -637,7 +670,12 @@ def test_cli_opens_a_browser_only_where_the_gateway_would(
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr("kiro_crew.cli.sys.platform", "linux")
+    from kiro_crew import cli
+
+    # Take the non-macOS branch on every host through `cli`'s own one-line helper. A faked
+    # `sys.platform` or `platform_compat` would be live while `_cli_gateway` imports
+    # `cli_server`, and every module imported then would see the fake value.
+    monkeypatch.setattr(cli, "_headless_ssh_skips_browser_here", lambda: True)
     seen: dict[str, Any] = {}
 
     def sign_in_then_exit(_exc: BaseException, **kwargs: Any) -> None:

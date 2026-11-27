@@ -213,7 +213,7 @@ async def _inspect_model_text(
         return await _inspect_switch_model_text(state, slot, argument)
     current = slot.model or "auto"
     served = str(getattr(slot, "served_model", "") or "")
-    line = f"🧠 Model: `{current}`"
+    line = f"Model: `{current}`"
     if served and served != current:
         line += f" (running `{served}`)"
     lines = [line]
@@ -246,9 +246,9 @@ async def _inspect_switch_model_text(
     if resp.status == 200 and body.get("ok"):
         model = str(body.get("model") or "auto")
         if body.get("deferred"):
-            text = f"🧠 Model set to `{model}`. It applies when the current turn ends."
+            text = f"Model set to `{model}`. It applies when the current turn ends."
         else:
-            text = f"🧠 Model set to `{model}`."
+            text = f"Model set to `{model}`."
         warning = str(body.get("warning") or "")
         if warning:
             text += f"\n⚠ {warning}"
@@ -261,14 +261,14 @@ async def _inspect_tools_text(state: DashboardState, session_key: str) -> tuple[
     provider = await _inspect_live_provider(state, session_key)
     if provider is None:
         return (
-            "🔧 No tool list yet: this chat has no running session. "
+            "No tool list yet: this chat has no running session. "
             "Send a message first, then run `/tools` again.",
             "no_session",
         )
     view = kas_tool_view(provider)
     if view is None:
         return (
-            "🔧 This session holds no agent batch registered with KAS, "
+            "This session holds no agent batch registered with KAS, "
             "so there is no tool list for it here.",
             "no_batch",
         )
@@ -277,12 +277,12 @@ async def _inspect_tools_text(state: DashboardState, session_key: str) -> tuple[
         mode_id = view.get("mode_id")
         mode = f" (`{mode_id}`)" if isinstance(mode_id, str) and mode_id else ""
         return (
-            f"🔧 This session runs an agent{mode} that Kiro Crew did not register, "
+            f"This session runs an agent{mode} that Kiro Crew did not register, "
             "so there is no tool list for it here.",
             "unregistered_agent",
         )
     agent = str(entry.get("id") or "")
-    lines = [f"🔧 Tools for agent `{agent}`:" if agent else "🔧 Tools:"]
+    lines = [f"Tools for agent `{agent}`:" if agent else "Tools:"]
     tools = entry.get("tools")
     if tools == "*":
         lines.append("- Tools: all tools (`*`)")
@@ -319,7 +319,7 @@ def _inspect_mcp_text(slot: _ChatSlot, declared: list[str] | None = None) -> tup
     report = slot.mcp_report_payload()
     if not isinstance(report, dict):
         return (
-            "🔌 No MCP report yet: this chat has no running session. "
+            "No MCP report yet: this chat has no running session. "
             "Send a message first, then run `/mcp` again.",
             "no_session",
         )
@@ -341,8 +341,8 @@ def _inspect_mcp_text(slot: _ChatSlot, declared: list[str] | None = None) -> tup
         ]
     )
     if not names:
-        return "🔌 This session has no MCP servers.", "shown"
-    lines = ["🔌 MCP servers:"]
+        return "This session has no MCP servers.", "shown"
+    lines = ["MCP servers:"]
     for name in names[:_INSPECT_LIST_CAP]:
         if name in failed:
             reason = failures.get(name) if isinstance(failures.get(name), str) else ""
@@ -388,10 +388,10 @@ async def _inspect_context_text(state: DashboardState, slot: _ChatSlot) -> tuple
     pct = _number(fields.get("context_pct"))
     if pct is None:
         return (
-            "📊 No context reading yet. Send a message first, then run `/context` again.",
+            "No context reading yet. Send a message first, then run `/context` again.",
             "no_reading",
         )
-    line = f"📊 Context: {round(pct, 1):g}% full"
+    line = f"Context: {round(pct, 1):g}% full"
     used = _number(fields.get("context_used_tokens"))
     window = _number(fields.get("context_window_tokens"))
     if used and window:
@@ -421,9 +421,14 @@ async def _inspect_usage_text() -> tuple[str, str]:
     plan = _number(usage.get("credits_plan"))
     if used is None or not plan:
         if usage.get("reason") == "signin_required":
-            return "💳 No credit reading: sign in again to see your credits.", "signin_required"
-        return "💳 No credit reading yet. Try `/usage` again in a few minutes.", "no_reading"
-    line = f"💳 Credits: {_amount(used)} of {_amount(plan)} used"
+            return "No credit reading: sign in again to see your credits.", "signin_required"
+        if usage.get("reason") == "plan_without_limit":
+            return (
+                "Kiro's usage service reports credits used but no credit limit for the "
+                "signed-in account, so there is no balance to show."
+            ), "plan_without_limit"
+        return "No credit reading yet. Try `/usage` again in a few minutes.", "no_reading"
+    line = f"Credits: {_amount(used)} of {_amount(plan)} used"
     pct = _number(usage.get("percentage"))
     if pct is not None:
         line += f" ({round(pct, 1):g}%)"
@@ -446,7 +451,7 @@ def _inspect_help_text() -> tuple[str, str]:
     """The commands this chat runs, as the ``/`` menu lists them here."""
     from kiro_crew.dashboard.chat_utils import SLASH_COMMAND_DESCRIPTIONS
 
-    lines = ["❓ Commands in this chat:"]
+    lines = ["Commands in this chat:"]
     for command in sorted(local_harness_menu(ACP_BACKEND_KAS)):
         description = SLASH_COMMAND_DESCRIPTIONS.get(command, "")
         lines.append(f"- `{command}`: {description}" if description else f"- `{command}`")
@@ -463,7 +468,7 @@ async def _inspect_agent_text(slot: _ChatSlot) -> tuple[str, str]:
         names = clean_names(await asyncio.to_thread(pickable_agent_names))
     except Exception:  # noqa: BLE001 - an unreadable agent directory lists none
         names = []
-    lines = [f"🤖 Agent: `{current}`" if current else "🤖 Agent: the default agent"]
+    lines = [f"Agent: `{current}`" if current else "Agent: the default agent"]
     for name in names[:_INSPECT_LIST_CAP]:
         lines.append(f"- `{name}` (current)" if name == current else f"- `{name}`")
     if len(names) > _INSPECT_LIST_CAP:
@@ -495,7 +500,7 @@ async def _inspect_hooks_text(
         if found.unreadable:
             note = "⚠ The agent's own hooks could not be read."
         hooks += found.hooks
-    lines = ["🪝 Hooks for this chat:"]
+    lines = ["Hooks for this chat:"]
     for hook in hooks[:_INSPECT_LIST_CAP]:
         name = str(getattr(hook, "name", "") or getattr(hook, "id", "") or "hook")
         event = str(getattr(hook, "event", "") or "")
@@ -509,7 +514,7 @@ async def _inspect_hooks_text(
     if len(hooks) > _INSPECT_LIST_CAP:
         lines.append(f"- and {len(hooks) - _INSPECT_LIST_CAP} more")
     if not hooks:
-        lines = ["🪝 No hooks are set up for this chat."]
+        lines = ["No hooks are set up for this chat."]
     if note:
         lines.append(note)
     return "\n".join(lines), "shown"
@@ -606,13 +611,13 @@ async def _kas_context_text(state: DashboardState, session_key: str, rest: str) 
         return f"⚠ Name at most {_INSPECT_LIST_CAP} paths at once. Nothing was changed.", "usage"
     provider = await _inspect_live_provider(state, session_key)
     if provider is None:
-        return "📎 No context change: " + _NO_SESSION.format("/context"), "no_session"
+        return "No context change: " + _NO_SESSION.format("/context"), "no_session"
     cwd = str(getattr(provider, "cwd", "") or "")
     if sub == "clear":
         answer = await _kas_call(provider, "context", {"subcommand": "clear"})
         if answer is None:
             return "⚠ " + _NO_VERB.format("/context clear"), "unsupported_backend"
-        return "📎 " + _kas_message(answer, "Context cleared."), _ok(answer)
+        return _kas_message(answer, "Context cleared."), _ok(answer)
     lines: list[str] = []
     outcome = "shown"
     for raw in paths:
@@ -631,10 +636,10 @@ async def _kas_context_text(state: DashboardState, session_key: str, rest: str) 
         answer = await _kas_call(provider, "context", params)
         if answer is None:
             return "⚠ " + _NO_VERB.format(f"/context {sub}"), "unsupported_backend"
-        mark = "📎" if answer.get("success") is True else "⚠"
+        mark = "" if answer.get("success") is True else "Warning: "
         if answer.get("success") is not True:
             outcome = "error"
-        lines.append(f"{mark} {_kas_message(answer, 'Done.')}")
+        lines.append(f"{mark}{_kas_message(answer, 'Done.')}")
     return "\n".join(lines), outcome
 
 
@@ -673,7 +678,7 @@ async def _kas_knowledge_text(
     params: dict[str, Any] = {"subcommand": sub}
     provider = await _inspect_live_provider(state, session_key)
     if provider is None:
-        return "📚 No knowledge reading: " + _NO_SESSION.format("/knowledge"), "no_session"
+        return "No knowledge reading: " + _NO_SESSION.format("/knowledge"), "no_session"
     cwd = str(getattr(provider, "cwd", "") or "")
     if sub in ("add", "update"):
         flags, plain = _flags_and_words(args)
@@ -701,12 +706,12 @@ async def _kas_knowledge_text(
     if answer is None:
         return "⚠ " + _NO_VERB.format("/knowledge"), "unsupported_backend"
     if sub != "show" or answer.get("success") is not True:
-        mark = "📚" if answer.get("success") is True else "⚠"
-        return f"{mark} {_kas_message(answer, 'Done.')}", _ok(answer)
+        mark = "" if answer.get("success") is True else "Warning: "
+        return f"{mark}{_kas_message(answer, 'Done.')}", _ok(answer)
     entries = [e for e in answer.get("entries") or () if isinstance(e, dict)]
     if not entries:
-        return "📚 No knowledge bases yet. Add one with `/knowledge add <name> <path>`.", "shown"
-    lines = ["📚 Knowledge bases:"]
+        return "No knowledge bases yet. Add one with `/knowledge add <name> <path>`.", "shown"
+    lines = ["Knowledge bases:"]
     for entry in entries[:_INSPECT_LIST_CAP]:
         name = str(entry.get("name") or entry.get("id") or "")
         line = f"- `{name}`"
@@ -731,16 +736,16 @@ async def _kas_code_text(state: DashboardState, session_key: str, rest: str) -> 
     sub = words[0].lower() if words else "status"
     provider = await _inspect_live_provider(state, session_key)
     if provider is None:
-        return "🧩 No code reading: " + _NO_SESSION.format("/code"), "no_session"
+        return "No code reading: " + _NO_SESSION.format("/code"), "no_session"
     answer = await _kas_call(provider, "code", {"subcommand": sub})
     if answer is None:
         return "⚠ " + _NO_VERB.format("/code"), "unsupported_backend"
     status = answer.get("status")
     if sub != "status" or answer.get("success") is not True or not isinstance(status, dict):
-        mark = "🧩" if answer.get("success") is True else "⚠"
-        return f"{mark} {_kas_message(answer, 'Done.')}", _ok(answer)
+        mark = "" if answer.get("success") is True else "Warning: "
+        return f"{mark}{_kas_message(answer, 'Done.')}", _ok(answer)
     ready = "set up" if status.get("initialized") is True else "not set up (run `/code init`)"
-    lines = [f"🧩 Code intelligence: {ready}"]
+    lines = [f"Code intelligence: {ready}"]
     languages = clean_names(status.get("languages"))
     if languages:
         lines.append(f"- Languages: {_inspect_code_list(languages)}")

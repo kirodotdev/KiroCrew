@@ -132,8 +132,9 @@ def _manager(
     return SimpleNamespace(proxy_request=_proxy_request, calls=calls, params=params)
 
 
-def _state(mgr, slots: dict[str, _ChatSlot] | None = None):
-    return SimpleNamespace(instances_manager=mgr, _slots=slots or {})
+def _state(mgr, slots: dict[str, _ChatSlot] | None = None, registered=("nobita",)):
+    registry = SimpleNamespace(get=lambda i: object() if i in registered else None)
+    return SimpleNamespace(instances_manager=mgr, instances_registry=registry, _slots=slots or {})
 
 
 def _remote_slot(key: str = "chat-1", *, instance_id: str = "nobita", remote: str = "peer-chat-9"):
@@ -180,7 +181,11 @@ class TestRelayArchivesHideNoPeerRow:
         data = await _body(await hi.api_instances_chat_slots(_request(state)))
 
         assert data == [
-            {"running": False, "pending_approval": False, "needs_input": False},
+            {
+                "running": False,
+                "pending_approval": False,
+                "needs_input": False,
+            },
             {
                 "key": "peer-chat-9",
                 "running": False,
@@ -280,6 +285,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "workspace": "/Users/someone/secret-project",
             "source_links": [{"url": "https://internal.example"}],
             "messages": 42,
+            "needs_full_chat": True,
             "unknown_future_field": "surprise",
             # A citation is forwarded, but only its two keys: a peer cannot ride
             # extra content in on the parent object either.
@@ -488,7 +494,14 @@ class TestPeerTextIsRedactedAndAllowlisted:
         _enable_instances(monkeypatch)
         mgr = _manager(
             body=json.dumps(
-                [{"key": "p1", "running": "no", "pending_approval": 1, "needs_input": "yes"}]
+                [
+                    {
+                        "key": "p1",
+                        "running": "no",
+                        "pending_approval": 1,
+                        "needs_input": "yes",
+                    }
+                ]
             ).encode()
         )
 
@@ -834,6 +847,17 @@ class TestCarrierFailures:
 
         assert resp.status == 503
         assert (await _body(resp))["code"] == "instances_manager_unavailable"
+
+    async def test_an_unregistered_crew_is_a_404_and_never_reaches_a_peer(self, monkeypatch):
+        """An id naming no crew is not a crew that is down: 404, no tunnel call."""
+        _enable_instances(monkeypatch)
+        mgr = _manager()
+
+        resp = await hi.api_instances_chat_slots(_request(_state(mgr), instance_id="ghost"))
+
+        assert resp.status == 404
+        assert (await _body(resp))["code"] == "instance_not_found"
+        assert mgr.calls == []
 
 
 @pytest.mark.asyncio

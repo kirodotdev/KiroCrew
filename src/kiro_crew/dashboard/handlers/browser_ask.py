@@ -107,8 +107,13 @@ def _refused(code: str) -> dict[str, Any]:
     return {"ok": True, "outcome": qa.REFUSED, "code": code}
 
 
-async def run_ask(hub: LiveHub, key: str, args: dict[str, Any]) -> dict[str, Any]:
-    """The ``ask`` op's result: ``{ok, ask_id, expires_at}``, or ``{ok, outcome: refused, code}``."""
+async def run_ask(
+    hub: LiveHub, key: str, args: dict[str, Any], *, own_origins: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """The ``ask`` op's result: ``{ok, ask_id, expires_at}``, or ``{ok, outcome: refused, code}``.
+
+    *own_origins* is the gateway's live ``allowed_origins``, for the page and frame gate.
+    """
     from kiro_crew.dashboard.handlers.browser_ops import committed_url_allowed
 
     try:
@@ -131,7 +136,7 @@ async def run_ask(hub: LiveHub, key: str, args: dict[str, Any]) -> dict[str, Any
             spec,
             float(getattr(stream, "scale", 1.0) or 1.0),
             getattr(stream, "frames", None),
-            url_allowed=committed_url_allowed,
+            url_allowed=lambda url: committed_url_allowed(url, own_origins),
         )
     except qa.AskError as exc:
         _audit("browser_ask", "refused", exc.code)

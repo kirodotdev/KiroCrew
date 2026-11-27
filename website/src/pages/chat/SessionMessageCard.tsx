@@ -12,6 +12,7 @@
 import { useState } from 'react'
 
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import TruncatedText from '../../components/TruncatedText'
 import { i18nT } from '../../i18n/t'
 
 export interface SessionParty {
@@ -34,6 +35,9 @@ export interface SessionMessageCardProps {
    *  text — a host that cannot navigate keeps a non-interactive card rather
    *  than a dead-looking link. */
   onOpenSession?: (key: string) => void
+  /** Opens an `/artifacts/<slug>` link in the body in the host's side panel;
+   *  absent, the link stays a plain new-tab anchor. */
+  onArtifactOpen?: (slug: string) => void
 }
 
 /** Placeholder passed as the name in the translated "Sent to {{name}}" and
@@ -84,7 +88,7 @@ function RecipientTag({ recipient, onOpenSession }: { recipient: SessionParty; o
   )
 }
 
-export function SessionMessageCard({ sender, recipient, body, time = null, onOpenSession }: SessionMessageCardProps) {
+export function SessionMessageCard({ sender, recipient, body, time = null, onOpenSession, onArtifactOpen }: SessionMessageCardProps) {
   const [open, setOpen] = useState(false)
   // Clamp a body that visibly runs past ~two lines; a short one never offers the
   // toggle.
@@ -100,10 +104,11 @@ export function SessionMessageCard({ sender, recipient, body, time = null, onOpe
       <div className="flex items-center gap-2 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
           {/* The title IS this session, so it is plain text, never a self-link;
-              "This session" reads right in its own chat, the title stays on hover. */}
-          <span className="min-w-0 truncate text-[12px] font-medium text-text-strong" title={sender.title} data-testid="session-card-title">
+              "This session" reads right in its own chat, the title shows in the
+              tip on hover and on focus. */}
+          <TruncatedText full={sender.title} className="min-w-0 text-[12px] font-medium text-text-strong" data-testid="session-card-title">
             {i18nT('pages.chat.sessionMessageCard.this_session')}
-          </span>
+          </TruncatedText>
           <span className="text-[11.5px] text-muted" aria-hidden="true">·</span>
           <SentTo recipient={recipient} onOpenSession={onOpenSession} />
         </div>
@@ -119,7 +124,7 @@ export function SessionMessageCard({ sender, recipient, body, time = null, onOpe
         className={`text-[12.5px] text-text break-words [&_p]:m-0 ${long && !open ? 'line-clamp-2' : ''}`}
         data-testid="session-card-body"
       >
-        <MarkdownRenderer content={body} />
+        <MarkdownRenderer content={body} onArtifactOpen={onArtifactOpen} />
       </div>
 
       {long ? (

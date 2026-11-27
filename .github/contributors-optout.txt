@@ -20,7 +20,18 @@
 github-actions
 dependabot
 renovate
+KiroCrewCaptain
+KiroCrewAutoBuilder
+web-flow
 kiro-agent
 # Placeholder or tool accounts that GitHub links from `Co-authored-by:` trailers.
 codex
+copilot
 noreply
+claude
+cursoragent
+kirocrew
+Autofix
+autopipeline
+kiro
+testoptimizer

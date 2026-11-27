@@ -104,6 +104,7 @@ def _test_tree_files() -> list[Path]:
     return found
 
 
+@source_corpus.untraced()
 def _corpus_patched_names() -> set[str]:
     spellings = {FACADE: FACADE}
     names: set[str] = set()

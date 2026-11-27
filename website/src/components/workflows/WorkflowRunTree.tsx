@@ -12,8 +12,8 @@
  *     a stop mark for the phase a cancel interrupted), title, and agent count.
  *   - under each phase, the AGENTS with per-agent status (spinner / ✓ / ✗, or a
  *     stop mark for an agent the run ended before it finished), their `label`
- *     (mono), `last_tool` if present, and the time the agent took once it has
- *     finished.
+ *     (mono), the `last_tool` its latest `agent_progress` named while it runs,
+ *     and the time the agent took once it has finished.
  *   - a narrator log strip (most recent `log` lines) and a budget readout.
  *
  * All LLM-derived strings are sanitized via sanitizeLlmOutput. Pure event-fold
@@ -198,7 +198,7 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
                         <XCircle size={12} className="text-danger shrink-0" />
                       )}
                       <span className="font-mono truncate">{label}</span>
-                      {lastTool && (
+                      {state === 'running' && lastTool && (
                         <span className="text-muted truncate">· {lastTool}</span>
                       )}
                       {a.elapsed_ms !== undefined && (

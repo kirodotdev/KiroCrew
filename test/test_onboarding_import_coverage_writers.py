@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -441,6 +442,26 @@ class TestMcpWriter:
             "srv",
             {"name": "srv", "spec": spec or {"command": "srv-bin", "disabled": True}},
         )
+
+    @pytest.mark.skipif(os.name != "posix", reason="the save is vouched on POSIX only")
+    def test_the_save_is_vouched_for_the_sandbox_pin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``<data home>/mcp.json`` is sealed in every sandbox; a gateway save it does
+        # not vouch for makes the launcher refuse the next spawn.
+        from kiro_crew.config import write_provenance
+
+        api = _api()
+        staged: list[str] = []
+        monkeypatch.setattr(write_provenance, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            write_provenance, "_note_staged", lambda leaf, fd, prev: staged.append(leaf)
+        )
+
+        outcome = onboarding_apply._write_mcp(self._item(api), tmp_path, tmp_path / "home")
+
+        assert outcome.status == "imported"
+        assert staged == ["mcp.json"]
 
     def test_a_non_mapping_servers_block_is_a_conflict(self, tmp_path: Path) -> None:
         api = _api()

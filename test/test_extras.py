@@ -105,13 +105,11 @@ def test_every_declared_extra_is_covered() -> None:
     ), f"extras declared in setup.cfg but absent from REQUIREMENTS: {sorted(missing)}"
 
 
-# ── The pins embedded in the UI catalogs ──
+# ── No pin embedded in the UI catalogs ──
 #
-# The Feishu guide spells a command out inside its translated prose, so that
-# specifier is a SECOND copy of the pin that no Python caller reads. Without
-# this test, bumping setup.cfg leaves the same panel showing two different
-# commands -- the generated one and a stale hand-written one -- across 13
-# locale files.
+# Every optional-SDK channel takes its install step from the gateway's card
+# (the command naming the gateway's interpreter, or the desktop app's Install
+# button). A pin spelled out in catalog prose would be a second, stale copy.
 
 
 def _embedded_specs(text: str, package: str) -> set[str]:
@@ -129,25 +127,9 @@ def _embedded_specs(text: str, package: str) -> set[str]:
     return {package + m.group(1).rstrip("<>=,") for m in re.finditer(pattern, text)}
 
 
-@pytest.mark.parametrize(
-    ("extra", "package"),
-    [("feishu", "lark-oapi")],
-)
-def test_locale_catalogs_carry_the_declared_pin(extra: str, package: str) -> None:
-    expected = extras.REQUIREMENTS[extra][0]
-    seen_anywhere = False
-    for path in sorted(LOCALES.glob("*.json")):
-        found = _embedded_specs(path.read_text(encoding="utf-8"), package)
-        assert found <= {
-            expected
-        }, f"{path.name} embeds {sorted(found - {expected})}, expected {expected}"
-        seen_anywhere = seen_anywhere or bool(found)
-    assert seen_anywhere, f"no locale embeds a {package} pin; did the key move?"
-
-
-@pytest.mark.parametrize("package", ["PyJWT", "neonize"])
+@pytest.mark.parametrize("package", ["PyJWT", "neonize", "lark-oapi"])
 def test_locale_catalogs_embed_no_pin_for_card_channels(package: str) -> None:
-    """Teams and WhatsApp take their install command from the gateway's
+    """Feishu, Teams and WhatsApp take their install command from the gateway's
     optional-SDK card, which names the gateway's interpreter. A pin spelled out
     in catalog prose would be a bare ``pip install`` beside it."""
     for path in sorted(LOCALES.glob("*.json")):
@@ -210,6 +192,34 @@ def test_a_non_extra_spec_is_quoted_for_the_platform(monkeypatch: pytest.MonkeyP
     windows = extras.pip_install_command_for("faiss-cpu>=1.7,<2")
     assert '"faiss-cpu>=1.7,<2"' in windows
     assert windows.startswith("& '")
+
+
+@pytest.mark.parametrize("quote", ["'", "\u2018", "\u2019", "\u201a", "\u201b"])
+def test_every_pasted_powershell_command_doubles_each_single_quote(
+    monkeypatch: pytest.MonkeyPatch, quote: str
+) -> None:
+    """PowerShell ends a single-quoted string on U+2018..U+201B as well as on ASCII
+    ', so each command a user pastes doubles all five or stops at the path."""
+    from kiro_crew import kiro_cli_bundle, lts_sign_in
+    from kiro_crew.platform import update_layout
+
+    folder = f"/home/O{quote}Brien"
+    monkeypatch.setattr(extras.os, "name", "nt")
+    monkeypatch.setattr(extras.sys, "executable", f"{folder}/python.exe")
+    login, _sso, bundled = kiro_cli_bundle.login_commands(
+        f"{folder}/kiro-cli.exe", {kiro_cli_bundle.BUNDLED_KIRO_DIR_ENV: folder}, windows=True
+    )
+    commands = {
+        "pip install": extras.pip_install_command_for("faiss-cpu"),
+        "update": update_layout._running_interpreter_pip_prefix(),
+        "lts sign-in": lts_sign_in.render_command([f"{folder}/kirocrew.exe"], platform="win32"),
+        "kiro-cli sign-in": login,
+    }
+
+    assert bundled
+    literal = f"& '/home/O{quote * 2}Brien/"
+    for name, command in commands.items():
+        assert literal in command, f"{name}: {command}"
 
 
 # ── Install channel ──
@@ -334,3 +344,110 @@ def test_a_multi_package_extra_quotes_every_specifier() -> None:
     command = extras.pip_install_command("voice")
     for req in extras.REQUIREMENTS["voice"]:
         assert extras.quote_spec(req) in command
+
+
+def test_a_distribution_named_in_several_places_carries_one_specifier() -> None:
+    """The managed-venv update installs the new wheel with every extra the running
+    install has, so a pin that differs between ``install_requires`` and an extra (or
+    between two extras) would be a resolution conflict on every such update."""
+    parser = configparser.ConfigParser()
+    parser.read(SETUP_CFG, encoding="utf-8")
+    places = {"install_requires": parser["options"]["install_requires"]}
+    # Only the extras an update carries: `dev` is never one (see REQUIREMENTS).
+    places.update(
+        (k, v) for k, v in parser["options.extras_require"].items() if k in extras.REQUIREMENTS
+    )
+    specifiers: dict[str, dict[str, str]] = {}
+    for place, raw in places.items():
+        for line in raw.splitlines():
+            req = line.split("#", 1)[0].strip()
+            if not req or re.match(r"^kirocrew\s*\[", req, re.IGNORECASE):
+                continue
+            name = re.match(r"^[A-Za-z0-9._-]+", req)
+            assert name is not None, req
+            key = re.sub(r"[-_.]+", "-", name.group(0)).lower()
+            spec = re.sub(r"^\[[^\]]*\]", "", req[name.end() :].strip()).replace(" ", "")
+            specifiers.setdefault(key, {})[place] = spec
+    shared = {k: v for k, v in specifiers.items() if len(v) > 1}
+    assert shared, "no distribution is named in two places; the guard checks nothing"
+    differing = {k: v for k, v in shared.items() if len(set(v.values())) > 1}
+    assert not differing, f"one distribution, several specifiers: {differing}"
+
+
+# The note naming what a rebuilt managed-venv tree did not carry
+
+
+def _dist(site: Path, name: str, *requires: str, direct: bool = False) -> None:
+    """An installed distribution *name* in *site*, requiring *requires*."""
+    info = site / f"{name.replace('-', '_')}-1.0.dist-info"
+    info.mkdir(parents=True)
+    lines = "".join(f"Requires-Dist: {r}\n" for r in requires)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n{lines}", encoding="utf-8"
+    )
+    if direct:
+        (info / "direct_url.json").write_text(
+            '{"url": "file:///src/app", "dir_info": {}}', encoding="utf-8"
+        )
+
+
+def _uncarried(previous: Path, new: Path) -> tuple[list[str], list[str]]:
+    assert hasattr(extras, "uncarried"), "kiro_crew.extras names no uncarried packages"
+    return extras.uncarried([previous], [new])
+
+
+def _note(previous: Path, new: Path, python: str) -> str:
+    assert hasattr(extras, "uncarried_note"), "kiro_crew.extras writes no uncarried note"
+    return extras.uncarried_note([previous], [new], python)
+
+
+def test_a_dependency_of_another_installed_package_is_not_named(tmp_path: Path) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    _dist(old, "faiss-cpu", "numpy>=1.25; python_version >= '3.10'")
+    _dist(old, "numpy")
+    new.mkdir()
+
+    from_index, direct = _uncarried(old, new)
+
+    assert from_index == ["faiss-cpu"]
+    assert direct == []
+
+
+def test_kiro_crew_and_the_packaging_tools_are_never_named(tmp_path: Path) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    for name in ("kirocrew", "kirocrew-lts", "pip", "setuptools", "wheel"):
+        _dist(old, name)
+    new.mkdir()
+
+    assert _uncarried(old, new) == ([], [])
+    assert _note(old, new, "/venv/bin/python") == ""
+
+
+def test_a_package_kiro_crew_requires_only_under_an_extra_is_named(tmp_path: Path) -> None:
+    """A base requirement is a dependency like any other; an ``extra`` one is not,
+    so a dropped extra's package is named when the new tree lacks it."""
+    old, new = tmp_path / "old", tmp_path / "new"
+    _dist(old, "kirocrew", "httpx>=0.27", 'lark-oapi<2,>=1.4; extra == "feishu"')
+    _dist(old, "httpx")
+    _dist(old, "lark-oapi")
+    _dist(new, "httpx")
+
+    note = _note(old, new, "/venv/bin/python")
+
+    assert _uncarried(old, new) == (["lark-oapi"], [])
+    assert note.startswith("Note: ")
+    command = extras.pip_install_command_for("lark-oapi", python="/venv/bin/python")
+    assert note.endswith(f"Add lark-oapi back with: {command}")
+
+
+def test_a_package_installed_from_a_path_is_named_without_a_command(tmp_path: Path) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    _dist(old, "my-app", direct=True)
+    new.mkdir()
+
+    note = _note(old, new, "/venv/bin/python")
+
+    assert _uncarried(old, new) == ([], ["my-app"])
+    assert "my-app" in note
+    assert "reinstall it from where it came from" in note
+    assert "pip install" not in note

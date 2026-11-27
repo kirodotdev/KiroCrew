@@ -567,6 +567,28 @@ async def test_a_port_nothing_is_bound_to_is_reported_as_an_expired_approval(mon
     )
 
 
+def test_the_relay_outwaits_the_sign_in_page_hold():
+    """A Kiro Crew callback answers only once its swap settles, so the relay waits longer."""
+    from kiro_crew.connections import crew_oauth
+
+    assert connections._CALLBACK_STATUS_TIMEOUT_SECS > crew_oauth._CALLBACK_PAGE_WAIT_SECS
+
+
+def test_the_handler_does_not_load_crew_oauth_at_import():
+    """The relay reads its wait from ``callback_timing``, keeping Crew OAuth off the boot path."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(connections))
+    top_level = [
+        node.module if isinstance(node, ast.ImportFrom) else alias.name
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    ]
+    assert "kiro_crew.connections.crew_oauth" not in top_level
+
+
 @pytest.mark.asyncio
 async def test_a_listener_that_accepts_but_never_answers_stays_a_delivery_failure(monkeypatch):
     """Accepting the connection proves the listener is there, so it is not expired.
@@ -585,14 +607,9 @@ async def test_a_listener_that_accepts_but_never_answers_stays_a_delivery_failur
     port = int(listener.sockets[0].getsockname()[1])
     audit = MagicMock()
     monkeypatch.setattr(connections, "sel", lambda: audit)
-    # The read bound is what this exercises; shorten it so the test is not paced
-    # by the production 5s deadline.
-    real_wait_for = asyncio.wait_for
-
-    async def quick_wait_for(awaitable, timeout):  # type: ignore[no-untyped-def]
-        return await real_wait_for(awaitable, 0.25 if timeout == 5 else timeout)
-
-    monkeypatch.setattr(connections.asyncio, "wait_for", quick_wait_for)
+    # The read bound is what this exercises; 0 makes it expire at once, with no
+    # real clock in the test.
+    monkeypatch.setattr(connections, "_CALLBACK_STATUS_TIMEOUT_SECS", 0)
 
     try:
         status, body = await _post_relay(port)

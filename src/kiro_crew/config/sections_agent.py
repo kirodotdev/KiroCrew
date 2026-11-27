@@ -23,8 +23,12 @@ from kiro_crew.config.sections_agent_fields import (
     _YOLO_DURATION_SECS,
     DEFAULT_CWD_ALLOWED_ROOTS,
     JAIL_MODE_AUTO,
+    KAS_AUTH_CALLBACK,
+    KAS_AUTH_MODES,
     KAS_BUNDLE_DEFAULT_URL,
     KAS_FAIL_CLOSED_WEB_FETCH_BLOCKED_HELP,
+    KAS_MACHINE_HELP,
+    KAS_MACHINE_TOKEN_PATH_DEFAULT,
     KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP,
     YOLO_UNTIL_SHUTDOWN,
     coerce_model_context_tokens,
@@ -118,15 +122,17 @@ class AgentConfig:
             "Per-role models",
             "Optional per-task-class model overrides. Keys: 'background' "
             "(lite / heartbeat background workers), 'subagent' (spawned "
-            "sub-agents) and 'subagent_light' (sub-agents a spawn marks "
-            "light, while Light Sub-agent Tier is on). An empty value or 'auto' defers to the chat default "
+            "sub-agents), 'subagent_light' (sub-agents a spawn marks "
+            "light, while Light Sub-agent Tier is on) and 'optimizer' (Optimize "
+            "prompt, which runs on the 'background' model while this is unset). An empty value or 'auto' defers to the chat default "
             "(agent.model) and then to the provider default, so an unpinned "
             "role stays usable on every subscription tier. Pin a cheaper model "
             "here to run background / sub-agent work on it without changing the "
-            "interactive chat default. A 'subagent' pin runs each spawned "
-            "sub-agent in its own runtime (its own agent process and MCP "
-            "servers, about 0.55 GB of memory each) where it could otherwise "
-            "share the parent chat's.",
+            "interactive chat default. A 'subagent' pin still shares the parent "
+            "chat's runtime where its backend sets a model per session (kiro-cli "
+            "and codex) and no reasoning effort applies; elsewhere it runs each "
+            "spawned sub-agent in its own runtime (its own agent process and MCP "
+            "servers, about 0.55 GB of memory each).",
         ),
     )
     role_efforts: dict[str, str] = field(
@@ -134,12 +140,12 @@ class AgentConfig:
         metadata=_meta(
             "Per-role reasoning effort",
             "Optional per-task-class reasoning effort, paired with role_models "
-            "(keys: 'background', 'subagent', 'subagent_light'). Empty for a role inherits the chat "
-            "default (agent.reasoning_effort) and then the provider/model default. "
-            "Only applies on reasoning-capable models. Like a model pin, a "
-            "'subagent' effort runs each spawned sub-agent in its own runtime "
-            "(about 0.55 GB of memory each) where it could otherwise share the "
-            "parent chat's.",
+            "(keys: 'background', 'subagent', 'subagent_light', 'optimizer'). Empty for a role inherits the chat "
+            "default (agent.reasoning_effort) and then the provider/model default; "
+            "an empty 'optimizer' runs Optimize prompt at the 'background' effort. "
+            "Only applies on reasoning-capable models. A 'subagent' effort "
+            "runs each spawned sub-agent in its own runtime (about 0.55 GB of "
+            "memory each) where it could otherwise share the parent chat's.",
         ),
     )
     model_context_tokens: dict[str, int] = field(
@@ -251,9 +257,9 @@ class AgentConfig:
             "Counts only 'error' and 'timeout': a server asking for OAuth sign-in "
             "is working correctly and is never counted, and one success clears the "
             "count. The server stays mounted, but while its streak is at or over "
-            "this threshold MCP discovery stops spawning it for probes; the count "
-            "survives a gateway restart and holds until it is cleared (the "
-            "dashboard offers a one-click reset). 0 turns it off.",
+            "this threshold MCP discovery stops spawning it for probes; the count survives "
+            "a gateway restart and holds until it is cleared (the dashboard offers a "
+            "one-click reset) or the server's command, args, env or url changes. 0 turns it off.",
         ),
     )
     acp_backend: str = field(
@@ -326,9 +332,11 @@ class AgentConfig:
             "installed the gateway installs the pinned engine at the first spawn. "
             "With false, KAS still takes this route when kiro-cli's relay cannot "
             "run on the host (no kiro-cli, or one that is not signed in). "
-            "When unset, a Nightly build turns it on and every other build leaves "
-            "it off (config.loader_document.kas_bundle_build_default(), read from "
-            "the build's own stamp, not the update channel). A saved value always "
+            "When unset, a packaged build (desktop app, wheel or image, not a "
+            "source checkout) prefers the built-in engine: KAS runs on it once Kiro "
+            "Crew's own sign-in is usable, and a host signed in only to kiro-cli "
+            "keeps kiro-cli until then (acp.kas_build_default). If that first move "
+            "to the engine fails, the chat runs on kiro-cli. A saved value always "
             "wins, and save() leaves the key off disk until it is set. This "
             "dataclass default stays false so the committed config-schema snapshot "
             "is the same for every build.",
@@ -413,6 +421,46 @@ class AgentConfig:
             "The AWS region the Company SSO sign-in form starts filled in with, "
             "such as us-east-1. Used only together with agent.kas_sso_start_url. "
             "Empty leaves the region field empty.",
+        ),
+    )
+    # Machine mode (``agent_sdk/kas_machine.py``), honoured only while the ``crew_client``
+    # feature preview is on. Every key is read at spawn, so a running engine keeps
+    # the mode it started under until it is replaced.
+    kas_auth: str = field(
+        default=KAS_AUTH_CALLBACK,
+        metadata=_meta(
+            "KAS: engine credential",
+            KAS_MACHINE_HELP["kas_auth"],
+            enum=list(KAS_AUTH_MODES),
+            restart=True,
+        ),
+    )
+    kas_token_path: str = field(
+        default=KAS_MACHINE_TOKEN_PATH_DEFAULT,
+        metadata=_meta("KAS: machine token file", KAS_MACHINE_HELP["kas_token_path"], restart=True),
+    )
+    kas_endpoint: str = field(
+        default="",
+        metadata=_meta("KAS: machine endpoint", KAS_MACHINE_HELP["kas_endpoint"], restart=True),
+    )
+    kas_control_plane_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "KAS: machine control plane endpoint",
+            KAS_MACHINE_HELP["kas_control_plane_endpoint"],
+            restart=True,
+        ),
+    )
+    kas_region: str = field(
+        default="",
+        metadata=_meta("KAS: machine region", KAS_MACHINE_HELP["kas_region"], restart=True),
+    )
+    kas_machine_env_drop: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "KAS: variables kept from the engine",
+            KAS_MACHINE_HELP["kas_machine_env_drop"],
+            restart=True,
         ),
     )
     native_skill_projection: bool = field(
@@ -589,6 +637,21 @@ class AgentConfig:
             enum=["auto", "strict", "off"],
         ),
     )
+    harness_sandbox: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Per-harness sandbox floor",
+            'Optional sandbox floor per harness, as {"<harness id>": "auto" or '
+            '"strict"}, for example {"antigravity": "auto"}. A session on a listed '
+            "harness starts at the stricter of agent.sandbox and its floor, with its "
+            "credential mask applied, so that harness runs in Kiro Crew's OS sandbox "
+            "while agent.sandbox stays 'off' for every other harness, cron and MCP "
+            "server. The floor only raises a tier. It is read only for the harnesses "
+            "that are refused while the sandbox is off; an entry for Kiro CLI, KAS or "
+            "Claude Code, 'off', or any other value sets no floor. Applies to sessions "
+            "started after the change. Empty by default.",
+        ),
+    )
     sandbox_allow_no_isolation: bool = field(
         default=False,
         metadata=_meta(
@@ -758,6 +821,19 @@ class AgentConfig:
             "this host needs longer than the default allows.",
         ),
     )
+    apps_ui_protected_copy: bool = field(
+        default=False,
+        metadata=_meta(
+            "Serve App UI Scripts From the Protected Copy",
+            "When on, the /apps/{name}/ui/ route serves an app's .js and .mjs "
+            "files from the copy the gateway took when it installed, updated or "
+            "registered the app, kept where no sandboxed process can write, "
+            "instead of from the app's own folder. A script edited in the app's "
+            "folder then keeps serving as installed, and an app the gateway never "
+            "installed has its scripts not found. Off by default: scripts are "
+            "read from the app's folder.",
+        ),
+    )
     jail: str = field(
         default=JAIL_MODE_AUTO,
         metadata=_meta(
@@ -790,8 +866,8 @@ class AgentConfig:
             "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from "
             "the dashboard picker, Slack, or the API. Every one of those surfaces "
             "uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or "
-            "until_shutdown to keep it on with no timed expiry until Kiro Crew "
-            "restarts. Timed values are capped at 24h. Does NOT apply to a grant "
+            "until_shutdown to keep it on until you stop Kiro Crew (a restart keeps "
+            "any grant). Timed values are capped at 24h. Does NOT apply to a grant "
             "declared via 'dangerously_skip_permissions' above, which persists.",
             enum=["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
         ),
@@ -866,9 +942,11 @@ class AgentConfig:
             "Subagents reuse a shared ACP runtime instead of spawning a fresh "
             "backend process per subagent. Reduces startup from ~3-5s to ~200ms "
             "and memory from about 0.55 GB to near-zero per subagent. Default ON for the "
-            "eligible backends (kiro-cli and codex); every other ACP backend "
-            "ignores it and runs a dedicated process per subagent. Set false to "
-            "opt an eligible backend back onto per-subagent processes.",
+            "eligible backends (kiro-cli, codex and KAS; on KAS only when the "
+            "chat's own process can close a session and keep its record, runs "
+            "engine 0.66.104 or newer, and serves no other chat); every other ACP "
+            "backend ignores it and runs a dedicated process per subagent. Set "
+            "false to opt an eligible backend back onto per-subagent processes.",
         ),
     )
     chat_runtime_sharing_max_sessions: int = field(
@@ -976,7 +1054,12 @@ class AgentConfig:
             "Resource Critical Threshold (GB)",
             "Available memory (GB) at or below which the [RESOURCES] context line "
             "escalates to 'critically low' and advises against starting heavy work "
-            "at all. Should be <= resource_pressure_gb. 0 disables the critical tier.",
+            "at all. Should be <= resource_pressure_gb. It also arms the host memory guard, which "
+            "on Linux stops the largest Crew tool or test tree at critical memory, or at tight "
+            "memory with PSI full avg10 >= 10, or, with no memory controller in view, when the "
+            "cgroup in view stalls 10% of the time between samples. 0 disables the critical tier "
+            "and turns the memory guard off. When the container's memory limit is at or under "
+            "it, the gateway logs one start-up warning naming the settings to lower.",
         ),
     )
     admission_gate: bool = field(
@@ -986,10 +1069,14 @@ class AgentConfig:
             "While available memory is at or below resource_critical_gb, defer scheduled cron "
             "firings to the next tick, and TaskRunner steps and workflow ctx.agent() calls by "
             "admit_wait_secs, until memory frees. Background helper turns (titles, labels, "
-            "summaries, history consolidation) are skipped while it lasts. Subagent "
+            "summaries, history consolidation) are skipped while it lasts. Scheduled "
+            "auto-nudge prompt-loop ticks are held and re-checked every 30 seconds; the loop stays "
+            "on and spends no cycle, and a Fire now press still runs. Subagent "
             "spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. "
             "Manually triggered cron runs and direct chat turns are never gated; an unreadable "
-            "probe admits (fail-open). Set false to make the critical posture advisory-only.",
+            "probe admits (fail-open). Set false to make the critical posture advisory-only "
+            "for these deferrals; it does not stop the host memory guard (see "
+            "resource_critical_gb).",
         ),
     )
     task_queue_enabled: bool = field(
@@ -1488,17 +1575,20 @@ class AgentConfig:
         default=False,
         metadata=_meta(
             "Peer Steer Loss Recovery",
-            "Let a steer that is not typed into the session's own composer (another "
-            "session's session_send or session_broadcast steer, or an automation's) "
-            "cut into a running Claude Code, Codex, Goose, Pi or OpenCode turn. "
-            "Those harnesses can drop a steer they accepted, so it counts as "
-            "delivered only when the turn ends cleanly; a turn that is cancelled, "
-            "fails or loses it to a denied approval puts it back as a queue card "
-            "that runs as the next turn, so it can run twice. While it is on, a "
-            "hard stop that drops another session's pending steer, on any harness, "
-            "tells that session the steer may not have run. Off by default: such "
-            "a steer queues for the next turn, and only the composer steers these "
-            "harnesses.",
+            "Off (the default): a session_send or session_broadcast steer into "
+            "a running Claude Code, Codex, Goose, Pi or OpenCode turn is held and "
+            "goes in at that turn's next tool step, or runs as its next turn if "
+            "the turn ends first; an automation's steer is not held. "
+            "On: both cut into the running turn at once. Those "
+            "harnesses can drop a steer they accepted, so with it on the steer "
+            "counts as delivered only when the turn ends cleanly; a turn that is "
+            "cancelled, fails or loses it to a denied approval puts it back as a "
+            "queue card that runs as the next turn, so it can run twice. With it "
+            "on, a hard stop that drops another session's pending steer, on any "
+            "harness, tells that session the steer may not have run. With it off, "
+            "a held steer cannot run twice on Claude Code and Codex; on the other "
+            "harnesses a steer taken just as the turn ended can run once more from "
+            "the queue.",
         ),
     )
     member_dispatch: bool = field(
@@ -1636,9 +1726,21 @@ class AgentConfig:
             "agent.role_efforts.subagent_light for whichever of the two its call "
             "left unset; a model or effort the call names always wins. A spawn "
             "that names an agent, a crew or a backend is not changed. A pinned "
-            "model or effort starts the sub-agent in its own process, as any "
-            "per-spawn pin does. Off by default: with it off every spawn picks the "
-            "model and effort it always has.",
+            "model or effort decides whether the sub-agent shares its parent's "
+            "process the way any per-spawn pin does. Off by default: with it off "
+            "every spawn picks the model and effort it always has.",
+        ),
+    )
+    subagent_light_lean_context: bool = field(
+        default=False,
+        metadata=_meta(
+            "Light Sub-agent Lean Context",
+            "While agent.subagent_light_tier is on, start a spawn marked light "
+            "without the lessons and memory blocks, since a search, lookup or "
+            "summarize helper rarely needs them. A spawn that sets include_lessons "
+            "or include_memory to true keeps that block, and a spawn that names an "
+            "agent, a crew or a backend is not changed. Off by default: with it off "
+            "every spawn starts with the context it always has.",
         ),
     )
     subagent_max_turns: int = field(

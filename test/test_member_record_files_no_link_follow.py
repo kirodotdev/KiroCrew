@@ -23,6 +23,7 @@ import os
 import socket
 import stat
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -450,10 +451,10 @@ def test_members_swapped_for_a_link_between_the_two_levels_is_not_followed(
 
 
 @requires_symlinks
-@needs_pinned_walk
 def test_the_folder_a_link_at_members_names_swapped_for_a_link_after_it_is_resolved_is_refused(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     from kiro_crew import member_folder
 
     outside = _empty_folder(tmp_path)
@@ -480,10 +481,10 @@ def test_the_folder_a_link_at_members_names_swapped_for_a_link_after_it_is_resol
 
 
 @requires_symlinks
-@needs_pinned_walk
 def test_a_link_at_members_pointed_elsewhere_after_it_is_resolved_still_writes_to_the_resolved_folder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     resolved = _empty_folder(tmp_path)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -569,11 +570,11 @@ def _a_chain_of_links(tmp_path: Path) -> str:
     still refuses to follow them."""
     named = _members()
     named.parent.mkdir(parents=True, exist_ok=True)
-    (named.parent / "real").mkdir()
+    (tmp_path / "real").mkdir()
     count = 45
     for index in range(1, count):
         os.symlink(f"hop{index + 1}", named.parent / f"hop{index}")
-    os.symlink("real", named.parent / f"hop{count}")
+    os.symlink(tmp_path / "real", named.parent / f"hop{count}")
     return "hop1"
 
 
@@ -777,12 +778,42 @@ UNRESOLVABLE = [
 ]
 
 
-def _open_fds() -> set[str] | None:
-    """The descriptors this process holds, or ``None`` where they cannot be listed."""
-    try:
-        return set(os.listdir("/proc/self/fd"))
-    except OSError:
-        return None
+@contextmanager
+def _descriptors_left_open(monkeypatch: pytest.MonkeyPatch) -> Iterator[set[int]]:
+    """The descriptors ``os.open`` hands this thread inside the block that ``os.close`` has not closed.
+
+    The worker's other threads open and close descriptors of their own, so
+    only this thread's ``os.open`` calls are counted. A descriptor handed to
+    ``os.fdopen`` is closed by its file object, not ``os.close``; every call
+    checked here refuses or raises before any writer reaches that step.
+    A descriptor made another way (``os.dup``, ``os.pipe``) is not seen; the
+    member-folder walk makes every descriptor it holds with ``os.open``.
+    """
+    outstanding: set[int] = set()
+    caller = threading.get_ident()
+    real_open, real_close = os.open, os.close
+
+    def spy_open(*args: Any, **kwargs: Any) -> int:
+        fd = real_open(*args, **kwargs)
+        if threading.get_ident() == caller:
+            outstanding.add(fd)
+        return fd
+
+    def spy_close(fd: int) -> None:
+        try:
+            real_close(fd)
+        finally:
+            outstanding.discard(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", spy_open)
+        patch.setattr(os, "close", spy_close)
+        # The code asks ``os.open in os.supports_dir_fd`` before it walks by
+        # descriptor; the spies stand in for the real functions there too.
+        spies = {real_open: spy_open, real_close: spy_close}
+        for name in ("supports_dir_fd", "supports_fd", "supports_follow_symlinks"):
+            patch.setattr(os, name, {spies.get(f, f) for f in getattr(os, name)})
+        yield outstanding
 
 
 NEEDS_A_USER_WHO_CAN_BE_REFUSED = (
@@ -866,10 +897,10 @@ def test_a_members_that_leads_to_no_existing_folder_is_refused_and_creates_nothi
         for p in (tmp_path / "locked", tmp_path / "target", tmp_path / "readonly")
         if p.exists()
     }
-    fds = _open_fds()
-    result = _run(site)
+    with _descriptors_left_open(monkeypatch) as left_open:
+        result = _run(site)
     assert isinstance(result, members.MemberSlugError), result
-    assert _open_fds() == fds
+    assert left_open == set()
     assert _snapshot(watched) == before
     assert not (tmp_path / "missing").exists()
     assert not (tmp_path / "nowhere").exists()
@@ -898,13 +929,11 @@ def test_the_callers_report_a_members_that_leads_nowhere_and_go_on(
 
 
 @requires_symlinks
-@pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "no_pin"])
 def test_a_loop_reported_as_an_oserror_is_refused_like_one_reported_as_a_runtimeerror(
-    pinned: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """``Path.resolve`` reports a loop as ``OSError`` on some Pythons and ``RuntimeError`` on others."""
-    if not pinned:
-        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     target = tmp_path / "elsewhere"
     target.mkdir()
     _link_at_members(target)
@@ -926,6 +955,7 @@ def test_a_loop_reported_as_an_oserror_is_refused_like_one_reported_as_a_runtime
 def test_a_link_removed_after_it_was_seen_and_before_it_is_resolved_is_refused_or_a_plain_folder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     target = _members().parent / "other-folder"
     target.mkdir(parents=True)
     _link_at_members("other-folder")
@@ -948,6 +978,7 @@ def test_a_link_removed_after_it_was_seen_and_before_it_is_resolved_is_refused_o
 def test_a_link_replaced_by_a_folder_after_it_was_seen_is_written_as_a_plain_folder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     target = _members().parent / "other-folder"
     target.mkdir(parents=True)
     _link_at_members("other-folder")
@@ -970,6 +1001,7 @@ def test_a_link_replaced_by_a_folder_after_it_was_seen_is_written_as_a_plain_fol
 def test_a_link_swapped_for_a_loop_after_it_is_resolved_still_writes_to_the_resolved_folder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     target = tmp_path / "elsewhere"
     target.mkdir()
     _link_at_members(target)
@@ -1004,14 +1036,14 @@ def test_the_helper_raises_nothing_but_the_refusal_and_its_message_names_no_path
     from kiro_crew import member_folder
 
     _unresolvable(kind, tmp_path, monkeypatch)
-    fds = _open_fds()
-    with pytest.raises(members.MemberSlugError) as refused:
-        with member_folder.open_member_folder(members.member_slug(SLUG)):
-            pytest.fail("the helper opened a folder behind a link that leads nowhere")
+    with _descriptors_left_open(monkeypatch) as left_open:
+        with pytest.raises(members.MemberSlugError) as refused:
+            with member_folder.open_member_folder(members.member_slug(SLUG)):
+                pytest.fail("the helper opened a folder behind a link that leads nowhere")
     message = str(refused.value)
     assert str(tmp_path) not in message
     assert "hop-" not in message and "folder-" not in message and "nowhere" not in message
-    assert _open_fds() == fds
+    assert left_open == set()
 
 
 @pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "no_pin"])
@@ -1063,15 +1095,15 @@ def test_an_interrupt_before_the_folder_is_handed_out_is_not_turned_into_the_ref
         raise raised
 
     monkeypatch.setattr(members, "members_root", members_root)
-    fds = _open_fds()
-    with pytest.raises(type(raised)) as at_the_helper:
-        with member_folder.open_member_folder(members.member_slug(SLUG)):
-            pytest.fail("the helper opened a folder it could not make")
-    assert at_the_helper.value is raised
-    with pytest.raises(type(raised)) as at_a_writer:
-        SITES[0].call()
-    assert at_a_writer.value is raised
-    assert _open_fds() == fds
+    with _descriptors_left_open(monkeypatch) as left_open:
+        with pytest.raises(type(raised)) as at_the_helper:
+            with member_folder.open_member_folder(members.member_slug(SLUG)):
+                pytest.fail("the helper opened a folder it could not make")
+        assert at_the_helper.value is raised
+        with pytest.raises(type(raised)) as at_a_writer:
+            SITES[0].call()
+        assert at_a_writer.value is raised
+    assert left_open == set()
 
 
 @pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "no_pin"])
@@ -1087,12 +1119,12 @@ def test_what_the_callers_body_raises_inside_the_with_reaches_the_caller_unchang
 
     if not pinned:
         monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
-    fds = _open_fds()
-    with pytest.raises(type(raised)) as caught:
-        with member_folder.open_member_folder(members.member_slug(SLUG)):
-            raise raised
+    with _descriptors_left_open(monkeypatch) as left_open:
+        with pytest.raises(type(raised)) as caught:
+            with member_folder.open_member_folder(members.member_slug(SLUG)):
+                raise raised
     assert caught.value is raised
-    assert _open_fds() == fds
+    assert left_open == set()
 
 
 @requires_symlinks
@@ -1125,7 +1157,6 @@ def test_the_slug_folder_swapped_for_a_loop_before_it_is_opened_is_refused(
         "relative",
         "trailing_slash",
         "inside_the_data_home",
-        "forty_five_links",
         "sticky_and_world_writable",
     ],
 )
@@ -1138,11 +1169,14 @@ def test_a_link_to_a_folder_that_exists_is_followed_once(
     data_home.mkdir(parents=True, exist_ok=True)
     mode = 0o755
     if how == "inside_the_data_home":
+        # A folder of the data home that is not the members folder is refused, not followed.
         target = data_home / "other-folder"
-        spelling = "other-folder"
-    elif how == "forty_five_links":
-        target = data_home / "real"
-        spelling = _a_chain_of_links(tmp_path)
+        target.mkdir(exist_ok=True)
+        _link_at_members("other-folder")
+        for site in SITES:
+            assert isinstance(_run(site), members.MemberSlugError)
+        assert list(target.iterdir()) == []
+        return
     else:
         target = tmp_path / "elsewhere"
         spelling = os.path.relpath(target, data_home) + ("/" if how == "trailing_slash" else "")
@@ -1159,6 +1193,27 @@ def test_a_link_to_a_folder_that_exists_is_followed_once(
         assert stat.S_IMODE(target.stat().st_mode) == mode
         assert stat.S_IMODE(folder.stat().st_mode) == 0o700
         assert stat.S_IMODE((folder / SITES[1].leaf).stat().st_mode) == 0o600
+
+
+@requires_symlinks
+@pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "no_pin"])
+def test_a_chain_of_more_than_forty_links_is_refused_where_the_folder_is_held_by_descriptor(
+    pinned: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Was ``forty_five_links`` in the followed-once test: the kernel stops a descriptor open at
+    40 links, so the pinned arm refuses; the by-name arm (``Path.resolve``) still follows."""
+    if not pinned:
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    target = tmp_path / "real"
+    _link_at_members(_a_chain_of_links(tmp_path))
+    for site in SITES:
+        outcome = _run(site)
+        if pinned and pinned_fs.supports_pinned_walk():
+            assert isinstance(outcome, members.MemberSlugError), outcome
+        else:
+            assert not isinstance(outcome, Exception), outcome
+    held = pinned and pinned_fs.supports_pinned_walk()
+    assert (target / members.member_slug(SLUG)).exists() is (not held)
 
 
 @requires_symlinks

@@ -22,9 +22,17 @@ export interface SidePanelTab {
   icon: React.ReactNode
   /** Background of a coloured rounded tile drawn behind `icon` (a `--tile-*`
    *  token), the way System Settings marks each section. Omitted: the bare icon
-   *  in `--muted`, as every other host of this layout renders it. */
+   *  in `--muted`, as every other host of this layout renders it. The tile
+   *  sizes a Lucide `svg` and a masked brand glyph (`BrandGlyph`'s `span`, whose
+   *  inline size it overrides) alike. */
   tile?: string
   description?: string
+  /** The pane draws its own visible header (Settings > Kiro account's centered
+   *  account header), so the layout's title row with `label`, `description`
+   *  and a `header`-docked `headerRight` is left out. The label stays as a
+   *  visually hidden heading, so a screen reader still meets the tab's title
+   *  first. */
+  ownHeader?: boolean
   /** Presence dot after the label (e.g. About while an update is available). */
   dot?: boolean
   /** The dot's accessible name; defaults to "update available". */
@@ -541,7 +549,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                     onClick={() => setTab(t.key)}
                   >
                     {t.tile
-                      ? <span className="w-[30px] h-[30px] shrink-0 flex items-center justify-center rounded-[8px] text-[color:var(--tile-fg)] [&_svg]:w-4 [&_svg]:h-4" style={{ background: t.tile }}>{t.icon}</span>
+                      ? <span className="w-[30px] h-[30px] shrink-0 flex items-center justify-center rounded-[8px] text-[color:var(--tile-fg)] [&_svg]:w-4 [&_svg]:h-4 [&>span]:!w-4 [&>span]:!h-4" style={{ background: t.tile }}>{t.icon}</span>
                       : <span className="w-5 h-5 shrink-0 flex items-center justify-center text-muted">{t.icon}</span>}
                     <span className="flex-1 min-w-0 truncate">{t.label}</span>
                     {t.dot && <span className="w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={t.dotLabel ?? i18nT('components.sidePanelLayout.update_available')} />}
@@ -623,7 +631,10 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                 </div>
               )}
               <button
-                className={`flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[13px] text-left font-medium cursor-pointer border-none transition-all ${
+                // `focus-visible:outline-offset-[-2px]` draws the focus ring inside the
+                // row: the list scrolls (`overflow-y-auto` clips the x axis too) and has
+                // no side padding, so a ring outside a full-width row loses its sides.
+                className={`flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[13px] text-left font-medium cursor-pointer border-none transition-all focus-visible:outline-offset-[-2px] ${
                   tab === t.key
                     ? 'bg-accent-subtle text-accent'
                     : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
@@ -634,7 +645,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                 onClick={() => setTab(t.key)}
               >
                 {t.tile
-                  ? <span className="w-5 h-5 shrink-0 flex items-center justify-center rounded-[5px] text-[color:var(--tile-fg)] [&_svg]:w-3 [&_svg]:h-3" style={{ background: t.tile }}>{t.icon}</span>
+                  ? <span className="w-5 h-5 shrink-0 flex items-center justify-center rounded-[5px] text-[color:var(--tile-fg)] [&_svg]:w-3 [&_svg]:h-3 [&>span]:!w-3 [&>span]:!h-3" style={{ background: t.tile }}>{t.icon}</span>
                   : <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${tab === t.key ? 'text-accent' : 'text-muted'}`}>
                       {t.icon}
                     </span>}
@@ -658,7 +669,8 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
 
       <div className={`flex-1 min-w-0 min-h-0 flex flex-col ${fixed ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {isMobile && !subDrilled && <NavBackBar label={title} onBack={backToRoot} />}
-        {!subDrilled && <div data-testid={isMobile ? 'mobile-detail-header' : 'side-panel-header'} className={`flex items-end justify-between gap-4 shrink-0 ${isMobile ? 'px-4 pb-2' : 'px-6 pt-2 pb-3'}`}>
+        {!subDrilled && meta?.ownHeader && <h2 className="sr-only" data-testid="side-panel-header-hidden">{meta.label}</h2>}
+        {!subDrilled && !meta?.ownHeader && <div data-testid={isMobile ? 'mobile-detail-header' : 'side-panel-header'} className={`flex items-end justify-between gap-4 shrink-0 ${isMobile ? 'px-4 pb-2' : 'px-6 pt-2 pb-3'}`}>
           <div>
             {/* A heading, so the tab's title is the page's first heading for a
                 screen reader rather than plain text above its cards. */}

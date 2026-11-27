@@ -1361,11 +1361,18 @@ function BlockedLinkEntry({ record, cardId, entry, allowed }: { record: BlockedL
     if (!slotKey) { setConfirming(null); return }
     try {
       const res = await api.redactionAllowHost(slotKey, record.domain)
-      setError(null)
-      setFeedback({ kind: 'allowed', workspace: res.workspace })
-      // The reply reloads with this host's links rendered live again; the
-      // hold keeps this card open over them with its Undo.
-      setHold(record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed', cardId, entry })
+      // One commit for the entry's outcome and the shared hold. The hold
+      // store is an external store, so on its own it renders ahead of this
+      // entry's state: the card would drop every Allow while this entry still
+      // showed its confirmation and no Undo (#39501).
+      flushSync(() => {
+        setError(null)
+        setFeedback({ kind: 'allowed', workspace: res.workspace })
+        setConfirming(null)
+        // The reply reloads with this host's links rendered live again; the
+        // hold keeps this card open over them with its Undo.
+        setHold(record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed', cardId, entry })
+      })
       // Settings → Security → Redaction caches this list; mark it stale (#34384).
       void queryClient.invalidateQueries({ queryKey: ['redaction-allowed-hosts'] })
       window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
@@ -1377,9 +1384,12 @@ function BlockedLinkEntry({ record, cardId, entry, allowed }: { record: BlockedL
   const undo = async (workspace: string) => {
     try {
       await api.redactionRevokeHost(workspace, record.domain)
-      setError(null)
-      setFeedback({ kind: 'undone' })
-      if (hold) setHold(record.domain, { ...hold, outcome: 'undone' })
+      // One commit, for the same reason as in allow().
+      flushSync(() => {
+        setError(null)
+        setFeedback({ kind: 'undone' })
+        if (hold) setHold(record.domain, { ...hold, outcome: 'undone' })
+      })
       void queryClient.invalidateQueries({ queryKey: ['redaction-allowed-hosts'] })
       if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
       // Clears "Undone" only: a re-Allow meanwhile keeps its "Allowed · Undo".

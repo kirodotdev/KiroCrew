@@ -29,8 +29,10 @@ from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registe
 from redaction_structured_cases import github_classic
 
 from kiro_crew import crew_log as lg
+from kiro_crew import platform_compat
 from kiro_crew.crew_log import emit
 from kiro_crew.crew_log import projection as crew_log_projection
+from kiro_crew.testing.wait import default_timeout
 
 # cache pressure
 
@@ -735,6 +737,32 @@ def test_call_index_of_a_live_turn_survives_cache_pressure():
     assert steps == [1, 2, 3], "the numbering restarted, so two calls share a step"
 
 
+@pytest.fixture
+def _gateway_descriptor_limit():
+    """Run under the open-file soft limit the gateway sets at boot (10240).
+
+    ``service_boot`` raises it with ``raise_nofile_soft_limit(10240)``. A test that keeps
+    ``_MAX_OPEN_CREW_LOGS`` crew logs open (each with its lock file) beside the eager
+    folder needs more than the macOS default of 256, so without this it reds on a stock
+    Mac with ``EMFILE`` while passing on CI runners that allow 10240. The handles are
+    closed before the inherited limit comes back.
+    """
+    try:
+        import resource
+    except ImportError:  # Windows: no per-process descriptor rlimit
+        yield
+        return
+    inherited = resource.getrlimit(resource.RLIMIT_NOFILE)
+    platform_compat.raise_nofile_soft_limit(10240)
+    try:
+        yield
+    finally:
+        emit.drain_for_shutdown(timeout=default_timeout())
+        emit.reset_caches()
+        resource.setrlimit(resource.RLIMIT_NOFILE, inherited)
+
+
+@pytest.mark.usefixtures("_gateway_descriptor_limit")
 def test_call_index_stays_unique_when_many_turns_are_live_at_once():
     """More live turns than the handle cap, all still running.
 

@@ -130,6 +130,13 @@ def _refuse_locked(path: str) -> None:
 
 def _kirocrew_target(path: str, label: str, spec: dict[str, Any]) -> dict[str, Any]:
     _refuse_locked(path)
+    if spec.get("type") == "str_list":
+        # A card carries no config-list value (see ``_CANNOT_WIDEN_SETTINGS``).
+        raise catalog.CardCatalogError(
+            "no_write_path",
+            f"'{label}' is a list a card cannot change; offer the guide's settings.show "
+            "action so the user changes it on the Settings page",
+        )
     target: dict[str, Any] = {"store": catalog.STORE_KIROCREW, "key": path, "label": label}
     allowed = spec_allowed_values(spec)
     if allowed is not None:
@@ -144,8 +151,9 @@ def resolve_setting(params: dict[str, Any]) -> dict[str, Any]:
     A registry id resolves from data: a dashboard-config control the Settings page
     writes through ``PUT /api/dashboard/config``
     (``change_card_catalog.DASHBOARD_SETTINGS``), else its ``configKey`` when the
-    config route accepts that key. Anything else has no write path a card may
-    use. Raises :class:`kiro_crew.change_card_catalog.CardCatalogError`.
+    config route accepts that key, except a ``str_list`` key, which a card cannot
+    carry. Anything else has no write path a card may use. Raises
+    :class:`kiro_crew.change_card_catalog.CardCatalogError`.
     """
     editable = _editable_config()
     err = catalog.CardCatalogError
@@ -688,14 +696,11 @@ def check_setting_value(spec: dict[str, Any], value: Any) -> None:
         if pattern and not re.fullmatch(pattern, value):
             raise err("invalid_value", "value has an invalid format")
     elif kind == "str_list":
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            raise err("invalid_value", "value must be a list of strings")
-        if len(value) > spec["max_items"]:
-            raise err("invalid_value", f"value must be at most {spec['max_items']} items")
-        if any(len(item) > spec["max_item_len"] for item in value):
-            raise err(
-                "invalid_value", f"each item must be at most {spec['max_item_len']} characters"
-            )
+        from kiro_crew.dashboard.handlers.core import _str_list_problem
+
+        problem = _str_list_problem(value, spec)
+        if problem:
+            raise err("invalid_value", f"value: {problem}")
     elif kind == "dict":
         # Every key, optional ones too: a card writes and restores a WHOLE
         # record, which the route stores as sent (the update popup's skip list

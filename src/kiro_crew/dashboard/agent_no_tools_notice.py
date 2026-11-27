@@ -69,12 +69,9 @@ def session_spec_lists_tools(agent: str, spec: dict[str, Any]) -> bool:
     Shared by the chat notice and the editor's detail read. Blocking file I/O;
     the projection never writes the added servers or grants into the agent file.
     """
-    from kiro_crew.agent_sdk import spec_with_default_crew_servers
-    from kiro_crew.template_mcp_additions import merge_at_spawn
+    from kiro_crew.agent_sdk import kas_session_spec
 
-    # The tools projection order used by acp.harness.kas.resolve_projected_spec.
-    projected = spec_with_default_crew_servers(agent, merge_at_spawn(agent, spec))
-    return spec_lists_tools(projected)
+    return spec_lists_tools(kas_session_spec(agent, spec))
 
 
 def editable_agent_without_tools(agent: str) -> bool:
@@ -152,15 +149,21 @@ async def surface_agent_no_tools(state: Any, slot: Any, session_key: str, agent:
             claim_agent_no_tools_notice, state.conversation_log, session_key, agent
         ):
             return False
+        # The welcome row's redactors: the same two, in the same order, as the
+        # sibling notices, imported from ``security`` so no runner composition is needed.
+        from kiro_crew.dashboard.agent_welcome import _display_text as _redact_display_text
         from kiro_crew.dashboard.state import append_and_surface
 
+        # The claim above keys on the raw name; the row shows the redacted one (a
+        # plain file stem passes through unchanged). A name the redactor changed
+        # cannot name the agent's page, so that row carries no link token: the
+        # dashboard draws its English text alone instead of opening another agent.
+        shown = _redact_display_text(agent)
+        meta = (
+            agent_no_tools_meta(agent) if shown == agent else {"kind": AGENT_NO_TOOLS_NOTICE_KIND}
+        )
         append_and_surface(
-            state,
-            slot,
-            "notice",
-            agent_no_tools_text(agent),
-            "msg msg-info",
-            meta=agent_no_tools_meta(agent),
+            state, slot, "notice", agent_no_tools_text(shown), "msg msg-info", meta=meta
         )
         return True
     except Exception:  # noqa: BLE001 - an informational notice must never fail a turn

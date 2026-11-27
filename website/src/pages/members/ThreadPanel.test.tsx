@@ -7,6 +7,9 @@ import { threadDrafts, threadLiveStore, threadPendingReplies } from '../../state
 
 const mockDetail = vi.fn()
 const mockReply = vi.fn()
+const phone = vi.hoisted(() => ({ on: false }))
+vi.mock('../../hooks/useIsMobile', () => ({ useIsMobile: () => phone.on }))
+vi.mock('../../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => phone.on }))
 
 vi.mock('../../api/threads', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/threads')>()
@@ -45,6 +48,7 @@ const renderPanel = (onClose = vi.fn()) =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  phone.on = false
   qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   mockDetail.mockResolvedValue({ parent: PARENT, replies: REPLIES, in_flight: false })
   mockReply.mockResolvedValue({ reply: { id: 'r4', role: 'user', content: 'ok', ts: '2026-09-22T07:44:00Z' }, run_id: 'run-1' })
@@ -102,6 +106,19 @@ describe('ThreadPanel', () => {
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled()
   })
 
+  it('on a phone, Return starts a new line and the Send button replies', async () => {
+    phone.on = true
+    renderPanel()
+    await screen.findByTestId('thread-parent')
+    const box = screen.getByTestId('thread-composer') as HTMLTextAreaElement
+    fireEvent.change(box, { target: { value: 'Is #4198 among them?' } })
+    expect(fireEvent.keyDown(box, { key: 'Enter' })).toBe(true)
+    await act(async () => {})
+    expect(mockReply).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+    await waitFor(() => expect(mockReply).toHaveBeenCalledWith('member-radar', 'm-1', 'Is #4198 among them?', expect.stringMatching(/^[0-9a-f]{32}$/)))
+  })
+
   it('streams the mate reply from the live store', async () => {
     renderPanel()
     await screen.findByTestId('thread-parent')
@@ -114,6 +131,40 @@ describe('ThreadPanel', () => {
       threadLiveStore.apply({ slot: 'member-radar', mid: 'm-1', run_id: 'run-9', role: 'assistant', content: 'Yes, #4198 is covered.', final: true })
     })
     expect(screen.queryByTestId('thread-reply-live')).toBeNull()
+  })
+
+  // The crewmate bubble's own class spans whatever column holds it, and the side
+  // panel has no Content Width clamp, so the thread's crewmate column carries
+  // the 72ch reading measure, at the bubble's 13px so `ch` is the bubble's.
+  it('keeps the crewmate side of the thread at a 72ch reading measure', async () => {
+    renderPanel()
+    await screen.findByTestId('thread-parent')
+    act(() => {
+      threadLiveStore.apply({ slot: 'member-radar', mid: 'm-1', run_id: 'run-7', role: 'assistant', content: 'Checking.' })
+    })
+    try {
+      const bubbles = [
+        screen.getByTestId('thread-parent-bubble'),
+        ...screen.getAllByTestId('thread-reply').filter((r) => r.dataset.replyFrom === 'assistant').map((r) => r.querySelector('.crewmate-bubble')),
+        screen.getByTestId('thread-reply-live').querySelector('.crewmate-bubble'),
+      ]
+      expect(bubbles).toHaveLength(4)
+      for (const bubble of bubbles) {
+        const column = bubble?.parentElement?.className ?? ''
+        expect(column).toMatch(/(^|\s)max-w-\[72ch\](\s|$)/)
+        expect(column).toMatch(/(^|\s)text-\[13px\](\s|$)/)
+        expect(bubble?.className).toMatch(/(^|\s)text-\[13px\](\s|$)/)
+        // One max-width per element: a second one on the bubble would be
+        // decided by stylesheet order, not by class order.
+        expect(bubble?.className).not.toMatch(/(^|\s)max-w-(?!full(\s|$))/)
+      }
+    } finally {
+      // The live store is module state: end the streamed reply whatever the
+      // assertions did, so no later test starts with it.
+      act(() => {
+        threadLiveStore.apply({ slot: 'member-radar', mid: 'm-1', run_id: 'run-7', role: 'assistant', content: 'Checking.', final: true })
+      })
+    }
   })
 
   it('names the failure in plain words and keeps the draft', async () => {

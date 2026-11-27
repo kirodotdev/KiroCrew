@@ -8,7 +8,8 @@ With it off, none of this applies and the gateway refuses `crew=`
 With it on, you can put a leaf item's worker on a connected crew (another
 machine). The session lives there, shows in that crew's sidebar group, and runs
 under that crew's own approvals and credentials. The crew must have the switch
-on too and run the same major.minor version; `agent.session_control` must be on
+on too; a different version only warns, and a call that crew does not know
+fails `crew_peer_incompatible` naming both versions. `agent.session_control` must be on
 here, as for every session tool.
 
 **Remote workers are visible sessions.** Dispatch a worker on another machine as
@@ -32,9 +33,11 @@ needs a message, record the `decide`, tell the user, and send it in the next
 owner turn. Skip a remote item in the patrol drift check for the same reason.
 
 **Dispatch a remote item** (`work_dispatch` is local only). Call `crew_list`
-first (read-only, no arguments): it shows each registered crew's id, state,
-version match, headroom, `open_workers`, and agent and model names. It is a
-snapshot; the crew's own gate still decides.
+first (read-only): it shows each registered crew's id, state, version match,
+headroom, `open_workers`, tags, and agent and model names. `logins: true` also
+shows each crew's login states (`gh`, `glab`, `az`: valid, expired or unknown),
+as `requires.logins` reads them; it is slower, because each crew checks its
+logins first. It is a snapshot; the crew's own gate still decides.
 
 1. `work_ledger_record` `action=create`, as for a local item.
 2. `session_create` with `work_item=<item_id>`, `title` and
@@ -50,8 +53,10 @@ snapshot; the crew's own gate still decides.
    worker is on another machine and cannot see your checkout: the seed names
    the repo URL and the branch to push.
 
-The crew create reply does not show the `patrol=` outcome; check with
-`monitor_inspect` and arm the loop as Patrol says if none runs.
+The crew create reply ends with `patrol=` like a local `bind`: the hub arms
+your default work-ledger patrol when you have no active loop. When it says no
+patrol runs, arm `monitor_start` with `watch="work-ledger"` before you end the
+turn, or nothing pulls the worker's reports.
 
 **No room.** A named crew short on memory, CPU or disk answers `crew_busy` and
 creates nothing. With no `crew=`, placement skips crews that are busy,
@@ -59,6 +64,9 @@ unreachable, on another version or have the switch off, and answers
 `crew_none_available` when none admits the item. With `requires`, a refusal
 `crew_requirements_unmet` names what each crew lacked (`login gh (expired)`,
 `tag gpu`): tell the user which crew to sign in or tag rather than retrying.
+A crew named `could not be checked` is not a sign-in or tag fix: retry once in
+a later owner turn (`crew_list` shows that crew's state).
+A crew that already holds a session for this item (an earlier create whose reply was lost) is skipped and named under `skipped`; that leftover session stays on the crew, so tell the user to close it there.
 A login named `still checking` is not a missing sign-in: retry once in a later
 owner turn. Either way the item stays open
 and unbound, and nothing falls back to this machine. Retry in a later owner
@@ -67,8 +75,19 @@ tell the user instead of retrying.
 
 **Driving it.** `session_send`, `session_read_message`, `session_stop` and
 `session_close` take the same `crew=` and reach only a crew session you created
-or one an open item of yours is bound to. After a hub restart only the open
-item counts, so close the worker's session before you `close` its item. A
+or one an open item of yours is bound to. A session you opened without
+`work_item=` is yours to drive only until this gateway restarts or you close
+it; after a restart it is refused `crew_target_not_dispatched`, and nothing can
+bind it to an item afterwards. One bound to an open item of yours stays
+drivable across restarts while that item is open, so dispatch work you will
+drive for long with `work_item=`. A session lost that way can still be used and
+closed by the person from that crew's own window. Closing a remote item ends its
+worker's Trust and records its session as pending close (`close_pending` on
+the row). In an owner turn the session is closed for you once its crew is
+connected. On a patrol wake it is closed only once its worker is idle and
+reported `done`; otherwise `session_close(crew=)` it in the next owner turn.
+`session_read_message(crew=)` takes `since` like the local read: pass the
+`next_since` it returned to get only what is new. A
 `decide` whose forward fails says it "did NOT reach the worker's crew"; record
 it again to retry. A remote row adds `worker_instance_id`, `crew_state`,
 `crew_down_since`, `pending_approval`, `remote_error` and
@@ -81,17 +100,17 @@ as an ordinary report, so
 work-ledger patrol pulls once per tick, before it reads the ledger, with no
 model turn, so a remote `done`, `blocked`, `question` or `reply` wakes you at
 the next tick like a local one; a `work_ledger_read` pulls too. Nothing pulls
-between ticks, so keep the patrol running while a remote item is open. A lost
+between ticks and the worker never writes back to this hub, so keep the patrol running while a remote item is open. A lost
 crew's retire is also checked only on a pull, so it can land up to two patrol
-intervals late. Each pull is best effort (a read takes at
+intervals late. Each pull reads each crew once and is best effort (a read takes at
 most 32 items in about 6 seconds), and a row whose pull failed keeps its last
-state until the next pull files what it missed. `remote_reports_skipped` counts
+state until the next pull files what it missed. A worker on a crew that went away reads not running once its last pull is old, so its row goes stale like a quiet local worker. Quiet and stale time count from when this hub filed the report, not the crew's clock. `remote_reports_skipped` counts
 places in the worker's reports the hub could not file (a report it can never
 file, or a worker log that rolled past the last pull); above 0, read the
-worker's session for what you missed.
+worker's session for what you missed. When you leave Trust, a remote worker's grant ends only at the next pull; with no patrol running it lasts until it expires (default 6 h) or the session closes.
 
 **Follow-ups use `reply`.** To ask a finished worker something, keep its item
-open, `session_send` the question in an owner turn, and tell it to answer with
+open, `session_send` the question with `steer: true` in an owner turn, and tell it to answer with
 `work_report status=reply`. A `reply` wakes you once pulled and claims nothing,
 so it needs no acceptance: relay its summary to the worker that asked. A
 `reply` replaces the item's status like any report, so verify a `done` before
@@ -108,8 +127,9 @@ retired crews, and its reply names the old worker's `previous_branch` when that
 worker reported one. Seed the new worker to start from that branch, if any, and
 push a NEW one. An explicit `crew=` create may still name a retired crew and
 returns no branch. The retired session can only be closed. Once its crew is
-back, a pull tries once to close it; if that fails, `session_close(crew=)` it
-in an owner turn. An item keeps at most 8 retired sessions not yet closed; a
+back, a pull closes it, and retries a failed close later; the row's
+`close_pending` counts the ones still open. To close one now,
+`session_close(crew=)` it in an owner turn. An item keeps at most 8 retired sessions not yet closed; a
 retire past that is refused `retired_history_full` and the binding stays.
 
 **A stuck or wrong crew.** When a crew worker reports `blocked` on a login, or

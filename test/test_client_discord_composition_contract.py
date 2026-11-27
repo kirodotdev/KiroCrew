@@ -194,7 +194,7 @@ BASE_MEMBERS = {
     "_await_capacity": ("coroutine", "(self, route: 'str', *, exempt: 'bool') -> 'float'"),
     "_destination_still_permitted": (
         "coroutine",
-        "(self, path: 'str', destination_hint: 'str' = '') -> 'SendPermission'",
+        "(self, path: 'str', destination_hint: 'str' = '', caller_permitted: 'Callable[[], bool] | None' = None) -> 'SendPermission'",
     ),
     "_roster_still_permits": ("function", "(self, destination: 'str') -> 'SendPermission'"),
     "_audit_mid_send_decision": (
@@ -203,7 +203,7 @@ BASE_MEMBERS = {
     ),
     "_wait_then_revalidate": (
         "coroutine",
-        "(self, path: 'str', delay: 'float', destination_hint: 'str' = '') -> 'SendPermission'",
+        "(self, path: 'str', delay: 'float', destination_hint: 'str' = '', caller_permitted: 'Callable[[], bool] | None' = None) -> 'SendPermission'",
     ),
     "_note_rate_limit": (
         "function",
@@ -213,7 +213,7 @@ BASE_MEMBERS = {
     "_note_invalid": ("function", "(self, status: 'int', headers: 'Mapping[str, str]') -> 'None'"),
     "api_json": (
         "coroutine",
-        "(self, method: 'str', path: 'str', payload: 'dict | list | None', *, timeout: 'int' = 30, destination: 'str' = '', recheck_destination: 'bool' = True) -> 'DiscordApiResult'",
+        "(self, method: 'str', path: 'str', payload: 'dict | list | None', *, timeout: 'int' = 30, destination: 'str' = '', recheck_destination: 'bool' = True, caller_permitted: 'Callable[[], bool] | None' = None) -> 'DiscordApiResult'",
     ),
     "api_files": (
         "coroutine",
@@ -221,7 +221,7 @@ BASE_MEMBERS = {
     ),
     "_api": (
         "coroutine",
-        "(self, method: 'str', path: 'str', payload: 'dict | list | None', timeout: 'int' = 30, *, destination: 'str' = '') -> 'Any'",
+        "(self, method: 'str', path: 'str', payload: 'dict | list | None', timeout: 'int' = 30, *, destination: 'str' = '', caller_permitted: 'Callable[[], bool] | None' = None) -> 'Any'",
     ),
     "_api_multipart": (
         "coroutine",
@@ -229,7 +229,7 @@ BASE_MEMBERS = {
     ),
     "_api_request": (
         "coroutine",
-        "(self, method: 'str', path: 'str', *, timeout: 'int', build: 'Callable[[], dict[str, Any]]', destination: 'str' = '', recheck_destination: 'bool' = True) -> 'DiscordApiResult'",
+        "(self, method: 'str', path: 'str', *, timeout: 'int', build: 'Callable[[], dict[str, Any]]', destination: 'str' = '', recheck_destination: 'bool' = True, caller_permitted: 'Callable[[], bool] | None' = None) -> 'DiscordApiResult'",
     ),
 }
 

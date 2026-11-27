@@ -29,7 +29,6 @@ import asyncio
 import functools
 import hashlib
 import importlib.metadata
-import importlib.util
 import json
 import logging
 import os
@@ -41,7 +40,7 @@ import sysconfig
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,6 +89,13 @@ COMPONENTS: tuple[str, ...] = (COMPONENT_HARNESS, COMPONENT_CHROMIUM)
 #: a dozen wheels over a slow link is minutes.
 _VENV_TIMEOUT_SECS = 120.0
 _PIP_TIMEOUT_SECS = 15 * 60.0
+#: The ``pip`` / ``ensurepip`` check is one interpreter start.
+_PROBE_TIMEOUT_SECS = 30.0
+
+#: Run as ``python -I -c <this> <module>``: exit 0 when the module is importable.
+_IMPORTABLE_PROBE = (
+    "import importlib.util, sys; sys.exit(importlib.util.find_spec(sys.argv[1]) is None)"
+)
 
 #: How much of a failed step's output the state carries. The Settings page shows
 #: the tail, which for pip is where the reason is.
@@ -213,6 +219,10 @@ def install_state(home: Path) -> InstallState:
         have_python = python.is_file()
     except OSError:
         have_python = False
+    # A Windows venv's ``python.exe`` is a copied launcher, not a link, so it stays
+    # a file after the base Python it starts is removed; ask ``pyvenv.cfg`` instead.
+    if have_python and IS_WINDOWS:
+        have_python = _venv_base_python_present(prefix)
     installed = have_python and version == HARNESS_VERSION
     return InstallState(
         prefix=prefix,
@@ -247,18 +257,32 @@ async def install(
     *,
     components: tuple[str, ...] = COMPONENTS,
     refresh: bool = False,
+    before_clear: Callable[[], Coroutine[Any, Any, None]] | None = None,
 ) -> InstallState:
     """Create or refresh the venv and download Chromium. Raises :class:`InstallError`.
 
     *refresh* replaces a Chromium that is already present (Settings' Redownload);
     without it a whole copy is kept. Runs its blocking steps in a worker thread;
     *progress* is called from that thread with ``(stage, detail)`` and must
-    marshal onto the loop itself.
+    marshal onto the loop itself. *before_clear* runs on the loop, and is waited
+    for, before an install that clears the venv removes anything.
     """
+    loop = asyncio.get_running_loop()
+
+    def clearing() -> None:
+        if before_clear is not None:
+            asyncio.run_coroutine_threadsafe(before_clear(), loop).result()
+
     stop = threading.Event()
     worker = asyncio.create_task(
         asyncio.to_thread(
-            install_sync, home, progress, components=components, refresh=refresh, stop=stop
+            install_sync,
+            home,
+            progress,
+            components=components,
+            refresh=refresh,
+            stop=stop,
+            before_clear=clearing,
         )
     )
     try:
@@ -285,8 +309,14 @@ def install_sync(
     refresh: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     stop: threading.Event | None = None,
+    before_clear: Callable[[], None] | None = None,
 ) -> InstallState:
-    """The blocking body; *runner* replaces the owned subprocess in tests."""
+    """The blocking body; *runner* replaces the owned subprocess in tests.
+
+    *before_clear* is called before either arm that clears the venv (a rebuild, a
+    copy from the runtime) removes the marker; a stop set meanwhile keeps the marker.
+    A repair, and an install that keeps the venv, never call it.
+    """
 
     def notify(stage: str, detail: str) -> None:
         _check_stop(stop, stage)
@@ -298,7 +328,11 @@ def install_sync(
     notify(STAGE_PREPARING, str(prefix))
     if COMPONENT_HARNESS in components:
         _install_harness(
-            prefix, notify, runner or functools.partial(_run, cwd=prefix, stop=stop), stop=stop
+            prefix,
+            notify,
+            runner or functools.partial(_run, cwd=prefix, stop=stop),
+            stop=stop,
+            before_clear=before_clear,
         )
     if COMPONENT_CHROMIUM in components:
         try:
@@ -320,6 +354,7 @@ def _install_harness(
     run: Callable[..., subprocess.CompletedProcess[str]],
     *,
     stop: threading.Event | None = None,
+    before_clear: Callable[[], None] | None = None,
 ) -> None:
     if sys.version_info < MIN_PYTHON:
         raise InstallError(
@@ -335,6 +370,9 @@ def _install_harness(
     # nothing to build, so neither the pip checks nor the pillow refusal below apply.
     runtime_files = _runtime_harness_files()
     if runtime_files is not None:
+        if before_clear is not None:
+            before_clear()
+            _check_stop(stop, STAGE_CREATING_VENV)
         _copy_runtime_harness(prefix, notify, run, runtime_files, stop=stop)
         return
     # Interpreters differ in which half of pip they ship: the packaged app has
@@ -342,8 +380,9 @@ def _install_harness(
     # ``pip``. With the gateway's pip, the venv is made ``--without-pip`` and that
     # pip installs into it (``--python``). Without it, the venv bootstraps its own
     # pip through ``ensurepip`` (offline, bundled wheel) and installs with that.
-    gateway_pip = _has_module("pip")
-    if not gateway_pip and not _has_module("ensurepip"):
+    # Both are asked of an isolated child, the way the steps below run them.
+    gateway_pip = _has_module("pip", run)
+    if not gateway_pip and not _has_module("ensurepip", run):
         raise InstallError(
             STAGE_PREPARING,
             f"{sys.executable} has neither pip nor ensurepip; cannot install packages",
@@ -385,6 +424,9 @@ def _install_harness(
         repair_argv.append(str(venv_dir(prefix)))
         _step(run, repair_argv, _VENV_TIMEOUT_SECS, STAGE_CREATING_VENV)
     elif rebuild:
+        if before_clear is not None:
+            before_clear()
+            _check_stop(stop, STAGE_CREATING_VENV)
         # The marker goes first: a rebuild that fails part-way must read as
         # "not installed", never as a finished install of a venv now cleared.
         (prefix / MARKER_FILE).unlink(missing_ok=True)
@@ -579,12 +621,25 @@ def _venv_from_runtime(prefix: Path) -> bool:
         return False
 
 
-def _has_module(name: str) -> bool:
-    """Whether the gateway interpreter can import ``name`` (no subprocess)."""
+def _has_module(name: str, run: Callable[..., subprocess.CompletedProcess[str]]) -> bool:
+    """Whether an isolated (``-I``) child of the gateway interpreter can import ``name``.
+
+    Asked of the child, through the installer's own spawn, because the steps run
+    ``venv`` and ``pip`` that way: the gateway's import path also holds the
+    ``PYTHONPATH`` entries and the user site, which ``-I`` drops, so a ``pip``
+    found only there (``pip install --user pip``) made the child exit
+    "No module named pip". ``-I`` also keeps ``.pth`` entries the gateway cannot
+    tell apart from ``PYTHONPATH`` ones, so the question is not answered in-process.
+    """
+    argv = [sys.executable, *_ISOLATED, "-c", _IMPORTABLE_PROBE, name]
     try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, ValueError):
-        return False
+        return run(argv, _PROBE_TIMEOUT_SECS).returncode == 0
+    except subprocess.TimeoutExpired as exc:
+        raise InstallError(
+            STAGE_PREPARING, f"checking for {name} timed out after {_PROBE_TIMEOUT_SECS:.0f}s"
+        ) from exc
+    except OSError as exc:
+        raise InstallError(STAGE_PREPARING, str(exc)) from exc
 
 
 def _venv_has_pip(prefix: Path) -> bool:
@@ -611,6 +666,29 @@ def _venv_built_by_this_minor(prefix: Path) -> bool:
         if sep and key.strip() == "version":
             return value.strip().split(".")[:2] == [str(n) for n in sys.version_info[:2]]
     return False
+
+
+def _venv_base_python_present(prefix: Path) -> bool:
+    """Whether the folder ``pyvenv.cfg`` names as ``home`` still holds ``python.exe`` (no spawn).
+
+    Windows only: there the venv's launcher starts that interpreter. A ``home`` that
+    cannot be read or checked is taken as present, as before this check existed.
+    ``lexists`` rather than ``is_file``: a Microsoft Store Python's ``python.exe``
+    under ``WindowsApps`` is an app execution alias, a reparse point that is not
+    a plain file, and it must still read as present.
+    """
+    try:
+        text = (venv_dir(prefix) / "pyvenv.cfg").read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return True
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "home" and value.strip():
+            try:
+                return os.path.lexists(Path(value.strip()) / "python.exe")
+            except OSError:
+                return True
+    return True
 
 
 def _drop_dangling_interpreter_links(prefix: Path) -> None:

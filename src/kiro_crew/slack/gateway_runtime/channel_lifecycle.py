@@ -273,7 +273,7 @@ async def _connect_slack(self: GatewayOrchestrator) -> bool:
         return False
     try:
         await self._socket_client.connect()
-        print("Kiro Crew gateway connected to Slack")
+        print("👻 Kiro Crew gateway connected to Slack")
         return True
     except Exception as exc:
         # Keep a short reason for status surfaces (settings badge). Slack
@@ -295,7 +295,7 @@ async def _connect_slack(self: GatewayOrchestrator) -> bool:
             exc_info=True,
         )
         print(
-            "Warning: Slack connect failed — running dashboard-only "
+            "⚠️  Slack connect failed — running dashboard-only "
             "(check network/proxy; details in gateway.log)"
         )
         return False
@@ -310,7 +310,10 @@ async def _on_channel_config_change(self: GatewayOrchestrator, change: ConfigCha
     applied by that channel's own applier without a reconnect, so a change
     touching only them leaves the transport alone. Slack is not in this loop:
     its lifecycle is host-managed (``_connect_slack``), and its hot fields go
-    through :meth:`_on_slack_config_change`.
+    through :meth:`_on_slack_config_change`. A channel whose descriptor has a
+    ``reconnect`` (Discord) is offered a credential-only change, and a change to
+    its ``reconnect_keys``, in place first (``registry.reconnects_in_place``):
+    it is not closed here, and is restarted only if the reconnect declines.
     """
     if not self._channel_transports_started:
         # The boot loop has not started the channels yet: they start from the
@@ -333,6 +336,7 @@ async def _on_channel_config_change(self: GatewayOrchestrator, change: ConfigCha
     degraded = change.new.degraded_sections
     bootable = registry.bootable(builtin_channel_descriptors())
     to_restart: list[tuple[str, frozenset[str]]] = []
+    in_place: set[str] = set()
     deferred: set[str] = set()
     for desc in bootable:
         if desc.channel_type in degraded:
@@ -357,8 +361,14 @@ async def _on_channel_config_change(self: GatewayOrchestrator, change: ConfigCha
         # up, so the reconnected channel authenticates with the new credential.
         keys = registry.changed_boot_keys(desc, change.changed)
         keys = keys | registry.changed_credential_keys(desc, change.changed)
+        # A channel with an in-place reconnect (Discord) is also handed the
+        # live keys that change what it connects with, and is not closed below:
+        # ``_restart_changed_channels`` offers it the change first.
+        keys = keys | registry.changed_reconnect_keys(desc, change.changed)
         if keys:
             to_restart.append((desc.channel_type, keys))
+            if registry.reconnects_in_place(desc, keys):
+                in_place.add(desc.channel_type)
     if not to_restart:
         if deferred:
             raise ConfigDeferred(deferred)
@@ -370,7 +380,8 @@ async def _on_channel_config_change(self: GatewayOrchestrator, change: ConfigCha
     # transport whose config was just revoked.
     async with self._channel_restart_lock:
         for channel_type, _keys in to_restart:
-            await self._close_channel_locked(channel_type)
+            if channel_type not in in_place:
+                await self._close_channel_locked(channel_type)
     # Only the RECONNECT runs off the watcher's cycle: the applier is awaited
     # under ``ConfigWatch._cycle``'s lock, which every dashboard save also
     # waits on through ``refresh_now``, so a transport whose connect hangs
@@ -398,6 +409,23 @@ async def _restart_changed_channels(
     # on the restart lock, and a restart from the older document would put
     # the revoked principal back.
     for channel_type, keys in to_restart:
+        desc = next(
+            (d for d in builtin_channel_descriptors() if d.channel_type == channel_type), None
+        )
+        if (
+            desc is not None
+            and desc.reconnect is not None
+            and registry.reconnects_in_place(desc, keys)
+        ):
+            # Offered first; any failure falls through to the restart.
+            try:
+                if await desc.reconnect(self):
+                    continue
+            except Exception:
+                logger.exception("config: reconnecting %s in place failed", channel_type)
+            if keys <= desc.reconnect_keys:
+                # Live keys alone never restarted a channel; they still don't.
+                continue
         logger.info(
             "config: %s connection parameter(s) changed (%s); restarting the channel",
             channel_type,
@@ -411,8 +439,10 @@ async def _restart_changed_channels(
 
 async def channel_restarts_settled(self: GatewayOrchestrator) -> None:
     """Wait for every in-flight channel restart the applier scheduled."""
-    while self._channel_restart_tasks:
-        await asyncio.gather(*list(self._channel_restart_tasks), return_exceptions=True)
+    # Only the running tasks: a finished one leaves the set on a later loop pass,
+    # and gathering only finished tasks never yields (3.12+), so this would spin.
+    while pending := [task for task in self._channel_restart_tasks if not task.done()]:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def restart_channel(
@@ -659,6 +689,12 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
             "or run `kirocrew restart`, to apply the new Slack token or owner.",
             ", ".join(slack_cred_keys),
         )
+        # A credential any writer (the CLI included) changed away from what an
+        # open owner-claim window pinned closes it; a re-save of the same
+        # tokens (this notice arriving after the window opened) does not.
+        claim = getattr(self.dashboard_state, "slack_owner_claim", None)
+        if claim is not None:
+            claim.recheck_soon("credential_change")
     slack_paths = change.under("slack")
     if slack_paths and "slack" in new.degraded_sections:
         # Deferred, not dropped: the watcher retries these paths once the
@@ -698,6 +734,10 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
         # Two config objects in play (the handler global was never installed,
         # or was installed with another object): keep both current.
         slack_handler.copy_slack_fields(new, self._cfg)
+    if change.touched("slack.channels"):
+        from kiro_crew.slack.shared_channel_agent import retire_stale_marks_on_reload
+
+        await retire_stale_marks_on_reload()
     if change.touched("slack.reactions"):
         unknown = slack_handler.refresh_phase_emojis(new.slack.reactions)
         if unknown:
@@ -728,10 +768,9 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
 
         await asyncio.to_thread(slack_enterprise.reload_allowed_team_ids)
     if "slack.command" in slack_paths:
-        logger.warning(
-            "slack.command changed in config; the slash command is registered in "
-            "the Slack app manifest, so this takes effect on the next gateway start"
-        )
+        # The name help text shows and the router answers beside the manifest
+        # names; Slack's routing is the app manifest's, so nothing reconnects.
+        self.slack_command = new.slack.command
 
 
 def _on_default_agent_config_change(self: GatewayOrchestrator, change: ConfigChange) -> None:
@@ -851,9 +890,13 @@ async def _replay_spooled_inbound(self: GatewayOrchestrator, *, spool: Path | No
         # local prevents every other shared send ladder from discovering a
         # Slack transport it was never designed to route through.
         if self.slack is not None:
+            from kiro_crew.slack import shared_access
+
+            # A shared user (slack.shared_access) the owner still lists is owed the
+            # notice for their own refused message, in the conversation it came from.
             transports["slack"] = SlackTransport(
                 self.slack,
-                allowed_users=self._allowed_users,
+                allowed_users=set(self._allowed_users) | set(shared_access.listed_ids(self._cfg)),
             )
         await inbound_spool.replay_spooled(transports=transports, path=spool)
     except asyncio.CancelledError:

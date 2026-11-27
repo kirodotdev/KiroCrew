@@ -326,22 +326,35 @@ def format_approval_no_budget_card() -> str:
     )
 
 
-def format_approval_timeout_card(timeout_secs: float) -> str:
+def format_approval_timeout_card(
+    timeout_secs: float, *, yolo_covers: bool = True, rule: str = ""
+) -> str:
     """User-facing text for an approval prompt nobody answered in time.
 
     Deliberately distinct from :func:`format_turn_timeout_card`: the approval
     window can outlive the turn, and one shared card would surface an unanswered
     prompt as a generic turn timeout, stating neither the actual cause nor the
     fix, which is resending.
+
+    It advises YOLO mode only when *yolo_covers*, that is when YOLO would have
+    answered this prompt; otherwise it says YOLO does not cover the call and,
+    for a deny-rules override card, names the matched *rule* (a note label).
     """
-    return (
+    head = (
         f"⏱️ A tool needed your approval and nothing came back within "
         f"{_approval_wait_phrase(timeout_secs)}, "
         "so I declined it on your behalf and carried on from the denial — nothing "
         "was rolled back. If you wanted that tool to run, send the message again "
-        "and approve the prompt when it appears, or turn on YOLO mode first for an "
-        "unattended run."
+        "and approve the prompt when it appears"
     )
+    if yolo_covers:
+        return f"{head}, or turn on YOLO mode first for an unattended run."
+    if rule:
+        return (
+            f"{head}. YOLO mode does not cover this call: it matched the security "
+            f"rule {rule}, which only you can allow."
+        )
+    return f"{head}. YOLO mode does not cover this call."
 
 
 def _approval_wait_phrase(timeout_secs: float) -> str:
@@ -910,6 +923,11 @@ def spawn_guarded_turn(
             # A Task cancelled before its first loop step closes the bounded
             # wrapper but not the input coroutine stored in its arguments.
             coro.close()
+            # Nor did the turn run, so no exit of it marked the turn unstarted:
+            # mark it here, or a send queued behind this dispatch waits for a
+            # next send (an app that cancels its turns when it stops, then
+            # never sends to that slot again).
+            mark_turn_unstarted(slot)
         finish_turn_task(state, slot, t, timeout, limit_scope)
         _hand_off_if_unstarted(state, slot, t)
 

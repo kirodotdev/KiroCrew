@@ -232,6 +232,53 @@ class TestTheSlotRunsOnItsPick:
 
         assert _live_session_off_slot_backend(state, slot) is reset
 
+    @pytest.mark.parametrize(
+        "slot_agent, resolved, live, selection, reset",
+        [
+            # The default slot: the turn resolves the default template.
+            ("", "kirocrew", "kirocrew", ("template", ""), False),
+            ("", None, "kirocrew", ("template", ""), False),
+            # A custom agent (template) slot.
+            ("my-conductor", "my-conductor", "my-conductor", ("template", "my-conductor"), False),
+            # A crew member's session runs on the template prepare_runtime picked.
+            ("alice", "mate-conductor", "alice-template", ("member", "alice"), False),
+            # An app-owned slot: the launch copy is wire-only, the agent is its own.
+            ("writer", "notes--writer", "app-launch", ("template", "notes--writer"), False),
+            # A shared runtime founded by another agent: the session names its own.
+            ("my-conductor", "my-conductor", "joined", ("template", "my-conductor"), False),
+            # No live provider, and a provider naming no agent.
+            ("my-conductor", "my-conductor", None, ("template", ""), False),
+            ("my-conductor", "my-conductor", "", ("template", ""), False),
+            # A live session built for the default agent on a custom agent slot.
+            ("my-conductor", "my-conductor", "kirocrew", ("template", ""), True),
+        ],
+    )
+    def test_a_live_session_on_another_agent_is_reset(
+        self, tmp_path, slot_agent, resolved, live, selection, reset
+    ):
+        from kiro_crew.acp import session_provider
+        from kiro_crew.dashboard import chat_runner
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("w")
+        slot.agent = slot_agent
+        if live == "app-launch":
+            provider = SimpleNamespace(_agent="notes--writer", _launch_agent="notes--writer-copy")
+        elif live == "joined":
+            joined = object.__new__(session_provider.AcpSessionProvider)
+            joined._session_agent = "my-conductor"
+            joined._runtime = SimpleNamespace(_agent="kirocrew")
+            provider = SimpleNamespace(_client=joined)
+        elif live is None:
+            provider = None
+        else:
+            provider = SimpleNamespace(_agent=live)
+        state.sessions = SimpleNamespace(
+            get_provider=lambda key: provider, get_agent_selection=lambda key: selection
+        )
+
+        assert chat_runner._live_session_off_slot_agent(state, slot, resolved) is reset
+
     @pytest.mark.parametrize("pick, sent", [("kiro", {"backend_override": ""}), ("", {})])
     def test_the_inherited_default_is_resolved_for_the_pick(
         self, tmp_path, monkeypatch, pick, sent

@@ -71,7 +71,8 @@ previous one. A duplicate or backward `seq` raises
 because it can be a damaged line the low-level reader skipped. Rendering-only callers
 may pass `strict_seq=False`, but a state fold must keep the default.
 
-`resume` and `cursor` make a tail read cost the tail: `cursor` (a `ReadCursor`) is
+`resume` and `cursor` make a tail read cost the tail: `cursor` (a `ReadCursor`,
+imported with `ResumePoint` from `kiro_crew.crew_log.store`) is
 filled with the last yielded entry's `ResumePoint`, and passing that point back as
 `resume` opens the file at that record instead of decoding everything below it. A
 point is ignored when `seq` is below it, or when the store's cut count or the record
@@ -179,12 +180,14 @@ be well formed and owned, and the `src` acceptable
 [`event_type_not_owned`](errors.md#event_type_not_owned),
 [`namespace_violation`](errors.md#namespace_violation)); a declared type's payload
 must match its field schema ([`bad_data_field`](errors.md#bad_data_field)); a `ref`
-must be representable ([`bad_ref`](errors.md#bad_ref)); a `thread` must name an
-existing, earlier, readable entry in this same file
-([`bad_thread`](errors.md#bad_thread)); and the serialized line must fit the ceiling
-([`entry_too_large`](errors.md#entry_too_large)).
+must be representable ([`bad_ref`](errors.md#bad_ref)); and a `thread` must be a
+positive seq ([`bad_thread`](errors.md#bad_thread)).
 
-Then ownership is claimed and the tail is re-scanned under the unit's `.lock`.
+Then ownership is claimed and the tail is re-scanned under the unit's `.lock`, and
+two more checks run there, still before any byte is written: a `thread` must name an
+existing, earlier, readable entry in this same file
+([`bad_thread`](errors.md#bad_thread)), and the serialized line must fit the ceiling
+([`entry_too_large`](errors.md#entry_too_large)).
 `seq` is assigned as `last_seq + 1` where `last_seq` is read back from the file's
 own tail window on **every** write, never trusted from the cached property. `time`
 is assigned by the writer. So a refusal always means nothing happened, and a return
@@ -259,7 +262,8 @@ the next append re-supplies the missing newline. An interior line that is
 newline-terminated but unparseable is left on disk and skipped on read, because
 truncating at it would discard everything after it.
 
-**Interrupted-turn closers — the sessions' logs only, and only with `repair=True`.**
+**Interrupted-turn closers — the sessions' logs only, and only with `repair=True` or
+`repair_interrupted_turn`.**
 One closer per still-open opener, written in this order with a fixed value per type:
 
 | Open opener | Closer written | Fixed value |

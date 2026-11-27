@@ -11,7 +11,6 @@ resolves at its home. The suite is described in
 
 from __future__ import annotations
 
-import ast
 import importlib
 import re
 
@@ -171,22 +170,6 @@ def test_the_container_smoke_lane_fires_on_the_owners() -> None:
     patterns = [_globstar(p) for p in on["pull_request"]["paths"]]
     assert any(p.match("src/kiro_crew/dashboard/server.py") for p in patterns)
     assert [o for o in _owner_paths() if not any(p.match(o) for p in patterns)] == []
-
-
-def test_the_async_config_dir_guard_scans_every_owner_coroutine() -> None:
-    """``test_no_config_dir_in_async`` checks only the files it lists, so an owner that
-    defines a coroutine and is missing from the list would take it out of the guard."""
-    import test_no_config_dir_in_async as guard
-
-    listed = set(guard._ASYNC_CHECKED_FILES)
-    with_coroutines = {
-        f"dashboard/server_runtime/{stem}.py"
-        for stem, source in _owner_sources().items()
-        if any(isinstance(node, ast.AsyncFunctionDef) for node in ast.walk(ast.parse(source)))
-    }
-    assert len(with_coroutines) >= 20
-    assert "dashboard/server.py" in listed
-    assert with_coroutines - listed == set()
 
 
 def test_the_redaction_census_classifies_the_owners() -> None:

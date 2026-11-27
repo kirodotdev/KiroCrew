@@ -23,6 +23,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
+import { loadOlderMessages } from '../store/chatSlice'
 
 // How many leading rows the virtualizer stub currently has committed. The test
 // raises this to simulate the window-replacement commit landing late.
@@ -30,11 +31,30 @@ let mountedTo = 5
 
 vi.mock('../pages/chat', async () => {
   const React = await import('react')
+  const { useCurrentOcc } = await import('../hooks/SearchHighlightContext')
   return {
     ChatFooter: () => null,
     McpInfoButton: () => null,
-    UserMessage: () => React.createElement('div', { 'data-testid': 'user-msg' }),
+    // A user row says which message it draws and whether it holds the find's
+    // current match, which is all a test reads off it.
+    UserMessage: ({ messageTs }: { messageTs?: string }) => React.createElement('div', {
+      'data-testid': 'user-msg', 'data-ts': messageTs, 'data-current': useCurrentOcc() >= 0 ? 'yes' : 'no',
+    }),
     AssistantMessage: () => React.createElement('div', { 'data-testid': 'assistant-msg' }),
+  }
+})
+// The transcript draws a deferred snapshot of the messages. `hold` keeps it at
+// the last frame drawn before it was set, the way a background render that React
+// has not finished yet does; otherwise the real hook runs.
+const deferral = vi.hoisted(() => ({ hold: false, held: undefined as unknown }))
+vi.mock('../hooks/useSlotDeferredValue', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../hooks/useSlotDeferredValue')>()
+  return {
+    useSlotDeferredValue: (...args: Parameters<typeof real.useSlotDeferredValue>) => {
+      const value = real.useSlotDeferredValue(...args)
+      if (!deferral.hold) deferral.held = value
+      return deferral.hold ? deferral.held : value
+    },
   }
 })
 vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
@@ -173,7 +193,30 @@ function installLayout(recorded: Recorded[]) {
   }
 }
 
-const renderChatPage = async (messages: unknown[], msgTs: string) => {
+/** Queue every animation frame instead of running it, so a test steps the frames itself. */
+function installFrames() {
+  let frames: FrameRequestCallback[] = []
+  const origRaf = globalThis.requestAnimationFrame
+  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+    frames.push(cb)
+    return frames.length
+  }) as typeof globalThis.requestAnimationFrame
+  return {
+    /** Run every queued frame once (each may enqueue its successor), `n` times. */
+    flush(n: number) {
+      for (let i = 0; i < n; i++) {
+        const batch = frames
+        frames = []
+        if (batch.length === 0) return
+        act(() => { batch.forEach((cb) => cb(0)) })
+      }
+    },
+    restore() { globalThis.requestAnimationFrame = origRaf },
+  }
+}
+
+/** `msgTs` opens the chat through a `?msg=` deep link to that message. */
+const renderChatPage = async (messages: unknown[], msgTs?: string) => {
   const slot = { key: 'chat-1', title: 'chat-1', messages: N, running: false, mode: '', created: '', last_ts: '' }
   apiMocks.chatSlots = vi.fn().mockResolvedValue([slot])
   apiMocks.chatSlotDetail = vi.fn().mockResolvedValue({ messages, has_more: false, total: messages.length })
@@ -203,7 +246,7 @@ const renderChatPage = async (messages: unknown[], msgTs: string) => {
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
-          <MemoryRouter initialEntries={[`/chat/chat-1?msg=${encodeURIComponent(msgTs)}`]}>
+          <MemoryRouter initialEntries={[msgTs ? `/chat/chat-1?msg=${encodeURIComponent(msgTs)}` : '/chat/chat-1']}>
             <Routes>
               <Route path="/chat/:slug?" element={<ChatPage mode="" />} />
             </Routes>
@@ -218,8 +261,7 @@ const renderChatPage = async (messages: unknown[], msgTs: string) => {
 }
 
 describe('ChatPage — a far jump whose row mounts late still lands on the first navigation', () => {
-  let frames: FrameRequestCallback[] = []
-  let origRaf: typeof globalThis.requestAnimationFrame
+  let raf: ReturnType<typeof installFrames>
   let restoreLayout: (() => void) | null = null
   const recorded: Recorded[] = []
 
@@ -227,12 +269,7 @@ describe('ChatPage — a far jump whose row mounts late still lands on the first
     Object.keys(apiMocks).forEach(k => delete apiMocks[k])
     mountedTo = 5
     recorded.length = 0
-    frames = []
-    origRaf = globalThis.requestAnimationFrame
-    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
-      frames.push(cb)
-      return frames.length
-    }) as typeof globalThis.requestAnimationFrame
+    raf = installFrames()
     // Only timers are faked: performance.now must stay real so the poll's
     // wall-clock backstop measures the (near-zero) real duration of the flush
     // loop rather than the simulated 500ms deep-link delay.
@@ -242,20 +279,12 @@ describe('ChatPage — a far jump whose row mounts late still lands on the first
 
   afterEach(() => {
     vi.useRealTimers()
-    globalThis.requestAnimationFrame = origRaf
+    raf.restore()
     restoreLayout?.()
     restoreLayout = null
   })
 
-  /** Run every queued frame once (each may enqueue its successor). */
-  const flushFrames = (n: number) => {
-    for (let i = 0; i < n; i++) {
-      const batch = frames
-      frames = []
-      if (batch.length === 0) return
-      act(() => { batch.forEach((cb) => cb(0)) })
-    }
-  }
+  const flushFrames = (n: number) => raf.flush(n)
 
   it('keeps polling past 30 frames and scrolls once the row commits', async () => {
     const messages = mkMessages()
@@ -315,5 +344,73 @@ describe('ChatPage — a far jump whose row mounts late still lands on the first
     // anchoring hides the shift, iOS Safari has none (13-25px measured drift).
     await renderChatPage([{ role: 'user', content: 'q', ts: '2026-01-01T00:00:00Z', meta: { mid: 'm-1' } }], '2026-01-01T00:00:00Z')
     expect(capturedVirtOpts?.eagerFirstMeasure).toBe(true)
+  })
+})
+
+// A jump's settle poll re-scrolls every frame until the target's height has held
+// still for its quiet window. A page of older history that lands in that window
+// renumbers every loaded row, so the poll must aim at the jump's MESSAGE: the row
+// number it started with names an older message once the page is in. The reader
+// reaches this by wheeling (which lets the history walk page for the next 20
+// seconds) and then jumping near the top, where the walk lands the next page.
+describe('ChatPage — a page that lands while a jump settles leaves the jump on its message', () => {
+  let raf: ReturnType<typeof installFrames>
+  let restoreLayout: (() => void) | null = null
+  const recorded: Recorded[] = []
+
+  beforeEach(() => {
+    Object.keys(apiMocks).forEach(k => delete apiMocks[k])
+    // Every row is committed, so only the renumbering can move the target.
+    mountedTo = 1000
+    recorded.length = 0
+    deferral.hold = false
+    raf = installFrames()
+    // The clock is frozen as well, so the poll is still inside its quiet window
+    // when the page lands, however slowly the machine renders.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    restoreLayout = installLayout(recorded)
+  })
+
+  afterEach(() => {
+    deferral.hold = false
+    vi.useRealTimers()
+    raf.restore()
+    restoreLayout?.()
+    restoreLayout = null
+  })
+
+  const OLDER = 10
+  /** The walk's next page lands: OLDER messages from before the loaded ones. */
+  const landOlderPage = (store: ReturnType<typeof createTestStore>) => {
+    const older = Array.from({ length: OLDER }, (_, i) => ({
+      role: 'user', content: `o${i}`, cls: '', ts: `2026-06-23T19:${String(i).padStart(2, '0')}:00.000Z`,
+    }))
+    act(() => {
+      store.dispatch(loadOlderMessages.fulfilled(
+        { slot: 'chat-1', nextBefore: 0, messages: older, hasMore: false, total: N + OLDER } as never,
+        'req-older',
+        undefined as never,
+      ))
+    })
+  }
+  /** The scroll position the faked layout gives a centered display row `di`. */
+  const centered = (di: number) => di * ROW_H - CLIENT_H / 2
+  /** The scroll positions `steps` wrote. */
+  const scrollsDuring = (steps: () => void) => {
+    recorded.length = 0
+    steps()
+    return recorded.map((r) => r.top)
+  }
+
+  it('a ?msg= link: the poll keeps centering the linked message after the page lands', async () => {
+    const { store } = await renderChatPage(mkMessages(), ts(5))
+    // The deep link scrolls 500ms after the rows load.
+    act(() => { vi.advanceTimersByTime(600) })
+    expect(scrollsDuring(() => raf.flush(2)).at(-1)).toBe(centered(5))
+
+    landOlderPage(store)
+    const after = scrollsDuring(() => raf.flush(3))
+    expect(after.length).toBeGreaterThan(0)
+    expect(after).toEqual(after.map(() => centered(5 + OLDER)))
   })
 })

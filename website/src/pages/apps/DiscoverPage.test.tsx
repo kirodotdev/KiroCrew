@@ -25,7 +25,7 @@
  * the other writers of that shared banner without mocking the banner itself.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { createConnectedTestStore, renderWithProviders } from '../../test/helpers'
 
 const { refreshAppStore, refreshRegistries } = vi.hoisted(() => ({
@@ -83,15 +83,19 @@ vi.mock('./useAppsData', async importOriginal => {
  * write faithfully while the banner state itself stays real.
  */
 let pageSetError: ((message: string) => void) | null = null
+/** The page's Update All next-step setter, captured the same way. */
+let pageSetNotice: ((message: string) => void) | null = null
 
 vi.mock('./useAppUpdates', () => ({
-  useAppUpdates: ({ setError }: { setError: (m: string) => void }) => {
+  useAppUpdates: ({ setError, setNotice }: { setError: (m: string) => void; setNotice?: (m: string) => void }) => {
     pageSetError = setError
+    pageSetNotice = setNotice ?? null
     return {
       updatingAll: false,
       updatePending: {},
       runUpdate: vi.fn(),
       updateAll: vi.fn(),
+      trustHandoff: [],
     }
   },
 }))
@@ -250,6 +254,33 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
 
     await clickRefresh()
     expect(screen.getByText(foreign)).toBeInTheDocument()
+  })
+})
+
+describe('DiscoverPage Update All notices', () => {
+  it('renders consent lines in a warn-toned status notice, apart from the error alert', async () => {
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
+    await screen.findByRole('button', { name: REFRESH_LABEL })
+
+    const failure = 'pages.appsPage.failed_to_update {"names":"Docs"}'
+    const nextStep = 'pages.appsPage.updated_needs_session_approval_consent {"name":"Notes"}'
+    act(() => {
+      pageSetError!(failure)
+      pageSetNotice!(nextStep)
+    })
+
+    const notice = await screen.findByTestId('update-all-notice')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice).toHaveAttribute('data-tone', 'warn')
+    expect(notice).toHaveTextContent(nextStep)
+    expect(notice).not.toHaveTextContent(failure)
+    const alert = screen.getByText(failure).closest('[role="alert"]')
+    expect(alert).not.toBeNull()
+    expect(alert).not.toHaveTextContent(nextStep)
+
+    fireEvent.click(within(notice).getByRole('button'))
+    expect(screen.queryByTestId('update-all-notice')).toBeNull()
+    expect(screen.getByText(failure)).toBeInTheDocument()
   })
 })
 

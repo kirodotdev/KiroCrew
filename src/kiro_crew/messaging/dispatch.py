@@ -54,6 +54,7 @@ from kiro_crew.executors import (
 from kiro_crew.hooks import (
     HOOK_REPLY,
 )
+from kiro_crew.llm_helpers import record_interaction_event
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.dispatch_admission import (
@@ -240,6 +241,16 @@ def build_directive_consumer(
         # turn owes the thread no empty-turn notice.
         return outcome.ends_turn
 
+    def _claim_parked(input_digest: str, not_before: float) -> dict[str, Any] | None:
+        # The out-of-band half ``messaging.directive_tracker`` uses on a backend
+        # whose tool calls carry no trusted tool name (KAS). It claims only from
+        # THIS consumer's own session, so the tracker never names a session.
+        # Deferred import, for the same cycle as the applier above.
+        from kiro_crew.directive_queue import claim
+
+        return claim(session_key, input_digest, not_before=not_before)
+
+    setattr(_consume, "claim_parked", _claim_parked)
     return _consume
 
 
@@ -441,6 +452,8 @@ class ChannelTurns:
     * ``notice(reply_to, session_key, provider)`` -- post-turn threshold handling.
     * ``surface()`` -- runs after the record of a turn that opened its conversation.
     * ``restricted(session_key)`` -- whether a shutdown refusal may NOT be spooled.
+    * ``blocks_reads(session_key)`` -- whether the turn's prompt takes NO memory or
+      lessons (a ``temporary`` conversation). Unset, every turn reads, as before.
     * ``slot_state()`` -- the dashboard state the crew-log opener reads the slot's
       workspace from; defaults to ``dispatcher.dashboard_state``.
     * ``approvals`` -- the grant and the window sweep (:class:`Approvals`).
@@ -459,6 +472,7 @@ class ChannelTurns:
         notice: Callable[[Any, str, Any], Awaitable[None]] | None = None,
         surface: Callable[[], Awaitable[None]] | None = None,
         restricted: Callable[[str], Awaitable[bool]] | None = None,
+        blocks_reads: Callable[[str], Awaitable[bool]] | None = None,
         conv_log: Any = None,
         slot_state: Callable[[], Any] | None = None,
         approvals: Approvals = Approvals(),
@@ -473,6 +487,7 @@ class ChannelTurns:
         self._notice = notice
         self._surface = surface
         self._restricted = restricted
+        self._blocks_reads = blocks_reads
         self._conv_log = conv_log
         self._slot_state = slot_state
         self._approvals = approvals
@@ -699,6 +714,12 @@ class ChannelTurns:
         # session is acquired.
         if Drift.NO_GOVERNANCE_BACKSTOP not in drift and not await inbound_permitted(channel):
             return self._outcome(Verdict.DENIED, monitor)
+        from kiro_crew.start_priority import StartPriority  # noqa: F811
+        from kiro_crew.stats import Stats  # in-function: keeps them off the facade
+
+        # Only a message a person sent counts; a loop or monitor wake starts BACKGROUND.
+        if asker.start_priority is StartPriority.FOREGROUND:
+            Stats().inc_message_admitted()
         agent = asker.agent or self._agent()
         if asker.resumed:
             # A resumed session must run as ITSELF: on a cold start ``get_or_create``
@@ -762,6 +783,9 @@ class ChannelTurns:
         # compaction replay fences against the session the replay reacquired, not
         # the first acquisition's entry that an earlier reset already popped.
         _fence_token: Any = None
+        # Built before the wake's own claim, so that claim's resume debt is
+        # recorded too.
+        bracket = TurnBracket(sessions, ctx_builder, session_key)
         if monitor is not None:
             # A wake claims its session WITHOUT waiting, before anything is built: a
             # conversation already in a turn answers BUSY and the wake retries its
@@ -790,6 +814,7 @@ class ChannelTurns:
                 logger.exception("%s monitor session claim failed", channel)
                 return self._outcome(Verdict.FAILED, monitor)
             _acquired = claimed = True
+            bracket.owe_resume(is_new=is_new, resumed=resumed)
             _fence_token = _claim_token
             _turn_provider = provider
             if self._opens_crew_log(asker):
@@ -815,6 +840,7 @@ class ChannelTurns:
                     # A wake owns its claim before the renderer exists, unlike an
                     # inbound turn: fail closed and give the claim back.
                     sessions.release(session_key)
+                    bracket.settle()
                     logger.exception("%s monitor pre-turn setup failed", channel)
                     return self._outcome(Verdict.BUSY, monitor, acquired=True)
                 raise
@@ -823,7 +849,6 @@ class ChannelTurns:
                 getattr(renderer, "capabilities", None),
                 getattr(renderer, "channel_type", "") or channel,
             )
-        bracket = TurnBracket(sessions, ctx_builder, session_key)
         driver: Any = None
         prompt = text
         accumulated = ""
@@ -958,6 +983,9 @@ class ChannelTurns:
                         **extra,
                     )
                     _acquired = True
+                    # The claim consumed a one-shot resume: owe its re-sent
+                    # lessons and steering before any await a Stop can cut.
+                    bracket.owe_resume(is_new=is_new, resumed=resumed)
                     # Hold the provider this attempt obtained, for the failure
                     # handler's attribution question. Captured HERE rather than looked
                     # up when a failure is handled: the recovery paths replace a dead
@@ -1043,6 +1071,7 @@ class ChannelTurns:
                         _fence_token,
                     )
                     provider, is_new, resumed = reprojection.claimed
+                    bracket.owe_resume(is_new=is_new, resumed=resumed)
                     _reprojected = _reprojected or reprojection.reprojected
                     if reprojection.superseded or (
                         reprojection.reprojected
@@ -1151,6 +1180,11 @@ class ChannelTurns:
                 # This conversation's own silo comes from the session's RECORDED
                 # binding (``memory_store`` above), never from ``agent``: that is a
                 # kiro-cli template id, a namespace disjoint from ``cfg.agents``.
+                # Temporary reads NO memory: refusing the transcript write alone
+                # would still put stored memories and lessons into this prompt.
+                blocks_reads = self._blocks_reads is not None and await self._blocks_reads(
+                    session_key
+                )
                 # Off-loop: build_message embeds the episodic query (blocking urllib).
                 full_message, _ = await run_in_embed_pool(
                     ctx_builder.build_message,
@@ -1163,6 +1197,7 @@ class ChannelTurns:
                     resumed=resumed,
                     needs_reinjection=needs_reinjection,
                     minimal_context=minimal_context,
+                    blocks_reads=blocks_reads,
                     runtime_source=channel,
                     context_provider=provider,
                     user_display_name=asker.display_name,
@@ -1334,6 +1369,11 @@ class ChannelTurns:
             # recorded a failure, but the context it carried has already landed,
             # and re-arming would inject it a second time on the next turn.
             landed = bracket.landed(driver)
+            if landed:
+                # Per-interaction telemetry, on the landed verdict alone and
+                # before delivery is judged: a reply the channel failed to carry
+                # was still a model turn. On the provider this turn ran on.
+                record_interaction_event(_turn_provider, session_key, channel)
             stop_reason = (
                 (getattr(driver, "last_stop_reason", "") or "")
                 if getattr(driver, "completion_observed", False)

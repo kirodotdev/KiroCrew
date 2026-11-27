@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 import kiro_crew.dashboard.handlers.usage as usage_mod
 from kiro_crew.dashboard.handlers.usage import (
@@ -135,12 +136,11 @@ def _default_model_session(extra_layers: int, *, resolved: str = "auto") -> obje
     :func:`_documented_shape`.
     """
     from kiro_crew.acp.runtime import AcpRuntime
-    from kiro_crew.acp.session_handle import AcpSessionHandle
     from kiro_crew.acp.session_provider import AcpSessionProvider
     from kiro_crew.providers.acp import AcpProvider
 
     runtime = object.__new__(AcpRuntime)
-    handle = object.__new__(AcpSessionHandle)
+    handle = bare_session_handle()
     handle._runtime = runtime
     handle._model = ""
     handle._resolved_model_id = resolved

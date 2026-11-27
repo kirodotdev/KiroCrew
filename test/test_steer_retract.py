@@ -26,6 +26,7 @@ from chat_test_helpers import _make_app, _make_state
 from steer_requeue_helpers import _running_slot
 
 from kiro_crew.acp.types import wrap_user_message
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_AUTOMATION
 from kiro_crew.dashboard import steer_retract
 from kiro_crew.dashboard.chat_delivery import (
     STEER_RETRACTABLE_META,
@@ -377,6 +378,21 @@ class TestDropped:
             "take me back": STEER_STATE_RETRACTED,
             "last": STEER_STATE_WRITTEN,
         }
+
+    @pytest.mark.asyncio
+    async def test_an_automation_steer_the_clear_dropped_is_sent_again_as_automation(self, harness):
+        client = harness.slot._acp_client
+        async with TestClient(TestServer(harness.app)) as http:
+            for text in ("take me back", "wake"):
+                await _steer(http, text)
+            await _retract(http, _mid_of(harness.slot, "take me back"), "unsend")
+        # The second pending steer stands in for a work-ledger wake steered into the turn.
+        harness.slot._steer_automation["wake"] = {"cycle": 1}
+        client.steer.reset_mock()
+
+        await steer_retract.on_dropped(harness.state, harness.slot)
+
+        client.steer.assert_awaited_once_with("wake", origin=STEER_ORIGIN_AUTOMATION)
 
     @pytest.mark.asyncio
     async def test_a_possibly_delivered_steer_is_not_taken_back_or_resent(self, harness):

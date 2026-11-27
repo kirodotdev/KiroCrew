@@ -23,12 +23,28 @@ When a pass runs (all must hold):
 gateway reads on its next memory repair visit: it skips gates 1 and 2 only, and
 still needs 3 and 4.
 
-One run reads at most :data:`ROWS_PER_RUN` rows past the watermark, in batches of
-:data:`BATCH_ROWS`, and stops at the next batch boundary once a chat turn starts
-or :data:`RUN_SECONDS` have passed. The watermark is the last ``(updated_at, key)``
-read, so the first run over an existing store walks the backlog one capped run a
-night and resumes where it stopped. A row without a vector is compared by text
-only and counted; the gateway's backfill sweep already embeds it at bulk priority.
+The watermark is the last ``(updated_at, key)`` read. A run reads at most
+:data:`ROWS_PER_RUN` rows past it, so a backlog takes several runs and a caught-up
+store reads only the rows written since. Rows go in batches of :data:`BATCH_ROWS`,
+and a run stops at the next batch boundary once a chat turn starts or
+:data:`RUN_SECONDS` have passed. Only the model step spends tokens, and it stays
+under :data:`MODEL_INPUT_TOKENS` a run whatever the row budget: after the first
+batch, a pair that does not fit the tokens left stops the run before its batch, so
+the next run asks about it instead of passing it by. A row without a vector is
+compared by text only and counted; the gateway's backfill sweep already embeds it
+at bulk priority.
+
+Each run first rechecks the open approval list (:func:`recheck`) and drops a
+proposal whose rows are gone or changed since it was listed, or that today's
+candidate rules do not give; drops are counted by reason. When the list is
+still full (:data:`PROPOSALS_CAP` entries or the byte cap), the oldest proposals
+of earlier runs roll off to make room, counted per kind, so a list nobody works
+through never stops the scan. A proposal is only a report entry: rolling one off
+changes no memory row. Only when this run's own proposals fill the list does the
+watermark stop before the batch of the first one that did not fit
+(``stopped="list_full"``), so that batch is read again by the next run. A single
+proposal over the byte cap on its own can never fit, so it is refused
+(``too_large``) instead.
 
 Candidates, by code:
 
@@ -41,7 +57,9 @@ Candidates, by code:
   merged sentence, under :data:`MODEL_INPUT_TOKENS` input tokens a run.
 * ``work_state`` -- a ``project.*`` row whose key names a PR, issue, CI run,
   branch, round, SHA, status, next step or worktree, which GitHub, git or the work
-  ledger already holds (the classes kind routing tags ``state``).
+  ledger already holds (the classes kind routing tags ``state``). A key that names
+  only a topic (PR, CI, issue) and ends in a decision, rule, gate or contract word,
+  with no status word and no number, is a lasting fact and is not proposed.
 * ``numbered_family`` -- ``project.*`` keys that differ only by their numbers,
   grouped for review; nothing would change.
 * ``legacy_tier`` -- an agent-inferred lesson (L3) in the rule tier, which would
@@ -80,7 +98,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, Iterable, Mapping, Sequence
 
 from kiro_crew import memory_kind_routing as _kind_log
 from kiro_crew import memory_lesson_dedup as _dedup
@@ -108,7 +126,11 @@ MODE_PROPOSE: Final = "propose"
 MIN_HOURS_BETWEEN_RUNS: Final = 24
 MIN_NEW_LESSONS: Final = 20
 MIN_NEW_SESSIONS: Final = 5
-ROWS_PER_RUN: Final = 200
+#: Rows past the watermark one run reads. Row scanning spends no model tokens
+#: (candidates come from stored vectors), so this is sized to walk a 17k-row backlog
+#: in about a week against about 200 new rows a day; once caught up a run reads only
+#: the rows written since. The model step has its own cap.
+ROWS_PER_RUN: Final = 2_500
 BATCH_ROWS: Final = 50
 RUN_SECONDS: Final = 600.0
 MODEL_INPUT_TOKENS: Final = 20_000
@@ -140,6 +162,13 @@ REFUSE_NEW_WORDS: Final = "new_content_word"
 REFUSE_CLAIMED: Final = "row_in_another_proposal"
 REFUSE_OUTSIDE_GROUP: Final = "outside_model_group"
 REFUSE_EMPTY: Final = "empty_merge"
+REFUSE_TOO_LARGE: Final = "too_large"
+
+#: Why :func:`recheck` drops an open proposal.
+DROP_GONE: Final = "gone"
+DROP_CHANGED: Final = "changed"
+DROP_PROTECTED: Final = "protected_row"
+DROP_RULES: Final = "no_longer_qualifies"
 
 _META_PREFIX: Final = "memory_dream:"
 STATE_KEY: Final = _META_PREFIX + "state"
@@ -191,6 +220,39 @@ _STATE_WORDS: Final = frozenset(
 )
 _STATE_PAIRS: Final = frozenset(
     {"pr_number", "pr_status", "next_action", "next_step", "next_steps", "in_progress"}
+)
+#: The words of :data:`_STATE_WORDS` that name a status itself, not a topic.
+_STATUS_WORDS: Final = frozenset({"status", "pending", "blocked", "blocker", "sha", "head", "wip"})
+#: Last key words that name a lasting decision, rule or contract (a kind routing
+#: ``fact``), as in ``ci.error_code_contract_gate`` or ``prepare_pr.rule_files_decision``.
+_DURABLE_HEADS: Final = frozenset(
+    {
+        "decision",
+        "decisions",
+        "contract",
+        "contracts",
+        "rule",
+        "rules",
+        "policy",
+        "convention",
+        "conventions",
+        "gate",
+        "gates",
+        "invariant",
+        "invariants",
+        "design",
+        "pattern",
+        "protocol",
+        "workflow",
+        "approval",
+        "guideline",
+        "guidelines",
+        "principle",
+        "principles",
+        "approach",
+        "strategy",
+        "rationale",
+    }
 )
 _ASCII_DIGITS: Final = "0123456789"
 
@@ -252,6 +314,8 @@ class Snapshot:
     project_keys: dict[str, str]
     dim: int
     space: object
+    #: When the rows were read, taken under the same store-lock hold.
+    read_at: str = ""
 
     @property
     def read_ids(self) -> set[str]:
@@ -295,13 +359,15 @@ class Proposal:
     #: For a model proposal: the rows the model was shown.
     group: list[str] | None = None
 
-    def entry(self, run_id: str) -> dict:
+    def entry(self, run_id: str, seen: str = "") -> dict:
+        """The list entry; *seen* is when the run that found it read its rows."""
         out: dict = {
             "run": run_id,
             "kind": self.kind,
             "keys": self.keys,
             "changes": self.changes,
             "gate": "pass",
+            "seen": seen,
         }
         if self.kind == KIND_TIER:
             out["applies"] = "on_topic"
@@ -326,16 +392,28 @@ def _rule_text(row: Row) -> str:
 
 
 def is_work_state_key(key: str) -> bool:
-    """Whether ``project.*`` *key* names work state another system already holds."""
+    """Whether ``project.*`` *key* names work state another system already holds.
+
+    A key that only names a topic word (a PR, CI, an issue) and ends in a durable
+    word (:data:`_DURABLE_HEADS`) is a decision or contract about that topic, not
+    its status, so it is not work state. A status word or a number (a work-item
+    number, a date) anywhere in the key keeps it work state: like kind routing's
+    mixed-item rule, it reads true only while that item is open.
+    """
     if not key.startswith("project."):
         return False
     parts = key[len("project.") :].replace(".", "_").split("_")
+    topic = False
     for i, part in enumerate(parts):
-        if _before_digit(part) in _STATE_WORDS:
+        word = _before_digit(part)
+        if word in _STATUS_WORDS:
             return True
         if i + 1 < len(parts) and f"{part}_{_before_digit(parts[i + 1])}" in _STATE_PAIRS:
             return True
-    return False
+        topic = topic or word in _STATE_WORDS
+    if not topic:
+        return False
+    return parts[-1] not in _DURABLE_HEADS or any(c in _ASCII_DIGITS for c in key)
 
 
 def _before_digit(part: str) -> str:
@@ -572,6 +650,10 @@ class Receipt:
     proposed: dict[str, int] = field(default_factory=dict)
     refused: dict[str, int] = field(default_factory=dict)
     refused_ids: list[dict] = field(default_factory=list)
+    #: Open proposals of earlier runs dropped by :func:`recheck`, by reason.
+    dropped: dict[str, int] = field(default_factory=dict)
+    #: Open proposals of earlier runs rolled off a full list to make room, by kind.
+    rolled_off: dict[str, int] = field(default_factory=dict)
 
     def refuse(self, proposal: Proposal, reason: str) -> None:
         self.refused[reason] = self.refused.get(reason, 0) + 1
@@ -590,6 +672,8 @@ def _bump_counts(db: "sqlite3.Connection", receipt: Receipt, now: datetime) -> N
     add = {"runs": 1, "rows": receipt.rows, "model_tokens": receipt.model_tokens}
     add.update({f"proposed_{k}": n for k, n in receipt.proposed.items()})
     add.update({f"refused_{k}": n for k, n in receipt.refused.items()})
+    add.update({f"dropped_{k}": n for k, n in receipt.dropped.items()})
+    add.update({f"rolled_off_{k}": n for k, n in receipt.rolled_off.items()})
     for name, n in add.items():
         if n:
             counts[name] = _kind_log._count(counts.get(name)) + n
@@ -616,6 +700,79 @@ def _live_rows(db: "sqlite3.Connection", keys: Iterable[str]) -> dict[str, Row]:
     return live
 
 
+def _space_of(store: "VectorMemoryStore") -> object:
+    signature = store._read_meta("embedding_space_sig")
+    return (signature, store._space_generation) if signature is not None else None
+
+
+def recheck(store: "VectorMemoryStore", listed: list[dict]) -> tuple[list[dict], dict[str, int]]:
+    """The open proposals that still hold, and how many were dropped, by reason.
+
+    Dropped: a row gone (``gone``), a row updated after the run that listed it started
+    (``changed``), a row it would change now L1 or L2 (``protected_row``), or a
+    ``work_state``, ``legacy_tier`` (servable, rule tier) or ``numbered_family``
+    proposal today's candidate rules do not give (``no_longer_qualifies``). Read-only; the
+    caller holds the store lock.
+    """
+    db = store.db
+    live = _live_rows(db, proposed_keys(listed))
+    started = {str(r.get("run")): r.get("started_at") for r in read_runs(db)}
+    dim, space = int(store._embedding_dim), _space_of(store)
+    servable: set[str] = set()
+    if any(e.get("kind") == KIND_TIER for e in listed):
+        servable = {str(r["key"]) for r in _dedup._live_lessons(store)}
+    kept: list[dict] = []
+    dropped: dict[str, int] = {}
+    for entry in listed:
+        reason = _stale_reason(entry, live, started, servable, dim, space)
+        if reason is None:
+            kept.append(entry)
+        else:
+            dropped[reason] = dropped.get(reason, 0) + 1
+    return kept, dropped
+
+
+def _stale_reason(
+    entry: Mapping,
+    live: Mapping[str, Row],
+    started: Mapping[str, object],
+    servable: set[str],
+    dim: int,
+    space: object,
+) -> str | None:
+    keys = [str(k) for k in entry["keys"]]
+    if not keys or any(k not in live for k in keys):
+        return DROP_GONE
+    # An entry listed before ``seen`` existed falls back to its run's start.
+    seen = entry.get("seen") or started.get(str(entry.get("run")))
+    listed_at = _kind_log._parse_instant(seen) if isinstance(seen, str) else None
+    if listed_at is None:
+        # No stamp and its receipt is gone: whether a row changed cannot be told.
+        return DROP_CHANGED
+    for key in keys:
+        at = _kind_log._parse_instant(live[key].updated_at)
+        if at is not None and at > listed_at:
+            return DROP_CHANGED
+    kind = entry.get("kind")
+    changes = [str(k) for k in entry.get("changes") or ()]
+    protect = keys if kind == KIND_UNCERTAIN else changes
+    if any(k in live and live[k].protected for k in protect):
+        return DROP_PROTECTED
+    if kind == KIND_STATE and not all(is_work_state_key(k) for k in keys):
+        return DROP_RULES
+    if kind == KIND_TIER:
+        if keys[0] not in servable:
+            return DROP_RULES
+        item = _item(live[keys[0]], dim, space)
+        if item is None or item.tier != TIER_RULE:
+            return DROP_RULES
+    if kind == KIND_FAMILY:
+        families = {family_of(k) for k in keys}
+        if len(keys) < 2 or len(families) != 1 or None in families:
+            return DROP_RULES
+    return None
+
+
 def persist(
     store: "VectorMemoryStore",
     receipt: Receipt,
@@ -625,40 +782,78 @@ def persist(
     cursor: tuple[str, str],
     completed: bool,
     now: datetime,
+    marks: Sequence[tuple[int, tuple[str, str]]] = (),
+    read_at: str = "",
 ) -> list[dict]:
     """Gate *candidates* against the store as it is now, and record the run.
+
+    *read_at* is when the candidates' rows were read; it becomes each new entry's
+    ``seen`` (the run's start when empty).
+
+    The open list is rechecked first (:func:`recheck`). When a passing candidate
+    does not fit, the oldest proposals of earlier runs roll off until it does.
+    *marks* holds, per batch, the index of its first candidate and the watermark
+    before it. When this run's own proposals fill the list, the watermark goes back
+    to the mark of the first candidate that did not fit and the rest are left for a
+    later run to find again.
 
     Writes ``memory_meta`` only, in one transaction under the store lock. Returns the
     proposals added to the approval list.
     """
     added: list[dict] = []
     stamp = now.isoformat()
+    cap = _kind_log.SAMPLE_BYTES_CAP
     with store._db_lock:
         db = store.db
         db.execute("BEGIN IMMEDIATE")
         try:
-            listed = read_proposals(db)
+            before = read_proposals(db)
+            listed, receipt.dropped = recheck(store, before)
+            # A rolled-off proposal's rows stay claimed for this run: this run's
+            # candidates were found without them, so nothing here can cite them.
             claimed = proposed_keys(listed)
             live = _live_rows(db, (k for p in candidates for k in p.keys))
-            room = PROPOSALS_CAP - len(listed)
-            for proposal in candidates:
+            sizes = [len(json.dumps(e)) for e in listed]
+            # ``json.dumps`` of a list is its entries joined by ", " inside "[]",
+            # so the list's bytes are this sum once it holds an entry.
+            body = sum(sizes) + 2 * len(sizes)
+            head = 0
+            for index, proposal in enumerate(candidates):
                 reason = gate(proposal, read=read, live=live, claimed=claimed)
                 if reason is not None:
                     receipt.refuse(proposal, reason)
                     continue
-                if room <= 0:
-                    receipt.list_full += 1
+                # When the rows were read, not their stamps now: an edit made after
+                # the read makes the entry ``changed`` next run.
+                entry = proposal.entry(receipt.run, seen=read_at or receipt.started_at)
+                one = len(json.dumps(entry))
+                if one + 2 > cap:
+                    # It would not fit an empty list either, so waiting cannot help.
+                    receipt.refuse(proposal, REFUSE_TOO_LARGE)
                     continue
-                entry = proposal.entry(receipt.run)
-                if len(json.dumps(listed + added + [entry])) > _kind_log.SAMPLE_BYTES_CAP:
-                    receipt.list_full += 1
-                    continue
+                while head < len(listed) and (
+                    len(listed) - head + len(added) >= PROPOSALS_CAP or body + one + 2 > cap
+                ):
+                    # The oldest open proposal of an earlier run makes room. It is a
+                    # report entry only; no memory row changes.
+                    gone = listed[head]
+                    body -= sizes[head] + 2
+                    head += 1
+                    kind = str(gone.get("kind"))
+                    receipt.rolled_off[kind] = receipt.rolled_off.get(kind, 0) + 1
+                if len(listed) - head + len(added) >= PROPOSALS_CAP or body + one + 2 > cap:
+                    # Only this run's proposals are left: the batch this candidate
+                    # came from is read again by the next run.
+                    receipt.list_full += len(candidates) - index
+                    receipt.stopped, completed = "list_full", False
+                    cursor = next((c for at, c in reversed(marks) if at <= index), cursor)
+                    break
                 added.append(entry)
-                room -= 1
+                body += one + 2
                 claimed.update(proposal.keys)
                 receipt.proposed[proposal.kind] = receipt.proposed.get(proposal.kind, 0) + 1
-            if added:
-                _kind_log._upsert(db, PROPOSALS_KEY, json.dumps(listed + added), stamp)
+            if added or head or len(listed) != len(before):
+                _kind_log._upsert(db, PROPOSALS_KEY, json.dumps(listed[head:] + added), stamp)
             state = read_state(db)
             state["cursor"] = list(cursor)
             if completed:
@@ -730,11 +925,14 @@ async def run_store(
     receipt = Receipt(
         run=uuid.uuid4().hex[:12], store=store_name, trigger=trigger, started_at=now().isoformat()
     )
-    cursor, claimed = await offload(_start_state, store)
-    snap: Snapshot = await offload(read_snapshot, store, cursor, ROWS_PER_RUN)
+    # A full list does not stop the scan: :func:`persist` rolls the oldest open
+    # proposals off to make room.
+    cursor, claimed, snap = await offload(_start_state, store, now)
     candidates: list[Proposal] = []
+    marks: list[tuple[int, tuple[str, str]]] = []
     completed = True
     for start in range(0, len(snap.batch), BATCH_ROWS):
+        marks.append((len(candidates), cursor))
         if should_stop():
             receipt.stopped, completed = "chat", False
             break
@@ -754,9 +952,15 @@ async def run_store(
                 interrupted = "chat" if left > 0 else "time"
                 break
             tokens_left = MODEL_INPUT_TOKENS - receipt.model_tokens
-            merged = await _ask_model(pair, merge, tokens_left, left, receipt)
+            # The first batch always finishes, so every run moves the watermark.
+            merged = await _ask_model(
+                pair, merge, tokens_left, left, receipt, can_stop=receipt.batches > 0
+            )
             if merged is _TIMED_OUT:
                 interrupted = "time"
+                break
+            if merged is _SPENT:
+                interrupted = "budget"
                 break
             if isinstance(merged, str):
                 keys = [pair.keep.key, pair.other.key]
@@ -775,23 +979,45 @@ async def run_store(
             1 for r in batch if r.is_lesson and unit_vector(r.blob, snap.dim) is None
         )
         cursor = (batch[-1].updated_at, batch[-1].key)
-    await offload(_persist_now, store, receipt, candidates, snap.read_ids, cursor, completed, now)
+    await offload(
+        _persist_now,
+        store,
+        receipt,
+        candidates,
+        snap.read_ids,
+        cursor,
+        completed,
+        now,
+        marks,
+        snap.read_at,
+    )
     return receipt
 
 
 _TIMED_OUT: Final = object()
+_SPENT: Final = object()
 
 
 async def _ask_model(
-    pair: Pair, merge: MergeFn | None, tokens_left: int, left: float, receipt: Receipt
+    pair: Pair,
+    merge: MergeFn | None,
+    tokens_left: int,
+    left: float,
+    receipt: Receipt,
+    *,
+    can_stop: bool,
 ) -> object:
-    """The merged sentence for *pair*, ``None`` when there is none, or :data:`_TIMED_OUT`."""
+    """The merged sentence for *pair*, ``None`` when there is none, :data:`_TIMED_OUT`,
+    or :data:`_SPENT` when it does not fit the tokens left and *can_stop*."""
     prompt = merge_prompt(_rule_text(pair.keep), _rule_text(pair.other))
     cost = prompt_tokens(prompt)
+    if merge is not None and can_stop and tokens_left < cost <= MODEL_INPUT_TOKENS:
+        return _SPENT
     if merge is None or cost > tokens_left:
-        # shortcut: a pair skipped here is passed by the watermark and comes back
-        # only when one of its rows changes; keep a retry list if the counted skips
-        # stay high.
+        # shortcut: a pair skipped here (no model wired, one prompt over the whole
+        # budget, or the first batch out of budget) is passed by the watermark and
+        # comes back only when one of its rows changes; keep a retry list if the
+        # counted skips stay high.
         receipt.budget_skipped += 1
         return None
     receipt.model_calls += 1
@@ -828,10 +1054,23 @@ def _tier_proposals(rows: Iterable[Row], snap: Snapshot) -> list[Proposal]:
     return out
 
 
-def _start_state(store: "VectorMemoryStore") -> tuple[tuple[str, str], set[str]]:
-    """The watermark, and every row already in an open proposal."""
+def _start_state(
+    store: "VectorMemoryStore", now: Callable[[], datetime]
+) -> tuple[tuple[str, str], set[str], Snapshot]:
+    """The watermark, every row in an open proposal that still holds, and the snapshot.
+
+    Read under one hold of the store lock, so a row edited between the recheck and
+    the batch read cannot be both read in the batch and still claimed by the stale
+    proposal it was dropped from. The snapshot's ``read_at`` is stamped inside that
+    hold, so an edit the batch already holds is never read as a later change.
+    """
     with store._db_lock:
-        return cursor_of(read_state(store.db)), proposed_keys(read_proposals(store.db))
+        listed, _dropped = recheck(store, read_proposals(store.db))
+        cursor = cursor_of(read_state(store.db))
+        read_at = now().isoformat()
+        snap = read_snapshot(store, cursor, ROWS_PER_RUN)
+        snap.read_at = read_at
+        return cursor, proposed_keys(listed), snap
 
 
 def _persist_now(
@@ -842,8 +1081,20 @@ def _persist_now(
     cursor: tuple[str, str],
     completed: bool,
     now: Callable[[], datetime],
+    marks: Sequence[tuple[int, tuple[str, str]]],
+    read_at: str,
 ) -> list[dict]:
-    return persist(store, receipt, candidates, read, cursor=cursor, completed=completed, now=now())
+    return persist(
+        store,
+        receipt,
+        candidates,
+        read,
+        cursor=cursor,
+        completed=completed,
+        now=now(),
+        marks=marks,
+        read_at=read_at,
+    )
 
 
 # ── Host lock, manual request, idle ─────────────────────────────────────────

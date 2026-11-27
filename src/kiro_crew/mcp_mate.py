@@ -22,9 +22,13 @@ tiers that follow who owns the field:
   ``[CURRENT ASSIGNMENT]`` section it keeps for itself
   (:mod:`kiro_crew.member_notes`). Its chat runs on the conductor, which has no
   file tool, so this is how it keeps them. Admitted like the goal tools.
+* **Memory** -- ``memory_list`` reads one page of the crewmate's own facts or
+  experiences (:mod:`kiro_crew.dashboard.handlers.member_memory_self`), admitted
+  like the goal tools; ``propose_memory_changes`` is card-backed, below.
 * **Card-backed** -- ``set_model``, ``set_approval_mode``,
   ``request_capabilities``, ``set_goal`` (add or change one goal), ``set_key_results``
-  (how the goals are measured, the whole set at once): what the crewmate
+  (how the goals are measured, the whole set at once), ``propose_memory_changes``
+  (delete or edit some of its own memories, each row ticked by the user): what the crewmate
   works toward, runs on and what it may do
   without asking. These are the user's to grant, so each becomes the
   existing change card (:mod:`kiro_crew.dashboard.change_cards`) for the caller's
@@ -143,6 +147,7 @@ _PROPOSALS = {
     "set_key_results": "key_results",
     "set_check_ins": "check_ins",
     "offer_dashboard_page": "dashboard_page",
+    "propose_memory_changes": "memory",
 }
 
 
@@ -203,6 +208,16 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"{refused}\nYour notes were not saved; do not say they were."
         return _render({**d, "next": "Saved; they open your next turn."})
 
+    if name == "memory_list":
+        wanted = ("kind", "query", "sort", "offset", "limit")
+        d = _post(
+            "/api/member/self/memory/list",
+            {k: args[k] for k in wanted if k in args},
+            session_key=sk,
+        )
+        refused = _error_for(name, d)
+        return refused or _render(d)
+
     if name == "find_capabilities":
         d = _post("/api/member/self/capabilities", {"query": args.get("query", "")}, session_key=sk)
         refused = _error_for(name, d)
@@ -257,6 +272,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "user to turn on Dynamic capabilities for you. If they press Turn on, "
                 "your request becomes its own card on its own; do not ask again. "
                 "Refer to the card once and end your turn.",
+            }
+        )
+    if name == "propose_memory_changes":
+        return _render(
+            {
+                **d,
+                "next": "The card is in this chat above your reply. Say in one short "
+                "line how many changes you put on it for the user to review, and end "
+                "your turn.",
             }
         )
     return _render(

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import type { SetURLSearchParams } from 'react-router-dom'
 
-import { BROWSER_HANDBACK_CHAT_EVENT } from '../../../api/client/browserLive'
 import type { ChatLaunchOptions } from '../../../app-sdk'
 import { chatLaunchOpensDraft } from '../../../app-sdk/chatLaunch'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
@@ -527,18 +526,6 @@ export function useAutoSendIntake({
     else void start()
   }, [send, connected, autoSendTick, autoSendRef, appLaunchSendRef])
 
-  // A browser hand-back note no parked agent op was waiting for:
-  // the person typed it on the card's hand-back bar and pressed Enter, so it is
-  // their message, sent to the chat the card belongs to.
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ slotKey?: unknown; text?: unknown }>).detail
-      if (typeof detail?.text !== 'string' || !detail.text.trim()) return
-      void send(detail.text, typeof detail.slotKey === 'string' && detail.slotKey ? detail.slotKey : undefined)
-    }
-    window.addEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
-    return () => window.removeEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
-  }, [send])
 
   // Widget interactivity: when a mcwidget iframe fires an action, PRE-FILL the
  // composer instead of auto-submitting. Auto-submitting would be a

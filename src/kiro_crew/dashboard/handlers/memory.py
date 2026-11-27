@@ -296,10 +296,14 @@ def _validate_private_profile_update(
 
     from kiro_crew.config.loader import resolve_agent_bindings
     from kiro_crew.member_essential_context import ESSENTIAL_MAX_CHARS, MemberEssentialContextError
+    from kiro_crew.memory_provider.contract import MAX_DOCUMENT_TEXT
 
-    if len(content) > ESSENTIAL_MAX_CHARS:
+    # A profile file is also a memory-provider document, so it must fit both
+    # caps: a move or export refuses a document over MAX_DOCUMENT_TEXT by name.
+    limit = min(ESSENTIAL_MAX_CHARS, MAX_DOCUMENT_TEXT)
+    if len(content) > limit:
         raise MemberEssentialContextError(
-            f"{filename} exceeds the {ESSENTIAL_MAX_CHARS}-character essential context budget"
+            f"{filename} exceeds the {limit}-character limit for a profile document"
         )
 
     builder = state.context_builder
@@ -329,8 +333,9 @@ async def api_memory_preferences(request: web.Request) -> web.Response:
     # writes. For a store-bearing PUT that puts the parameter's owner gate ahead
     # of the write gate below, which is the precedence it should have: naming
     # another store is the OPERATOR's question, and a caller that may not ask it
-    # should not have its body read either. With no ``?store=`` the resolver cannot
-    # refuse at all, so the write gate is still the first thing such a PUT meets.
+    # should not have its body read either. With no ``?store=`` the resolver refuses
+    # only a dashboard session that is neither the owner nor a teammate, so for
+    # everyone else the write gate is still the first thing such a PUT meets.
     operation = "preferences.write" if request.method == "PUT" else "preferences.read"
     store, denial = await resolve_requested_memory_store(request, state, operation)
     if denial is not None:
@@ -1036,7 +1041,11 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
     tag_filter = [t.strip() for t in request.query.get("tags", "").split(",") if t.strip()] or None
     # _try_embed runs blocking in-process model inference (and a ~1s model
     # load on first call); offload to keep the dashboard event loop responsive.
-    emb = await asyncio.to_thread(store._try_embed, query) if store.embed_fn and query else None
+    emb = (
+        await asyncio.to_thread(store._try_embed, query, query=True)
+        if store.embed_fn and query
+        else None
+    )
     results = []
     # Offload: search_episodic serializes on _db_lock — see
     # api_memory_semantic.

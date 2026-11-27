@@ -667,6 +667,34 @@ def _crew_sign_in_not_owned_slugs(providers: list[Provider]) -> frozenset[str]:
     )
 
 
+def _owner_yielded_slugs(providers: list[Provider]) -> frozenset[str]:
+    """The providers whose card yields its exact url to the owner's own entry. Blocking.
+
+    The mint refuses such an entry (``owns`` is False through
+    ``crew_oauth._left_to_owner``), and Connect does not change that: writing the
+    registry url leaves the entry the owner's. Saving an OAuth app does, so the
+    row keeps its setup steps and only its Connect and Reconnect go.
+    """
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.mcp_discovery import list_servers
+
+    yielded = {
+        str(p["slug"])
+        for p in providers
+        if crew_oauth.manages(str(p["slug"])) and not crew_oauth.owns(str(p["slug"]))
+    }
+    if not yielded:
+        return frozenset()
+    urls = {str(p["slug"]): str(p["mcp_url"]) for p in providers}
+    return frozenset(
+        s.name
+        for s in list_servers()
+        if s.name in yielded
+        and s.url == urls[s.name]
+        and crew_oauth._left_to_owner(s.name, {"url": s.url})
+    )
+
+
 def _kas_sign_in_slugs(providers: list[Provider]) -> frozenset[str]:
     """The slugs whose Connect signs in on the KAS engine (``connections.mint_kas``). Blocking.
 
@@ -727,6 +755,7 @@ async def collect_connection_statuses(
     redirects = await asyncio.to_thread(_sign_in_redirects, providers, crew_managed)
     crew_sign_in_off = await asyncio.to_thread(_crew_sign_in_off_slugs, providers)
     crew_not_owned = await asyncio.to_thread(_crew_sign_in_not_owned_slugs, providers)
+    owner_yielded = await asyncio.to_thread(_owner_yielded_slugs, providers)
     client_configured = await asyncio.to_thread(_client_config_map, providers)
     backend_oauth = (
         await asyncio.to_thread(chat_backend_honors_preregistered_oauth)
@@ -761,7 +790,7 @@ async def collect_connection_statuses(
         # held grant hides the wording below, but Reconnect would still mint.
         if slug in crew_sign_in_off:
             entry["crewMintRefused"] = "sign_in_off"
-        elif slug in crew_not_owned:
+        elif slug in crew_not_owned or slug in owner_yielded:
             entry["crewMintRefused"] = "not_owned"
         if slug in crew_sign_in_off:
             # Nothing to caveat: Connect is not offered until Crew's sign-in serves chats.

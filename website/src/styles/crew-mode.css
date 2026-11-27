@@ -1,11 +1,9 @@
 /* ── Conductor mode surfaces (code name: Crew Mode) ──
-   One solid accent from the theme, `--conductor-mode-accent`, is the ghost's colour and
-   every icon's. It is the theme's `--aim` pulled toward the strongest text
-   colour so it holds contrast on idle, hover and selected rows in light and
-   dark (the composer chip while off stays grey). The words "Conductor mode" alone (the sidebar eyebrow, the composer chip
-   while on, the welcome title) wear a purple-to-blue text gradient, from the
-   theme's `--aim` to its `--info`. Nothing here covers other UI: each rule
-   colours the element it is set on. */
+   One solid accent from the theme, `--conductor-mode-accent`, colours every
+   Conductor mode bolt. It is the theme's `--aim` pulled toward the strongest
+   text colour, so it holds contrast on idle, hover and selected rows in light
+   and dark. The welcome title and the pressed setup chip keep the approved
+   purple-to-blue text gradient. */
 
 :root {
   --conductor-mode-accent: color-mix(in srgb, var(--aim) 72%, var(--text-strong, var(--text)));
@@ -17,14 +15,8 @@
   color: var(--aim-fg);
 }
 
-/* The "Conductor mode" words. The purple stop is the theme's `--aim` and the blue
-   stop its `--info`, pulled 15% and 40% toward the strongest text colour, so
-   the two ends stay far apart in hue. Measured >= 4.5:1 for each stop on the
-   page and on idle, hover and selected rows in the light, dark, kiro-light and
-   kiro-dark themes, and >= 5.2:1 on the pressed chip, whose tint is kept light
-   (12%, 16% on hover or press) for it. */
-.crew-grad-text,
-.crew-eyebrow-text,
+/* The remaining Conductor mode words keep the approved purple-to-blue
+   gradient. Both stops hold WCAG AA contrast in shipped light and dark themes. */
 .conductor-mode-title-text,
 html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
   background-image: linear-gradient(
@@ -39,44 +31,10 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
 
 /* Forced colours drop background images: fall back to the solid text colour. */
 @media (forced-colors: active) {
-  .crew-grad-text,
-  .crew-eyebrow-text,
   .conductor-mode-title-text,
   html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
     background-image: none;
     color: CanvasText;
-  }
-}
-
-/* The Sessions row's CONDUCTOR MODE tag: the same two stops, laid out
-   purple -> blue -> purple on a tile twice the tag's width. While the crew
-   works, `CrewEyebrow` slides the tile one width per loop (Framer Motion,
-   background-position only), so every frame shows only colours between the
-   two measured stops and the loop has no seam. At rest the position is 0,
-   which is the static purple-to-blue look. */
-.crew-eyebrow-text {
-  background-image: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--aim) 85%, var(--text-strong, var(--text))),
-    color-mix(in srgb, var(--info) 60%, var(--text-strong, var(--text))),
-    color-mix(in srgb, var(--aim) 85%, var(--text-strong, var(--text)))
-  );
-  background-size: 200% 100%;
-}
-
-/* Repeated after the tag's gradient above, which would otherwise win back the
-   image the forced-colours block drops. */
-@media (forced-colors: active) {
-  .crew-eyebrow-text {
-    background-image: none;
-  }
-}
-
-/* No text clipping: the solid accent, not transparent text. */
-@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
-  .crew-eyebrow-text {
-    background-image: none;
-    color: var(--conductor-mode-accent);
   }
 }
 

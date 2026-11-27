@@ -36,6 +36,7 @@ import asyncio
 import contextlib
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 from remote_crew_chaining_helpers import (
     VIA_ID,
     _FakeMintSession,
@@ -47,6 +48,8 @@ from remote_crew_chaining_helpers import (
 
 from kiro_crew.instances.ssh_tunnel_manager import _Mint
 from kiro_crew.testing.wait import await_until
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 
 class TestHopRetiredDetection:
@@ -769,6 +772,8 @@ class TestChainedRepairPaths:
         monkeypatch.setattr(mgr, "_peer_cookie_header", _no_cookie_header)
 
         base = {"token": "T", "port": 4242, "ttl": "2h", "hop_id": "c-2", "hop_gen": 3}
+        # The reply is a class attribute other tests read; monkeypatch puts it back.
+        monkeypatch.setattr(_FakeMintSession, "reply", dict(base))
         for missing in ("hop_id", "hop_gen"):
             bad = dict(base)
             del bad[missing]

@@ -6,7 +6,8 @@ notifies a consumed envelope when pi starts that message. These cases load the
 SHIPPED file and drive its handlers the way pi does, with files sealed by the host's
 own :class:`~kiro_crew.acp.harness.pi_steer.PiSteerChannel`, and pin each guard: the
 key, the nonce, the session, the sequence in the name, replay, a turn that aborted
-or failed, an idle agent, and a steer retired when its run settled.
+or failed, an idle agent, and a steer retired when its run settled. The same rig
+drives the extension's report of a failed model call at settle.
 
 Marked ``real_adapter`` like ``test_pi_gate_extension_mcp.py``: the lane that installs
 Node 24 runs it, and fails rather than skips when Node is absent there.
@@ -27,7 +28,13 @@ from test_pi_gate_extension_mcp import _node
 from kiro_crew.acp.harness.pi import pi_gate_extension_path
 from kiro_crew.acp.harness.pi_steer import PiSteerChannel
 
-pytestmark = pytest.mark.real_adapter
+# Its own xdist group: the tests here start node children, so they run on one worker
+# rather than cold-starting node on several at once (testing-conventions, "A real
+# interpreter child is started once per module").
+pytestmark = [
+    pytest.mark.real_adapter,
+    pytest.mark.xdist_group(name="node_probe_pi_gate_extension_steer"),
+]
 
 _NONCE = "0123456789abcdef0123456789abcdef"
 _KEY = bytes(range(32))
@@ -42,7 +49,8 @@ const [, , extPath, stepsPath, gateDir] = process.argv;
 const steps = JSON.parse(readFileSync(stepsPath, "utf8"));
 const handlers = {};
 const sent = [];
-const notes = [];
+let notes = [];
+const cases = {};
 let streaming = true;
 const queued = [];
 const pi = {
@@ -73,7 +81,12 @@ function ctx(step) {
 const mod = await import(pathToFileURL(extPath).href);
 mod.default(pi);
 for (const step of steps) {
-  if (step.write) {
+  if (step.case !== undefined) {
+    // A fresh extension (its state lives in default(pi)'s closure) whose notes are
+    // kept under the case's name, so one child serves several cases.
+    notes = cases[step.case] = [];
+    mod.default(pi);
+  } else if (step.write) {
     copyFileSync(step.write.src, join(gateDir, step.write.name));
   } else if (step.turn_end) {
     streaming = !step.idle;
@@ -81,7 +94,13 @@ for (const step of steps) {
       {
         type: "turn_end",
         outcome: step.outcome ?? "completed",
-        message: { role: "assistant", stopReason: step.stopReason ?? "stop" },
+        message: {
+          role: "assistant",
+          stopReason: step.stopReason ?? "stop",
+          provider: step.provider,
+          model: step.model,
+          errorMessage: step.errorMessage,
+        },
       },
       ctx(step),
     );
@@ -95,10 +114,13 @@ for (const step of steps) {
       : { role: "user", content: [{ type: "text", text: step.message_start }] };
     await handlers.message_start({ type: "message_start", message }, ctx(step));
   } else if (step.settled) {
-    await handlers.agent_settled({ type: "agent_settled", aborted: false }, ctx(step));
+    await handlers.agent_settled(
+      { type: "agent_settled", aborted: Boolean(step.aborted) },
+      ctx(step),
+    );
   }
 }
-console.log(JSON.stringify({ sent, notes }));
+console.log(JSON.stringify({ sent, notes, cases }));
 """
 
 
@@ -148,8 +170,12 @@ class _Rig:
     def message_start(self, text: str) -> None:
         self.steps.append({"message_start": text})
 
-    def settled(self) -> None:
-        self.steps.append({"settled": True})
+    def settled(self, **kw: Any) -> None:
+        self.steps.append({"settled": True, **kw})
+
+    def case(self, name: str) -> None:
+        """Start case *name* on a fresh extension; its notes land in ``cases[name]``."""
+        self.steps.append({"case": name})
 
     def run(self, node_argv: list[str]) -> dict[str, Any]:
         harness = self.tmp / "harness.mjs"
@@ -303,3 +329,66 @@ def test_an_echo_is_not_sent_for_a_message_the_extension_did_not_deliver(node, t
     out = rig.run(node)
     assert _sent(out) == ["use blue"]
     assert _echoes(out) == []
+
+
+# ── a failed model call, reported when the run settles ───────────────────────
+
+_FAILED = {
+    "stopReason": "error",
+    "provider": "amazon-bedrock",
+    "model": "amazon.nova-micro-v1:0",
+    "errorMessage": "Could not load credentials from any providers",
+}
+
+
+@pytest.fixture(scope="module")
+def model_error_cases(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """Each failed-model-call case's notes, from one node child for all of them."""
+    argv = _node()
+    require_real_adapter(argv, what="Node 22.6 or later", install="install Node 24")
+    assert argv is not None
+    rig = _Rig(tmp_path_factory.mktemp("pi_model_error"))
+    rig.case("settles_failed")
+    rig.turn_end(**_FAILED)
+    rig.settled()
+    rig.settled()
+    rig.case("retried")
+    rig.turn_end(**_FAILED)
+    rig.turn_end()
+    rig.settled()
+    rig.case("aborted")
+    rig.turn_end(**_FAILED)
+    rig.settled(aborted=True)
+    rig.settled()
+    return rig.run(argv)["cases"]
+
+
+def _failures(notes: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (n["level"], json.loads(n["message"]))
+        for n in notes
+        if "kiro-crew-model-error" in n["message"]
+    ]
+
+
+def test_a_run_that_settles_on_a_failed_model_call_reports_it_once(model_error_cases) -> None:
+    assert _failures(model_error_cases["settles_failed"]) == [
+        (
+            "error",
+            {
+                "kiro-crew-model-error": 1,
+                "nonce": _NONCE,
+                "provider": "amazon-bedrock",
+                "model": "amazon.nova-micro-v1:0",
+                "error": "Could not load credentials from any providers",
+            },
+        )
+    ]
+
+
+def test_a_failure_pi_retried_successfully_reports_nothing(model_error_cases) -> None:
+    assert _failures(model_error_cases["retried"]) == []
+
+
+def test_an_aborted_run_reports_no_failure_and_clears_it(model_error_cases) -> None:
+    assert _failures(model_error_cases["aborted"]) == []

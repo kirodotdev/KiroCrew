@@ -4,13 +4,15 @@
  *   A frame built with `relayWheel` posts a horizontal wheel run its own content
  *   does not own as `{type: 'mc-frame-wheel', dx, dy, mode}`, and cancels the
  *   run's rightward-finger events (`deltaX < 0`, the host's close direction) so
- *   the browser's history swipe does not start under it. A run that starts
+ *   the browser's history swipe does not start under it. With Natural
+ *   scrolling off (the wheel's own `webkitDirectionInvertedFromDevice`, or the
+ *   host's `natural`) those events are `deltaX > 0` instead. A run that starts
  *   vertical, a pinch, or a run over a sideways scroller posts nothing. A frame
  *   built without the option carries no relay.
  */
 import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import { buildSrcdoc } from '../lib/widgetSrcdoc'
-import { hasScrollRoomX, SWIPE_GESTURE_IDLE_MS } from '../lib/trackpadGesture'
+import { fingerSign, hasScrollRoomX, SWIPE_GESTURE_IDLE_MS } from '../lib/trackpadGesture'
 
 const MARK = 'mc-frame-wheel'
 
@@ -24,7 +26,7 @@ function relayScript(out: string): string | undefined {
 /** The events' clock; `host()` steps it past the relay's run gap. */
 let clock = 0
 
-const posted: Array<{ type: string; dx: number; dy: number; mode: number; t?: number }> = []
+const posted: Array<{ type: string; dx: number; dy: number; mode: number; t?: number; inv?: unknown }> = []
 let hellos = 0
 /** The frame's `parent`: records what the relay posts. */
 const parentStub = {
@@ -34,17 +36,19 @@ const parentStub = {
   },
 }
 /** A host's arm/disarm, sent from `source`. */
-function armFrom(source: unknown, on: boolean) {
-  const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel-armed', on } })
+function armFrom(source: unknown, on: boolean, natural: boolean | null = null) {
+  const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel-armed', on, natural } })
   Object.defineProperty(ev, 'source', { value: source })
   window.dispatchEvent(ev)
 }
 
 /** A run of wheel events; returns how many the relay cancelled. */
-function wheel(target: Element, dx: number, dy: number, n: number, init: WheelEventInit = {}) {
+function wheel(target: Element, dx: number, dy: number, n: number, init: WheelEventInit = {}, inverted?: boolean) {
   let cancelled = 0
   for (let i = 0; i < n; i++) {
     const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: dy, bubbles: true, cancelable: true, ...init })
+    // WebKit's Natural scrolling flag, which the test DOM does not carry.
+    if (inverted !== undefined) Object.defineProperty(ev, 'webkitDirectionInvertedFromDevice', { value: inverted })
     // The test DOM drops modifier keys from a WheelEvent's init.
     if (init.ctrlKey) Object.defineProperty(ev, 'ctrlKey', { value: true })
     // The relay reads the run's timing from the event: 16ms apart within a run.
@@ -92,7 +96,7 @@ describe('frame wheel relay', () => {
     expect(wheel(el, -12, 1, 3)).toBe(3)
     // `t` is when each wheel happened, on the shared epoch clock, so the host
     // reads the fingers' own timing however late the messages arrive.
-    expect(posted).toEqual([1, 2, 3].map((i) => ({ type: MARK, dx: -12, dy: 1, mode: 0, t: performance.timeOrigin + from + i * 16 })))
+    expect(posted).toEqual([1, 2, 3].map((i) => ({ type: MARK, dx: -12, dy: 1, mode: 0, t: performance.timeOrigin + from + i * 16, inv: null })))
     posted.length = 0
     const other = host()
     expect(wheel(other, 12, 0, 2)).toBe(0)
@@ -192,6 +196,42 @@ describe('frame wheel relay', () => {
             expect(room(scrollLeft, max, rtl, dx), `rtl=${rtl} max=${max} scrollLeft=${scrollLeft} dx=${dx}`).toBe(hasScrollRoomX(scrollLeft, max, rtl, dx))
           }
         }
+      }
+    }
+  })
+
+  it('with Natural scrolling off (from the host), cancels the fingers-right events, which are deltaX > 0', () => {
+    armFrom(parentStub, true, false)
+    try {
+      expect(wheel(host(), 12, 0, 3)).toBe(3)
+      expect(wheel(host(), -12, 0, 2)).toBe(0)
+      // The raw deltas reach the host, which applies the same sign.
+      expect(posted.map((m) => m.dx)).toEqual([12, 12, 12, -12, -12])
+    } finally {
+      armFrom(parentStub, true)
+    }
+  })
+
+  it("the wheel's own WebKit flag wins over the host's, and is posted with it", () => {
+    armFrom(parentStub, true, true)
+    try {
+      expect(wheel(host(), 12, 0, 2, {}, false)).toBe(2)
+      expect(wheel(host(), -12, 0, 2, {}, false)).toBe(0)
+      expect(wheel(host(), -12, 0, 2, {}, true)).toBe(2)
+      expect(posted.map((m) => m.inv)).toEqual([false, false, false, false, true, true])
+    } finally {
+      armFrom(parentStub, true)
+    }
+  })
+
+  it("the frame's finger-sign rule is the host's: same answer on every case", () => {
+    const script = relayScript(buildSrcdoc({ html: '<p>probe</p>', themeVars: {}, mode: 'dark', relayWheel: true }))!
+    const src = /function sign\([^)]*\)\{[\s\S]*?\n {2}\}/.exec(script)?.[0]
+    expect(src).toBeDefined()
+    for (const natural of [true, false, null]) {
+      const sign = new Function('natural', `${src}; return sign`)(natural) as (inv: unknown) => number
+      for (const inv of [true, false, null, undefined, 'x']) {
+        expect(sign(inv), `natural=${natural} inv=${String(inv)}`).toBe(fingerSign(inv, natural))
       }
     }
   })

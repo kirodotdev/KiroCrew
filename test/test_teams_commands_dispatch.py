@@ -324,7 +324,7 @@ class TestMirrorCommands:
         await d.handle_message(_inbound("/stop"))
 
         assert sessions.cleared == [d._session_key(_EMAIL)]
-        assert any(word in str(client.sent[-1]) for word in ("Stopped.", "Nothing was running"))
+        assert "🛑" in client.sent[-1]
 
     @pytest.mark.asyncio
     async def test_a_typed_stop_survives_a_channels_governance_deny(self, monkeypatch) -> None:

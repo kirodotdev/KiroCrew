@@ -223,17 +223,6 @@ FINDING_RE = re.compile(
     re.MULTILINE,
 )
 
-DISPOSITION_PREFIX = "<!-- ai-review-disposition "
-# The adjudication ledger selects by this leading byte prefix before parsing.
-# A prefixed but malformed comment therefore retains downgrade power and must
-# remain visible as a violation instead of being ignored.
-DISPOSITION_MARKER_RE = re.compile(
-    r"\A<!--\s*ai-review-disposition\s+target=([A-Za-z0-9_-]+)" r"\s+head=([0-9a-f]{7,40})\s*-->"
-)
-SPAN_CLAIM_RE = re.compile(r"\bspan=([0-9a-f]{12})\b")
-# Span identity is deliberately coarse (path + reviewer/kind). Counting title
-# bullets prevents two findings that share one span from sharing one rationale.
-DISPOSITION_BULLET_RE = re.compile(r"^\s*[-*]\s*\*\*")
 _MAX_COMMENT_PAGES = 50
 
 
@@ -1223,9 +1212,9 @@ def extract_design_items(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES)
 def parse_disposition_record(comment):
     """Parse one disposition-marked comment into a record dict, else None.
 
-    A body carrying the ledger-selected prefix remains visible as ``malformed``
-    when its marker does not parse. Span claims preserve first-seen order and
-    ignore quoted evidence, where a displayed span is not the writer's claim.
+    A prefixed body whose marker does not parse stays visible as ``malformed``,
+    keeping any ``target=``/``head=`` it names. Span claims keep first-seen order
+    and skip quoted evidence, where a displayed span is not the writer's claim.
     """
     body = comment.get("body") or ""
     if not body.startswith(DISPOSITION_PREFIX):
@@ -1241,10 +1230,10 @@ def parse_disposition_record(comment):
         "malformed": True,
     }
     match = DISPOSITION_MARKER_RE.match(body)
-    if match:
-        record["target"] = match.group(1).lower()
-        record["head"] = match.group(2)
-        record["malformed"] = False
+    named = (match.group(1).lower(), match.group(2)) if match else lenient_marker(body)
+    if named:
+        record["target"], record["head"] = named
+        record["malformed"] = not match
         seen = set()
         spans = []
         bullets = 0
@@ -1446,18 +1435,18 @@ def disposition_violations(
     comments,
     head_sha,
     bindings,
+    notices=None,
 ):
     """Return sorted violations of the one-lane, one-finding disposition rule.
 
     Records are checked against the reviewer findings on both the head they
     judged and the current head. A record keeps ledger power after a new push,
-    so an older ``head=`` does not exempt malformed, multi-finding, or cross-lane
-    claims. Lanes without parseable finding identities remain exempt from the
-    requirement to claim one.
+    so an older ``head=`` does not exempt multi-finding or cross-lane claims.
+    A malformed marker's own shape blocks only per ``malformed_marker_verdict``;
+    one that does not is appended to ``notices`` when a list is passed. Lanes
+    without parseable finding identities need not claim one.
 
-    Every check resolves ``target=`` to the reviewer(s) it answers for through
-    ``disposition_reviewer_names``, so the override spelling ``fable`` and the
-    bound name ``opus`` are held to the same claim rules for the OPUS lane.
+    Every check resolves aliases and reviewer names through ``disposition_reviewer_names``.
     """
 
     def lane_map(for_head):
@@ -1471,17 +1460,21 @@ def disposition_violations(
     current_lanes = set(current_map.values())
     judged_cache: dict = {}
     out = set()
+    notices = [] if notices is None else notices
     for record in records or []:
         where = "comment {} by {}".format(
             record.get("comment_id") or "?", record.get("author") or "?"
         )
         if record.get("malformed"):
-            out.add(
-                "malformed disposition marker ({}) - the adjudication ledger "
-                "selects it by prefix alone, so fix or delete that comment: "
-                "expected '{}target=<lane> head=<sha> -->'".format(where, DISPOSITION_PREFIX)
+            blocking, text = malformed_marker_verdict(
+                record, records, head_sha, lambda t: disposition_reviewer_names(t, bindings)
             )
-            continue
+            if blocking:
+                out.add(text)
+            else:
+                notices.append(text)
+            if not record.get("target"):
+                continue
         target = record.get("target") or ""
         target_lanes = disposition_reviewer_names(target, bindings)
         spans = record.get("spans") or []
@@ -1541,7 +1534,7 @@ def disposition_violations(
     return sorted(out)
 
 
-# --- Owners: fences, disposition rounds, the blocked-push count ----------------------
+# --- Owners: fences, disposition records and rounds, the blocked-push count ----------
 #
 # Three sibling modules hold these responsibilities, and every name they define is
 # bound here, so a caller keeps reading them off this module. They load in a chain
@@ -1591,6 +1584,13 @@ OUTCOME_WORDS = _rounds.OUTCOME_WORDS
 declared_outcome = _rounds.declared_outcome
 declared_resolution = _rounds.declared_resolution
 same_head = _rounds.same_head
+DISPOSITION_PREFIX, SPAN_CLAIM_RE = _rounds.DISPOSITION_PREFIX, _rounds.SPAN_CLAIM_RE
+DISPOSITION_MARKER_RE = _rounds.DISPOSITION_MARKER_RE
+DISPOSITION_BULLET_RE = _rounds.DISPOSITION_BULLET_RE
+LENIENT_MARKER_RE, EXPECTED_MARKER = _rounds.LENIENT_MARKER_RE, _rounds.EXPECTED_MARKER
+lenient_marker = _rounds.lenient_marker
+superseding_record = _rounds.superseding_record
+malformed_marker_verdict = _rounds.malformed_marker_verdict
 disposition_rounds = _rounds.disposition_rounds
 fix_rounds = _rounds.fix_rounds
 

@@ -2,9 +2,13 @@ import { memo, useContext, useState, useRef, useEffect, useMemo, useCallback, ty
 import { ChevronRight } from 'lucide-react'
 import { RowActivityContext, type RowActivityReporter } from './rowActivity'
 import type { DisplayItem, TurnItem } from './types'
+import type { ChatMessage } from '../../types'
 import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
 import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { isJumpTarget, useJumpReveal } from '../../hooks/JumpRevealContext'
+import { MESSAGE_BODY_ATTR } from '../../messageActions/messageText'
+import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { ExpandStepsContext } from '../../hooks/useToolCallsStartExpanded'
 import { isWorkflowRunTool } from './WorkflowRunCard'
@@ -18,10 +22,13 @@ import { parseRecoveryMessage } from './RecoveryCard'
 import { isDiffToolMessage } from './toolDiff'
 import { isAskAnsweredToolMessage } from '../../utils/askQuestionAnswers'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
+import { extractSteeringAcks } from '../../app-sdk/protocol/steering'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
-import { isSpecHooksRunNowhereNotice, useSpecHooksRunNowhereDismissed } from './SpecHooksNotice'
+import { useDismissedSpecHooksNotice } from './SpecHooksNotice'
+import { isToolCallRow } from '../../lib/toolRowContract'
+import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 
 /**
  * Where a turn's live-browser card goes. The card belongs to the turn's FIRST
@@ -82,8 +89,13 @@ const isMcpAppItem = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
 // ever hid. Density relief is per-card (ToolCallLine's fold chip) plus the
 // size caps in presentToolDiff, so an edit-heavy turn is N foldable cards,
 // not an immovable wall (see rfc-tool-derived-diff-cards.md).
+// The exception is a row the gateway stamped `file_change_recorded`: the
+// turn's changed-files card lists that change, so the row is a working step
+// and folds with the others (rfc-fold-recorded-edit-cards.md). A row without
+// the stamp (another harness's write shape, a refused path, an older turn)
+// keeps the rule above, since its card may be the only record of the edit.
 const isDiffCardItem = (it: TurnItem) =>
-  it.kind === 'single' && isDiffToolMessage(it.msg)
+  it.kind === 'single' && isDiffToolMessage(it.msg) && it.msg.meta?.file_change_recorded !== true
 // An answered ask_question row carries the only record of the user's answers (its chip), so like a diff card it stays out of both folds.
 const isAskAnsweredItem = (it: TurnItem) =>
   it.kind === 'single' && isAskAnsweredToolMessage(it.msg)
@@ -91,7 +103,7 @@ const isTool = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
   it.kind === 'single' && it.msg.role === 'tool' && !isWorkflowRunItem(it) &&
   !isSpawnRunItem(it) && !isMcpAppItem(it, appToolCallIds) && !isDiffCardItem(it) &&
   !isAskAnsweredItem(it)
-const isHiddenTool = (it: TurnItem) => it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')
+const isHiddenTool = (it: TurnItem) => it.kind === 'single' && it.msg.role === 'tool' && !isToolCallRow(it.msg.content)
 const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 'assistant' || it.msg.role === 'streaming' || it.msg.role === 'file')
 /**
  * "Always visible" items — must render inline regardless of TurnBlock collapse state.
@@ -119,7 +131,7 @@ const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
   it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
   it.msg.meta?.kind === 'crew_dispatch_notice' || it.msg.meta?.kind === 'crew_paused_notice' ||
   it.msg.meta?.kind === 'agent_welcome' || it.msg.meta?.kind === 'agent_no_tools' ||
-  it.msg.meta?.kind === 'mcp_sign_in_unsupported' ||
+  it.msg.meta?.kind === 'mcp_sign_in_unsupported' || it.msg.meta?.kind === 'mcp_servers_left_out' ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )
 
@@ -212,11 +224,11 @@ const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>, pinn
 /** How many tool-call rows a RUNNING turn keeps open. */
 const LIVE_ACTIVITY_WINDOW = 5
 
-/** A hidden ✅/🚫 completion row renders nothing in every host, so it is
+/** A hidden Approved:/Refused: completion row renders nothing in every host, so it is
  *  never folded and never counted: one call is one step. A notice the user
  *  dismissed draws nothing either, so it is not a step to expand onto. */
-const isCountedRow = (it: TurnItem, noticeDismissed: boolean) =>
-  !isHiddenTool(it) && !(noticeDismissed && it.kind === 'single' && isSpecHooksRunNowhereNotice(it.msg))
+const isCountedRow = (it: TurnItem, isDismissedNotice: (m: ChatMessage) => boolean) =>
+  !isHiddenTool(it) && !(it.kind === 'single' && isDismissedNotice(it.msg))
 
 type FoldMode = 'interim' | 'collapseAll' | 'default'
 
@@ -235,8 +247,8 @@ type FoldMode = 'interim' | 'collapseAll' | 'default'
  * The settled set contains the running set, so completion only ever folds
  * more rows. It never opens a row the window had folded.
  */
-function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, pinnedRows: ReadonlySet<TurnItem>, noticeDismissed: boolean): number[] {
-  const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it, noticeDismissed) ? [i] : [])
+function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, pinnedRows: ReadonlySet<TurnItem>, isDismissedNotice: (m: ChatMessage) => boolean): number[] {
+  const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it, isDismissedNotice) ? [i] : [])
   const out = new Set(tools.slice(0, Math.max(0, tools.length - LIVE_ACTIVITY_WINDOW)))
   if (complete && mode === 'default') tools.forEach(i => out.add(i))
   if (complete && mode !== 'default') {
@@ -247,13 +259,35 @@ function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, 
     for (let i = 0; i < end; i++) {
       const it = items[i]
       if (wholeTurn && !isWorkingStepRow(it)) continue
-      if (isCountedRow(it, noticeDismissed) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
+      if (isCountedRow(it, isDismissedNotice) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
     }
   }
   return Array.from(out).sort((a, b) => a - b)
 }
 
 const NO_ACTIVE_KEYS: ReadonlySet<string> = new Set()
+
+/** Row `k`'s activity reporter: each call marks the row live and returns the
+ *  undo. Built here, outside the component, because the block caches it for
+ *  its whole life: a closure made during a render keeps that render's scope
+ *  (its items and row elements) alive through V8's shared closure context. */
+function makeRowReporter(
+  k: string,
+  activeCounts: Map<string, number>,
+  setActiveKeys: (update: (s: ReadonlySet<string>) => ReadonlySet<string>) => void,
+): RowActivityReporter {
+  return () => {
+    const n = (activeCounts.get(k) ?? 0) + 1
+    activeCounts.set(k, n)
+    if (n === 1) setActiveKeys(s => new Set(s).add(k))
+    return () => {
+      const m = (activeCounts.get(k) ?? 1) - 1
+      if (m > 0) { activeCounts.set(k, m); return }
+      activeCounts.delete(k)
+      setActiveKeys(s => { if (!s.has(k)) return s; const next = new Set(s); next.delete(k); return next })
+    }
+  }
+}
 
 /** The tool call rendered an MCP App (persisted on the message), so its row may host one again. */
 const NEVER_LIVE = (): boolean => false
@@ -263,16 +297,22 @@ const hadMcpApp = (it: TurnItem) => it.kind === 'single' && it.msg.meta?.mcp_app
  *  value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_ID_SET: ReadonlySet<string> = new Set()
 
-/** Strip OPTIONS/markdown formatting and return plain text content length */
+/** Strip steering notes, OPTIONS/markdown formatting, and format chars; return visible text length. */
 function substantiveLength(text: string): number {
-  return stripOptionMarkers(text).replace(/[#*_`>\-|]/g, '').trim().length
+  return stripOptionMarkers(extractSteeringAcks(text).cleaned)
+    .replace(/\p{Cf}/gu, '')
+    .replace(/[#*_`>\-|]/g, '')
+    .trim().length
 }
 
 /**
  * Find the index of a turn's conclusion item: the last `isConclusion` item that
  * is substantive (>= 50 chars), falling back to the last `isConclusion` item of
  * any length, else -1. System notice rows (a watchdog recycle, a compaction)
- * never qualify: they trail the answer and must not displace it. Shared by the
+ * never qualify: they trail the answer and must not displace it. Nor does any
+ * row after the turn's last stamped reply (`isTurnEnd`, the reply the runner
+ * recorded): a workflow result or another writer's row landing after it would
+ * otherwise fold the turn's final answer. Shared by the
  * auto-expand decision and the render split so the "what's the always-visible
  * conclusion vs collapsed reasoning" answer can't drift between them (a
  * mismatch wrongly expands reasoning above a visible match and pushes it down).
@@ -280,7 +320,8 @@ function substantiveLength(text: string): number {
 function findConclusionIdx(items: TurnItem[]): number {
   let conclusionIdx = -1
   let fallbackIdx = -1
-  for (let i = items.length - 1; i >= 0; i--) {
+  const lastReply = items.findLastIndex(it => it.kind === 'single' && isTurnEnd(it.msg))
+  for (let i = lastReply >= 0 ? lastReply : items.length - 1; i >= 0; i--) {
     const it = items[i]
     if (isConclusion(it) && !(it.kind === 'single' && isSystemNoticeRow(it.msg))) {
       if (fallbackIdx === -1) fallbackIdx = i
@@ -317,14 +358,15 @@ const collapseAllFoldRange = (items: TurnItem[]): { end: number; wholeTurn: bool
     : { end: conclusionIdx, wholeTurn: false }
 }
 
+/** The agent's own text (a system notice is the gateway's, not the agent's). */
+const isAgentTextRow = (it: TurnItem): boolean =>
+  it.kind === 'single' && (it.msg.role === 'assistant' || it.msg.role === 'streaming') && !isSystemNoticeRow(it.msg)
+
 /** A row the agent produced while working: a tool call, a reasoning burst, or
- *  its own text (a system notice is the gateway's, not the agent's). */
+ *  its own text. */
 const isWorkingStepRow = (it: TurnItem): boolean => {
   if (it.kind !== 'single') return it.kind === 'group'
-  const { role } = it.msg
-  if (role === 'tool') return true
-  if (role === 'assistant' || role === 'streaming') return !isSystemNoticeRow(it.msg)
-  return isReasoningBurst(it)
+  return it.msg.role === 'tool' || isAgentTextRow(it) || isReasoningBurst(it)
 }
 
 /**
@@ -549,17 +591,7 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   const reporterFor = (k: string): RowActivityReporter => {
     let r = reporters.current.get(k)
     if (!r) {
-      r = () => {
-        const n = (activeCounts.current.get(k) ?? 0) + 1
-        activeCounts.current.set(k, n)
-        if (n === 1) setActiveKeys(s => new Set(s).add(k))
-        return () => {
-          const m = (activeCounts.current.get(k) ?? 1) - 1
-          if (m > 0) { activeCounts.current.set(k, m); return }
-          activeCounts.current.delete(k)
-          setActiveKeys(s => { if (!s.has(k)) return s; const next = new Set(s); next.delete(k); return next })
-        }
-      }
+      r = makeRowReporter(k, activeCounts.current, setActiveKeys)
       reporters.current.set(k, r)
     }
     return r
@@ -594,10 +626,10 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   const expandSteps = useContext(ExpandStepsContext)
   const mode: FoldMode = turn.interim ? 'interim' : collapseAll && !expandSteps ? 'collapseAll' : 'default'
   // A dismiss drops its notice from the count at once, not on the next flush.
-  const specHooksNoticeDismissed = useSpecHooksRunNowhereDismissed()
+  const isDismissedNotice = useDismissedSpecHooksNotice()
   const candidates = useMemo(
-    () => foldCandidates(items, appToolCallIds, mode, turn.complete, pinnedRows, specHooksNoticeDismissed),
-    [items, appToolCallIds, mode, turn.complete, pinnedRows, specHooksNoticeDismissed],
+    () => foldCandidates(items, appToolCallIds, mode, turn.complete, pinnedRows, isDismissedNotice),
+    [items, appToolCallIds, mode, turn.complete, pinnedRows, isDismissedNotice],
   )
   const fold = useMemo(() => {
     const rows = new Set<number>()
@@ -626,13 +658,54 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     }
     return false
   }, [items, term, currentMessageIdx, fold.rows])
+  // The message a jump just highlighted opens the fold the same way, so the
+  // reader lands on a row they can see.
+  const { ts: revealTs, mid: revealMid, seq: revealSeq, claimScroll, scrollerEl } = useJumpReveal()
+  const jumpInFold = useMemo(() => {
+    if (!revealTs) return false
+    for (const i of fold.rows) {
+      const it = items[i]
+      if (it.kind === 'single' ? isJumpTarget(it.msg, revealTs, revealMid) : it.kind === 'group' && it.msgs.some(m => isJumpTarget(m, revealTs, revealMid))) return true
+    }
+    return false
+  }, [items, revealTs, revealMid, fold.rows])
+  const jumpInTurn = useMemo(
+    () => !!revealTs && items.some(it => it.kind === 'single' ? isJumpTarget(it.msg, revealTs, revealMid) : it.msgs.some(m => isJumpTarget(m, revealTs, revealMid))),
+    [items, revealTs, revealMid],
+  )
   // Held in a ref so an inline parent callback cannot re-fire this effect.
   const setOpenRef = useRef(setOpen)
   setOpenRef.current = setOpen
-  useEffect(() => { if (matchInFold) setOpenRef.current(true) }, [matchInFold])
+  useEffect(() => { if (matchInFold || jumpInFold) setOpenRef.current(true) }, [matchInFold, jumpInFold, revealSeq])
+  // The jump scrolls to this whole turn, which can be taller than the viewport;
+  // bring the highlighted row itself into view, once any fold hiding it has
+  // opened.
+  // shortcut: waits out the 200 ms fold transition on a timer; move to the row's
+  // transitionend if the fold's timing ever changes.
+  useEffect(() => {
+    if (!jumpInTurn || !revealTs) return
+    const t = setTimeout(() => {
+      // The transcript's own row: not the measuring farm's copy, nor one authored in a message.
+      // Searched in this pane's own transcript: split panes can show the same
+      // transcript, so the same timestamp can mark a row in another pane.
+      const rows = (scrollerEl() ?? document).querySelectorAll<HTMLElement>('[data-jump-target]')
+      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]') && !el.closest(`[${MESSAGE_BODY_ATTR}]`))
+      if (!row) return
+      // The jump's settle poll centres the whole turn each frame; end it first.
+      claimScroll()
+      row.scrollIntoView({ block: 'center' })
+    }, 250)
+    // A reader who scrolls while the fold opens has taken over: the row scroll
+    // must not pull them back, as the jump's own settle poll does not.
+    const detach = attachUserScrollIntent(scrollerEl() ?? undefined, () => clearTimeout(t))
+    return () => { clearTimeout(t); detach() }
+  }, [jumpInTurn, revealTs, revealSeq, claimScroll, scrollerEl])
 
   const candidateSet = useMemo(() => new Set(candidates), [candidates])
   const count = fold.rows.size
+  // The collapse-all pill names the folded replies that hold text; an interim
+  // fan-out fold does not, as the synthesis below restates its replies.
+  const messages = mode === 'collapseAll' ? Array.from(fold.rows, i => items[i]).filter(it => it.kind === 'single' && isAgentTextRow(it) && !isHiddenInvisibleAssistantRow(it.msg, { fileChips: false, steerChip: false })).length : 0
   // "Earlier" only holds while nothing the fold skipped sits above the toggle.
   // A live row older than the folded ones keeps its place there, so the
   // running label falls back to the neutral tool-call count.
@@ -641,7 +714,10 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     ? (open ? i18nT('pages.chat.turnBlock.hide_earlier_steps') : i18nT('pages.chat.turnBlock.earlier_step', { count }))
     : mode === 'default' || !turn.complete
       ? (open ? i18nT('pages.chat.turnBlock.hide_tool_calls') : i18nT('pages.chat.collapsibleToolGroup.tool_call', { count }))
-      : (open ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.turnBlock.worked_through_step', { count }))
+      : open ? i18nT('pages.chat.thinkingBlock.hide_reasoning')
+        : messages > 0
+          ? i18nT('pages.chat.turnBlock.worked_through_step_with_messages', { count, messages: i18nT('pages.chat.turnBlock.folded_message', { count: messages }) })
+          : i18nT('pages.chat.turnBlock.worked_through_step', { count })
 
   // ONE render for every mode and both phases. Each row is a plain keyed
   // <div> in one flat list, so a fold, an unfold, the completion flip, a

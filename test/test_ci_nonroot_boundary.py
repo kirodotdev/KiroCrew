@@ -114,11 +114,12 @@ def test_all_linux_shards_and_memory_heavy_jobs_use_large(jobs):
         "matrix": {"python-version": ["3.12"], "group": list(range(1, 9))},
     }
     assert backend["env"]["SHARD_COUNT"] == 8
-    # 60 on CodeBuild (admitted eight-shard runs finish in ~20 min); 70 on any
+    # 65 on CodeBuild (admitted eight-shard runs finish in ~20 min; 5 of the 65
+    # are for shard 1's measure step, which runs on the fleet only); 70 on any
     # non-fleet runner, where a run shards four-wide and a single shard needs
     # the longer budget to clear 120 seconds per test plus setup.
     assert backend["timeout-minutes"] == (
-        "${{ startsWith(needs.changes.outputs.linux_runner_large, " "'codebuild-') && 60 || 70 }}"
+        "${{ startsWith(needs.changes.outputs.linux_runner_large, " "'codebuild-') && 65 || 70 }}"
     )
     lint = next(
         s
@@ -131,9 +132,15 @@ def test_all_linux_shards_and_memory_heavy_jobs_use_large(jobs):
     )
     assert "if" not in lint
     assert "continue-on-error" not in lint
+    # flake8 and mypy share one step, where each is the command a script line
+    # hands to its `timed` wrapper rather than the whole `run:`.
     for command in ("isort --check-only", "flake8 ", "mypy "):
         assert any(
-            s.get("run", "").startswith(command) and not s.get("continue-on-error")
+            any(
+                line.strip().removeprefix("timed ").startswith(command)
+                for line in s.get("run", "").splitlines()
+            )
+            and not s.get("continue-on-error")
             for s in jobs["backend-lint"]["steps"]
         )
     assert any(
@@ -343,3 +350,16 @@ def test_boundary_ratchet_rejects_world_writable_chmod(action, line):
     changed[0]["run"] += "\n" + line
     with pytest.raises(AssertionError):
         test_privilege_transition_only_goes_down_and_temp_stays_root_owned(changed)
+
+
+def test_docs_contract_tests_hands_over_the_workspace_last(jobs):
+    # run-as-runner chowns the checkout to the unprivileged user, so a later
+    # root-shell step that runs git there (resolve-i18n-base.sh in the
+    # frontend step) dies on "detected dubious ownership". Every step after
+    # the hand-over runs through ci-shell.
+    steps = jobs["docs-contract-tests"]["steps"]
+    provision = next(i for i, step in enumerate(steps) if step.get("uses") == _ACTION_REF)
+    after = [step for step in steps[provision + 1 :] if "run" in step]
+    assert after
+    for step in after:
+        assert step.get("shell") == _CI_SHELL, step.get("name")

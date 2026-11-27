@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, within } from '@testing-library/react'
+import { fireEvent, screen, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 
@@ -84,6 +84,8 @@ describe('RemoteCrewPanel — the note on an SSM crew with no launch record', ()
 
     const row = (await screen.findByText('my-ec2')).closest('[data-crew-id="b1"]') as HTMLElement
     expect(row).not.toBeNull()
+    // The note is the row's "Managed by" line, in its details.
+    fireEvent.click(within(row).getByRole('button', { name: 'Show details for my-ec2' }))
     expect(
       within(row).getByText(
         'Kiro Crew cannot tell from here whether it launched this crew or you added it. Remove only takes it off this list and leaves the machine as it is; stop or delete the machine yourself if you no longer need it.',

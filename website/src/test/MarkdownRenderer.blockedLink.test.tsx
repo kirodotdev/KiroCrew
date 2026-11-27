@@ -399,6 +399,29 @@ describe('Blocked link chip', () => {
       expectCardListsHostRecords(card(), records, host)
     })
 
+    it('never commits a card with no Allow left before the pressed entry shows Undo (#39501)', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      const { getAllByTestId, getByTestId } = render(
+        <MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" messageTs="2026-10-07T07:30:00Z" />,
+      )
+      fireEvent.click(getAllByTestId('blocked-link-inspect')[0])
+      const card = () => getByTestId('blocked-link-card')
+      const entries = () => within(card()).getAllByTestId('blocked-link-entry')
+      // The shared hold is an external store and can render ahead of the
+      // entry's own state; every committed DOM must have Allow or Undo.
+      let torn = 0
+      const mo = new MutationObserver(() => {
+        const c = document.querySelector('[data-testid="blocked-link-card"]')
+        if (c && !c.querySelector('[data-testid="blocked-link-allow"]') && !c.querySelector('[data-testid="blocked-link-undo"]')) torn++
+      })
+      mo.observe(document.body, { subtree: true, childList: true, attributes: true })
+      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-allow'))
+      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(within(card()).queryAllByTestId('blocked-link-undo')).toHaveLength(1))
+      mo.disconnect()
+      expect(torn).toBe(0)
+    })
+
     it('keeps Allowed and Undo under the pressed entry across closing and reopening the card of a reply with no message time (#18675)', async () => {
       vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
       const { getAllByTestId, getByTestId, queryByTestId } = render(<MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" />)

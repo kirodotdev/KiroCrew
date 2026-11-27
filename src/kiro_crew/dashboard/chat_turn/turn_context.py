@@ -56,14 +56,15 @@ def _startup_query_prewarm_applies(
     return execution_context.member_id is None and execution_context.memory_mode != "temporary"
 
 
-def _message_rewritten_before_build(slot: Any, message: str) -> bool:
-    """Whether the turn's text changes between the session claim and the build.
+def _message_rewritten_before_build(message: str) -> bool:
+    """Whether the text the build ranks changes between the session claim and the build.
 
-    An ``@prompt`` expansion replaces it, and drained sub-agent failures or pending
-    context are put in front of it. An embed of the claim-time text would then rank
-    nothing and hold the one inference thread ahead of the embed the build reads.
+    An ``@prompt`` expansion replaces it. Drained sub-agent failures and pending
+    context go in front of it, outside the user's span, so the build still ranks
+    the claim-time text. An embed of replaced text would rank nothing and hold the
+    one inference thread ahead of the embed the build reads.
     """
-    return bool(message.startswith("@") or slot._pending_subagent_failures or slot._pending_context)
+    return message.startswith("@")
 
 
 def _folder_steering_turn(
@@ -71,15 +72,14 @@ def _folder_steering_turn(
     execution_context: Any,
     *,
     context_is_new: bool,
-    provider_has_history: bool,
     needs_reinjection: bool,
 ) -> bool:
     """Whether this turn must resolve the folder's steering directories.
 
-    A template chat reads the folder tree only on the two turns that carry
-    session-start context: a fresh provider session (not a resumed one, which
-    already holds its original injection) and a reinjection after compaction.
-    Warm template turns never touch it.
+    A template chat reads the folder tree only on the turns that send folder
+    steering: a new or resumed provider session (a resume re-sends it, because a
+    compacted restored history may have lost it) and a reinjection after
+    compaction. Warm template turns never touch it.
 
     A V2 MEMBER chat is different. ``build_message`` rebuilds the member's
     essentials envelope on EVERY turn, and that envelope declares itself the
@@ -88,7 +88,7 @@ def _folder_steering_turn(
     that passed no directories would hand the model a snapshot that silently
     withdraws the folder's guides. Every turn that rebuilds the envelope resolves.
     """
-    if (context_is_new and not provider_has_history) or needs_reinjection:
+    if context_is_new or needs_reinjection:
         return True
     return bool(
         getattr(slot, "mode", "") == "member"

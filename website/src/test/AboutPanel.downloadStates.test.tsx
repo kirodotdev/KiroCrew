@@ -219,7 +219,7 @@ describe('AboutPanel download states', () => {
     expect(btn.hasAttribute('disabled')).toBe(false)
     expect(screen.queryByRole('button', { name: /restart/i })).toBeNull()
     const cardText = (await screen.findByTestId('update-card')).textContent
-    expect(cardText).toMatch(/installs when you quit/i)
+    expect(cardText).toMatch(/installs the next time you quit/i)
     expect(cardText).not.toMatch(/reopen automatically|several minutes/i)
     fireEvent.click(btn)
     await waitFor(() => expect(btn.hasAttribute('disabled')).toBe(true))

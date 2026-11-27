@@ -133,7 +133,7 @@ async def test_a_tool_call_inside_the_reply_still_cuts(yolo):
     roles = [(r.get("role"), r.get("content")) for r in record.history_rows]
     assert roles[1:] == [
         ("assistant", "Running one command."),
-        ("tool", "🔧 ls"),
+        ("tool", "Tool: ls"),
         ("assistant", "done"),
     ]
 

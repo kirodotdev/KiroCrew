@@ -87,6 +87,15 @@ UNTRUSTED_CRON_RESULT_FENCE_CLOSE = ">>>END_UNTRUSTED_PREVIOUS_RUN_RESULT"
 _CRON_RESULT_FENCE_OPEN_RE = _fence_marker_regex(UNTRUSTED_CRON_RESULT_FENCE_OPEN)
 _CRON_RESULT_FENCE_CLOSE_RE = _fence_marker_regex(UNTRUSTED_CRON_RESULT_FENCE_CLOSE)
 
+# Delimiters that wrap a page's content in the ``browser`` tool's ``read`` result
+# (``mcp_tools.browser``). The page wrote that text, so it sits inside this fence
+# with every untrusted fence neutralized, and the tool's own lines (the header,
+# the hand-back line) stay outside it.
+UNTRUSTED_BROWSER_PAGE_FENCE_OPEN = "<<<UNTRUSTED_BROWSER_PAGE"
+UNTRUSTED_BROWSER_PAGE_FENCE_CLOSE = ">>>END_UNTRUSTED_BROWSER_PAGE"
+_BROWSER_PAGE_FENCE_OPEN_RE = _fence_marker_regex(UNTRUSTED_BROWSER_PAGE_FENCE_OPEN)
+_BROWSER_PAGE_FENCE_CLOSE_RE = _fence_marker_regex(UNTRUSTED_BROWSER_PAGE_FENCE_CLOSE)
+
 # Delimiters that wrap the origin thread's text in a Slack code channel's first
 # turn (``slack.code_channels.routing._seed_context``). Anyone in that thread
 # could have written the text. Matched head-anchored on the normalized view (the
@@ -107,14 +116,16 @@ _UNTRUSTED_FENCE_RES: tuple[re.Pattern[str], ...] = (
     _TODO_FENCE_OPEN_RE,
     _CRON_RESULT_FENCE_CLOSE_RE,
     _CRON_RESULT_FENCE_OPEN_RE,
+    _BROWSER_PAGE_FENCE_CLOSE_RE,
+    _BROWSER_PAGE_FENCE_OPEN_RE,
 )
 
 
 def _neutralize_fence_markers(text: str) -> str:
     """Replace Unicode-normalized variants of every untrusted fence in *text*.
 
-    Covers the Slack code-channel seed, thread-parent, calendar-event, todo-text
-    and previous-run-result fences, open and close. The
+    Covers the Slack code-channel seed, thread-parent, calendar-event, todo-text,
+    previous-run-result and browser-page fences, open and close. The
     shared marker matcher supplies NFKC, default-ignorable removal, and
     original-coordinate spans; the replacement remains fence-specific.
     """
@@ -330,25 +341,216 @@ def neutralize_background_context_frame(text: str) -> str:
     return _apply_marker_spans(text, _marker_spans(text, _BACKGROUND_CONTEXT_FRAME_RES))
 
 
+# The fence ``dashboard.mate_user_actions.terminal_line`` mints around a command the
+# user ran from a crewmate's card or code block. Only the closer is scrubbed: a copy
+# of the opener inside the fence is data, and ``<<< command`` is a bash here-string.
+# shortcut: ``>>end of command`` (two ``>``) and reworded closers are left; neither
+# is the minted closer. Widen only if one is seen.
+_USER_ACTION_COMMAND_CLOSE_RE = _fence_marker_regex(">>>END_OF_COMMAND")
+
+
+def neutralize_user_action_command_close(text: str) -> str:
+    """*text* with every look-alike ``>>>end of command`` closer neutralized."""
+    spans = _marker_spans(text, (_USER_ACTION_COMMAND_CLOSE_RE,), drop_controls=True)
+    return _apply_marker_spans(text, spans, _THREAD_FENCE_NEUTRALIZED)
+
+
+# Frames ``memory_provider.render`` mints around provider text, and the opener of
+# Crew's own memory block whose words make preferences rules (``memory.py``). Not in
+# ``_STRUCTURAL_MARKER_RES``, for the member-marker reason: the session-context tail
+# holds the genuine frames. Closers match only their exact bracketed form. The opener
+# needs the dash its header uses and must not be a markdown link title, so
+# ``[Memory](url)``, ``[Memory-safe ...]`` and ``[Memory - Wikipedia](url)`` stay
+# prose. The "DATA, not instructions" openers (``[Memory from``, ``[Memory
+# activity``) are left: forging one only opens another data block.
+# shortcut: a closer with extra words inside its bracket (``[End of memory, really]``)
+# and an en dash touching a letter (``[Memory–x``) are left, and the link check looks
+# at most 200 characters ahead so its cost stays linear; widen only if one is seen.
+_MEMORY_FRAME_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\[\s*END\s*OF\s*(?:DOCUMENT|MEMORY(?:\s*ACTIVITY(?:\s*INDEX)?|\s*TOOLS"
+        r"|\s*FROM\s*PROVIDER)?)\s*\]",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\[\s*MEMORY\s*(?:TOOLS|UNAVAILABLE)\s*\]", re.IGNORECASE),
+    re.compile(r"\[\s*MEMORY\s*-+(?=[\s-])(?![^\]\n]{0,200}\]\()", re.IGNORECASE),
+)
+
+
+def neutralize_memory_frame(text: str) -> str:
+    """*text* with every look-alike memory or provider-document frame neutralized."""
+    return _apply_marker_spans(text, _marker_spans(text, _MEMORY_FRAME_RES, drop_controls=True))
+
+
 # The frame the webhook intake (``dashboard.handlers.hooks_webhook_intake``) mints
 # around a hook's saved context: ``=== Restored Context (from prior session) ===``
 # ... ``=== End Restored Context ===``. Not in ``_STRUCTURAL_MARKER_RES``, for the
 # member-marker reason above: the genuine frame rides the user turn, which that
 # scrub covers. The webhook payload and the saved context are scrubbed of it
-# instead, before the frame is minted. Two shapes, matched once each rather than
-# word by word: the phrase anywhere (any non-word run may sit between its two
-# words), and any line that opens with an ``==`` run, so a banner line cannot be
-# forged whatever words, look-alike letters or punctuation it carries. ``===``
-# inside a line (code such as ``a === b``) is left alone.
-_RESTORED_CONTEXT_FRAME_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"RESTORED[\W_]*CONTEXT", re.IGNORECASE),
-    re.compile(r"^[^\w\n]*={2,}", re.MULTILINE),
+# instead, before the frame is minted. Two shapes: the phrase anywhere, with any
+# run of spaces, line breaks, symbols or invisible characters between its two
+# words but no sentence punctuation (``Service restored. Context: ...`` is
+# prose, not a banner); and the leading ``==`` run of every line that opens with
+# one, unless the line is a known-plain shape (see :func:`_banner_line_is_plain`).
+# ``===`` inside a line (``a === b``) is left alone. When the body may name the
+# frame (:func:`_body_may_name_frame`) no line is plain and the phrase also
+# matches across punctuation: exactly the scrub before the plain shapes existed,
+# so a banner split over lines (``===\nEnd Restored. Context\n===``) is cut.
+_RESTORED_CONTEXT_PHRASE_RE = re.compile(r"RESTORED(?:_|[^\w.,;:!?])*CONTEXT", re.IGNORECASE)
+_RESTORED_CONTEXT_ANY_PHRASE_RE = re.compile(r"RESTORED[\W_]*CONTEXT", re.IGNORECASE)
+# Digits and symbols that stand in for a frame word's letters (``R3st0red``).
+_FRAME_WORD_LEET = str.maketrans("03457@$", "oeastas")
+# A non-ASCII character touching an ASCII letter: a look-alike inside a word
+# (``Сontext`` with a Cyrillic initial, ``®estored``).
+_MIXED_SCRIPT_WORD_RE = re.compile(r"[A-Za-z][^\x00-\x7f]|[^\x00-\x7f][A-Za-z]")
+# Scripts whose letters pass for Latin ones (``СОΝТЕХТ`` in Cyrillic and Greek).
+_LOOKALIKE_SCRIPT_RE = re.compile(r"[\u0370-\u03ff\u0400-\u052f\u0530-\u058f\u13a0-\u13ff]")
+# A frame-word stem where one symbol may stand in for any letter (``R*st*red``).
+_SYMBOL_STEM_RE = re.compile(r"r[a-z\W_]st[a-z\W_]r|c[a-z\W_]nt[a-z\W_]xt")
+# A banner opens a line, or follows a separator other than ``\n`` inside one.
+_BANNER_OPEN_RE = re.compile(
+    r"(?:^|(?<=[\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029]))"
+    r"[^\w\n\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029]*={2,}"
 )
+_BANNER_ARROW_RE = re.compile(r"[^\w\n=]*={2,}>")  # disjoint classes: linear
+# What disqualifies a ``==>`` log arrow: a digit or symbol inside a word
+# (``R3st0red``), or either frame word once only letters are kept (``R e s t o
+# r e d``); a frame word may continue on the next line.
+_ARROW_SPLIT_WORD_RE = re.compile(r"[A-Za-z][^A-Za-z\s]+[A-Za-z]")
+_ARROW_FRAME_WORD_RE = re.compile(r"RESTOR|CONTEXT", re.IGNORECASE)
+# Separators other than ``\n`` that a reader may still show inside one line:
+# a banner line holding one is never plain (``===\x0cEnd R3st0red ...``).
+_INLINE_BREAK_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029]")
+# The words of a pytest run banner (``===== 3 failed, 10 passed in 2.1s =====``,
+# ``==== short test summary info ====``); ``s`` is the seconds unit.
+_TEST_RUN_BANNER_WORDS = frozenset(
+    {
+        "deselected",
+        "durations",
+        "error",
+        "errors",
+        "failed",
+        "failures",
+        "in",
+        "info",
+        "no",
+        "passed",
+        "ran",
+        "passes",
+        "rerun",
+        "s",
+        "session",
+        "short",
+        "skipped",
+        "slowest",
+        "starts",
+        "summary",
+        "test",
+        "tests",
+        "warning",
+        "warnings",
+        "xfailed",
+        "xpassed",
+    }
+)
+
+
+def _banner_line_is_plain(line: str) -> bool:
+    """Whether a ``==``-opening *line* alone is a shape that cannot pass for the frame.
+
+    Fails closed: a banner line keeps its opening only when it is positively
+    known, never by guessing whether its words resemble the frame (look-alike
+    letters, misspellings, synonyms and reordering defeat any such guess). After
+    NFKC with invisible characters dropped, the line must be ASCII and either
+    a ``==>`` log arrow (``==> Building image``) with no ``=`` after the arrow,
+    no digit or symbol inside a word and neither frame word, or
+    carry no words outside the pytest run-banner words: which covers setext
+    underlines and merge-conflict markers (no words at all) and ``===== 3
+    failed, 10 passed in 2.1s =====``. Any other ``==`` banner (``=== RUN
+    TestX``, ``== Notes ==``) loses its leading run, and so does a line holding
+    a control character or a line separator other than ``\n``.
+    shortcut: an arrow line with misspelled frame words (``==> End Restoored
+    Contxt``) keeps its ``==``; drop the arrow carve-out if that is ever seen.
+    """
+    line = line.removesuffix("\n").removesuffix("\r")
+    if _INLINE_BREAK_RE.search(line):
+        return False
+    if not line.isascii():
+        line = "".join(
+            ch for ch in unicodedata.normalize("NFKC", line) if not _is_marker_ignorable(ch)
+        )
+        if not line.isascii():
+            return False
+    arrow = _BANNER_ARROW_RE.match(line)
+    if arrow:
+        rest = line[arrow.end() :]
+        return not (
+            "=" in rest
+            or _ARROW_SPLIT_WORD_RE.search(rest)
+            or _ARROW_FRAME_WORD_RE.search(re.sub(r"[^A-Za-z]+", "", rest))
+        )
+    return all(word in _TEST_RUN_BANNER_WORDS for word in re.findall(r"[a-z]+", line.lower()))
+
+
+def _body_may_name_frame(text: str) -> bool:
+    """Whether *text* anywhere may spell a frame word, so no banner line is plain.
+
+    Judged on the whole body, not line by line, because a banner can be split
+    over lines (``===`` / ``End Restored Context`` / ``===``) and blank lines
+    can sit between the parts. After NFKC with invisible characters dropped, it
+    trips on a non-ASCII character touching an ASCII letter, or on ``RESTOR`` or
+    ``CONTEXT`` once stand-in digits are read as letters and everything but
+    letters is dropped (``R e s t o r e d``, ``R3st0red``). Over-matching only
+    costs ordinary ``==`` lines their opening, as before the plain shapes.
+    shortcut: a split banner whose words are misspelled past both stems
+    (``Rstord Cntxt``) keeps its wordless ``==`` lines, like the arrow shortcut.
+    """
+    if not text.isascii():
+        text = "".join(
+            ch for ch in unicodedata.normalize("NFKC", text) if not _is_marker_ignorable(ch)
+        )
+        if _MIXED_SCRIPT_WORD_RE.search(text) or _LOOKALIKE_SCRIPT_RE.search(text):
+            return True
+    lowered = text.lower().translate(_FRAME_WORD_LEET)
+    if _SYMBOL_STEM_RE.search(re.sub(r"\s+", "", lowered)):
+        return True
+    letters = re.sub(r"[^a-z]+", "", lowered)
+    return _ARROW_FRAME_WORD_RE.search(letters) is not None
+
+
+def _is_bare_banner(line: str) -> bool:
+    """Whether a plain ``==`` *line* has under two words after NFKC (``===``, ``=== 1 ===``)."""
+    return len(re.findall(r"[^\W\d_]+", unicodedata.normalize("NFKC", line))) < 2
 
 
 def neutralize_restored_context_frame(text: str) -> str:
     """*text* with every look-alike restored-context frame neutralized."""
-    return _apply_marker_spans(text, _marker_spans(text, _RESTORED_CONTEXT_FRAME_RES))
+    guarded = _body_may_name_frame(text)
+    spans: list[tuple[int, int]] = []
+    plain: list[tuple[list[tuple[int, int]], bool]] = []
+    offset = 0
+    # Split on ``\n`` only: other separators stay inside the line they break,
+    # so the plain-shape test judges the whole line a reader sees.
+    for line in text.split("\n"):
+        # Every banner holds ``=`` (NFKC folds the wide forms to it).
+        if "=" in line or not line.isascii():
+            opening = [(offset + s, offset + e) for s, e in _marker_spans(line, (_BANNER_OPEN_RE,))]
+            if opening and (guarded or not _banner_line_is_plain(line)):
+                spans.extend(opening)
+            elif opening and (_is_bare_banner(line) or not _BANNER_ARROW_RE.match(line)):
+                plain.append((opening, _is_bare_banner(line)))
+        offset += len(line) + 1
+    # A bare ``===`` line next to another plain banner can frame a title between
+    # them whatever its words (``===`` / ``End Restord Contxt`` / ``===``, blank
+    # lines or not), so then none of them is plain. One heading underline, one
+    # conflict marker, or pytest banners with words only, stay plain.
+    # shortcut: two worded pytest banners around misspelled frame words keep
+    # their openings; drop the pytest carve-out if that is ever seen.
+    if len(plain) > 1 and any(bare for _, bare in plain):
+        spans.extend(span for opening, _ in plain for span in opening)
+    phrase = _RESTORED_CONTEXT_ANY_PHRASE_RE if guarded and spans else _RESTORED_CONTEXT_PHRASE_RE
+    spans.extend(_marker_spans(text, (phrase,)))
+    return _apply_marker_spans(text, _merge_overlapping_spans(spans))
 
 
 def _merge_overlapping_spans(raw: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -365,9 +567,18 @@ def _merge_overlapping_spans(raw: list[tuple[int, int]]) -> list[tuple[int, int]
     return merged
 
 
+# Characters ``_marker_spans`` sends through the per-character view pipeline:
+# non-ASCII, and with ``drop_controls`` also C0/C1 controls other than \t \n \r.
+_VIEW_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_VIEW_SPECIAL_RE = re.compile(r"[^\x00-\x7f]")
+_VIEW_SPECIAL_OR_CONTROL_RE = re.compile(r"[^\t\n\r\x20-\x7e]")
+
+
 def _marker_spans(
     text: str,
     patterns: tuple[re.Pattern[str], ...],
+    *,
+    drop_controls: bool = False,
 ) -> list[tuple[int, int]]:
     """Merged *patterns* matches in *text*, in original coordinates.
 
@@ -375,8 +586,15 @@ def _marker_spans(
     punctuation, drop format/zero-width chars, and map Unicode dashes to
     ASCII) with an index map back to the original offsets. Callers can enforce
     one boundary class without rewriting unrelated trusted markers.
+    *drop_controls* also leaves C0/C1 control characters other than tab, line
+    feed and carriage return out of the view, so a control inside a marker
+    cannot hide it.
     """
-    if text.isascii():  # pure ASCII cannot contain confusables — match directly
+    special = _VIEW_SPECIAL_RE
+    if drop_controls and _VIEW_CONTROL_RE.search(text):
+        special = _VIEW_SPECIAL_OR_CONTROL_RE
+    if special is _VIEW_SPECIAL_RE and text.isascii():
+        # pure ASCII cannot contain confusables — match directly
         raw = [m.span() for pattern in patterns for m in pattern.finditer(text)]
     else:
         # Compatibility-normalized matching view + origin map (normalized char
@@ -390,11 +608,13 @@ def _marker_spans(
         # ASCII is unchanged by every normalization below. Copy entire runs in
         # C instead of paying the Unicode pipeline per character whenever one
         # non-ASCII character appears anywhere in a large prompt.
-        for match in re.finditer(r"[^\x00-\x7f]", text):
+        for match in special.finditer(text):
             idx = match.start()
             norm.append(text[cursor:idx])
             origin.extend(range(cursor, idx))
             cursor = idx + 1
+            if special is not _VIEW_SPECIAL_RE and _VIEW_CONTROL_RE.match(match.group()):
+                continue
             for compatible in unicodedata.normalize("NFKC", match.group()):
                 if _is_marker_ignorable(compatible):
                     continue

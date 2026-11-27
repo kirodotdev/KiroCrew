@@ -272,6 +272,7 @@ def _stamp_abnormal_turn_footer(turn) -> tuple[bool, tuple[TurnUsage, int] | Non
             model=turn._turn_model,
             ttft_ms=_ttft_visible.ms,
             cache_rewrite=turn._turn_cache_rewrite,
+            cache_likely=turn._turn_cache_likely,
         )
         return stamped, None
     if slot._acp_client is None:
@@ -303,6 +304,7 @@ def _attach_abnormal_turn_stats(
     model: str | None = None,
     ttft_ms: int = 0,
     cache_rewrite: bool = False,
+    cache_likely: bool = False,
 ) -> bool:
     """Put ``meta.turn_stats`` on the last reply row of a turn that ended abnormally.
 
@@ -322,6 +324,7 @@ def _attach_abnormal_turn_stats(
     have written, all three included. A turn the seam bills itself reads the
     model here and, as before, records no ``ttft_ms``; it was never judged
     against the previous turn's cache, so it carries no rewrite flag either.
+    ``cache_likely``, the estimated flag, is carried the same way as ``cache_rewrite``.
     Returns whether a row received the footer.
 
     The row is mutated in place, so this marks the slot dirty itself, as every
@@ -347,6 +350,7 @@ def _attach_abnormal_turn_stats(
             )
             or "",
             cache_rewrite=cache_rewrite,
+            cache_likely=cache_likely,
         )
         row = _last_reply_row(slot, turn._turn_msg_boundary, turn._turn_start_mid)
         if stats is None or row is None:
@@ -354,6 +358,11 @@ def _attach_abnormal_turn_stats(
         if ttft_ms > 0:
             stats["ttft_ms"] = int(ttft_ms)
         row.setdefault("meta", {})["turn_stats"] = stats
+        # Imported here: this body runs on the chat runner module's globals.
+        from kiro_crew.dashboard.engine_subagent_record import attach_engine_record
+
+        # The turn's engine sub-agents, recorded on the row its footer went on.
+        attach_engine_record(slot, row)
         slot._dirty = True
     except Exception:
         logger.debug(

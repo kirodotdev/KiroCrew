@@ -61,6 +61,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.pod import log_mark
 from kiro_crew.pod.config import TERMINAL_BOOT_EXIT_CODES, PodConfig, environment_vars
 from kiro_crew.pod.unit import _kirocrew_argv as _shared_kirocrew_argv
@@ -245,8 +246,14 @@ def launchctl(*args: str, check: bool = False) -> subprocess.CompletedProcess:
     ``DBUS_SESSION_BUS_ADDRESS`` plumbing has no launchd counterpart).
     """
     require_backend()
+    launchctl_bin = platform_compat.trusted_system_bin("launchctl")
+    if launchctl_bin is None:
+        raise LaunchdError(
+            "pods need `launchctl`, but no launchctl executable was found in trusted "
+            "system directories; refusing to resolve it from PATH."
+        )
     return subprocess.run(
-        ["launchctl", *args],
+        [launchctl_bin, *args],
         capture_output=True,
         timeout=30,
         check=check,
@@ -406,7 +413,7 @@ def active_names(cfg: PodConfig) -> set[str]:
             f"launchctl print {domain()} failed (rc={cp.returncode}); cannot "
             f"enumerate pods: {(cp.stderr or cp.stdout or '').strip()}"
         )
-    prefix = pod_label(cfg, "")  # e.g. "dev.kirocrew.pod." (trailing dot kept)
+    prefix = pod_label(cfg, "")  # e.g. "dev.kirocrew.pod.kirocrew-pod." (trailing dot kept)
     names: set[str] = set()
     for tok in re.findall(rf"{re.escape(prefix)}[A-Za-z0-9._-]+", cp.stdout or ""):
         candidate = tok[len(prefix):]

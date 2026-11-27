@@ -271,3 +271,120 @@ async def test_the_dashboard_lists_the_global_servers_an_agent_opts_in_to(
 
     assert resp.status == 200
     assert _payload(resp) == [{"name": n, "enabled": True} for n in expected]
+
+
+class _LiveSlots:
+    """A dashboard state with one chat ``s1`` whose live session runs on *backend*."""
+
+    owner_id = ""
+
+    def __init__(self, backend: str | None, *, app: str = "") -> None:
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+        provider = (
+            None if backend is None else SimpleNamespace(capabilities=capabilities_for(backend))
+        )
+        slot = SimpleNamespace(key="s1", linked_session_key="", _app=app)
+        self._slots = {"s1": slot}
+        self.sessions = SimpleNamespace(get_provider=lambda _key: provider)
+
+
+def _opted_in_agent(kiro_home: Path, agents_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import kiro_crew.config.loader as loader
+
+    monkeypatch.setattr(
+        loader, "resolve_agent_bindings", lambda cfg, name: SimpleNamespace(kiro_agent=name)
+    )
+    _write(kiro_home / "settings" / "mcp.json", {"g": {"command": "x"}})
+    spec = {"name": "other", "mcpServers": {"own": {}}, "includeMcpJson": True}
+    (agents_dir / "other.json").write_text(json.dumps(spec), encoding="utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend", "slot", "expected"),
+    [
+        (ACP_BACKEND_KIRO, "s1", ["g", "own"]),
+        (ACP_BACKEND_KAS, "s1", ["g", "own"]),
+        # A backend that does not read mcp.json never mounted ``g``.
+        (ACP_BACKEND_CODEX, "s1", ["own"]),
+        # No live session, an unknown slot, no slot, or a backend this build does
+        # not know: kiro-cli's answer, as before the slot was read.
+        (None, "s1", ["g", "own"]),
+        (ACP_BACKEND_CODEX, "nope", ["g", "own"]),
+        (ACP_BACKEND_CODEX, "", ["g", "own"]),
+        ("some-harness-nobody-registered", "s1", ["g", "own"]),
+    ],
+)
+async def test_the_list_follows_the_live_session_backend_of_the_named_slot(
+    kiro_home: Path,
+    agents_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str | None,
+    slot: str,
+    expected: list[str],
+):
+    """``?slot=`` asks the chat's live session which backend it runs on."""
+    _opted_in_agent(kiro_home, agents_dir, monkeypatch)
+    query = {"agent": "other", **({"slot": slot} if slot else {})}
+
+    resp = await mcp_mod.api_mcp_active(_request(query=query, state=_LiveSlots(backend)))
+
+    assert resp.status == 200
+    assert _payload(resp) == [{"name": n, "enabled": True} for n in expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("owner", "expected"), [("app-a", ["own"]), ("", ["g", "own"])])
+async def test_an_app_reads_the_backend_only_of_a_slot_it_owns(
+    kiro_home: Path,
+    agents_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: str,
+    expected: list[str],
+):
+    """An app that does not own the slot gets kiro-cli's answer, nothing about the slot."""
+    from dashboard_owner_helpers import owner_claims
+
+    _opted_in_agent(kiro_home, agents_dir, monkeypatch)
+    request = _request(
+        query={"agent": "other", "slot": "s1"},
+        state=_LiveSlots(ACP_BACKEND_CODEX, app=owner),
+    )
+    owner_claims(request, app_token="app-a")
+
+    resp = await mcp_mod.api_mcp_active(request)
+
+    assert resp.status == 200
+    assert _payload(resp) == [{"name": n, "enabled": True} for n in expected]
+
+
+@pytest.mark.parametrize("user_level,expected", [(False, False), (True, True)])
+def test_a_kas_agent_is_judged_by_the_spec_kas_runs_not_the_checkouts(
+    tmp_path, monkeypatch, user_level, expected
+):
+    # KAS runs the user-level spec over a same-named checkout spec, so the checkout's
+    # opt-in decides nothing there; kiro-cli runs the checkout's.
+    from kiro_crew.agent_sdk import mcp_json_reach
+
+    agents_dir = tmp_path / "kiro-agents"
+    agents_dir.mkdir()
+    (agents_dir / "crew.json").write_text(
+        json.dumps({"name": "crew", "prompt": "mine", "includeMcpJson": user_level})
+    )
+    project = tmp_path / "checkout"
+    (project / ".kiro" / "agents").mkdir(parents=True)
+    (project / ".kiro" / "agents" / "crew.json").write_text(
+        json.dumps({"name": "crew", "prompt": "theirs", "includeMcpJson": not user_level})
+    )
+    monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: agents_dir)
+    assert mcp_json_reach.agent_includes_mcp_json("crew", ACP_BACKEND_KAS, str(project)) is expected
+
+
+def test_an_unknown_kas_agent_includes_nothing(tmp_path, monkeypatch):
+    from kiro_crew.agent_sdk import mcp_json_reach
+
+    agents_dir = tmp_path / "kiro-agents"
+    agents_dir.mkdir()
+    monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: agents_dir)
+    assert mcp_json_reach.agent_includes_mcp_json("nobody", ACP_BACKEND_KAS, str(tmp_path)) is False

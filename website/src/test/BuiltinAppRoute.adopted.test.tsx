@@ -44,12 +44,21 @@ function AppHostProbe({ app }: { app: { name: string; origin?: string } }) {
 vi.mock('../components/AppHost', () => ({ default: AppHostProbe }))
 
 const listApps = vi.fn()
+const reportAppView = vi.fn(() => Promise.resolve(undefined))
 // A loaded list naming no record for the page's app asks the gateway about that
 // name; here it answers the plain not-installed 404.
 const getApp = vi.fn(() => Promise.reject(Object.assign(new Error('not installed'), { status: 404 })))
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
-  return { ...actual, api: { ...actual.api, listApps: () => listApps(), getApp: (name: string) => getApp(name) } }
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      listApps: () => listApps(),
+      getApp: (name: string) => getApp(name),
+      reportAppView: (report: unknown) => reportAppView(report),
+    },
+  }
 })
 
 const ADOPTED = {
@@ -132,6 +141,32 @@ describe('BuiltinAppRoute for an adopted former built-in', () => {
     act(() => { client.setQueryData(['apps'], [ADOPTED]) })
     expect((await screen.findByTestId('app-host', undefined, LAZY_PAGE_TIMEOUT)).dataset.origin).toBe('registry')
     expect(screen.queryByTestId('compiled-page')).toBeNull()
+  })
+})
+
+describe('BuiltinAppRoute counts one opened per view', () => {
+  const OPENED = { app: 'former-app', surface: 'page', event: 'opened' }
+  const opens = () => reportAppView.mock.calls.filter(([r]) => (r as { event?: string }).event === 'opened')
+
+  it('counts a cold load that swaps to the adopted copy once, from the copy', async () => {
+    reportAppView.mockClear()
+    const client = installedAppsClient()
+    client.removeQueries({ queryKey: ['apps'], exact: true })
+    renderAt('/former-app', ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>)
+    expect(await screen.findByTestId('compiled-page', undefined, LAZY_PAGE_TIMEOUT)).toBeInTheDocument()
+    // The route has not settled, so the compiled page has not counted itself.
+    expect(opens()).toEqual([])
+    act(() => { client.setQueryData(['apps'], [ADOPTED]) })
+    expect(await screen.findByTestId('app-host', undefined, LAZY_PAGE_TIMEOUT)).toBeInTheDocument()
+    expect(opens()).toEqual([[OPENED]])
+  })
+
+  it('counts the compiled page once the list loaded and the released lookup answered', async () => {
+    reportAppView.mockClear()
+    getApp.mockClear()
+    renderAt('/former-app', withInstalledApps([]))
+    expect(await screen.findByTestId('compiled-page', undefined, LAZY_PAGE_TIMEOUT)).toBeInTheDocument()
+    await vi.waitFor(() => expect(opens()).toEqual([[OPENED]]), LAZY_PAGE_TIMEOUT)
   })
 })
 

@@ -8,6 +8,14 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { loadChatConfig, DEFAULT_MESSAGE_FONT_SIZE, MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE } from '../pages/chat/ChatSettings'
 
 describe('loadChatConfig', () => {
+  it.each(['showTimestamps', 'collapseAllSteps', 'simplifiedToolNames'] as const)(
+    'reads a stored non-boolean %s as its default, so the live reader gets a primitive',
+    (key) => {
+      localStorage.setItem('mc-chat-config', JSON.stringify({ [key]: { nested: true } }))
+      expect(loadChatConfig()[key]).toBe(true)
+    },
+  )
+
   beforeEach(() => { localStorage.removeItem('mc-chat-config') })
 
   it('defaults sendOnEnter to true', () => {

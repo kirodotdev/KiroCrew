@@ -109,6 +109,9 @@ def test_each_owner_route_wraps_the_handler_of_the_twin_it_names():
     }
     for path, item in CONTRACT["paths"].items():
         for method, operation in item.items():
+            if "x-crew-wraps" not in operation:
+                # No ``/api/*`` twin; test_crew_api_grant_requests.py pins its owner gate.
+                continue
             twin_method, twin_path = operation["x-crew-wraps"].split(" ", 1)
             wrapped = table[(method.upper(), path)]
             assert wrapped.__wrapped__ is table[(twin_method, twin_path)]
@@ -123,6 +126,19 @@ async def test_the_roster_matches_the_contract(tmp_path):
     header_schemas = CONTRACT["components"]["headers"]
     for name in ("X-Request-Id", "Crew-API-Version"):
         Draft202012Validator(header_schemas[name]["schema"]).validate(headers[name])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("teammate", ["relay", "ssm", "tailscale"])
+async def test_teammates_keep_the_owner_roster_access(tmp_path, monkeypatch, teammate):
+    from test_shared_crew_teammate_owner_access import _publish
+
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+    req = _request(_owner_state(tmp_path), BOTS)
+    _publish(req, teammate)
+    status, body, _headers = await _call(_members_route(), req)
+    assert status == 200
+    _validator("#/components/schemas/BotRoster").validate(body)
 
 
 @pytest.mark.asyncio
@@ -234,3 +250,42 @@ def test_the_bot_prune_gate_holds_the_owner_roster_like_its_twin():
 
     assert server_mod._crewmate_prune_gate_holds_path("/api/members")
     assert server_mod._crewmate_prune_gate_holds_path(BOTS)
+
+
+def _app_credential_request(state: Any, method: str, pattern: str):
+    """A request as token auth would mark one made with an app credential."""
+    app = web.Application()
+    app["state"] = state
+    path = pattern.replace("{", "").replace("}", "")
+    info = {name: name for name in pattern.replace("}", "{").split("{")[1::2]}
+    req = make_mocked_request(method, path, app=app, match_info=info)
+    # The marker carries a ``:``, which no installed app's name can hold.
+    req["app"] = "local-grant:grt_0123456789abcdef"
+    req["user"] = "app:grt_0123456789abcdef"
+    return req
+
+
+@pytest.mark.asyncio
+async def test_no_owner_route_answers_an_app_credential(tmp_path):
+    """Every route registered under the Owner prefix, read from the route table."""
+    routes = _owner_routes()
+    assert len(routes) >= 9
+    state = _owner_state(tmp_path)
+    sel = MagicMock()
+    with patch("kiro_crew.sel.sel", return_value=sel):
+        for (method, pattern), handler in sorted(routes.items()):
+            resp = await handler(_app_credential_request(state, method, pattern))
+            body = json.loads(resp.body)
+            assert resp.status == 403, (method, pattern)
+            _validator("#/components/schemas/Error").validate(body)
+            assert body["error"]["code"] == "owner_only", (method, pattern)
+            assert set(body) == {"error"}
+            if "x-crew-wraps" in CONTRACT["paths"][pattern][method.lower()]:
+                # A twin's handler serves teammates too; the route's gate is its refusal.
+                continue
+            # The handler's own check refuses as well, were the route's gate ever to pass.
+            inner = await handler.__wrapped__(_app_credential_request(state, method, pattern))
+            assert inner.status == 403, (method, pattern)
+            assert json.loads(inner.body)["code"] == "owner_only", (method, pattern)
+    outcomes = {call.kwargs["outcome"] for call in sel.log_api_access.call_args_list}
+    assert outcomes == {"denied"}

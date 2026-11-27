@@ -23,7 +23,7 @@ _CHANNEL = "C0123ABC"
 _OWNER_DM = "D0OWNER"
 _NEW_TS = "1700000000.000100"
 _THREAD_TS = "1699999999.000200"
-_REPORT = "*Heartbeat*\n\nall green"
+_REPORT = "💓 *Heartbeat*\n\nall green"
 
 
 @pytest.fixture()

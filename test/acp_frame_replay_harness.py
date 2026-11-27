@@ -31,7 +31,7 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.elicitation import ElicitationParseError, parse_elicitation_request
 from kiro_crew.acp.engine_fallback import normalize_kiro_v2
-from kiro_crew.acp.harness.pi_steer import steer_echo_seq
+from kiro_crew.acp.harness.pi_steer import model_error_line, steer_echo_seq
 from kiro_crew.acp.harness_notices import parse_notice
 from kiro_crew.acp.plan_checklist import plan_todo_snapshot
 from kiro_crew.acp.raw_sdk_tasks import METHOD_CLAUDE_SDK_MESSAGE, sdk_message
@@ -156,6 +156,9 @@ def event_dict(event: AcpEvent) -> dict[str, Any]:
                 out[name] = usage
             continue
         if value == defaults.get(name):
+            continue
+        if name == "offered_allow":
+            # The same classification the entry's ``recorded_options`` snapshots.
             continue
         if value in (None, "", 0, 0.0, False, [], {}):
             continue
@@ -286,6 +289,10 @@ def _replay(
                         seq = steer_echo_seq(text, gate_envelope_nonce)
                         if seq is not None:
                             entry["pi_steer_consumed"] = seq
+                        # Its failed-model-call report, which fails the turn.
+                        failure = model_error_line(text, gate_envelope_nonce)
+                        if failure is not None:
+                            entry["pi_model_error"] = failure
             if discriminant == "usage_update":
                 entry["usage"] = list(parse_usage_update(update))
                 entry["usage_cost"] = parse_usage_cost(update)

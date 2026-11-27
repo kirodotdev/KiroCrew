@@ -319,13 +319,17 @@ class TestLocalToken:
         row = fake_sel.log_api_access.call_args.kwargs
         assert row["operation"] == "token.local"
         assert row["outcome"] == "success"
-        assert row["resources"] == "token-issued"
+        assert row["resources"].startswith("token-issued basis=")
 
     @pytest.mark.asyncio
-    async def test_an_app_backend_mint_is_refused_and_attributed_to_the_app(
+    async def test_an_app_backend_mint_is_attributed_to_the_app(
         self, monkeypatch, fake_sel
     ) -> None:
-        """No token is signed for an app backend; the app's name reaches the audit row."""
+        """The owning app's name reaches the audit row, not the response or the token.
+
+        The token carries no ``app`` claim because the owner-dashboard check refuses an
+        app-scoped token.
+        """
         from kiro_crew import member_memory_auth as auth
 
         peer_pid = 4242
@@ -355,13 +359,15 @@ class TestLocalToken:
                 headers={"X-Local-Secret": "right"},
             )
         )
-        assert resp.status == 403
-        assert json.loads(resp.body)["code"] == "member_owner_token_refused"
-        assert minted == {}
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body == {"token": "issued-value", "expires_in": core_mod.MAX_SESSION_TTL_SECS}
+        assert minted["owner"] == "owner-1"
+        assert minted["extra"] == {"owner_mint": "1"}
         row = fake_sel.log_api_access.call_args.kwargs
         assert row["operation"] == "token.local"
-        assert row["outcome"] == "denied"
-        assert row["resources"] == "app-backend-refused app=demo-app"
+        assert row["outcome"] == "success"
+        assert row["resources"] == "token-issued app=demo-app basis=spawned-app"
 
     @pytest.mark.asyncio
     async def test_unix_peer_match_with_valid_secret_issues_a_token(

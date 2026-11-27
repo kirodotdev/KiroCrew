@@ -97,8 +97,9 @@ def start_enabled_app_backends() -> list[str]:
                 _deregister_agents,
                 _deregister_mcp_servers,
                 _deregister_skills,
+                _scrub_legacy_shared_mcp,
                 reconcile_app_skills,
-                register_app,
+                reconcile_enabled_app_resources,
             )
         except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
             logger.warning("Boot resource reconcile unavailable: %s", exc)
@@ -146,10 +147,13 @@ def start_enabled_app_backends() -> list[str]:
                     name,
                     denied,
                 )
+            # _deregister_mcp_servers leaves the legacy shared mcp.json alone; the
+            # boot reconcile is where every enabled app's entries leave it.
+            _scrub_legacy_shared_mcp(name)
             continue
 
         try:
-            registration = register_app(name)
+            registration = reconcile_enabled_app_resources(name)
             if registration.errors:
                 logger.warning(
                     "Boot resource reconcile for app %s completed with errors: %s",

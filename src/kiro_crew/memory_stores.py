@@ -32,6 +32,7 @@ from functools import wraps
 from pathlib import Path
 
 from kiro_crew import crew_teams
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +431,14 @@ def named_store_of_db(path: Path) -> str:
         return ""
     try:
         root = memory_stores_root().resolve()
+        if os.name == "nt" and parent != root / name:
+            # Resolving a UNC path opens SMB to its host, so an untrusted share is
+            # answered lexically, as the memory read gate does. Imported here as a
+            # circular import: hooks imports security, which imports this module.
+            from kiro_crew.hooks import is_unc_shape, unc_probe_allowed
+
+            if is_unc_shape(str(parent)) and not unc_probe_allowed(str(parent)):
+                return ""
         if parent.resolve() != root / name:
             return ""
     except OSError:
@@ -965,7 +974,9 @@ def _allocate_member_id(config, member: str, *, refuse_damaged: bool = True) -> 
     members retain their stores and DM bindings, so those identities reserve the
     slug too. A live legacy agent with no ``member_id`` reserves its name-derived
     slug until it is provisioned. Captured work and an existing legacy member must
-    never resolve to a newly created member that happens to share the name.
+    never resolve to a newly created member that happens to share the name. A create
+    also never takes a ``constants.WINDOWS_DEVICE_STEMS`` stem, which is no directory
+    on Windows; the upgrade keeps one, since its live member's records are already keyed by it.
 
     ``refuse_damaged`` decides what a non-string identity elsewhere in the config
     means. Creating a member refuses outright, because a config that cannot be
@@ -1019,6 +1030,8 @@ def _allocate_member_id(config, member: str, *, refuse_damaged: bool = True) -> 
     if refuse_damaged and any(not isinstance(identity, str) for identity in identities):
         raise UnknownMemoryStore("Configured member identity must be a string; allocation refused")
     existing = {identity for identity in identities if isinstance(identity, str)}
+    if refuse_damaged:
+        existing |= WINDOWS_DEVICE_STEMS
     member_id = base
     while member_id in existing or dm_slug_is_reserved(member_id):
         member_id = f"{base[:48]}-{uuid.uuid4().hex[:12]}"
@@ -1903,6 +1916,25 @@ def persist_member_config(
                         f"memory store {store!r} is already bound to another member"
                     )
             existing = stores.get(store)
+            if create and existing is not None:
+                # An adopt takes the id its kept store records. A crewmate with no
+                # member id derives its slug from its name; one written by another
+                # process since the snapshot would share that id, which the
+                # snapshot's checks could not see.
+                from kiro_crew.members import MemberSlugError, slug_for_name
+
+                for name, entry in agents.items():
+                    if name == member or not isinstance(entry, dict) or entry.get("member_id"):
+                        continue
+                    try:
+                        legacy_slug = slug_for_name(name)
+                    except MemberSlugError:
+                        continue
+                    if legacy_slug == config.agents[member].member_id:
+                        raise UnknownMemoryStore(
+                            f"Bot {name!r} was added concurrently with the same identity; "
+                            "reload the roster"
+                        )
             if existing is not None and (
                 not isinstance(existing, dict)
                 or existing.get("owner_member_id") != config.agents[member].member_id

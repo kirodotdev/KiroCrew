@@ -43,6 +43,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 import ChatSidebar from '../pages/ChatSidebar'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
+import { expandSessionLinks } from './SessionLinksTestUtils'
 
 /** The chip's title now names the panel and the modifier escape hatch. Built
  *  here rather than matched loosely, so the tooltip's promise is asserted too.
@@ -105,6 +106,7 @@ function renderSidebar() {
       </Provider>
     </QueryClientProvider>,
   )
+  expandSessionLinks()
 }
 
 describe('ChatSidebar – issue chips', () => {

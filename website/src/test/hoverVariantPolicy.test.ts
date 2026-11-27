@@ -142,6 +142,7 @@ const DECORATIVE: Array<[file: string, snippet: string, why: string]> = [
   ['pages/chat/BrowserLiveCardViews.tsx', 'pointer-events-none absolute inset-0 grid place-items-center bg-bg/40 opacity-0', '"Click to take over" hint over the frame; the header\'s Take over button is the control and a tap on the frame claims too'],
   ['pages/ArtifactDetailPageHeader.tsx', '<Pencil size={14}', 'edit glyph inside the always-visible rename button'],
   ['pages/chat/SessionTitleControl.tsx', '<Pen size=', 'edit glyph beside the always-visible title'],
+  ['pages/members/MembersPageThreadHeader.tsx', 'data-testid="member-identity-pill-chevron"', 'chevron inside the always-visible identity stack button; hidden at rest by owner decision'],
   ['pages/settings/SecurityPanelPosture.tsx', '<ExternalLink size={11}', 'external-link glyph on an always-visible row'],
   ['components/WelcomeView.tsx', '[@media(min-width:640px)_and_(min-height:600px)]:group-hover:line-clamp-none', 'unclamps a suggestion\'s text on hover; one tap sends the full text to the composer'],
 ]
@@ -226,8 +227,6 @@ describe('hidden-until-hover controls stay reachable on touch', () => {
     ['components/RegistryManager.tsx', 'sm:group-hover:opacity-100 [@media(hover:none)]:opacity-100'],
     // A pending registry action keeps its dimmed state on touch: the touch override lives in the idle branch only.
     ['components/RegistryManager.tsx', "refreshMutation.isPending ? 'pointer-events-none opacity-30 [@media(hover:none)]:opacity-30' : '[@media(hover:none)]:opacity-100'"],
-    // A busy (aria-disabled) remove button stays dimmed on touch.
-    ['apps/personal-shopper/SitesTab.tsx', 'aria-disabled:opacity-30 aria-disabled:hover:text-[var(--muted)] aria-disabled:cursor-not-allowed [@media(hover:none)]:aria-disabled:opacity-30'],
     // The daily-usage tooltip is the only place a day's figures appear and the bar has no click to lose,
     // so it keeps an ungated :hover that a tap still triggers.
     ['pages/overview/TokenDailyChart.tsx', 'hidden [.group:hover_&]:block'],
