@@ -265,6 +265,21 @@ describe('ChatPane header — fork-of tag (#23084)', () => {
     expect(onSessionOpen).toHaveBeenCalledWith(PARENT)
   })
 
+  it('opens a channel-bound parent, matched by its linked session key', async () => {
+    const onSessionOpen = vi.fn()
+    const { store } = renderPane({ onSessionOpen })
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: SLOT, title: TITLE, messages: 0, running: false, forked_from: 'slack:123' },
+        { key: 'slack_123', title: 'Slack thread', messages: 2, running: false, linked_session_key: 'slack:123' },
+      ] as never))
+    })
+    const tag = await screen.findByTestId('chat-pane-fork-parent')
+    expect(tag.textContent).toBe('↳ Slack thread')
+    fireEvent.click(tag)
+    expect(onSessionOpen).toHaveBeenCalledWith('slack_123')
+  })
+
   it('keeps a plain tag for a parent the host cannot open', async () => {
     const { store } = renderPane({ onSessionOpen: vi.fn() })
     act(() => {

@@ -428,6 +428,16 @@ describe('fork-point marker', () => {
     expect(findByType(result.current.renderMessage(1, other), ForkPointMarker)).toBeNull()
   })
 
+  it('draws under a compaction notice row the fork was cut at', () => {
+    const notice = { ...msg('assistant', 'summary', 'r4', { mid: 'm-notice' }), kind: 'compaction' } as unknown as ChatMessage
+    const atNotice = { ...child, fork_point_mid: 'm-notice', fork_point_ts: 'r4' }
+    const { result, p } = render({ filteredSlots: [parent, atNotice] as never, messages: [point, notice], messagesRef: { current: [point, notice] } })
+    const marker = findByType(result.current.renderMessage(1, notice), ForkPointMarker)
+    expect(marker).not.toBeNull()
+    expect((marker!.props.forks as { key: string }[]).map(f => f.key)).toEqual(['slot-b'])
+    expect(marker!.props.onOpen).toBe(p.selectSessionTab)
+  })
+
   it('draws nothing for a fork made before the point was recorded', () => {
     const legacy = { key: 'slot-b', title: 'Old fork', messages: 1, running: false, forked_from: 'dashboard:slot-a' }
     const { result } = render({ filteredSlots: [parent, legacy] as never, messages: [point], messagesRef: { current: [point] } })

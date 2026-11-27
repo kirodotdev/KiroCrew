@@ -621,9 +621,21 @@ export function useTranscriptRendering({
     // A role nobody claims renders as the conversational bubble -- what the
     // if-chain's fall-through did, so an unknown role is visible, never lost.
     // By reference: the merged list's tail is an SDK default, not the bubble.
-    return (entry ?? bubbleRenderer).render(m, ctx)
+    const renderer = entry ?? bubbleRenderer
+    const out = renderer.render(m, ctx)
+    // The bubble draws its own fork marker. Any other row a fork was cut at
+    // (a compaction notice, a status card) gets the marker below it here.
+    if (renderer === bubbleRenderer || out == null) return out
+    const forksHere = forkChildrenAt(forkPoints, m)
+    if (forksHere.length === 0) return out
+    return (
+      <Fragment key={key}>
+        {out}
+        <ForkPointMarker forks={forksHere} onOpen={selectSessionTab} />
+      </Fragment>
+    )
   // eslint-disable-next-line react-hooks/exhaustive-deps -- messagesRef is a useRef (stable for the page's lifetime) that the rule cannot see across the owner boundary; listing it would also put the flush-volatile `messages` name the dep-hygiene ratchet (TurnBlock.rowMemo.test.tsx) bans back in this array
-  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, handleArtifactOpen, connectionsUiOn])
+  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, handleArtifactOpen, connectionsUiOn, forkPoints, selectSessionTab])
 
   // Hoisted out of the row map so every TurnBlock receives the SAME function
   // identity per render — an inline closure there re-created it per row per
