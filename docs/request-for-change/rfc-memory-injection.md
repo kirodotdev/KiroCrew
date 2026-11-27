@@ -181,8 +181,12 @@ Write-side facts that matter for later sections:
 | Findings | same ranking | `_LESSON_EXPERIENCE_CAP` (5%) | any shared stemmed `\w+` word, no length floor | `any_lesson_overlap`, `_lesson_words` (`lessons.py`) |
 | Preferences | all `pref.*` rows | `_PREFS_STARTUP_CAP = 12_700` | none | `get_preferences_context` (`vector_memory_runtime/semantic.py`) |
 | Task facts, default (V1) | hybrid rank | `_SEMANTIC_MEMORY_CAP` (7.7%) | none | `get_semantic_context` (`semantic.py`) |
-| Task facts, private (V2) | candidates with evidence | same | `relevance_evidence`, cosine floors 0.62 / 0.57 | `semantic_candidates_v2` (`semantic.py`); `relevance_evidence`, `SHORT_COSINE_FLOOR`, `LONG_COSINE_FLOOR` (`memory_v2.py`) |
-| Episodic | vector search | `_EPISODIC_INJECT_CAP = 3_000` | cosine 0.55 (0.42 for long text) | `_EPISODIC_RELEVANCE_THRESHOLD` (`vector_memory_runtime/episodic_search.py`) |
+| Task facts, private (V2) | candidates with evidence | same | `relevance_evidence`, cosine floors 0.62 / 0.57 (0.55 / 0.57 for an instructed query) | `semantic_candidates_v2` (`semantic.py`); `relevance_evidence`, `SHORT_COSINE_FLOOR`, `LONG_COSINE_FLOOR`, `INSTRUCTED_SHORT_COSINE_FLOOR`, `INSTRUCTED_LONG_COSINE_FLOOR` (`memory_v2.py`) |
+| Episodic | vector search | `_EPISODIC_INJECT_CAP = 3_000` | cosine 0.55 (0.42 for long text); 0.515 (0.375) for an instructed query | `_EPISODIC_RELEVANCE_THRESHOLD`, `_EPISODIC_INSTRUCTED_RELEVANCE_THRESHOLD` (`vector_memory_runtime/episodic_search.py`) |
+
+An instructed query is one embedded with the model's query instruction, which
+the bundled Qwen3 model and `ollama:qwen3-embedding*` get
+(`embedding.query_is_instructed`); other models use the plain floors.
 
 Ranking inputs differ by store. The default store passes a query vector to the
 rule block only when the activity block already ranked against the first
@@ -325,7 +329,8 @@ and is never folded into another row.
   This is the shipped `split_cjk_word` rule, reused unchanged.
 - Admission needs at least one shared significant token.
 - For task facts, both stores use the V2 gate: a row must carry
-  `relevance_evidence` (lexical token or cosine above the 0.62 / 0.57 floors).
+  `relevance_evidence` (lexical token or cosine above the 0.62 / 0.57 floors,
+  0.55 / 0.57 for an instructed query).
 
 **P5 Budget model.** Each block is one row of one table (section 4.3, Select).
 A block declares its cap, its admission gate, its order, and the line it prints
