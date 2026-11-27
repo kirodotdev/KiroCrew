@@ -26,7 +26,8 @@
       "literal": "Y",
       "expansion": {"p-dollar": "Y", "p-envprefix": "Y"},
       "ambient": ["opencode-project", "opencode-user"],
-      "crew_tool_bytes_ceiling": 160000
+      "crew_tool_bytes_ceiling": 160486,
+      "note": "160000 plus the 486 bytes the app_store_search tool adds on this harness (#41498: 159403 bytes without it, 159889 with it, same base), dropping back to the target once tool specs are deferred (#30603)."
     },
     "goose": {
       "literal": "Y",

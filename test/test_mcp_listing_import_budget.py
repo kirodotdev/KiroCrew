@@ -128,8 +128,11 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for ``mcp-mate`` (368 to 369): the memory-change card tools read their
 #: limits and kind names from ``kiro_crew.change_card_memory``, a ``typing``-only leaf;
 #: that one file is the whole rise.
+#: Raised by 1 for ``mcp-core`` (505 to 506): the App Store search's declaration lives in
+#: its own ``kiro_crew.mcp_tools.catalog.app_store``, which the core listing loads from
+#: ``mcp_tools.DOMAIN_MODULES`` like every other domain.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 505,
+    "mcp-core": 506,
     "mcp-cron": 372,
     "mcp-guide": 366,
     "mcp-mate": 369,

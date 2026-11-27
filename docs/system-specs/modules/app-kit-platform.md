@@ -3764,6 +3764,29 @@ that runs the button is disabled and its accessible name and tooltip read
 "Refreshing the store…" (`pages.appsPage.refreshing_store`) instead of the
 action, so the disabled state states its reason.
 
+An agent reads the same listing through the `app_store_search` tool:
+`GET /api/app-store/search?q=<words>[&limit=<n>]` (`handle_app_store_search`, a
+strict internal path the `kirocrew-core` server calls with the internal secret)
+searches the listing `handle_registry` serves, the catalog first and the seed
+offline (`catalogUnavailable: true`), minus the two kinds of row the Discover
+shelf leaves out: an app named after an installed built-in whose manifest is
+`hidden`, and a built-in row with nothing installed under its name. The query and
+each row's name, display name, description, tags and use cases are casefolded and
+split at every character that is not a letter or digit; a query word matches the
+start of a row word. Rows matching more distinct words rank first, ties by name;
+each match carries only `name`, `displayName`, `description`, `useCases` and
+`installed` (whichever the row has: published-catalog rows carry no `useCases`;
+seed, edition and external-registry rows, dressed from their `app.json`, can),
+each text redacted, then cut at 240 characters, and at most five use cases (a non-text value is
+left out). The tool then drops the last apps until its text, normalized as it is on
+the way out, fits the 100 000-character cap on a tool's answer (`MAX_RESPONSE_LEN`),
+so a padded listing cannot cut the JSON. `total` counts every match
+before the `limit` (default 10, at most 50) cuts it, and comes first in the answer
+with `catalogUnavailable`. A Kiro Space store's listings are not searched. It is a
+read: it announces no app update and installs nothing, so installing stays the
+person's action in the store. It sits under `/api/app-store/` for the reason the
+refresh does.
+
 User-configured external registries (`config.registries`) are a separate,
 always-present source: both `list_registry` and `list_catalog_apps` merge them
 through one shared site, `_append_external_registry_apps`, so the online and

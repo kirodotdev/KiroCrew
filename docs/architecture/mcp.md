@@ -3759,6 +3759,14 @@ answers `tools/list` from):
   [rfc-mcp-resource-subscriptions](../request-for-change/rfc-mcp-resource-subscriptions.md) §4.9.3)
 - **Sessions and history:** `list_sessions`, `get_chat_session`,
   `search_chat_history`
+- **App Store:** `app_store_search` searches the store's listing for keywords
+  through `GET /api/app-store/search` (strict internal,
+  `apps/routes_registry.handle_app_store_search`), which lists what
+  `GET /api/apps/registry` lists (the published catalog, or the seed offline; not a
+  Kiro Space store's block), minus what the Discover shelf hides, and answers each
+  match's name, display copy, use cases where the row has them, and install state,
+  each text cut short. A row matching more of the words ranks first. Read-only: it
+  installs nothing and, unlike the store's own listing, announces no app update.
 - **Artifacts:** `artifact_list`, `artifact_get`, `artifact_save`,
   `artifact_update`, `artifact_delete`, `artifact_move`, `artifact_versions`,
   `artifact_revert`, `artifact_folder_list`, `artifact_folder_create`,
