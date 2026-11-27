@@ -104,7 +104,7 @@ _BASE_NAMES = frozenset("""
         _grep_resolve_root _grep_rg _grep_rg_argv _grep_rg_executable _grep_rg_hit_of
         _grep_rg_teardown _grep_sensitive_globs _grep_xlsx_segments
         _is_not_a_repo_verdict _is_windows_drive_root _known_project_dirs
-        _load_sheet_payload _match_known_project _match_known_project_for _open_checked
+        _load_sheet_payload _match_known_project _match_known_project_for _numstat_new_path _open_checked
         _open_checked_file _open_completion_dir _open_rb_nofollow
         _owner_view_bypasses_credential_pass _parse_range_header _parse_workbook_grid
         _porcelain_unquote _probe_busy_response _probe_git_dir _probe_persisted_session

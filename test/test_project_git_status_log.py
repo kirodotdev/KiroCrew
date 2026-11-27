@@ -1502,6 +1502,92 @@ class TestArrowFilename:
         assert "a.txt -> renamed.txt" not in paths
 
 
+class TestRenameCounts:
+    """A renamed file's ``+N/-N`` reaches the row: numstat folds the rename into one field."""
+
+    _BODY = "".join(f"line{n}\n" for n in range(1, 7))
+
+    def _commit(self, repo, name: str) -> None:
+        # Large enough that git still calls the edited copy a rename.
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(self._BODY)
+        _git(repo, "add", name)
+        _git(repo, "commit", "-qm", f"add {name}")
+
+    async def _counts(self, repo, path: str) -> list[tuple]:
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={repo}")
+            data = await resp.json()
+        return [
+            (f["status"], f["staged"], f.get("additions"), f.get("deletions"))
+            for f in data["files"]
+            if f["path"] == path
+        ]
+
+    @pytest.mark.asyncio
+    async def test_renamed_file_rows_carry_counts(self, repo, mock_sel):
+        self._commit(repo, "old.txt")
+        _git(repo, "mv", "old.txt", "renamed.txt")
+        (repo / "renamed.txt").write_text(self._BODY + "line7\nline8\n")
+        assert await self._counts(repo, "renamed.txt") == [
+            ("R", True, 2, 0),
+            ("M", False, 2, 0),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_rename_inside_a_directory_carries_counts(self, repo, mock_sel):
+        self._commit(repo, "d/inner.txt")
+        _git(repo, "mv", "d/inner.txt", "d/moved.txt")
+        (repo / "d" / "moved.txt").write_text(self._BODY + "line7\n")
+        rows = await self._counts(repo, "d/moved.txt")
+        assert rows and {r[2:] for r in rows} == {(1, 0)}
+
+    @pytest.mark.asyncio
+    async def test_rename_out_of_a_directory_carries_counts(self, repo, mock_sel):
+        self._commit(repo, "d/inner.txt")
+        _git(repo, "mv", "d/inner.txt", "inner.txt")
+        (repo / "inner.txt").write_text(self._BODY + "line7\n")
+        rows = await self._counts(repo, "inner.txt")
+        assert rows and {r[2:] for r in rows} == {(1, 0)}
+
+    @pytest.mark.asyncio
+    async def test_renames_off_still_carries_counts(self, repo, mock_sel):
+        """With ``diff.renames`` off numstat names a plain path: nothing to collapse."""
+        _git(repo, "config", "diff.renames", "false")
+        self._commit(repo, "old.txt")
+        _git(repo, "mv", "old.txt", "renamed.txt")
+        (repo / "renamed.txt").write_text(self._BODY + "line7\n")
+        rows = await self._counts(repo, "renamed.txt")
+        assert rows and {r[2:] for r in rows} == {(7, 0)}
+
+    @pytest.mark.skipif(os.name == "nt", reason="'>' is not a legal NTFS filename character")
+    @pytest.mark.asyncio
+    async def test_file_named_like_a_rename_keeps_its_own_counts(self, repo, mock_sel):
+        name = "old => new.txt"
+        self._commit(repo, name)
+        (repo / name).write_text(self._BODY + "line7\n")
+        assert await self._counts(repo, name) == [("M", False, 1, 0)]
+
+    @pytest.mark.parametrize(
+        ("field", "expected"),
+        [
+            ("old.txt => new name.txt", "new name.txt"),
+            ("d/{inner.txt => moved.txt}", "d/moved.txt"),
+            ("{e/f/g => z}/h.txt", "z/h.txt"),
+            ("x/{a => }/f.txt", "x/f.txt"),
+            ("{a => }/f.txt", "f.txt"),
+            ("x/{ => a}/f.txt", "x/a/f.txt"),
+            ('"q\\td/one.txt" => "q\\td/uno.txt"', '"q\\td/uno.txt"'),
+            ("plain/path.txt", "plain/path.txt"),
+            ("{open => brace.txt", "brace.txt"),
+        ],
+    )
+    def test_numstat_new_path(self, field, expected):
+        from kiro_crew.dashboard.file_api.git_panel import _numstat_new_path
+
+        assert _numstat_new_path(field) == expected
+
+
 class TestVanishedDirectory:
     @pytest.mark.asyncio
     async def test_windows_spawn_failure_after_directory_vanishes_returns_no_data(

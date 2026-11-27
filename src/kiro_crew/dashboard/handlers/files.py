@@ -162,6 +162,7 @@ from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _cat_file_lines,
     _git_repo_listing,
     _is_not_a_repo_verdict,
+    _numstat_new_path,
     _porcelain_unquote,
     _probe_git_dir,
     _project_directory_absent,
