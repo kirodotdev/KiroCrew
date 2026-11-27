@@ -835,15 +835,11 @@ async def _sent_by_owner(writer: asyncio.StreamWriter) -> bool:
     """Whether the kernel reports the sender as this daemon's owning gateway.
 
     The owner pid or its exec successor, the same rule an ``owner-port`` announce
-    is held to (``control._apply_owner_port``). An unowned daemon has no owner.
+    or an ``agent-binding`` is held to. An unowned daemon has no owner. One rule
+    for every owner-only decision: this asks ``control._owner_sender_refusal``.
     """
-    owner = facade._OWNER_PID
-    peer_pid = socketsec.get_peer_pid(writer)
-    if owner <= 0 or peer_pid is None:
-        return False
-    if peer_pid == owner:
-        return True
-    return bool(await asyncio.to_thread(platform_compat.is_exec_supervisor_of, owner, peer_pid))
+    _peer_pid, refusal = await facade._owner_sender_refusal(writer)
+    return not refusal
 
 
 async def _attested_session_key(writer: asyncio.StreamWriter, stub_uuid: str) -> str:
