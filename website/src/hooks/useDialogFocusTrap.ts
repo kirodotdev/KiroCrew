@@ -66,6 +66,12 @@ const newestArmedTrap = (): number => Math.max(-1, ...armedTabTraps)
  * A dialog with no single trigger (the Modal family) has neither problem and
  * keeps the default.
  *
+ * `returnFocusTo` names where the return goes instead, for a dialog a Radix
+ * menu item opened: the item is gone by the time the dialog mounts and the
+ * menu's own trigger restore is suppressed (`useMenuOpensDialog`), so the
+ * element captured at mount is `<body>`. When the element it named is no
+ * longer on the page at unmount, the capture is used, as without it.
+ *
  * Key handling also stands down while the dialog's Crew is hidden behind a
  * remote one (`useLocalCrewHidden`): the dialog is kept for the return, and the
  * keys belong to the Crew in front.
@@ -79,12 +85,13 @@ export interface DialogFocusTrapOptions {
   enabled?: boolean
   handleEscape?: boolean
   restoreFocus?: boolean
+  returnFocusTo?: RefObject<HTMLElement | null>
 }
 
 export function useDialogFocusTrap(
   containerRef: RefObject<HTMLElement | null>,
   onEscape: () => void,
-  { enabled = true, handleEscape = true, restoreFocus = true }: DialogFocusTrapOptions = {},
+  { enabled = true, handleEscape = true, restoreFocus = true, returnFocusTo }: DialogFocusTrapOptions = {},
 ): void {
   // Move focus into the dialog on open, restore it on close, so keyboard users
   // aren't dumped at the top of the document afterwards.
@@ -108,8 +115,11 @@ export function useDialogFocusTrap(
     const first = Array.from(containerRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
       .find((el) => el.tabIndex >= 0)
     ;(first ?? containerRef.current)?.focus({ preventScroll: true })
-    return () => restoreTo?.focus?.({ preventScroll: true })
-  }, [containerRef, restoreFocus, opener])
+    // Read once, when the dialog opens: the opener is set before the dialog
+    // mounts and nothing changes it while the dialog is up.
+    const named = returnFocusTo?.current
+    return () => { (named?.isConnected ? named : restoreTo)?.focus?.({ preventScroll: true }) }
+  }, [containerRef, restoreFocus, returnFocusTo, opener])
 
   // IME guard for the Tab-cycles-focus path. This listener receives NATIVE
   // KeyboardEvents (window capture), which `useImeGuard`'s synthetic-only

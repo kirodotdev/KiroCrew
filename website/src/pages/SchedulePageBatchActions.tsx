@@ -39,8 +39,11 @@ export function useScheduleBatchActions({
   const [runSkipped, setRunSkipped] = useState<SkippedJob[]>([])
   const [telegramResult, setTelegramResult] = useState<TelegramResult>({ updated: 0, destination: '', kept: [] })
   const batchMenuLayer = useMenuOpensDialog()
-  const closeRunConfirm = useCallback(() => { setRunConfirmIds(null); batchMenuLayer.returnFocus() }, [batchMenuLayer])
-  const closeBatchConfirm = useCallback(() => { setBatchConfirm(false); batchMenuLayer.returnFocus() }, [batchMenuLayer, setBatchConfirm])
+  // Both confirms hand focus back to the Actions trigger from their dialog's
+  // `onCloseAutoFocus` (`batchMenuLayer.onDialogCloseAutoFocus`), once the
+  // dialog has unmounted; a close handler runs too early for that.
+  const closeRunConfirm = useCallback(() => setRunConfirmIds(null), [])
+  const closeBatchConfirm = useCallback(() => setBatchConfirm(false), [setBatchConfirm])
   const applyBatch = useCallback(async (action: CronBatchAction, ids?: string[]) => {
     const eligible = batchTargets(action, selectedJobs, running).map(j => j.id)
     // A confirmed id list may be stale: drop jobs paused or started since it was shown.
@@ -183,16 +186,17 @@ export function TelegramResultNotice({ failed, result: { updated, destination, k
 }
 
 /** Confirm before a batch Run now; `ids` are the jobs the menu counted when it opened. */
-export function BatchRunConfirmDialog({ ids, skipped, busy, onClose, onConfirm }: {
+export function BatchRunConfirmDialog({ ids, skipped, busy, onClose, onCloseAutoFocus, onConfirm }: {
   ids: string[] | null
   skipped: SkippedJob[]
   busy: boolean
   onClose: () => void
+  onCloseAutoFocus: (e: Event) => void
   onConfirm: (ids: string[]) => void
 }) {
   return (
     <Dialog open={ids !== null} onOpenChange={next => { if (!next && !busy) onClose() }}>
-      <DialogContent maxWidth={420}>
+      <DialogContent maxWidth={420} onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <Play size={16} className="text-accent shrink-0" aria-hidden="true" />
           <DialogTitle>{i18nT('pages.schedulePage.batchActions.run_confirm_title', { count: ids?.length ?? 0 })}</DialogTitle>

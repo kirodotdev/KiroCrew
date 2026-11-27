@@ -477,6 +477,12 @@ Rules:
   from the page's global chords — but that isolation follows the React tree, so
   an overlay rendered as a *sibling* of `<Modal>` is outside it. See
   [Keyboard isolation](#keyboard-isolation-dialogs-and-the-overlays-above-them).
+- A dialog a Radix menu item opened returns focus to the menu's trigger on
+  close, and does so from its own unmount, never from the close handler: the
+  dialog's focus restore runs at unmount and would undo an earlier move. The
+  menu side is `useMenuOpensDialog`; the dialog side is `onCloseAutoFocus` on a
+  Radix `DialogContent` (`onDialogCloseAutoFocus`) or `returnFocusTo` on a
+  `Modal` (`openerRef`).
 - A virtualized transcript is not a live region. Scrolling mounts and unmounts
   rows, so `aria-live` on the scroller would announce old messages again. New
   messages are spoken through the one stable, offscreen polite live region in
