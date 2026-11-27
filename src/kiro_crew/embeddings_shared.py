@@ -16,6 +16,7 @@ import hashlib
 import logging
 import threading
 import time
+import urllib.parse
 from collections import OrderedDict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -36,7 +37,7 @@ from kiro_crew.embeddings_model import (
 )
 from kiro_crew.embeddings_ollama import (
     build_ollama_backend,
-    egress_host,
+    egress_url,
     ollama_backend_selected,
     resolve_ollama_settings,
 )
@@ -497,8 +498,8 @@ def default_embedding_backend() -> EmbeddingBackend:
         # resolve_ollama_settings refuses an unpermitted source or host itself, and
         # the tag records that same answer (not a second read that could differ).
         server = build_ollama_backend(memory)
-        # The host the egress rule was asked about, so the re-check asks the same one.
-        server._egress_host = egress_host(  # type: ignore[attr-defined]
+        # The URL the egress rule was asked about, so the re-check asks the same one.
+        server._egress_url = egress_url(  # type: ignore[attr-defined]
             server._settings.url, memory.get("ollama_allow_remote") is True
         )
         error = str(getattr(getattr(server, "_settings", None), "error", "") or "")
@@ -576,8 +577,8 @@ def _policy_allows(backend: EmbeddingBackend, source: str) -> bool:
 
     if not _source_gov.source_permitted(source):
         return False
-    host = getattr(backend, "_egress_host", "") if source == _source_gov.OLLAMA else ""
-    return not host or _source_gov.egress_permitted(host)
+    url = getattr(backend, "_egress_url", "") if source == _source_gov.OLLAMA else ""
+    return not url or _source_gov.egress_permitted(url)
 
 
 def _with_policy_tag(backend: _B, source: str, allowed: bool, *, egress_allowed: bool = True) -> _B:
@@ -605,12 +606,12 @@ def _with_policy_tag(backend: _B, source: str, allowed: bool, *, egress_allowed:
             allowed,
             "the backend was built" if allowed else _source_gov.refused_reason(source),
         )
-        host = getattr(backend, "_egress_host", "")
-        if allowed and host:
+        url = getattr(backend, "_egress_url", "")
+        if allowed and url:
             edition_locks.audit_decision(
                 tool,
                 "network.egress",
-                host,
+                urllib.parse.urlsplit(url).hostname or "",
                 egress_allowed,
                 "the Ollama host is allowed" if egress_allowed else _source_gov.EGRESS_REASON,
             )

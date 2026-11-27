@@ -206,7 +206,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _RefuseRedirects,
         _url_error,
         build_ollama_backend,
-        egress_host,
+        egress_url,
         ollama_backend_selected,
         resolve_ollama_settings,
     )

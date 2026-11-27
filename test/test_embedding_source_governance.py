@@ -452,6 +452,41 @@ async def test_the_status_route_names_an_egress_refusal(policy, memory, monkeypa
     assert body["setup_error_code"] == "locked_by_policy"
 
 
+def test_a_percent_encoded_host_is_asked_as_urllib_reads_it(policy, memory):
+    policy(
+        _rule("allow", "[ollama]"),
+        _rule("allow", capability="network_egress"),
+        _rule("deny", "[blocked.example]", "network_egress"),
+    )
+    _ollama(memory, "https://blocked.example")
+    assert emb.resolve_ollama_settings(memory).error == gov.EGRESS_REASON
+    _ollama(memory, "https://%62locked.example")
+    assert emb.resolve_ollama_settings(memory).error == gov.EGRESS_REASON
+    _ollama(memory, _REMOTE)
+    assert emb.resolve_ollama_settings(memory).error == ""
+
+
+def test_a_refused_bundled_model_is_not_downloaded(policy, memory, monkeypatch):
+    from kiro_crew import embeddings_download
+
+    monkeypatch.setattr(
+        embeddings_download,
+        "model_download_manager",
+        lambda: pytest.fail("the refused bundled model was downloaded"),
+    )
+    policy(_rule("allow", "[ollama]"))
+    assert emb.start_background_model_download() is None
+
+
+@pytest.mark.asyncio
+async def test_the_enable_route_refuses_a_refused_bundled_model(policy, memory):
+    policy(_rule("allow", "[ollama]"))
+    req = _make_request(_make_state(), method="POST", json_body={})
+    resp = await mem_mod.api_memory_enable_embeddings(req)
+    assert resp.status == 409
+    assert _body(resp)["code"] == "locked_by_policy"
+
+
 def test_the_sentinel_path_never_loads_even_when_a_file_is_there(policy, memory, tmp_path):
     from kiro_crew import embeddings_llama
 
@@ -503,6 +538,18 @@ class TestTheDashboard:
         body = _body(await mem_mod.api_memory_embedding_status(req))
         assert body["setup_error_code"] == "locked_by_policy"
         assert body["server_healthy"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_status_route_offers_no_retry_of_a_refused_download(
+        self, policy, memory, monkeypatch
+    ):
+        policy(_rule("allow", "[ollama]"))
+        mgr = emb.model_download_manager()
+        monkeypatch.setattr(mgr, "status", {"step": "failed", "error": "network", "attempt": 1})
+        req = _make_request(_make_state(), method="GET")
+        body = _body(await mem_mod.api_memory_embedding_status(req))
+        assert body["setup_error_code"] == "locked_by_policy"
+        assert body["can_retry"] is False
 
 
 # --- oss: no policy read on the embedding path -------------------------------------

@@ -730,6 +730,7 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
         not ollama and custom is None and not _source_gov.source_permitted(_source_gov.BUNDLED)
     )
     if bundled_refused:
+        can_retry = False
         error_code = _source_gov.LOCKED_CODE
         setup_error = _source_gov.refused_reason(_source_gov.BUNDLED)
     elif ollama and setup_error in (
@@ -925,6 +926,20 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
     ollama_refusal = await _ollama_provider_refusal()
     if ollama_refusal is not None:
         return ollama_refusal
+    # Setup downloads the bundled model, which an LTS policy may refuse.
+    from kiro_crew import embedding_source_governance as _source_gov
+
+    if not _source_gov.source_permitted(_source_gov.BUNDLED, audit=True) and (
+        await asyncio.to_thread(resolve_custom_model) is None
+    ):
+        return web.json_response(
+            {
+                "ok": False,
+                "error": _source_gov.refused_reason(_source_gov.BUNDLED),
+                "code": _source_gov.LOCKED_CODE,
+            },
+            status=409,
+        )
 
     # Allow retry — reset any previous error state
     if _embedding_setup_status["step"] == "error":

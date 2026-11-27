@@ -110,18 +110,18 @@ def _url_error(url: str, allow_remote: bool, *, check_egress: bool = True) -> st
         return ""
     from kiro_crew.embedding_source_governance import EGRESS_REASON, egress_permitted
 
-    if not egress_permitted(host):
+    if not egress_permitted(url):
         return EGRESS_REASON
     return ""
 
 
-def egress_host(url: str, allow_remote: bool) -> str:
-    """The host ``network.egress`` is asked about for *url*, or ``""``: a non-loopback
-    host of a URL that every other rule accepts. Reads no policy."""
+def egress_url(url: str, allow_remote: bool) -> str:
+    """*url* when ``network.egress`` is asked about it, else ``""``: a non-loopback
+    URL that every other rule accepts. Reads no policy."""
     if _url_error(url, allow_remote, check_egress=False):
         return ""
     host = urllib.parse.urlsplit(url).hostname or ""
-    return "" if _is_loopback_host(host) else host
+    return "" if _is_loopback_host(host) else url
 
 
 def resolve_ollama_settings(memory: dict) -> OllamaSettings:

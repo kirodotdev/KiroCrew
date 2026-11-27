@@ -56,18 +56,22 @@ def source_permitted(source: str, *, audit: bool = False) -> bool:
     return policy_permits(SCOPE, source, audit_tool=f"embedding_source:{source}" if audit else "")
 
 
-def egress_permitted(host: str) -> bool:
-    """Whether ``network.egress`` lets memory text reach the non-loopback *host*.
+def egress_permitted(url: str) -> bool:
+    """Whether ``network.egress`` lets memory text reach the server at *url*.
 
-    Always ``True`` on oss. The caller skips loopback hosts: the LTS egress baseline
+    Every host a client could connect to for *url* must be permitted
+    (``url_policy_hosts``: urllib percent-decodes the authority, so the plain
+    hostname alone is not the host it connects to). Always ``True`` on oss, before
+    anything is read. The caller skips a loopback URL: the LTS egress baseline
     allows nothing, so asking it about ``127.0.0.1`` would refuse a local server.
     Not audited: the settings it guards are re-read by every status poll.
     """
     if not edition.is_lts():
         return True
     from kiro_crew.edition_locks import policy_permits
+    from kiro_crew.platform.governance_parts.matching import url_policy_hosts
 
-    return policy_permits("network.egress", host)
+    return all(policy_permits("network.egress", host) for host in url_policy_hosts(url))
 
 
 def refused_reason(source: str) -> str:
