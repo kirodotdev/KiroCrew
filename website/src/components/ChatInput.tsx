@@ -809,8 +809,8 @@ function ChatInput({
   // measurement waits for a strip box that would never appear.
   const hasQuote = !!pendingQuote
   const uploadsRunning = useComposerUploadsRunning(uploadSlot)
-  const { fileStripRef, sessionStripRef, uploadStripRef, stripH } = useStripHeights({
-    pendingFilesCount: pendingFiles.length, pendingDirsCount: pendingDirs.length, hasSessionRefs, uploadsRunning, setManualHeight, dragMinHRef,
+  const { terminalHeaderRef, fileStripRef, sessionStripRef, uploadStripRef, stripH } = useStripHeights({
+    terminalActive: terminal.active, pendingFilesCount: pendingFiles.length, pendingDirsCount: pendingDirs.length, hasSessionRefs, uploadsRunning, setManualHeight, dragMinHRef,
   })
   /** True when the composer holds something a send would carry.
    *
@@ -1038,33 +1038,6 @@ function ChatInput({
       {terminal.failure === 'failed' && (
         <Glass variant="chip" thickness="thick" radius={8} className="mb-1.5 flex px-3 py-1.5">
           <ErrorNotice message={i18nT('components.chatInput.terminal_failed')} variant="inline" onDismiss={terminal.dismissFailure} />
-        </Glass>
-      )}
-      {terminal.active && (
-        <Glass variant="chip" thickness="thick" radius={8} className="mb-1 flex flex-col gap-1.5 px-3 py-2" role="group" aria-label={i18nT('components.chatInput.terminal_review')}>
-          <div className="text-sm text-muted flex items-center gap-1.5" role="status">
-            <Terminal className="lucide-inline shrink-0" />
-            {/* The folder name, as on the project chip; the review dialog shows the full path. */}
-            <span className="min-w-0 [overflow-wrap:anywhere]" title={terminalValidation ? undefined : project || undefined}>
-              {terminalValidation || (project && onProjectClick && !shelfCompact
-                ? i18nT('components.chatInput.terminal_panel')
-                : i18nT('components.chatInput.terminal_hint', { workspace: project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.terminal_default_directory') }))}
-            </span>
-          </div>
-          {!showGhost && !composerCollapsed && (
-            <Btn
-              primary
-              className="self-end max-w-full"
-              onClick={fireComposer}
-              disabled={!!terminal.blocked || terminal.pending || disabled || optimizing || voiceTranscribing || !connected}
-              title={i18nT(terminal.failure === 'limit'
-                ? 'components.chatInput.terminal_review_at_capacity'
-                : 'components.chatInput.terminal_review')}
-            >
-              {terminal.pending ? <Loader2 className="lucide-inline shrink-0 animate-spin" /> : <Terminal className="lucide-inline shrink-0" />}
-              <span className="min-w-0 whitespace-normal text-left [overflow-wrap:anywhere]">{i18nT('components.chatInput.terminal_run_review')}</span>
-            </Btn>
-          )}
         </Glass>
       )}
 
@@ -1391,6 +1364,49 @@ function ChatInput({
             {i18nT('components.chatInput.tree_drop_folder_refused')}
           </div>
         )}
+        {/* Grows the composer open when a leading ! turns terminal mode on, and
+            folds it shut when the ! is removed. Padding sits on the inner row so
+            the height animation can reach 0. */}
+        <AnimatePresence initial={false}>
+        {terminal.active && (
+          <motion.div
+            key="terminal-header"
+            // Measured like the strips below it, so a manually sized composer
+            // grows by the header instead of squeezing the editor under it.
+            ref={terminalHeaderRef}
+            // Height only: the row's text stays readable while it opens.
+            initial={reduceMotion ? false : { height: 0 }}
+            animate={{ height: 'auto' }}
+            exit={reduceMotion ? { height: 0, transition: { duration: 0 } } : { height: 0 }}
+            transition={{ type: 'spring', damping: 26, stiffness: 280, mass: 0.7 }}
+            style={{ overflow: 'hidden' }}
+          >
+          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3 pt-2 pb-1" role="group" aria-label={i18nT('components.chatInput.terminal_review')} data-testid="composer-terminal-header">
+            <div className="text-sm text-muted flex min-w-0 items-center gap-1.5" role="status">
+              <Terminal className="lucide-inline shrink-0" />
+              {/* The folder name, as on the project chip; the review dialog shows the full path. */}
+              <span className="min-w-0 [overflow-wrap:anywhere]" title={terminalValidation ? undefined : project || undefined}>
+                {terminalValidation || (project && onProjectClick && !shelfCompact
+                  ? i18nT('components.chatInput.terminal_panel')
+                  : i18nT('components.chatInput.terminal_hint', { workspace: project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.terminal_default_directory') }))}
+              </span>
+            </div>
+            <Btn
+              primary
+              className="ml-auto max-w-full"
+              onClick={fireComposer}
+              disabled={!!terminal.blocked || terminal.pending || disabled || optimizing || voiceTranscribing || !connected}
+              title={i18nT(terminal.failure === 'limit'
+                ? 'components.chatInput.terminal_review_at_capacity'
+                : 'components.chatInput.terminal_review')}
+            >
+              {terminal.pending ? <Loader2 className="lucide-inline shrink-0 animate-spin" /> : <Terminal className="lucide-inline shrink-0" />}
+              <span className="min-w-0 whitespace-normal text-left [overflow-wrap:anywhere]">{i18nT('components.chatInput.terminal_run_review')}</span>
+            </Btn>
+          </div>
+          </motion.div>
+        )}
+        </AnimatePresence>
         <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} rootRef={sessionStripRef} />
         <UploadingStrip slot={uploadSlot} rootRef={uploadStripRef} focusAfterLast={() => { const trigger = plus.plusBtnRef.current; if (trigger) trigger.focus(); else composerControl()?.focus() }} />
         <FilePreviewStrip files={pendingFiles} dirs={pendingDirs} resizedInfo={resizedInfo} onRemove={removeFileEndingUndoBurst} onRemoveDir={removeDirEndingUndoBurst} rootRef={fileStripRef} />

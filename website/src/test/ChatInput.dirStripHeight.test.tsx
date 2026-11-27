@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
-import { act, screen } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { registerComposerUpload, unregisterComposerUpload } from '../utils/composerSendHolds'
@@ -138,6 +138,27 @@ describe('ChatInput preview-strip height compensation', () => {
     expect(strip.querySelectorAll('button')).toHaveLength(20)
     // The height hook still measures the strip's rendered box, not its content.
     expect(outerOf().style.minHeight).toBe(`${INPUT_DRAG_MIN_H + UPLOAD_STRIP_H}px`)
+  })
+
+  // The terminal header sits inside the composer box, so a manually sized
+  // composer must grow by it rather than squeeze the editor under the toolbar.
+  it('grows a pinned composer by the terminal header and restores it', async () => {
+    const TERMINAL_HEADER_H = 40
+    const { rerender } = renderWithProviders(<ChatInput {...defaultProps} terminalCommands="local" />)
+    const wrapper = screen.getByTestId('input-wrapper')
+    expect(wrapper.style.height).toBe(`${MANUAL_H}px`)
+
+    act(() => setStripHeight('composer-terminal-header', TERMINAL_HEADER_H))
+    rerender(<ChatInput {...defaultProps} terminalCommands="local" value="! pwd" />)
+    expect(screen.getByTestId('composer-terminal-header')).toBeInTheDocument()
+    expect(wrapper.style.height).toBe(`${MANUAL_H + TERMINAL_HEADER_H}px`)
+    expect(outerOf().style.minHeight).toBe(`${INPUT_DRAG_MIN_H + TERMINAL_HEADER_H}px`)
+
+    rerender(<ChatInput {...defaultProps} terminalCommands="local" value="pwd" />)
+    await waitFor(() => expect(screen.queryByTestId('composer-terminal-header')).not.toBeInTheDocument())
+    expect(wrapper.style.height).toBe(`${MANUAL_H}px`)
+    expect(outerOf().style.minHeight).toBe(`${INPUT_DRAG_MIN_H}px`)
+    expect(localStorage.getItem('mc-input-height')).toBe(String(MANUAL_H))
   })
 
   it('does not compensate when nothing is staged', () => {
