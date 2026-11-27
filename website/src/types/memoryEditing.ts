@@ -1,8 +1,26 @@
 export type MemoryRecordKind = 'fact' | 'directive' | 'episode'
-export type MemoryRecordQuery = { q: string; kind: MemoryRecordKind | 'all' }
+/** The facet groups `GET /api/memory/records` filters on (`memory_record_facets.FACET_GROUPS`). */
+export type MemoryRecordFacetGroup = 'category' | 'applies' | 'scope' | 'source' | 'surface' | 'crew' | 'tag'
+/** Facet filters plus the confidence range; part of the query, so "select all
+ *  matching" reaches exactly the filtered rows. */
+export type MemoryRecordFilters = Partial<Record<MemoryRecordFacetGroup, string[]>> & { conf_min?: number; conf_max?: number
+  /** Exactly these records (`memory_record_facets.record_ref`): a graph selection. */
+  ref?: string[]
+  /** A date range on the sort's time, as UTC ISO: `since` is inclusive, `until` exclusive. */
+  since?: string; until?: string; date_field?: 'updated' | 'created' }
+export type MemoryRecordQuery = { q: string; kind: MemoryRecordKind | 'all'; filters?: MemoryRecordFilters }
+export type MemoryRecordSort = 'updated' | 'created' | 'confidence' | 'importance' | 'key' | 'match'
+/** Per group, how many rows each value would list (`kind` counts ignore the kind). */
+export type MemoryRecordFacets = Record<'kind' | MemoryRecordFacetGroup, Record<string, number>>
 export type MemoryRecord = {
   kind: MemoryRecordKind; id: string; key?: string; value_json?: unknown; text: string
   source?: string; updated_at?: string; created_at?: string; derived_from?: string
+  /** A fact's or lesson's confidence, or an experience's importance (one stored column). */
+  importance?: number | null
+  /** An experience's tags, as stored (a JSON list). */
+  tags?: string
+  /** The word match score, on a `sort=match` page. */
+  match?: number
   revision: string
   metadata?: { revision?: number; category?: string; subject?: string; predicate?: string; status?: string; source_ref?: string; email_addresses?: string[]; pending_conflicts?: number }
 }

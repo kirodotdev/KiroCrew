@@ -301,6 +301,26 @@ class TestMemoryGraphNodeExtraction:
         assert len(sem_nodes) == 1
         assert SECRET not in sem_nodes[0]["title"]
 
+    @pytest.mark.asyncio
+    async def test_graph_redacts_a_credential_in_the_record_a_node_opens(
+        self, tmp_path, monkeypatch
+    ):
+        """A node's ``record`` carries its key to the list; a secret in it is redacted too."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = self._make_state(tmp_path)
+        vs = MagicMock()
+        vs.get_all_semantic.return_value = [{"key": f"user.{SECRET}", "value_json": '"x"'}]
+        vs.get_lessons.return_value = []
+        state.context_builder.memory.vector_store = vs
+        request = MagicMock()
+        request.app = {"state": state}
+
+        data = json.loads((await _get_handler()(request)).body)
+
+        records = [n["record"] for n in data["nodes"] if "record" in n]
+        assert records
+        assert SECRET not in json.dumps(records)
+
 
 class TestMemoryEndpointRedaction:
     """Tests that memory API endpoints redact credentials and exfiltration URLs."""

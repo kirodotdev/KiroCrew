@@ -62,7 +62,7 @@ function harness(opts: { isPopout?: boolean; isEmbed?: boolean; activeSlot?: str
   )
   renderHook(() => useShellKeyboard({
     toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: !!opts.isPopout,
-    isEmbed: !!opts.isEmbed, terminalPoppedOut: false, activeSlotProject: undefined,
+    isEmbed: !!opts.isEmbed, terminalPoppedOut: false,
   }), { wrapper })
 }
 

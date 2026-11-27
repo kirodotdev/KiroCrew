@@ -238,7 +238,7 @@ describe('TelemetryPanel — the spend tab opens on the answer', () => {
   it('leaves a session bar inert when the dashboard cannot open it', async () => {
     await mount({
       conversations: [
-        convo({ title: 'Asked over Telegram', category: 'telegram', slot: 'telegram:kirocrew:direct:1' }),
+        convo({ title: 'Asked over Telegram', category: 'telegram', channel: 'telegram', slot: 'telegram:kirocrew:direct:1' }),
       ],
     })
     await waitFor(() => expect(screen.getByText('Asked over Telegram')).toBeInTheDocument())

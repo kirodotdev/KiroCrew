@@ -12,4 +12,5 @@ export const MEMORY_QUERY_PREFIXES: readonly string[][] = [
   ['memory-carve'],
   ['member-memory'],
   ['memory-records'],
+  ['memory-graph'],
 ]

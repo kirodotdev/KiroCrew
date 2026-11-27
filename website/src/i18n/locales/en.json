@@ -10093,7 +10093,7 @@
         "source_consolidation": "Learned from chat",
         "source_taskrunner": "Learned from a task",
         "source_unknown": "Unknown",
-        "source_user_explicit": "Saved by you or the agent",
+        "source_user_explicit": "Saved on purpose",
         "summarize_now": "Summarize now",
         "tool": "tool",
         "when": "When"
@@ -10482,10 +10482,6 @@
     },
     "overviewPage": {
       "back_to_overview": "Back to Overview",
-      "memory_summary_kept_one": "Summarizes chats into memory after {{hours}}h idle · keeps {{days}} day of history",
-      "memory_summary_kept_other": "Summarizes chats into memory after {{hours}}h idle · keeps {{days}} days of history",
-      "memory_summary_semantic": "Summarizes chats into memory after {{hours}}h idle · semantic memory active",
-      "memory": "Memory",
       "overview": "Overview",
       "uptime_line": "Up <uptime/>",
       "uptime_line_version": "Up <uptime/> · v{{version}}",
@@ -12412,6 +12408,8 @@
       "gauges_latest": "latest sample",
       "credits_by_origin": "Credits by origin",
       "cost_by_origin": "Cost by origin",
+      "all_origins": "All origins",
+      "filter_by_origin": "Filter sessions by origin",
       "advice_title": "Where to save",
       "advice_tip": "Each line is measured from the turns in this window, not estimated. Sub-agent turns are not part of these figures.",
       "advice_high_context": "{{share}} of spend is on turns above {{tokens}} of context: compact earlier",

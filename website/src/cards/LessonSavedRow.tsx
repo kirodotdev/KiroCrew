@@ -44,7 +44,7 @@ export interface LessonSavedRef {
 /** Where lessons are reviewed: the Memory view, landed on its lessons
  *  (`focus=lessons`): the Lessons card, or the Semantic browser filtered to
  *  `lesson.` rows when vector memory keeps them (pages/overview/MemoryTab). */
-export const LESSONS_ROUTE = '/settings/overview?view=memory&focus=lessons'
+export const LESSONS_ROUTE = '/settings/memory?focus=lessons'
 
 /** The lessons route, opened on one saved lesson when its key is known
  *  (`lesson=`: the Semantic browser pins and highlights that row). */

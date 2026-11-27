@@ -96,6 +96,22 @@ class TestFaissAbsentDegradation:
         assert stats["episodic_active"] == 1
         assert stats["faiss_index_size"] == 0
         assert stats["embedded_count"] == 0
+        assert stats["semantic_embedded"] == 0
+
+    def test_stats_count_facts_with_a_vector_apart_from_experiences(self, tmp_path: Path) -> None:
+        # The memory page's "X of Y embedded" adds both: search by meaning reads both.
+        store = _store(tmp_path)
+        try:
+            store.embed_fn = _fixed_embed()
+            store.set_semantic("pref.editor", "vim", 0.9, "user_explicit")
+            store.embed_fn = None
+            store.set_semantic("pref.shell", "zsh", 0.9, "user_explicit")
+            stats = store.memory_stats()
+        finally:
+            store.close()
+        assert stats["semantic_active"] == 2
+        assert stats["semantic_embedded"] == 1
+        assert stats["embedded_count"] == 0
 
 
 class TestSqliteVectorSearchRanking:

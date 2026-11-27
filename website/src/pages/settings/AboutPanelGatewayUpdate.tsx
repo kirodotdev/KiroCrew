@@ -20,7 +20,7 @@ import { i18nT } from '../../i18n/t'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useAppSelector, useAppStore } from '../../store'
 import { fmtRelative } from '../../i18n/format'
-import { InAppUpdateFlow, RestartGatewayButton, copyCommand } from './AboutPanelUpdateFlow'
+import { InAppUpdateFlow, RestartGatewayButton, copyCommand, useInstalledAndWaiting } from './AboutPanelUpdateFlow'
 import { AboutPanelUpdateChanges } from './AboutPanelUpdateChanges'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
@@ -79,7 +79,7 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   const [gwChanges, setGwChanges] = useState('')
   const [gwTarget, setGwTarget] = useState('')
   // Display-only sibling of gwTarget, folded to the clean release version on
-  // stable. Never fed to InAppUpdateFlow or /api/update/arm.
+  // stable. Never used for raw status matching or as the installed build target.
   const [gwTargetDisplay, setGwTargetDisplay] = useState('')
   const [gwFound, setGwFound] = useState(false)
   // Commit distance from the tracked upstream, straight from the check payload.
@@ -343,6 +343,15 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
 
 export type AboutPanelGatewayUpdateState = ReturnType<typeof useAboutPanelGatewayUpdate>
 
+/** The raw version this page offers: this tab's own check while it is the newest
+ * answer, else the background check's from the status frame. */
+export function offeredGatewayTarget(gwUpdate: AboutPanelGatewayUpdateState, gwStatusLatest: string): string {
+  return gwUpdate.newestIsLocal ? gwUpdate.gwTarget : gwStatusLatest
+}
+
+// Defined beside the flow, which reads the same rule to leave its `done` phase.
+export { useInstalledAndWaiting }
+
 /**
  * The Updates card body for a gateway install (no Electron shell): the update offer or
  * the check, the auto-update switch the panel passes in, and the standing Restart row.
@@ -395,12 +404,12 @@ export function AboutPanelGatewayUpdates({
   restartControls?: boolean
 }) {
   const {
-    gwChanges, gwTarget: localTarget, gwTargetDisplay: localTargetDisplay, gwChecked, gwError, gwUnavailableReason,
+    gwChanges, gwTargetDisplay: localTargetDisplay, gwChecked, gwError, gwUnavailableReason,
     gwImageVersion, gwImageNotesUrl, gwCommandCopied,
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, setShowConfirm, applyError,
     setApplyError, restarting, setRestarting, gwCheck, gwRestart, newestIsLocal, newestCheckFailed,
   } = gwUpdate
-  const gwTarget = newestIsLocal ? localTarget : gwStatusLatest
+  const gwTarget = offeredGatewayTarget(gwUpdate, gwStatusLatest)
   const gwTargetDisplay = newestIsLocal ? localTargetDisplay : gwStatusLatestDisplay
   // A git checkout that is only behind its upstream reports the version it
   // already runs as the target, so the text names no version then.
@@ -413,11 +422,19 @@ export function AboutPanelGatewayUpdates({
   // boot-time apply left, from the status frame.
   const armedVersion = useAppSelector(s => s.dashboard.status?.update_armed_version) || ''
   const pendingApplyError = useAppSelector(s => s.dashboard.status?.pending_apply_error) || ''
+  // Installed or armed for the next start: either way only a restart starts it,
+  // so neither offers Update again. The armed note above explains an arm.
+  const offerWaiting = useInstalledAndWaiting(gwTarget)
+  const installedWaiting = offerWaiting === 'installed'
+  const restartReadyVersion = installedWaiting ? gwTarget : ''
+  const runningDisplay = useAppSelector(s => s.dashboard.status?.version_display) || runningVersion
   return (
     <div className="flex flex-col gap-2.5">
       {armedVersion && (
-        <p className="text-[13px] text-muted" data-testid="about-update-armed-note">
-          {i18nT('components.updateFoundModal.update_armed_note')}
+        <p className="text-[13px] text-muted" data-testid={effectiveGwCanArm && offerWaiting === 'armed' ? 'about-update-armed-restart' : 'about-update-armed-note'}>
+          {effectiveGwCanArm && offerWaiting === 'armed'
+            ? i18nT('pages.settings.aboutPanel.update_armed_restart', { version: gwTargetDisplay || armedVersion })
+            : i18nT('components.updateFoundModal.update_armed_note')}
           <button
             type="button"
             data-testid="about-update-cancel-armed"
@@ -444,7 +461,7 @@ export function AboutPanelGatewayUpdates({
       )}
       {(showUpdate || channelMovePending) ? (
         <>
-          {showUpdate && (
+          {showUpdate && !(effectiveGwCanArm && offerWaiting) && (
             <p className="text-sm text-muted flex items-center gap-1.5">
               {/* Named from the background check too, so the reader learns which
                   version before running a check of their own. */}
@@ -454,9 +471,47 @@ export function AboutPanelGatewayUpdates({
             </p>
           )}
           {showManualUpdate ? (
-            effectiveGwCanArm ? (
+            effectiveGwCanArm && installedWaiting ? (
+              <div className="flex flex-col gap-2" data-testid="in-app-update-installed">
+                <p className="text-sm text-muted flex items-center gap-1.5">
+                  <RefreshCw size={13} className="lucide-inline text-accent" /> {i18nT(
+                    'pages.settings.aboutPanel.update_installed_restart',
+                    { version: gwTargetDisplay || restartReadyVersion, current: runningDisplay })}
+                </p>
+                {restartControls && (
+                  <>
+                    <div>
+                      <RestartGatewayButton
+                        primary
+                        pending={gwRestart.isPending}
+                        restarting={restarting}
+                        onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
+                        testId="gateway-restart-installed"
+                      />
+                    </div>
+                    <ErrorNotice message={applyError} report={gwUpdate.applyErrorReport} askAgent testId="gateway-restart-installed-error" />
+                  </>
+                )}
+              </div>
+            ) : effectiveGwCanArm && offerWaiting === 'armed' ? (
+              restartControls ? (
+                <div className="flex flex-col gap-2">
+                  <div>
+                    <RestartGatewayButton
+                      primary
+                      pending={gwRestart.isPending}
+                      restarting={restarting}
+                      onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
+                      testId="gateway-restart-armed"
+                    />
+                  </div>
+                  <ErrorNotice message={applyError} report={gwUpdate.applyErrorReport} askAgent testId="gateway-restart-armed-error" />
+                </div>
+              ) : null
+            ) : effectiveGwCanArm ? (
               <InAppUpdateFlow
                 version={gwTargetDisplay || gwStatusLatestDisplay || gwTarget || gwStatusLatest}
+                rawVersion={gwTarget}
                 manualCommand={effectiveCommand || ''}
                 isChannelMove={gwChannelMovePending}
               />

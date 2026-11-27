@@ -61,6 +61,7 @@
     "verify:followup-chip-columns": "node scripts/capture-followup-chip-columns.mjs",
     "verify:path-chips": "node scripts/capture-path-chips.mjs",
     "verify:registry-pinned-row": "node scripts/capture-registry-pinned-row.mjs",
+    "verify:skill-picker-nested": "node scripts/capture-skill-picker-nested.mjs",
     "verify:reveal-fade": "node scripts/probe-reveal-fade.mjs",
     "verify:steering-inclusion": "node scripts/capture-steering-inclusion.mjs",
     "verify:tool-row-narrow-stack": "node scripts/capture-tool-row-narrow-stack.mjs",

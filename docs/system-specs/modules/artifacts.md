@@ -557,7 +557,7 @@ caps.
 
 ```
 kirocrew artifact list [--tag T] [--kind K] [--q SUBSTR]
-kirocrew artifact show <slug> [--version N] [--meta | --docx FILE]
+kirocrew artifact show <slug> [--version N] [--meta | --docx FILE | --xlsx FILE]
 kirocrew artifact save --name N [--slug S] [--kind K] [--content C | --content-file F] [--tags A,B] [--description D]
 kirocrew artifact update <slug> [--content C | --content-file F] [--name N] [--description D] [--tags A,B]
 kirocrew artifact versions <slug>
@@ -565,6 +565,8 @@ kirocrew artifact delete <slug>
 ```
 
 `show --docx FILE` writes a markdown or text artifact to a new Word file, one paragraph per source line. An empty name or a sensitive path is refused before any request; an existing file is refused when the write begins, after the artifact is fetched. The file is created owner-only where the filesystem keeps modes (a FAT or exFAT drive keeps its own). Only headings are styled; lists, tables, quotes and inline marks stay as typed text. Over 20,000 lines or 1,000,000 characters it writes nothing, and a failed write, flush or close removes the file it created.
+
+`show --xlsx FILE` writes the pipe tables of a markdown or text artifact to a new workbook, one sheet per table, named after the heading above it (cut to 31 characters, the characters a sheet name cannot hold replaced by a space, `Table N` when there is none or the heading is `History`, a number added when the name is taken in any case). Every cell is stored as text, so a cell that starts with `=`, `+`, `-` or `@` is never a formula and `007` keeps its zeros; the rest of the artifact is not written. It shares the path, kind and create rules of `--docx`. An artifact with no table, over 50 tables, 65,536 cells or 1,000,000 characters, or with a cell over 32,767 characters, writes nothing.
 
 The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 `show --version N` takes N of 1 or more; a lower value or a non-number exits 2
@@ -2006,6 +2008,17 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   selection that mixes kinds has no shared controls and gets no toolbar; it still
   moves, deletes and copies as one. Resize handles and connect dots stay with a
   single shape.
+- **A text box is as tall as its text.** Its height grows as text wraps or lines
+  are added and shrinks as text goes, so its handles set only its width; the
+  selection ring, hit area, connectors and toolbar follow the fitted height.
+  The file's stored height is a hint (JSON Canvas requires one on every node):
+  the editor measures the real height once the canvas is laid out
+  (`textFit.ts`; a canvas mounted hidden, such as a background tab, shows stored
+  heights until it is shown) and shows it without an edit, so opening a canvas
+  never autosaves or adds an undo step. A box is written at its fitted height
+  when it is next edited, and an edit leaves every box it did not touch at its
+  stored height. Shapes and stickies keep their
+  fixed size. The backend still reads the stored height.
 - **Zoom is one menu.** Its trigger shows the zoom; zoom in, zoom out, 100% and
   fit are its items, as in FigJam's corner control.
 - **Read-only where a save could do harm.** A past version opens pan-and-zoom

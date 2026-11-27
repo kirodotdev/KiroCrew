@@ -9,8 +9,32 @@
  */
 
 import type { MemoryCarveEntry, MemoryStoreSummary, RetiredMemory, MemoryBackup } from '../../types'
-import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision } from '../../types/memoryEditing'
+import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision, MemoryRecordFacets, MemoryRecordSort } from '../../types/memoryEditing'
 import type { ClientTransport } from './transport'
+
+/** How the memory page orders a record list and whether it asks for facet counts. */
+export type MemoryRecordView = { sort?: MemoryRecordSort; order?: 'asc' | 'desc'; facets?: boolean
+  /** Rank by meaning instead of matching words; `weak` also lists rows under the cut-off. */
+  meaning?: boolean; weak?: boolean }
+
+/** `GET /api/memory/records`'s query string: each facet value is a repeated parameter. */
+export function memoryRecordParams(store: string, query: MemoryRecordQuery, offset: number, limit: number, view: MemoryRecordView = {}): URLSearchParams {
+  const params = new URLSearchParams({ store: store || 'default', q: query.q, kind: query.kind, offset: String(offset), limit: String(limit) })
+  if (view.sort) params.set('sort', view.sort)
+  if (view.sort && view.order) params.set('order', view.order)
+  if (view.facets) params.set('facets', '1')
+  if (view.meaning) params.set('mode', 'meaning')
+  if (view.meaning && view.weak) params.set('weak', '1')
+  const filters = query.filters || {}
+  for (const group of ['category', 'applies', 'scope', 'source', 'surface', 'crew', 'tag'] as const) for (const value of filters[group] || []) params.append(group, value)
+  for (const ref of filters.ref || []) params.append('ref', ref)
+  if (filters.conf_min !== undefined) params.set('conf_min', String(filters.conf_min))
+  if (filters.conf_max !== undefined) params.set('conf_max', String(filters.conf_max))
+  if (filters.since) params.set('since', filters.since)
+  if (filters.until) params.set('until', filters.until)
+  if ((filters.since || filters.until) && filters.date_field === 'created') params.set('date_field', 'created')
+  return params
+}
 
 /**
  * The optional `store=` parameter on memory content routes.
@@ -179,8 +203,8 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
       fetch('/api/memory/carve' + memoryQuery(q)).then(j) as Promise<MemoryCarveResult>,
     memoryRecall: (query: string, store: string) =>
       fetch('/api/memory/recall?q=' + encodeURIComponent(query) + memoryStoreQuery(store, '&')).then(j),
-    memoryRecords: (store: string, query: MemoryRecordQuery, offset = 0, limit = 50) =>
-      fetch('/api/memory/records?' + new URLSearchParams({ store: store || 'default', q: query.q, kind: query.kind, offset: String(offset), limit: String(limit) })).then(j) as Promise<{ entries: MemoryRecord[]; total: number; has_more: boolean }>,
+    memoryRecords: (store: string, query: MemoryRecordQuery, offset = 0, limit = 50, view: MemoryRecordView = {}) =>
+      fetch('/api/memory/records?' + memoryRecordParams(store, query, offset, limit, view)).then(j) as Promise<{ entries: MemoryRecord[]; total: number; has_more: boolean; facets?: MemoryRecordFacets; hidden?: number }>,
     memoryEditPreview: (store: string, selection: MemoryRecordSelection, operation: MemoryEditOperation) =>
       post('/api/memory/bulk/preview', { store: store || 'default', selection, operation }).then(j) as Promise<MemoryEditPreview>,
     memoryEditPreviewPage: (store: string, previewId: string, offset: number) =>
@@ -220,7 +244,7 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
     vectorDisableEmbeddings: () => post('/api/memory/disable-embeddings').then(j),
     vectorImport: (data: object) => post('/api/memory/import', data).then(j),
     vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
-    memoryGraph: () => fetch('/api/memory/graph').then(j),
+    memoryGraph: (store?: string) => fetch('/api/memory/graph' + memoryStoreQuery(store)).then(j),
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
   }
 

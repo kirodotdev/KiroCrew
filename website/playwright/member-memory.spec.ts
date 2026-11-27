@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { writeFile } from 'node:fs/promises'
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 
 // Retain successful recordings only for this focused memory spec, not the
 // whole browser suite or its token-exchanging authentication setup project.
@@ -58,37 +58,75 @@ async function writeFact(request: APIRequestContext, store: string, key: string,
   expect(response.ok(), await response.text()).toBeTruthy()
 }
 
+const GLOBAL_LABEL = 'Shared · Global Memory V1'
+
+/** The memory page's tab list, named for the store it shows. */
+const memoryTabs = (page: Page, label: string) => page.getByRole('tablist', { name: `Memory for ${label}`, exact: true })
+
+const storePicker = (page: Page) => page.getByRole('combobox', { name: 'Memory store', exact: true })
+
 async function openMemory(page: Page, owner: { name: string; store: string }) {
-  await page.goto(`/settings/overview?view=memory&store=${encodeURIComponent(owner.store)}`)
-  await expect(page.getByText(`Memory for ${owner.name}`, { exact: true })).toBeVisible()
+  await page.goto(`/settings/memory?store=${encodeURIComponent(owner.store)}`)
+  await expect(memoryTabs(page, owner.name)).toBeVisible()
 }
 
-async function recordEditor(page: Page, lineage: 'V1' | 'V2') {
-  if (lineage === 'V1') {
-    const summary = page.locator('summary').filter({ hasText: /^Edit saved memories$/ })
-    await expect(summary).toBeVisible()
-    if (await summary.locator('..').getAttribute('open') === null) await summary.click()
-  }
-  const editor = page.getByTestId('memory-records-editor')
-  await expect(editor).toBeVisible()
+async function openGlobalMemory(page: Page) {
+  await page.goto('/settings/memory')
+  await expect(memoryTabs(page, GLOBAL_LABEL)).toBeVisible()
+}
+
+/** The Memories tab's list of one store, with its toolbar. */
+async function memoryList(page: Page) {
+  const list = page.getByTestId('memory-list')
+  await expect(list).toBeVisible()
+  return list
+}
+
+/** The header's ⋯ menu item, opened; Escape closes the menu again. */
+async function moreAction(page: Page, name: string) {
+  await page.getByRole('button', { name: 'More actions', exact: true }).click()
+  const item = page.getByRole('menuitem', { name, exact: true })
+  await expect(item).toBeVisible()
+  return item
+}
+
+/** One row's ⋯ menu item. */
+async function rowAction(row: Locator, name: string) {
+  await row.getByRole('button', { name: 'Memory actions', exact: true }).click()
+  return row.page().getByRole('menuitem', { name, exact: true })
+}
+
+const rowWith = (list: Locator, text: string) => list.getByRole('listitem').filter({ has: list.page().getByText(text, { exact: true }) })
+
+/** The bot editor's Memory section, which keeps the task recall and the source analysis. */
+async function editorMemory(page: Page, name: string) {
+  await page.goto(`/capabilities?tab=crews&crew=${encodeURIComponent(name)}`)
+  const editor = page.getByRole('dialog', { name: `Edit bot ${name}`, exact: true })
+  await expect(editor).toBeVisible({ timeout: 10000 })
+  await editor.getByTestId('next-rail-memory').click()
   return editor
 }
 
 test('switching memory stores keeps a draft until the owner explicitly discards it', async ({ page, request }) => {
   const owner = await member(request, 'draft-guard')
-  await page.goto('/settings/overview?view=memory')
-
-  const picker = page.getByRole('combobox', { name: 'Memory store', exact: true })
-  await expect(picker).toContainText('Shared · Global Memory V1')
-  // A migrated Global store hides the legacy Preferences document. Its current
-  // fact editor keeps the same store-switch guard reachable in either state.
-  const editor = await recordEditor(page, 'V1')
-  const keyInput = editor.getByRole('textbox', { name: 'Key (e.g. pref.backend.framework)', exact: true })
-  const valueInput = editor.getByRole('textbox', { name: 'Value', exact: true })
   const key = `user.e2e_draft_${randomUUID().replaceAll('-', '')}`
-  const draft = `Keep this unsaved draft ${randomUUID()}`
-  await keyInput.fill(key)
-  await valueInput.fill(draft)
+  const value = `Keep this selection ${randomUUID()}`
+  await writeFact(request, 'default', key, value)
+  const globalBefore = await rows(request, 'default', key)
+  await openGlobalMemory(page)
+
+  const picker = storePicker(page)
+  await expect(picker).toHaveAttribute('title', GLOBAL_LABEL)
+  // The page's draft is a picked selection: the list's Select mode holds it
+  // until it is applied or cancelled, and a store switch must not drop it unasked.
+  const list = await memoryList(page)
+  await list.getByRole('textbox', { name: 'Search memory', exact: true }).fill(key)
+  await expect(list.getByRole('radio', { name: 'All 1', exact: true })).toBeVisible()
+  await list.getByRole('button', { name: 'Select', exact: true }).click()
+  const pick = list.getByRole('checkbox', { name: `Select memory: ${value}`, exact: true })
+  await pick.check()
+  const selected = list.getByRole('toolbar', { name: 'Selected memories', exact: true }).getByText('Selected: 1', { exact: true })
+  await expect(selected).toBeVisible()
 
   const chooseMember = async () => {
     await picker.click()
@@ -98,15 +136,17 @@ test('switching memory stores keeps a draft until the owner explicitly discards 
   const guard = page.getByRole('dialog', { name: 'Discard changes', exact: true })
   await expect(guard).toBeVisible()
   await guard.getByRole('button', { name: 'Keep editing', exact: true }).click()
-  await expect(keyInput).toHaveValue(key)
-  await expect(valueInput).toHaveValue(draft)
-  await expect(picker).toContainText('Shared · Global Memory V1')
+  await expect(guard).toBeHidden()
+  await expect(pick).toBeChecked()
+  await expect(selected).toBeVisible()
+  await expect(picker).toHaveAttribute('title', GLOBAL_LABEL)
+  await expect(memoryTabs(page, GLOBAL_LABEL)).toBeVisible()
 
   await chooseMember()
   await guard.getByRole('button', { name: 'Discard changes', exact: true }).click()
-  await expect(page.getByText(`Memory for ${owner.name}`, { exact: true })).toBeVisible()
-  await expect(picker).toContainText(`${owner.name} · Member memory (V2)`)
-  expect(await rows(request, 'default', key)).toEqual([])
+  await expect(memoryTabs(page, owner.name)).toBeVisible()
+  await expect(picker).toHaveAttribute('title', `${owner.name} · Member memory (V2)`)
+  expect(await rows(request, 'default', key)).toEqual(globalBefore)
   expect(await rows(request, owner.store)).toEqual([])
 })
 
@@ -127,34 +167,40 @@ test('member memory copy, correction and forgetting persist without changing V1 
 
   await openMemory(page, target)
   await page.screenshot({ path: testInfo.outputPath('member-memory-owner-empty.png'), fullPage: false, animations: 'disabled' })
-  await page.getByRole('button', { name: 'Copy memories' }).click()
+  await (await moreAction(page, 'Copy from another memory…')).click()
   const copy = page.getByRole('dialog', { name: `Copy memories to “${target.name}”`, exact: true })
-  await copy.getByRole('textbox').fill(key)
+  await copy.getByRole('textbox', { name: 'Search memory', exact: true }).fill(key)
   await copy.getByRole('checkbox', { name: original, exact: true }).check()
   await page.screenshot({ path: testInfo.outputPath('member-memory-copy-dialog.png'), fullPage: false, animations: 'disabled' })
   await copy.getByRole('button', { name: 'Copy selected (1)' }).click()
-  await expect(copy.getByRole('status')).toContainText('1')
-  const copyNotice = 'Adds only selected memories to this member; the source stays unchanged.'
+  await expect(copy.getByRole('status')).toContainText('Copied 1.')
+  const copyNotice = 'Copy selected memories here without changing existing or source memories. Each copy records its origin.'
   await expect(copy.getByText(copyNotice, { exact: true })).toBeVisible()
   await copy.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(page.getByText(copyNotice, { exact: true })).toHaveCount(0)
-  await expect(page.getByText(original, { exact: true })).toBeVisible()
+  const list = await memoryList(page)
+  await expect(list.getByText(original, { exact: true })).toBeVisible()
   const seeded = (await rows(request, target.store)).find(row => row.key === key)
   expect(JSON.parse(seeded!.derived_from!)).toMatchObject({ store: 'default' })
 
-  const search = page.getByRole('textbox', { name: 'Search memory', exact: true })
-  await search.fill('blue review checklist')
-  const recallExplanation = page.getByText('Context the member would receive for this task. Search results below are for browsing and editing.', { exact: true })
+  // Task recall lives in the bot editor's Memory section; the memory page lists and edits.
+  const recallEditor = await editorMemory(page, target.name)
+  await recallEditor.getByTestId('next-memory-tab-memories').click()
+  const recallRecords = recallEditor.getByTestId('memory-records-editor')
+  await expect(recallRecords).toBeVisible()
+  await recallRecords.getByRole('textbox', { name: 'Search memory', exact: true }).fill('blue review checklist')
+  const recallExplanation = recallEditor.getByText('Context the member would receive for this task. Search results below are for browsing and editing.', { exact: true })
   await expect(recallExplanation).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('member-memory-recall-before.png'), fullPage: false, animations: 'disabled' })
-  await page.getByRole('button', { name: 'Recall for this task', exact: true }).click()
-  await expect(page.getByText('Memory selected for this task', { exact: true })).toBeVisible()
+  await recallRecords.getByRole('button', { name: 'Recall for this task', exact: true }).click()
+  await expect(recallEditor.getByText('Memory selected for this task', { exact: true })).toBeVisible()
   await expect(recallExplanation).toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('member-memory-recall-evidence.png'), fullPage: false, animations: 'disabled' })
-  await page.getByRole('button', { name: 'Clear search', exact: true }).click()
-  await expect(page.getByText('Memory selected for this task', { exact: true })).toHaveCount(0)
+  await recallRecords.getByRole('button', { name: 'Clear search', exact: true }).click()
+  await expect(recallEditor.getByText('Memory selected for this task', { exact: true })).toHaveCount(0)
+  await openMemory(page, target)
 
-  await page.getByRole('button', { name: 'Edit', exact: true }).click()
+  await (await rowAction(rowWith(list, original), 'Edit')).click()
   const correction = page.getByRole('dialog', { name: 'Edit memory' })
   await correction.getByRole('textbox', { name: 'Memory text', exact: true }).fill(corrected)
   await correction.getByRole('button', { name: 'Preview changes', exact: true }).click()
@@ -163,9 +209,10 @@ test('member memory copy, correction and forgetting persist without changing V1 
   await correction.getByRole('button', { name: 'Apply changes (1)', exact: true }).click()
   await expect(correction).toBeHidden()
   await page.reload()
-  await expect(page.getByText(corrected, { exact: true })).toBeVisible()
-  await expect(page.getByText(`Memory for ${target.name}`, { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Copy memories', exact: true })).toBeEnabled()
+  await expect(list.getByText(corrected, { exact: true })).toBeVisible()
+  await expect(memoryTabs(page, target.name)).toBeVisible()
+  await expect(await moreAction(page, 'Copy from another memory…')).toBeEnabled()
+  await page.keyboard.press('Escape')
   expect((await rows(request, target.store)).find(row => row.key === key)?.derived_from).toBe(seeded?.derived_from)
   expect((await rows(request, 'default', key)).find(row => row.key === key)).toEqual(globalBefore)
   expect(await rows(request, other.store)).toEqual([])
@@ -177,11 +224,14 @@ test('member memory copy, correction and forgetting persist without changing V1 
   await page.getByRole('tab', { name: 'Memories', exact: true }).click()
   await page.screenshot({ path: testInfo.outputPath('member-memory-desktop.png'), fullPage: true, animations: 'disabled' })
   await page.setViewportSize({ width: 390, height: 844 })
-  await expect(page.getByText(corrected, { exact: true })).toBeVisible()
-  await expect(page.getByText('Facts save details. Lessons guide the member’s work. Experiences are events the member can recall.', { exact: true })).toBeVisible()
-  for (const label of ['All', 'Facts', 'Lessons', 'Experiences']) {
-    await expect(page.getByText(label, { exact: true })).toBeVisible()
-    await expect(page.getByText(label, { exact: true })).toBeInViewport({ ratio: 1 })
+  await expect(list.getByText(corrected, { exact: true })).toBeVisible()
+  // The kind pills carry the kinds' explanation, and each has its own (?) tip.
+  const kinds = list.getByRole('radiogroup', { name: 'Memory type', exact: true })
+  await expect(kinds).toHaveAttribute('title', 'Facts save details. Lessons guide the member’s work. Experiences are events the member can recall.')
+  for (const [label, count] of [['All', 1], ['Facts', 1], ['Lessons', 0], ['Experiences', 0]] as const) {
+    const pill = kinds.getByRole('radio', { name: `${label} ${count}`, exact: true })
+    await pill.scrollIntoViewIfNeeded()
+    await expect(pill).toBeInViewport({ ratio: 1 })
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
   await page.screenshot({ path: testInfo.outputPath('member-memory-mobile.png'), fullPage: true, animations: 'disabled' })
@@ -194,8 +244,8 @@ test('member memory copy, correction and forgetting persist without changing V1 
   await page.screenshot({ path: testInfo.outputPath('member-memory-separate-empty-member.png'), fullPage: false, animations: 'disabled' })
   await openMemory(page, target)
 
-  await page.getByRole('button', { name: 'View details', exact: true }).click()
-  const detail = page.getByRole('dialog', { name: 'Memory details' })
+  await rowWith(list, corrected).getByRole('button', { name: 'View details', exact: true }).click()
+  const detail = page.getByTestId('memory-record-detail')
   await expect(detail.getByText('Revision history', { exact: true })).toBeVisible()
   await expect(detail.getByRole('status')).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('member-memory-details-desktop.png'), fullPage: false, animations: 'disabled' })
@@ -249,14 +299,16 @@ test('private backup staging can be cancelled and a replaced experience can be r
   await expect(page.getByRole('button', { name: 'Restore backup', exact: true })).toBeEnabled()
   expect(await rows(request, owner.store)).toEqual(active)
   await page.screenshot({ path: testInfo.outputPath('member-memory-restore-cancelled.png'), fullPage: false, animations: 'disabled' })
-  const advanced = page.locator('summary').filter({ hasText: /^Advanced memory analysis$/ })
-  await expect(advanced).toBeVisible()
-  await advanced.click()
-  const countBy = page.getByRole('combobox', { name: 'Count by', exact: true })
+  // The source analysis is the bot editor's, on its Memory > Recovery tab.
+  const analysisEditor = await editorMemory(page, owner.name)
+  await analysisEditor.getByTestId('next-memory-tab-recovery').click()
+  await expect(analysisEditor.getByText('Explore memory', { exact: true })).toBeVisible()
+  const countBy = analysisEditor.getByRole('combobox', { name: 'Count by', exact: true })
   await expect(countBy).toBeVisible()
   await countBy.scrollIntoViewIfNeeded()
   await expect(countBy).toBeInViewport({ ratio: 1 })
   await page.screenshot({ path: testInfo.outputPath('member-memory-advanced-analysis.png'), fullPage: false, animations: 'disabled' })
+  await openMemory(page, owner)
 
   // Import a real episode, then replace its explicitly linked fact through the
   // owner API. V2 records a conflict retirement, not automatic time-based decay.
@@ -294,7 +346,9 @@ test('private backup staging can be cancelled and a replaced experience can be r
   await expect(replacedRow).toBeVisible()
   await expect(replacedRow.getByText(episodeKey, { exact: true })).toBeVisible()
   const restoreExperience = replacedRow.getByRole('button', { name: 'Restore experience', exact: true })
-  await restoreExperience.scrollIntoViewIfNeeded()
+  // Centred, not edge-aligned: the settings scroll area can leave an edge-aligned
+  // button a fraction of a pixel past the viewport.
+  await restoreExperience.evaluate(button => button.scrollIntoView({ block: 'center', inline: 'nearest' }))
   await expect(restoreExperience).toBeInViewport({ ratio: 1 })
   await page.screenshot({ path: testInfo.outputPath('member-memory-replaced-experience.png'), fullPage: false, animations: 'disabled' })
   const restored = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/memory/retired/restore')
@@ -311,7 +365,7 @@ test('private backup staging can be cancelled and a replaced experience can be r
   expect({ facts: await rows(request, 'default'), episodes: await episodes('default') }).toEqual(globalBeforeRestore)
   expect({ facts: await rows(request, peer.store), episodes: await episodes(peer.store) }).toEqual(peerBeforeRestore)
   await page.getByRole('tab', { name: 'Memories', exact: true }).click()
-  const records = await recordEditor(page, 'V2')
+  const records = await memoryList(page)
   await records.getByRole('textbox', { name: 'Search memory', exact: true }).fill(episodeKey)
   await expect(records.getByText(episodeText, { exact: true })).toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('member-memory-restored-experience.png'), fullPage: false, animations: 'disabled' })
@@ -481,9 +535,13 @@ test('a legacy configured default member keeps V1 while new members receive inde
     await expect(editor.getByRole('button', { name: 'Create private memory', exact: true })).toHaveCount(0)
     // The editor's Memory section edits the member's own store in place; the
     // standalone memory page shows the same store.
+    // An old Overview link still opens the same store on Settings > Memory.
     await page.goto(`/settings/overview?view=memory&store=${encodeURIComponent(store)}`)
-    await expect(page.getByText(`Memory for ${newOwner.name}`, { exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Copy memories', exact: true })).toBeEnabled()
+    await expect(page).toHaveURL(url => url.pathname === '/settings/memory' && url.searchParams.get('store') === store)
+    await expect(memoryTabs(page, newOwner.name)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Copy from another memory…', exact: true })).toBeEnabled()
+    await expect(await moreAction(page, 'Copy from another memory…')).toBeEnabled()
+    await page.keyboard.press('Escape')
     await page.screenshot({ path: testInfo.outputPath('new-member-memory-v2-empty.png'), fullPage: false, animations: 'disabled' })
     const freshThread = page.waitForResponse(response =>
       response.request().method() === 'POST' && /\/api\/members\/[^/]+\/thread$/.test(new URL(response.url()).pathname),
@@ -500,9 +558,9 @@ test('a legacy configured default member keeps V1 while new members receive inde
     await expect.poll(() => readOwner(newOwner!.name)).toMatchObject({
       slot_key: fresh.slot_key, memory_store: store, memory_version: 2, memory_owner: newOwner.name,
     })
-    await page.goto(`/settings/overview?view=memory&store=${encodeURIComponent(store)}`)
+    await page.goto(`/settings/memory?store=${encodeURIComponent(store)}`)
     await page.reload()
-    await expect(page.getByText(`Memory for ${newOwner.name}`, { exact: true })).toBeVisible()
+    await expect(memoryTabs(page, newOwner.name)).toBeVisible()
     expect(await rows(request, store)).toEqual([])
     expect(await rows(request, other.store)).toEqual([])
     expect(await rows(request, 'default', key)).toEqual(globalBefore)
@@ -571,7 +629,7 @@ test('intentional bad memory configuration shows unavailable, mismatch and a rea
     await page.screenshot({ path: testInfo.outputPath(screenshot), fullPage: false, animations: 'disabled' })
   }
 
-  await page.goto(`/settings/overview?view=memory&store=${encodeURIComponent(fixture.unavailable_store)}`)
+  await page.goto(`/settings/memory?store=${encodeURIComponent(fixture.unavailable_store)}`)
   const unavailable = page.getByText('This memory store’s member identity is unavailable.', { exact: true })
   await expect(unavailable).toBeVisible()
   const retry = page.getByRole('button', { name: 'Retry member identity', exact: true })
@@ -584,7 +642,7 @@ test('intentional bad memory configuration shows unavailable, mismatch and a rea
   expect(catalog.stores.some(row => row.name === fixture.unavailable_store)).toBe(false)
   await expect(unavailable).toBeVisible()
   await expect(retry).toBeEnabled()
-  await expect(page.getByTestId('memory-records-editor')).toHaveCount(0)
+  await expect(page.getByTestId('memory-list')).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('member-memory-identity-retry-unavailable.png'), fullPage: false, animations: 'disabled' })
   const after = await readConfig()
   for (const name of [fixture.unavailable_member, fixture.mismatched_member]) expect(after.agents[name]).toEqual(before.agents[name])
@@ -618,27 +676,36 @@ for (const lineage of ['V1', 'V2'] as const) {
     expect((await records(store, oldEmail)).total).toBe(65)
     if (lineage === 'V2') await openMemory(page, owner)
     else {
-      await page.goto('/settings/overview?view=memory')
-      await expect(page.locator('summary').filter({ hasText: /^Edit saved memories$/ })).toBeVisible()
-      await expect(page.getByRole('combobox', { name: 'Memory store', exact: true })).toBeEnabled()
+      await openGlobalMemory(page)
+      await expect(storePicker(page)).toBeEnabled()
       await page.screenshot({ path: testInfo.outputPath('memory-v1-global-overview.png'), fullPage: true, animations: 'disabled' })
     }
-    const editor = await recordEditor(page, lineage)
+    const editor = await memoryList(page)
     await editor.getByRole('textbox', { name: 'Search memory', exact: true }).fill(oldEmail)
     await expect(editor.getByRole('button', { name: 'Email', exact: true })).toHaveCount(0)
-    await expect(editor.getByText('Matching memories: 65', { exact: true })).toBeVisible()
-    await editor.getByRole('checkbox', { name: 'Select this page', exact: true }).check()
-    await editor.getByRole('button', { name: 'Select all 65 matching memories', exact: true }).click()
-    await editor.getByRole('button', { name: 'Next page', exact: true }).click()
-    await expect(editor.getByText('51–65 of 65', { exact: true })).toBeVisible()
-    const selectedCount = editor.getByText('Selected: 65', { exact: true })
+    await expect(editor.getByRole('radio', { name: 'All 65', exact: true })).toBeVisible()
+    // The list reads 50 rows a page and loads the next as its end scrolls near.
+    await expect(editor.getByText('1–50 of 65', { exact: true })).toBeVisible()
+    await editor.getByRole('button', { name: 'Select', exact: true }).click()
+    const selection = editor.getByRole('toolbar', { name: 'Selected memories', exact: true })
+    await selection.getByRole('checkbox', { name: 'Select this page', exact: true }).check()
+    await expect(selection.getByText('Selected: 50', { exact: true })).toBeVisible()
+    await selection.getByRole('button', { name: 'Select all 65 matching memories', exact: true }).click()
+    await editor.getByText('1–50 of 65', { exact: true }).scrollIntoViewIfNeeded()
+    await expect(editor.getByText('1–65 of 65', { exact: true })).toBeVisible()
+    await expect(editor.getByRole('checkbox', { name: /^Select memory: Contact \d+: / })).toHaveCount(65)
+    for (const box of await editor.getByRole('checkbox', { name: /^Select memory: Contact \d+: / }).all()) await expect(box).toBeChecked()
+    const selectedCount = selection.getByText('Selected: 65', { exact: true })
     await expect(selectedCount).toBeVisible()
     await selectedCount.scrollIntoViewIfNeeded()
     await expect(selectedCount).toBeInViewport({ ratio: 1 })
-    await expect(editor.getByRole('button', { name: 'Find and replace', exact: true })).toBeInViewport({ ratio: 1 })
-    await expect(editor.getByRole('button', { name: 'Forget selected memories: 65', exact: true })).toBeInViewport({ ratio: 1 })
+    const bulkEdit = selection.getByRole('button', { name: 'Edit', exact: true })
+    await expect(bulkEdit).toBeInViewport({ ratio: 1 })
+    await bulkEdit.click()
+    await expect(page.getByRole('menuitem', { name: 'Find and replace', exact: true })).toBeInViewport({ ratio: 1 })
+    await expect(page.getByRole('menuitem', { name: 'Forget selected memories: 65', exact: true })).toBeInViewport({ ratio: 1 })
     await page.screenshot({ path: testInfo.outputPath(`memory-${lineage.toLowerCase()}-bulk-selection.png`), fullPage: false, animations: 'disabled' })
-    await editor.getByRole('button', { name: 'Find and replace', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Find and replace', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: 'Edit selected memories', exact: true })
     await expect(dialog).toBeVisible()
     await dialog.getByLabel('Find text', { exact: true }).fill(oldEmail)
@@ -684,10 +751,16 @@ for (const lineage of ['V1', 'V2'] as const) {
     expect((await records(store, oldEmail)).total).toBe(0)
     expect((await records(untouchedStore, newEmail)).total).toBe(0)
     await page.reload()
-    await (await recordEditor(page, lineage)).getByRole('textbox', { name: 'Search memory', exact: true }).fill(newEmail)
-    await expect(page.getByText('Matching memories: 65', { exact: true })).toBeVisible()
-    await editor.getByRole('checkbox', { name: 'Select this page', exact: true }).check()
-    await editor.getByRole('button', { name: 'Forget selected memories: 50', exact: true }).click()
+    await (await memoryList(page)).getByRole('textbox', { name: 'Search memory', exact: true }).fill(newEmail)
+    await expect(editor.getByRole('radio', { name: 'All 65', exact: true })).toBeVisible()
+    await expect(editor.getByText('1–50 of 65', { exact: true })).toBeVisible()
+    // Still at phone width: Select moves into the header's ⋯ sheet.
+    await expect(editor.getByRole('button', { name: 'Select', exact: true })).toHaveCount(0)
+    await page.getByRole('button', { name: 'More actions', exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Select', exact: true }).click()
+    await selection.getByRole('checkbox', { name: 'Select this page', exact: true }).check()
+    await selection.getByRole('button', { name: 'Edit', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Forget selected memories: 50', exact: true }).click()
     const forget = page.getByRole('dialog', { name: 'Forget selected memories: 50', exact: true })
     await forget.getByRole('button', { name: 'Preview changes', exact: true }).click()
     await expect(forget.getByText('Will change: 50', { exact: true })).toBeVisible()
@@ -741,9 +814,10 @@ for (const lineage of ['V1', 'V2'] as const) {
       }
     }
     const filterRecord = async () => {
-      const editor = await recordEditor(page, lineage)
+      const editor = await memoryList(page)
       await editor.getByRole('textbox', { name: 'Search memory', exact: true }).fill(key)
-      await expect(editor.getByText('Matching memories: 1', { exact: true })).toBeVisible()
+      await expect(editor.getByRole('radio', { name: 'All 1', exact: true })).toBeVisible()
+      await expect(editor.getByText(key, { exact: true })).toBeVisible()
       return editor
     }
 
@@ -752,12 +826,12 @@ for (const lineage of ['V1', 'V2'] as const) {
     await propose(firstProposal)
     expect((await readRecord()).value_json).toBe(initial.value_json)
     if (lineage === 'V2') await openMemory(page, owner)
-    else await page.goto('/settings/overview?view=memory')
+    else await openGlobalMemory(page)
     let editor = await filterRecord()
     if (lineage === 'V1') {
       expect(await readRecord()).toEqual(initial)
       await expect(editor.getByRole('button', { name: /Review proposals/ })).toHaveCount(0)
-      await editor.getByRole('button', { name: 'Edit', exact: true }).click()
+      await (await rowAction(rowWith(editor, currentValue), 'Edit')).click()
       const correction = page.getByRole('dialog', { name: 'Edit memory', exact: true })
       await correction.getByRole('textbox', { name: 'Memory text', exact: true }).fill(acceptedValue)
       await correction.getByRole('button', { name: 'Preview changes', exact: true }).click()
@@ -780,7 +854,8 @@ for (const lineage of ['V1', 'V2'] as const) {
       return
     }
     await editor.getByRole('button', { name: 'Review proposals (1)', exact: true }).click()
-    let detail = page.getByRole('dialog', { name: 'Memory details', exact: true })
+    // The proposal opens the record's detail, with the pending proposal unfolded.
+    let detail = page.getByTestId('memory-record-detail')
     await expect(detail.getByText(firstProposal, { exact: true })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('member-memory-review-proposals.png'), fullPage: false, animations: 'disabled' })
     const resolutionPreview = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/memory/bulk/preview')
@@ -815,7 +890,7 @@ for (const lineage of ['V1', 'V2'] as const) {
     await page.reload()
     editor = await filterRecord()
     await editor.getByRole('button', { name: 'Review proposals (1)', exact: true }).click()
-    detail = page.getByRole('dialog', { name: 'Memory details', exact: true })
+    detail = page.getByTestId('memory-record-detail')
     await expect(detail.getByText(acceptedValue, { exact: true })).toBeVisible()
     await expect(detail.getByRole('button', { name: 'Use proposed value', exact: true })).toHaveCount(1)
     await detail.getByRole('button', { name: 'Use proposed value', exact: true }).click()

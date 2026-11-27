@@ -3,7 +3,7 @@ import { agentCycleTarget } from '../../lib/crewMode'
 import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore, store } from '../../store'
 import { changeApprovalMode, updateSlot } from '../../store/dashboardSlice'
-import { requestSlotFolderOpen, setAgentSwitchNotice } from '../../store/chatSlice'
+import { requestSlotFolderOpen, selectActiveSlotProject, setAgentSwitchNotice } from '../../store/chatSlice'
 import { isStaleProjectDirError } from '../../utils/folderAgent'
 import type { ChatFolder } from '../../types'
 import { newChatShortcutArgs } from './newChatArgs'
@@ -51,14 +51,13 @@ const APPROVAL_MODE_LEVELS = ['normal', 'trust_reads', 'trust', 'yolo']
  * on the active session (and the notice a failed switch leaves), the panel
  * toggles, and the instance-pane and auto-connect hooks registered once here.
  */
-export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject }: {
+export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, isPopout, isEmbed, terminalPoppedOut }: {
   toggleFocusMode: () => void
   toggleNav: () => void
   terminalEnabled: boolean
   isPopout: boolean
   isEmbed: boolean
   terminalPoppedOut: boolean
-  activeSlotProject: string | undefined
 }) {
   // The new-chat create can take seconds, so its navigate asks when it runs.
   const navigate = useAskingNavigate()
@@ -350,13 +349,13 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     // in a popout reads it: a chord there would flip a flag nothing renders,
     // and with an empty tab list would mint a shell into the shared list.
     onToggleTerminal: terminalEnabled && !isPopout && !isEmbed
-      ? () => { if (terminalPoppedOut) focusTerminalPopout(); else toggleTerminalByChord(activeSlotProject) }
+      ? () => { if (terminalPoppedOut) focusTerminalPopout(); else toggleTerminalByChord(selectActiveSlotProject(appStore.getState())) }
       : undefined,
     // VS Code's Create New Terminal: open the docked panel if needed and add a
     // tab in the active session's project. Same gating as the toggle above, and
     // a popped-out panel is focused rather than grown from out of sight.
     onNewTerminal: terminalEnabled && !isPopout && !isEmbed
-      ? () => { if (terminalPoppedOut) focusTerminalPopout(); else newTerminalByChord(activeSlotProject) }
+      ? () => { if (terminalPoppedOut) focusTerminalPopout(); else newTerminalByChord(selectActiveSlotProject(appStore.getState())) }
       : undefined,
     onCloseTerminalTab: terminalTabChord('close'),
     onPrevTerminalTab: terminalTabChord('prev'),

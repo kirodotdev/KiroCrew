@@ -178,6 +178,14 @@ const FULL_VIEWPORT_ALLOWLIST: ReadonlyArray<{ file: string; classes: string; re
       + 'carries sm:p-safe-or-6. OnboardingChapterShell.test.tsx pins both halves.',
   },
   {
+    file: 'src/pages/overview/memoryPage/MemoryActionSheet.tsx',
+    classes: 'fixed inset-0 z-[90] flex items-end',
+    reason:
+      'The row only places the bottom sheet against the bottom edge, under a tap-to-close backdrop. The '
+      + 'sheet carries p-safe itself, so its background reaches the screen edge while its content stays '
+      + 'clear of the insets.',
+  },
+  {
     file: 'src/pages/chat/quickAsk/QuickAskSheet.tsx',
     classes: 'fixed inset-0 z-50 flex flex-col justify-end bg-black/50',
     reason:

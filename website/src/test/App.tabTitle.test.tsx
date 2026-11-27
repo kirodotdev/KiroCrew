@@ -121,6 +121,22 @@ describe('main window tab title', () => {
     expect(shellRenders.count).toBe(before)
   })
 
+  it('switches to a session in another project without rendering the whole shell again', async () => {
+    const store = renderAt('/chat')
+    const inProject = (key: string, title: string, project: string) => ({ key, title, agent: 'kirocrew', project }) as unknown as ChatSlot
+    act(() => {
+      store.dispatch(addSlotOptimistic(inProject('p1', 'Fix the login page', '/work/a')))
+      store.dispatch(addSlotOptimistic(inProject('p2', 'Other work', '/work/b')))
+      store.dispatch(setActiveSlot('p1'))
+    })
+    await waitFor(() => expect(document.title).toBe('Fix the login page — Chat — Kiro Crew'))
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    const before = shellRenders.count
+    act(() => { store.dispatch(setActiveSlot('p2')) })
+    await waitFor(() => expect(document.title).toBe('Other work — Chat — Kiro Crew'))
+    expect(shellRenders.count).toBe(before)
+  })
+
   it('names Chat alone when no session is selected', async () => {
     renderAt('/chat')
     await waitFor(() => expect(document.title).toBe('Chat — Kiro Crew'))

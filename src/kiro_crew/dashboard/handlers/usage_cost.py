@@ -257,6 +257,12 @@ def cost_breakdown(
         # footnote for money with no row.
         if slot and not is_session_slot(slot):
             continue
+        # The app that owns the session, stamped at write time from `slot._app`.
+        # Read per row and grouped here, over every row in the window, so an
+        # app's total does not depend on its sessions surviving the
+        # `_COST_TOP_CONVOS` cut below.
+        app_raw = obj.get("app")
+        app = app_raw if isinstance(app_raw, str) else ""
 
         if ts_epoch < cutoff:
             prev_tot["credits"] += credits
@@ -264,7 +270,7 @@ def cost_breakdown(
             prev_model[model] = prev_model.get(model, 0.0) + credits
             ch = telemetry_channel_of(slot or None)
             prev_channel[ch] = prev_channel.get(ch, 0.0) + credits
-            cat = session_category(slot)
+            cat = session_category(slot, app)
             prev_category[cat] = prev_category.get(cat, 0.0) + credits
             purpose = _purpose_of(obj, slot)
             prev_purpose[purpose] = prev_purpose.get(purpose, 0.0) + credits
@@ -278,7 +284,7 @@ def cost_breakdown(
         for bucket, name in (
             (by_model, model),
             (by_channel, telemetry_channel_of(slot or None)),
-            (by_category, session_category(slot)),
+            (by_category, session_category(slot, app)),
             (by_purpose, _purpose_of(obj, slot)),
         ):
             e = bucket.setdefault(name, {"name": name, "credits": 0.0, "turns": 0})
@@ -303,8 +309,11 @@ def cost_breakdown(
                     "last_ts": ts_epoch,
                     "_occ": [],
                     "transcript": "",
+                    "app": "",
                 },
             )
+            if app:
+                c["app"] = app
             if obj.get("transcript"):
                 c["transcript"] = str(obj["transcript"])
             c["credits"] = float(c["credits"]) + credits
@@ -408,7 +417,7 @@ def cost_breakdown(
                 # only a dashboard session has a route to open. Deriving either
                 # from the key shape in the frontend would put a second,
                 # drifting copy of session-key knowledge there.
-                "category": session_category(c["slot"]),
+                "category": session_category(c["slot"], c["app"]),
                 # The unollapsed label underneath the category, so a `bg` row
                 # still says whether it was a subagent, a cron or the heartbeat
                 # instead of becoming an anonymous lump.

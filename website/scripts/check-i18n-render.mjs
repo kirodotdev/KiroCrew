@@ -348,6 +348,9 @@ const FIXTURE_OVERRIDES = async (language, path, route) => {
   if (path === '/api/agents' || path === '/api/chat/agents') {
     return done([{ name: '0001', source: 'builtin' }])
   }
+  // The global Memory page mounts every tab: these two page on `retired` and `events`.
+  if (path === '/api/memory/retired') return done({ retired: [] })
+  if (path === '/api/memory/events') return done({ events: [] })
   if (path === '/api/memory/stores') {
     return done({
       active: 'default',
@@ -1021,7 +1024,8 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
           // resolves several requests before mounting its manifest; comparing a
           // loading frame with a populated frame invents a branch regression.
           if (surface.readyText) {
-            await page.getByText(surface.readyText, { exact: true }).waitFor({ state: 'visible', timeout: 15000 })
+            // `.first()`: a ready record can show its text in several places at once (list, detail, picker).
+            await page.getByText(surface.readyText, { exact: true }).first().waitFor({ state: 'visible', timeout: 15000 })
           }
           // Panels that fetch after mount need a beat more. `settle` stays as the
           // FLOOR for that beat, but it is no longer the whole of it: a fixed sleep
