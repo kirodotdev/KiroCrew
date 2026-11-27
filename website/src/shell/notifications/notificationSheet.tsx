@@ -239,11 +239,14 @@ export function useNotificationSheet() {
   const crewHidden = useLocalCrewHidden()
   // A relay tab covers <main> without hiding the local overlay root, so it is read on its own.
   const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
-  const openPanelOn = useCallback((ts: string) => {
+  const showLocalCrew = useCallback(() => {
     if (crewHidden || relayCovered) dispatch(setActiveId(null))
+  }, [crewHidden, relayCovered, dispatch])
+  const openPanelOn = useCallback((ts: string) => {
+    showLocalCrew()
     openPanel()
     setSelectedTs(ts)
-  }, [openPanel, crewHidden, relayCovered, dispatch])
+  }, [openPanel, showLocalCrew])
   // Lives with the bell because it reads the bell's notes: a cron run's note is
   // read when the user opens its chat or it arrives while a pane shows that
   // chat (#23564), never behind a remote Crew, while a crew window covers the
@@ -378,7 +381,10 @@ export function useNotificationSheet() {
     dispatch(ackNotification(selected.ts))
   }, [selected, dispatch])
 
-  const toggle = () => { if (phaseRef.current === 'closed') openPanel(); else closePanel() }
+  // The bell stays in the top bar over a relay Crew, whose pane hides under this
+  // sheet while the local page stays hidden beneath it: opening there would leave
+  // nothing on screen but the sheet, so the bell brings the local Crew forward too.
+  const toggle = () => { if (phaseRef.current === 'closed') { showLocalCrew(); openPanel() } else closePanel() }
   return {
     items, isMobile, phase, open, closing, selectedTs, setSelectedTs, selected,
     containerRef, popoverRef, bellRef, sheetRef, sheetX, leavingProps,

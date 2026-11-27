@@ -11,7 +11,7 @@ import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { createTestStore } from './helpers'
 import type { RootState } from '../store'
-import { setActiveId } from '../store/instancesSlice'
+import { relayPaneOpened, setActiveId } from '../store/instancesSlice'
 import { LocalOverlayRoot } from '../components/overlayRoot'
 import { useNotificationSheet } from '../shell/notifications/notificationSheet'
 import { closeCrewWindow, openCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
@@ -42,6 +42,27 @@ describe('notification sheet across Crew switches', () => {
     act(() => { result.current.openPanelOn('1700000000.000001') })
     expect(store.getState().instances.activeId).toBeNull()
     expect(result.current.selectedTs).toBe('1700000000.000001')
+  })
+
+  // A relay Crew is a pane over the page with the local top bar, and its bell,
+  // still on screen: the pane hides under the sheet and the local page is hidden
+  // under the pane, so the bell brings the local Crew forward as the banner does.
+  it('brings the local Crew forward when the bell opens the sheet over a relay Crew', () => {
+    const { store, result } = setup(false)
+    act(() => { store.dispatch(relayPaneOpened({ id: 'endpoint-1', name: 'Team Crew' })) })
+    expect(store.getState().instances.relayActive).toBe('endpoint-1')
+    act(() => { result.current.toggle() })
+    expect(store.getState().instances.relayActive).toBeNull()
+    expect(result.current.phase).toBe('open')
+  })
+
+  it('leaves the relay Crew in front when the bell closes the sheet', () => {
+    const { store, result } = setup(false)
+    act(() => { result.current.toggle() })
+    act(() => { store.dispatch(relayPaneOpened({ id: 'endpoint-1', name: 'Team Crew' })) })
+    act(() => { result.current.toggle() })
+    expect(result.current.phase).not.toBe('open')
+    expect(store.getState().instances.relayActive).toBe('endpoint-1')
   })
 
   // #23564: the sheet's hook reads a cron note arriving live while a pane shows
