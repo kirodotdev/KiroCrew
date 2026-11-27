@@ -617,26 +617,20 @@ class LaunchApprovals:
                 digests = _env_digests(stem, env, env_display)
                 if digests is not None:
                     self.approved_env_digests.setdefault(stem, {})[identity] = digests
+            if healed:
+                changed = "its command's extension case"
+            elif prefolded:
+                changed = "how its digest folds the gateway's PATH"
+            elif normalized:
+                changed = "a version folder the edition folds"
+            elif trusted:
+                changed = "its launch, and the operator trusts its changes"
+            else:
+                changed = "a ${VAR} value in its declared env"
             logger.info(
                 "mcp launch approvals: %s keeps its approval; only %s changed",
                 _bounded_name(name),
-                (
-                    "its command's extension case"
-                    if healed
-                    else (
-                        "how its digest folds the gateway's PATH"
-                        if prefolded
-                        else (
-                            "a version folder the edition folds"
-                            if normalized
-                            else (
-                                "its launch, and the operator trusts its changes"
-                                if trusted
-                                else "a ${VAR} value in its declared env"
-                            )
-                        )
-                    )
-                ),
+                changed,
             )
             return True
         self.names.setdefault(stem, _bounded_name(name))
