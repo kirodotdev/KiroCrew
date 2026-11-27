@@ -1398,7 +1398,8 @@ class TestOrphanForwarderReclaim:
             await self._reclaim_cd1(reg, mgr)
 
             assert self._gone_fields(reg) == before
-            assert reached == [proc.pid]
+            # A fingerprint-free record is verified once per argv candidate.
+            assert reached and set(reached) == {proc.pid}
             assert sent == []
             assert proc.poll() is None
         finally:
