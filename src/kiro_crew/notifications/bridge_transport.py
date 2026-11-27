@@ -33,6 +33,7 @@ from kiro_crew.notifications.bridge import BridgeTransportUnavailable
 from kiro_crew.notifications.bridge_approval_note import (
     ACTION_TOKEN_KEY,
     APPROVAL_DETAIL_KEY,
+    approval_mcp_identity,
     is_pending_approval_note,
 )
 from kiro_crew.notifications.bridge_question_note import OPTIONS_KEY, is_pending_question_note
@@ -131,14 +132,45 @@ QUESTION_PROMPT = "Reply with the number of your answer to this message."
 _OPTION_SEPARATOR = " · "
 
 
+def _identity_code_span(name: str) -> str:
+    """One MCP identity name in backticks, so the transport shows it as code.
+
+    A backtick in the name is swapped for the look-alike ``ˋ`` (U+02CB) and its
+    whitespace collapsed, so the name cannot end its span or the line early.
+    """
+    return "`" + " ".join(name.split()).replace("`", "\u02cb") + "`"
+
+
+def _approval_identity_line(note: Mapping[str, Any]) -> str:
+    """The ``MCP tool:`` line a pending-approval *note* names, or ``""``.
+
+    The trusted server and tool the note carries
+    (:func:`bridge_approval_note.approval_mcp_identity`), through the shared
+    ``messaging.renderer.mcp_identity_line``, which scrubs and bounds each name
+    before it goes in a code span.
+    """
+    # Lazy: the shared renderer is not needed until a note is bound.
+    from kiro_crew.messaging.renderer import mcp_identity_line
+
+    return mcp_identity_line(*approval_mcp_identity(note), fmt=_identity_code_span)
+
+
 def render_reply_text(
-    head: str, detail: str, transport: str, prompt: str = APPROVAL_PROMPT, *, whole: bool = False
+    head: str,
+    detail: str,
+    transport: str,
+    prompt: str = APPROVAL_PROMPT,
+    *,
+    whole: bool = False,
+    identity: str = "",
 ) -> str:
     """*head* (the note) plus what it asks and how to answer, as one message, or ``""``.
 
     *detail* is what an approval will run, or a question's numbered options;
     *prompt* says how to answer it. *whole* refuses any cut: a question's options
-    must all be readable in full before a number can pick one.
+    must all be readable in full before a number can pick one. *identity* is the
+    approval's ``MCP tool:`` line (:func:`_approval_identity_line`), shown under
+    *head* and above the detail; ``""`` adds no line.
 
     *detail* is scrubbed for display FIRST, so the cut can never sever a credential
     the scan would have caught, then collapsed to one line and cut the way
@@ -153,13 +185,14 @@ def render_reply_text(
     from kiro_crew.telegram.renderer_display import _display_safe
 
     shown = " ".join(_display_safe(" ".join(detail.split())).split())
+    lead = f"{head}\n{identity}" if identity else head
     cut = _APPROVAL_INPUT_CHARS
     while cut >= _MIN_SHOWN:
         if whole and len(shown) > cut:
             return ""
         part = shown if len(shown) <= cut else shown[: cut - 1].rstrip() + "…"
         part = part.replace("`", "`\u200b")
-        text = f"{head}\n\n```\n{part}\n```\n{prompt}"
+        text = f"{lead}\n\n```\n{part}\n```\n{prompt}"
         if _fits_one_message(transport, text):
             return text
         cut //= 2
@@ -185,8 +218,9 @@ class TransportBridgeSink:
 
     *state* is the gateway's ``DashboardState``; *transport* is the channel type,
     one of ``bridge.BRIDGE_TRANSPORTS``. On a :data:`REPLY_TRANSPORTS` transport a
-    bound pending approval also shows what it will run and how to answer, and each
-    delivered message is linked to its token by ``<chat id>:<message id>``.
+    bound pending approval also shows the MCP server and tool it names, what it will
+    run and how to answer, and each delivered message is linked to its token by
+    ``<chat id>:<message id>``.
     """
 
     def __init__(self, state: Any, transport: str) -> None:
@@ -218,6 +252,7 @@ class TransportBridgeSink:
                 self.transport,
                 prompt,
                 whole=prompt == QUESTION_PROMPT,
+                identity=_approval_identity_line(note),
             )
             text, token = (reply_text, token) if reply_text else (text, "")
         posted: list[tuple[str, str]] = []

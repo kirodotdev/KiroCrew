@@ -124,6 +124,7 @@ DECLARED_SITES = frozenset(
         ("apps/manager_tree.py", "_remove_any_shape"),
         ("apps/manager_tree.py", "_remove_unpinned_tree"),
         ("apps/manager_tree.py", "gateway_data_dir_obstruction"),
+        ("apps/manager_uninstall.py", "_rmtree_app_dir"),
         ("apps/manager_uninstall.py", "uninstall_app"),
         ("apps/plugin_import.py", "_convert_skills"),
         ("apps/plugin_import.py", "_copy_tree_without_links"),

@@ -612,7 +612,10 @@ live on the serve path, and closes their open dashboard sockets and any forwarde
 socket nobody could name (`routes_invites.close_revoked_sockets`). Crew stops no
 work itself. Revoking and `tailscale_invites.sync` commit one at a time
 (`_commit_lock`): `sync` reads the invite state again under the lock, and an invite
-Crew made that was revoked after the list was read admits nobody. Every revoked id
+Crew made that was revoked after the list was read admits nobody. Create, revoke and
+`sync` read the connection (`_api`) under that lock too, so the read never overlaps
+another commit's write of the state file; `sync` drops the lock for its list call
+and takes it again to commit. Every revoked id
 is also kept in the store (`revoked_invite_ids`, the newest 512), so a sync that
 holds a reusable link as accepted by someone new admits nobody by it, even while a
 removed member's row still names that link. A refused read on these owner-only

@@ -118,7 +118,8 @@
             "desktop",
             "other",
             "page",
-            "popout"
+            "popout",
+            "shortcut"
           ]
         }
       }
