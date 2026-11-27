@@ -709,10 +709,13 @@ is re-pinned only to a verified peer and otherwise stays unbound, so it keeps
 roaming after a gateway restart empties the in-memory bindings
 (`test_local_session_cookie_first_use_stays_unbound`).
 
-A Public route served through the owner gate (`/v1/models`, `/v1/responses`, `/v1/responses/{response_id}`, `/v1/responses/{response_id}/input_items`, `/v1/conversations`, `/v1/conversations/{conversation_id}`, `/v1/crew/capabilities`, `/v1/crew/info`) registers through
+A Public route served through the owner gate (`/v1/models`, `/v1/responses`, `/v1/responses/{response_id}`, `/v1/responses/{response_id}/input_items`, `/v1/conversations`, `/v1/conversations/{conversation_id}`, `/v1/conversations/{conversation_id}/items`, `/v1/crew/capabilities`, `/v1/crew/info`) registers through
 `crew_api_owner.owner_route`, the gate the Owner tier uses. `crew_api_auth.OWNER_ONLY_PUBLIC_ROUTES`
 maps each such path to its audit operation; the route passes that
-operation to `owner_route`, and the app-scope refusal reads the same map. The map is keyed
+operation to `owner_route`, and the app-scope refusal reads the same map. The map names a
+path once, and every method of a path it names is refused to an app: the list, the update
+and the delete of a conversation share their paths with the create and the read, and name
+their own audit operations in the handlers' modules. The map is keyed
 by route pattern, so the app-scope refusal looks up the pattern the request matched
 (`crew_api_scopes.route_key`) as well as the path: an installed app's token on
 `/v1/responses/resp_<id>` is the same `403 owner_only`, and a path that matched no route is

@@ -1228,6 +1228,10 @@ class TestRedactionSinkRegistry:
             # redact_model_written (memory_provider/migration.py) runs
             # _redact_memory_field, both scanners, over an item's text and negative.
             "redact_model_written(",
+            # _texts_redacted (dashboard/crew_api_response_reads.py) runs the Crew API
+            # routes' _redact (redact_exfiltration_urls THEN redact_credentials) over
+            # every `text` and `message` string of what it is given.
+            "_texts_redacted(",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")

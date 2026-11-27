@@ -987,16 +987,23 @@ async def _run(
         # A request too large to keep starts no conversation: the conversation would
         # not hold the turn, and a later turn would run without it.
         if conversation_id is None and items is not None:
+            new_id = "conv_" + uuid.uuid4().hex
             try:
-                made = await asyncio.to_thread(conversations.create, {}, OWNER)
+                # Hold the conversation before its record becomes readable.
+                if not conversations.claim(new_id):
+                    raise ValueError("the conversation is already claimed")
+                started = new_id
+                await asyncio.to_thread(conversations.create, {}, OWNER, conversation_id=new_id)
             except Exception as exc:  # the record must never change the turn's answer
+                if started is not None:
+                    conversations.release(started)
+                    started = None
                 logger.warning(
                     "Crew API turn runs in no conversation: none could be recorded (%s)",
                     type(exc).__name__,
                 )
             else:
-                conversation_id = started = str(made["id"])
-                conversations.claim(conversation_id)
+                conversation_id = started
         # The gate, the audit write and the conversation's record can yield: the
         # session may have been closed meanwhile.
         if state._slots.get(slot.key) is not slot or slot.is_closing:

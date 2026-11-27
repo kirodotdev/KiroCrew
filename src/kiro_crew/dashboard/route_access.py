@@ -156,6 +156,18 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("GET", "/v1/conversations/{conversation_id}"): RouteAccess(
         "crew_api.conversations.resolve", PREVIEW
     ),
+    ("POST", "/v1/conversations/{conversation_id}"): RouteAccess(
+        "crew_api.conversations.update", PREVIEW
+    ),
+    ("DELETE", "/v1/conversations/{conversation_id}"): RouteAccess(
+        "crew_api.conversations.delete", PREVIEW
+    ),
+    # The two paged reads (crew_api_conversation_lists), behind the same two checks.
+    # Contract test: test_crew_api_conversation_routes.py.
+    ("GET", "/v1/conversations"): RouteAccess("crew_api.conversations.list.resolve", PREVIEW),
+    ("GET", "/v1/conversations/{conversation_id}/items"): RouteAccess(
+        "crew_api.conversations.items.resolve", PREVIEW
+    ),
     # Connected computers, this computer's own side (feature preview). Owner dashboard
     # only (connected_computers/local_routes.py `_owner`); the action names are the
     # handlers' own audit operation names.

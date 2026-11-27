@@ -745,6 +745,8 @@ paths:
             application/json:
               schema:
                 $ref: ./components.yaml#/components/schemas/ConversationList
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
         '401':
           $ref: ./components.yaml#/components/responses/Unauthorized
         '403':
@@ -758,11 +760,25 @@ paths:
       x-crew-tier: public
       x-crew-scope: conversations:read
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/dashboard/chat_api/slot_detail.py:52 (api_chat_slots)
       x-crew-coverage: done
-      description: OpenAI has no such endpoint; Crew adds it. A delegated credential lists only conversations opened
-        under its grant.
+      x-crew-stability: preview
+      description: 'OpenAI has no such endpoint; Crew adds it. A delegated credential lists only conversations opened
+        under its grant. Proposed amendments, 2026-11-26, waiting for a maintainer''s sign-off: (1) The list
+        holds every conversation of the caller that is still kept, the ones a turn started for itself included
+        (a POST /v1/responses that named no conversation). (2) The order is by `created_at`, then by id; `desc`,
+        the default, is newest first. A conversation keeps its place while turns run in it. (3) `after` is a
+        conversation id of the caller''s own list; any other value is 400 invalid_request, whether or not a
+        conversation of that id exists. A `limit` or `order` outside what the parameters allow is 400
+        invalid_request too; the 400 response is part of this amendment.'
   /v1/conversations/{conversation_id}:
     get:
       operationId: get_v1_conversations_conversation_id
@@ -886,9 +902,23 @@ paths:
       x-crew-tier: public
       x-crew-scope: responses:write
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        request-headers:
+        - Idempotency-Key
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
+      x-crew-stability: preview
+      description: 'Proposed amendments, 2026-11-26, waiting for a maintainer''s sign-off: (1) `metadata` replaces
+        the conversation''s metadata whole: a pair the request does not send is removed, and `{}` removes them
+        all. (2) An update is not a turn: it does not renew the conversation''s retention, which still counts
+        from its latest turn. (3) A conversation can be updated while a turn runs in it.'
       requestBody:
         required: true
         content:
@@ -952,11 +982,23 @@ paths:
       x-crew-tier: public
       x-crew-scope: responses:write
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/dashboard/chat_api/slot_lifecycle.py:1303 (api_chat_slot_delete)
       x-crew-coverage: done
-      description: A delegated credential can delete only conversations opened under its grant; others get 404.
-        409 response_in_progress while a turn is running.
+      x-crew-stability: preview
+      description: 'A delegated credential can delete only conversations opened under its grant; others get 404.
+        409 response_in_progress while a turn is running. Proposed amendments, 2026-11-26, waiting for a
+        maintainer''s sign-off: (1) Deleting a conversation deletes the stored responses of the turns that ran
+        in it. Afterwards the conversation, each of those responses and their input items read 404 not_found,
+        and a turn that names the conversation or one of those responses is 404 not_found. (2) A turn asked
+        for in the conversation while the delete is in progress is 409 response_in_progress.'
   /v1/conversations/{conversation_id}/items:
     get:
       operationId: get_v1_conversations_conversation_id_items
@@ -997,6 +1039,8 @@ paths:
             application/json:
               schema:
                 $ref: ./components.yaml#/components/schemas/ConversationItemList
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
         '401':
           $ref: ./components.yaml#/components/responses/Unauthorized
         '403':
@@ -1012,9 +1056,25 @@ paths:
       x-crew-tier: public
       x-crew-scope: conversations:read
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/dashboard/chat_api/slot_detail.py:803 (the slot window)
       x-crew-coverage: done
+      x-crew-stability: preview
+      description: 'Proposed amendments, 2026-11-26, waiting for a maintainer''s sign-off: (1) The history is
+        the conversation''s stored turns in the order they ran: for each turn its input items, then its reply.
+        `asc` is that order and `desc`, the default, is its reverse. The texts are the stored ones, which are
+        redacted. (2) A turn that failed, was cancelled or was cut short is listed too, and each of its items
+        has `status: incomplete`. (3) A turn still running is not listed until it ends. (4) Every item is a
+        `message`: tool call and approval items are not served yet. (5) `after` is an item id of this history;
+        any other value is 400 invalid_request, as is a `limit` or `order` outside what the parameters allow;
+        the 400 response is part of this amendment.'
   /v1/models:
     get:
       operationId: get_v1_models
