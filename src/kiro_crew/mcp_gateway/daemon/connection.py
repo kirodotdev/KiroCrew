@@ -19,14 +19,15 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.json_line import parse_json_object_line, recover_line_id
-from kiro_crew.mcp_gateway import hazards
-from kiro_crew.mcp_gateway.admission import Admission
+from kiro_crew.mcp_gateway import hazards, socketsec
+from kiro_crew.mcp_gateway.admission import QUEUED_KEEPALIVE_SECS, Admission
 from kiro_crew.mcp_gateway.backend import (
     INTERNAL_STUB_PREFIXES,
     Backend,
     BackendGone,
     has_recyclable_in_flight,
 )
+from kiro_crew.mcp_gateway.backend_stubs import _relabel_stub
 from kiro_crew.mcp_gateway.daemon import logger, session_describe
 from kiro_crew.mcp_gateway.daemon.admission_protocol import (
     _LEGACY_SPAWN_WAIT_SECS,
@@ -36,7 +37,10 @@ from kiro_crew.mcp_gateway.daemon.admission_protocol import (
     _refuse_ensure_backend,
     _refuse_lazy_spawn,
 )
-from kiro_crew.mcp_gateway.daemon.audit import _audit_disconnect_cancel
+from kiro_crew.mcp_gateway.daemon.audit import (
+    _audit_declaring_agent_denied,
+    _audit_disconnect_cancel,
+)
 from kiro_crew.mcp_gateway.daemon.control import _serve_control_frame
 from kiro_crew.mcp_gateway.daemon.control_plane import _caller_for_backend
 from kiro_crew.mcp_gateway.daemon.diagnostics import (
@@ -111,6 +115,137 @@ REGISTERED_CAPABILITIES: tuple[str, ...] = (
 )
 
 
+def _warn_no_declared_env(server_name: str) -> None:
+    """Warn that a routed server's private stub starts with no declared env.
+
+    A process that is not the owning gateway (``kirocrew chat`` / ``run`` /
+    ``eval`` / knowledge consolidate) cannot bind its stubs' agents: the daemon
+    takes a declaring agent only from the owner it is bound to, so a non-owner
+    binding is refused and the private backend reads no declared-env sidecar.
+    Fail-closed by design -- the credentials a routed server needs are resolved
+    only in the dashboard's gateway.
+    """
+    logger.warning(
+        "MCP server %r started with no declared env: only the owning gateway can "
+        "bind a stub's agent, so credentials for routed servers are available only "
+        "from the dashboard",
+        server_name or "?",
+    )
+
+
+async def _declaring_agent(frame_agent: str, conn: _StubConn, writer: asyncio.StreamWriter) -> str:
+    """The agent whose declaration *conn*'s backend is served with, or ``""``.
+
+    The Register's *frame_agent* is taken only when the gateway vouches for it:
+    the owning gateway bound it to this connection's session token
+    (``conn.bound_agents``, from an ``agent-binding`` frame), or the owning
+    gateway is the registrant itself (a resource-subscription holder, whose
+    Register is the one the daemon kept with the agent it resolved). Anything
+    else answers ``""``, the value a stub that names no agent always had: no
+    sidecar is read (``launch._read_declared_env_sidecar``) and an app render's
+    callbacks have no agent to be governed by (``app_call._agent_for_call``).
+    A stub with no session token never has a binding, so it gets ``""`` too.
+    """
+    if not frame_agent:
+        return ""
+    if frame_agent in conn.bound_agents:
+        return frame_agent
+    _peer_pid, refusal = await facade._owner_sender_refusal(writer)
+    if not refusal:
+        return frame_agent
+    logger.info(
+        "stub %s names agent %r, which the gateway did not bind to its session; "
+        "serving it with no declaring agent",
+        conn.stub_uuid,
+        frame_agent,
+    )
+    return ""
+
+
+async def _await_declaring_agent(
+    frame_agent: str,
+    stub_agent: str,
+    conn: _StubConn,
+    exclusive_stub_uuid: str,
+    deadline: Optional[float],
+    writer: asyncio.StreamWriter,
+    server_name: str = "",
+) -> str:
+    """Resolve the declaring agent for a private backend, waiting for a late binding.
+
+    A connection-private backend reads its agent's declared-env sidecar at spawn.
+    The owner gateway's binding can land just after the stub registered -- a
+    warm-pool race, or a reconnect to a restarted daemon before the gateway
+    replays its bindings. So for a private backend whose tokened Register named
+    an agent that is not bound yet, wait a short, bounded time for the binding,
+    the way a pooled control-plane backend waits for the owner port
+    (``launch._await_owner_port``), then re-resolve. The wait is bounded by one
+    keepalive interval (and the acquire's own deadline when shorter) so it never
+    reaches the stub's spawn-queue silence window; it is skipped on an unowned
+    daemon or a connection the owner does not descend, which can receive no
+    binding. Returns ``""`` when none binds in time
+    -- the same fail-closed value, which the next forward replaces once the
+    binding does arrive.
+    """
+    if stub_agent or not exclusive_stub_uuid or not frame_agent or not conn.stub_session_token:
+        return stub_agent
+
+    def _deny(reason: str, *, warn: bool = False) -> str:
+        # The refusal decides whether this private backend is started with the
+        # framed agent's rotating secrets, so record it in the SEL beside the
+        # register-time token refusal and the agent-binding accept/deny. One
+        # event per refusal; the bearer token is never logged.
+        if warn:
+            _warn_no_declared_env(server_name)
+        _audit_declaring_agent_denied(
+            socketsec.get_peer_pid(writer), conn.stub_uuid, frame_agent, reason
+        )
+        return ""
+
+    # A token already bound to an agent set that excludes the framed agent is the
+    # forged case (a Register naming an agent its session does not run): fail fast.
+    # Only an as-yet-unbound token is still waiting for its binding to arrive.
+    if conn.bound_agents:
+        return _deny("framed agent is not in the token's bound set")
+    # A binding can arrive only from the gateway that owns this daemon, and only
+    # for a connection that owner descends -- its pid is then in the stub's
+    # kernel-attested host chain (``conn.attested_pids``). An unowned daemon can
+    # send none; a non-owner session (a local ``kirocrew chat`` / ``run`` /
+    # ``eval`` while the dashboard owns the daemon) is not owner-descended, so its
+    # binding was already refused and will never arrive. Either way, fail closed
+    # at once rather than waiting out the keepalive before every private backend.
+    if facade._OWNER_PID <= 0 or facade._OWNER_PID not in conn.attested_pids:
+        return _deny("no owner binding: the registrant is not owner-descended", warn=True)
+    # Stay silent for at most one keepalive interval, well under the stub's own
+    # spawn-queue silence window (``stub._SPAWN_QUEUE_SILENCE_SECS``, 25s): a
+    # longer silent wait makes the stub give up and fall back to per-session
+    # exec. The acquire's own deadline caps it further when it is shorter.
+    bound = time.monotonic() + QUEUED_KEEPALIVE_SECS
+    if deadline is not None:
+        bound = min(bound, deadline)
+    event = facade._agent_binding_event()
+    while True:
+        resolved = await _declaring_agent(frame_agent, conn, writer)
+        if resolved:
+            # The retained Register (track_live_conn) still holds the empty agent
+            # this connection registered with; a resource-subscription holder
+            # built from it (session_describe -> holder_register_frame) would
+            # otherwise carry "" and its private backend get no declared env.
+            # Update it now, before the backend is acquired.
+            if conn.register is not None and "agent_name" in conn.register:
+                conn.register["agent_name"] = resolved
+            return resolved
+        if conn.bound_agents:
+            # A binding arrived but does not name this agent: forged, stop waiting.
+            return _deny("framed agent is not in the token's bound set")
+        remaining = bound - time.monotonic()
+        if remaining <= 0:
+            return _deny("no binding arrived before the wait deadline", warn=True)
+        tick = min(QUEUED_KEEPALIVE_SECS, remaining)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(event.wait(), timeout=tick)
+
+
 async def _handle_connection(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -179,21 +314,13 @@ async def _handle_connection(
         return
 
     stub_uuid = str(register.get("stub_uuid", ""))
-    # The agent this stub was wrapped for. NOT a pool dimension, so it is read
-    # off the frame here rather than off ``pool_key``, which does not carry it,
-    # and it never reaches pool identity -- it can neither split nor merge a
-    # partition. Two readers, both needing "whose declaration is this" rather
-    # than "which backend is this":
-    #
-    # * the declared-env sidecar THIS stub's own private backend must read
-    #   (``daemon.launch._read_declared_env_sidecar``), and
-    # * ``Backend.agent_for_stub``, which stamps it into an intercepted app
-    #   render's spool record so the callback is governed by the agent that
-    #   produced it (``app_call._agent_for_call``).
-    #
-    # It arrives over the uid socket from the stub the rewriter wrote, which is
-    # what makes it an answer the governed agent cannot author.
-    stub_agent = str(register.get("agent_name") or "")
+    # The agent this stub's Register NAMES. NOT a pool dimension, so it is read
+    # off the frame rather than off ``pool_key``, which does not carry it. It is
+    # only a request: any process at this uid can write a Register, so the
+    # declaring agent the backend is served with (``stub_agent`` below) is the
+    # one the gateway bound to this stub's session token, see
+    # :func:`_declaring_agent`.
+    frame_agent = str(register.get("agent_name") or "")
     # Where this stub's spawn waits in the gate's queue: the priority its
     # session start has (``kiro_crew.start_priority``). Not a pool dimension. A
     # frame without the field, as an older stub sends, is background.
@@ -294,6 +421,14 @@ async def _handle_connection(
     # and any probe this block created.
     _probe: Optional[_StubProbe] = None
     try:
+        # Whose declaration this connection's backend is served with. Two
+        # readers, both needing "whose declaration is this" rather than "which
+        # backend is this": the declared-env sidecar THIS stub's own private
+        # backend reads (``daemon.launch._read_declared_env_sidecar``), and
+        # ``Backend.agent_for_stub``, which stamps it into an intercepted app
+        # render's spool record so the callback is governed by the agent that
+        # produced it (``app_call._agent_for_call``).
+        stub_agent = await _declaring_agent(frame_agent, conn, writer)
         # Register this connection for the keepalive probe. Scoped to the handler's
         # own task so a dead transport can cancel exactly the coroutine that is
         # parked on the read, letting its finally run the detach.
@@ -386,10 +521,18 @@ async def _handle_connection(
     # by ``_MAX_PENDING_FRAMES`` / ``_MAX_PENDING_BYTES``, since only the loop
     # below drains it and it cannot run while a wait is being served.
     pending: deque[bytes] = deque()
+    # Set when the agent-binding pickup below finds a private backend that was
+    # started with no declaring agent; consumed by the next forward.
+    restart_for_agent = False
     try:
         # Inside the ``try``: whatever tracking raises, the teardown below
         # still clears the claim index and the keepalive probe table.
-        session_describe.track_live_conn(conn, register, private_backend=bool(exclusive_stub_uuid))
+        session_describe.track_live_conn(
+            conn,
+            register,
+            private_backend=bool(exclusive_stub_uuid),
+            agent_name=stub_agent,
+        )
         while True:
             try:
                 line = pending.popleft() if pending else await reader.readuntil(b"\n")
@@ -427,6 +570,18 @@ async def _handle_connection(
             # re-targeted this connection's identity via ``conn.caller``.
             # Sync per-frame so the very next forward carries the new caller.
             caller = conn.caller
+            # Agent-binding pickup: a binding that arrived after this stub
+            # registered (``control._apply_agent_binding`` refreshes
+            # ``conn.bound_agents``). A private backend started without the
+            # declaration is replaced before the next forward, so it starts
+            # again with the agent's declared env.
+            if not stub_agent and frame_agent and frame_agent in conn.bound_agents:
+                stub_agent = frame_agent
+                if conn.register is not None and "agent_name" in conn.register:
+                    conn.register["agent_name"] = stub_agent
+                if backend is not None:
+                    await _relabel_stub(backend, stub_uuid, stub_agent)
+                    restart_for_agent = bool(exclusive_stub_uuid)
             if msg.get("type") == "unregister":
                 logger.info("stub %s sent Unregister; closing", stub_uuid)
                 return
@@ -480,6 +635,17 @@ async def _handle_connection(
                     async def _on_queued(position: Any) -> None:
                         await _write_json_line(writer, position.frame())
 
+                    # A private backend reads its agent's sidecar at spawn; wait
+                    # for a late binding before acquiring (see _await_declaring_agent).
+                    stub_agent = await _await_declaring_agent(
+                        frame_agent,
+                        stub_agent,
+                        conn,
+                        exclusive_stub_uuid,
+                        deadline,
+                        writer,
+                        server_name=pool_key.server_name,
+                    )
                     _acquire_t0 = time.monotonic()
                     try:
                         backend, _was_spawned = await _await_answering_pings(
@@ -537,6 +703,18 @@ async def _handle_connection(
             # dedups concurrent first-attaches so even if two stubs race
             # into this block at the same tick they share one backend.
             if backend is None:
+                _lazy_deadline = (
+                    None if admission is None else time.monotonic() + _LEGACY_SPAWN_WAIT_SECS
+                )
+                stub_agent = await _await_declaring_agent(
+                    frame_agent,
+                    stub_agent,
+                    conn,
+                    exclusive_stub_uuid,
+                    _lazy_deadline,
+                    writer,
+                    server_name=pool_key.server_name,
+                )
                 _lazy_t0 = time.monotonic()
                 try:
                     backend, _lazy_was_spawned = await _await_answering_pings(
@@ -585,7 +763,16 @@ async def _handle_connection(
                 captured_init = dict(msg)
                 session_describe.track_initialize(conn, captured_init)
 
+            # Whether the frame forcing this iteration's replacement is the
+            # session's own ``initialize`` (a late agent binding replacing an
+            # agent-less backend). The replacement is primed from it, so its
+            # cached handshake -- not a retry error -- is what this frame returns.
+            agent_rebind_initialize = False
             try:
+                if restart_for_agent:
+                    restart_for_agent = False
+                    agent_rebind_initialize = msg.get("method") == "initialize"
+                    raise BackendGone("its declaring agent was bound after it started")
                 if not bound_to_owner_port(backend):
                     # The owner announced a new port after this connection
                     # attached (``control._apply_owner_port``). The pool hands
@@ -652,7 +839,20 @@ async def _handle_connection(
                     # per-session exec rather than churn against a dead server.
                     await _write_json_line(writer, _jsonrpc_error(msg, f"backend gone: {exc}"))
                     return
-                backend, inbox, writer_task = recovered
+                replacement, inbox, writer_task = recovered
+                backend = replacement
+                if agent_rebind_initialize:
+                    # This frame is the session's own ``initialize`` and the
+                    # replacement was primed from it (``prime_initialize`` left
+                    # it ``ready``), so answer it from the replacement's cached
+                    # handshake. A retry error here is read as terminal by the
+                    # stub's ``_replay_initialize`` (``stub_link.py``), which
+                    # would drop this MCP server for the whole session.
+                    forward_caller = _caller_for_backend(replacement, caller, conn)
+                    await replacement.forward_from_stub(
+                        stub_uuid, msg, caller=forward_caller, tenant_nonce=conn.tenant_nonce
+                    )
+                    continue
                 # Fail only this in-flight request; kiro-cli retries it on the
                 # now-healthy transport. A duplicate error for this id from the
                 # dying backend's broadcast is harmless — clients dedupe by id.

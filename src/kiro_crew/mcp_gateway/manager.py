@@ -996,6 +996,33 @@ class GatewayManager:
             # MemoryError) that would otherwise leak ``log_fh`` until
             # GC — a real risk under a watchdog respawn storm.
             log_fh.close()
+        # A freshly spawned daemon holds no agent bindings (they live only in a
+        # daemon's memory). Replay them once it is serving, so a stub that
+        # reconnects before its session's next turn still resolves its declaring
+        # agent and its private backend reads the right declared env. Covers
+        # every respawn path, not only an owner-port announce the daemon that
+        # already has the port on its argv never triggers.
+        self._schedule_binding_replay()
+
+    def _schedule_binding_replay(self) -> None:
+        """Replay this gateway's agent bindings to its daemon, in the background.
+
+        Fire-and-forget so it never blocks the watchdog; best-effort like the
+        owner-port announce. A foreign daemon we did not spawn refuses the
+        bindings (it is not our owner), so a stray replay is a harmless no-op.
+        """
+        task = asyncio.ensure_future(self._replay_bindings_when_ready())
+        self._telemetry_tasks.add(task)
+        task.add_done_callback(self._telemetry_tasks.discard)
+
+    async def _replay_bindings_when_ready(self) -> None:
+        from kiro_crew.mcp_gateway import claim as _claim
+
+        try:
+            if await self._wait_for_socket(self._spec.socket_path, _SOCKET_READY_TIMEOUT_SECS):
+                await _claim.replay_agent_bindings(str(self._spec.socket_path))
+        except Exception:
+            logger.debug("mcp-gateway: agent-binding replay failed", exc_info=True)
 
     @staticmethod
     def _host_available_mb() -> float:

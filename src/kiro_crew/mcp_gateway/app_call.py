@@ -192,9 +192,9 @@ def _agent_for_call(record: Mapping[str, Any]) -> Optional[str]:
        session or a subagent has none and every callback would be refused.
 
     The SPOOL RECORD satisfies both. ``gatewayd`` writes it at interception
-    (``Backend._fetch_and_deliver_ui``) and stamps in the agent the PRODUCING
-    STUB declared on its Register frame, which arrived over the gateway's own
-    uid socket from the stub the rewriter wrote. So the value is per call rather
+    (``Backend._fetch_and_deliver_ui``) and stamps in the agent the daemon
+    resolved for the PRODUCING STUB (``connection._declaring_agent``): one the
+    owning gateway bound to that stub's session token, else none. So the value is per call rather
     than per session — correct for a shared backend serving several agents — and
     it lives in the owner-only spool directory only gatewayd writes. No
     session-side store is consulted, which is why no class of session is left
