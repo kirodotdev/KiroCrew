@@ -72,6 +72,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     # IAM Identity Center sign-in profiles only while it is on.
     "crew_client",
     "crew_oauth",
+    "crew_reply_status",
     "dashboard_stale_fields",
     "dashboard_stale_wake",
     "explore",

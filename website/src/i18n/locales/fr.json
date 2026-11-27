@@ -11334,7 +11334,9 @@
       "conductor_mode_pause_confirm_body_many": "Arrête {{count}} workers en cours, sous-équipes comprises. Les étapes en cours s’arrêtent maintenant et reprennent à la reprise. Aucun nouveau worker ne démarre pendant la pause.",
       "conductor_mode_paused_notice_many": "Tu as mis l’équipe en pause. {{count}} workers arrêtés. Reprends depuis le Board.",
       "conductor_mode_row_lead_working": "Le lead travaille",
-      "conductor_mode_pause_confirm_lead": "Arrête l’étape en cours du lead. Aucun nouveau worker ne démarre pendant la pause."
+      "conductor_mode_pause_confirm_lead": "Arrête l’étape en cours du lead. Aucun nouveau worker ne démarre pendant la pause.",
+      "reply_status_label": "Exécutants : {{status}}. Ouvrir le panneau Exécutants",
+      "reply_status_open": "Ouvrir le panneau Exécutants"
     },
     "guideLayer": {
       "region_label": "Guide",
@@ -17151,7 +17153,10 @@
         "remote_dispatch_connect": "Connecte des machines dans <0>Settings › Remote Crew</0>.",
         "bot_chat_app_tools": "Outils d’app dans les chats des Bots",
         "bot_chat_app_tools_desc": "Pour arrêter un seul bot, décoche-le sur la page de l'app.",
-        "bot_chat_app_tools_desc_summary": "Permet aux apps que tu autorises d'ajouter leurs outils au chat d'un Bot. Chaque appel suit le réglage d'approbation propre à ce Bot."
+        "bot_chat_app_tools_desc_summary": "Permet aux apps que tu autorises d'ajouter leurs outils au chat d'un Bot. Chaque appel suit le réglage d'approbation propre à ce Bot.",
+        "crew_reply_status": "État des exécutants sous la réponse",
+        "crew_reply_status_desc": "Sous la dernière réponse terminée d'un conductor, une ligne indique combien de ses exécutants ont besoin de toi, sont bloqués, sont en cours ou attendent. Un clic ouvre Exécutants dans le panneau latéral. Utile quand la barre latérale est fermée, sur un téléphone ou en vue partagée. Les réponses plus anciennes n'affichent rien, et la ligne disparaît quand aucun exécutant n'est occupé.",
+        "crew_reply_status_desc_summary": "La dernière réponse d'un conductor indique ce que font ses exécutants."
       },
       "kasBundleCard": {
         "installed": "Moteur intégré {{version}}",

@@ -10816,7 +10816,9 @@
       "conductor_mode_pause_confirm_body_other": "停止 {{count}} 个正在运行的成员，包括子团队。进行中的步骤现在停止，继续时会重新运行。暂停期间不会启动新成员。",
       "conductor_mode_paused_notice_other": "你暂停了团队。已停止 {{count}} 个成员。可在 Board 上继续。",
       "conductor_mode_row_lead_working": "负责人工作中",
-      "conductor_mode_pause_confirm_lead": "停止负责人当前的步骤。暂停期间不会启动新成员。"
+      "conductor_mode_pause_confirm_lead": "停止负责人当前的步骤。暂停期间不会启动新成员。",
+      "reply_status_label": "执行者：{{status}}。打开执行者面板",
+      "reply_status_open": "打开执行者面板"
     },
     "guideLayer": {
       "region_label": "引导",
@@ -16265,7 +16267,10 @@
         "remote_dispatch_connect": "在 <0>Settings › Remote Crew</0> 中连接机器。",
         "bot_chat_app_tools": "Bot 聊天里的应用工具",
         "bot_chat_app_tools_desc": "要停掉某一个 Bot，在 app 页面取消勾选它。",
-        "bot_chat_app_tools_desc_summary": "允许你授权的应用把工具加进 Bot 的聊天里。每次调用都按这个 Bot 自己的批准设置处理。"
+        "bot_chat_app_tools_desc_summary": "允许你授权的应用把工具加进 Bot 的聊天里。每次调用都按这个 Bot 自己的批准设置处理。",
+        "crew_reply_status": "回复下方的执行者状态",
+        "crew_reply_status_desc": "在 conductor 最新一条已结束的回复下方，用一行字说明有几个执行者需要你、卡住、运行中或在等待。点一下就在侧边面板打开执行者。侧边栏收起、用手机或分屏时有用。更早的回复不显示；没有执行者在忙时这一行会消失。",
+        "crew_reply_status_desc_summary": "conductor 最新一条回复下显示它的执行者在做什么。"
       },
       "kasBundleCard": {
         "installed": "内置引擎 {{version}}",

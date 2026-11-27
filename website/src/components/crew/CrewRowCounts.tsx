@@ -7,7 +7,7 @@
  *  "needs you" takes the warm colour: a stall is the conductor's to pick up,
  *  so it is muted. */
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
-import { Check, Circle, Hand, Pause } from 'lucide-react'
+import { Check, Circle, Hand, Hourglass, Pause } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { fmtList } from '../../i18n/format'
 import { fmtMinutes } from '../../lib/crewWork'
@@ -62,6 +62,9 @@ export interface CrewRowAttentionProps {
   needsYou: number
   stalled: number
   running: number
+  /** Idle workers and workers held on the conductor. The sidebar row leaves
+   *  them out (0); the status row under a conductor's reply counts them. */
+  waiting?: number
   /** Every crew member finished. */
   done: boolean
   /** Pause all stands: the row says "Paused", after what needs the person. */
@@ -74,8 +77,8 @@ export interface CrewRowAttentionProps {
 
 const PART_CLS = 'inline-flex items-center gap-1 h-4 text-[12px] whitespace-nowrap tabular-nums'
 
-export function CrewRowAttention({ needsYou, stalled, running, done, paused, stalledName, stalledForMs, title }: CrewRowAttentionProps) {
-  const { ref, hidden } = useWrappedAwayCount<HTMLSpanElement>(`${needsYou}/${stalled}/${running}`)
+export function CrewRowAttention({ needsYou, stalled, running, waiting = 0, done, paused, stalledName, stalledForMs, title }: CrewRowAttentionProps) {
+  const { ref, hidden } = useWrappedAwayCount<HTMLSpanElement>(`${needsYou}/${stalled}/${running}/${waiting}`)
   if (paused) {
     // What needs the person still comes first: the pause leaves a member that
     // waits on them as it is, so the row keeps saying so.
@@ -92,7 +95,7 @@ export function CrewRowAttention({ needsYou, stalled, running, done, paused, sta
       </span>
     )
   }
-  if (needsYou <= 0 && stalled <= 0 && running <= 0) {
+  if (needsYou <= 0 && stalled <= 0 && running <= 0 && waiting <= 0) {
     if (!done) return null
     return (
       <span className={`${PART_CLS} crew-tone-muted`} data-testid="crew-root-done" title={title}>
@@ -122,6 +125,11 @@ export function CrewRowAttention({ needsYou, stalled, running, done, paused, sta
         {running > 0 && (
           <span className={`${PART_CLS} crew-tone-muted`} data-testid="crew-root-count" data-bucket="running">
             <Circle size={ICON_PX} aria-hidden="true" fill="currentColor" className="inline-block shrink-0" />{i18nT('components.crewMode.conductor_mode_row_count_running', { count: running })}
+          </span>
+        )}
+        {waiting > 0 && (
+          <span className={`${PART_CLS} crew-tone-muted`} data-testid="crew-root-count" data-bucket="waiting">
+            <Hourglass size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.conductor_mode_row_count_waiting', { count: waiting })}
           </span>
         )}
       </span>

@@ -2838,6 +2838,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.worker-status-under-the-reply",
+    "label": "Worker status under the reply",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_reply_status",
+    "description": "A conductor's latest reply says what its workers are doing.",
+    "hint": "Under a conductor's latest finished reply, one line says how many of its workers need you, have stalled, are running or are waiting. Click it to open Workers in the side panel. Useful when the sidebar is closed, on a phone, or in split view. Older replies show nothing, and the line goes away when no worker is busy.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "display.command-completion",
     "label": "Command completion",
     "labelKey": "pages.settings.displayPanel.terminal_completion",

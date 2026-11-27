@@ -10816,7 +10816,9 @@
       "conductor_mode_pause_confirm_body_other": "実行中の {{count}} 件のメンバーを停止します（サブクルーを含む）。進行中のステップは今止まり、再開時にもう一度実行されます。一時停止中は新しいメンバーは始まりません。",
       "conductor_mode_paused_notice_other": "クルーを一時停止しました。{{count}} 件のメンバーを停止。Board から再開できます。",
       "conductor_mode_row_lead_working": "リードが作業中",
-      "conductor_mode_pause_confirm_lead": "リードの現在のステップを止めます。一時停止中は新しいメンバーは始まりません。"
+      "conductor_mode_pause_confirm_lead": "リードの現在のステップを止めます。一時停止中は新しいメンバーは始まりません。",
+      "reply_status_label": "ワーカー: {{status}}。ワーカーパネルを開く",
+      "reply_status_open": "ワーカーパネルを開く"
     },
     "guideLayer": {
       "region_label": "ガイド",
@@ -16265,7 +16267,10 @@
         "remote_dispatch_connect": "<0>Settings › Remote Crew</0> でマシンを接続します。",
         "bot_chat_app_tools": "Bot チャットでのアプリのツール",
         "bot_chat_app_tools_desc": "1 つの Bot だけ止めるには、app のページでチェックを外します。",
-        "bot_chat_app_tools_desc_summary": "許可したアプリが Bot のチャットにツールを追加できるようにします。各呼び出しは、その Bot 自身の承認設定に従います。"
+        "bot_chat_app_tools_desc_summary": "許可したアプリが Bot のチャットにツールを追加できるようにします。各呼び出しは、その Bot 自身の承認設定に従います。",
+        "crew_reply_status": "返信の下にワーカーの状態",
+        "crew_reply_status_desc": "conductor の最新の完了した返信の下に、対応が必要なワーカー、停滞中、実行中、待機中の数を 1 行で表示します。クリックするとサイドパネルでワーカーを開きます。サイドバーを閉じているとき、スマートフォン、分割表示で役立ちます。古い返信には表示されず、忙しいワーカーがいなければ行は消えます。",
+        "crew_reply_status_desc_summary": "conductor の最新の返信に、ワーカーの様子を表示します。"
       },
       "kasBundleCard": {
         "installed": "内蔵エンジン {{version}}",

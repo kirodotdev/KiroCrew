@@ -11075,7 +11075,9 @@
       "conductor_mode_paused_notice_one": "তুমি টিম থামিয়েছ। {{count}}টি ওয়ার্কার থেমেছে। Board থেকে আবার চালু করো।",
       "conductor_mode_paused_notice_other": "তুমি টিম থামিয়েছ। {{count}}টি ওয়ার্কার থেমেছে। Board থেকে আবার চালু করো।",
       "conductor_mode_row_lead_working": "লিড কাজ করছে",
-      "conductor_mode_pause_confirm_lead": "লিডের চলতি ধাপ থামবে। থামানো অবস্থায় কোনো নতুন ওয়ার্কার শুরু হবে না।"
+      "conductor_mode_pause_confirm_lead": "লিডের চলতি ধাপ থামবে। থামানো অবস্থায় কোনো নতুন ওয়ার্কার শুরু হবে না।",
+      "reply_status_label": "কর্মী: {{status}}। কর্মী প্যানেল খোলো",
+      "reply_status_open": "কর্মী প্যানেল খোলো"
     },
     "guideLayer": {
       "region_label": "গাইড",
@@ -16708,7 +16710,10 @@
         "remote_dispatch_connect": "<0>Settings › Remote Crew</0>-এ মেশিন সংযুক্ত করো।",
         "bot_chat_app_tools": "Bot চ্যাটে অ্যাপের টুল",
         "bot_chat_app_tools_desc": "একটি bot থামাতে app-এর পাতায় তার টিক তুলে দাও।",
-        "bot_chat_app_tools_desc_summary": "যে অ্যাপগুলো তুমি অনুমতি দিয়েছ সেগুলোকে Bot-এর চ্যাটে তাদের টুল যোগ করতে দেয়। প্রতিটি কল Bot-এর নিজের অনুমোদন সেটিং মেনে চলে।"
+        "bot_chat_app_tools_desc_summary": "যে অ্যাপগুলো তুমি অনুমতি দিয়েছ সেগুলোকে Bot-এর চ্যাটে তাদের টুল যোগ করতে দেয়। প্রতিটি কল Bot-এর নিজের অনুমোদন সেটিং মেনে চলে।",
+        "crew_reply_status": "উত্তরের নিচে কর্মীদের অবস্থা",
+        "crew_reply_status_desc": "conductor-এর সর্বশেষ শেষ হওয়া উত্তরের নিচে এক লাইনে দেখায় তার কতজন কর্মীর তোমাকে দরকার, কতজন আটকে আছে, চলছে বা অপেক্ষায় আছে। ক্লিক করলে পাশের প্যানেলে কর্মী খোলে। সাইডবার বন্ধ থাকলে, ফোনে বা স্প্লিট ভিউতে কাজে লাগে। পুরোনো উত্তরে কিছু দেখায় না, আর কোনো কর্মী ব্যস্ত না থাকলে লাইনটি সরে যায়।",
+        "crew_reply_status_desc_summary": "conductor-এর সর্বশেষ উত্তর জানায় তার কর্মীরা কী করছে।"
       },
       "kasBundleCard": {
         "installed": "বিল্ট-ইন ইঞ্জিন {{version}}",

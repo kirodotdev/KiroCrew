@@ -11686,6 +11686,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.crew_reply_status",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: crew_reply_status",
+      "help": "Turn on the 'crew_reply_status' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.dashboard_stale_fields",
       "kind": "core",
       "type": "boolean",

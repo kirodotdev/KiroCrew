@@ -4693,7 +4693,9 @@
       "conductor_mode_paused_notice_one": "You paused the crew. {{count}} worker stopped. Resume from the Board.",
       "conductor_mode_paused_notice_other": "You paused the crew. {{count}} workers stopped. Resume from the Board.",
       "conductor_mode_row_lead_working": "Lead working",
-      "conductor_mode_pause_confirm_lead": "Stops the lead's current step. No new workers start while paused."
+      "conductor_mode_pause_confirm_lead": "Stops the lead's current step. No new workers start while paused.",
+      "reply_status_label": "Workers: {{status}}. Open the Workers panel",
+      "reply_status_open": "Open the Workers panel"
     },
     "guideLayer": {
       "region_label": "Guide",
@@ -11638,7 +11640,10 @@
         "remote_dispatch_connect": "Connect machines in <0>Settings › Remote Crew</0>.",
         "bot_chat_app_tools": "App tools in bot chats",
         "bot_chat_app_tools_desc": "To stop one bot, untick it on the app's page.",
-        "bot_chat_app_tools_desc_summary": "Lets apps you allow add their tools to a bot's chat. Each call follows the bot's own approval setting."
+        "bot_chat_app_tools_desc_summary": "Lets apps you allow add their tools to a bot's chat. Each call follows the bot's own approval setting.",
+        "crew_reply_status": "Worker status under the reply",
+        "crew_reply_status_desc": "Under a conductor's latest finished reply, one line says how many of its workers need you, have stalled, are running or are waiting. Click it to open Workers in the side panel. Useful when the sidebar is closed, on a phone, or in split view. Older replies show nothing, and the line goes away when no worker is busy.",
+        "crew_reply_status_desc_summary": "A conductor's latest reply says what its workers are doing."
       },
       "kasBundleCard": {
         "installed": "Built-in engine {{version}}",

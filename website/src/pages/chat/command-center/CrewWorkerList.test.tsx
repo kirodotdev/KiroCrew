@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { StrictMode } from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -15,6 +16,7 @@ import { ApiError } from '../../../api/apiError'
 import { CREW_WORKERS_FAILED_POLL_MS, CREW_WORKERS_FALLBACK_POLL_MS, CREW_WORKERS_PUSH_COALESCE_MS, CrewWorkersTab, crewWorkerQueryKey, crewWorkersPollMs, reopenCrewSession } from './CrewWorkerList'
 import ConductorModeCrewPanel, { CREW_BOARD_EXPANDED_KEY } from './ConductorModeCrewPanel'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
+import { requestCrewPanelList, takeCrewPanelView } from './crewPanelView'
 import { resetCrewWorkersPoll } from '../../../lib/crewWorkersPoll'
 
 const W = (key: string, title: string, status: string, group: string) =>
@@ -341,6 +343,34 @@ describe('Conductor mode Crew tab', () => {
     renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />, [{ key: 'root-1', title: 'Sample goal', crew_mode_root: true }])
     expect(await screen.findByTestId('conductor-mode-view-status')).toHaveTextContent(/^Status$/)
     expect(screen.getByTestId('conductor-mode-view-list')).toHaveTextContent(/^Workers$/)
+  })
+
+  it('opens on the Workers list when asked before it mounts, and switches to it when asked after', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    requestCrewPanelList('root-1')
+    // StrictMode, as the dashboard runs in development: a state initializer runs twice there.
+    const { unmount } = renderWith(<StrictMode><ConductorModeCrewPanel root="root-1" viewing="root-1" active /></StrictMode>, [{ key: 'root-1', title: 'Sample goal', crew_mode_root: true }])
+    expect(await screen.findByTestId('conductor-mode-view-list')).toHaveAttribute('aria-checked', 'true')
+    unmount()
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />, [{ key: 'root-1', title: 'Sample goal', crew_mode_root: true }])
+    expect(await screen.findByTestId('conductor-mode-view-status')).toHaveAttribute('aria-checked', 'true')
+    // Another conductor's request leaves this panel where it is.
+    act(() => { requestCrewPanelList('root-2') })
+    expect(screen.getByTestId('conductor-mode-view-status')).toHaveAttribute('aria-checked', 'true')
+    act(() => { requestCrewPanelList('root-1') })
+    expect(screen.getByTestId('conductor-mode-view-list')).toHaveAttribute('aria-checked', 'true')
+    // root-2's request waits for root-2's panel; drop it so no later test sees it.
+    expect(takeCrewPanelView('root-2')).toBe('list')
+  })
+
+  it("leaves the Workers request on a worker's Board for the conductor's own Board", async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    // A worker's Board shows the same crew while the click switches to the conductor.
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="w-work" active />, [{ key: 'root-1', title: 'Sample goal', crew_mode_root: true }])
+    await screen.findByTestId('conductor-mode-view-status')
+    act(() => { requestCrewPanelList('root-1') })
+    expect(screen.getByTestId('conductor-mode-view-status')).toHaveAttribute('aria-checked', 'true')
+    expect(takeCrewPanelView('root-1')).toBe('list')
   })
 
   it('the Workers tab on a plain chat lists nothing', () => {
