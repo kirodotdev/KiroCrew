@@ -56,6 +56,9 @@ def _score(skill: str, text: str) -> tuple[float, bool]:
         ("feature-request", "I have a feature request"),
         ("debug-gateway", "my fix did not land in the gateway"),
         ("debug-gateway", "did my fix land in the gateway?"),
+        ("best-of-n", "run this on three models side by side"),
+        ("best-of-n", "best of n on this task"),
+        ("best-of-n", "compare models on one task"),
     ],
 )
 def test_topic_phrases_fire(skill: str, text: str) -> None:
@@ -94,6 +97,9 @@ def test_topic_phrases_fire(skill: str, text: str) -> None:
         ("feature-request", "I have an hour before the meeting."),
         ("debug-gateway", "Fix the import; it did not compile."),
         ("artifacts", "What have we got left to do?"),
+        ("best-of-n", "Pick the best of the three options."),
+        ("best-of-n", "Run the tests on several machines."),
+        ("best-of-n", "Which models does the gateway offer?"),
     ],
 )
 def test_ordinary_prose_does_not_fire(skill: str, text: str) -> None:

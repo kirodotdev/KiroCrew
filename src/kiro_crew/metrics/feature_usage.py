@@ -210,6 +210,7 @@ REPO_SKILL_IDS: tuple[str, ...] = (
 #: compares it with the package tree.
 BUILTIN_SKILL_IDS: tuple[str, ...] = (
     "artifacts",
+    "best-of-n",
     "blocked-by-policy",
     "browser-auth",
     "browser-recording",
