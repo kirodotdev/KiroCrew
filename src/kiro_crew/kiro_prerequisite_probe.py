@@ -295,8 +295,7 @@ def _latch_login_only(
     ``whoami``, which carries the latch's previous answer rather than none.
     """
     login_cmd, sso_cmd, bundled = login_commands_for(self._viable_binary, self._environ)
-    skipped = authenticated is not None
-    unclear = not skipped and not whoami.ok and not _whoami_says_signed_out(whoami)
+    unclear = authenticated is None and not whoami.ok and not _whoami_says_signed_out(whoami)
     if unclear and whoami.timed_out:
         error = f"kiro-cli whoami timed out after {_IDENTITY_PROBE_TIMEOUT_SECS}s"
     elif unclear:
@@ -306,7 +305,7 @@ def _latch_login_only(
     self._status = PrerequisiteStatus(
         platform=_platform_label(self._platform),
         installed=True,
-        authenticated=authenticated if skipped else whoami.ok,
+        authenticated=whoami.ok if authenticated is None else authenticated,
         ready=False,
         initial_setup_complete=self._initial_setup_complete,
         login_command=login_cmd,
