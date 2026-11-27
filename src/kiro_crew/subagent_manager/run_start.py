@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from ..subagent import (
         _DEDICATED_TOPUP_POLL_SECS,
         _DEDICATED_TOPUP_WAIT_SECS,
+        DEFAULT_MODEL,
         MEMORY_CAUSE_READ_UNANSWERED,
         AcpRuntime,
         AcpSessionProvider,
@@ -112,6 +113,43 @@ def _should_use_session_sharing_impl(self: RunEventCoordinator, info: SubagentIn
     return eligible
 
 
+#: Most sub-agents of one parent placed on its KAS process at once; the next one
+#: takes a process of its own. Bounds what one runaway fan-out can load onto the
+#: one process that also serves the parent chat.
+KAS_SHARED_CHILDREN_PER_PARENT = 8
+
+
+def _kas_shared_slot_taken(self: RunEventCoordinator, info: SubagentInfo) -> bool:
+    """Reserve *info* a place on its KAS parent's process, or answer that none is left.
+
+    One KAS process also serves the parent chat, so a fan-out past
+    ``KAS_SHARED_CHILDREN_PER_PARENT`` takes processes of its own rather than
+    loading every child onto it. Counted and reserved with no await in between,
+    so starts racing on one event loop cannot both take the last place: a child
+    counts from this reservation (``_shared_slot_reserved``), before its session
+    exists, until it is done or falls back to a dedicated process. Returns True
+    when the cap is reached, False after reserving (or on a parent that is not KAS).
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+    host = self._manager._get_parent_runtime(info.parent_session_key) or getattr(
+        self._manager._sessions, "_subagent_runtimes", {}
+    ).get(info.parent_session_key)
+    if getattr(host, "acp_backend", None) == ACP_BACKEND_KAS:
+        placed = sum(
+            1
+            for other in list(self._manager._agents.values())
+            if other is not info
+            and other.parent_session_key == info.parent_session_key
+            and (other._session_sharing or getattr(other, "_shared_slot_reserved", False))
+            and not other.done
+        )
+        if placed >= KAS_SHARED_CHILDREN_PER_PARENT:
+            return True
+        info._shared_slot_reserved = True
+    return False
+
+
 def _sharing_plan_impl(
     self: RunEventCoordinator,
     info: SubagentInfo,
@@ -131,9 +169,9 @@ def _sharing_plan_impl(
     where the override reaches the provider factory. A model (per-spawn,
     per-role or routed) shares only where :func:`_pinned_model_shares` says
     the parent's runtime can put one session on it; the shared session is
-    then put on it by ``_bind_shared_handle_impl``. Eligibility and that
-    answer are the backend's opt-in capabilities; nothing here names a
-    harness. *cfg* is a config the caller already loaded.
+    then put on it by ``_bind_shared_handle_impl``. An unpinned KAS start
+    also needs no configured session effort: only its dedicated factory can
+    apply that effort. *cfg* is a config the caller already loaded.
 
     A run whose ``cwd`` binds another AWS profile (``aws.project_profiles``)
     than the binding set on the parent also takes the dedicated arm, where
@@ -162,6 +200,20 @@ def _sharing_plan_impl(
         shared = _pinned_model_shares(self._manager._sessions, info, cfg)
     if shared and self._aws_profile_rules_out_sharing(info, child_aws_profile):
         shared = False
+    if shared and not eff_model:
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        try:
+            host = self._manager._get_parent_runtime(info.parent_session_key) or getattr(
+                self._manager._sessions, "_subagent_runtimes", {}
+            ).get(info.parent_session_key)
+            if getattr(host, "acp_backend", None) == ACP_BACKEND_KAS:
+                cfg = cfg if cfg is not None else KiroCrewConfig.load()
+                template = info.agent or getattr(info.execution_context, "template_id", "")
+                shared = cfg.resolve_session_effort(template or None, "") == ""
+        except Exception:
+            shared = False
     return _SharingPlan(eff_model, eff_effort, shared)
 
 
@@ -480,14 +532,39 @@ async def _create_shared_session_impl(
 
     async def _serve_cli_default(handle: Any) -> None:
         # After the bind, which publishes ownership before any cancellable await.
-        # On KAS a shared sub-agent carries no model pin (``_pinned_model_shares``), so
-        # it starts on kiro-cli's chat.defaultModel unless Crew pins its agent one.
+        # A run's own pin was applied in the bind and is not overwritten.
+        # KAS's agent projection carries no model, so apply Crew's agent/global
+        # pin before falling back to kiro-cli's chat.defaultModel.
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+        from kiro_crew.agent_sdk.drivers.acp import apply_configured_model
+
         start_agent = agent or getattr(shared_runtime, "_agent", "") or None
+        pin = info.requested_model if info.requested_model != DEFAULT_MODEL else ""
+        if not pin and shared_runtime.acp_backend == ACP_BACKEND_KAS:
+            try:
+                pin = await asyncio.to_thread(
+                    self._manager._sessions._cfg.acp_effective_model,
+                    start_agent,
+                    None,
+                    namespace=capabilities_for(shared_runtime.acp_backend).model_id_namespace,
+                )
+                if pin and pin != DEFAULT_MODEL:
+                    await apply_configured_model(handle, pin, backend=shared_runtime.acp_backend)
+                    return
+            except Exception:
+                logger.warning(
+                    "Subagent %s: could not apply model %s to its shared session",
+                    info.id,
+                    pin,
+                    exc_info=True,
+                )
+                return
         await serve_kiro_cli_default_model(
             shared_runtime,
             handle,
             cwd,
-            lambda: self._manager._sessions._cfg.acp_effective_model(start_agent, None),
+            lambda: pin,
         )
 
     async def _late_adopter(handle: Any) -> bool:

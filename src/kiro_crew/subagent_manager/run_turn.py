@@ -414,9 +414,10 @@ async def _run_inner_impl(
     # both arms -- a resident subagent session would hold its MCP fleet on a
     # runtime nobody is using -- and what a later ``spawn_continue`` addresses is
     # the record the host kept: kiro-cli's transcript under
-    # ``<kiro home>/sessions/cli``, or the thread ``codex`` persists under
-    # ``CODEX_HOME``. Both are driven end to end with the shared session's runtime
-    # process dead before the continuation runs. The fail-closed resume guard
+    # ``<kiro home>/sessions/cli``, the thread ``codex`` persists under
+    # ``CODEX_HOME``, or the record a KAS engine keeps after ``session/close``.
+    # Each is driven end to end with the shared session's runtime process dead
+    # before the continuation runs. The fail-closed resume guard
     # below still applies, because a record can be pruned or released between the
     # two runs; it is one of two things standing between a shared-arm run and its
     # follow-up rather than the only one.
@@ -439,8 +440,12 @@ async def _run_inner_impl(
         self._manager._sessions.mark_continuable(session_key)
         self._manager._conversations[session_key] = time.monotonic()
     # The parent's shared runtime carries its workspace server, so a remote
-    # child gets its own; a start priced shared takes the top-up below.
-    use_session_sharing = plan.shared and not inherits_remote
+    # child gets its own; a start priced shared takes the top-up below. A KAS
+    # parent's process holds a bounded number of children; the check reserves the
+    # place in the same synchronous step, so racing starts cannot both take it.
+    use_session_sharing = (
+        plan.shared and not inherits_remote and not self._kas_shared_slot_taken(info)
+    )
     client, is_new, _resumed, is_cc, use_session_sharing = await _session.acquire_session(
         self,
         info,

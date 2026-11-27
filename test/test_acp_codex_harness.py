@@ -1056,19 +1056,11 @@ class TestOneFactReadThreeWays:
         # transcript -- the property that makes a closed session continuable.
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_HARNESS_OWNED_SESSIONS
 
-    def test_running_on_the_shared_runtime_does_not_by_itself_grant_sharing(self):
-        """The superset relation must not be read as an implication.
-
-        codex belongs to both sets, so KAS is the member that separates them, and it
-        is asserted here rather than left to the sharing set's comment: a harness runs
-        on the runtime and is still refused sharing when its teardown removes the
-        record a continuation would load.
-        """
+    def test_codex_is_on_the_shared_runtime_and_in_sharing(self):
+        """codex is in both sets; the sharing set stays within the runtime set."""
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_SHARING
-        assert ACP_BACKEND_KAS in ACP_BACKENDS_ACP_RUNTIME
-        assert ACP_BACKEND_KAS not in ACP_BACKENDS_SESSION_SHARING
-        assert ACP_BACKENDS_SESSION_SHARING < ACP_BACKENDS_ACP_RUNTIME
+        assert ACP_BACKENDS_SESSION_SHARING <= ACP_BACKENDS_ACP_RUNTIME
 
     def test_it_is_in_the_eviction_set_because_its_teardown_evicts(self):
         """Eviction is the harness's own property, and it is unchanged by sharing.

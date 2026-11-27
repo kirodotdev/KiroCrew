@@ -79,12 +79,21 @@ from kiro_crew.agent_sdk.backends import (
 # carries the first turn. ``session/delete`` and the recall
 # ANSWER stay with the opt-in ``test_real_codex_acp_load_after_close_restores``.
 #
-# KAS answers NO, and that is the whole of its exclusion: its teardown maps to
-# ``_kiro/session/delete``, which REMOVES the persisted record, so there is nothing
-# for a load to restore and a shared subagent would strand ``spawn_continue`` on
-# ``conversation_gone``. A different gap from anything codex had, owned by whoever
-# gives KAS a non-destroying teardown; until then its subagents get dedicated
-# sessions, which is working behaviour rather than a degraded one.
+# KAS answers yes with the record its engine keeps after ``session/close``. Its
+# teardown verb is ``_kiro/session/delete``, which removes the record, so a shared
+# sub-agent's teardown never sends it: ``AcpSessionProvider.shutdown`` destroys the
+# handle inside ``keep_record_on_teardown`` whenever the transcript is kept and the
+# runtime ``can_release()``, so the session leaves with ``session/close`` (the verb
+# a shared KAS chat's teardown already sends), and the tombstone pruner deletes the
+# record with the run folder. Measured on the kiro-cli 3.6.2 relay (engine
+# ``@kiro/agent`` 0.66.127) by ``test_kas_subagent_sharing_real.py``: sessions on
+# one process each reach their own same-named per-session MCP server; a close stops
+# only the closed session's server; the same process and a restarted one load the
+# closed session, and the next turn recalls the first. Membership is necessary,
+# not sufficient: the process in hand must qualify as well
+# (``acp.kas_subagent_sharing.runtime_hosts_subagents``: close advertised, engine at
+# or above the chat-sharing floor, no machine mode, no chat lease), or its
+# sub-agents keep the dedicated path.
 #
 # opencode is not a member: one binary serves one session over its own stdio pipe,
 # so there is no second session to share.
@@ -101,7 +110,7 @@ from kiro_crew.agent_sdk.backends import (
 # demux Crew has -- see ``ACP_BACKENDS_ACP_RUNTIME`` -- so Crew opens one process per
 # session and there is no shared session to persist. A harness capability Crew cannot
 # reach is recorded here rather than claimed.
-ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
+ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX, ACP_BACKEND_KAS})
 
 # Backends a top-level DASHBOARD CHAT slot may share a runtime on, behind the
 # off-by-default ``chat_runtime_sharing`` feature preview. Deliberately SEPARATE

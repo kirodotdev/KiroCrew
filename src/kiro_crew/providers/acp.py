@@ -840,8 +840,20 @@ class AcpProvider(LLMProvider):
         process per session) and is not a member, so subagents fall back to the
         legacy per-process path — and neither does any harness added later,
         until someone adds it deliberately.
+
+        On KAS membership is necessary, not sufficient: this provider's own
+        process must also qualify (``acp.kas_subagent_sharing.runtime_hosts_subagents``),
+        or its sub-agents keep the dedicated path.
         """
-        return self._client.backend in ACP_BACKENDS_SESSION_SHARING
+        backend = self._client.backend
+        if backend == ACP_BACKEND_KAS and backend in ACP_BACKENDS_SESSION_SHARING:
+            from kiro_crew.acp.kas_subagent_sharing import runtime_hosts_subagents
+
+            return runtime_hosts_subagents(
+                getattr(self._client, "_runtime", None),
+                chat_shared=getattr(self._client, "_shared_runtime", False) is True,
+            )
+        return backend in ACP_BACKENDS_SESSION_SHARING
 
     @property
     def manual_compact_unsupported_backend(self) -> str | None:
