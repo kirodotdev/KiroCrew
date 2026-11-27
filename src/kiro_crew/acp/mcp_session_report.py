@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kiro_crew.acp._dispatch import classify_notification
-from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure
+from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure, is_start_timeout_failure
 from kiro_crew.acp.mcp_report_bound import keep, read_status_snapshot
 from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
@@ -831,6 +831,12 @@ class McpSessionReport:
     #: :meth:`restart_to_load`: the next turn may bring them up. Set by the
     #: session handle through :meth:`set_reattempting`.
     _reattempting: frozenset[str] = frozenset()
+    #: Servers whose latest failure was a start that ran out of time
+    #: (:func:`~kiro_crew.acp.mcp_reattempt.is_start_timeout_failure`). Kept
+    #: while the host starts one again, when ``_failures`` holds no reason for it,
+    #: so :meth:`given_up` can tell that re-attempt apart.
+    #: Holds only names the report tracks (:meth:`_tracked`).
+    _start_timed_out: set[str] = field(default_factory=set)
     #: Servers a config write added or changed after this session started, on a
     #: backend that applies no such change to a running session. Listed in
     #: :meth:`restart_to_load` until the next session, which loads them. Set
@@ -891,6 +897,7 @@ class McpSessionReport:
         self._sign_in_suspected.clear()
         self._failures.clear()
         self._reattempting = frozenset()
+        self._start_timed_out.clear()
         self._reload_pending = ()
         self._unauthorized = frozenset()
 
@@ -1099,8 +1106,12 @@ class McpSessionReport:
         * ``failed``: the host gave up on it, and does not try it again on its own
           (:meth:`set_reattempting`).
         * ``connecting``: still starting although this session began more than
-          *after_secs* ago, so it is hung, or queued behind hung ones. Not one
-          the host is re-attempting: that one is starting again now.
+          *after_secs* ago, so it is hung, or queued behind hung ones.
+
+        Not one the host is re-attempting (it may come up now, say with a
+        credential it lacked), unless its last failure was a start that ran out
+        of time: a second start takes as long as the first, longer than another
+        session's wait for it.
 
         Nothing else: a server waiting for a sign-in has reported, so no wait
         holds for it, and one switched off or dropped by a registry is never
@@ -1109,7 +1120,8 @@ class McpSessionReport:
         states = self.not_ready()
         late = time.monotonic() - self.began_at > after_secs if self._started else False
         given_up = (*states.get("failed", ()), *(states.get("connecting", ()) if late else ()))
-        return tuple(name for name in given_up if name not in self._reattempting)
+        retrying = self._reattempting - self._start_timed_out
+        return tuple(name for name in given_up if name not in retrying)
 
     def note_turn_told(self, mark: str, named: Iterable[str]) -> None:
         """A block marked *mark* spells out the servers *named* as still starting."""
@@ -1164,6 +1176,7 @@ class McpSessionReport:
         for name in stale:
             self._failures.pop(name, None)
             self._reported.pop(name, None)
+        self._start_timed_out -= stale
         self._host_disabled -= stale
         self._host_pending -= stale
         if dropped_stale:
@@ -1400,6 +1413,7 @@ class McpSessionReport:
             tracked = self._tracked()
             for name in [name for name in self._reported if name not in tracked]:
                 del self._reported[name]
+            self._start_timed_out &= tracked
             more = snapshot.omitted + self._cut.get("reports", 0) - refused
             if more:
                 logger.warning(
@@ -1512,6 +1526,7 @@ class McpSessionReport:
                 evicted = target.pop(0)
                 self._refuse_report(evicted)
                 self._failures.pop(evicted, None)
+                self._start_timed_out.discard(evicted)
                 if evicted not in self._host_disabled and evicted not in self._host_pending:
                     self._reported.pop(evicted, None)
             target.append(name)
@@ -1531,7 +1546,12 @@ class McpSessionReport:
                 self._failures[name] = error
             else:
                 self._failures.pop(name, None)
+            if is_start_timeout_failure(error):
+                self._start_timed_out.add(name)
+            else:
+                self._start_timed_out.discard(name)
         else:
+            self._start_timed_out.discard(name)
             # A server that has since initialized (or gone back to asking for
             # authorization) must not keep showing the stale reason it failed
             # with, which is exactly the misleading evidence this view removes.

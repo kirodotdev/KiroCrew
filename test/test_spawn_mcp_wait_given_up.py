@@ -27,6 +27,7 @@ from kiro_crew.acp.runtime import AcpSessionHandle
 from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    METHOD_KAS_MCP_STATUS,
     JsonRpcMessage,
 )
 from kiro_crew.agent_sdk import mcp_problems
@@ -85,11 +86,81 @@ def test_a_server_still_starting_is_given_up_only_once_the_session_is_old():
     assert _aged(young, 91.0).given_up(90.0) == ("dead",)
 
 
+def _failed_with(report: McpSessionReport, name: str, reason: str) -> McpSessionReport:
+    report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, name, reason)
+    return report
+
+
+def _starting_again(report: McpSessionReport, name: str) -> McpSessionReport:
+    """The host's status snapshot lists *name* as connecting: a reset it is running."""
+    report.fold_frame(
+        JsonRpcMessage(
+            method=METHOD_KAS_MCP_STATUS,
+            params={"sessionId": "s", "servers": [{"name": name, "status": "connecting"}]},
+        )
+    )
+    return report
+
+
+_NO_CREDENTIAL = "Unable to locate credentials"
+_START_TIMEOUT = "connection timed out after 120000ms"
+
+
 def test_a_failed_server_the_host_still_retries_is_not_given_up():
-    report = _report(**{"slow-ok": "connected", "dead": "failed"})
+    """A server that lacked a credential may come up on the re-attempt."""
+    report = _failed_with(_report(**{"slow-ok": "connected"}), "dead", _NO_CREDENTIAL)
     report.set_reattempting({"dead"})
 
     assert report.given_up(90.0) == ()
+
+
+def test_a_credential_retry_is_not_given_up_while_it_starts_again():
+    report = _failed_with(_aged(_report(**{"slow-ok": "connected"}), 600.0), "dead", _NO_CREDENTIAL)
+    report.set_reattempting({"dead"})
+
+    assert _starting_again(report, "dead").given_up(90.0) == ()
+
+
+@pytest.mark.parametrize("starting_again", [False, True], ids=["failed", "starting-again"])
+def test_a_retry_of_a_start_that_timed_out_is_given_up(starting_again):
+    """A second start takes as long as the first: longer than a spawn waits for it."""
+    report = _failed_with(_aged(_report(**{"slow-ok": "connected"}), 600.0), "dead", _START_TIMEOUT)
+    report.set_reattempting({"dead"})
+    if starting_again:
+        _starting_again(report, "dead")
+
+    assert report.given_up(90.0) == ("dead",)
+
+
+def test_a_young_session_does_not_give_up_on_a_timed_out_start_it_starts_again():
+    """Starting again within the bound is still the bound's to wait for."""
+    report = _failed_with(_report(**{"slow-ok": "connected"}), "dead", _START_TIMEOUT)
+    report.set_reattempting({"dead"})
+
+    assert _starting_again(report, "dead").given_up(90.0) == ()
+
+
+@pytest.mark.parametrize("later", ["connected", "credential"])
+def test_a_later_report_replaces_the_timed_out_start(later):
+    """A server that came up (then dropped), or failed for a credential, is retried for real."""
+    report = _failed_with(_aged(_report(**{"slow-ok": "connected"}), 600.0), "dead", _START_TIMEOUT)
+    if later == "connected":
+        report.record_event(EVENT_MCP_SERVER_INITIALIZED, "dead")
+    else:
+        _failed_with(report, "dead", _NO_CREDENTIAL)
+    report.set_reattempting({"dead"})
+
+    assert _starting_again(report, "dead").given_up(90.0) == ()
+
+
+def test_a_new_session_forgets_a_timed_out_start():
+    report = _failed_with(_report(**{"slow-ok": "connected"}), "dead", _START_TIMEOUT)
+    report.begin_session([])
+    report.record_declared(_SPEC)
+    report.record_event(EVENT_MCP_SERVER_INITIALIZED, "slow-ok")
+    report.set_reattempting({"dead"})
+
+    assert _starting_again(_aged(report, 600.0), "dead").given_up(90.0) == ()
 
 
 def test_a_server_the_host_retries_is_not_given_up_while_it_starts_again():

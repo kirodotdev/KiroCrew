@@ -446,6 +446,15 @@ async def _run_inner_impl(
     use_session_sharing = (
         plan.shared and not inherits_remote and not self._kas_shared_slot_taken(info)
     )
+    if use_session_sharing:
+        placement = "shared: on the parent's runtime"
+    elif not plan.shared:
+        placement = f"dedicated: {plan.reason or 'not eligible'}"
+    elif inherits_remote:
+        placement = "dedicated: a remote session environment"
+    else:
+        placement = "dedicated: the KAS parent's process is full"
+    logger.info("Subagent %s session %s", info.id, placement)
     client, is_new, _resumed, is_cc, use_session_sharing = await _session.acquire_session(
         self,
         info,
