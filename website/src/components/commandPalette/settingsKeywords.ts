@@ -297,6 +297,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'developer.wake-bots-to-update-out-of-date-fields': ['refresh stale fields', 'wake bots', 'update dashboard fields'],
   'developer.webhooks': ['webhook', 'incoming webhook', 'http hook', 'external triggers'],
   'developer.which-judge-answers': ['judge', 'pick a judge', 'judge choice', 'small model or decision model'],
+  'developer.worker-status-under-the-reply': ['worker status in chat', 'workers under the reply', 'see what workers are doing', 'conductor worker count'],
 
   // Display
   'display.command-completion': ['terminal autocomplete', 'shell completion', 'tab completion'],

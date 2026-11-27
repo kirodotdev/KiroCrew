@@ -11334,7 +11334,9 @@
       "conductor_mode_pause_confirm_body_many": "Detiene {{count}} workers en ejecución, subequipos incluidos. Los pasos en curso se detienen ahora y se repiten al reanudar. No se inicia ningún worker nuevo mientras está en pausa.",
       "conductor_mode_paused_notice_many": "Pausaste el equipo. {{count}} workers detenidos. Reanúdalo desde el Board.",
       "conductor_mode_row_lead_working": "El líder trabaja",
-      "conductor_mode_pause_confirm_lead": "Detiene el paso actual del líder. No se inician workers nuevos mientras está en pausa."
+      "conductor_mode_pause_confirm_lead": "Detiene el paso actual del líder. No se inician workers nuevos mientras está en pausa.",
+      "reply_status_label": "Trabajadores: {{status}}. Abrir el panel Trabajadores",
+      "reply_status_open": "Abrir el panel Trabajadores"
     },
     "guideLayer": {
       "region_label": "Guía",
@@ -17151,7 +17153,10 @@
         "remote_dispatch_connect": "Conecta máquinas en <0>Settings › Remote Crew</0>.",
         "bot_chat_app_tools": "Herramientas de apps en chats de Bots",
         "bot_chat_app_tools_desc": "Para detener un solo bot, desmárcalo en la página de la app.",
-        "bot_chat_app_tools_desc_summary": "Permite que las apps que autorices añadan sus herramientas al chat de un Bot. Cada llamada sigue la configuración de aprobación del propio Bot."
+        "bot_chat_app_tools_desc_summary": "Permite que las apps que autorices añadan sus herramientas al chat de un Bot. Cada llamada sigue la configuración de aprobación del propio Bot.",
+        "crew_reply_status": "Estado de los trabajadores bajo la respuesta",
+        "crew_reply_status_desc": "Bajo la última respuesta terminada de un conductor, una línea dice cuántos de sus trabajadores te necesitan, están detenidos, en curso o esperando. Haz clic para abrir Trabajadores en el panel lateral. Útil con la barra lateral cerrada, en un teléfono o en vista dividida. Las respuestas anteriores no muestran nada, y la línea desaparece cuando ningún trabajador está ocupado.",
+        "crew_reply_status_desc_summary": "La última respuesta de un conductor dice qué hacen sus trabajadores."
       },
       "kasBundleCard": {
         "installed": "Motor integrado {{version}}",

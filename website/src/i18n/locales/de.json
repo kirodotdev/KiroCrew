@@ -11075,7 +11075,9 @@
       "conductor_mode_paused_notice_one": "Du hast die Crew pausiert. {{count}} Worker gestoppt. Fortsetzen über das Board.",
       "conductor_mode_paused_notice_other": "Du hast die Crew pausiert. {{count}} Worker gestoppt. Fortsetzen über das Board.",
       "conductor_mode_row_lead_working": "Lead arbeitet",
-      "conductor_mode_pause_confirm_lead": "Stoppt den aktuellen Schritt des Leads. Solange pausiert ist, starten keine neuen Worker."
+      "conductor_mode_pause_confirm_lead": "Stoppt den aktuellen Schritt des Leads. Solange pausiert ist, starten keine neuen Worker.",
+      "reply_status_label": "Worker: {{status}}. Worker-Bereich öffnen",
+      "reply_status_open": "Worker-Bereich öffnen"
     },
     "guideLayer": {
       "region_label": "Anleitung",
@@ -16708,7 +16710,10 @@
         "remote_dispatch_connect": "Verbinde Rechner unter <0>Settings › Remote Crew</0>.",
         "bot_chat_app_tools": "App-Tools in Bot-Chats",
         "bot_chat_app_tools_desc": "Um einen einzelnen Bot zu stoppen, entferne auf der Seite der App sein Häkchen.",
-        "bot_chat_app_tools_desc_summary": "Erlaubt Apps, die du zulässt, ihre Tools zum Chat eines Bots hinzuzufügen. Jeder Aufruf folgt der Freigabe-Einstellung dieses Bots."
+        "bot_chat_app_tools_desc_summary": "Erlaubt Apps, die du zulässt, ihre Tools zum Chat eines Bots hinzuzufügen. Jeder Aufruf folgt der Freigabe-Einstellung dieses Bots.",
+        "crew_reply_status": "Worker-Status unter der Antwort",
+        "crew_reply_status_desc": "Unter der neuesten fertigen Antwort eines Conductors sagt eine Zeile, wie viele seiner Worker dich brauchen, hängen, laufen oder warten. Ein Klick öffnet Worker im Seitenbereich. Hilfreich bei geschlossener Seitenleiste, auf dem Handy oder in geteilter Ansicht. Ältere Antworten zeigen nichts, und die Zeile verschwindet, wenn kein Worker beschäftigt ist.",
+        "crew_reply_status_desc_summary": "Die neueste Antwort eines Conductors zeigt, was seine Worker tun."
       },
       "kasBundleCard": {
         "installed": "Integrierte Engine {{version}}",

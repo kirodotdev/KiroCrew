@@ -11334,7 +11334,9 @@
       "conductor_mode_pause_confirm_body_many": "Para {{count}} workers em execução, incluindo subequipes. As etapas em andamento param agora e rodam de novo ao retomar. Nenhum worker novo começa enquanto estiver pausado.",
       "conductor_mode_paused_notice_many": "Você pausou a equipe. {{count}} workers parados. Retome pelo Board.",
       "conductor_mode_row_lead_working": "Líder trabalhando",
-      "conductor_mode_pause_confirm_lead": "Para a etapa atual do líder. Nenhum worker novo começa enquanto estiver pausado."
+      "conductor_mode_pause_confirm_lead": "Para a etapa atual do líder. Nenhum worker novo começa enquanto estiver pausado.",
+      "reply_status_label": "Trabalhadores: {{status}}. Abrir o painel Trabalhadores",
+      "reply_status_open": "Abrir o painel Trabalhadores"
     },
     "guideLayer": {
       "region_label": "Guia",
@@ -17151,7 +17153,10 @@
         "remote_dispatch_connect": "Conecte máquinas em <0>Settings › Remote Crew</0>.",
         "bot_chat_app_tools": "Ferramentas de apps nos chats de Bots",
         "bot_chat_app_tools_desc": "Para parar um só bot, desmarque-o na página do app.",
-        "bot_chat_app_tools_desc_summary": "Permite que apps que você autoriza adicionem suas ferramentas ao chat de um Bot. Cada chamada segue a configuração de aprovação do próprio Bot."
+        "bot_chat_app_tools_desc_summary": "Permite que apps que você autoriza adicionem suas ferramentas ao chat de um Bot. Cada chamada segue a configuração de aprovação do próprio Bot.",
+        "crew_reply_status": "Status dos trabalhadores sob a resposta",
+        "crew_reply_status_desc": "Sob a resposta concluída mais recente de um conductor, uma linha diz quantos de seus trabalhadores precisam de você, estão parados, em andamento ou esperando. Clique para abrir Trabalhadores no painel lateral. Útil com a barra lateral fechada, no celular ou em tela dividida. Respostas mais antigas não mostram nada, e a linha some quando nenhum trabalhador está ocupado.",
+        "crew_reply_status_desc_summary": "A resposta mais recente de um conductor diz o que seus trabalhadores estão fazendo."
       },
       "kasBundleCard": {
         "installed": "Motor integrado {{version}}",

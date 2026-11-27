@@ -134,6 +134,7 @@ export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.wake-bots-to-update-out-of-date-fields',
   'developer.agent-harness-for-worker-chats',
   'developer.visual-refresh',
+  'developer.worker-status-under-the-reply',
   'developer.session-environments',
   'developer.kiro-managed-environments',
 ])

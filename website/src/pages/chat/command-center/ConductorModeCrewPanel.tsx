@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ArrowDown, Check, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause, PencilLine, CircleStop, EyeOff, X } from 'lucide-react'
 import { safeGetItem, safeSetItem } from '../../../utils/safeStorage'
+import { CREW_PANEL_VIEW_EVENT, takeCrewPanelView, type CrewPanelView } from './crewPanelView'
 import { useCrewBack, type CrewBack } from '../../../components/crew/useCrewBack'
 import { api } from '../../../api/client'
 import type { CrewWorker, ConductorModeRun } from '../../../types'
@@ -890,7 +891,25 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
       onToggle={searching ? undefined : () => toggleRow(n, pathToViewing.has(n.w.key))} onOpen={n.w.remote_crew ? undefined : () => open(n.w)}
       pausedIn={pause?.stopped.includes(n.w.key) ? root : undefined} />
   )
-  const [view, setView] = useState<'status' | 'list'>('status')
+  const [view, setView] = useState<CrewPanelView>('status')
+  // A request to show the Workers list (`requestCrewPanelList`): one left before
+  // this panel mounted, taken in the effect (a state initializer runs twice under
+  // StrictMode and would drop it), and one sent while the panel is on screen.
+  // Only the conductor's own Board takes it: a worker's Board shows the same crew
+  // and is on screen while the click switches to the conductor, so it leaves the
+  // request for the Board that mounts there.
+  useEffect(() => {
+    if (viewing !== root) return
+    const pendingView = takeCrewPanelView(root)
+    if (pendingView) setView(pendingView)
+    const onRequest = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== root) return
+      const next = takeCrewPanelView(root)
+      if (next) setView(next)
+    }
+    window.addEventListener(CREW_PANEL_VIEW_EVENT, onRequest)
+    return () => window.removeEventListener(CREW_PANEL_VIEW_EVENT, onRequest)
+  }, [root, viewing])
   const [doneOpen, setDoneOpen] = useState(false)
   const [droppedOpen, setDroppedOpen] = useState(false)
   // The work ledger through the Crew page's own read (GET /api/crew-board), same key and cadence.

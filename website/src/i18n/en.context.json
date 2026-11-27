@@ -1616,6 +1616,11 @@
     "memoryAudit.tip_correct": "(?) tip after the Edited event on the Audit tab: the person edited the memory, and its earlier value is kept in the memory's history.",
     "memoryAudit.tip_resolve": "(?) tip after the Reviewed event on the Audit tab: the person looked at the changes proposed for a memory and kept its content as it was.",
     "memoryAudit.not_saved": "Heading in the Audit tab's detail panel above the value of a refused, blocked or skipped memory write; nothing was stored. An adjective state (the value was not saved), not a command.",
-    "memoryAudit.event_work_state": "Chip and filter label in the Audit tab for a memory write refused because it described the progress of a task (like a PR waiting on review), which belongs in a task tool, not in memory as a fact."
+    "memoryAudit.event_work_state": "Chip and filter label in the Audit tab for a memory write refused because it described the progress of a task (like a PR waiting on review), which belongs in a task tool, not in memory as a fact.",
+    "pages.developer.featurePreviewsTab.crew_reply_status": "Label of the Feature Previews switch that adds one status line under a conductor's latest reply, saying what its workers are doing. Default off. A short noun phrase, not a verb. Use the same word for \"workers\" as the Workers side-panel tab.",
+    "pages.developer.featurePreviewsTab.crew_reply_status_desc_summary": "One-line summary under that switch: the latest conductor reply shows what its workers are doing.",
+    "pages.developer.featurePreviewsTab.crew_reply_status_desc": "Longer help for that switch. It must say: only the latest finished reply shows the line, a click opens Workers in the side panel, older replies show nothing, and the line goes away when no worker is busy.",
+    "components.crewMode.reply_status_label": "Screen-reader label of the clickable status line under a conductor's latest reply. {{status}} is a full sentence of worker counts (for example \"3 sessions, 1 needs you, 2 running\"); keep it verbatim. Ends with what a click does.",
+    "components.crewMode.reply_status_open": "Tooltip of that status line: what a click does. Use the same word as the Workers side-panel tab."
   }
 }

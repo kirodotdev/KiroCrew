@@ -1666,6 +1666,14 @@
       "route": "/settings/developer/feature-previews?highlight=developer.which-judge-answers"
     },
     {
+      "id": "developer.worker-status-under-the-reply",
+      "label": "Worker status under the reply",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.worker-status-under-the-reply",
+      "description": "A conductor's latest reply says what its workers are doing.",
+      "hint": "Under a conductor's latest finished reply, one line says how many of its workers need you, have stalled, are running or are waiting. Click it to open Workers in the side panel. Useful when the sidebar is closed, on a phone, or in split view. Older replies show nothing, and the line goes away when no worker is busy."
+    },
+    {
       "id": "display.command-completion",
       "label": "Command completion",
       "tab": "display",
