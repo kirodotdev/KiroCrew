@@ -134,17 +134,22 @@ def gateway_lacks(spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, An
 _SUMMARY_NAMES = 12
 _SUMMARY_NAME_CHARS = 48
 _SUMMARY_NAME_STRIP = re.compile(r"[^A-Za-z0-9_.@/: -]+")
+#: Names listed on the gateway-has line. It is an invitation to look further
+#: (``find_capabilities`` lists them all), and it rides every hand-off result.
+_SUMMARY_LACKS_NAMES = 8
 
 
-def _summary_names(names: list[str], how: dict[str, str] | None = None) -> str:
+def _summary_names(
+    names: list[str], how: dict[str, str] | None = None, cap: int = _SUMMARY_NAMES
+) -> str:
     shown = []
-    for name in names[:_SUMMARY_NAMES]:
+    for name in names[:cap]:
         clean = _SUMMARY_NAME_STRIP.sub("", name).strip()[:_SUMMARY_NAME_CHARS]
         if clean:
             shown.append(f"{clean} ({how[name]})" if how else clean)
-    more = len(names) - _SUMMARY_NAMES
+    more = len(names) - cap
     text = ", ".join(shown) or "none"
-    return f"{text} and {more} more" if more > 0 else text
+    return f"{text} +{more} more" if more > 0 else text
 
 
 #: The buckets of a session's MCP report (``McpSessionReport.payload``) that name a
@@ -269,7 +274,11 @@ def dispatch_summary(
         unusable_line(spec, unusable),
     ]
     if lacks:
-        lines.append(crewmate_prompts.fill("dispatch.gateway_has", names=_summary_names(lacks)))
+        lines.append(
+            crewmate_prompts.fill(
+                "dispatch.gateway_has", names=_summary_names(lacks, cap=_SUMMARY_LACKS_NAMES)
+            )
+        )
     return " ".join(line for line in lines if line)
 
 
