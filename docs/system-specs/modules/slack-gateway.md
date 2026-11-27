@@ -2411,7 +2411,11 @@ gateway behaves as it does without it.
   waits on that turn's refresh. When something else published meanwhile (a turn
   start's first bar) or the channel was rebound to another worktree, the stored
   digests are not trusted and the refresh runs once more, so what Slack shows
-  last is the current state.
+  last is the current state. Inside one refresh pass the PR lookup, both bars,
+  the Code tab and the worker rows share one read of the checkout's branch,
+  `origin` URL and pushed state (`workspace/checkout_reads.py`; a pass pushes
+  nothing); the branch is reused only while the checkout's `HEAD` file is
+  unchanged (a stat, no process), and nothing is kept past the pass.
   `git diff --end-of-options <merge-base(HEAD, origin/HEAD) or base sha> --`
   against the working tree — committed, staged and unstaged changes in one diff,
   external diff drivers and textconv off — plus a `new file` section per untracked,

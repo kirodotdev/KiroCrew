@@ -42,7 +42,7 @@ from kiro_crew.slack.code_channels.models import (  # noqa: F401 - publishing.ca
     CodeChannelApiError,
     CodeChannelError,
 )
-from kiro_crew.slack.code_channels.workspace import folders, git_ops, publishing
+from kiro_crew.slack.code_channels.workspace import checkout_reads, folders, git_ops, publishing
 from kiro_crew.slack.code_channels.workspace.board_cache import BoardCache
 from kiro_crew.slack.code_channels.workspace.code_tab import CodeTab
 from kiro_crew.slack.code_channels.workspace.context_bar import PR_CI_UNREAD, BarState
@@ -1600,7 +1600,8 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
                 return
             token = surface.admit()
             try:
-                await self._refresh(binding, recheck_pr=recheck_pr)
+                with checkout_reads.reading():  # one pass's git answers, asked once
+                    await self._refresh(binding, recheck_pr=recheck_pr)
             finally:
                 surface.release(token)
 
@@ -1920,7 +1921,7 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
                 chunks.append(section)
                 remaining -= len(section)
             names_cut = names_cut or len(names) > _MAX_UNTRACKED
-            branch = git_ops.current_branch(cwd) or record.branch
+            branch = checkout_reads.branch_in_thread(cwd) or record.branch
             workers: list[DiffGroup] = []
             if board is not None:
                 workers = worker_groups(

@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from kiro_crew.slack.code_channels.workspace import git_ops
+from kiro_crew.slack.code_channels.workspace import checkout_reads, git_ops
 from kiro_crew.slack.code_channels.workspace.context_bar import (
     PR_CI_UNREAD,
     BarState,
@@ -157,12 +157,12 @@ async def bar_state(svc: WorkspaceService, record: WorkspaceRecord) -> BarState:
     cwd = svc._checkout_dir(record)
     if not cwd:
         return BarState(folder=record.project_dir, **(await svc._bar_extras(record, has_pr=False)))
-    branch = await asyncio.to_thread(git_ops.current_branch, cwd)
+    branch = await checkout_reads.current_branch(cwd)
     if not branch:
         head = await asyncio.to_thread(git_ops.short_head, cwd)
         branch = f"detached at {head}" if head else ""
-    repo = parse_remote(await asyncio.to_thread(git_ops.remote_url, cwd))
-    pushed = bool(repo) and await asyncio.to_thread(git_ops.has_remote_branch, cwd, branch)
+    repo = parse_remote(await checkout_reads.remote_url(cwd))
+    pushed = bool(repo) and await checkout_reads.has_remote_branch(cwd, branch)
     from kiro_crew.slack.code_channels.workspace.service import _pr_identity
 
     # The PR shown is only ever this checkout's (its repository and branch).
@@ -512,15 +512,14 @@ async def refresh_pr(svc: WorkspaceService, record: WorkspaceRecord) -> None:
     from kiro_crew.slack.code_channels.workspace.service import (  # read when run
         _clear_pr,
         _pr_identity,
-        git_ops,
         parse_remote,
     )
 
     cwd = svc._checkout_dir(record)
     if not cwd:
         return
-    branch = await asyncio.to_thread(git_ops.current_branch, cwd)
-    repo = parse_remote(await asyncio.to_thread(git_ops.remote_url, cwd))
+    branch = await checkout_reads.current_branch(cwd)
+    repo = parse_remote(await checkout_reads.remote_url(cwd))
     identity = _pr_identity(repo, branch)
     if not identity or repo is None:
         # Detached, or no forge remote: no PR can be this checkout's.

@@ -11,6 +11,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew.slack.code_channels.workspace import checkout_reads
 from kiro_crew.slack.code_channels.workspace.store import WorkspaceRecord, WorkspaceStore
 
 if TYPE_CHECKING:
@@ -136,7 +137,7 @@ class CodeTab:
         # A record whose diff base was dropped (repaired on load) builds nothing
         # until it rebinds: the same rule as a build that failed.
         built = (
-            await asyncio.to_thread(self._build_diff, record, board, trees)
+            await asyncio.to_thread(checkout_reads.lend(self._build_diff), record, board, trees)
             if record.base_sha
             else None
         )
