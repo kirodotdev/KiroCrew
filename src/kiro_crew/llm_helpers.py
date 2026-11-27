@@ -121,6 +121,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _rewrite_lite_spec,
         _start_fresh_conversation,
         background_turn,
+        begin_member_consolidation_pass,
+        end_member_consolidation_pass,
         repair_lite_spec,
         run_bg_oneliner,
     )

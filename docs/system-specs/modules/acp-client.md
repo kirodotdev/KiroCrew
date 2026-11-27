@@ -633,7 +633,7 @@ generated one-run key -- `subagent:<16 hex>` from `SubagentManager._mint_agent_i
 (eight hex on the shipped builds whose directories the sweep also recognises),
 `cron:<8 hex job>:<8 hex run>` from `build_cron_session_context`,
 `memory-consolidation:<store>:<32 hex>` from `llm_helpers.background_turn` (discards
-the key when the call ends), `judge:<uuid4 hex>` from `decisions/impl_llm.py`
+the key when the call, or the consolidation pass that reuses it, ends), `judge:<uuid4 hex>` from `decisions/impl_llm.py`
 (destroyed on return), `taskrunner:refine:<epoch ms>` from
 `dashboard/handlers/taskrunner.py`, `hook:default:<epoch s>-<token_hex(6)>` from
 `dashboard/handlers/hooks.py` (per-request default webhook key), or

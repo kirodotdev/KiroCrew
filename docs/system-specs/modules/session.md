@@ -968,7 +968,9 @@ warm pool. Reusing a live provider can retain context between turns; stateless
 does not mean a fresh native conversation on every call. `background_turn`
 accounts against the selected key, releases its semaphore, and applies the same
 context recycling policy with the extraction agent. Private V2 memory keeps its
-per-store `memory-consolidation:` session and cleanup path.
+per-store `memory-consolidation:` session and cleanup path; one consolidation
+pass reuses that session for all of its calls on the store and retires it when
+the pass ends.
 
 `recycle_background()` is called after every background task completes.
 It checks context usage and **recycles** (kill + fresh spawn) the session
