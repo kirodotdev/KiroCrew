@@ -154,6 +154,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # n
 from kiro_crew.security.redaction_switch import bypassed_in
 from kiro_crew.sel import sel  # noqa: F401
 from kiro_crew.session_agent_selection import session_agent_selection_name  # noqa: F401
+from kiro_crew.session_directive import default_row_cls  # noqa: F401
 from kiro_crew.validation import ARTIFACT_SLUG_RE  # noqa: F401
 
 logger = logging.getLogger(__name__)

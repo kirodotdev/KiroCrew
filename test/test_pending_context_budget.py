@@ -140,7 +140,7 @@ def test_the_flush_warns_when_the_held_context_has_no_seat(caplog):
     slot._deferred_notes.append(_held_note(_entry("held"), content="delivered without context"))
 
     with caplog.at_level("WARNING", logger="kiro_crew.dashboard.slot_buffers"):
-        assert slot.flush_deferred_notes() == 1
+        assert slot.flush_deferred_notes(markers_only=False) == 1
     row = [m for m in slot.messages if m.get("role") == "inject"][-1]
     assert row["content"] == "delivered without context"
     assert "contextDropped" not in row["meta"], "the unread flag is gone; the warning is the signal"
@@ -155,7 +155,7 @@ def test_the_flush_is_silent_when_the_context_seats(caplog):
     slot._deferred_notes.append(_held_note(_entry("held"), content="delivered with context"))
 
     with caplog.at_level("WARNING", logger="kiro_crew.dashboard.slot_buffers"):
-        assert slot.flush_deferred_notes() == 1
+        assert slot.flush_deferred_notes(markers_only=False) == 1
     row = [m for m in slot.messages if m.get("role") == "inject"][-1]
     assert "contextDropped" not in row["meta"]
     assert not any("without its context" in r.message for r in caplog.records)
