@@ -181,7 +181,9 @@ The frame, as `CrewDynamicDashboard.tsx` and `widgetSrcdoc.ts` build it:
   (`useFrameLinkBridge`) opens it only from its own frame, only right after a click or
   key press in that frame, for an `http(s)` URL or a dashboard path such as
   `/artifacts/<slug>` or `/chat?sid=<key>`. A web URL opens in a new tab; a
-  dashboard page opens in place in the dashboard. A click it cannot tie to the
+  dashboard page opens in place in the dashboard. On a Bot's Dashboard tab, a
+  link to an `/artifacts/<slug>` the library holds, or to an absolute path inside
+  the Bot's workspace, opens in the Bot's side panel instead. A click it cannot tie to the
   frame gets an "Open <host>" button instead. Other schemes drop, and so does a
   post with no click, so post it from a click handler, never on a timer.
 
