@@ -1,0 +1,2 @@
++49
+The user's ~/.kiro/hooks directory on the file-tool write tier in paths_lists and in the KIRO_HOME-anchored kiro-cli leaves, and the configured agent.kiro_hooks_dir directory as a live row in paths, so an agent's file tools cannot delete or edit a hook registration that gates it.

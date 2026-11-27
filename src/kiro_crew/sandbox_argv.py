@@ -53,10 +53,13 @@ from kiro_crew.sandbox_leaves import (
 from kiro_crew.sandbox_plan import scrub_prefixes as _agent_scrub_prefixes
 from kiro_crew.sandbox_seals import (
     SandboxCeilingUnsealable,
+    _materialize_kiro_hooks_dirs,
     _materialize_kiro_mcp_registry,
     _materialize_mate_ledger,
     _materialize_sealable_ceilings,
     _refuse_linked_models_leaf,
+    _resolved_kiro_hooks_targets,
+    _resolved_kiro_hooks_walk_entries,
     _resolved_kiro_mcp_registry_targets,
 )
 from kiro_crew.sandbox_staging import (
@@ -478,10 +481,11 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         )
     )
     # kiro-cli's own trusted files ride one host field: its agents tree, its user MCP
-    # registry and every installed app's ``app.json`` (it names the MCP servers that app
-    # brings, and only the gateway's own app install and update writes it), each sealed
-    # read-only with its parents guarded against rename. The spawn folder's project MCP
-    # files get their own field (``PlanHost.project_mcp_targets``).
+    # registry, the user's hook registrations and every installed app's ``app.json`` (it
+    # names the MCP servers that app brings, and only the gateway's own app install and
+    # update writes it), each sealed read-only with its parents guarded against rename.
+    # The spawn folder's project MCP files get their own field
+    # (``PlanHost.project_mcp_targets``).
     # Call-time imports: kept off this module's names, which ``kiro_crew.sandbox`` forwards.
     from kiro_crew.app_manifest_files import app_manifest_targets
     from kiro_crew.project_mcp_files import project_mcp_targets
@@ -489,6 +493,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
     kiro_cli_targets = (
         *_resolved_kiro_agents_targets(),
         *_resolved_kiro_mcp_registry_targets(),
+        *_resolved_kiro_hooks_targets(),
         *app_manifest_targets(home),
     )
     kiro_agents_targets = tuple(dict.fromkeys(kiro_cli_targets))
@@ -535,6 +540,10 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
             *install_root_targets,
         )
         for entry in (os.path.dirname(os.path.normpath(target)), *_resolution_entries(target))
+    ) + tuple(
+        # Every entry a hooks directory's spelling steps on, from the walker Crew's own
+        # resolver uses, so the guarded set is exactly what decides the directory read.
+        _resolved_kiro_hooks_walk_entries()
     )
     # Renaming a parent of a hidden crew-home leaf carries the leaf out from under its mask:
     # on Seatbelt the mask is a path rule, so the renamed tree is readable at once, and on
@@ -960,6 +969,8 @@ def namespace_argv(
     _materialize_kiro_mcp_registry()
     # The Bot-move ledger (a moved Bot's held limits) refuses like the ceilings.
     _materialize_mate_ledger(_required_targets)
+    # And the user's hooks directory, so an absent one cannot be created with a hook in it.
+    _materialize_kiro_hooks_dirs()
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)

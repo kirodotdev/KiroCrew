@@ -527,6 +527,8 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
         matched = matched or under(_app_readonly_dir_rows())
         if not matched and (rule_rows := _permission_rule_rows()):
             matched = under(rule_rows)
+        if not matched and (hooks_rows := _configured_kiro_hooks_dir_rows()):
+            matched = under(hooks_rows)
         matched = matched or _native_store_write(path_str, base_dir)
         matched = matched or _install_root_write(path_str, base_dir)
         # Call-time imports: keep the modules off the MCP servers' import budget.
@@ -681,6 +683,38 @@ def write_protected_home_paths() -> tuple[str, ...]:
     be written by an agent tool, the app-declared rows after the core ones.
     """
     return (*_WRITE_PROTECTED_HOME_PATHS, *_permission_rule_rows(), *_app_readonly_dir_rows())
+
+
+def _configured_kiro_hooks_dir_rows() -> list[str]:
+    """The ``agent.kiro_hooks_dir`` directory as ``$HOME``-relative rows, while one is set.
+
+    Crew reads the user's hook files from that directory in place of ``.kiro/hooks``, so
+    the file-edit gate fences it like the default, as written and as resolved
+    (:func:`kiro_crew.kiro_hooks_dir.configured_kiro_hooks_dir_spellings`, the reader the
+    sandbox seal uses). A setting the resolver rejects adds nothing: Crew then reads the
+    default, which the static tier already fences. Checked by
+    :func:`sensitive_write_path_refusal` only, never listed by
+    :func:`write_protected_home_paths`: callers of that view mask each row's PARENT, and a
+    configured directory such as ``~/hooks`` would mask the whole home. Never raises.
+    """
+    from kiro_crew.kiro_hooks_dir import configured_kiro_hooks_dir_spellings
+
+    spellings = configured_kiro_hooks_dir_spellings()
+    if not spellings:
+        return []
+    try:
+        homes = tuple(dict.fromkeys((Path.home(), Path.home().resolve())))
+    except (OSError, RuntimeError):  # no resolvable home: nothing to anchor a row to
+        return []
+    rows: list[str] = []
+    for spelling in spellings:
+        for home in homes:
+            try:
+                rows.append(Path(spelling).relative_to(home).as_posix())
+                break
+            except ValueError:
+                continue
+    return list(dict.fromkeys(rows))
 
 
 def _permission_rule_rows() -> list[str]:
@@ -948,6 +982,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CREW_SECRET_LEAVES,
         _KIRO_AGENTS_DIR,
         _KIRO_CLI_WRITE_TIER_LEAVES,
+        _KIRO_HOOKS_DIR,
         _KIRO_MATE_AGENTS_DIR,
         _KIRO_MATE_STATE_LEAVES,
         _KIRO_SETTINGS_MCP_JSON,

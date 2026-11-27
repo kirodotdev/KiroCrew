@@ -927,7 +927,9 @@ def resolved_kiro_hooks_dir() -> Path:
     through the HOME-contained check the ``*.sh`` autoimport uses
     (:func:`kiro_crew.agent_materialization.kiro_hooks.resolve_kiro_hooks_dir`),
     so the standalone ``*.json`` hook-file loader and the script autoimport read
-    one directory under one rule. Falls back to ``~/.kiro/hooks`` on any failure.
+    one directory under one rule. Falls back to ``~/.kiro/hooks`` when the setting
+    is rejected; raises :class:`kiro_crew.kiro_hooks_dir.HooksDirUnreadable` when a
+    folder on its path cannot be searched.
     """
     try:
         mc_cfg = _load_json(_mc_config_path()) or {}

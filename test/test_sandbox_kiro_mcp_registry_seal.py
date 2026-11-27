@@ -96,6 +96,7 @@ def test_the_live_adapter_seals_the_registry_beside_the_agents_tree(
 ) -> None:
     monkeypatch.setattr(sandbox, "_resolved_kiro_agents_targets", lambda: [f"{HOME}/.kiro/agents"])
     monkeypatch.setattr(sandbox, "_resolved_kiro_mcp_registry_targets", lambda: [REGISTRY])
+    monkeypatch.setattr(sandbox, "_resolved_kiro_hooks_targets", lambda: [])
     host = sandbox._live_plan_host(SandboxRequest(tier="standard"))
     assert host.kiro_agents_targets == (f"{HOME}/.kiro/agents", REGISTRY)
 

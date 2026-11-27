@@ -73,6 +73,7 @@ from kiro_crew.hooks import (
     HOOK_EVENT_USER_PROMPT_SUBMIT,
     pre_tool_match_names,
 )
+from kiro_crew.kiro_hooks_dir import HooksDirUnreadable
 from kiro_crew.mcp_oauth_projection import oauth_servers_in
 from kiro_crew.slack.outbound import PostedOptions
 
@@ -301,6 +302,13 @@ async def _prepare_spec_hooks(
     is_kas = capabilities_of(client).backend == ACP_BACKEND_KAS  # harness-ok: KAS-only notices
     try:
         hooks = await asyncio.to_thread(merge_user_hook_files, client, hooks)
+    except HooksDirUnreadable:
+        logger.warning(
+            "the user's hooks folder for %r cannot be read; tool calls are blocked",
+            agent,
+            exc_info=True,
+        )
+        return [], True, work_dir
     except Exception:  # noqa: BLE001 - a hook-file read must never fail a turn
         logger.debug("user hook files could not be merged; none added", exc_info=True)
     if is_new and lost:

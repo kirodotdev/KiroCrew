@@ -340,6 +340,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
             "~/.config/gcloud",
             "~/.config/gh",
             "~/.kiro/crew-auth-staging",
+            "~/.kiro/hooks",
             # ``~/.kiro/settings`` holds kiro-cli's other settings, which it writes.
             "~/.kiro/settings/mcp.json",
             # The gateway checkout's git control files, as ``_plain_gateway_checkout``
@@ -497,6 +498,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "~/.gnupg": "standard",
         "~/.gpg": "standard",
         "~/.kiro/crew-auth-staging": "standard",
+        "~/.kiro/hooks": "standard",
         "~/.kiro/settings/mcp.json": "standard",
         "~/.kube": "cc",
         "~/.midway": "cc",

@@ -194,7 +194,8 @@ class PlanHost:
     #: Every rename-sensitive ancestor of those parents.
     voice_runtime_ancestor_guards: tuple[str, ...] = ()
     #: kiro-cli's own trusted files, sealed read-only: the agents tree, its user MCP
-    #: registry (``settings/mcp.json``) and every installed app's ``app.json``.
+    #: registry (``settings/mcp.json``), the user's hooks directory and every installed
+    #: app's ``app.json``.
     kiro_agents_targets: tuple[str, ...] = ()
     #: The project MCP files of :attr:`SandboxRequest.project_folder`, sealed
     #: read-only. Two FILES in the person's own folder, so unlike the other seals they

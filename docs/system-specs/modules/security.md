@@ -268,6 +268,42 @@ folder. A per-server share that restarts the broker resets open chats even with
 **Restart open chats to use it** unchecked: subscribed stubs cannot reconnect.
 The reset defers busy chats until their turn ends and reports `sessions_reset`.
 
+The user's hook registrations are sealed under the same decision. kiro-cli loads
+`~/.kiro/hooks/*.json` when a session starts, Crew fires those files on its permission
+path (`spec_hooks.user_hook_files`) and folds the directory's `*.sh` scripts into the
+agent specs it writes (`kiro_hooks._apply_user_kiro_hooks`), so an agent that deleted
+or edited one would switch the person's gate off from its next turn. A reader reaches
+the directory through a spelling: `$HOME/.kiro/hooks`, kiro-cli's `$KIRO_HOME/hooks`
+while Crew accepts that override, and the `agent.kiro_hooks_dir` setting while Crew
+reads it, relative or not. `kiro_hooks_dir.walk` walks a spelling as written, one name
+at a time, the way `os.path.realpath` does, and returns the directory reached and every
+entry on the way: directories, symlinks, and missing names a later `..` removes. Crew's
+resolver for the setting (`resolve_kiro_hooks_dir`) takes its answer from that walk,
+and the seal takes everything from it, so the two cannot disagree. Both launchers seal
+each reached directory read-only (`sandbox_seals._resolved_kiro_hooks_targets`, plus a
+spelling as written when it has no `.` or `..` name), and guard every walk entry
+against rename (`_resolved_kiro_hooks_walk_entries`, added to the seal-parent guards).
+The guards also cover a spelling Crew rejects (a setting or `KIRO_HOME` that leaves
+`$HOME`, reaches a sensitive directory or loops): the same entries decide whether Crew
+accepts it, so its walk up to where it failed, and the name it reached, are guarded and
+created like an accepted one's (`kiro_hooks_dir.guard_walk`). Nothing a rejected
+spelling names is sealed read-only. On Linux a pin holds a name, not its mode, so an
+agent can still make a folder it owns unsearchable; every reader then fails closed
+(`kiro_hooks_dir.HooksDirUnreadable`): Crew's resolver and `user_hook_files` raise
+instead of answering the default or no hooks, the turn's permission path refuses every
+tool call, an agent-config rebuild fails and keeps the config on disk, and
+`_materialize_kiro_hooks_dirs` refuses the next spawn (`SandboxHooksDirUnreadable`).
+Seatbelt denies a name whether or not it exists; the Linux launcher pins and binds only
+a name that exists, so `_materialize_kiro_hooks_dirs` creates every missing entry and
+the reached directory 0o700, in walk order, before the spawn; creating a missing name
+keeps what the spelling reaches. It never touches an existing entry and never refuses
+a spawn. The file-edit tool is refused on `.kiro/hooks` (`paths_lists._KIRO_HOOKS_DIR`,
+re-anchored under `KIRO_HOME`) and on the configured directory as reached and as
+written (`paths._configured_kiro_hooks_dir_rows`), which stay out of
+`write_protected_home_paths()` because its callers mask each row's parent. Reads stay
+open. No Crew code writes the directory. The person edits it from outside every
+sandbox, and a hook script that writes beside itself there fails inside one.
+
 A project's own MCP files are sealed under the same decision
 (`project_mcp_files`): kiro-cli and KAS read `<folder>/.kiro/settings/mcp.json`
 when a session starts in that folder on a spec with `includeMcpJson`, and Claude

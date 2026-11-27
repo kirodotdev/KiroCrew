@@ -853,6 +853,7 @@ def test_the_live_adapter_reads_the_host_the_builders_always_read(live_host: Pat
     assert host.kiro_agents_targets == (
         str(live_host / ".kiro" / "agents"),
         str(live_host / ".kiro" / "settings" / "mcp.json"),
+        str(live_host / ".kiro" / "hooks"),
     )
     assert host.carveout_probes == (_probe(str(probe)),)
     assert host.ssh_accept_new is False

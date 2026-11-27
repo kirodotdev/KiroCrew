@@ -65,6 +65,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
@@ -833,9 +834,12 @@ def _user_hooks_dir() -> Path | None:
     # Deferred import: ``agent`` imports ``hooks``, which this module imports at
     # load time, so resolving the dir at call time avoids the import cycle.
     from kiro_crew import agent as agent_mod
+    from kiro_crew.kiro_hooks_dir import HooksDirUnreadable
 
     try:
         return agent_mod.resolved_kiro_hooks_dir()
+    except HooksDirUnreadable:
+        raise  # an unsearchable folder on the way is an error, never "no hooks"
     except Exception:  # noqa: BLE001 - a missing dir must never fail the turn
         logger.debug("user hook files: could not resolve the hooks directory", exc_info=True)
         return None
@@ -907,17 +911,27 @@ def user_hook_files() -> list[ScriptHook]:
 
     Each file's conversion is cached by its path and content digest, so an
     unchanged file is converted -- and its skipped documents audited -- once rather
-    than on every turn. Never raises: a missing directory, or an unreadable or
-    malformed file, degrades to fewer hooks rather than a failed turn.
+    than on every turn. A missing directory, or an unreadable or malformed file,
+    degrades to fewer hooks. A directory that exists but cannot be listed, or a folder
+    on the way that cannot be searched, raises
+    :class:`kiro_crew.kiro_hooks_dir.HooksDirUnreadable`: a mode change an agent can
+    make must not read as "no hooks", so the callers refuse the turn's tool calls.
     """
     hooks_dir = _user_hooks_dir()
     if hooks_dir is None:
         return []
     try:
-        files = sorted(p for p in hooks_dir.glob("*.json") if p.is_file())
-    except OSError:
-        logger.debug("user hook files: could not list %s", _diagnostic(str(hooks_dir)))
+        # ``os.scandir`` rather than ``Path.glob``, which reads an unlistable folder as
+        # an empty one.
+        with os.scandir(hooks_dir) as listing:
+            names = [entry.name for entry in listing if entry.name.endswith(".json")]
+    except (FileNotFoundError, NotADirectoryError):
         return []
+    except OSError as exc:
+        from kiro_crew.kiro_hooks_dir import HooksDirUnreadable
+
+        raise HooksDirUnreadable(str(hooks_dir)) from exc
+    files = sorted(p for p in (hooks_dir / name for name in names) if p.is_file())
     out: list[ScriptHook] = []
     dropped_files = max(0, len(files) - _MAX_HOOK_FILES)
     # A cap truncated the hooks that run. The per-file side-count (``cap_overflow``)
@@ -1718,8 +1732,17 @@ async def turn_spec_hooks(
     # only the dashboard chat turn, so a sub-agent or task-runner turn fires them
     # too (and the auto-approve withhold always has a hook to fire). KAS only; the
     # helper returns the spec hooks unchanged off KAS.
+    from kiro_crew.kiro_hooks_dir import HooksDirUnreadable
+
     try:
         hooks = await asyncio.to_thread(merge_user_hook_files, provider, hooks)
+    except HooksDirUnreadable:
+        logger.warning(
+            "the user's hooks folder for %r cannot be read; tool calls are blocked",
+            agent_id,
+            exc_info=True,
+        )
+        return TurnSpecHooks([], work_dir, True, True)
     except Exception:  # noqa: BLE001 - a hook-file read must never fail the turn
         logger.debug("user hook files could not be merged for this turn", exc_info=True)
     return TurnSpecHooks(hooks, work_dir, False, True, tuple(lost))
