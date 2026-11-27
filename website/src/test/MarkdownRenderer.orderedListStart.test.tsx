@@ -66,7 +66,8 @@ describe('MarkdownRenderer ordered lists — start is preserved', () => {
     expect(ol.getAttribute('type')).toBe('A')
     expect(ol.className).not.toContain('list-decimal')
     expect(ol.style.listStyleType).toBe('upper-alpha')
-    expect(ol.className).toContain('pl-8')
+    expect(ol.className).toContain('ps-0')
+    expect(ol.querySelector('li')!.className).toContain('ms-8')
   })
 
   it('still emits list-decimal for an explicit numeric type', () => {

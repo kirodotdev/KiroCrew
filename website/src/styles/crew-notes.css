@@ -66,12 +66,14 @@
   color: var(--text);
 }
 
-/* Lists: shallower indent than the renderer's pl-8, a clear gap between
- * top-level items, and a tighter, slightly-muted nested level. */
+/* Lists use a shallow gutter on each item's inline start so mixed-direction
+ * items have room for their markers. Nested items use a tighter gutter. */
 .crew-notes ul,
 .crew-notes ol {
-  padding-left: 1.25rem;
   margin: 8px 0;
+}
+.crew-notes :is(ul, ol) > li {
+  margin-inline-start: 1.25rem;
 }
 /* Gap between top-level bullets only; :not(li ul/ol) excludes nested lists and
  * is independent of MarkdownRenderer's .group wrapper the list sits under. */
@@ -81,10 +83,10 @@
 }
 .crew-notes li ul,
 .crew-notes li ol {
-  padding-left: 1rem;
   margin: 4px 0;
 }
 .crew-notes li li {
+  margin-inline-start: 1rem;
   font-size: 12.5px;
   color: color-mix(in srgb, var(--text) 68%, var(--muted));
 }

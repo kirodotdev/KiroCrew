@@ -158,3 +158,27 @@ describe('session row: a mate\'s own thread', () => {
     expect(generateTitleMock).not.toHaveBeenCalled()
   })
 })
+
+
+describe('session row content direction', () => {
+  beforeEach(async () => {
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
+    await initI18n(); await i18next.changeLanguage('en')
+  })
+  it('isolates the title while leaving markers and the row in shell order', async () => {
+    const { store } = renderSidebar()
+    const title = 'שלום (API 42)'
+    act(() => { store.dispatch(sseSlotTitle({ key: SLOT_KEY, title })) })
+    const row = sessionRow()
+    const label = within(row).getByText(title)
+    expect(label.tagName).toBe('BDI')
+    expect(label.getAttribute('dir')).toBe('auto')
+    expect(row.querySelector('[data-session-title]')?.hasAttribute('dir')).toBe(false)
+    await act(async () => { fireEvent.doubleClick(label, { detail: 2 }) })
+    const input = await within(row).findByDisplayValue(title) as HTMLTextAreaElement
+    expect(input.getAttribute('dir')).toBe('auto')
+    expect(input.style.unicodeBidi).toBe('plaintext')
+    expect(input.value).toBe(title)
+    await act(async () => { fireEvent.keyDown(input, { key: 'Escape' }) })
+  })
+})

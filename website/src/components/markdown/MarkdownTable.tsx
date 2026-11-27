@@ -143,8 +143,10 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
     ? <Check size={13} className="text-ok" aria-hidden="true" />
     : <Icon size={13} aria-hidden="true" />
 
+  // Keep the default column order inside RTL prose. The native table still
+  // takes an authored direction from sp(node).
   return (
-    <div className={`markdown-table ${TABLE_WRAPPER_CLS} group/table`} data-testid="markdown-table" data-expanded={expanded ? '' : undefined}>
+    <div dir="ltr" className={`markdown-table ${TABLE_WRAPPER_CLS} group/table`} data-testid="markdown-table" data-expanded={expanded ? '' : undefined}>
       {/* A hidden scrollbar leaves no sign that columns sit past an edge, so
           fade whichever edge still clips. The fade is a `mask-image` on the
           scroller itself (the proven edge-fade pattern — ThinkingBlock,
