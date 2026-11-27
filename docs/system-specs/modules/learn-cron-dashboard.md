@@ -1019,6 +1019,25 @@ with no exit code; a process that exited keeps its code, `-1` (SIGHUP) included.
 Pinned by `TestCommandFailureReachesTheUser` in
 `test/test_cron_run_failure_alert.py`.
 
+A script run whose child exits non-zero (`sys.exit(2)`, a crash before the
+launcher's envelope) fails with `run_script_sandboxed`'s `exit_code` and a reason
+that says `Script exited with code N.`, then the end of the child's redacted
+stderr, then a `Next:` line pointing at `kirocrew cron preview`
+(`cron_script._script_exit_error`). The whole reason fits in
+`_MAX_SCRIPT_STDERR_TAIL` (500) characters, the head the alert keeps, so the
+stderr kept is shorter than that, and when its cut lands inside a line the
+severed part is dropped, so the output starts at a line; a last line longer than
+the whole budget is shown from its start and cut at its end with `...`. That reason, like a
+launcher-reported error (which already names the script's exception type), is
+the job's `last_error` and the alert's body as written: the `RuntimeError` the
+script arm raises to reach its error arm is not named. An exception the arm did
+not raise itself keeps its type in the alert. Pinned by
+`test_nonzero_exit_names_its_code_and_starts_its_output_at_a_line` and
+`test_a_last_line_longer_than_the_budget_is_shown_from_its_start` in
+`test/test_cron_script_hardening.py` and
+`test_reported_failure_is_told_without_an_exception_type` in
+`test/test_cron_run_failure_alert.py`.
+
 An alert reaching only the dashboard bell while the results reach a chat is worse
 than a uniform gap: the success path is what taught the operator to watch the
 channel, so a job crashing every minute there reads as an idle one — the exact
