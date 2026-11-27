@@ -190,7 +190,10 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
         _, dash = _call(
             "session_create",
             {"title": "worker"},
-            {"POST /api/session-control/create": {"target": "chat-2", "title": "w"}},
+            {
+                "GET /api/chat/slots": [{"key": "chat-verified", "folder_id": ""}],
+                "POST /api/session-control/create": {"target": "chat-2", "title": "w"},
+            },
             self.VERIFIED,
         )
         assert dash.requests[-1].session_key == "dashboard:chat-verified"

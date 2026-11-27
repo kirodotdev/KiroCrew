@@ -20,7 +20,9 @@ from kiro_crew.conductor_patrol import reply_line
 from kiro_crew.mcp_dashboard_caller_scope import (
     CREW_MODE_FOLDER_NOTE,
     _caller_app_scope,
+    _caller_folder_id,
     _caller_in_crew_tree,
+    _inherited_caller_folder,
     _refuse_tree_shaping_if_unverifiable,
 )
 from kiro_crew.mcp_dashboard_folder_tree import _chat_folder_paths
@@ -46,6 +48,7 @@ def _resolve_folder_for_new_session(
     verb: str,
     preflight: Callable[[str], str | None] | None = None,
     crew_project: bool = False,
+    inherit_caller_folder: bool = False,
 ) -> tuple[str, str, str, str | None]:
     """``(folder_id, folder_label, made_note, error)`` for filing a NEW session.
 
@@ -57,7 +60,12 @@ def _resolve_folder_for_new_session(
     reach the same write by naming the path here. The gate's verified key is what
     the segment creation writes under, per its own contract.
 
-    An empty reference resolves to ``("", "", "", None)``: nothing to file.
+    An empty reference resolves to ``("", "", "", None)``: nothing to file, unless
+    ``inherit_caller_folder`` (``session_create`` only: a fork already lands beside
+    its source and a revive keeps its own placement) files it in the caller's own
+    folder. On that same create path ``/`` is the top level (fork and revive resolve
+    it like any other path, which refuses it). A reference starting ``./`` is a path
+    below the caller's own folder, or below the top level for an unfiled caller.
     ``made_note`` names any path segments the mkdir -p walk created, and it is
     reported on BOTH outcomes -- those segments persist even when the create
     itself is then refused, the same partial-report posture chat_folder_create
@@ -72,8 +80,14 @@ def _resolve_folder_for_new_session(
     between the preflight and the create (a race, or a folder-create rate limit
     hit part-way down the path) can still strand segments.
     """
+    folder_ref = folder_ref.strip()
     if not folder_ref:
+        return _inherited_caller_folder(ctx) if inherit_caller_folder else ("", "", "", None)
+    if folder_ref == "/" and inherit_caller_folder:
         return "", "", "", None
+    relative = folder_ref == "." or folder_ref.startswith("./")
+    if relative:
+        folder_ref = folder_ref[2:].strip()
     gate_key, _gate_app, gate = _refuse_tree_shaping_if_unverifiable(ctx, verb)
     if gate:
         return "", "", "", gate
@@ -86,6 +100,10 @@ def _resolve_folder_for_new_session(
     scope_rows, scope_err = _get_rows(ctx.client, "/api/chat/slots")
     if scope_err:
         return "", "", "", redact(f"Error: {scope_err}")
+    root = _caller_folder_id(gate_key, scope_rows) if relative else ""
+    if relative and not root and not folder_ref:
+        # `./` from an unfiled caller names the top level.
+        return "", "", "", None
     if _caller_in_crew_tree(gate_key, scope_rows):
         # A chat that turned Crew Mode on keeps its sessions out of the person's
         # folders: no path segment is created and the reply says so. With
@@ -103,7 +121,7 @@ def _resolve_folder_for_new_session(
         # unfiled and the note says so. An AMBIGUOUS reference is still refused: it
         # would pick a project directory nobody chose.
         crew_id, _created, crew_ref_err = _resolve_chat_folder_ref(
-            folder_ref, crew_folders, create_missing=False
+            folder_ref, crew_folders, create_missing=False, root=root
         )
         if crew_ref_err:
             if crew_ref_err.startswith("folder not found"):
@@ -126,7 +144,12 @@ def _resolve_folder_for_new_session(
     if folders_err:
         return "", "", "", redact(f"Error: {folders_err}")
     fld_id, created_segments, fld_err = _ensure_chat_folder_path(
-        folder_ref, chat_folders, client=ctx.client, session_key=gate_key, before_create=preflight
+        folder_ref,
+        chat_folders,
+        client=ctx.client,
+        session_key=gate_key,
+        before_create=preflight,
+        root=root,
     )
     made_note = ""
     if created_segments:
@@ -331,17 +354,23 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
             return _refused(refused, " (no folder was created)")
         return None
 
+    folder_ref = str(args.get("folder") or "")
     fld_id, folder_label, made_note, fld_err = _resolve_folder_for_new_session(
         walk_ctx,
-        str(args.get("folder") or ""),
+        folder_ref,
         "filing a new session at creation",
         preflight=_preflight_create,
         crew_project=True,
+        inherit_caller_folder=True,
     )
     if fld_err:
         return _Created(None, "", made_note, fld_err, None, next(reversed(walk.refusals), None))
     if fld_id:
         payload["folder_id"] = fld_id
+        if not folder_ref.strip():
+            # Inherited from the caller: it files the child, and the route keeps
+            # the child's project the caller's instead of the folder's.
+            payload["folder_inherited"] = True
     try:
         resp = ctx.client.post(
             "/api/session-control/create",

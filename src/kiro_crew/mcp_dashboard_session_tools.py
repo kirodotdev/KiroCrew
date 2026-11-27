@@ -116,7 +116,8 @@ def _session_tools() -> tuple[Tool, ...]:
                             "Sidebar folder to file the new session into, atomically with "
                             "creation — a folder id or a '/'-separated human path. Missing "
                             "path segments are created (mkdir -p), like chat_folder_create's "
-                            "`parent`. Omit to leave the session at the top level."
+                            "`parent`. Omit to file it in your own session's folder; './x' is "
+                            "below your folder, '/' the top level."
                         ),
                     },
                     "model": {

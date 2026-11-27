@@ -1848,7 +1848,10 @@ def _mcp(path: str, reply: object, tool: str, args: dict[str, Any]) -> str:
     from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
     from kiro_crew.mcp_tools.table import Caller, ToolContext
 
-    dash = InMemoryDashboardClient({path: reply})
+    # The create reads the caller's row for its folder; the route files a code
+    # channel's worker itself, so an unfiled row keeps the reply under test.
+    slots = [{"key": "chat-code-channel", "folder_id": ""}]
+    dash = InMemoryDashboardClient({"GET /api/chat/slots": slots, path: reply})
     return TABLE.call(tool, args, ToolContext(dash, Caller.strict("dashboard:chat-code-channel")))
 
 

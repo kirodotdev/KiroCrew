@@ -76,13 +76,13 @@ the row declares its route, its identity (`"strict"`), its descriptor and its
 row, so a caller that cannot be verified is refused before any request is sent,
 and the body finds the verified key in `ctx.caller_key` and sends it on every
 session-control request it makes on the caller's authority. When `folder` is
-given, the folder-filing reads of `/api/chat/slots` and `/api/chat/folders` carry
+given, or `session_create` looks up a `dashboard:` caller's own folder, the folder-filing reads of `/api/chat/slots` and `/api/chat/folders` carry
 the frame's attribution key, and a folder segment the filing creates is written
 under the tree-shaping gate's own strictly verified key. The body's dashboard
 client refuses a route its row does not declare, so
 a row's routes are the complete list of what its tool reaches: the Route column
 above, plus, for `session_create`, `session_fork` and `session_revive`, the chat
-slot and folder routes that file the new session when `folder` is given.
+slot and folder routes that file the new session.
 `test_mcp_call_site_auth_coverage.py` checks every declared route against the
 internal allowlists. `SESSION_CONTROL_TOOLS` is read off the rows
 (`TABLE.names("strict")`), which is what keeps the gate, the channel containment
@@ -670,8 +670,20 @@ carries that line.
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
 segments created, behind the same tree-shaping gate) — and files the slot as
-part of creation. No dispatcher spec grants a folder verb or passes
-`folder`: conductor and Bot guidance creates workers without it
+part of creation. A path starting `./` resolves below the caller's own folder
+(the top level for an unfiled caller), with the same mkdir -p walk and dry-run
+preflight, so a conductor groups a task's workers in `<its folder>/<task>`
+without knowing its own path; `session_fork` and `session_revive` accept `./`
+the same way. `/` names the top level. With `folder` omitted, the MCP tool files
+the child in the folder the caller's own session is filed in, read off the
+caller's `/api/chat/slots` row (`_inherited_caller_folder` in
+`mcp_dashboard_caller_scope.py`), the way a fork lands beside its source; an
+unfiled caller, a caller with no `dashboard:` row, a conductor mode tree and an
+app-scoped caller inherit nothing. `work_dispatch` creates through the same
+path. The routes keep their filing rules: a code channel's conductor and a Bot conductor
+still get their own filing rule from the create route, and the person's own
+New chat never reaches this tool. No dispatcher spec grants a folder verb or
+passes `folder`: conductor and Bot guidance creates workers without it
 (rfc-crewmate-workers-under-the-crewmate.md, Design 6). Filing is
 part of creation rather than a second call (`chat_folder_move_session`), because a
 folder deleted between two calls would leave the session unfiled with the create
@@ -695,6 +707,18 @@ and the workspace default when the caller has none
 (`_inherited_project_dir` in `session_create.py`). An invalid folder project refuses the create
 with 400 `folder_project_invalid`, and a folder whose project changes while the
 creation is in flight refuses with 409 `folder_target_changed`.
+
+A folder the child INHERITED only files it. When `session_create` names no
+`folder` and files the child in the caller's own folder, the MCP tool sends
+`folder_inherited: true` with that `folder_id` (a non-boolean is refused 400
+`invalid_field_type`), and the route takes the project directory from no folder:
+the child keeps the caller's project, as a create with no folder always did, so
+a conductor that switched to a worktree still sends its workers there, and an
+invalid project on the inherited folder refuses nothing
+(`session_create_folder.py`). If a Bot conductor's home filing re-files the
+child home, the home supplies the project, as before. A code channel's conductor
+keeps its channel rule. A folder the caller names, the caller's own included,
+still supplies its project.
 
 A caller inside a conductor mode tree — a chat that turned conductor mode on, or a session
 such a chat dispatched (`crew_mode.slot_in_turned_on_tree`, the rule the slot

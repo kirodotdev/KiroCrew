@@ -256,6 +256,8 @@ def test_a_dry_run_arms_nothing(tmp_path, svc, ledger):
 def test_the_session_create_reply_ends_with_the_patrol_outcome(resp_patrol, expected):
     client = MagicMock()
     client.post.return_value = {"ok": True, "target": "chat-9", "title": "worker", **resp_patrol}
+    # The slot list the create reads for the caller's own folder: none to inherit.
+    client.get.return_value = []
     ctx = SimpleNamespace(client=client, caller_key="dashboard:chat-1")
 
     out = mcp_dashboard._run_session_create({"title": "worker"}, ctx)

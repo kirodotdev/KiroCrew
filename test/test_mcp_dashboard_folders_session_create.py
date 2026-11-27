@@ -11,10 +11,19 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from mcp_dashboard_folders_helpers import _call, _minting_post, _reads, _writes
+from mcp_dashboard_folders_helpers import (
+    _call,
+    _minting_post,
+    _reads,
+    _slots_with_caller,
+    _writes,
+)
 
 from kiro_crew.mcp_dashboard import _list_tools
 from kiro_crew.mcp_tools.table import Caller
+
+#: The reads a create makes for an unfiled caller, which inherits no folder.
+_UNFILED = _reads(slots=_slots_with_caller())
 
 
 class TestSessionCreateModel:
@@ -25,9 +34,9 @@ class TestSessionCreateModel:
         out, dash = _call(
             "session_create",
             {"title": "worker", "model": "claude-sonnet-4.6"},
-            {"POST /api/session-control/create": created},
+            {**_UNFILED, "POST /api/session-control/create": created},
         )
-        (post,) = dash.requests
+        (post,) = _writes(dash)
         assert post.path == "/api/session-control/create"
         assert post.body["model"] == "claude-sonnet-4.6"
         assert "claude-sonnet-4.6" in out
@@ -36,7 +45,10 @@ class TestSessionCreateModel:
         _, dash = _call(
             "session_create",
             {"title": "w"},
-            {"POST /api/session-control/create": {"target": "chat-9-900", "title": "w"}},
+            {
+                **_UNFILED,
+                "POST /api/session-control/create": {"target": "chat-9-900", "title": "w"},
+            },
         )
         assert "model" not in dash.requests[-1].body
 
@@ -64,9 +76,9 @@ class TestSessionCreateAgentKind:
         _, dash = _call(
             "session_create",
             {"title": "worker", "agent": "kirocrew-worker", "agent_kind": "template"},
-            {"POST /api/session-control/create": created},
+            {**_UNFILED, "POST /api/session-control/create": created},
         )
-        (post,) = dash.requests
+        (post,) = _writes(dash)
         assert post.body["agent"] == "kirocrew-worker"
         assert post.body["agent_kind"] == "template"
 
@@ -74,7 +86,10 @@ class TestSessionCreateAgentKind:
         _, dash = _call(
             "session_create",
             {"title": "w", "agent": "kirocrew-worker"},
-            {"POST /api/session-control/create": {"target": "chat-9-900", "title": "w"}},
+            {
+                **_UNFILED,
+                "POST /api/session-control/create": {"target": "chat-9-900", "title": "w"},
+            },
         )
         assert "agent_kind" not in dash.requests[-1].body
 
@@ -92,7 +107,7 @@ class TestSessionCreateAgentKind:
         out, _ = _call(
             "session_create",
             {"title": "worker", "agent": "kirocrew-worker"},
-            {"POST /api/session-control/create": self._DENIED},
+            {**_UNFILED, "POST /api/session-control/create": self._DENIED},
         )
         assert out.startswith("Error: could not create a session:")
         assert "cannot verify delegation" in out
@@ -107,7 +122,7 @@ class TestSessionCreateAgentKind:
         out, _ = _call(
             "session_create",
             {"title": "worker", "agent": "kirocrew-worker", "agent_kind": "template"},
-            {"POST /api/session-control/create": self._DENIED},
+            {**_UNFILED, "POST /api/session-control/create": self._DENIED},
         )
         assert out.startswith("Error: could not create a session:")
         assert 'agent_kind: "template"' not in out
@@ -124,7 +139,7 @@ class TestSessionCreateAgentKind:
         out, _ = _call(
             "session_create",
             {"title": "worker", "agent": "kirocrew-worker", "agent_kind": "template"},
-            {"POST /api/session-control/create": self._DENIED},
+            {**_UNFILED, "POST /api/session-control/create": self._DENIED},
         )
         lowered = out.lower()
         for promise in ("re-select", "reselect", "re-bind", "rebind", "re-pick"):
@@ -136,10 +151,11 @@ class TestSessionCreateAgentKind:
             "session_create",
             {"title": "worker", "agent": "kirocrew-worker"},
             {
+                **_UNFILED,
                 "POST /api/session-control/create": {
                     "error": "'kirocrew-worker' does not resolve to a configured agent",
                     "code": "agent_unresolved",
-                }
+                },
             },
         )
         assert out == (
@@ -173,9 +189,9 @@ class TestSessionCreateAutocompact:
         out, dash = _call(
             "session_create",
             {"title": "worker", "autocompact_pct": 85},
-            {"POST /api/session-control/create": created},
+            {**_UNFILED, "POST /api/session-control/create": created},
         )
-        (post,) = dash.requests
+        (post,) = _writes(dash)
         assert post.path == "/api/session-control/create"
         assert post.body["autocompact_pct"] == 85
         assert "auto-compacting at 85%" in out
@@ -184,7 +200,10 @@ class TestSessionCreateAutocompact:
         out, dash = _call(
             "session_create",
             {"title": "w"},
-            {"POST /api/session-control/create": {"target": "chat-9-900", "title": "w"}},
+            {
+                **_UNFILED,
+                "POST /api/session-control/create": {"target": "chat-9-900", "title": "w"},
+            },
         )
         assert "autocompact_pct" not in dash.requests[-1].body
         assert "auto-compacting" not in out
@@ -255,6 +274,7 @@ class TestSessionCreateFolder:
         (create,) = _writes(dash)
         assert create.path == "/api/session-control/create"
         assert create.body["folder_id"] == "bbbbbbbbbbbb"
+        assert "folder_inherited" not in create.body, "a named folder supplies its project"
         assert "kirocrew/0811" in out
 
     def test_missing_segments_are_created_like_a_parent_ref(self) -> None:
@@ -368,6 +388,134 @@ class TestSessionCreateFolder:
         # exists); the folder write is the one request to the folder route.
         (folder_write,) = dash.sent("POST /api/chat/folders")
         assert folder_write.session_key == "dashboard:gate-key"
+
+
+class TestSessionCreateFolderDefault:
+    """`session_create.folder` relative to the caller's own folder.
+
+    The default caller (``chat-1-100``) is filed in ``kirocrew`` (``aaaaaaaaaaaa``),
+    which holds ``0811`` (``bbbbbbbbbbbb``).
+    """
+
+    def _routes(self, slots: list[dict] | None = None, **extra: Any) -> dict[str, Any]:
+        return {
+            **_reads(slots=slots),
+            "POST /api/session-control/create": lambda req: (
+                {"ok": True}
+                if req.body.get("dry_run")
+                else {"target": "chat-9-900", "title": "worker"}
+            ),
+            **extra,
+        }
+
+    @staticmethod
+    def _create(dash: Any) -> Any:
+        return _writes(dash)[-1]
+
+    def test_an_omitted_folder_files_the_session_in_the_callers_folder(self) -> None:
+        out, dash = _call("session_create", {"title": "worker"}, self._routes())
+        create = self._create(dash)
+        assert create.path == "/api/session-control/create"
+        assert create.body["folder_id"] == "aaaaaaaaaaaa"
+        # The route keeps the caller's project for a folder it did not name.
+        assert create.body["folder_inherited"] is True
+        assert "filed in `kirocrew`" in out
+        # Inheriting creates nothing.
+        assert dash.sent("POST /api/chat/folders") == []
+
+    def test_an_omitted_folder_from_an_unfiled_caller_stays_at_the_top_level(self) -> None:
+        out, dash = _call(
+            "session_create", {"title": "worker"}, self._routes(slots=_slots_with_caller())
+        )
+        assert "folder_id" not in self._create(dash).body
+        assert "filed in" not in out
+
+    def test_a_dot_slash_path_creates_its_folder_below_the_callers_folder(self) -> None:
+        made = {"id": "dddddddddddd", "name": "task", "parent_id": "aaaaaaaaaaaa"}
+        out, dash = _call(
+            "session_create",
+            {"title": "worker", "folder": "./task"},
+            self._routes(**{"POST /api/chat/folders": made}),
+        )
+        (folder_write,) = dash.sent("POST /api/chat/folders")
+        assert folder_write.body == {"name": "task", "parent_id": "aaaaaaaaaaaa"}
+        assert self._create(dash).body["folder_id"] == "dddddddddddd"
+        assert "created folder path: task" in out
+
+    def test_a_dot_slash_path_reuses_an_existing_folder_below_the_callers_folder(self) -> None:
+        _, dash = _call("session_create", {"title": "worker", "folder": "./0811"}, self._routes())
+        assert dash.sent("POST /api/chat/folders") == []
+        assert self._create(dash).body["folder_id"] == "bbbbbbbbbbbb"
+        assert "folder_inherited" not in self._create(dash).body
+
+    def test_a_dot_slash_path_from_an_unfiled_caller_resolves_at_the_top_level(self) -> None:
+        _, dash = _call(
+            "session_create",
+            {"title": "worker", "folder": "./Travel"},
+            self._routes(slots=_slots_with_caller()),
+        )
+        assert dash.sent("POST /api/chat/folders") == []
+        assert self._create(dash).body["folder_id"] == "cccccccccccc"
+
+    def test_a_slash_files_the_session_at_the_top_level(self) -> None:
+        out, dash = _call("session_create", {"title": "worker", "folder": "/"}, self._routes())
+        assert [r.route for r in dash.requests] == ["POST /api/session-control/create"]
+        assert "folder_id" not in dash.requests[0].body
+        assert not out.startswith("Error:")
+
+    def test_a_slash_is_refused_by_session_fork_instead_of_silently_ignored(self) -> None:
+        out, dash = _call(
+            "session_fork",
+            {"source": "chat-2-200", "title": "copy", "folder": "/"},
+            {**self._routes(), "POST /api/session-control/fork": {"target": "chat-9-900"}},
+        )
+        assert out.startswith("Error:")
+        assert "folder not found" in out
+        assert dash.sent("POST /api/session-control/fork") == []
+
+    def test_an_absolute_path_is_still_resolved_from_the_top_level(self) -> None:
+        _, dash = _call("session_create", {"title": "worker", "folder": "Travel"}, self._routes())
+        assert self._create(dash).body["folder_id"] == "cccccccccccc"
+
+    def test_a_crew_mode_caller_filed_in_a_folder_does_not_pass_it_on(self) -> None:
+        crew_root = {
+            "key": "chat-1-100",
+            "title": "Conductor",
+            "folder_id": "aaaaaaaaaaaa",
+            "crew_mode_root": True,
+            "crew_mode_agent": "kirocrew",
+        }
+        _, dash = _call("session_create", {"title": "worker"}, self._routes(slots=[crew_root]))
+        assert "folder_id" not in self._create(dash).body
+
+    def test_an_app_scoped_caller_inherits_no_folder(self) -> None:
+        app_row = {"key": "chat-1-100", "folder_id": "aaaaaaaaaaaa", "app": "some-app"}
+        _, dash = _call("session_create", {"title": "worker"}, self._routes(slots=[app_row]))
+        assert "folder_id" not in self._create(dash).body
+
+    def test_work_dispatch_files_its_worker_in_the_callers_folder(self) -> None:
+        args = {
+            "title": "Fix the flaky test",
+            "acceptance": {"kind": "pr_checks", "pr": "TBD", "repo": "o/r"},
+            "agent": "kirocrew-worker",
+            "agent_kind": "template",
+            "seed": "Call work_brief first.",
+        }
+        _, dash = _call(
+            "work_dispatch",
+            args,
+            {
+                **_reads(),
+                "POST /api/work-ledger/record": lambda req: {
+                    "action": req.body["action"],
+                    "item": {"item_id": "it_0000abcd"},
+                },
+                "POST /api/session-control/create": {"target": "chat-9-900", "title": "w"},
+                "POST /api/session-control/send": {"target": "chat-9-900", "started": True},
+            },
+        )
+        (create,) = dash.sent("POST /api/session-control/create")
+        assert create.body["folder_id"] == "aaaaaaaaaaaa"
 
 
 class TestSessionCreateFolderInCrewMode:

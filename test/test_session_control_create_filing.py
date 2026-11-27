@@ -175,6 +175,126 @@ def test_an_explicit_folder_project_wins_over_the_callers(tmp_path):
     assert child.project == str(folder_project.resolve())
 
 
+# ── session_create over MCP: a folder inherited from the caller ──────────────
+
+
+def _post_create(state, caller, body: dict):
+    """``POST /api/session-control/create`` with *body*, as the caller's MCP process."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.dashboard.handlers import session_control as handlers_sc
+
+    request = MagicMock()
+    request.app = {"state": state}
+    request.path = "/api/session-control/create"
+    request.method = "POST"
+    request.headers = {"X-Session-Key": _key(caller)}
+    request.get = lambda key, default=None: (
+        True if key in ("internal_auth", "peer_verified") else default
+    )
+
+    async def _json() -> dict:
+        return dict(body)
+
+    request.json = _json
+    return asyncio.run(handlers_sc.api_session_control_create(request))
+
+
+def _mcp_create(state, caller, args: dict) -> str:
+    """``session_create`` as the caller's MCP process runs it, against the real route.
+
+    The slot list and folder list the MCP resolver reads come from *state*.
+    """
+    import json
+
+    from kiro_crew.mcp_dashboard import TABLE
+    from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+    from kiro_crew.mcp_tools.table import Caller, ToolContext
+
+    routes = {
+        "GET /api/chat/slots": [{"key": caller.key, "folder_id": caller.folder_id or ""}],
+        "GET /api/chat/folders": lambda _req: [dict(f) for f in state._folders],
+        "POST /api/session-control/create": lambda req: json.loads(
+            _post_create(state, caller, req.body).text
+        ),
+    }
+    ctx = ToolContext(InMemoryDashboardClient(routes), Caller.strict(_key(caller)))
+    return TABLE.call("session_create", args, ctx)
+
+
+def _filed_caller(tmp_path, folder_project: str):
+    """A caller filed in a folder declaring *folder_project*, working in its own project."""
+    state = _make_state(tmp_path)
+    caller_project = tmp_path / "caller-worktree"
+    caller_project.mkdir()
+    _folder(state, "fold00000020", "Repo", project_dir=folder_project)
+    caller = _slot(state, "chat-1")
+    caller.folder_id = "fold00000020"
+    caller.project = str(caller_project.resolve())
+    return state, caller
+
+
+def _only_child(state, caller):
+    (child,) = [s for key, s in state._slots.items() if key != caller.key]
+    return child
+
+
+def test_an_inherited_folder_files_the_child_but_keeps_the_callers_project(tmp_path):
+    """A conductor that switched to a worktree keeps its workers there.
+
+    Mutation guard: let an inherited folder supply its project and the child runs in
+    the folder's repository instead of the caller's worktree.
+    """
+    folder_project = tmp_path / "folder-repo"
+    folder_project.mkdir()
+    state, caller = _filed_caller(tmp_path, str(folder_project))
+
+    out = _mcp_create(state, caller, {"title": "worker"})
+
+    assert "filed in `Repo`" in out, out
+    child = _only_child(state, caller)
+    assert child.folder_id == "fold00000020"
+    assert child.project == caller.project
+
+
+def test_an_inherited_folder_with_an_invalid_project_still_creates(tmp_path):
+    """The folder's project is not consulted, so a broken one refuses nothing."""
+    state, caller = _filed_caller(tmp_path, str(tmp_path / "gone-repo"))
+
+    out = _mcp_create(state, caller, {"title": "worker"})
+
+    assert not out.startswith("Error"), out
+    child = _only_child(state, caller)
+    assert child.folder_id == "fold00000020"
+    assert child.project == caller.project
+
+
+def test_naming_the_callers_folder_gives_the_child_its_project(tmp_path):
+    """An explicit folder, even the caller's own, supplies its project as before."""
+    folder_project = tmp_path / "folder-repo"
+    folder_project.mkdir()
+    state, caller = _filed_caller(tmp_path, str(folder_project))
+
+    out = _mcp_create(state, caller, {"title": "worker", "folder": "fold00000020"})
+
+    assert "filed in `Repo`" in out, out
+    child = _only_child(state, caller)
+    assert child.folder_id == "fold00000020"
+    assert child.project == str(folder_project.resolve())
+
+
+def test_the_route_refuses_a_non_boolean_folder_inherited(tmp_path):
+    """``"false"`` is truthy: a non-boolean must not choose the project rule."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    before = state.live_slot_count()
+
+    resp = _post_create(state, caller, {"title": "w", "folder_inherited": "false"})
+
+    assert resp.status == 400
+    assert state.live_slot_count() == before
+
+
 def test_a_caller_project_switch_mid_create_is_refused(tmp_path, monkeypatch):
     """The inherited project is re-checked at the late gate, like a folder project.
 

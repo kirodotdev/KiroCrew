@@ -30,7 +30,6 @@ from kiro_crew.dashboard.approval_inheritance import inherit_posture
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_folders import (
     _folder_declared_project,
-    _resolve_folder_project_dir,
     _unhide_folder,
     _validate_project_dir,
 )
@@ -61,6 +60,10 @@ from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
 from kiro_crew.dashboard.session_control_parts.crew_filing import (
     _crew_filing_answer,
     _in_turned_on_crew_tree,
+)
+from kiro_crew.dashboard.session_control_parts.session_create_folder import (
+    folder_project_for_create,
+    inherited_project_folder,
 )
 from kiro_crew.dashboard.session_control_parts.session_create_pins import (  # noqa: F401
     _inherited_pin_foreign_to_child,
@@ -145,6 +148,7 @@ async def create_session(
     agent: str = "",
     agent_kind: str = "",
     folder_id: str = "",
+    folder_inherited: bool = False,
     model: str = "",
     reasoning_effort: str | None = None,
     autocompact_pct: float | None = None,
@@ -391,6 +395,8 @@ async def create_session(
     # person's folder it names still supplies the project directory. No other
     # caller may file into a mate's home.
     project_folder_id = folder_id
+    # A code channel's folder is its own rule above, never an inherited one.
+    inherited_folder = folder_id if folder_inherited and not via_code_channel else ""
     if not in_crew_tree:
         from kiro_crew.dashboard.mate_folders import (
             MateFolderError,
@@ -416,28 +422,11 @@ async def create_session(
             raise SessionControlError(
                 "this folder belongs to a Bot", status=403, code="mate_home_locked"
             ) from None
+    project_folder_id = inherited_project_folder(inherited_folder, folder_id, project_folder_id)
     if folder_id:
-        folder_snapshot = await state.read_folders(
-            lambda folders: [dict(folder) for folder in _safe_folder_tree(folders)]
+        folder_project_raw, folder_project = await folder_project_for_create(
+            state, folder_id, project_folder_id
         )
-        if not {folder_id, project_folder_id} <= {str(f.get("id") or "") for f in folder_snapshot}:
-            raise SessionControlError("folder not found", code="folder_not_found")
-        folder_project_raw, folder_project_error = _folder_declared_project(
-            folder_snapshot, project_folder_id
-        )
-        if folder_project_error:
-            raise SessionControlError(
-                f"invalid folder project: {folder_project_error}",
-                code="folder_project_invalid",
-            )
-        folder_project, folder_project_error = await asyncio.to_thread(
-            _resolve_folder_project_dir, folder_snapshot, project_folder_id
-        )
-        if folder_project_error:
-            raise SessionControlError(
-                f"invalid folder project: {folder_project_error}",
-                code="folder_project_invalid",
-            )
     # An unnamed agent inherits the CALLER'S, not the global default: the caller is
     # already running in this workspace, so its agent is the one bound here, and
     # falling to the global default would put the child on another workspace's
