@@ -18077,6 +18077,8 @@
         "builtin": "In {{productName}} integriert",
         "builtin_help": "{{productName}} betreibt seine eigenen Funktionen (Gedächtnis, Zeitplanung, Sitzungen, Leitfaden) über diesen Server, daher kann er hier nicht ausgeschaltet oder deinstalliert werden.",
         "scope_builtin": "{{label}}: an (in {{productName}} integriert; kann nicht ausgeschaltet werden)",
+        "app_owned": "Aus der App {{app}}",
+        "app_owned_help": "Die App {{app}} stellt diesen Server bereit, daher kannst du ihn hier nicht deinstallieren: {{productName}} würde ihn aus der App wieder hinzufügen. Schalte ihn hier aus, oder deaktiviere oder deinstalliere die App unter Apps.",
         "scope_switch_pending_on": "{{label}}: wird beim Klick auf „Anwenden“ eingeschaltet (zum Zurücknehmen klicken)",
         "scope_switch_pending_off": "{{label}}: wird beim Klick auf „Anwenden“ ausgeschaltet (zum Zurücknehmen klicken)",
         "all_off": "Alle aus",

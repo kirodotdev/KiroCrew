@@ -817,11 +817,11 @@ def _use_registered_app_launch_lines(base: dict[str, Any], mate_spec: dict[str, 
     from kiro_crew import agent as agent_mod
     from kiro_crew.apps import bridges
     from kiro_crew.mate_capability_catalog import _TRANSPORT_DROP
-    from kiro_crew.mcp_provenance import DERIVED_KEY, WITHHELD_KEY
+    from kiro_crew.mcp_provenance import DERIVED_KEY, SOURCE_KEY, WITHHELD_KEY
 
     enabled = agent_mod._app_owned_mcp_keys()
     registered = bridges.registered_app_mcp_servers()
-    not_launch = _TRANSPORT_DROP | {DERIVED_KEY, WITHHELD_KEY}
+    not_launch = _TRANSPORT_DROP | {DERIVED_KEY, WITHHELD_KEY, SOURCE_KEY}
     for name, entry in servers.items():
         live = registered.get(name)
         if name in base_servers or ":" not in name or enabled.get(name) is not True:

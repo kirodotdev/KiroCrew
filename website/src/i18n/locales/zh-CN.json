@@ -17599,6 +17599,8 @@
         "builtin": "{{productName}} 内置",
         "builtin_help": "{{productName}} 自身的功能（记忆、计划任务、会话、指南）运行在这个服务器上，因此无法在此关闭或卸载。",
         "scope_builtin": "{{label}}：已开启（{{productName}} 内置，无法关闭）",
+        "app_owned": "来自 {{app}} 应用",
+        "app_owned_help": "此服务器由 {{app}} 应用提供，因此无法在此卸载：{{productName}} 会从该应用重新添加它。可在此将其关闭，或在“应用”中禁用或卸载该应用。",
         "scope_switch_pending_on": "{{label}}：点“应用更改”后开启（点击撤销）",
         "scope_switch_pending_off": "{{label}}：点“应用更改”后关闭（点击撤销）",
         "all_off": "全部关闭",

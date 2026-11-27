@@ -52,6 +52,8 @@ from kiro_crew.dashboard.handlers._shared import (
 from kiro_crew.dashboard.handlers.mcp_agent_sync import (
     _agent_home_not_owned,
     _agent_home_not_owned_response,
+    _app_owned_apply_refusal,
+    _app_owned_server_refusal,
     _builtin_apply_refusal,
     _builtin_server_refusal,
     _builtin_stays_on,
@@ -161,7 +163,10 @@ from kiro_crew.user_json import (
 if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
 # Bound here: an owner-served name needs a TYPE_CHECKING import, which the hoist ratchet refuses.
-from kiro_crew.agent import emission_eligible_mcp_servers  # noqa: F401  # isort: skip
+from kiro_crew.agent import (  # noqa: F401  # isort: skip
+    _app_owned_mcp_server_apps,
+    emission_eligible_mcp_servers,
+)
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
 
@@ -889,6 +894,8 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
         return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     if (refused := await _builtin_server_refusal(name)) is not None:
         return refused
+    if (refused := await _app_owned_server_refusal(name)) is not None:
+        return refused
 
     # Ownership BEFORE the first mutation: this handler writes the
     # user-level registry (and, on remove, asks the companion package
@@ -1055,8 +1062,11 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
             {"error": "server name is required", "code": "name_required"}, status=400
         )
     name = name.strip()
-    if request.method == "DELETE" and (refused := await _builtin_server_refusal(name)) is not None:
-        return refused
+    if request.method == "DELETE":
+        if (refused := await _builtin_server_refusal(name)) is not None:
+            return refused
+        if (refused := await _app_owned_server_refusal(name)) is not None:
+            return refused
 
     # Ownership BEFORE the first mutation: this handler writes the
     # user-level registry (and, on remove, asks the companion package
@@ -1218,6 +1228,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
     from kiro_crew.config.loader import read_endorsed_config_text  # noqa: F401
     from kiro_crew.dashboard.handlers.mcp_agent_sync import (  # noqa: F401
+        _app_owned_mcp_servers,
         _builtin_mcp_server_names,
         _is_builtin_mcp_server,
         _is_page_placeholder,
@@ -1410,6 +1421,8 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         )
 
     if (refused := await _builtin_apply_refusal(changes, _get_mcp_lock)) is not None:
+        return refused
+    if (refused := await _app_owned_apply_refusal(changes)) is not None:
         return refused
     results: list[dict] = []
     corrupt = False  # a scope file broke mid-batch: stop and refuse

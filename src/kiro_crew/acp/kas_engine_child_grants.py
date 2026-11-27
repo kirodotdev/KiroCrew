@@ -495,10 +495,13 @@ def set_up_alike(mine: Any, theirs: Any, read: Callable[[Any], Any] = lambda ent
     entry matches only *theirs* whole. *read* narrows both sides to the keys that
     count before they are compared; every other key must be equal.
     """
-    from kiro_crew.mcp_provenance import DERIVED_KEY, source_view
+    from kiro_crew.mcp_provenance import DERIVED_KEY, SOURCE_KEY, source_view
 
     if not isinstance(mine, dict) or not isinstance(theirs, dict):
         return False
+    # The app-source stamp records who declared the entry, not what it launches.
+    mine = {k: v for k, v in mine.items() if k != SOURCE_KEY}
+    theirs = {k: v for k, v in theirs.items() if k != SOURCE_KEY}
     if DERIVED_KEY in mine:
         return _same(read(mine), read(theirs))
     stored = {k: v for k, v in theirs.items() if k != DERIVED_KEY}

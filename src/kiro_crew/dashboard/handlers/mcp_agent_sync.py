@@ -22,6 +22,7 @@ from aiohttp import web
 from kiro_crew.agent import (
     AGENT_FILENAME,
     SharedAgentHomeRefused,
+    _app_owned_mcp_server_apps,
     _atomic_json_write,
     _declined_foreign_spec_write,
     emission_eligible_mcp_servers,
@@ -156,6 +157,86 @@ async def _builtin_server_refusal(name: str) -> web.Response | None:
         },
         status=409,
     )
+
+
+def _app_owned_mcp_servers() -> dict[str, str]:
+    """Mounted aliases in the agent spec mapped to their owning enabled app.
+
+    The rule is :func:`_app_owned_mcp_server_apps`: an entry carrying the
+    ``x-kirocrew-app-source`` stamp the rebuild and the app bridge write on what they
+    mount for an app, while that app is installed and enabled.
+
+    Blocking (it reads the agent spec and every enabled app manifest), so a caller
+    on the event loop offloads it. The spec is read through the hardened agent-spec
+    reader (``_read_agent_spec``: sensitive-symlink screen, size cap, SEL denial
+    event), never by raw bytes. Never raises: an unreadable or refused spec,
+    registry or manifest claims nothing, so every route answers as it does without
+    this rule.
+    """
+    from kiro_crew.agent_discovery import _read_agent_spec
+
+    cfg = _read_agent_spec(
+        kiro_agents_dir_path() / AGENT_FILENAME,
+        operation="mcp_app_owned_servers",
+        source="dashboard",
+    )
+    if cfg is None:
+        return {}
+    mounted_servers = cfg.get("mcpServers", {})
+    if not isinstance(mounted_servers, dict):
+        return {}
+    return _app_owned_mcp_server_apps(mounted_servers)
+
+
+async def _app_owned_server_refusal(name: str) -> web.Response | None:
+    """A 409 when *name* is an MCP server an installed app declares, else ``None``.
+
+    The agent-config rebuild re-derives every enabled app's servers from its manifest
+    on each run, and the boot reconcile registers them again, so a removal from the
+    MCP Servers list cannot stick: the apply's own rebuild writes the entry straight
+    back and the row is listed again after the restart. Callers ask only for the
+    remove direction; switching the server off is still accepted, because the store's
+    ``disabled: true`` is what the rebuild honours. Removing the app removes its server.
+    """
+    owned = await asyncio.to_thread(_app_owned_mcp_servers)
+    # The removal canonicalizes a raw slash key to its alias and pops both
+    # spellings, so the refusal asks about both names it would touch.
+    app = owned.get(name) or owned.get(mcp_server_alias(name))
+    if app is None:
+        return None
+    sel().log_api_access(
+        caller="dashboard",
+        operation="mcp_app_owned_remove_refused",
+        outcome="denied",
+        resources=name[:64],
+    )
+    return web.json_response(
+        {
+            "error": (
+                f"{name!r} is provided by the app {app!r} and cannot be uninstalled here; "
+                f"switch it off, or disable or uninstall the app"
+            ),
+            "code": "mcp_server_app_owned",
+            "app": app,
+        },
+        status=409,
+    )
+
+
+async def _app_owned_apply_refusal(changes: Iterable[Any]) -> web.Response | None:
+    """The 409 for an apply batch that uninstalls an app's server, else ``None``.
+
+    Taken for the whole request before the apply's Phase 1, like
+    :func:`_builtin_apply_refusal`. Only an ``uninstall`` change counts: the Kiro
+    Crew switch and the tool overrides of an app's server keep working.
+    """
+    for change in changes:
+        if not isinstance(change, dict) or not change.get("uninstall"):
+            continue
+        refused = await _app_owned_server_refusal(str(change.get("name", "")).strip())
+        if refused is not None:
+            return refused
+    return None
 
 
 async def _toggle_all_skip(enabled: bool) -> Callable[[str], bool]:
