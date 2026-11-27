@@ -1750,6 +1750,11 @@ class AcpSessionProvider(LLMProvider):
         """The model a non-strict push was refused on — see the handle's field."""
         return self._handle.model_pin_refused
 
+    @model_pin_refused.setter
+    def model_pin_refused(self, value: str) -> None:
+        """Record a refusal decided above the handle (AcpClient-compatible attribute)."""
+        self._handle.model_pin_refused = value
+
     @property
     def model_pin_partial(self) -> str:
         """The bare model a pair pin landed as — see the handle's field."""
@@ -1824,6 +1829,14 @@ class AcpSessionProvider(LLMProvider):
     def available_models(self) -> list[dict[str, str]]:
         """Models advertised by the backend."""
         return self._handle.available_models
+
+    async def refresh_available_models(self) -> list[dict[str, str]]:
+        """A fresh advertised-model answer for this session (AcpClient-compatible).
+
+        Forced, as :meth:`set_model`'s revalidation is: it is asked before a
+        named model is refused, so a recent failed probe is not replayed.
+        """
+        return await self._guarded(self._handle.refresh_available_models(force=True))
 
     async def maybe_refresh_available_models(self, catalog_ids: list[str]) -> list[dict[str, str]]:
         """Revalidate the advertised-model snapshot on the read path.

@@ -9,6 +9,8 @@
   subagents and a run's task sessions run on.
 * ``eviction`` -- ending a registered session a claim cannot hand out: a dead one, one
   flagged for an account change, or one spawned under a looser ``agent.sandbox`` tier.
+* ``pool_claim`` -- the model checks a warm-pool claim makes before it switches the
+  claimed process.
 * ``get_or_create`` -- ``SessionAllocationService.get_or_create``: claim the live session
   for a key, or cold-start one.
 

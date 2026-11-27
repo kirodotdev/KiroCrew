@@ -3502,6 +3502,14 @@ when Crew's own fallback ladder swaps the session's model (`_record_fallback_mod
 Only that swap sets a known value back to `""`: one onto a model the session cannot
 name (`auto`).
 
+A per-spawn `model` the session will not serve never runs under that name. A
+session that withholds its startup pin, and a warm-pool claim that cannot switch
+to it once a fresh model list also lacks it, stay on the model they have and record the id in `model_pin_refused`.
+Right after the session is acquired, the run reads that record
+(`_refused_spawn_pin`) and, for the spawn's own pin, fails with
+`model_unavailable` before its prompt is sent. A refused role pin or routed tier
+is not judged: that run keeps going on the session's model.
+
 The resolved id rides the wire as a `model` field on the `subagent_spawn`,
 `subagent_done`, and reconnect `subagent_snapshot` payloads, and the requested pin
 rides alongside it as a `requested_model` field on those same payloads (both are

@@ -84,6 +84,7 @@ from kiro_crew.session_allocation_parts.errors import (
     SpeculativeResumeRefused,
 )
 from kiro_crew.session_allocation_parts.eviction import _drain_despite_cancellation
+from kiro_crew.session_allocation_parts.pool_claim import _revalidated_pin
 from kiro_crew.session_lifecycle import adopt_parked_queue, allocation_identity
 from kiro_crew.start_priority import (
     START_QUEUE_COLD_START,
@@ -1259,7 +1260,9 @@ async def _get_or_create_impl(
                     if pool_model and _foreign_scope:
                         # Harness ownership and account entitlement are
                         # separate decisions. A foreign pin inherits this
-                        # harness's current pooled model.
+                        # harness's current pooled model, and the warm process's
+                        # own startup refusal is not about this pin.
+                        cast(Any, provider).client.model_pin_refused = ""
                         self._deps.logger.info(
                             "Pool post-claim: model %s belongs to another harness, "
                             "not %s; leaving the claimed process on %s",
@@ -1268,6 +1271,9 @@ async def _get_or_create_impl(
                             pool_model,
                         )
                     elif pool_model and switch_model != comparable_pool:
+                        # This claim decides the model afresh, so the warm
+                        # process's refusal of its own pin does not describe it.
+                        cast(Any, provider).client.model_pin_refused = ""
                         _send_model = switch_model
                         if advertised and self._deps.model_is_unusable(switch_model, advertised):
                             # A literal miss can be a stale `<namespace>::`
@@ -1282,12 +1288,20 @@ async def _get_or_create_impl(
                                 switch_model, advertised, provider
                             )
                         if not _send_model:
+                            # The pooled snapshot is one answer from the startup
+                            # race; refuse only if a fresh answer also lacks the
+                            # pin, as the cold-start withhold does.
+                            _send_model = await _revalidated_pin(provider, switch_model, self._deps)
+                        if not _send_model:
                             self._deps.logger.warning(
                                 "Pool post-claim: model %s is not available to this "
                                 "account; leaving the claimed process on %s",
                                 switch_model,
                                 pool_model,
                             )
+                            # The same record a cold start's withhold leaves, so
+                            # a caller that named this model learns it never ran.
+                            cast(Any, provider).client.model_pin_refused = switch_model
                         elif _model_is_a_launch_argument(provider):
                             # The harness takes its model only at launch, so a
                             # switch would relaunch the claimed process: the
