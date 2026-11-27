@@ -34,6 +34,7 @@ error chains and tracebacks still name the path callers import it from.
 | `acp/transport_framing.py` | stdio JSON-RPC framing: the oversize-line drain, the no-progress bound on request, response and notification writes, and the failure-path stderr settle (`settle_drain`) |
 | `acp/transport_errors.py` | the `AcpError` family and the reading of a harness failure: the stderr, auth, throttle and sandbox classifiers, `classify_provider_error`, and the text and retry verdict `_format_acp_error` / `_raise_acp_error` produce, with the `auth_error_code` tag (the AWS exception name of a credential rejection, read from the raw frame through `classify_provider_error`, so a caller compares a code instead of the prose) |
 | `acp/oversized_request_errors.py` | the three refusals of a request too large to send (`_RE_OVERSIZED_REQUEST`, `_RE_ADAPTER_INPUT_TOO_LONG`, `_RE_REQUEST_SIZE_EXCEEDED`), read by `transport_errors` |
+| `acp/malformed_request_errors.py` | the two refusals of a request the model service could not parse (`_RE_MALFORMED_REQUEST`, and the claude adapter's `is_adapter_invalid_json_body` with its user text), read by `transport_errors` |
 | `acp/model_registry_errors.py` | the engine's model-list refusal (`ModelRegistryUnavailableError`) and its wording, read by `transport_errors` so it is never worded as an HTTP 5xx |
 | `acp/user_rate_limit_errors.py` | Kiro's per-user request-rate limit (`USER_REQUEST_RATE_EXCEEDED`) and its wording, read by `transport_errors` so it carries no switch-model advice; the retry verdict stays the throttle's |
 | `acp/thinking_binding_errors.py` | the preserved-thinking signature refusal (`_is_thinking_binding_mismatch`) and its changed-`tools`-list reason (`_is_tools_list_refusal`), read by `transport_errors` |
@@ -4770,6 +4771,14 @@ whose transport behaviour this module owns.
   same tags; its provider sentence is shown as is. Both are terminal in
   `_is_transient_raw_error` too, so neither the retry ladder nor the throttle
   fallback chain re-sends a history every model refuses.
+- The claude adapter's `Internal error: API Error: 400 The request body is not
+  valid JSON: ...` means Claude Code built a request the model service could not
+  parse, from history it re-sends on every turn, so retries, other models and
+  `/compact` all draw the same refusal. Like the adapter's overflow it rides in
+  `message` and is matched at its START (`is_adapter_invalid_json_body`). It is
+  terminal in `_is_transient_raw_error`, tagged `structural_terminal` (not
+  `context_overflow`: nothing is too large), classified `malformed_request` by
+  `classify_provider_error`, and worded to start a fresh session.
 - `AcpPromptBusy` — a prompt is already in progress on the session, classified via `_PROMPT_BUSY_RE` from kiro-cli's "already in progress" text or goose's "session already has active run" (its -32602 answer to a `session/prompt` sent while its own run is live), and raised at prompt-dispatch sites. `slack/handler_runtime/turn.py` catches it and auto-resets the wedged session (`sessions.reset`) before recording the failure, so the next message cold-starts cleanly.
 
 ### `AcpProcessDied` on a stalled stdin write
