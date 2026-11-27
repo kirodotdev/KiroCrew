@@ -133,12 +133,16 @@ class CrewChatArm(Arm):
         if payload is None:
             return ArmOutcome("error", note=f"no --json result (exit {returncode})")
         status = str(payload.get("status") or "error")
+        # An error before the agent ever answered (the chat was refused, the
+        # agent was missing) means the harness did not start: the run says
+        # nothing about the task. A CLI too old to report ``started`` stays scored.
+        not_started = status == "error" and payload.get("started") is False
         events = payload.get("ask_events")
         # A chat the CLI could not close never saved its last turn's usage, so the
         # credits it counted are a floor, not the run's spend: unknown, not a number.
         unclosed = payload.get("unclosed")
         outcome = ArmOutcome(
-            "void" if status in _CREW_VOID_STATUSES else status,
+            "void" if status in _CREW_VOID_STATUSES or not_started else status,
             asks=int(payload.get("asks") or 0),
             ask_events=list(events) if isinstance(events, list) else [],
             cost=None if unclosed else _number(payload.get("credits")),

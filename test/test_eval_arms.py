@@ -127,6 +127,20 @@ def test_other_crew_endings_are_scored(status):
     assert ARMS["crew-chat"].parse(4, _crew_json(status=status)).status == status
 
 
+def test_a_crew_error_before_the_agent_answered_is_void():
+    refused = "RuntimeError: POST /api/chat/slots: HTTP 409 agent_choice_unavailable"
+    out = ARMS["crew-conductor"].parse(1, _crew_json(status="error", started=False, error=refused))
+    assert (out.status, out.note) == ("void", refused)
+    # An error after the agent ran is scored, and so is one from a CLI without the field.
+    assert (
+        ARMS["crew-conductor"].parse(1, _crew_json(status="error", started=True)).status == "error"
+    )
+    assert ARMS["crew-conductor"].parse(1, _crew_json(status="error")).status == "error"
+    # Only an error: a run that timed out before answering is still scored.
+    out = ARMS["crew-conductor"].parse(4, _crew_json(status="timeout", started=False))
+    assert out.status == "timeout"
+
+
 def test_crew_output_without_a_json_result_is_an_error():
     out = ARMS["crew-chat"].parse(1, "Traceback ...\n")
     assert out.status == "error" and "exit 1" in out.note

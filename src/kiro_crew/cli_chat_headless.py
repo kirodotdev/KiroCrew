@@ -143,6 +143,10 @@ class Result:
     cwd: str = ""
     error: str = ""
     unclosed: list[str] = field(default_factory=list)
+    #: Whether the agent ever answered: a reply in the root chat, or spend. A run
+    #: that ends without one never started (a refused chat, a missing agent), so
+    #: an eval scores it VOID instead of FAILED.
+    started: bool = False
 
     def to_json(self) -> dict[str, Any]:
         out = dict(self.__dict__)
@@ -430,22 +434,33 @@ def last_agent_turn(messages: list[dict[str, Any]]) -> tuple[str, str]:
     reads as an error: once the chat is idle, it is how a turn that gave up on an
     empty reply ends. Other notices are not turn output.
     """
-    from kiro_crew.dashboard.chat_utils_injected_rows import EMPTY_TURN_NOTICE_KIND
-    from kiro_crew.dashboard.system_notices import is_harness_advisory_row
-
     for msg in reversed(messages or []):
-        role = msg.get("role")
-        meta = msg.get("meta")
-        if role == "notice" and is_harness_advisory_row(msg):
-            role = "assistant"
-        elif role == "notice" and isinstance(meta, dict):
-            role = "error" if meta.get("kind") == EMPTY_TURN_NOTICE_KIND else role
+        role = _turn_role(msg)
         if role in ("assistant", "error", "system"):
             content = msg.get("content")
             return role, content if isinstance(content, str) else json.dumps(content)
         if role == "user":
             return "", ""
     return "", ""
+
+
+def _turn_role(msg: dict[str, Any]) -> Any:
+    """The role *msg* plays in a turn's output (see :func:`last_agent_turn`)."""
+    from kiro_crew.dashboard.chat_utils_injected_rows import EMPTY_TURN_NOTICE_KIND
+    from kiro_crew.dashboard.system_notices import is_harness_advisory_row
+
+    role = msg.get("role")
+    meta = msg.get("meta")
+    if role == "notice" and is_harness_advisory_row(msg):
+        return "assistant"
+    if role == "notice" and isinstance(meta, dict):
+        return "error" if meta.get("kind") == EMPTY_TURN_NOTICE_KIND else role
+    return role
+
+
+def agent_replied(messages: list[dict[str, Any]]) -> bool:
+    """Whether any row of *messages* is an agent's answer."""
+    return any(_turn_role(msg) == "assistant" for msg in messages or [])
 
 
 def classify_failure(text: str) -> str:
@@ -753,6 +768,8 @@ def run(
     # Closing a chat saves the stopped turn's usage, and `_stop` may have found
     # more chats: count the spend again now that it is all on disk.
     res.credits = max(res.credits, run_spend(client, run_slots, since, settled))
+    # From the final count: a turn's spend is written only when it ends or is stopped.
+    res.started = res.started or res.credits > 0
     return res
 
 
@@ -834,10 +851,12 @@ def _poll(
         run_slots |= descendant_slots(rows, run_slots | worker_slots(items))
         any_busy = any(busy(rows.get(k) or {}) for k in run_slots)
         detail = client.call("GET", f"/api/chat/slots/{res.slot}")
-        role, root_text = last_agent_turn((detail or {}).get("messages") or [])
+        messages = (detail or {}).get("messages") or []
+        role, root_text = last_agent_turn(messages)
         root_idle = not turn_busy(rows.get(res.slot) or {})
         cards = (client.call("GET", "/api/ask-question/pending") or {}).get("pending") or []
         res.credits = run_spend(client, run_slots, since, settled)
+        res.started = res.started or agent_replied(messages)
         # A background agent's result may still be on its way to its parent.
         any_busy = any_busy or settled.delivering(time.time(), _DELIVERY_GRACE_SECS + poll)
         _progress(poll_n, res, any_busy)
