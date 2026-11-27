@@ -15557,7 +15557,8 @@
       "jump_to_new_many": "{{count}} novas · Ir para o final",
       "could_not_repair_images": "Não foi possível reparar as imagens",
       "could_not_edit_and_resend": "Não foi possível editar e reenviar",
-      "session_closed_elsewhere": "Este chat foi fechado fora desta janela."
+      "session_closed_elsewhere": "Este chat foi fechado fora desta janela.",
+      "conductor_link_not_started": "Um chat comum foi aberto: o Conductor mode não pôde iniciar. Ative-o na caixa de mensagem antes da sua primeira mensagem."
     },
     "chatSidebar": {
       "sign_in_then_resume": "Entre e depois toque em Retomar",
