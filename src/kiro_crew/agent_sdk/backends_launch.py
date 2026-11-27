@@ -199,7 +199,7 @@ STRANDS_VERIFIED_VERSION = "0.2.4"
 #: requirement carries one extra for every ``agent.strands_provider`` but ``bedrock``
 #: (``openai`` serves both ``openai`` and ``bedrock-mantle``, ``gemini`` serves
 #: ``google``).
-STRANDS_PYTHON_REQUIREMENT = "strands-harness[anthropic,gemini,litellm,ollama,openai]==0.3.3"
+STRANDS_PYTHON_REQUIREMENT = "strands-harness[anthropic,gemini,litellm,ollama,openai]==0.6.0"
 #: botocore's CRT extra, installed beside it: boto3's credential chain refuses an AWS
 #: profile using the ``login`` provider without it, and the worker dies before it
 #: loads the gate.
