@@ -9,11 +9,18 @@ command text is untrusted. Each allowlist carries the reason for its names.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import sys
 
 from kiro_crew import platform_compat
+from kiro_crew.agent_sdk.drivers.acp import resolve_ssh_auth_sock
+from kiro_crew.apps.registry_pipeline import _FACADE
+from kiro_crew.mcp_gateway.agent_socket import agent_socket_refusal
 from kiro_crew.sandbox import scrub_env
+
+logger = logging.getLogger(_FACADE)
 
 # Minimal environment for install/uninstall scripts.
 # Only pass through variables needed for git, build tools, and shell operation.
@@ -164,6 +171,80 @@ def _git_network_env(env: dict[str, str], git_url: str) -> dict[str, str]:
     for key, value in os.environ.items():
         if platform_compat.env_key_allowed(key, _GIT_NETWORK_ENV_KEYS):
             network_env.setdefault(key, value)
+    return network_env
+
+
+def _found_agent_socket(named: str) -> str:
+    """The live agent socket to use in place of *named*, or ``""`` to keep *named*.
+
+    :func:`resolve_ssh_auth_sock` keeps a socket that exists and otherwise names the
+    newest agent socket it finds under ``/tmp`` or the user runtime directory. A
+    socket found that way is a path the operator never named, and on a shared host
+    the newest one can be another user's. It is used only when
+    :func:`agent_socket_refusal` accepts it: the socket and its directory belong to
+    this user, and nobody else can write the directory. The socket the gateway was
+    started with is the operator's own choice and is never judged here.
+
+    Blocking: the resolver stats the socket and, when it is gone, globs ``/tmp``.
+    """
+    probe = {"SSH_AUTH_SOCK": named} if named else {}
+    resolve_ssh_auth_sock(probe)
+    found = probe.get("SSH_AUTH_SOCK", "")
+    if found == named:
+        return ""
+    refusal = agent_socket_refusal(found)
+    if refusal is not None:
+        # shortcut: judges only the scan's one pick, so a newer socket that is refused
+        # hides an older one of the operator's own. Rank after judging if a shared
+        # host turns out to need that.
+        logger.debug("ssh-agent socket scan: not using the socket it found (%s)", refusal)
+        return ""
+    return found
+
+
+async def _git_network_step_env(
+    env: dict[str, str], git_url: str, *, forward_applied: list[bool]
+) -> dict[str, str]:
+    """:func:`_git_network_env` for one network step, with the ssh agent only if its wrap keeps it.
+
+    *forward_applied* is the list the caller gave ``wrap_argv_async`` as
+    ``forward_ssh_auth_sock_out`` for the same spawn, so its last entry is the
+    forward the wrap applied, not the one the step asked for: the wrap re-judges a
+    request on the tier it applies, and ``strict`` without the operator's consent
+    turns it down. An empty list, from a step that never asked or a wrap that
+    reported nothing, reads as turned down.
+
+    Kept: *env* carries the gateway's own ``SSH_AUTH_SOCK``, the path it was started
+    with, and an agent socket's path lasts one login session. A gateway that
+    outlives that session hands git a socket that is gone, and the server refuses a
+    sign-in whose credentials are valid. The agent-session spawn repairs that
+    pointer, and this is the same repair for these steps, so a registry clone
+    reaches the agent an agent's own ``git`` reaches. A socket the repair finds is
+    used only when it is the operator's own (:func:`_found_agent_socket`).
+
+    Not kept: no repair runs, and the step starts with neither ``SSH_AUTH_SOCK`` nor
+    ``SSH_AGENT_PID``. The launcher's scrub is not enough to rely on: on macOS the
+    Seatbelt ``env -u`` flags name only what the gateway's own environment holds, so
+    a socket found for a gateway started without one would survive them, and a host
+    with no launcher scrubs nothing.
+
+    Off the event loop: the scan is blocking. One that fails leaves the socket as
+    the gateway named it: the step may not need the agent at all.
+    """
+    network_env = _git_network_env(env, git_url)
+    if not (forward_applied and forward_applied[-1]):
+        for key in ("SSH_AUTH_SOCK", "SSH_AGENT_PID"):
+            network_env.pop(key, None)
+        return network_env
+    try:
+        found = await asyncio.to_thread(_found_agent_socket, network_env.get("SSH_AUTH_SOCK", ""))
+    except OSError:
+        logger.debug(
+            "ssh-agent socket scan failed; keeping the gateway's SSH_AUTH_SOCK", exc_info=True
+        )
+    else:
+        if found:
+            network_env["SSH_AUTH_SOCK"] = found
     return network_env
 
 

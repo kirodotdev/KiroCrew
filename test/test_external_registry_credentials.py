@@ -608,15 +608,30 @@ class _SshFakeProc:
         return None
 
 
-def _ssh_capture(monkeypatch, module, calls: list[dict], stderr: bytes = b"") -> None:
-    """Record each ``wrap_argv_async`` call's argv + kwargs; every network spawn fails."""
+def _ssh_capture(
+    monkeypatch, module, calls: list[dict], stderr: bytes = b"", keeps_agent: bool = True
+) -> None:
+    """Record each ``wrap_argv_async`` call's argv + kwargs; every network spawn fails.
+
+    The spawn that follows a wrap adds the environment it was started with to that
+    call's record, as ``env``. A wrap asked which forward it applied reports the
+    request itself when *keeps_agent*, and a refusal otherwise: the real wrap can
+    only turn a request down, never grant one that was not made.
+    """
     from kiro_crew.apps.registry_pipeline import checkout
 
     async def _wrap(argv: list[str], **kwargs: object) -> tuple[list[str], None]:
         calls.append({"argv": list(argv), **kwargs})
+        applied = kwargs.get("forward_ssh_auth_sock_out")
+        if isinstance(applied, list):
+            applied.append(bool(kwargs.get("forward_ssh_auth_sock")) and keeps_agent)
         return list(argv), None
 
     async def _spawn(*argv: str, **kwargs: object) -> _SshFakeProc:
+        for call in reversed(calls):
+            if call["argv"] == list(argv):
+                call["env"] = dict(kwargs.get("env") or {})
+                break
         # init / remote add succeed so the pinned path reaches its network fetch.
         ok = any(tok in ("init", "remote") for tok in argv[:12]) and "fetch" not in argv
         return _SshFakeProc(0 if ok else 128, stderr)
@@ -754,6 +769,299 @@ async def test_branch_fetch_asks_for_the_agent_socket_only_when_told_to(
     # The socket is for the network step only: local init/remote steps never get it.
     local = [c for c in calls if c is not fetch]
     assert all(c.get("forward_ssh_auth_sock", False) is False for c in local)
+
+
+# --- A step whose wrap keeps the agent is handed a live socket ---
+#
+# The gateway's own ``SSH_AUTH_SOCK`` is the path it was started with, and an agent
+# socket lasts one login session. A gateway that outlives the session names a socket
+# that is gone, and the server refuses a sign-in whose credentials are valid. Every
+# network step that asks ``wrap_argv`` for the socket has it repaired first, when the
+# wrap keeps the forward. A step that does not ask, or whose wrap turns the forward
+# down, starts with no agent socket and gets no scan: on macOS the launcher unsets
+# only the names the gateway's own environment holds, so a socket found for a gateway
+# started without one would reach a child whose wrap had refused it.
+
+_STALE_AGENT_SOCK = "/tmp/ssh-gone/agent.1"
+_LIVE_AGENT_SOCK = "/tmp/ssh-live/agent.2"
+
+#: What the stand-in wrap reports for a step that asks for the agent: the forward
+#: kept, or turned down the way ``strict`` without the operator's consent turns it down.
+_wrap_verdicts = pytest.mark.parametrize(
+    "keeps_agent", [True, False], ids=["wrap-keeps-agent", "wrap-refuses-agent"]
+)
+
+
+def _agent_repair(monkeypatch) -> list[str]:
+    """Stand in for the socket resolver; return the socket each env it met named."""
+    from kiro_crew.apps.registry_pipeline import subprocess_env
+
+    met: list[str] = []
+
+    def _resolve(env: dict[str, str]) -> None:
+        met.append(env.get("SSH_AUTH_SOCK", ""))
+        env["SSH_AUTH_SOCK"] = _LIVE_AGENT_SOCK
+
+    # raising=False: on a tree without the repair a test fails on its own assertion,
+    # not on this line. A misspelt name cannot pass: nothing else yields the live socket.
+    monkeypatch.setattr(subprocess_env, "resolve_ssh_auth_sock", _resolve, raising=False)
+    return met
+
+
+def _handed_live_agent(calls: list[dict]) -> list[dict]:
+    return [c for c in calls if c.get("env", {}).get("SSH_AUTH_SOCK") == _LIVE_AGENT_SOCK]
+
+
+def _agent_sockets(calls: list[dict]) -> list[str | None]:
+    """The agent socket each spawn's environment named, ``None`` where it named none."""
+    return [c["env"].get("SSH_AUTH_SOCK") for c in calls]
+
+
+@pytest.mark.parametrize(
+    ("forward_applied", "kept"),
+    [([True], True), ([False], False), ([], False)],
+    ids=["wrap-kept-it", "wrap-turned-it-down", "wrap-reported-nothing"],
+)
+@pytest.mark.asyncio
+async def test_network_step_env_names_a_live_agent_only_for_a_step_that_keeps_it(
+    monkeypatch, forward_applied: list[bool], kept: bool
+):
+    from kiro_crew.apps.registry_pipeline.subprocess_env import _git_network_step_env
+
+    met = _agent_repair(monkeypatch)
+    started_with = {"HOME": "/home/op", "SSH_AUTH_SOCK": _STALE_AGENT_SOCK, "SSH_AGENT_PID": "4242"}
+    gateway_env = dict(started_with)
+    step_env = await _git_network_step_env(
+        gateway_env, _SSH_REGISTRY_URL, forward_applied=forward_applied
+    )
+    agent = {"SSH_AUTH_SOCK": _LIVE_AGENT_SOCK, "SSH_AGENT_PID": "4242"} if kept else {}
+    assert step_env == {"HOME": "/home/op", **agent}
+    # No scan for a step that does not keep the agent: all a scan can do is find it one.
+    assert met == ([_STALE_AGENT_SOCK] if kept else [])
+    # The caller's env also serves the local steps, which keep the environment they had.
+    assert gateway_env == started_with
+
+
+@pytest.mark.parametrize("failing", ["scan", "judging"])
+@pytest.mark.asyncio
+async def test_network_step_env_keeps_the_gateways_socket_when_the_scan_fails(
+    monkeypatch, failing: str
+):
+    """A socket that vanishes mid-scan must not fail a step that may not need the agent."""
+    from kiro_crew.apps.registry_pipeline import subprocess_env
+
+    def _vanished(*_args: object) -> None:
+        raise FileNotFoundError("agent socket vanished mid-scan")
+
+    if failing == "scan":
+        monkeypatch.setattr(subprocess_env, "resolve_ssh_auth_sock", _vanished, raising=False)
+    else:
+        _agent_repair(monkeypatch)
+        monkeypatch.setattr(subprocess_env, "agent_socket_refusal", _vanished, raising=False)
+    step_env = await subprocess_env._git_network_step_env(
+        {"SSH_AUTH_SOCK": _STALE_AGENT_SOCK}, _SSH_REGISTRY_URL, forward_applied=[True]
+    )
+    assert step_env == {"SSH_AUTH_SOCK": _STALE_AGENT_SOCK}
+
+
+# --- A socket the scan finds is used only when it is the operator's own ---
+#
+# The scan names the newest agent socket under ``/tmp``, and on a shared host that can
+# be another user's. A found socket is judged before git is handed it. The socket the
+# gateway was started with is the operator's own choice and is never judged.
+
+
+@pytest.mark.parametrize(
+    "refusal", [None, "it belongs to another user"], ids=["operators-own", "another-users"]
+)
+@pytest.mark.parametrize(
+    "started_with", [_STALE_AGENT_SOCK, ""], ids=["gateway-socket-gone", "gateway-had-no-socket"]
+)
+@pytest.mark.asyncio
+async def test_network_step_env_uses_a_found_socket_only_when_it_is_the_operators_own(
+    monkeypatch, started_with: str, refusal: str | None
+):
+    from kiro_crew.apps.registry_pipeline import subprocess_env
+
+    met = _agent_repair(monkeypatch)
+    judged: list[str] = []
+
+    def _judge(path: str) -> str | None:
+        judged.append(path)
+        return refusal
+
+    # raising=False: on a tree without the judging this fails on its own assertions.
+    monkeypatch.setattr(subprocess_env, "agent_socket_refusal", _judge, raising=False)
+    gateway_env = {"SSH_AUTH_SOCK": started_with} if started_with else {}
+    step_env = await subprocess_env._git_network_step_env(
+        dict(gateway_env), _SSH_REGISTRY_URL, forward_applied=[True]
+    )
+    # Refused, the step keeps what the gateway named: its own socket, or none at all.
+    assert step_env == ({"SSH_AUTH_SOCK": _LIVE_AGENT_SOCK} if refusal is None else gateway_env)
+    assert judged == [_LIVE_AGENT_SOCK]
+    assert met == [started_with]
+
+
+@pytest.mark.asyncio
+async def test_network_step_env_never_judges_the_socket_the_gateway_named(monkeypatch):
+    """A socket the operator configured is used as it is, wherever it lives."""
+    from kiro_crew.apps.registry_pipeline import subprocess_env
+
+    def _must_not_judge(path: str) -> str:
+        raise AssertionError(f"judged the gateway's own socket {path!r}")
+
+    # The scan is the guard's: it finds nothing, as the real one does for a live socket.
+    monkeypatch.setattr(subprocess_env, "agent_socket_refusal", _must_not_judge, raising=False)
+    own = "/home/op/.agent/shared.sock"
+    step_env = await subprocess_env._git_network_step_env(
+        {"SSH_AUTH_SOCK": own}, _SSH_REGISTRY_URL, forward_applied=[True]
+    )
+    assert step_env == {"SSH_AUTH_SOCK": own}
+
+
+@_wrap_verdicts
+@pytest.mark.parametrize(
+    "started_with", [_STALE_AGENT_SOCK, ""], ids=["gateway-socket-gone", "gateway-had-no-socket"]
+)
+@pytest.mark.asyncio
+async def test_owner_index_clone_is_handed_a_live_agent_socket_only_when_its_wrap_keeps_it(
+    monkeypatch, started_with: str, keeps_agent: bool
+):
+    from kiro_crew.apps.registry_pipeline import indexes
+
+    calls: list[dict] = []
+    _ssh_capture(monkeypatch, indexes, calls, keeps_agent=keeps_agent)
+    monkeypatch.setattr(indexes, "_context_clone_sandbox_mode", lambda url: "standard")
+    if started_with:
+        monkeypatch.setenv("SSH_AUTH_SOCK", started_with)
+    else:
+        monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    met = _agent_repair(monkeypatch)
+    assert await indexes._fetch_external_registry_index(_SSH_REGISTRY_URL, "main") is None
+    (clone,) = _ssh_calls_with(calls, "clone")
+    # Kept: the socket the gateway started with is the one repaired, and git gets the
+    # result. Turned down: git gets no socket, not even the gateway's own, and no scan.
+    assert _agent_sockets([clone]) == [_LIVE_AGENT_SOCK if keeps_agent else None]
+    assert met == ([started_with] if keeps_agent else [])
+
+
+@_wrap_verdicts
+@pytest.mark.parametrize("pinned", [False, True], ids=["branch", "pinned-commit"])
+@pytest.mark.parametrize("index_originated", [False, True], ids=["owner", "index-entry"])
+@pytest.mark.asyncio
+async def test_install_clone_is_handed_a_live_agent_socket_only_on_an_owners_network_step(
+    monkeypatch, tmp_path: Path, index_originated: bool, pinned: bool, keeps_agent: bool
+):
+    from kiro_crew.apps.registry_pipeline import checkout
+
+    calls: list[dict] = []
+    _ssh_capture(monkeypatch, checkout, calls, keeps_agent=keeps_agent)
+    monkeypatch.setattr(checkout, "_context_clone_sandbox_mode", lambda url: "standard")
+    met = _agent_repair(monkeypatch)
+    commit = "a" * 40 if pinned else ""
+    result = await checkout._git_clone_or_pull(
+        _SSH_REGISTRY_URL,
+        "main",
+        tmp_path / "apps" / "demo",
+        [],
+        index_originated=index_originated,
+        commit=commit,
+    )
+    assert result is not None and result["ok"] is False
+    network = _ssh_calls_with(calls, "fetch" if pinned else "clone")
+    assert network, calls
+    # Never a local init or checkout step, never a clone an index entry chose, and
+    # never a step whose wrap turned the forward down.
+    handed = network if keeps_agent and not index_originated else []
+    assert _agent_sockets(network) == [_LIVE_AGENT_SOCK if handed else None] * len(network)
+    assert _handed_live_agent(calls) == handed
+    assert len(met) == len(handed)
+
+
+@_wrap_verdicts
+@pytest.mark.asyncio
+async def test_install_pull_is_handed_a_live_agent_socket_only_when_its_wrap_keeps_it(
+    monkeypatch, tmp_path: Path, keeps_agent: bool
+):
+    from kiro_crew.apps.registry_pipeline import checkout
+
+    calls: list[dict] = []
+    _ssh_capture(monkeypatch, checkout, calls, keeps_agent=keeps_agent)
+    monkeypatch.setattr(checkout, "_context_clone_sandbox_mode", lambda url: "standard")
+    monkeypatch.setattr(checkout, "_clone_origin_url", AsyncMock(return_value=_SSH_REGISTRY_URL))
+    monkeypatch.setattr(checkout, "_read_clone_branch", lambda path: "main")
+    met = _agent_repair(monkeypatch)
+    dest = tmp_path / "apps" / "demo"
+    (dest / ".git").mkdir(parents=True)
+    result = await checkout._git_clone_or_pull(_SSH_REGISTRY_URL, "main", dest, [])
+    assert result is not None and result["ok"] is False
+    (pull,) = _ssh_calls_with(calls, "pull")
+    assert _agent_sockets([pull]) == [_LIVE_AGENT_SOCK if keeps_agent else None]
+    assert _handed_live_agent(calls) == ([pull] if keeps_agent else [])
+    assert len(met) == (1 if keeps_agent else 0)
+
+
+@_wrap_verdicts
+@pytest.mark.parametrize("pinned", [False, True], ids=["branch", "pinned-commit"])
+@pytest.mark.parametrize("owner_designated", [False, True], ids=["default", "owner"])
+@pytest.mark.asyncio
+async def test_manifest_fetch_is_handed_a_live_agent_socket_only_for_the_owners_url(
+    monkeypatch, owner_designated: bool, pinned: bool, keeps_agent: bool
+):
+    from kiro_crew.apps.registry_pipeline import checkout, manifests
+
+    calls: list[dict] = []
+    _ssh_capture(monkeypatch, manifests, calls, keeps_agent=keeps_agent)
+    _ssh_capture(monkeypatch, checkout, calls, keeps_agent=keeps_agent)
+    monkeypatch.setattr(manifests, "is_clone_host_trusted", lambda url: True)
+    monkeypatch.setattr(manifests, "_context_clone_sandbox_mode", lambda url: "standard")
+    monkeypatch.setattr(manifests, "_sel_credential_grant", lambda operation, url: None)
+    # The owner's plain clone starts from the gateway's own environment.
+    monkeypatch.setenv("SSH_AUTH_SOCK", _STALE_AGENT_SOCK)
+    met = _agent_repair(monkeypatch)
+    commit = "a" * 40 if pinned else ""
+    manifest = await manifests._fetch_app_manifest(
+        _SSH_REGISTRY_URL,
+        "main",
+        git_url=_SSH_REGISTRY_URL,
+        owner_designated=owner_designated,
+        commit=commit,
+    )
+    assert manifest is None
+    network = _ssh_calls_with(calls, "fetch" if pinned else "clone")
+    assert network, calls
+    handed = network if keeps_agent and owner_designated else []
+    assert _agent_sockets(network) == [_LIVE_AGENT_SOCK if handed else None] * len(network)
+    assert _handed_live_agent(calls) == handed
+    assert len(met) == len(handed)
+
+
+@_wrap_verdicts
+@pytest.mark.parametrize("forward", [False, True], ids=["default", "forwarded"])
+@pytest.mark.asyncio
+async def test_branch_fetch_is_handed_a_live_agent_socket_only_when_it_keeps_the_agent(
+    monkeypatch, tmp_path: Path, forward: bool, keeps_agent: bool
+):
+    from kiro_crew.apps.registry_pipeline import checkout
+
+    calls: list[dict] = []
+    _ssh_capture(monkeypatch, checkout, calls, keeps_agent=keeps_agent)
+    met = _agent_repair(monkeypatch)
+    result = await checkout._git_fetch_branch(
+        _SSH_REGISTRY_URL,
+        "main",
+        tmp_path / "branch",
+        [],
+        clone_env={},
+        sandbox_mode="standard",
+        forward_ssh_auth_sock=forward,
+    )
+    assert result is not None and result["ok"] is False
+    (fetch,) = _ssh_calls_with(calls, "fetch")
+    handed = [fetch] if keeps_agent and forward else []
+    assert _agent_sockets([fetch]) == [_LIVE_AGENT_SOCK if handed else None]
+    assert _handed_live_agent(calls) == handed
+    assert len(met) == len(handed)
 
 
 def test_anonymous_clone_reads_no_ssh_config(monkeypatch):

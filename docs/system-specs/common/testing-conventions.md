@@ -3099,6 +3099,18 @@ about the code. Each is a hermeticity gap, and each has one fix:
   spawns and waits for overrides `server_bind` to call `socketserver.TCPServer.server_bind`
   and set `server_name` from the address it already has, as the stand-in in
   `test_decisions_local_runtime_real_spawn.py` and `plumb_cpu.py` do.
+- **A live ssh-agent is the operator's, not the test's.** A registry git network step
+  that keeps the ssh agent repairs a stale `SSH_AUTH_SOCK` from the agent sockets on the
+  host (`subprocess_env._git_network_step_env`), so on a developer host with a live
+  agent the environment a fake spawn received named that socket: four env-equality
+  tests in `test_apps_registry_coverage_manifests.py` and
+  `test_apps_routes_coverage_blob_proxy.py` failed there and passed on CI, which has no
+  agent. `_no_host_ssh_agent_in_registry_git_env` (`test/conftest_resets_app_registry.py`)
+  pins the resolver to a no-op for every test, and `agent_socket_refusal`, which stats a
+  socket the resolver finds, to accept; a test of the repair sets
+  `resolve_ssh_auth_sock` on `subprocess_env` itself, and its stand-in wrap reports the
+  forward it applied through `forward_ssh_auth_sock_out`: a wrap that reports nothing
+  reads as a refused forward, and the step then starts with no agent socket.
 
 ## Running the suite: the defaults, and how to narrow safely
 
