@@ -13989,7 +13989,15 @@
         "untracked": "कुछ सर्वर ट्रैक नहीं किए गए",
         "list_label": "इस सत्र के MCP सर्वर"
       },
+      "turnClock": {
+        "running_for": "{{elapsed}} से चल रहा है",
+        "notify_offer": "पूरा होने पर मुझे बताना",
+        "notify_offer_hint": "जब तुम इस विंडो से दूर हो और कोई चैट पूरी हो, तो डेस्कटॉप सूचना दिखाता है।",
+        "dismiss_offer": "फिर से मत दिखाना"
+      },
       "taskProgressBar": {
+        "done_left": "{{done}} पूरे, {{left}} बाकी",
+        "step_running": "{{elapsed}} से चल रहा है",
         "all_tasks_complete": "सभी टास्क पूर्ण",
         "aria_collapse_task_list": "{{total}} में से {{done}} टास्क पूर्ण। टास्क सूची समेटें",
         "aria_expand_task_list": "{{total}} में से {{done}} टास्क पूर्ण। टास्क सूची विस्तृत करें",
@@ -14008,7 +14016,6 @@
         "set_by_you_done": "तुमने इसे हो गया चिह्नित किया; एजेंट ने अभी पुष्टि नहीं की।",
         "set_by_you_open": "तुमने इसे नहीं हुआ चिह्नित किया; एजेंट ने अभी पुष्टि नहीं की।",
         "sending": "भेजा जा रहा है",
-        "done_of_total": "{{total}} में से {{done}}",
         "more_count_one": "+ {{n}} और…",
         "more_count_other": "+ {{n}} और…"
       },

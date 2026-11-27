@@ -98,6 +98,84 @@ class TestToolBloatFixesMountAndGrant:
         # ref, no ceiling) is preserved.
         assert config["allowedTools"] == ["@builder-mcp"]
 
+    def test_existing_config_seeds_todo_list_in_both_lists(self, tmp_path: Path):
+        """The step pill's tool reaches an existing spec mounted AND auto-approved,
+        each list only when the template grants it there."""
+        cfg_dir = tmp_path / "config"
+        cfg_dir.mkdir()
+        defaults = {
+            "model": "claude-default",
+            "tools": ["ReadFile", "todo_list"],
+            "allowedTools": ["todo_list"],
+            "mcpServers": {},
+            "hooks": {"preToolUse": "audit"},
+        }
+        (cfg_dir / "defaults.json").write_text(json.dumps(defaults))
+        (cfg_dir / "prompt.md").write_text("system prompt")
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        existing = {"tools": ["execute_bash", "code"], "allowedTools": [], "mcpServers": {}}
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
+
+        config = json.loads(_run_install(tmp_path, cfg_dir).read_text(encoding="utf-8"))
+
+        assert config["tools"] == ["execute_bash", "code", "todo_list"]
+        # Not a floor built-in, so the auto-approve filter keeps it.
+        assert config["allowedTools"] == ["todo_list"]
+
+    def test_a_removed_todo_list_stays_removed_on_the_next_refresh(self, tmp_path: Path):
+        """The seed runs once per agent, so a person can opt out of the grant."""
+        cfg_dir = tmp_path / "config"
+        cfg_dir.mkdir()
+        defaults = {
+            "model": "claude-default",
+            "tools": ["ReadFile", "todo_list", "tool_search"],
+            "allowedTools": ["todo_list"],
+            "mcpServers": {},
+            "hooks": {"preToolUse": "audit"},
+        }
+        (cfg_dir / "defaults.json").write_text(json.dumps(defaults))
+        (cfg_dir / "prompt.md").write_text("system prompt")
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        spec = kiro_dir / "kirocrew.json"
+        spec.write_text(json.dumps({"tools": ["code"], "allowedTools": [], "mcpServers": {}}))
+
+        first = json.loads(_run_install(tmp_path, cfg_dir).read_text(encoding="utf-8"))
+        assert "todo_list" in first["tools"] and first["allowedTools"] == ["todo_list"]
+
+        spec.write_text(json.dumps({**first, "tools": ["code", "tool_search"], "allowedTools": []}))
+        second = json.loads(_run_install(tmp_path, cfg_dir).read_text(encoding="utf-8"))
+
+        assert "todo_list" not in second["tools"]
+        assert "todo_list" not in second["allowedTools"]
+
+    def test_a_removed_tool_search_is_seeded_again(self, tmp_path: Path):
+        """tool_search keeps its every-refresh seed."""
+        cfg_dir = self._tool_search_defaults(tmp_path)
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        spec = kiro_dir / "kirocrew.json"
+        spec.write_text(json.dumps({"tools": ["code"], "allowedTools": [], "mcpServers": {}}))
+        first = json.loads(_run_install(tmp_path, cfg_dir).read_text(encoding="utf-8"))
+        spec.write_text(json.dumps({**first, "tools": ["code"]}))
+
+        second = json.loads(_run_install(tmp_path, cfg_dir).read_text(encoding="utf-8"))
+
+        assert "tool_search" in second["tools"]
+
+    def test_a_template_without_todo_list_seeds_nothing(self, tmp_path: Path):
+        cfg_dir = self._tool_search_defaults(tmp_path)
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        existing = {"tools": ["execute_bash"], "allowedTools": [], "mcpServers": {}}
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
+
+        config = json.loads(_run_install(tmp_path, cfg_dir).read_text(encoding="utf-8"))
+
+        assert "todo_list" not in config["tools"]
+        assert "todo_list" not in config["allowedTools"]
+
     def test_a_rebuild_drops_a_ref_whose_server_the_map_does_not_declare(self, tmp_path: Path):
         """The assembled config leaves no ref to a server the map does not declare.
 

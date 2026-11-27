@@ -105,8 +105,10 @@ class _ChatSlot:
         "_turn_admission_reserved",
         "_turn_generation",
         "_run_started_at",
+        "_run_started_wall",
         "_run_started_turns",
         "_task_started_at",
+        "_task_started_wall",
         "_turn_lineage",
         "_turns_started",
         "_unstarted_generation",
@@ -174,6 +176,7 @@ class _ChatSlot:
         "_todo_sync_rendered",
         "_todo_recovery_pending",
         "_todo_rebuild_expected",
+        "_todo_step_started_at",
         "_mcp_report",
         "_mcp_report_session_id",
         "_mcp_banner_shown",
@@ -462,6 +465,7 @@ class _ChatSlot:
     _todo_sync_rendered: tuple[tuple[str, str, bool], ...]
     _todo_recovery_pending: bool
     _todo_rebuild_expected: bool
+    _todo_step_started_at: float | None
 
     # Initialised by state_parts/slot_session.py.
     agent_kind: str
@@ -594,11 +598,16 @@ class _ChatSlot:
     # ``run_clock.now()`` when the first turn of the running run started, or
     # None between runs; the run's final ``chat_done`` reads and clears it.
     _run_started_at: float | None
+    # ``run_clock.wall_now()`` read with ``_run_started_at``: the epoch second the
+    # chat's live clock counts up from.
+    _run_started_wall: float | None
     # ``_turns_started`` when ``_run_started_at`` was stamped. While the two are
     # equal no turn of the run has passed the dispatch gates yet.
     _run_started_turns: int
     # ``run_clock.now()`` when the task holding the slot was set, or None.
     _task_started_at: float | None
+    # ``run_clock.wall_now()`` read with ``_task_started_at``.
+    _task_started_wall: float | None
     # ``(generation, first generation)`` of a dispatch that retried the turn
     # before it (``queue_drain``); read through :meth:`_turn_lineage_generation`.
     _turn_lineage: tuple[int, int]
@@ -1158,7 +1167,9 @@ class _ChatSlot:
             # along, and the next run is not measured from it.
             if self._run_started_turns == self._turns_started:
                 self._run_started_at = None
+                self._run_started_wall = None
             self._task_started_at = None
+            self._task_started_wall = None
             if value is not None:
                 self._turn_generation += 1
                 # Every turn starts here, so the earliest turn of a run stamps it
@@ -1166,11 +1177,25 @@ class _ChatSlot:
                 # reports the whole run, whichever window is watching. A person's
                 # message restamps from ``_task_started_at`` at the dispatch gates.
                 now = _run_clock.now()
+                wall = _run_clock.wall_now()
                 self._task_started_at = now
+                self._task_started_wall = wall
                 if self._run_started_at is None:
-                    self._run_started_at = now
-                    self._run_started_turns = self._turns_started
+                    self.stamp_run_start(now, wall)
         self._task = value
+
+    def stamp_run_start(self, started: float, started_wall: float) -> None:
+        """Stamp the run as started at *started* (``run_clock.now()``) and
+        *started_wall* (``run_clock.wall_now()``, read with it).
+
+        The step clock restarts no earlier than the run: a step the list was
+        already on when the previous run ended counts from this run's start, not
+        across the idle time between the two.
+        """
+        self._run_started_at = started
+        self._run_started_wall = started_wall
+        self._run_started_turns = self._turns_started
+        self.restart_step_clock(started_wall)
 
     def _turn_lineage_generation(self) -> int:
         """The generation that started the turn of the latest dispatch: that
@@ -1486,6 +1511,7 @@ class _ChatSlot:
     set_todo = _slot_todo.set_todo
     _todo_override_row_matches = _slot_todo._todo_override_row_matches
     todo_payload = _slot_todo.todo_payload
+    restart_step_clock = _slot_todo.restart_step_clock
     todo_task_text = _slot_todo.todo_task_text
     set_todo_task_completed = _slot_todo.set_todo_task_completed
     todo_sync_prompt = _slot_todo.todo_sync_prompt

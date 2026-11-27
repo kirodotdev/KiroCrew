@@ -13650,7 +13650,15 @@
         "untracked": "一部のサーバーは追跡されていません",
         "list_label": "このセッションの MCP サーバー"
       },
+      "turnClock": {
+        "running_for": "{{elapsed}} 実行中",
+        "notify_offer": "完了したら通知",
+        "notify_offer_hint": "このウィンドウから離れている間にチャットが完了すると、デスクトップ通知を表示します。",
+        "dismiss_offer": "今後表示しない"
+      },
       "taskProgressBar": {
+        "done_left": "完了 {{done}}・残り {{left}}",
+        "step_running": "{{elapsed}} 実行中",
         "all_tasks_complete": "すべてのタスクが完了しました",
         "aria_collapse_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を折りたたむ",
         "aria_expand_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を展開",
@@ -13669,7 +13677,6 @@
         "set_by_you_done": "あなたが完了にしました。エージェントはまだ確認していません。",
         "set_by_you_open": "あなたが未完了にしました。エージェントはまだ確認していません。",
         "sending": "送信中",
-        "done_of_total": "{{done}} ／ {{total}}",
         "more_count_other": "ほか {{n}} 件…"
       },
       "thinkingBlock": {

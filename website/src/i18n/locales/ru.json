@@ -14667,7 +14667,15 @@
         "untracked": "Некоторые серверы не отслеживаются",
         "list_label": "MCP-серверы этого сеанса"
       },
+      "turnClock": {
+        "running_for": "Выполняется {{elapsed}}",
+        "notify_offer": "Сообщить, когда закончится",
+        "notify_offer_hint": "Показывает уведомление на рабочем столе, когда чат завершается, пока ты не в этом окне.",
+        "dismiss_offer": "Больше не предлагать"
+      },
       "taskProgressBar": {
+        "done_left": "готово: {{done}}, осталось: {{left}}",
+        "step_running": "идёт {{elapsed}}",
         "all_tasks_complete": "Все задачи выполнены",
         "aria_collapse_task_list": "Выполнено задач: {{done}} из {{total}}. Свернуть список задач",
         "aria_expand_task_list": "Выполнено задач: {{done}} из {{total}}. Развернуть список задач",
@@ -14686,7 +14694,6 @@
         "set_by_you_done": "Ты отметил это как выполненное; агент ещё не подтвердил.",
         "set_by_you_open": "Ты отметил это как невыполненное; агент ещё не подтвердил.",
         "sending": "Отправка",
-        "done_of_total": "{{done}} из {{total}}",
         "more_count_one": "ещё {{n}}…",
         "more_count_few": "ещё {{n}}…",
         "more_count_many": "ещё {{n}}…",

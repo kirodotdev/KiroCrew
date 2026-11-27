@@ -49,6 +49,7 @@ vi.mock('../composerActions/useComposerActionItems', () => ({ useComposerActionI
 vi.mock('./chat/McpLoadingBar', () => ({ default: () => null }))
 vi.mock('./chat/SubagentProgressBar', () => ({ default: () => null }))
 vi.mock('./chat/TaskProgressBar', () => ({ default: () => null }))
+vi.mock('./chat/TurnClock', () => ({ default: () => null }))
 vi.mock('./chat/WorkflowProgressBar', () => ({ default: () => null }))
 vi.mock('./chat/KnowledgePicker', () => ({ KnowledgePicker: (p: Captured) => { seen.knowledge = p; return null } }))
 vi.mock('../app-sdk/ChatScrollChrome', async (orig) => ({ ...(await orig<typeof import('../app-sdk/ChatScrollChrome')>()), JumpToBottomButton: () => null }))

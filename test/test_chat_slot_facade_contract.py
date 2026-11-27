@@ -55,6 +55,8 @@ _TO_DICT_KEYS = (
     "welcome_message",
     "running",
     "admission_queued",
+    # Epoch seconds the running run started, for the chat's live clock.
+    "run_started_ts",
     "wake_starting",
     # Turn identity beside `running`: the slot's monotonic turn counter and the
     # gateway process generation it is comparable within. The dashboard uses the

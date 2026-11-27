@@ -12,6 +12,7 @@ import { useMemo, useRef } from 'react'
 import type { AppDispatch, RootState } from '../../store'
 import { sseStatus, setUpdateProgress } from '../../store/dashboardSlice'
 import { noteSignInCommand } from '../../api/signInCommand'
+import { noteServerNow } from '../../utils/serverClock'
 import type { StatusData } from '../../types'
 import type { FrameData } from './frames'
 import { UPDATE_RESTART_LATCH_TTL_MS, clearGatewayRestart, noteGatewayRestart, takeRestartKeepsTab } from '../../lib/gatewayRestart'
@@ -77,7 +78,7 @@ export function handleUpdateProgress(dispatch: AppDispatch, data: FrameData): vo
  */
 const VOLATILE_STATUS_KEYS: ReadonlySet<string> = new Set([
   'uptime', 'uptime_secs', 'messages_received', 'cron', 'stats', 'stats_summary',
-  'gateway_rss_mb', 'yolo_remaining_secs',
+  'gateway_rss_mb', 'yolo_remaining_secs', 'server_now',
 ])
 
 /** A comparable key for a frame's non-volatile fields. */
@@ -116,6 +117,7 @@ export function useBundleReload(
       // Every frame, ahead of the skip below: the sign-in sentences read it
       // outside the store.
       noteSignInCommand(data.sign_in_command)
+      noteServerNow(data.server_now)
       // Detect server version change → full reload (actual update)
       const prev = lastVersionRef.current
       const next = data.version

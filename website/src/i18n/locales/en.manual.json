@@ -6420,7 +6420,15 @@
         "untracked": "Some servers are not tracked",
         "list_label": "MCP servers in this session"
       },
+      "turnClock": {
+        "running_for": "Running for {{elapsed}}",
+        "notify_offer": "Notify me when done",
+        "notify_offer_hint": "Shows a desktop notification when a chat finishes while you are away from this window.",
+        "dismiss_offer": "Don't offer again"
+      },
       "taskProgressBar": {
+        "done_left": "{{done}} done, {{left}} left",
+        "step_running": "running {{elapsed}}",
         "all_tasks_complete": "All tasks complete",
         "current_task": "Current task",
         "aria_collapse_task_list": "{{done}} of {{total}} tasks complete. Collapse task list",

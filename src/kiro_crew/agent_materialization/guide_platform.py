@@ -12,6 +12,9 @@ the first time it rebuilds on a build that ships it.
 An edition-supplied server (``extra_mcp_servers()``) gets the same treatment per
 server: one the edition starts supplying after the first install gains its
 ``@name`` ref in ``tools`` once, recorded by name, and never again after.
+
+The ``todo_list`` built-in, which the chat's step pill reads, is granted the same
+way (:func:`grant_todo_list_once`).
 """
 
 from __future__ import annotations
@@ -27,6 +30,10 @@ GUIDE_GRANT_MARKER = "guide_platform_granted.json"
 MATE_GRANT_MARKER = "mate_platform_granted.json"
 #: The edition servers :func:`grant_edition_refs_once` has offered, under the data home.
 EDITION_REFS_MARKER = "edition_mcp_refs_offered.json"
+#: One-time marker for :func:`grant_todo_list_once`, under the data home.
+TODO_LIST_GRANT_MARKER = "todo_list_granted.json"
+#: The built-in :func:`grant_todo_list_once` grants.
+TODO_LIST_TOOL = "todo_list"
 
 
 def _marker(name: str):
@@ -121,6 +128,49 @@ def grant_mate_platform_once(config: dict[str, Any], *, fresh_install: bool) -> 
 def mark_mate_platform_granted() -> None:
     """Record that :func:`grant_mate_platform_once` has run on a written spec."""
     _mark(MATE_GRANT_MARKER)
+
+
+def grant_todo_list_once(config: dict[str, Any], *, fresh_install: bool) -> bool:
+    """``todo_list`` in ``tools`` and ``allowedTools`` of an existing default spec, once.
+
+    Mounted AND auto-approved, because the chat's step pill reads its results and
+    a tick that asks for approval would stall the turn it reports on; it writes
+    only the agent's own in-conversation list. Each list gains it only when the
+    shipped template grants it there, so an edition that drops it is respected.
+    Once recorded, a person who removes either grant keeps it removed.
+
+    Returns whether the grant is still to be recorded, as
+    :func:`_grant_platform_set_once` does: marked only after the spec is written.
+    """
+    if _marker(TODO_LIST_GRANT_MARKER).exists():
+        return False
+    if fresh_install:
+        return True
+    bundled = agent_mod._load_json(agent_mod._BUNDLED_CFG_DIR / "defaults.json") or {}
+    added = []
+    for field in ("tools", "allowedTools"):
+        entries = config.get(field)
+        if (
+            isinstance(entries, list)
+            and TODO_LIST_TOOL in (bundled.get(field) or [])
+            and TODO_LIST_TOOL not in entries
+        ):
+            entries.append(TODO_LIST_TOOL)
+            added.append(f"{TODO_LIST_TOOL} added to {field}")
+    if added:
+        agent_mod.sel().log_api_access(
+            caller="system",
+            operation="mcp_tools_added",
+            outcome="ok",
+            source="install_agent",
+            resources=f"{'; '.join(added)} (existing config upgrade)",
+        )
+    return True
+
+
+def mark_todo_list_granted() -> None:
+    """Record that :func:`grant_todo_list_once` has run on a written spec."""
+    _mark(TODO_LIST_GRANT_MARKER)
 
 
 def _offered_edition_servers() -> set[str] | None:

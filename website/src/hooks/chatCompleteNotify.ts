@@ -13,9 +13,10 @@
  * Settings > Notifications.
  */
 import { useSyncExternalStore } from 'react'
+import { isEmbeddedPane } from '../lib/embedded'
+import { nativeNotificationPermitted } from '../lib/nativeNotify'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { isWindowAway } from './windowAway'
-import { nativeNotificationPermitted } from '../lib/nativeNotify'
 
 /** localStorage key holding the opt-in. Absent — or anything but `'1'` —
  *  means off, so a corrupt or half-written value degrades to the default
@@ -95,19 +96,21 @@ export function saveChatCompleteMinSeconds(seconds: number): void {
 }
 
 /**
- * Persist the opt-in and, when enabling, ask for the OS permission.
+ * Persist the opt-in and, when enabling in a standalone dashboard, ask for
+ * the OS permission.
  *
  * The permission request is the load-bearing half. `useNativeNotification` is
  * the only other place that asks, and only when an unacked FEED notification
  * arrives — so a user who enables this toggle without ever having received a
  * feed note would sit at `Notification.permission === 'default'` and the
  * feature would be a silent no-op. Flipping the toggle IS the user gesture
- * browsers require for the prompt, so ask here.
+ * browsers require for the prompt, so ask here. An embedded pane relays through
+ * its parent and never asks for its own permission.
  */
 export function saveChatCompleteNotify(on: boolean): void {
   safeSetItem(CHAT_COMPLETE_NOTIFY_KEY, on ? '1' : '0')
   noteChatCompleteChanged()
-  if (!on || typeof Notification === 'undefined') return
+  if (!on || isEmbeddedPane() || typeof Notification === 'undefined') return
   if (Notification.permission !== 'default') return
   try {
     void Notification.requestPermission()

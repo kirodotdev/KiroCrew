@@ -3,7 +3,7 @@
 Instance fields of ``_ChatSlot`` this module reads and writes:
 
 Writes: ``_todo``, ``_todo_overrides``, ``_todo_rebuild_expected``,
-``_todo_recovery_pending``, ``_todo_sync_rendered``.
+``_todo_recovery_pending``, ``_todo_step_started_at``, ``_todo_sync_rendered``.
 
 A function whose first parameter is ``self`` is a ``_ChatSlot`` method: the
 class binds it under the same name (``state_parts/chat_slot.py``), so it reads
@@ -13,6 +13,8 @@ and writes the slot's own fields and calls its siblings through ``self``.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+
+from kiro_crew.dashboard import run_clock
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
@@ -52,6 +54,24 @@ def _fold_line_breaks(text: str) -> str:
         .replace("\u2028", " ")
         .replace("\u2029", " ")
     )
+
+
+def _step_marker(todo: dict[str, Any] | None) -> tuple[Any, ...] | None:
+    """What identifies the step *todo* is on: its completed rows and its current row.
+
+    Two snapshots with the same marker are the same step, so the step clock keeps
+    running across an echo; a row completed, or a new current row, starts a new one.
+    """
+    if todo is None:
+        return None
+    rows = [t for t in todo.get("tasks", []) if isinstance(t, dict)]
+    done = frozenset(
+        (str(t.get("id")), str(t.get("text") or "")) for t in rows if t.get("completed")
+    )
+    current = next(
+        ((str(t.get("id")), str(t.get("text") or "")) for t in rows if not t.get("completed")), None
+    )
+    return (done, current)
 
 
 def init_todo_fields(self: _ChatSlot) -> None:
@@ -94,6 +114,13 @@ def init_todo_fields(self: _ChatSlot) -> None:
     # _todo_override_row_matches). Cleared by the first snapshot after
     # delivery, which rebinds every surviving override to the rebuilt text.
     self._todo_rebuild_expected = False
+    # Epoch seconds the agent's own snapshot last moved the list to a new step
+    # (see _step_marker), or None while no step of the agent's is timed. Only
+    # set_todo starts it, which only the agent's snapshots reach. A person's tick
+    # that moves the pill to another step clears it (set_todo_task_completed), so
+    # the pill shows no time for a step the agent has not reached itself; a run's
+    # start moves it up to that start (restart_step_clock).
+    self._todo_step_started_at = None
 
 
 def set_todo(self: _ChatSlot, todo: dict[str, Any] | None) -> bool:
@@ -187,6 +214,10 @@ def set_todo(self: _ChatSlot, todo: dict[str, Any] | None) -> bool:
         self._todo_rebuild_expected = False
         if self._todo is None:
             return False
+    if normalised is None:
+        self._todo_step_started_at = None
+    elif self._todo is None or _step_marker(normalised) != _step_marker(self._todo):
+        self._todo_step_started_at = run_clock.wall_now()
     self._todo = normalised
     return True
 
@@ -236,6 +267,10 @@ def todo_payload(self: _ChatSlot) -> dict[str, Any] | None:
     }
     if self._todo.get("read_only") is True:
         payload["read_only"] = True
+    # getattr: tests build bare slots with __new__ and set only _todo.
+    step_started_at = getattr(self, "_todo_step_started_at", None)
+    if step_started_at is not None:
+        payload["step_started_at"] = round(step_started_at, 3)
     return payload
 
 
@@ -247,6 +282,17 @@ def todo_task_text(self: _ChatSlot, task_id: str) -> str | None:
         if isinstance(task, dict) and str(task.get("id")) == str(task_id):
             return str(task.get("text") or "")
     return None
+
+
+def restart_step_clock(self: _ChatSlot, run_started_wall: float) -> None:
+    """Move the step clock up to *run_started_wall* when it started earlier.
+
+    Called as a run is stamped (``_ChatSlot.stamp_run_start``), so a step the
+    list was already on counts from the later of the run start and its own.
+    """
+    started = getattr(self, "_todo_step_started_at", None)
+    if started is not None and started < run_started_wall:
+        self._todo_step_started_at = run_started_wall
 
 
 def set_todo_task_completed(self: _ChatSlot, task_id: str, completed: bool) -> bool:
@@ -266,7 +312,12 @@ def set_todo_task_completed(self: _ChatSlot, task_id: str, completed: bool) -> b
         if isinstance(task, dict) and str(task.get("id")) == str(task_id):
             if bool(task.get("completed")) == completed:
                 return False
+            before = _step_marker(self._todo)
             task["completed"] = completed
+            if _step_marker(self._todo) != before:
+                # The pill now shows a step the agent has not reached: no time
+                # for it until the agent's own snapshot starts one.
+                self._todo_step_started_at = None
             # Shown as the person's mark until the agent's snapshot agrees.
             task["person"] = True
             # Remembered until the agent's own snapshot agrees (see set_todo)

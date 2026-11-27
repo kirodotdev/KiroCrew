@@ -29,6 +29,16 @@ def _admission_queued(slot_key: str) -> bool:
     return admission_pending(slot_key)
 
 
+def _run_started_ts(slot: Any) -> float | None:
+    """The epoch second *slot*'s run was stamped at, or None when it has no stamp."""
+    if not isinstance(getattr(slot, "_run_started_at", None), (int, float)):
+        return None
+    started_wall = getattr(slot, "_run_started_wall", None)
+    if not isinstance(started_wall, (int, float)):
+        return None
+    return round(started_wall, 3)
+
+
 def summary_rows(slot: Any) -> list[Any]:
     """The rows a slot's sidebar summary reads, without loading a pending window.
 
@@ -566,6 +576,10 @@ class SlotProjection:
             # stays available; ``admission_queued`` says it has not started.
             "running": turn_in_flight,
             "admission_queued": _admission_queued(slot.key),
+            # Epoch seconds the running run started (the stamp its final
+            # ``chat_done`` measures ``run_seconds`` from), for the chat's live
+            # clock; null while no turn is in flight or the run has no stamp.
+            "run_started_ts": _run_started_ts(slot) if turn_in_flight else None,
             # A loop wake is opening this running turn and its row is not in the
             # transcript yet: a structured monitor writes that row only once the
             # runner accepts the turn. Rides the same frame as `running`, so a

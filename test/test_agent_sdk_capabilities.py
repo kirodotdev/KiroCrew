@@ -103,6 +103,7 @@ CAPABILITY_FIELDS = (
     "crew_merges_user_hook_files",
     "keeps_session_across_compaction",
     "inherits_kiro_default_resources",
+    "has_todo_list_tool",
 )
 
 

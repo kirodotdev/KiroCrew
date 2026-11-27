@@ -58,16 +58,16 @@ describe('TaskProgressBar', () => {
     expect(screen.queryByTestId('todo-pill')).toBeNull()
   })
 
-  it('shows the server-derived count as "N of M"', () => {
+  it('shows the server-derived count as "N done, M left", never a percentage', () => {
     renderBar([slot('slot-1', todo([['a', true], ['b', false], ['c', false]]))])
-    expect(screen.getByTestId('todo-count').textContent).toBe('1 of 3')
+    expect(screen.getByTestId('todo-count').textContent).toBe('1 done, 2 left')
   })
 
   it('renders the count as one catalog sentence, not "N" + "of" + "M"', async () => {
-    // en-XA brackets every catalog value, so a count glued from fragments reads `1 [of] 3`.
+    // en-XA brackets every catalog value, so a count glued from fragments reads `1 [done,] 2 [left]`.
     await act(async () => { await i18next.changeLanguage('en-XA') })
     renderBar([slot('slot-1', todo([['a', true], ['b', false], ['c', false]]))])
-    expect(screen.getByTestId('todo-count').textContent).toMatch(/^\[1 [^[\]]* 3[^[\]]*\]$/)
+    expect(screen.getByTestId('todo-count').textContent).toMatch(/^\[1 [^[\]]* 2 [^[\]]*\]$/)
   })
 
   it('shows the first incomplete task as the current task', () => {
@@ -77,7 +77,7 @@ describe('TaskProgressBar', () => {
 
   it('reports completion instead of a current task when all are done', () => {
     renderBar([slot('slot-1', todo([['a', true], ['b', true]]))])
-    expect(screen.getByTestId('todo-count').textContent).toBe('2 of 2')
+    expect(screen.getByTestId('todo-count').textContent).toBe('2 done, 0 left')
     expect(screen.getByTestId('todo-current').textContent).toBe('All tasks complete')
   })
 
@@ -119,7 +119,7 @@ describe('TaskProgressBar', () => {
       [slot('slot-1', todo([['mine', false]])), slot('slot-2', todo([['theirs', false], ['other', false]]))],
       'slot-1',
     )
-    expect(screen.getByTestId('todo-count').textContent).toBe('0 of 1')
+    expect(screen.getByTestId('todo-count').textContent).toBe('0 done, 1 left')
     expect(screen.getByTestId('todo-current').textContent).toBe('mine')
   })
 
@@ -148,9 +148,9 @@ describe('TaskProgressBar', () => {
 
   it('updates live when a todo_update delta arrives', () => {
     const { store } = renderBar([slot('slot-1', todo([['a', false], ['b', false]]))])
-    expect(screen.getByTestId('todo-count').textContent).toBe('0 of 2')
+    expect(screen.getByTestId('todo-count').textContent).toBe('0 done, 2 left')
     act(() => { store.dispatch(sseTodoUpdate({ slot: 'slot-1', todo: todo([['a', true], ['b', false]]) })) })
-    expect(screen.getByTestId('todo-count').textContent).toBe('1 of 2')
+    expect(screen.getByTestId('todo-count').textContent).toBe('1 done, 1 left')
     expect(screen.getByTestId('todo-current').textContent).toBe('b')
   })
 
@@ -159,7 +159,7 @@ describe('TaskProgressBar', () => {
     const { store } = renderBar([slot('slot-1', null)])
     expect(screen.queryByTestId('todo-pill')).toBeNull()
     act(() => { store.dispatch(sseSlots([slot('slot-1', todo([['a', true], ['b', false]]))])) })
-    expect(screen.getByTestId('todo-count').textContent).toBe('1 of 2')
+    expect(screen.getByTestId('todo-count').textContent).toBe('1 done, 1 left')
   })
 })
 
@@ -332,7 +332,7 @@ describe('TaskProgressBar row ticking', () => {
     const hint = screen.getByTestId('todo-hint').textContent
     expect(hint).toMatch(/agent keeps this list itself/)
     expect(hint).not.toMatch(/remote machine/)
-    expect(screen.getByTestId('todo-count').textContent).toBe('1 of 2')
+    expect(screen.getByTestId('todo-count').textContent).toBe('1 done, 1 left')
     await userEvent.click(screen.getAllByTestId('todo-row')[1])
     expect(api.setTodoTask).not.toHaveBeenCalled()
   })

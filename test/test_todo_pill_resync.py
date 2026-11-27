@@ -367,13 +367,15 @@ def _runner_state(tmp_path, monkeypatch, *, is_new: bool, resumed: bool):
     return state, sent
 
 
-async def _runner_turn(state, slot, message="carry on") -> None:
+async def _runner_turn(state, slot, message="carry on", **run_kwargs: Any) -> None:
     from chat_test_helpers import drain_background_tasks
 
     from kiro_crew.dashboard import chat_runner
 
     slot.append("user", message)
-    await finished(chat_runner._run_chat(state, slot, message), "the runner turn", timeout=30)
+    await finished(
+        chat_runner._run_chat(state, slot, message, **run_kwargs), "the runner turn", timeout=30
+    )
     await finished(drain_background_tasks(state), "the background tasks draining", timeout=10)
 
 
@@ -422,6 +424,27 @@ async def test_warm_turn_gets_no_recovery_block(tmp_path, monkeypatch) -> None:
     _seed_pill(slot)
     await _runner_turn(state, slot)
     assert sent and "[Task checklist" not in sent[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend, carried", [("", True), ("kas", False), ("claude", False)])
+async def test_a_persons_message_carries_the_progress_rule_only_where_todo_list_exists(
+    tmp_path, monkeypatch, backend: str, carried: bool
+) -> None:
+    """The step pill needs a list, so a person's message asks for one, but only on
+    the harness that holds ``todo_list`` (kiro-cli, spelled ``""``)."""
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.dashboard.chat_turn.checklist_rule import CHECKLIST_RULE
+
+    state, sent = _runner_state(tmp_path, monkeypatch, is_new=False, resumed=False)
+    provider, _, _ = await state.sessions.get_or_create()
+    provider.capabilities = capabilities_for(backend)
+    slot = state.get_or_create_slot("pill-chat")
+    await _runner_turn(state, slot, _directive_user_origin=True)
+    assert sent
+    assert sent[0].startswith(CHECKLIST_RULE) is carried
+    # A prepend: the builder's own prompt stays the trusted tail.
+    assert sent[0].endswith("BUILT")
 
 
 @pytest.mark.asyncio

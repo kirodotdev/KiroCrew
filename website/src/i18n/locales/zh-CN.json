@@ -13650,7 +13650,15 @@
         "untracked": "部分服务器未跟踪",
         "list_label": "本会话的 MCP 服务器"
       },
+      "turnClock": {
+        "running_for": "已运行 {{elapsed}}",
+        "notify_offer": "完成时通知我",
+        "notify_offer_hint": "当你不在此窗口时，聊天一完成就显示桌面通知。",
+        "dismiss_offer": "不再提示"
+      },
       "taskProgressBar": {
+        "done_left": "已完成 {{done}}，剩余 {{left}}",
+        "step_running": "已运行 {{elapsed}}",
         "all_tasks_complete": "所有任务已完成",
         "aria_collapse_task_list": "已完成 {{done}}/{{total}} 个任务。折叠任务列表",
         "aria_expand_task_list": "已完成 {{done}}/{{total}} 个任务。展开任务列表",
@@ -13669,7 +13677,6 @@
         "set_by_you_done": "你标成了完成，agent 还没确认。",
         "set_by_you_open": "你标成了未完成，agent 还没确认。",
         "sending": "发送中",
-        "done_of_total": "{{done}} / {{total}}",
         "more_count_other": "另外 {{n}} 个…"
       },
       "thinkingBlock": {
