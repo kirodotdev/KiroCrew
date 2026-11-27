@@ -1207,6 +1207,10 @@ def _cron_preview(args: argparse.Namespace) -> None:
             self._suppressed("list_session_folders")
             return []
 
+        def list_sessions(self) -> list[dict]:
+            self._suppressed("list_sessions")
+            return []
+
         def create_session_folder(self, name: str, *, parent_id: str = "") -> dict:
             self._suppressed("create_session_folder", name=name, parent_id=parent_id)
             return {"id": f"{self.job.id}-folder", "name": name, "parent_id": parent_id}

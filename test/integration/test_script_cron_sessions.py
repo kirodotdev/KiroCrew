@@ -184,6 +184,33 @@ async def test_a_script_context_lists_creates_opens_and_seeds_a_session(
             ), json.dumps(seeds)[:800]
 
 
+@pytest.mark.asyncio
+async def test_a_script_context_lists_each_sessions_state(
+    gateway_boot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+        owner_slot = await gw.post_json("/api/chat/slots", {"title": "Owner chat"})
+
+        with _script_context(gw, tmp_path, monkeypatch) as ctx:
+            cron_slot = await asyncio.to_thread(ctx.open_session, "Nightly triage")
+            rows = await asyncio.to_thread(ctx.list_sessions)
+
+        by_slot = {row["slot"]: row for row in rows}
+        assert {owner_slot["key"], cron_slot} <= set(by_slot), json.dumps(rows)[:800]
+        assert by_slot[cron_slot]["title"] == "Nightly triage"
+        assert by_slot[cron_slot]["status"] == "idle"
+        assert set(by_slot[cron_slot]) == {
+            "slot",
+            "title",
+            "folder_id",
+            "status",
+            "unread",
+            "last_activity",
+            "last_reply",
+        }
+
+
 async def _assert_switched_off_refusal(resp) -> None:
     body = await resp.text()
     assert resp.status == 403, body
