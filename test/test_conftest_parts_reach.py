@@ -121,6 +121,20 @@ _MOVED_READERS_THE_PATCH_SKIPS: dict[tuple[str, str, str, str], dict[str, str]] 
         ),
         _MIRROR_PRUNE: _PROTOCOL_ONLY,
     },
+    (
+        "test/test_host_service_guard.py",
+        "TestRepositoryRootResidueGuard.test_an_ignored_name_round_trips_whatever_its_spelling",
+        "conftest.py",
+        "_REPO_ROOT",
+    ): {
+        f"test/conftest_floor_reporting.py::{reader}": (
+            "the test points the residue guard's root at a temporary repository on a "
+            "private by-path copy to drive _not_ignored, which stays in conftest.py; "
+            "this reader's _REPO_ROOT is the part's own same-named binding, which "
+            "locates the repository's symlink list and is never read by the guard"
+        )
+        for reader in ("_apply_tracked_gap_list", "pytest_collection_modifyitems")
+    },
 }
 
 #: Plugins written as a string that patch a conftest they import, which the scan does
