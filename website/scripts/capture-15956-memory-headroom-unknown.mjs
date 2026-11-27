@@ -11,7 +11,9 @@
  * Drives the REAL built SPA (website/dist), pushes the `subagent_queued` frames
  * the gateway sends, and exits non-zero unless:
  *   - the unreadable-usage frame renders the unknown-headroom sentence with no
- *     "free now" figure, and
+ *     "free now" figure,
+ *   - a frame whose host read did not answer (`cause: host_read_unanswered`)
+ *     says the free-memory check did not answer and names no shortage, and
  *   - a measured low-memory frame still renders its figures.
  *
  * Usage: node scripts/capture-15956-memory-headroom-unknown.mjs [outDir]
@@ -58,6 +60,12 @@ const SCENES = [
     name: 'unknown-headroom',
     frame: { reason: 'low_memory', required_gb: 4.5, cause: 'cgroup_usage_unreadable', max_wait_secs: 1800 },
     expect: text => /free memory is unknown/.test(text) && !/free now/.test(text),
+  },
+  {
+    // #42633: a host read that did not answer measured nothing either.
+    name: 'unanswered-read',
+    frame: { reason: 'low_memory', required_gb: 8.3, cause: 'host_read_unanswered', max_wait_secs: 1800 },
+    expect: text => /free-memory check did not answer/.test(text) && !/not enough free memory|free now/.test(text),
   },
   {
     name: 'measured-low-memory',

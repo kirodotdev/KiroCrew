@@ -339,7 +339,29 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
           // pseudolocale failure with no clue why.
           data-i18n-opaque=""
           data-testid={navId ? `nav-shortcut-${navId}` : undefined}
-          className="shrink-0 text-[11px] leading-none text-muted opacity-0 transition-opacity duration-150 group-hover/nav:opacity-100 group-focus-visible/nav:opacity-100"
+          // IN FLOW, but with no width until it can be read. `opacity-0` hides
+          // the chord without removing it from layout, so as a plain `shrink-0`
+          // sibling it reserved its full width permanently — every row WITH a
+          // shortcut handed ~25px to a hint nobody could see, and the label
+          // (`flex-1 min-w-0`) took the whole squeeze. That is why Sessions and
+          // Schedule truncated to initials at the larger content text sizes
+          // while longer chordless labels, Artifacts and Customize, read in
+          // full. `max-w-0 overflow-hidden` gives that width back; the hover and
+          // focus escapes return it only while the chord is actually visible,
+          // so the label pays for it just while the row is hovered.
+          //
+          // NOT `absolute right-2.5`. Taking it out of flow frees the same
+          // width and reintroduces a defect that was already fixed once: the
+          // `{badge}` below is the last in-flow `shrink-0` child and this row's
+          // content edge is `pr-2.5`, so a chord pinned to that edge paints on
+          // top of the unread count and neither the keystroke nor the count can
+          // be read. `src/test/App.test.tsx` pins the badge in flow and after
+          // the chord in document order, but document order survives
+          // `position: absolute`, so it passes against that bug; and the browser
+          // probe that measures the geometry, `scripts/capture-nav-badge-chord
+          // .mjs`, cannot mount at all (its capture entry omits ThemeProvider,
+          // on main too). `src/test/navRailLabelRoom.test.ts` is the fence.
+          className="shrink-0 max-w-0 overflow-hidden text-[11px] leading-none text-muted opacity-0 transition-opacity duration-150 group-hover/nav:max-w-none group-hover/nav:opacity-100 group-focus-visible/nav:max-w-none group-focus-visible/nav:opacity-100"
         >
           {shortcut.chord}
         </span>

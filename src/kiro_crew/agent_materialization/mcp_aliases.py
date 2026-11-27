@@ -20,7 +20,7 @@ from typing import Any
 from kiro_crew import agent as agent_mod
 from kiro_crew import user_json
 from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
-from kiro_crew.mcp_provenance import DERIVED_KEY
+from kiro_crew.mcp_provenance import COPIED_KEY, DERIVED_KEY, SOURCE_KEY
 from kiro_crew.mcp_utils import mcp_server_alias
 
 
@@ -37,12 +37,22 @@ def _norm_mcp_spec(spec: Any) -> Any:
     :data:`~kiro_crew.mcp_provenance.DERIVED_KEY` is excluded for the same reason: it
     records which field this rebuild computed, not how the server launches, and only
     some entries carry it, so comparing it would mint the same growing suffix.
+    :data:`~kiro_crew.mcp_provenance.SOURCE_KEY` is excluded too: it records which
+    app declared the entry, not how the server launches. So is
+    :data:`~kiro_crew.mcp_provenance.COPIED_KEY`, which records who copied the entry.
     """
     if not isinstance(spec, dict):
         return spec
     return {
-        k: v for k, v in spec.items() if k != DERIVED_KEY and not (k in ("env", "args") and not v)
+        k: v
+        for k, v in spec.items()
+        if k not in (DERIVED_KEY, SOURCE_KEY, COPIED_KEY) and not (k in ("env", "args") and not v)
     }
+
+
+def _is_copy(spec: Any) -> bool:
+    """True when *spec* carries :data:`~kiro_crew.mcp_provenance.COPIED_KEY`."""
+    return isinstance(spec, dict) and spec.get(COPIED_KEY) is True
 
 
 def raw_tools_project_onto_alias(
@@ -64,6 +74,43 @@ def raw_tools_project_onto_alias(
     raw_rest = {k: v for k, v in raw_spec.items() if k != "disabledTools"}
     alias_rest = {k: v for k, v in alias_spec.items() if k != "disabledTools"}
     return bool(_norm_mcp_spec(raw_rest) == _norm_mcp_spec(alias_rest))
+
+
+def rendered_alias_projects_raw_tools(
+    alias: str, raw_spec: Any, rendered_spec: Any, declared: Iterable[Mapping[str, Any]]
+) -> bool:
+    """:func:`raw_tools_project_onto_alias` for an alias entry read back from the agent config.
+
+    The rebuild compares two emitted entries, and the alias entry read back is one of
+    them: its command is resolved (``/usr/bin/npx`` for a source's ``npx``) and its
+    ``args`` and ``env`` have their home and login references expanded. A source spec
+    that already equals the rendered entry is the same server. Any other source spec
+    that holds a command is emitted as the rebuild emits it (``emit_mcp_entry``, with
+    gatewayd's resolver, which applies the rebuild's rule), and the whole emitted entry
+    is compared with the rendered one, so a differing command, ``args`` or ``env``
+    makes them two servers. An alias pinned to one file is a different server once PATH
+    resolves the source's command to another, as it is to the rebuild, even while the
+    pinned file exists.
+    """
+    if not isinstance(raw_spec, dict) or not isinstance(rendered_spec, dict):
+        return False
+    if raw_tools_project_onto_alias(alias, raw_spec, rendered_spec, declared):
+        return True
+    raw_cmd = raw_spec.get("command")
+    if not isinstance(raw_cmd, str) or not raw_cmd:
+        return False
+    # Function-local: mcp_sources imports this module, and importing
+    # kiro_crew.agent does not load the gateway rewriter, which only a fold
+    # with a command to resolve needs.
+    from kiro_crew.agent_materialization import mcp_sources
+    from kiro_crew.mcp_gateway.rewriter import _resolve_target_command
+
+    emitted, _ = mcp_sources.emit_mcp_entry(
+        raw_spec, lambda cmd, env: (_resolve_target_command(cmd, env or {}, None), "")
+    )
+    return emitted is not None and raw_tools_project_onto_alias(
+        alias, emitted, rendered_spec, declared
+    )
 
 
 def _alias_family_base(key: str) -> str:
@@ -282,6 +329,37 @@ def _is_alias_family(key: str, base: str) -> bool:
     return key == base or (key.startswith(f"{base}-") and key[len(base) + 1 :].isdigit())
 
 
+def mcp_ref_owner(ref: str, keys: Iterable[str]) -> str:
+    """The longest of *keys* claiming ``ref`` as ``@key`` or ``@key/tool``, else ``""``.
+
+    Longest wins because a server key may itself contain a slash: with keys ``a/b``
+    and ``a/b/c``, the bare ``@a/b/c`` belongs to ``a/b/c``, not to ``a/b`` as a tool.
+    An exact bare match is always the longest claimant.
+    """
+    return max(
+        (k for k in keys if ref == f"@{k}" or ref.startswith(f"@{k}/")),
+        key=len,
+        default="",
+    )
+
+
+def rewrite_mcp_ref(ref: object, old_ref: str, new_ref: str) -> object:
+    """*ref* moved from ``old_ref`` to ``new_ref``, bare and per-tool spelling alike.
+
+    Both spellings kiro-cli resolves move together: the bare ``@server`` and the
+    per-tool ``@server/tool``. Leaving the per-tool spelling on the old key strands it
+    on a name the caller removes, and the final reconcile then drops it from BOTH
+    lists as dangling. The suffix is carried VERBATIM by slicing off the matched
+    prefix -- never re-derived by splitting the ref, because the server key itself
+    may contain a slash (``npm:@scope/pkg``), so a split takes the wrong component.
+    """
+    if ref == old_ref:
+        return new_ref
+    if isinstance(ref, str) and ref.startswith(f"{old_ref}/"):
+        return new_ref + ref[len(old_ref) :]
+    return ref
+
+
 def _normalize_mcp_server_keys(
     config: dict,
     *,
@@ -330,20 +408,9 @@ def _normalize_mcp_server_keys(
         return _is_alias_family(key, base)
 
     def _rewrite_ref(ref: object, old_ref: str, new_ref: str) -> object:
-        # Both spellings kiro-cli resolves move together: the bare ``@server``
-        # and the per-tool ``@server/tool``. Leaving the per-tool spelling on
-        # the old key strands it on a name this pass removes, and the final
-        # reconcile then drops it from BOTH lists as dangling. The suffix is
-        # carried VERBATIM by slicing off the matched prefix -- never re-derived
-        # by splitting the ref, because the server key itself may contain a
-        # slash (``npm:@scope/pkg``), so a split takes the wrong component.
         if isinstance(ref, str) and ref in _immovable:
             return ref
-        if ref == old_ref:
-            return new_ref
-        if isinstance(ref, str) and ref.startswith(f"{old_ref}/"):
-            return new_ref + ref[len(old_ref) :]
-        return ref
+        return rewrite_mcp_ref(ref, old_ref, new_ref)
 
     # A known-but-absent slashed server's refs are IMMOVABLE. They need
     # protecting from exactly one thing -- a present ANCESTOR reading the absent
@@ -376,12 +443,7 @@ def _normalize_mcp_server_keys(
     _claimable = _reserved | set(servers)
 
     def _owner(ref: str) -> str:
-        """The longest key claiming ``ref``; an exact bare match always wins."""
-        return max(
-            (k for k in _claimable if ref == f"@{k}" or ref.startswith(f"@{k}/")),
-            key=len,
-            default="",
-        )
+        return mcp_ref_owner(ref, _claimable)
 
     _immovable: set[str] = set()
     for _key in ("tools", "allowedTools"):
@@ -401,16 +463,26 @@ def _normalize_mcp_server_keys(
     for old_key in sorted(
         [k for k in servers if "/" in k and k not in managed], key=len, reverse=True
     ):
-        spec = _norm_mcp_spec(servers.pop(old_key))
+        raw = servers.pop(old_key)
+        spec = _norm_mcp_spec(raw)
         base = mcp_server_alias(old_key)
+        # The comparison form drops the app-source stamp, but the placed entry
+        # keeps it: it is how the owning app is read back from the alias. An
+        # equivalent entry converging onto a stamped one keeps that stamp too, so
+        # a user's same-spec declaration cannot unstamp the app's mount.
+        stamp = raw.get(SOURCE_KEY) if isinstance(raw, dict) else None
 
         # Reuse an existing home for an equivalent spec — the canonical alias or
         # any already-suffixed sibling — instead of minting a new suffix, so
         # repeated re-merges converge rather than accumulate.
-        alias = next(
-            (k for k in servers if _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec),
-            None,
-        )
+        equal = [k for k in servers if _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec]
+        alias = equal[0] if equal else None
+        if alias is not None and stamp is None and isinstance(servers[alias], dict):
+            stamp = servers[alias].get(SOURCE_KEY)
+        # The comparison form drops the copy stamp. A copy keeps it on the entry
+        # written only if every equal entry it reuses or merges away has it: one
+        # without (the user's, or an older build's) leaves the survivor theirs.
+        copied = _is_copy(raw) and all(_is_copy(servers[k]) for k in equal)
         if alias is None:
             # Genuinely distinct spec (or nothing here yet): take the canonical
             # alias if free, else the lowest free numeric suffix (never drop a
@@ -421,17 +493,14 @@ def _normalize_mcp_server_keys(
                 while f"{alias}-{n}" in servers:
                     n += 1
                 alias = f"{alias}-{n}"
-        servers[alias] = spec
         renames[old_key] = alias
         mounted_aliases[old_key] = alias
 
         # Converge any OTHER sibling that duplicates the spec we just placed:
         # drop it and redirect its @ref onto the surviving alias.
-        for dup in [
-            k
-            for k in list(servers)
-            if k != alias and _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec
-        ]:
+        for dup in [k for k in equal if k != alias]:
+            if stamp is None and isinstance(servers[dup], dict):
+                stamp = servers[dup].get(SOURCE_KEY)
             del servers[dup]
             for source, target in renames.items():
                 if target == dup:
@@ -440,6 +509,8 @@ def _normalize_mcp_server_keys(
             for source, target in mounted_aliases.items():
                 if target == dup:
                     mounted_aliases[source] = alias
+        placed = {**spec, COPIED_KEY: True} if copied else spec
+        servers[alias] = placed if stamp is None else {**placed, SOURCE_KEY: stamp}
 
         agent_mod.logger.info("Normalized MCP server key %r -> %r (kiro-safe)", old_key, alias)
 

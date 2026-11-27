@@ -17,7 +17,9 @@ makes: a GET to the url opens an event stream whose ``endpoint`` event names whe
 each message is POSTed, and the answers arrive on that stream as ``message``
 events. A stream that ends is opened again by the next message, which first sends
 the engine's ``initialize`` again, so a server that restarted still serves the
-engine's session.
+engine's session. On streamable HTTP a restarted server answers 404 to the session
+id it issued before; the bridge then sends the engine's ``initialize`` once more
+without the id, as the transport spec asks, and retries the request once.
 
 What it does not do: open the optional GET stream a streamable-HTTP server may use
 for messages that answer no request. Redirects are not followed, and an
@@ -42,6 +44,7 @@ import json
 import socket
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -65,7 +68,8 @@ _USER_AGENT = "kirocrew-mcp-bridge/1"
 #: The id of the ``initialize`` sent again on a reopened ``sse`` stream; its answer
 #: is the bridge's own and never reaches the engine.
 _REPEAT_ID = "kirocrew-bridge-reinitialize"
-#: How long a reopened ``sse`` stream waits for the answer to that ``initialize``.
+#: How long a reopened ``sse`` stream waits for the answer to that ``initialize``,
+#: and each request in a renewed streamable-HTTP session's handshake may wait.
 _REPEAT_SECS = 30.0
 _STREAM_CLOSED = "stopped answering (its event stream closed)"
 
@@ -149,12 +153,14 @@ def _sent_inline(line: bytes) -> bool:
     )
 
 
-def _sse_events(stream: IO[bytes]) -> Iterator[tuple[str, bytes]]:
+def _sse_events(stream: IO[bytes], *, deadline: float | None = None) -> Iterator[tuple[str, bytes]]:
     """``(event, data)`` of each event in an event stream, ``data`` joined across its
     lines; an event that names no type is a ``message``."""
     event = "message"
     data: list[bytes] = []
     for raw in stream:
+        if deadline is not None and time.monotonic() >= deadline:
+            return
         line = raw.rstrip(b"\r\n")
         if not line:
             if data:
@@ -167,6 +173,28 @@ def _sse_events(stream: IO[bytes]) -> Iterator[tuple[str, bytes]]:
             event = line[6:].strip().decode("utf-8", "replace")
     if data:
         yield event, b"\n".join(data)
+
+
+def _answer_to(
+    request_id: Any, resp: Any, *, deadline: float | None = None
+) -> dict[str, Any] | None:
+    """The ``result`` of the response to *request_id* in *resp*'s body, a JSON
+    document or an event stream; ``None`` when it holds none, an error, or passes
+    *deadline*."""
+    if resp.headers.get_content_type() == "text/event-stream":
+        bodies: Iterator[bytes] = (data for _event, data in _sse_events(resp, deadline=deadline))
+    else:
+        bodies = iter([resp.read()])
+    for body in bodies:
+        try:
+            msg = json.loads(body)
+        except ValueError:
+            continue
+        for item in msg if isinstance(msg, list) else [msg]:
+            if isinstance(item, dict) and item.get("id") == request_id and "method" not in item:
+                result = item.get("result")
+                return result if isinstance(result, dict) else None
+    return None
 
 
 #: The port a url that names none is reached on.
@@ -217,6 +245,9 @@ class Bridge:
     #: Whether a refused ``initialize`` is tried again over the older ``sse``
     #: transport (:func:`_moves_to_sse`).
     falls_back_to_sse = True
+    #: Whether a request the server answered 404 for is sent again once a new
+    #: session is started (:meth:`_post`); the session is started either way.
+    resends_after_renewal = True
 
     def __init__(
         self,
@@ -239,6 +270,11 @@ class Bridge:
         self._session_id: str | None = None
         self._protocol: str | None = None
         self._initialize_ids: set[Any] = set()
+        #: The engine's ``initialize``, sent again when the server forgot the session.
+        self._initialize: dict[str, Any] | None = None
+        #: Held while a new session is started, so concurrent requests that met the
+        #: same forgotten session share one ``initialize``.
+        self._renewing = threading.Lock()
         #: The older transport, once a stream it opened named where to POST.
         self._sse: _LegacySse | None = None
 
@@ -300,10 +336,10 @@ class Bridge:
             return []
         return self._emit(msg)
 
-    def _open(self, request: urllib.request.Request) -> Any:
+    def _open(self, request: urllib.request.Request, *, timeout: float = _READ_TIMEOUT_SECS) -> Any:
         """The server's answer to *request*; :class:`_NoAnswer` says why there is none."""
         try:
-            return self._opener.open(request, timeout=_READ_TIMEOUT_SECS)
+            return self._opener.open(request, timeout=timeout)
         except urllib.error.HTTPError as exc:
             reason = self._http_error_reason(exc)
             exc.close()
@@ -315,6 +351,81 @@ class Bridge:
         except (urllib.error.URLError, OSError, ValueError) as exc:
             reason = _network_cause(exc) or getattr(exc, "reason", None) or type(exc).__name__
             raise _NoAnswer(f"could not be reached ({reason})") from None
+
+    def _post(self, body: bytes, *, retry_forgotten: bool) -> tuple[Any, str | None]:
+        """The server's answer to *body* and the session id sent with it.
+
+        With *retry_forgotten*, a 404 to a request carrying a session id is the
+        server saying it does not know that session (an IDE's built-in server
+        after the IDE restarted): the transport spec has the client initialize
+        again without the id. The bridge does so once and sends *body* once more
+        with the new id; the answer to that second try is relayed as it is.
+        """
+        headers = self._request_headers()
+        request = urllib.request.Request(self._url, data=body, headers=headers, method="POST")
+        try:
+            return self._open(request), headers.get(_SESSION_HEADER)
+        except _NoAnswer as exc:
+            stale = headers.get(_SESSION_HEADER)
+            renewed = retry_forgotten and exc.status == 404 and stale and self._renew(stale)
+            if not (renewed and self.resends_after_renewal):
+                raise
+        headers = self._request_headers()
+        request = urllib.request.Request(self._url, data=body, headers=headers, method="POST")
+        return self._open(request), headers.get(_SESSION_HEADER)
+
+    def _renew(self, stale: str) -> bool:
+        """Start a new session in place of *stale*, which the server forgot; whether
+        one was started, by this call or a concurrent one. ``False`` when no
+        ``initialize`` of the engine's has passed through, so none can be repeated.
+        A server that refuses the new session or its initialized notification
+        raises :class:`_NoAnswer` with why.
+        """
+        with self._renewing:
+            with self._lock:
+                initialize, current = self._initialize, self._session_id
+            if initialize is None:
+                return False
+            if current != stale:
+                return True
+            print(
+                f"kirocrew: MCP server {self._server!r} forgot its session; starting a new one",
+                file=self._err,
+                flush=True,
+            )
+            headers = self._request_headers()
+            headers.pop(_SESSION_HEADER, None)
+            headers.pop(_PROTOCOL_HEADER, None)
+            body = json.dumps({**initialize, "id": _REPEAT_ID}, separators=(",", ":"))
+            request = urllib.request.Request(
+                self._url, data=body.encode("utf-8"), headers=headers, method="POST"
+            )
+            deadline = time.monotonic() + _REPEAT_SECS
+            with self._open(request, timeout=_REPEAT_SECS) as resp:
+                try:
+                    result = _answer_to(_REPEAT_ID, resp, deadline=deadline)
+                except (http.client.HTTPException, OSError) as exc:
+                    raise _NoAnswer(_cut_off(exc)) from None
+                if result is None:
+                    raise _NoAnswer("refused to start a new session")
+                session_id = resp.headers.get(_SESSION_HEADER)
+                version = result.get("protocolVersion")
+                protocol = version if isinstance(version, str) and version else None
+            if session_id:
+                headers[_SESSION_HEADER] = session_id
+            if protocol:
+                headers[_PROTOCOL_HEADER] = protocol
+            body = json.dumps(
+                {"jsonrpc": "2.0", "method": "notifications/initialized"}, separators=(",", ":")
+            )
+            request = urllib.request.Request(
+                self._url, data=body.encode("utf-8"), headers=headers, method="POST"
+            )
+            self._open(request, timeout=_REPEAT_SECS).close()
+            with self._lock:
+                self._session_id = session_id
+                self._protocol = protocol
+            return True
 
     def send(self, line: bytes) -> None:
         """POST one engine message and relay whatever the server answers."""
@@ -332,15 +443,13 @@ class Bridge:
         if initialize and "id" in msg:
             with self._lock:
                 self._initialize_ids.add(msg["id"])
+                self._initialize = msg
         if self._sse is not None:
             self._sse.send(msg, ids)
             return
         body = json.dumps(msg, separators=(",", ":")).encode("utf-8")
-        request = urllib.request.Request(
-            self._url, data=body, headers=self._request_headers(), method="POST"
-        )
         try:
-            resp = self._open(request)
+            resp, sent_id = self._post(body, retry_forgotten=not initialize)
         except _NoAnswer as exc:
             if initialize and self.falls_back_to_sse and _moves_to_sse(exc.status or 0):
                 sse = _LegacySse(self)
@@ -355,7 +464,8 @@ class Bridge:
                 session_id = resp.headers.get(_SESSION_HEADER)
                 if session_id:
                     with self._lock:
-                        self._session_id = session_id
+                        if self._session_id == sent_id:
+                            self._session_id = session_id
                 if resp.status in (202, 204):
                     return
                 if resp.headers.get_content_type() == "text/event-stream":
@@ -431,14 +541,11 @@ class _LegacySse:
         self._answered = threading.Condition()
         self._post_url: str | None = None
         self._pending: set[Any] = set()
-        self._initialize: dict[str, Any] | None = None
         self._repeated = threading.Event()
 
     def send(self, msg: Any, ids: list[Any]) -> bool:
         """POST *msg* on the open stream, opening one first; whether one was open."""
         initialize = isinstance(msg, dict) and msg.get("method") == "initialize"
-        if initialize:
-            self._initialize = msg
         with self._opening:
             post_url = self._post_url or self._connect(ids, repeat=not initialize)
         if post_url:
@@ -506,9 +613,9 @@ class _LegacySse:
         with self._answered:
             self._post_url = post_url
         threading.Thread(target=self._read, args=(stream, events), daemon=True).start()
-        if repeat and self._initialize is not None:
+        if repeat and bridge._initialize is not None:
             self._repeated.clear()
-            self._post(post_url, {**self._initialize, "id": _REPEAT_ID}, [])
+            self._post(post_url, {**bridge._initialize, "id": _REPEAT_ID}, [])
             self._repeated.wait(_REPEAT_SECS)
             self._post(post_url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, [])
         return post_url

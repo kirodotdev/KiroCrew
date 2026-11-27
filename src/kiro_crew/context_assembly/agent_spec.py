@@ -7,7 +7,8 @@ and the per-session readings those tokens resolve to -- the delegation cap, the
 Computer Use gate and the browse gate, each read once per session
 (:func:`_session_reading`). Beside it,
 the other reads of an agent's spec: its ``includeCrewContext`` flag
-(:func:`_read_include_crew_context`) and the Claude Code steering load
+(:func:`_read_include_crew_context`), its ``includeCrossSessionContext`` flag
+(:func:`_read_include_cross_session_context`) and the Claude Code steering load
 (:func:`_load_steering_resources`) with its admission gate
 (:func:`steering_target_admissible`).
 
@@ -283,6 +284,62 @@ def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None
     val = data.get("includeCrewContext", True)
     # Honor only an explicit boolean; anything else defaults to inject.
     return val if isinstance(val, bool) else True
+
+
+def _read_include_cross_session_context(
+    agent: str, project: str | None = None, *, spec_path: Path | None = None
+) -> bool:
+    """Whether the spec *agent*'s session runs keeps other sessions' memory and lessons.
+
+    The spec is found the way :func:`_load_agent_prompt` finds it, so the flag and
+    the prompt always come from one file: *spec_path* for a session pinned to a
+    file, else *agent* resolved project-first, then in the global and crewmate
+    agents directories with ``agent.spec_pins`` applied.
+
+    ``True`` when no spec declares the agent, or its spec does not carry
+    ``includeCrossSessionContext``: every agent written before the key existed. A
+    spec that carries the key keeps the stored blocks only when the value is exactly
+    ``true``. The key decides what a session may read, so every other outcome
+    withholds: ``false``, a value that is not a boolean (``"true"``, ``1``,
+    ``null``), a resolved or pinned file that cannot be read, and a lookup that is
+    refused (a project spec of that name that cannot be read, an ambiguous name, a
+    pin no claimant matches, an unsafe project).
+
+    Read on every build and never kept: an author who adds the key must not wait
+    for a restart for it to hold.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_discovery import _read_agent_spec
+    from kiro_crew.member_essential_context import read_template_spec
+
+    try:
+        if spec_path is not None:
+            data = _read_agent_spec(spec_path, operation="agent_context_scope", source="context")
+        else:
+            resolved = read_template_spec(
+                agent, project, operation="agent_context_scope", source="context"
+            )
+            if resolved is None:
+                return True
+            data = resolved[1]
+    except (OSError, ValueError, ctx.FileTooLargeError) as exc:
+        logger.warning(
+            "Agent %r: its spec could not be resolved (%s); stored memory and lessons "
+            "are withheld from this build",
+            agent,
+            type(exc).__name__,
+        )
+        return False
+    if data is None:
+        logger.warning(
+            "Agent %r: its spec could not be read; stored memory and lessons are "
+            "withheld from this build",
+            agent,
+        )
+        return False
+    if "includeCrossSessionContext" not in data:
+        return True
+    return data["includeCrossSessionContext"] is True
 
 
 def _read_prompt_file(pp: Path) -> str:
@@ -600,11 +657,13 @@ def _load_agent_prompt(
     *,
     owner_template: str = "",
     spec_path: Path | None = None,
+    unread_out: list[Path] | None = None,
 ) -> str:
     """Read the resolved execution prompt, excluding an owner source in essentials.
 
     *spec_path* is the file a pinned session runs from (``skill_scope_pin``), read
-    by its path instead of resolving *agent* by name project-first.
+    by its path instead of resolving *agent* by name project-first. A ``file://``
+    prompt it cannot use is appended to *unread_out*.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_discovery import _read_agent_spec
@@ -643,7 +702,9 @@ def _load_agent_prompt(
         if agent == owner_template:
             return ""
         if prompt.startswith("file://"):
-            return _read_agent_prompt_file(agent, file_uri_path_text(prompt), path, project)
+            return _read_agent_prompt_file(
+                agent, file_uri_path_text(prompt), path, project, unread_out=unread_out
+            )
         return prompt
     except (OSError, ValueError, ctx.FileTooLargeError):
         return ""
@@ -666,7 +727,14 @@ def _is_checkout_spec(spec_path: Path, project: str | None) -> bool:
         return True
 
 
-def _read_agent_prompt_file(agent: str, ref: str, spec_path: Path, project: str | None) -> str:
+def _read_agent_prompt_file(
+    agent: str,
+    ref: str,
+    spec_path: Path,
+    project: str | None,
+    *,
+    unread_out: list[Path] | None = None,
+) -> str:
     """The text of a custom agent's ``file://`` prompt *ref*, or "" with a WARNING naming it.
 
     *ref* is expanded as KAS expands it (``$VAR``, ``~``:
@@ -679,13 +747,17 @@ def _read_agent_prompt_file(agent: str, ref: str, spec_path: Path, project: str 
     followed) and read only when it stays inside that root
     (:func:`_is_checkout_spec`). A file that is missing, refused, unreadable or
     empty degrades to "" (the session runs without the persona) and is named in
-    one WARNING, so the operator can see why.
+    one WARNING, so the operator can see why; a caller that passes *unread_out*
+    gets it appended there instead and names it itself.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_sdk.agent_specs import expand_prompt_ref, is_unsafe_prompt_path
     from kiro_crew.member_essential_context import resolve_relative_prompt_path
 
     def _unread(name: object, why: str) -> str:
+        if unread_out is not None:
+            unread_out.append(Path(str(name)))
+            return ""
         logger.warning(
             "Agent %s's prompt file %r is %s, so this session runs without that prompt",
             agent,
@@ -721,7 +793,9 @@ def _read_agent_prompt_file(agent: str, ref: str, spec_path: Path, project: str 
     return text
 
 
-def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> str:
+def _crewmate_worker_prompt(
+    agent: str, base_prompt: str, session_key: str, mounted: bool | None = None
+) -> str:
     """*base_prompt*, or for a crewmate's worker session the prompt its worker runs.
 
     *base_prompt* is the contract this block selected (the worker is a default-named
@@ -735,7 +809,10 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
     backend gets its prompt from this block alone
     (``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``: claude, codex, pi)
     carries both here; KAS's wire spec already does, so its block keeps the base.
-    Any other agent, or no session, keeps the base too.
+    Any other agent, or no session, keeps the base too. *mounted* is whether the live
+    session's start mounted session control (its ``member_dispatch_mounted``), so the
+    conducting rules ride this block only for a worker that holds the tools they name;
+    ``None`` (no session evidence) reads the switch.
     """
     from kiro_crew.mate_worker import (
         MATE_WORKER_AGENT,
@@ -756,7 +833,9 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
     try:
         disk = _worker_base().get("prompt")
         disk_prompt = disk if isinstance(disk, str) else ""
-        merged = worker_session_spec({"prompt": disk_prompt}, session_key).get("prompt")
+        merged = worker_session_spec({"prompt": disk_prompt}, session_key, mounted=mounted).get(
+            "prompt"
+        )
     except (WorkerKitUnreadable, AgentSpecUnreadable):
         # The session itself is refused where its spec is projected; the
         # contract keeps the worker's base rather than failing the turn's assembly.
@@ -774,24 +853,33 @@ def _resolve_agent_prompt(
     project: str | None,
     mode: str,
     session_key: str | None,
-    is_cc: bool,
     private_owner: bool,
     session_start: bool,
     provider_type: str | None = None,
+    member_dispatch_mounted: bool | None = None,
 ) -> str:
     """Return the agent contract for the ``[AGENT SYSTEM PROMPT]`` block, or "".
 
     Session start and post-compaction reinjection both call this, so the
     contract a compacted session gets back is the one it started with. Only
     a session start takes a fresh reading of the delegation cap; the call
-    that restores the block reuses the session's own.
+    that restores the block reuses the session's own. *member_dispatch_mounted*
+    is the live session's own answer for its session-control mount, which a
+    crewmate worker's conducting rules follow (:func:`_crewmate_worker_prompt`).
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.agent_sdk.kas_tool_names import backend_of_provider_label
 
     is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
+    # Asked of the backend behind the provider label
+    # (``SessionCapabilities.crew_sends_persona_prompt``); a label no known backend
+    # carries, ``None`` and ``""`` answer False.
+    backend = backend_of_provider_label(provider_type)
+    sends_persona = backend is not None and capabilities_for(backend).crew_sends_persona_prompt
     agent_prompt: str
-    if is_cc and not is_custom:
+    if sends_persona and not is_custom:
         # CC gets the same Kiro Crew persona prompt as kiro — including
         # the Output Format rules (diff blocks, image embeds, OPTIONS)
         # which are dashboard UI contracts, not kiro-specific. Only the
@@ -844,19 +932,20 @@ def _resolve_agent_prompt(
             lambda: _live_engine_subagents(provider_type, agent, key),
             refresh=session_start,
         ),
+        member_dispatch_mounted=member_dispatch_mounted,
     )
 
 
-def _live_engine_subagents(provider_type: str | None, agent: str | None, key: str) -> bool:
-    """A live reading of whether *key*'s contract names the engine's sub-agent tool."""
+def _live_engine_subagents(provider_type: str | None, agent: str | None, key: str) -> str:
+    """A live reading of how *key*'s contract names the engine's sub-agent tool."""
     from kiro_crew.agent_sdk.kas_engine_subagents import (
         DEFAULT_AGENT,
-        contract_names_engine_subagents,
+        contract_engine_subagent_mode,
     )
 
     # No agent named is the default agent, as ``_resolve_agent_prompt`` reads it, so
     # this reading agrees with the session head's, which names it.
-    return contract_names_engine_subagents(provider_type, agent or DEFAULT_AGENT, key)
+    return contract_engine_subagent_mode(provider_type, agent or DEFAULT_AGENT, key)
 
 
 def _render_contract(
@@ -868,7 +957,8 @@ def _render_contract(
     computer_use: Callable[[], bool],
     browser: Callable[[], bool],
     substitute_bot_name: Callable[[str], str],
-    engine_subagents: Callable[[], bool] = lambda: False,
+    engine_subagents: Callable[[], str] = lambda: "",
+    member_dispatch_mounted: bool | None = None,
 ) -> str:
     """The ``[AGENT SYSTEM PROMPT]`` text for *agent_prompt*, the agent's raw contract.
 
@@ -885,7 +975,9 @@ def _render_contract(
 
     # After every branch: the worker is a default-named agent, so it takes the
     # default contract above, and its crewmate's prompt follows that base.
-    agent_prompt = _crewmate_worker_prompt(agent or "", agent_prompt, session_key or "")
+    agent_prompt = _crewmate_worker_prompt(
+        agent or "", agent_prompt, session_key or "", member_dispatch_mounted
+    )
     # That worker reports to its crewmate's conductor, not to a person, so it
     # drops the widget pointer the default contract carries.
     if agent == MATE_WORKER_AGENT:
@@ -906,8 +998,9 @@ def _render_contract(
     # ``spawn_sub_agents`` sentence names that tool instead (the kas_subagents preview).
     from kiro_crew.agent_sdk import kas_engine_subagents as _engine
 
-    if _engine.SPAWN_SUB_AGENTS_SENTENCE in agent_prompt and engine_subagents():
-        agent_prompt = _engine.with_engine_sentence(agent_prompt)
+    if _engine.SPAWN_SUB_AGENTS_SENTENCE in agent_prompt:
+        if engine_subagents():
+            agent_prompt = _engine.with_engine_sentence(agent_prompt)
     # The Bot conductor's spec prompt is the shared stub, so its ask policy (the
     # shared core and conductor tail, the same constants Conductor mode carries)
     # rides here at agent rank. After any user prompt.md is read, so a custom

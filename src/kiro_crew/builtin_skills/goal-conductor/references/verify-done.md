@@ -55,7 +55,8 @@ Moved verbatim from the goal-conductor `SKILL.md` core; the core says when to re
    the bar is `pr_merged`, as your prompt's rule on landed code says.
 
    **A reviewer grills your plan and what no lane reviews**, as your prompt's
-   plan-reviewer rule says. Its seed carries your plan (items, acceptance,
+   plan-reviewer rule says, for a goal of more than one item only: a one-item
+   goal gets no reviewer or review item unless the person asks. Its seed carries your plan (items, acceptance,
    assumptions, what the last round produced). A `pr_*` item in a repo with
    review CI lanes needs no review here, since those lanes are part of its
    checks. It reports in ≤500 chars with paths in `artifacts` and the full list

@@ -296,7 +296,10 @@ def test_a_pre_registered_callback_with_no_iss_is_refused(slug):
 
 
 @pytest.mark.parametrize("slug", sorted(_PREREGISTERED_ISSUERS))
-def test_a_pre_registered_callback_from_its_own_issuer_succeeds(slug):
+def test_a_pre_registered_callback_from_its_own_issuer_succeeds(slug, monkeypatch):
+    # No finish() runs here, so 0 answers the tab at once instead of after the page wait.
+    monkeypatch.setattr(crew_oauth, "_CALLBACK_PAGE_WAIT_SECS", 0)
+
     async def _run():
         sign_in = _pre_registered(slug)
         query = {"state": sign_in._state, "code": "the-code", "iss": _PREREGISTERED_ISSUERS[slug]}
@@ -308,8 +311,10 @@ def test_a_pre_registered_callback_from_its_own_issuer_succeeds(slug):
 
 
 @pytest.mark.parametrize("slug", ["github", "asana", "slack"])
-def test_a_provider_with_no_verified_issuer_keeps_today_s_behaviour(slug):
+def test_a_provider_with_no_verified_issuer_keeps_today_s_behaviour(slug, monkeypatch):
     assert "issuer" not in crew_oauth._ENDPOINTS[slug]
+    # No finish() runs here, so 0 answers the tab at once instead of after the page wait.
+    monkeypatch.setattr(crew_oauth, "_CALLBACK_PAGE_WAIT_SECS", 0)
 
     async def _run():
         sign_in = _pre_registered(slug)

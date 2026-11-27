@@ -22,6 +22,11 @@ import { namedCeiling } from './namedCeiling'
  *  only once the meta read says the pack has a Lottie slot. */
 const metaThenWholeRead = () => namedCeiling('META_THEN_WHOLE_READ', 5000)
 
+/** The player stub sits behind PackAvatar's `lazy(() => import('./LottieRenderer'))`,
+ *  so it mounts one dynamic import after the avatar's box: meta read -> whole read
+ *  -> lazy import -> stub. */
+const lazyPlayer = () => namedCeiling('LAZY_LOTTIE_PLAYER', 5000)
+
 /** One client per test, so a cached pack never leaks between cases. The retry
  *  delay is shortened so the retry cases run in real time. */
 let qc: QueryClient
@@ -140,7 +145,7 @@ describe('PackAvatar format dispatch', () => {
     render(<PackAvatar id="aurora" state="idle" size={40} />)
 
     await screen.findByTestId('pack-avatar-lottie')
-    const stub = screen.getByTestId('lottie-stub')
+    const stub = await screen.findByTestId('lottie-stub', undefined, lazyPlayer())
     expect(stub.getAttribute('data-bytes')).toBe('13')
     expect(stub.getAttribute('data-loop')).toBe('true')
   })
@@ -263,7 +268,7 @@ describe('PackAvatar failure reporting', () => {
         <PackAvatar id={`pack-${label}`} state="done" size={40} fallback={<i data-testid="fallback">{label}</i>} />,
       )
       if (label === 'renderer') {
-        await screen.findByTestId('lottie-stub')
+        await screen.findByTestId('lottie-stub', undefined, lazyPlayer())
         act(() => screen.getByTestId('lottie-stub').click())
       }
       await screen.findByTestId('fallback')
@@ -310,7 +315,7 @@ describe('PackAvatar failure reporting', () => {
     const onError = vi.fn()
     render(<PackAvatar id="aurora" state="idle" size={40} onError={onError} />)
 
-    const stub = await screen.findByTestId('lottie-stub')
+    const stub = await screen.findByTestId('lottie-stub', undefined, lazyPlayer())
     act(() => stub.click())
     await waitFor(() => expect(onError).toHaveBeenCalled())
     expect(screen.queryByTestId('pack-avatar-lottie')).toBeNull()
@@ -382,7 +387,7 @@ describe('PackAvatar animation is bounded by visibility', () => {
     // No observer callback has fired, so nothing is known to be visible yet.
     const box = await screen.findByTestId('pack-avatar-lottie')
     expect(box.getAttribute('data-pack-playing')).toBe('false')
-    expect(screen.getByTestId('lottie-stub').getAttribute('data-autoplay')).toBe('false')
+    expect((await screen.findByTestId('lottie-stub', undefined, lazyPlayer())).getAttribute('data-autoplay')).toBe('false')
   })
 
   it('plays once the avatar scrolls into view, and stops when it leaves', async () => {
@@ -428,7 +433,7 @@ describe('PackAvatar animation is bounded by visibility', () => {
       // preference this would be playing.
       const box = await screen.findByTestId('pack-avatar-lottie')
       expect(box.getAttribute('data-pack-playing')).toBe('false')
-      expect(screen.getByTestId('lottie-stub').getAttribute('data-autoplay')).toBe('false')
+      expect((await screen.findByTestId('lottie-stub', undefined, lazyPlayer())).getAttribute('data-autoplay')).toBe('false')
 
       // The preference is a live system setting: flipping it resumes the timeline.
       reduce = false
@@ -505,7 +510,7 @@ describe('PackAvatar animation is bounded by visibility', () => {
     const box = await screen.findByTestId('pack-avatar-lottie')
     // The suite's observer stub reports intersecting immediately.
     expect(box.getAttribute('data-pack-playing')).toBe('false')
-    expect(screen.getByTestId('lottie-stub').getAttribute('data-autoplay')).toBe('false')
+    expect((await screen.findByTestId('lottie-stub', undefined, lazyPlayer())).getAttribute('data-autoplay')).toBe('false')
 
     rerender(
       <QueryClientProvider client={qc}>

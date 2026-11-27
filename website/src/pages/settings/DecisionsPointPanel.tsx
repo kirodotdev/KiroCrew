@@ -18,10 +18,9 @@ import { i18nT } from '../../i18n/t'
  * Split into its own module so the CARD can be mounted synchronously while this is
  * loaded on demand. Both halves of that matter and they pull in opposite directions:
  *
- *  - the card must be synchronous, because settings search highlights a control by
- *    probing the DOM for it and gives up after 100 ms. A deep link to
- *    `developer.decisions` that arrived while a chunk was still in flight found
- *    nothing and rang no control.
+ *  - the card is synchronous, so a settings search deep link to
+ *    `developer.decisions` finds its row as soon as the tab opens rather than
+ *    once a chunk arrives.
  *  - this panel need not be, because nothing it draws is in the settings registry:
  *    every control here takes its label from a map keyed by the SERVER's id (the
  *    scope, the tier), which is what lets a gateway ship another point with no edit

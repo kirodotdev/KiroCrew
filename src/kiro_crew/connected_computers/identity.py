@@ -104,7 +104,7 @@ def validate_fingerprint(fingerprint: str) -> str:
 
 
 def clean_label(label: str) -> str:
-    """A printable, bounded label; the base id when nothing printable is left."""
+    """A printable, bounded label; empty when nothing printable is left."""
     text = "".join(ch for ch in str(label or "") if ch.isprintable()).strip()
     return text[:LABEL_MAX]
 
@@ -134,7 +134,6 @@ def assign_device_id(base: str, fingerprint: str, existing: Mapping[str, str]) -
 
 def local_computer_name() -> str:
     """This machine's own name for the human label (not unique; never an id)."""
-    name = ""
     try:
         name = socket.gethostname()
     except OSError:

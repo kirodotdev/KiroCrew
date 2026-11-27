@@ -14,12 +14,14 @@ closed).
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import kiro_crew.sel as sel_mod
-from kiro_crew import llm_helpers
+from kiro_crew import llm_helpers, security
 from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.platform import tool_paths
 from kiro_crew.platform.tool_paths import (
@@ -387,3 +389,339 @@ class TestProvenanceComesFromTheClient:
             with_identity_caches=False,
         )
         assert ev.mcp_identity_trusted is False
+
+
+_URL = "https://example.com/docs/x"
+_STALL_NOW = 1_000_000.0
+
+
+def _fetch_event(
+    url: str = _URL,
+    *,
+    tool_id: str = "claude#WebFetch",
+    trusted: bool = True,
+    **params: object,
+) -> LLMEvent:
+    """A claude permission event shaped as the client builds it from the live
+    capture (``builtins-bash-edit-webfetch-live``): the WebFetch title, the trusted
+    ``url`` params and the harness id the tool_call frame stamped."""
+    raw = {"url": url, **params}
+    return LLMEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        title=f"Fetch {url}",
+        request_id="r1",
+        tool_kind="fetch",
+        tool_input=json.dumps(raw),
+        raw_tool_params=raw,
+        raw_params_trusted=trusted,
+        harness_tool_id=tool_id,
+    )
+
+
+_CAPTURE = (
+    Path(__file__).parent / "fixtures/acp_frames/claude/builtins-bash-edit-webfetch-live.jsonl"
+)
+_PROMPT = "What is the page title?"
+
+
+def _captured_fetch_event() -> LLMEvent:
+    """The capture's WebFetch, as sent (``url`` and ``prompt``), built by the client's
+    own parser from its ``tool_call`` frames and ``session/request_permission``."""
+    from kiro_crew.acp import _dispatch
+    from kiro_crew.acp.types import JsonRpcMessage
+
+    frames = [json.loads(line) for line in _CAPTURE.read_text().splitlines()[1:]]
+    caches: dict = {
+        "tool_input_cache": {},
+        "shell_cache": {},
+        "raw_params_cache": {},
+        "mcp_server_name_cache": {},
+        "tool_name_cache": {},
+        "harness_tool_name_cache": {},
+        "tool_kind_cache": {},
+    }
+    for frame in frames:
+        if frame.get("method") != "session/request_permission":
+            _dispatch.parse_session_update(
+                frame["params"]["update"], harness_backend="claude", **caches
+            )
+            continue
+        if frame["params"]["toolCall"].get("name") != "WebFetch":
+            continue
+        msg = JsonRpcMessage(id=frame["id"], method=frame["method"], params=frame["params"])
+        event, _ = _dispatch.build_permission_event(msg, harness_backend="claude", **caches)
+        assert event is not None
+        return event
+    raise AssertionError("the capture has no WebFetch permission request")
+
+
+async def _resolve_with(
+    event: LLMEvent, policy: ToolApprovalPolicy
+) -> tuple[bool, _RecordingProvider, list[dict]]:
+    from kiro_crew.hooks import HookManager, HooksConfig
+
+    provider = _RecordingProvider()
+    rows: list[dict] = []
+    sel_stub = MagicMock()
+    sel_stub.log_tool_invocation.side_effect = lambda **kw: rows.append(kw)
+    with patch.object(sel_mod, "sel", lambda: sel_stub):
+        approved = await _resolve_permission(
+            provider,  # type: ignore[arg-type]
+            event,
+            policy,
+            HookManager(HooksConfig()),
+        )
+    return approved, provider, rows
+
+
+@pytest.fixture
+def stalled_cwd(tmp_path, monkeypatch):
+    """The issue's state: a real cooldown over the home prefix and no home anchors
+    to serve, so their bounded rebuild refuses every path check fail-closed."""
+    from kiro_crew.security import paths
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(paths, "_path_resolve_clock", lambda: _STALL_NOW)
+    monkeypatch.setattr(paths, "_home_targets_cache", {})
+    prefix = paths._stall_prefix(str(Path.home()))
+    monkeypatch.setitem(paths._path_resolve_degraded, prefix, (_STALL_NOW + 30.0, 1))
+    return tmp_path
+
+
+_POLICIES = [ToolApprovalPolicy.AUTO_APPROVE, ToolApprovalPolicy.HOOK_BASED]
+
+#: The planted-link cases name a link ``https:`` and lean on POSIX collapsing ``//``;
+#: NTFS cannot hold a ``:`` in a name, so the shape does not exist on Windows.
+_POSIX_COLON_LINK = pytest.mark.skipif(
+    sys.platform == "win32", reason="a link named 'https:' cannot exist on NTFS"
+)
+
+
+class TestAProvenFetchUrlIsNotAPath:
+    """A proven web fetch's URL, and its ``Fetch <url>`` title, skip the path tier
+    of both gates (the resolver's tiers and the hook gate's); nothing else does."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy", _POLICIES)
+    async def test_a_fetch_is_not_refused_by_a_resolver_stall(self, stalled_cwd, policy) -> None:
+        approved, provider, rows = await _resolve_with(_fetch_event(), policy)
+        assert approved is True, rows
+        assert provider.approved == ["r1"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy", _POLICIES)
+    async def test_the_captured_webfetch_with_its_prompt_is_not_refused_by_a_stall(
+        self, stalled_cwd, policy
+    ) -> None:
+        ev = _captured_fetch_event()
+        assert ev.harness_tool_id == "claude#WebFetch"
+        assert ev.raw_params_trusted is True
+        assert ev.raw_tool_params == {"url": "https://example.com", "prompt": _PROMPT}
+        approved, provider, rows = await _resolve_with(ev, policy)
+        assert approved is True, rows
+        assert provider.approved == [ev.request_id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy", _POLICIES)
+    async def test_a_file_url_on_a_fetch_is_still_refused(self, stalled_cwd, policy) -> None:
+        approved, _p, rows = await _resolve_with(_fetch_event("file:///home/u/.ssh/id_rsa"), policy)
+        assert approved is False
+        assert security.is_unverifiable_path_refusal(_error(rows))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_id", ["claude#Read", "claude#Bash", "claude#Edit"])
+    async def test_the_same_url_on_another_tool_is_still_refused(
+        self, stalled_cwd, tool_id
+    ) -> None:
+        ev = _fetch_event(tool_id=tool_id)
+        approved, _p, rows = await _resolve_with(ev, ToolApprovalPolicy.AUTO_APPROVE)
+        assert approved is False
+        assert _error(rows).endswith(f"Path: {f'Fetch {_URL}'!r}")
+
+    @_POSIX_COLON_LINK
+    @pytest.mark.asyncio
+    async def test_a_url_through_a_planted_link_is_still_a_credential_on_a_read(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # ``https://.aws/credentials`` is ``https:/.aws/credentials``: with an
+        # ``https:`` link to $HOME in the base directory, the credential file.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "https:").symlink_to(Path.home(), target_is_directory=True)
+        ev = _fetch_event("https://.aws/credentials", tool_id="claude#Read")
+        approved, _p, rows = await _resolve_with(ev, ToolApprovalPolicy.AUTO_APPROVE)
+        assert approved is False
+        assert _error(rows).startswith("Blocked: sensitive path")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "unproven",
+        [
+            {"tool_id": ""},
+            {"tool_id": "claude#WebSearch"},
+            {"tool_id": "claude#mcp__web__fetch"},
+            {"tool_id": "web_fetch"},
+            {"trusted": False},
+            {"url": "https://:80/docs"},
+        ],
+        ids=[
+            "no-identity",
+            "other-tool",
+            "mcp-tool",
+            "unqualified-id",
+            "untrusted-params",
+            "hostless-url",
+        ],
+    )
+    async def test_an_unproven_fetch_gets_no_exemption(self, stalled_cwd, unproven) -> None:
+        approved, _p, rows = await _resolve_with(
+            _fetch_event(**unproven), ToolApprovalPolicy.AUTO_APPROVE
+        )
+        assert approved is False
+        assert security.is_unverifiable_path_refusal(_error(rows))
+
+    def test_a_malformed_event_proves_no_fetch(self) -> None:
+        from kiro_crew.hooks import proven_fetch_url
+
+        assert proven_fetch_url(MagicMock()) == ""
+
+    @pytest.mark.parametrize(
+        ("url", "kind", "tier"),
+        [
+            ("http://169.254.169.254/latest/meta-data/", "bash", "sensitive-bash"),
+            ("https://x.example/a; rm -rf / ", "regex", "deny-rules"),
+        ],
+    )
+    def test_the_command_tiers_still_read_a_fetch_url(self, url, kind, tier) -> None:
+        from kiro_crew.hooks import HookManager, HooksConfig, proven_fetch_url
+
+        assert proven_fetch_url(_fetch_event(url)) == url
+        title_hit = llm_helpers._title_denial(f"Fetch {url}", None, exempt_url=url)
+        input_hit = llm_helpers._first_tool_input_denial([url], None, path_rule=False)
+        assert title_hit is not None and title_hit[0] == kind
+        assert input_hit is not None and input_hit[0] == kind
+        verdict = HookManager(HooksConfig()).on_tool_call(
+            f"Fetch {url}", tool_kind="fetch", fetch_url=url
+        )
+        assert verdict.tier == tier
+
+    @pytest.mark.asyncio
+    async def test_a_credential_path_under_an_unlisted_key_is_still_refused(self) -> None:
+        ev = _fetch_event(prompt=_PROMPT, extra="~/.ssh/id_rsa")
+        approved, _p, rows = await _resolve_with(ev, ToolApprovalPolicy.AUTO_APPROVE)
+        assert approved is False
+        assert _error(rows) == "Blocked: sensitive path in tool_input: ~/.ssh/id_rsa"
+
+    @_POSIX_COLON_LINK
+    @pytest.mark.asyncio
+    async def test_the_url_is_spared_by_key_not_by_value(self, tmp_path, monkeypatch) -> None:
+        # The same string as the proven ``url``, under a key no row lists, is still
+        # resolved: through the planted ``https:`` link it is the credential file.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "https:").symlink_to(Path.home(), target_is_directory=True)
+        url = "https://.aws/credentials"
+        ev = _fetch_event(url, prompt=_PROMPT, extra=url)
+        approved, _p, rows = await _resolve_with(ev, ToolApprovalPolicy.AUTO_APPROVE)
+        assert approved is False
+        assert _error(rows) == f"Blocked: sensitive path in tool_input: {url}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("prompt", [{"text": _PROMPT}, [_PROMPT]], ids=["mapping", "list"])
+    async def test_a_prompt_that_is_not_a_string_is_still_path_scanned(
+        self, stalled_cwd, prompt
+    ) -> None:
+        ev = _fetch_event(prompt=prompt)
+        approved, _p, rows = await _resolve_with(ev, ToolApprovalPolicy.AUTO_APPROVE)
+        assert approved is False
+        assert _error(rows).endswith(f"Path: {_PROMPT!r}")
+
+    @pytest.mark.asyncio
+    async def test_another_harness_fetch_keeps_its_prompt_path_gated(self, stalled_cwd) -> None:
+        # opencode's webfetch is a proven fetch, so its url and title pass; no captured
+        # frame vets its other arguments, so the prompt is what the stall refuses.
+        ev = _fetch_event(tool_id="opencode#webfetch", prompt=_PROMPT)
+        approved, _p, rows = await _resolve_with(ev, ToolApprovalPolicy.AUTO_APPROVE)
+        assert approved is False
+        assert _error(rows).endswith(f"Path: {_PROMPT!r}")
+
+    @_POSIX_COLON_LINK
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            {"trusted": False},
+            {"tool_id": ""},
+            {"tool_id": "claude#Read"},
+            {"tool_id": "claude#Agent"},
+        ],
+        ids=["untrusted-params", "unproven", "non-fetch", "claude-agent"],
+    )
+    async def test_the_same_prompt_elsewhere_is_still_path_scanned(
+        self, tmp_path, monkeypatch, frame
+    ) -> None:
+        # Through the planted ``https:`` link this prompt is the credential file, so it
+        # is refused as that path only when the path tier reads the prompt.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "https:").symlink_to(Path.home(), target_is_directory=True)
+        prompt = "https://.aws/credentials"
+        approved, _p, rows = await _resolve_with(
+            _fetch_event(prompt=prompt, **frame), ToolApprovalPolicy.AUTO_APPROVE
+        )
+        assert approved is False
+        assert _error(rows) == f"Blocked: sensitive path in tool_input: {prompt}"
+
+    @_POSIX_COLON_LINK
+    @pytest.mark.asyncio
+    async def test_a_claude_task_prompt_is_still_path_scanned(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "https:").symlink_to(Path.home(), target_is_directory=True)
+        prompt = "https://.aws/credentials"
+        params = {"description": "look", "prompt": prompt, "subagent_type": "general-purpose"}
+        ev = LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="Task",
+            request_id="r1",
+            tool_kind="think",
+            tool_input=json.dumps(params),
+            raw_tool_params=params,
+            raw_params_trusted=True,
+            harness_tool_id="claude#Task",
+        )
+        approved, _p, rows = await _resolve_with(ev, ToolApprovalPolicy.AUTO_APPROVE)
+        assert approved is False
+        assert _error(rows) == f"Blocked: sensitive path in tool_input: {prompt}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("prompt", "kind"),
+        [
+            ("Summarise http://169.254.169.254/latest/meta-data/ for me", "bash"),
+            ("Summarise it; rm -rf / ", "regex"),
+        ],
+        ids=["imds-bash-tier", "deny-tier"],
+    )
+    async def test_the_command_tiers_still_read_the_prompt(self, prompt, kind) -> None:
+        ev = _fetch_event(prompt=prompt)
+        approved, _p, rows = await _resolve_with(ev, ToolApprovalPolicy.AUTO_APPROVE)
+        assert approved is False
+        hit = llm_helpers._first_tool_input_denial([prompt], None, path_rule=False)
+        assert hit is not None and hit[0] == kind
+        assert _error(rows) == hit[1]
+
+    @pytest.mark.asyncio
+    async def test_an_oversize_prompt_is_still_refused(self) -> None:
+        prompt = "x" * (llm_helpers._MAX_SCANNABLE_TOOL_INPUT_CHARS + 1)
+        approved, _p, rows = await _resolve_with(
+            _fetch_event(prompt=prompt), ToolApprovalPolicy.AUTO_APPROVE
+        )
+        assert approved is False
+        assert "too large to security-scan" in _error(rows)
+
+    @pytest.mark.asyncio
+    async def test_the_node_cap_still_refuses_a_fetch(self, monkeypatch) -> None:
+        monkeypatch.setattr(tool_paths, "_TARGET_PATH_MAX_NODES", 3)
+        ev = _fetch_event(prompt=_PROMPT, extra=["a", "b", "c", "d"])
+        approved, _p, rows = await _resolve_with(ev, ToolApprovalPolicy.AUTO_APPROVE)
+        assert approved is False
+        assert (
+            _error(rows) == "Blocked: tool arguments too large to security-scan (deny-by-default)"
+        )

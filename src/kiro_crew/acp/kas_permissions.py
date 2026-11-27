@@ -57,6 +57,13 @@ from kiro_crew.acp.kas_hook_mcp import (  # noqa: F401 - cached_mcp_tool_names i
     auto_approved_mcp_servers,
     cached_mcp_tool_names,
 )
+from kiro_crew.acp.kas_policy_bundle import (
+    allows_beside_bundle,
+    bundle_ids,
+    bundle_log_names,
+    is_allow_rule,
+    without_policy_bundle,
+)
 from kiro_crew.acp.kas_settings_mcp import CREW_SETTINGS_MCP_KEY
 from kiro_crew.acp.kas_spec_grants import (
     CREW_ANSWERED_PATHS_KEY,
@@ -685,13 +692,13 @@ def authored_restricted_capabilities(
     """The KAS capabilities the spec's own author restricted, read from the RAW inputs.
 
     Read before any merge or translation, because both can drop what they cannot
-    carry (a ``policies`` bundle refuses the whole block, an oversized or malformed
-    block is refused, a ``toolsSettings`` key may have no KAS translation) and a
+    carry (an oversized or malformed block is refused, a ``toolsSettings`` key may have no KAS translation) and a
     dropped restriction must still keep its built-ins at the prompt:
 
     * ``permissions``: every rule whose effect is not ``allow`` restricts its
-      capability (meta capabilities expanded), whatever its ``match`` scope. A block
-      that is not exactly ``{"rules": [...]}`` with no ``policies`` bundle, or any
+      capability (meta capabilities expanded), whatever its ``match`` scope. A
+      ``policies`` bundle is read as left out (``kas_policy_bundle``), so the rules
+      beside it decide. A block that is not exactly ``{"rules": [...]}``, or any
       rule that cannot be read, restricts all three.
     * ``toolsSettings``: any entry for one of these built-ins (in any kiro-cli
       spelling, :func:`canonical_tools_settings`) restricts its capabilities;
@@ -702,7 +709,7 @@ def authored_restricted_capabilities(
     """
     restricted: set[str] = set()
     if authored_permissions is not None:
-        raw = authored_permissions
+        raw = without_policy_bundle(authored_permissions)
         if (
             not isinstance(raw, dict)
             or set(raw) - {"rules", "policies"}
@@ -1090,6 +1097,27 @@ def _refuse_block(
     )
 
 
+def _skip_bundle(
+    agent_id: str, bundles: list[str], allows: int, audit_decision: _AuditDecision
+) -> None:
+    """Report a ``policies`` bundle left out of a block whose other rules travel."""
+    if audit_decision is _asking_only or isinstance(audit_decision, RefusalReason):
+        return
+    audit_decision(
+        ", ".join(bundles),
+        "withheld",
+        f"a named policies bundle, and the {allows} allow rule(s) beside it; "
+        "their grants live on the backend where Crew's ceiling cannot see them",
+    )
+    logger.warning(
+        "agent %r: leaving out its policies bundle %s and the %d allow rule(s) beside "
+        "it; its deny and ask rules still travel",
+        agent_id,
+        bundle_log_names(bundles),
+        allows,
+    )
+
+
 #: What :func:`_parse_rule` returns for a rule left out on its own, the block kept.
 _DROPPED: dict[str, Any] = {}
 
@@ -1248,12 +1276,12 @@ def parse_user_permissions(
     behaviour is the same either way, and the log line is what separates them.
     *dropped*, when given, collects the index of each rule left out alone.
 
-    A ``policies`` reference refuses the block. It is well formed, and that is the
-    problem: KAS expands a named bundle inline into ``allow`` rules held on the
-    backend (``policy-parser.ts`` ``expandPolicies`` over ``presets.ts``), so the
-    grant is not in this block at all and there is nothing here to intersect with
-    the ceiling. The shipped ``dev-shell`` bundle alone carries shell allows,
-    which is the one family rule 4 exists to refuse.
+    A ``policies`` reference is left out, with every ``allow`` rule beside it, and
+    the block's ``deny`` and ``ask`` rules are read as if it named none
+    (:mod:`kiro_crew.acp.kas_policy_bundle`): KAS expands a named bundle into
+    rules held on the backend, so its grant is not in this block and there is
+    nothing here to intersect with the ceiling, while a ``deny`` or ``ask`` only
+    narrows.
     """
     if raw is None:
         return None
@@ -1280,14 +1308,16 @@ def parse_user_permissions(
         )
         return None
     if policies:
-        _refuse_block(
-            agent_id,
-            "it references named policy bundles, whose rules live on the backend "
-            "where Crew's ceiling cannot see them",
-            audit_decision=audit_decision,
-        )
-        return None
-    rules = raw.get("rules")
+        bundles = bundle_ids(raw)
+        if not bundles:
+            _refuse_block(
+                agent_id,
+                "`policies` must contain only policy ids",
+                audit_decision=audit_decision,
+            )
+            return None
+        _skip_bundle(agent_id, bundles, allows_beside_bundle(raw), audit_decision)
+    rules = without_policy_bundle(raw).get("rules")
     if not isinstance(rules, list):
         _refuse_block(agent_id, "`rules` must be an array", audit_decision=audit_decision)
         return None
@@ -1299,8 +1329,14 @@ def parse_user_permissions(
             audit_decision=audit_decision,
         )
         return None
+    # Each rule keeps the index the author wrote it at, the allows beside a bundle
+    # skipped in place, so a refusal reason names the rule in the file.
+    authored = raw.get("rules", []) if policies else rules
+    indexed = [
+        (i, entry) for i, entry in enumerate(authored) if not (policies and is_allow_rule(entry))
+    ]
     parsed: list[dict[str, Any]] = []
-    for index, entry in enumerate(rules):
+    for index, entry in indexed:
         rule = _parse_rule(entry, index, agent_id, audit_decision)
         if rule is None:
             return None

@@ -103,6 +103,8 @@ class StubCrew:
         self.create_echo = True
         #: The GET reply's ``trust_active``; ``None`` leaves it out, as an older peer.
         self.trust_active: bool | None = None
+        #: Answer the ``work-item`` route with aiohttp's plain 404, as a crew without it.
+        self.no_work_item_route = False
 
     def status(self, instance_id: str):
         return SimpleNamespace(state=SimpleNamespace(value=self.state))
@@ -140,6 +142,11 @@ class StubCrew:
         body = json.loads(data) if data else None
         self.calls.append({"method": method, "path": path, "params": params, "body": body})
         status, reply = self._answer(method, path, body)
+        if self.no_work_item_route and path.endswith("/work-item"):
+            yield SimpleNamespace(
+                status=404, headers={"Content-Type": "text/plain"}, content=_Content(b"404")
+            )
+            return
         if isinstance(reply, dict) and isinstance(reply.get("events"), list) and params:
             # As the peer's route does: the newest ``limit`` events.
             reply = {**reply, "events": reply["events"][-int(params.get("limit", 50)) :]}
@@ -525,13 +532,13 @@ def test_tunnel_down_keeps_the_last_state_and_says_the_crew_is_down(recorded, pe
     asyncio.run(go())
 
 
-def test_a_version_skewed_crew_ingests_nothing(recorded, peer):
+def test_a_version_skewed_crew_still_ingests(recorded, peer):
     async def go() -> None:
         item_id = await _remote_item(peer)
         peer.version = "0.0.1"
         peer.report("done", "shipped", "2026-10-29T10:00:00+00:00", pr=1)
         row = _row(await _read(peer), item_id)
-        assert row["status"] is None and row["remote_error"] == "crew_version_mismatch"
+        assert row["status"] == "done" and row["remote_error"] is None
 
     asyncio.run(go())
 
@@ -612,6 +619,21 @@ def test_a_failed_patch_is_reported_and_the_local_decide_stands(recorded, peer):
         assert status == 200
         assert body["remote_decide"] == {"ok": False, "code": "nope"}
         assert work_ledger.read_work_item(CONDUCTOR, item_id).decision == "go"
+
+    asyncio.run(go())
+
+
+def test_a_crew_without_the_work_item_route_names_a_version_skew(recorded, peer):
+    async def go() -> None:
+        item_id = await _remote_item(peer)
+        peer.no_work_item_route = True
+        row = _row(await _read(peer), item_id)
+        assert row["remote_error"] == "crew_peer_incompatible"
+        status, body = await _record_via(
+            peer, {"action": "decide", "item_id": item_id, "decision": "go"}
+        )
+        assert status == 200
+        assert body["remote_decide"] == {"ok": False, "code": "crew_peer_incompatible"}
 
     asyncio.run(go())
 

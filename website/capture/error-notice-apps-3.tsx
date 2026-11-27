@@ -1,14 +1,14 @@
 /**
  * Isolated capture entry for the apps-3 batch of the error-state sweep
- * (ops-mission-control, papyrus, personal-shopper, pptx-maker, spec-builder,
- * workflows, mochi, TrustAppModal, Library page).
+ * (ops-mission-control, papyrus, pptx-maker, spec-builder, workflows, mochi,
+ * TrustAppModal, Library page).
  *
  * WHY ISOLATED: these failure states only appear once a request against a
  * provider or the gateway fails; booting the full SPA for that needs the app
  * shell, a gateway and per-app backends. `WorkflowRunTree` is prop-driven, so
  * its failed state renders directly with the value the app would hand it; the
- * hook-driven views (ops-mission-control board, papyrus workspace, shopper
- * tabs, pptx library) are shown as the exact `ErrorNotice` call this branch
+ * hook-driven views (ops-mission-control board, papyrus workspace, pptx
+ * library) are shown as the exact `ErrorNotice` call this branch
  * makes at each site.
  *
  * Two columns per frame:
@@ -40,7 +40,6 @@ document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-li
 const DISPATCH_ERROR = 'HTTP 502: provider poll timed out after 30s'
 const CLAIM_ERROR = 'HTTP 409: INV-42 is already claimed by another instance'
 const COMPILE_ERROR = 'latexmk exited with code 12: main.tex not found'
-const SAVE_ERROR = 'HTTP 500: could not write sites.json'
 const RUN_ERROR = 'Agent "researcher" exceeded its token budget'
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -80,11 +79,6 @@ function Before() {
           </button>
         </div>
       </Section>
-      <Section title="SitesTab — hand-built danger-subtle div">
-        <div role="alert" className="text-xs px-3 py-2 rounded-lg bg-[var(--danger-subtle)] text-[var(--danger)] border border-[var(--danger)]">
-          Save failed: {SAVE_ERROR}
-        </div>
-      </Section>
       <Section title="WorkflowRunTree — red-bordered failure panel">
         <div className="text-[12px] rounded p-2 border border-red-500/30 text-red-500">
           <div className="font-medium mb-1 flex items-center gap-1.5">
@@ -92,9 +86,6 @@ function Before() {
             Failed: {RUN_ERROR}
           </div>
         </div>
-      </Section>
-      <Section title="PreferencesTab — add / delete rejections had no surface">
-        <div className="text-[12px] text-muted italic">(nothing rendered; the input just did not clear)</div>
       </Section>
     </Column>
   )
@@ -112,14 +103,8 @@ function After() {
       <Section title="PapyrusPage — ErrorNotice, dismissable, No hand-off (open editor buffer)">
         <ErrorNotice message={COMPILE_ERROR} onDismiss={() => {}} />
       </Section>
-      <Section title="SitesTab — ErrorNotice, hand-off gated on the site form being empty">
-        <ErrorNotice message={`Save failed: ${SAVE_ERROR}`} askAgent />
-      </Section>
       <Section title="WorkflowRunTree — real component, failed run through ErrorNotice askAgent">
         <WorkflowRunTree events={[]} status="failed" error={RUN_ERROR} />
-      </Section>
-      <Section title="PreferencesTab — ErrorNotice, No hand-off (new-preference input)">
-        <ErrorNotice message="HTTP 500: preference store is read-only" />
       </Section>
     </Column>
   )

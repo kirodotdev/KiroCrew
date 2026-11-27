@@ -25,7 +25,7 @@ from kiro_crew.dashboard.slot_ownership import TASK_REVIEW_SLOT_PREFIX, task_rev
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, bind_session_execution
 from kiro_crew.hooks import FileTooLargeError, validate_file_path
-from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
+from kiro_crew.llm_helpers import RefusalHopText, _steer_host_deny, unfinished_turn_error
 from kiro_crew.messaging.driver import strip_steering_markers
 from kiro_crew.security import (
     is_sensitive_path,
@@ -236,6 +236,10 @@ async def _gate_auto_approve(
 
 async def api_taskrunner_status(request: web.Request) -> web.Response:
     """GET /api/taskrunner — current task runner status."""
+    # Each run's task bodies and lessons are the owner's, as its plan is.
+    denied = await require_owner_for_dashboard_caller(request, "taskrunner.status")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"running": False, "available": False})
@@ -866,6 +870,9 @@ async def api_taskrunner_retry(request: web.Request) -> web.Response:
 
 async def api_taskrunner_plan_context(request: web.Request) -> web.Response:
     """GET /api/taskrunner/{task_id}/plan-context — return plan text for chat pre-fill."""
+    denied = await require_owner_for_dashboard_caller(request, "taskrunner.plan_context")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -883,6 +890,9 @@ async def api_taskrunner_export_yaml(request: web.Request) -> web.Response:
     Serializes the run's tasks to the ``agents:`` schema so the file round-trips
     back through the "From YAML" import path.
     """
+    denied = await require_owner_for_dashboard_caller(request, "taskrunner.plan_yaml")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -1426,8 +1436,9 @@ async def _run_refine(
         client, _is_new, _resumed = await state.sessions.get_or_create(
             session_key, start_priority=start_priority
         )
-
+        refusal = RefusalHopText()
         async for event in client.stream(prompt):
+            state._refine_text = refusal.fold(event, state._refine_text)
             if event.kind == EVENT_TEXT_CHUNK:
                 state._refine_text += event.text
                 now = _time.monotonic()

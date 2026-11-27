@@ -43,7 +43,9 @@ import {
   sendToTerminalSession,
   sendRawToTerminalSession,
   ensureTerminalConnection,
+  typeIntoTerminal,
   disposeTerminalConnection,
+  dropTerminalDataForThisKey,
   useTerminalConnStatus,
   useTerminalManualRetry,
   useTerminalInvalidCwd,
@@ -445,6 +447,34 @@ describe('terminalRegistry', () => {
       expect(ws.send).not.toHaveBeenCalled()
     })
 
+    it('holds keys typed before the socket first opened and sends them once, raw and in order, on open', () => {
+      const id = session('early-input')
+      // A stand-in can type before the connection exists.
+      typeIntoTerminal(id, 'ec')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      typeIntoTerminal(id, 'ho\r')
+      term.dataCb?.('pwd')
+      expect(ws.send).not.toHaveBeenCalled()
+
+      ws.simulateOpen()
+      term.dataCb?.('\r')
+      expect(ws.send.mock.calls.map((_, i) => decode(ws, i))).toEqual(['echo\rpwd', '\r'])
+    })
+
+    it('drops keys typed into a socket that opened once and then dropped, as before', () => {
+      const id = session('early-input-reconnect')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      ws.readyState = MockWebSocket.CLOSED
+      term.dataCb?.('x')
+      typeIntoTerminal(id, 'y')
+      expect(ws.send).not.toHaveBeenCalled()
+    })
+
     it('does not type into a socket that has not finished dialing', () => {
       const id = session('dialing')
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
@@ -621,13 +651,13 @@ describe('terminalRegistry', () => {
       expect(term.write).not.toHaveBeenCalled()
     })
 
-    it('forwards keystrokes and resizes only while the socket is open', () => {
+    it('forwards resizes only while the socket is open, and holds keys typed before it first opened', () => {
       const id = session('io')
       const term = new FakeTerm()
       ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
       const ws = WS_INSTANCES[0]
 
-      // Still CONNECTING: both listeners must drop the payload.
+      // Still CONNECTING: the resize is dropped, the keys wait for the open.
       term.dataCb?.('early')
       term.resizeCb?.({ cols: 10, rows: 5 })
       expect(ws.send).not.toHaveBeenCalled()
@@ -635,8 +665,24 @@ describe('terminalRegistry', () => {
       ws.simulateOpen()
       term.dataCb?.('ls -al')
       term.resizeCb?.({ cols: 100, rows: 30 })
-      expect(decode(ws, 0)).toBe('ls -al')
-      expect(JSON.parse(decode(ws, 1))).toEqual({ type: 'resize', cols: 100, rows: 30 })
+      expect(decode(ws, 0)).toBe('early')
+      expect(decode(ws, 1)).toBe('ls -al')
+      expect(JSON.parse(decode(ws, 2))).toEqual({ type: 'resize', cols: 100, rows: 30 })
+    })
+
+    it('drops what xterm sends during the key it is told to drop, and nothing after it', async () => {
+      const id = session('drop-key')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+
+      dropTerminalDataForThisKey(id)
+      term.dataCb?.('~') // sent from inside the same keydown
+      await Promise.resolve() // the key event is handled
+      term.dataCb?.('~') // sent later, from xterm's compositionend timer
+      expect(ws.send).toHaveBeenCalledOnce()
+      expect(decode(ws, 0)).toBe('~')
     })
 
     it('closes the socket from the error handler without reconnecting itself', () => {

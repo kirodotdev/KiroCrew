@@ -16,6 +16,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // Stub the heavy panels — we are testing the tab roster, not panel internals.
 vi.mock('../pages/settings/OverviewPanel', () => ({ OverviewPanel: () => <div data-testid="overview-panel" /> }))
+vi.mock('../pages/settings/MemoryPanel', () => ({ MemoryPanel: () => <div data-testid="memory-panel" /> }))
 vi.mock('../pages/settings/ChatPanel', () => ({ ChatPanel: () => <div data-testid="chat-panel" /> }))
 vi.mock('../pages/settings/DisplayPanel', () => ({ DisplayPanel: () => <div data-testid="display-panel" /> }))
 vi.mock('../pages/settings/BrowserPanel', () => ({ BrowserPanel: () => <div data-testid="browser-panel" /> }))
@@ -268,8 +269,13 @@ describe('SettingsPage tabs', () => {
     expect(await screen.findByTestId('slack-panel')).toBeInTheDocument()
   })
 
-  it('leaves the Overview memory drill-in when the rail picks Overview', () => {
+  it('sends an old bare ?view=memory link to Settings > Memory', () => {
     renderAt('/settings?view=memory&store=team&focus=lessons')
+    expect(screen.getByTestId('loc').textContent).toBe('/settings/memory?store=team&focus=lessons')
+  })
+
+  it('drops the memory store and focus when the rail picks Overview', () => {
+    renderAt('/settings/memory?store=team&focus=lessons')
     fireEvent.click(screen.getByRole('button', { name: 'Overview' }))
     expect(screen.getByTestId('loc').textContent).toBe('/settings')
   })

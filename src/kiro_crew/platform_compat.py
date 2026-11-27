@@ -426,6 +426,9 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         PID_ALIVE,
         PID_DEAD,
         PID_UNSIGNALABLE,
+        SUPERVISION_NOT_POSIX,
+        SUPERVISION_OWN_GROUP,
+        SUPERVISION_TERMINAL,
         is_thread_group_leader,
         live_thread_group_leaders,
         pgroup_of,
@@ -434,6 +437,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         pid_is_zombie,
         pid_liveness,
         process_thread_count,
+        supervision_shape_failure,
     )
     from kiro_crew.platform_compat_metrics import (  # noqa: F401
         _EXTERNAL_PAGE_COUNT_ELEMENTS,
@@ -481,6 +485,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _macos_available_mib,
         _macos_current_rss_bytes,
         _malloc_trim,
+        _memory_status,
         _peak_rss_from_status,
         _posix_peak_rss_bytes,
         _prev_win_sys_cpu,
@@ -511,6 +516,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         proc_rss_bytes_for_pid,
         proc_rss_tree_mb_for_pid,
         proc_subtree_sample,
+        system_commit,
         system_cpu_percent,
         system_memory,
         trim_heap_if_needed,

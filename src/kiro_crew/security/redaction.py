@@ -46,7 +46,7 @@ from kiro_crew.credential_patterns import (  # noqa: F401
     AWS_KEY_ID,
     TOKEN_PARAMETER,
 )
-from kiro_crew.default_ignorable import DEFAULT_IGNORABLE_RANGES
+from kiro_crew.default_ignorable import DEFAULT_IGNORABLE_RUN_RE as _IGNORABLE_RE
 from kiro_crew.security.redaction_switch import credential_pass_bypassed
 
 # ``kiro_crew.security`` imports this name from here.
@@ -543,24 +543,57 @@ def _credential_redaction_plan(
     from kiro_crew.security.redaction_structured import compat
 
     plan = compat.credential_plan(text, defer_token_param, token_param_prefixes)
-    if not isinstance(text, str) or text.isascii() or not _IGNORABLE_RE.search(text):
+    if not isinstance(text, str):
         return plan
-    view = _IGNORABLE_RE.sub("", text)
+    look = compat._LOOK_BEHIND.get()
+    context, armour_from = (look[0], look[2]) if look is not None and look[1] == text else ("", 0)
+    if (text.isascii() and context.isascii()) or not (
+        _IGNORABLE_RE.search(text) or _IGNORABLE_RE.search(context)
+    ):
+        return plan
+    view_context, view, view_armour_from = _ignorable_view(context, text, armour_from)
     if not view:
         return plan
-    view_plan = compat.credential_plan(view, defer_token_param, token_param_prefixes)
+    # The stream's window reads after its context as the raw plan does, so a key ID
+    # committed earlier still pairs with the secret in this window.
+    with compat.look_behind(view_context, view, view_armour_from):
+        view_plan = compat.credential_plan(view, defer_token_param, token_param_prefixes)
     if view_plan[2].get(0) == REDACTION_UNAVAILABLE_RECORD:
         return [(0, len(text), REDACTION_UNAVAILABLE_TAG)], view_plan[1], view_plan[2]
     return _with_view_plan(text, plan, view_plan)
 
 
-#: A run of Unicode ``Default_Ignorable_Code_Point`` characters (U+200B, U+00AD, U+FEFF,
-#: ...), drawn as nothing. One inside a credential stops every rule from matching while
-#: the text still reads as the credential, so the plan also reads the text with them
-#: removed (:func:`_with_view_plan`).
-_IGNORABLE_RE = re.compile(
-    "[" + "".join(f"{chr(lo)}-{chr(hi)}" for lo, hi in DEFAULT_IGNORABLE_RANGES) + "]+"
-)
+def _ignorable_view(context: str, text: str, armour_from: int) -> tuple[str, str, int]:
+    """``(context, text, armour_from)`` of a look-behind with every ignorable run removed.
+
+    ``armour_from`` (an offset in *text*, negative inside *context*) moves by the
+    characters removed before it, so the private-key scan resumes at the same place.
+    """
+    view_context = _IGNORABLE_RE.sub("", context)
+    if armour_from:
+        at = max(0, len(context) + armour_from)
+        armour_from = len(_IGNORABLE_RE.sub("", (context + text)[:at])) - len(view_context)
+    return view_context, _IGNORABLE_RE.sub("", text), armour_from
+
+
+def _view_to_text(text: str) -> Callable[[int], int]:
+    """Maps an offset in *text* without its ignorable runs back onto *text*.
+
+    An offset where a run was removed lands just after that run.
+    """
+    # A view offset at or past ``view_at[i]`` follows ignorable run i, with
+    # ``shift[i]`` characters removed before it.
+    view_at, shift, removed = [], [], 0
+    for run in _IGNORABLE_RE.finditer(text):
+        view_at.append(run.start() - removed)
+        removed += run.end() - run.start()
+        shift.append(removed)
+
+    def to_text(offset: int) -> int:
+        i = bisect.bisect_right(view_at, offset)
+        return offset + (shift[i - 1] if i else 0)
+
+    return to_text
 
 
 def _with_view_plan(
@@ -576,18 +609,7 @@ def _with_view_plan(
     a character can also join a credential to the text after it.
     """
     spans, warnings, rules = plan
-    # A view offset at or past ``view_at[i]`` follows ignorable run i, with
-    # ``shift[i]`` characters removed before it.
-    view_at, shift, removed = [], [], 0
-    for run in _IGNORABLE_RE.finditer(text):
-        view_at.append(run.start() - removed)
-        removed += run.end() - run.start()
-        shift.append(removed)
-
-    def to_text(offset: int) -> int:
-        i = bisect.bisect_right(view_at, offset)
-        return offset + (shift[i - 1] if i else 0)
-
+    to_text = _view_to_text(text)
     items: list[tuple[int, int, str, tuple[str, str] | None, str | None]]
     items = [(s, e, tag, rules.get(s), None) for s, e, tag in spans]
     for (s, e, tag), view_warning in zip(view_plan[0], view_plan[1]):
@@ -918,6 +940,9 @@ if TYPE_CHECKING:  # project names it serves from outside its owners, from their
     import kiro_crew.security.pem_scan as pem_scan  # noqa: F401
     from kiro_crew.credential_patterns import (  # noqa: F401
         JWT_MULTI_SEGMENT,
+    )
+    from kiro_crew.default_ignorable import (  # noqa: F401
+        DEFAULT_IGNORABLE_RUN_RE,
     )
     from kiro_crew.jwt_header import (  # noqa: F401
         is_jwt_header,

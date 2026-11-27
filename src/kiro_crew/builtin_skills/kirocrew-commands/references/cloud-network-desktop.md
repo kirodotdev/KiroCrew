@@ -66,4 +66,4 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | `kirocrew computer doctor --json` | Same as JSON |
 | `kirocrew computer apps` | List on-screen applications the accessibility layer can address |
 | `kirocrew computer call TOOL k=v …` | Run ONE computer-use tool through the same gated chokepoint the agent uses |
-| `kirocrew computer call --calls '[…]'` | Run a JSON array of calls in a SINGLE process, so `element_index` values stay resolvable |
+| `kirocrew computer call --calls '[…]'` | Run a JSON array of calls in a SINGLE process, so `element_index` values stay resolvable. On Windows, or from a PowerShell shell tool, write the array to a file and pass `--calls-file <that file>` instead |

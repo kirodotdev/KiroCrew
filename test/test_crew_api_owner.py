@@ -250,3 +250,42 @@ def test_the_bot_prune_gate_holds_the_owner_roster_like_its_twin():
 
     assert server_mod._crewmate_prune_gate_holds_path("/api/members")
     assert server_mod._crewmate_prune_gate_holds_path(BOTS)
+
+
+def _app_credential_request(state: Any, method: str, pattern: str):
+    """A request as token auth would mark one made with an app credential."""
+    app = web.Application()
+    app["state"] = state
+    path = pattern.replace("{", "").replace("}", "")
+    info = {name: name for name in pattern.replace("}", "{").split("{")[1::2]}
+    req = make_mocked_request(method, path, app=app, match_info=info)
+    # The marker carries a ``:``, which no installed app's name can hold.
+    req["app"] = "local-grant:grt_0123456789abcdef"
+    req["user"] = "app:grt_0123456789abcdef"
+    return req
+
+
+@pytest.mark.asyncio
+async def test_no_owner_route_answers_an_app_credential(tmp_path):
+    """Every route registered under the Owner prefix, read from the route table."""
+    routes = _owner_routes()
+    assert len(routes) >= 9
+    state = _owner_state(tmp_path)
+    sel = MagicMock()
+    with patch("kiro_crew.sel.sel", return_value=sel):
+        for (method, pattern), handler in sorted(routes.items()):
+            resp = await handler(_app_credential_request(state, method, pattern))
+            body = json.loads(resp.body)
+            assert resp.status == 403, (method, pattern)
+            _validator("#/components/schemas/Error").validate(body)
+            assert body["error"]["code"] == "owner_only", (method, pattern)
+            assert set(body) == {"error"}
+            if "x-crew-wraps" in CONTRACT["paths"][pattern][method.lower()]:
+                # A twin's handler serves teammates too; the route's gate is its refusal.
+                continue
+            # The handler's own check refuses as well, were the route's gate ever to pass.
+            inner = await handler.__wrapped__(_app_credential_request(state, method, pattern))
+            assert inner.status == 403, (method, pattern)
+            assert json.loads(inner.body)["code"] == "owner_only", (method, pattern)
+    outcomes = {call.kwargs["outcome"] for call in sel.log_api_access.call_args_list}
+    assert outcomes == {"denied"}

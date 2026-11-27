@@ -23,7 +23,7 @@ function hero(on: boolean) {
   )
 }
 
-const diagramName = /all chats use one copy/i
+const diagramName = /all chats use one\./i
 
 describe('first-share diagram', () => {
   beforeEach(() => {

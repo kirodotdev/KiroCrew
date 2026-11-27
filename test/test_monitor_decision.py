@@ -646,6 +646,23 @@ class TestTheStallStreak:
         last = _tick_at(state, DEFAULT_MONITOR_STALL_TICKS - 1)
         assert monitor_stall_reason(state, now=last) == MONITOR_STOP_VERDICT_STALL
 
+    @pytest.mark.parametrize("extra", ["open", "undelivered"])
+    def test_an_extra_still_waiting_holds_the_streak_at_zero(self, extra: str) -> None:
+        """An open extra, or one owing its wake, means the watch is still waiting."""
+        entry = {"state": "open" if extra == "open" else "merged", "at": 0.0}
+        state = _suppressed_red_state(
+            also_wake_on=["owner/repo#124"],
+            also_wake_state={"owner/repo#124": {**entry, "read_errors": 0, "wake_claimed": False}},
+        )
+        decisions = self._run(state, DEFAULT_MONITOR_STALL_TICKS + 2)
+
+        assert set(decisions) == {MonitorDecision.NO_CHANGE}
+        assert state.stall_streak == 0
+        # Once the last extra's wake is claimed the streak counts from zero again.
+        state.also_wake_state["owner/repo#124"].update(state="merged", wake_claimed=True)
+        decide_monitor(state, _suppressed_red(), now=_tick_at(state, 20))
+        assert state.stall_streak == 1
+
     def test_one_tick_short_of_the_count_keeps_watching(self) -> None:
         """The differential: without it the test above passes on a stop that
         fires at any count, including one."""

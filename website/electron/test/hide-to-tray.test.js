@@ -836,7 +836,7 @@ describe("window lifecycle tray-close wiring", () => {
     assert.match(helper[1], /showMainWindow\(\{ focus: true \}\)/);
     assert.match(
       WINDOW_LIFECYCLE_JS,
-      /\{ label: `Show \$\{app\.name\}`, click: showFromTray \}/,
+      /onShow: showFromTray,/,
     );
     assert.match(WINDOW_LIFECYCLE_JS, /tray\.on\("click", showFromTray\)/);
   });

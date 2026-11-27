@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import ErrorNotice from '../components/ErrorNotice'
@@ -19,7 +19,7 @@ import { i18nT } from '../i18n/t'
  * there the shell answers nothing rather than open a tab no one can see.
  * Returns the failure to show and its dismiss.
  */
-export function useRunInTerminalShellBridge(cwd: string | undefined, hasDock: boolean): { error: string; dismiss: () => void } {
+export function useRunInTerminalShellBridge(getCwd: () => string | undefined, hasDock: boolean): { error: string; dismiss: () => void } {
   const queryClient = useQueryClient()
   const [error, setError] = useState('')
   const showActionError = useCallback((message: string) => setError(message), [])
@@ -37,8 +37,15 @@ export function useRunInTerminalShellBridge(cwd: string | undefined, hasDock: bo
     window.addEventListener('mc:run-in-terminal-result', onResult)
     return () => window.removeEventListener('mc:run-in-terminal-result', onResult)
   }, [])
-  const cwdRef = useRef(cwd)
-  cwdRef.current = cwd
+  // The cwd is read when a run arrives (`getCwd`), so App does not have to
+  // re-render on every session switch to keep it current. The bridge only
+  // reads `.current`; a write is ignored.
+  const getCwdRef = useRef(getCwd)
+  getCwdRef.current = getCwd
+  const cwdRef = useMemo<MutableRefObject<string | undefined>>(() => ({
+    get current() { return getCwdRef.current() },
+    set current(_ignored) { /* read-only view of the store */ },
+  }), [])
   const refs = useRunInTerminalRefs()
   useRunInTerminalBridge({
     queryClient,

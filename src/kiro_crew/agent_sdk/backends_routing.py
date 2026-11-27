@@ -76,8 +76,8 @@ from kiro_crew.agent_sdk.backends import (
 #   ``user.always_allow`` tools run unasked in ``approve`` mode. The side session
 #   gets its own goose home (``GOOSE_PATH_ROOT``,
 #   ``acp.harness.goose.build_side_goose_root``): the user's config linked in except
-#   ``permission.yaml``, ``config.yaml`` copied without ``extensions``, no MCP
-#   server. Measured on goose 1.50.1: with ``permission.yaml`` allowing ``shell``,
+#   ``permission.yaml``, ``config.yaml`` copied with ``extensions`` replaced by
+#   ``summon`` and ``extensionmanager`` switched off, no MCP server. Measured on goose 1.50.1: with ``permission.yaml`` allowing ``shell``,
 #   ``tree``, ``analyze`` and ``read_image``, every tool called on the separate home
 #   asked and a rejected ``shell`` write left no file; on the user's home the same
 #   call ran unasked. A read is proved only from the (extension, tool) pairs
@@ -378,12 +378,25 @@ ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
 #: included. Its own allow-always would stop it asking, so the client answers it
 #: once only (``client_permissions.approve_tool``).
 #:
+#: goose is a member. Its seed is ``GOOSE_MODE=approve``, and every chat session
+#: runs on a goose home Crew builds for the spawn
+#: (``acp.harness.goose.build_session_goose_root``): no ``permission.yaml``, so no
+#: ``user.always_allow`` entry skips the request, and ``summon`` (``delegate``,
+#: whose sub-agent asks for nothing) and ``extensionmanager`` switched off.
+#: Measured on goose 1.50.1 on that home, with the user's ``permission.yaml``
+#: allowing ``shell`` and ``write``: every ``shell`` and ``write`` call sent
+#: ``session/request_permission``. A session restored from before still carries
+#: ``delegate``; its own request names the ``summon`` extension, which the client
+#: refuses as a server it never placed. goose's allow-always would stop it asking
+#: for the rest of the process, so the client answers it once only. Windows hosts
+#: refuse a goose chat session, since no such home is built there.
+#:
 #: kiro-cli is NOT a member and must never become one: it reads ``toolsSettings``
 #: off disk and enforces it itself, and Crew's narrower pattern subset would refuse
 #: commands kiro-cli allows. The other backends stay out until their seed is shown
 #: to make every shell and write call ask.
 ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS: FrozenSet[str] = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_OPENCODE}
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE}
 )
 
 #: Backends whose session never reads the agent spec's ``resources``, so Crew puts

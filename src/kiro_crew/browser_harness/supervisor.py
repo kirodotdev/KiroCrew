@@ -53,6 +53,7 @@ from kiro_crew import platform_compat
 from kiro_crew.browser_harness import HARNESS_VERSION, budgets, credentials, discover
 from kiro_crew.browser_harness import governance as browse_governance
 from kiro_crew.browser_harness import install, sign_in_guard
+from kiro_crew.browser_harness.earlier_chromium import held_profile_detail, prepare_profile
 from kiro_crew.browser_harness.env import daemon_env
 from kiro_crew.browser_harness.helper_table import HELPERS
 from kiro_crew.browser_harness.relay import (
@@ -205,6 +206,8 @@ _FIRST_SAFE_FD = 5
 
 #: The status detail while a Redownload replaces Kiro's Chromium.
 CHROMIUM_REPLACING_DETAIL = "Kiro's Chromium is being redownloaded; try again when it finishes"
+#: The status detail while an install job rebuilds the harness venv in place.
+HARNESS_REINSTALLING_DETAIL = "Browser Harness is being reinstalled; try again when it finishes"
 
 
 class HarnessNotInstalled(RuntimeError):
@@ -280,6 +283,10 @@ class HarnessSupervisor:
         #: a start that would launch it is refused instead of running from files the
         #: swap is about to move.
         self.replacing_chromium = False
+        #: Set while an install job installs the harness: ``python -m venv --clear``
+        #: empties the venv in place, so a start then would spawn a missing
+        #: interpreter. The job's owner sets it back to ``False`` when the job ends.
+        self.installing_harness = False
         #: The last start ran under ``auto`` and found the person's Chrome or Edge
         #: not accepting debugging connections, so it used Kiro's Chromium instead.
         #: Status reports that browser until a start finds the person's one usable.
@@ -494,6 +501,19 @@ class HarnessSupervisor:
             await self.stop()
             self._set(DISCONNECTED, CHROMIUM_REPLACING_DETAIL)
 
+    async def stop_for_harness_rebuild(self) -> None:
+        """Before the install clears the venv: refuse new starts, end the browser session.
+
+        Its daemon and worker run from the venv's interpreter; :meth:`stop` also
+        reclaims a daemon a previous gateway left. The caller sets
+        :attr:`installing_harness` back to ``False`` when the install ends.
+        """
+        self.installing_harness = True
+        await self.stop()
+        # A call still starting a worker from the venv stops it before letting go.
+        async with self._call_lock:
+            pass
+
     def stop_soon(self) -> asyncio.Task[None]:
         """Start :meth:`stop` once, or return the one already running.
 
@@ -563,8 +583,15 @@ class HarnessSupervisor:
         if relay is not None and handle.relay is not relay:
             raise BrowserRestarted("the browser restarted during the op; its context is gone")
         async with self._call_lock:
+            # A stop or restart retires the handle without this lock; its call ends here.
+            if self._handle is not handle:
+                raise BrowserRestarted("the browser stopped or restarted before the call ran")
             if not _alive(handle.worker):
-                handle.worker = await self._start_worker(handle)
+                worker = await self._start_worker(handle)
+                if self._handle is not handle:
+                    await _stop_unowned(worker)
+                    raise BrowserRestarted("the browser stopped or restarted as the call began")
+                handle.worker = worker
             assert handle.worker is not None
             request = {"id": next(self._request_ids), "helper": helper, "kwargs": kwargs}
             try:
@@ -631,6 +658,9 @@ class HarnessSupervisor:
         if await browse_governance.browse_denied_async(browse_governance.HOST_KEY):
             self._set(DISCONNECTED, browse_governance.DENIED_TEXT)
             raise browse_governance.BrowsingDenied()
+        if self.installing_harness:
+            self._set(DISCONNECTED, HARNESS_REINSTALLING_DETAIL)
+            raise HarnessNotInstalled(self._detail)
         # Disk reads and the discovery probes (stat, plist, which) run off the loop:
         # ``ensure()`` is awaited from HTTP handlers on the gateway's one loop.
         state = await asyncio.to_thread(install.install_state, self.home)
@@ -970,8 +1000,7 @@ class HarnessSupervisor:
                 )
             raise BrowserUnavailable("Kiro's Chromium is not downloaded: install it in Settings")
         profile = self.profile_dir
-        await asyncio.to_thread(platform_compat.make_owner_only_dir, profile)
-        await asyncio.to_thread(_clear_restored_session, profile)
+        await prepare_profile(profile)
         argv = [str(exe), *_CHROMIUM_ARGS, f"--user-data-dir={profile}"]
         if choice.headless:
             argv.append(_HEADLESS_ARG)
@@ -1037,8 +1066,7 @@ class HarnessSupervisor:
         self, argv: list[str], profile: Path
     ) -> tuple[asyncio.subprocess.Process, str]:
         """Windows: a free debugging port, read back from ``DevToolsActivePort``."""
-        port_file = profile / DEVTOOLS_PORT_FILE
-        await asyncio.to_thread(port_file.unlink, missing_ok=True)
+        await asyncio.to_thread((profile / DEVTOOLS_PORT_FILE).unlink, missing_ok=True)
         proc = await self._spawn([*argv, _CHROMIUM_PORT_ARG], env=dict(self._env()), pipes=False)
         try:
             deadline = time.monotonic() + CHROMIUM_START_TIMEOUT_SECS
@@ -1047,7 +1075,8 @@ class HarnessSupervisor:
                 if url is not None:
                     return proc, url
                 if proc.returncode is not None:
-                    raise BrowserUnavailable(self._chromium_exit_detail(proc.returncode))
+                    detail = self._chromium_exit_detail(proc.returncode)
+                    raise BrowserUnavailable(await held_profile_detail(profile, detail))
                 await asyncio.sleep(_POLL_SECS)
             raise BrowserUnavailable("Kiro's Chromium did not open its debugging port")
         except BaseException:
@@ -1094,7 +1123,7 @@ class HarnessSupervisor:
         # ``PYTHONPATH`` off ``sys.path``, so ``-m browser_harness.daemon`` resolves to
         # the package in the venv (installed from the lock or copied from the runtime),
         # never to a ``browser_harness/`` directory in the gateway's working directory.
-        proc = await self._spawn(
+        proc = await self._spawn_venv_python(
             [str(python), "-I", "-m", "browser_harness.daemon"], env=env, pipes=False
         )
         try:
@@ -1141,7 +1170,9 @@ class HarnessSupervisor:
             raise HarnessNotInstalled("Browser Harness is not installed")
         env = await asyncio.to_thread(self._daemon_env, handle.relay.url)
         worker_py = Path(__file__).with_name("helper_worker.py")
-        proc = await self._spawn([str(state.python), "-I", str(worker_py)], env=env, pipes=True)
+        proc = await self._spawn_venv_python(
+            [str(state.python), "-I", str(worker_py)], env=env, pipes=True
+        )
         try:
             reply = await _worker_request(proc, {"id": 0, "ping": True}, WORKER_START_TIMEOUT_SECS)
             if not reply.get("ok"):
@@ -1188,6 +1219,16 @@ class HarnessSupervisor:
             kwargs["start_new_session"] = True
         return await asyncio.create_subprocess_exec(*argv, **kwargs)
 
+    async def _spawn_venv_python(
+        self, argv: list[str], *, env: dict[str, str], pipes: bool
+    ) -> asyncio.subprocess.Process:
+        """:meth:`_spawn` of the venv's interpreter, which a reinstall can empty in place
+        between the install read and the spawn: that reads as the reinstall it is."""
+        try:
+            return await self._spawn(argv, env=env, pipes=pipes)
+        except FileNotFoundError as exc:
+            raise HarnessNotInstalled(HARNESS_REINSTALLING_DETAIL) from exc
+
     # ── Harness IPC (the daemon's own protocol, client side) ──
 
     async def _ipc_ping(self) -> bool:
@@ -1198,14 +1239,23 @@ class HarnessSupervisor:
         await self._ipc_request({"meta": "shutdown"})
 
     async def _shutdown_stray_daemon(self) -> None:
-        """A daemon from a previous gateway life would make ours exit as 'already running'."""
+        """A daemon from a previous gateway life would make ours exit as 'already running'.
+
+        Waits for its process, by the pid its ping reply carries, not only for its
+        socket: once it stops answering it still runs its shutdown cleanup from the
+        venv's interpreter, and a venv rebuild must not clear the venv under that.
+        """
         runtime = self._runtime_dir_or_none()
         if runtime is None:
             return
-        if await self._ipc_ping():
+        reply = await self._ipc_request({"meta": "ping"})
+        if isinstance(reply, dict) and reply.get("pong") is True:
+            pid = reply.get("pid")
             await self._ipc_shutdown()
             deadline = time.monotonic() + _STOP_GRACE_SECS
-            while time.monotonic() < deadline and await self._ipc_ping():
+            while time.monotonic() < deadline and (
+                await self._ipc_ping() or (isinstance(pid, int) and platform_compat.pid_exists(pid))
+            ):
                 await asyncio.sleep(_POLL_SECS)
         for name in (_SOCK_FILE, _PORT_FILE):
             try:

@@ -211,7 +211,10 @@ def test_bundle_cli_writes_one_gzip_file_select_reads(
     assert before <= datetime.fromisoformat(doc.pop("built_at")) <= datetime.now(timezone.utc)
     assert "built_at" not in ctm.bundle(MAP, repo, timeout=FALLBACK_TIMEOUT_SECS)[0]
     # The map as it was, with the two tables beside it.
-    assert {k: v for k, v in doc.items() if k not in ctm.BUNDLE_TABLES} == MAP
+    built = (*ctm.BUNDLE_TABLES, ctm.UNRECORDED)
+    assert {k: v for k, v in doc.items() if k not in built} == MAP
+    # The tracked test files the map has no entry for.
+    assert doc[ctm.UNRECORDED] == [t for t in ctm.tracked_test_files(repo) if t not in MAP["tests"]]
     assert doc["guard"] == TIER
     assert doc["cochange"]["src/kiro_crew/a.py"] == ["test/test_a.py"]
     assert doc["os_sensitive"] == {"src/kiro_crew/lock.py": "W2"}
@@ -261,7 +264,10 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
         # Every table is in the file with rows, or named as left out: never both, never empty.
         assert {t for t in ctm.BUNDLE_TABLES if t in doc} == set(ctm.BUNDLE_TABLES) - set(absent)
         assert all(doc[t] for t in ctm.BUNDLE_TABLES if t in doc)
-        assert {k: v for k, v in doc.items() if k not in ctm.BUNDLE_TABLES} == MAP
+        # The repository tracks test files the map has no entry for, so that table is built.
+        assert doc[ctm.UNRECORDED] and ctm.UNRECORDED not in absent
+        built = (*ctm.BUNDLE_TABLES, ctm.UNRECORDED)
+        assert {k: v for k, v in doc.items() if k not in built} == MAP
     # A table the map already carries is rebuilt or left out, never carried over.
     stale = {**MAP, "cochange": {"src/kiro_crew/a.py": ["test/test_stale.py"]}, "guard": ["x"]}
     monkeypatch.setattr(ctm, "guard_tier", scan_fails)
@@ -269,7 +275,7 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
     assert sorted(absent) == ["cochange", "guard"] and not {"cochange", "guard"} & set(doc)
     # The same in a tree where no table can be built: the map alone is left.
     doc, absent = ctm.bundle(stale, tmp_path / "no-tree", timeout=FALLBACK_TIMEOUT_SECS)
-    assert doc == MAP and sorted(absent) == sorted(ctm.BUNDLE_TABLES)
+    assert doc == MAP and sorted(absent) == sorted((*ctm.BUNDLE_TABLES, ctm.UNRECORDED))
     # The CLI names each table it left out, and still writes the map.
     map_path = tmp_path / "map.json"
     map_path.write_text(json.dumps(MAP), encoding="utf-8")
@@ -281,7 +287,7 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
     assert "bundle: tables os_sensitive, windows_targeting," in printed
     assert all(f"::warning::{table} left out" in printed for table in ("cochange", "guard"))
     left = {k: v for k, v in ctm.load_map(out).items() if k not in ctm.BUNDLE_TABLES}
-    assert {k: v for k, v in left.items() if k != "built_at"} == MAP
+    assert {k: v for k, v in left.items() if k not in ("built_at", ctm.UNRECORDED)} == MAP
 
 
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:

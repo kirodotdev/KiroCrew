@@ -492,9 +492,13 @@ def _supply_live_enum(entry: dict) -> None:
 
 async def api_config_schema(request: web.Request) -> web.Response:
     """GET /api/config/schema — return config schema entries."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
     from kiro_crew.dashboard.handlers.config_all_settings import attach_descriptor
     from kiro_crew.edition_locks import LOCKED_BY_POLICY, config_path_locked
 
+    denied = await require_owner_for_dashboard_caller(request, "config.schema")
+    if denied is not None:
+        return denied
     entries = SCHEMA_REGISTRY
 
     # Filter by tags (comma-separated, intersection)
@@ -874,15 +878,12 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
                     "description": "Configured default",
                 },
             )
-    # Enrich every row with a context_window via the central authority so the CC
-    # dropdown carries the same field the kiro branch does (the frontend picker
-    # + tooltip read it uniformly). None -> reference (never a silent 200k).
+    # A row carries only the window a source backs: the dashboard learns a row's
+    # window as the model's real one, so the 1M budget reference would read as fact.
     for entry in merged:
-        if "context_window" not in entry:
-            name = entry.get("model_name", "")
-            entry["context_window"] = (
-                model_registry.model_window(name) or model_registry.REFERENCE_WINDOW_TOKENS
-            )
+        window = model_registry.model_window(entry.get("model_name", ""))
+        if window and "context_window" not in entry:
+            entry["context_window"] = window
     return merged
 
 
@@ -926,11 +927,10 @@ def _advertised_backend_models(
         rows.insert(
             1, {"model_name": default, "display_name": default, "description": "Configured default"}
         )
-    for entry in rows:
-        entry["context_window"] = (
-            model_registry.model_window(entry["model_name"])
-            or model_registry.REFERENCE_WINDOW_TOKENS
-        )
+    for entry in rows:  # only a source's window, as in ``_cc_models``
+        window = model_registry.model_window(entry["model_name"])
+        if window:
+            entry["context_window"] = window
     return rows
 
 
@@ -1152,6 +1152,10 @@ async def _fetch_kiro_catalog() -> list[dict]:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=_LIST_MODELS_BACKGROUND_TIMEOUT_SECS
             )
+        except asyncio.CancelledError:
+            # A gateway shutdown must not leave the call running with no owner.
+            await kill_and_reap(proc)
+            raise
         except asyncio.TimeoutError:
             # The whole group, while the supervisor still leads it: killing
             # only the leader would leave the command and its helpers running.

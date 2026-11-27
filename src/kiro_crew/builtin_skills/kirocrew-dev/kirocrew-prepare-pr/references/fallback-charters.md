@@ -3,7 +3,7 @@
 Use these ONLY when `local_review.py` exits 40 (a parity failure: a reviewer
 workflow no longer has the shape the extractor reads). They are hand-written
 paraphrases of CI's contracts and may have drifted; the extracted brief is the
-default. Say so with the WARNING line from SKILL.md's Phase 2, and fix the
+default. Say so with the WARNING line from `references/local-review.md`, and fix the
 extractor. Not when the failure says the running copy is not the base commit's
 copy: run the base copy it names instead.
 

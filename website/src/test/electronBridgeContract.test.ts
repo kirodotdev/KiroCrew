@@ -26,7 +26,7 @@ const dashboardBridges = [
 
 const bridgeContracts = {
   kirocrew: { name: 'KiroCrewBridge', methods: ['getPathForFile', 'windowControl'] },
-  electronAPI: { name: 'ElectronAPI', methods: ['onStatus', 'getAppMenuItems', 'setBadgeCount', 'getGlobalHotkey'] },
+  electronAPI: { name: 'ElectronAPI', methods: ['onStatus', 'getAppMenuItems', 'setBadgeCount', 'getGlobalHotkey', 'setGlobalHotkey'] },
   localGatewayAPI: { name: 'LocalGatewayAPI', methods: ['get', 'set'] },
   closeActionAPI: { name: 'CloseActionAPI', methods: ['get', 'set'] },
   trayIconAPI: { name: 'TrayIconAPI', methods: ['get', 'set'] },

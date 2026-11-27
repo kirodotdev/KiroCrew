@@ -51,25 +51,57 @@ from pathlib import Path
 # the packaging/signing inputs, the skills tree or a TS/TSX filename is enough
 # to keep the file in the must-run set. Over-matching only costs CI time.
 # ---------------------------------------------------------------------------
-_BACKEND_FOREIGN = re.compile(
-    r"""
-      website              # the frontend tree, in any quoting/joining style
-    | electron
-    | packaging            # build-desktop.sh, signing entitlements, ...
-    | node_modules
-    | \bskills\b           # repo-root skills/ tree (read by some guards)
-    | \bdocker\b
-    | \.tsx?\b             # a TypeScript filename appearing in an assertion
-    | \.mjs\b
-    | \.plist\b
-    | tsconfig\.json       # the frontend's config file, referenced by bare name
-    | entitlements
-    | \bnpm\b
-    | vitest
-    | playwright
-    """,
-    re.IGNORECASE | re.VERBOSE,
+# One alternative a row: the lower-case literal every match of it starts with,
+# then its pattern. The literal is what lets `_mentions_backend_foreign` find
+# the few places a match can start instead of trying every one.
+_BACKEND_FOREIGN_PARTS = (
+    ("website", r"website"),  # the frontend tree, in any quoting/joining style
+    ("electron", r"electron"),
+    ("packaging", r"packaging"),  # build-desktop.sh, signing entitlements, ...
+    ("node_modules", r"node_modules"),
+    ("skills", r"\bskills\b"),  # repo-root skills/ tree (read by some guards)
+    ("docker", r"\bdocker\b"),
+    (".ts", r"\.tsx?\b"),  # a TypeScript filename appearing in an assertion
+    (".mjs", r"\.mjs\b"),
+    (".plist", r"\.plist\b"),
+    ("tsconfig.json", r"tsconfig\.json"),  # the frontend's config file, by bare name
+    ("entitlements", r"entitlements"),
+    ("npm", r"\bnpm\b"),
+    ("vitest", r"vitest"),
+    ("playwright", r"playwright"),
 )
+_BACKEND_FOREIGN = re.compile(
+    "|".join(f"(?:{pattern})" for _literal, pattern in _BACKEND_FOREIGN_PARTS), re.IGNORECASE
+)
+_BACKEND_FOREIGN_STARTS = tuple(
+    (literal, re.compile(pattern, re.IGNORECASE)) for literal, pattern in _BACKEND_FOREIGN_PARTS
+)
+# The characters outside ASCII that `re.IGNORECASE` matches with an ASCII
+# letter (dotted and dotless i, long s, the Kelvin sign). `str.lower` does not
+# turn each into that letter in place, so a text holding one is searched whole.
+_FOLDS_TO_ASCII = "\u0130\u0131\u017f\u212a"
+
+
+def _mentions_backend_foreign(text: str) -> bool:
+    """`bool(_BACKEND_FOREIGN.search(text))`, found at the places a match can start.
+
+    Every alternative starts with its literal, whatever the case, so a match
+    starts where the lower-cased text holds one. Searching for the literals and
+    trying only the alternative there gives the same answer as trying every
+    alternative at every character, which is what makes the pattern slow on a
+    file with no match.
+    """
+    lowered = text.lower()
+    if len(lowered) != len(text) or any(char in text for char in _FOLDS_TO_ASCII):
+        return bool(_BACKEND_FOREIGN.search(text))
+    for literal, pattern in _BACKEND_FOREIGN_STARTS:
+        at = lowered.find(literal)
+        while at != -1:
+            if pattern.match(text, at):
+                return True
+            at = lowered.find(literal, at + 1)
+    return False
+
 
 # ---------------------------------------------------------------------------
 # What counts as "the other surface" for a FRONTEND (vitest / electron) file.
@@ -166,6 +198,8 @@ def _is_cross_surface(path: Path, pattern: re.Pattern[str]) -> bool:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return True
+    if pattern is _BACKEND_FOREIGN:
+        return _mentions_backend_foreign(text)
     return bool(pattern.search(text))
 
 

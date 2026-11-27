@@ -209,6 +209,7 @@ class DiscordRenderer(Renderer):
         react_message_id: str = "",
         reactions_enabled: bool = True,
         show_thinking: bool = False,
+        show_timing_footer: bool = True,
         now: Callable[[], float] | None = None,
     ) -> None:
         super().__init__(capabilities)
@@ -229,6 +230,9 @@ class DiscordRenderer(Renderer):
         # When discord.show_thinking is on, reasoning is surfaced as its own
         # subtext note. Off (the default) it is never accumulated at all.
         self._show_thinking = show_thinking
+        # discord.show_timing_footer: off, the "-# Finished in …" line is left
+        # off the final message and nothing else about the reply changes.
+        self._show_timing_footer = show_timing_footer
         self._thinking = ""
         self._thinking_posted = False
         # Read at turn end for the footer's context chip; unbound until the

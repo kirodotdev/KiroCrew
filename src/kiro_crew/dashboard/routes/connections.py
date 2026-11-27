@@ -120,6 +120,7 @@ def register(app: web.Application) -> None:
         "/api/instances/search-sessions", handlers_instances.api_instances_search_sessions
     )
     app.router.add_get("/api/instances/versions", handlers_instances.api_instances_versions)
+    app.router.add_get("/api/instances/bots", handlers_instances.api_instances_bots)
     app.router.add_post("/api/instances", handlers_instances.api_instances_add)
     app.router.add_patch("/api/instances/{id}", handlers_instances.api_instances_update)
     app.router.add_delete("/api/instances/{id}", handlers_instances.api_instances_remove)

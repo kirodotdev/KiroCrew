@@ -260,6 +260,106 @@ def test_a_non_pinned_utf8_value_still_reaches_the_vetting(
     assert STUB_SESSION_TOKEN_ENV not in env
 
 
+def _refuse_launcher_injection_env(judged: list[dict[str, str]]) -> Any:
+    """A stand-in for the fence's env rule: any non-empty ``LD_*`` / ``DYLD_*`` /
+    ``PYTHON*`` key in the judged env refuses the token."""
+
+    def _vet(_name: str, _command: str, _args: Any, *, env: Any = None, **_kw: Any) -> bool:
+        judged.append(dict(env))
+        return not any(
+            value and key.upper().startswith(("LD_", "DYLD_", "PYTHON"))
+            for key, value in env.items()
+        )
+
+    return _vet
+
+
+def _kirocrew_core_fallback_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    judged: list[dict[str, str]],
+    inherited: dict[str, str],
+    declared: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Run a kirocrew-core fallback whose stub inherited only *inherited* among the
+    ``LD_*`` / ``DYLD_*`` / ``PYTHON*`` keys (the test runner's own are removed)."""
+    for key in list(os.environ):
+        if key.upper().startswith(("LD_", "DYLD_", "PYTHON")):
+            monkeypatch.delenv(key)
+    for key, value in inherited.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, TOKEN_A)
+    monkeypatch.setattr(gw, "_spawns_own_control_plane", _refuse_launcher_injection_env(judged))
+    monkeypatch.setattr(gw, "_user_site_holds_our_package", lambda: False)
+    args = _fallback_args(tmp_path, "kirocrew-core", "/opt/kc/bin/kirocrew", ["mcp-core"])
+    if declared is not None:
+        env_file = tmp_path / "declared-env.json"
+        env_file.write_text(json.dumps(declared), encoding="utf-8")
+        args.env_file = str(env_file)
+    return _capture_fallback_env(monkeypatch, args)
+
+
+def test_an_inherited_pythonunbuffered_does_not_cost_a_control_plane_its_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A service manager exports ``PYTHONUNBUFFERED=1`` to the whole runtime, so
+    every stub inherits it. A control plane that keeps the token runs without it,
+    as the pooled resolver starts one, and the vetting judges that same env."""
+    judged: list[dict[str, str]] = []
+    env = _kirocrew_core_fallback_env(
+        monkeypatch, tmp_path, judged, {"PYTHONUNBUFFERED": "1", "SOME_OTHER_VAR": "x"}
+    )
+
+    assert env.get(STUB_SESSION_TOKEN_ENV) == TOKEN_A
+    [verdict_env] = judged
+    assert "PYTHONUNBUFFERED" not in verdict_env
+    assert "PYTHONUNBUFFERED" not in env
+    assert verdict_env["SOME_OTHER_VAR"] == env["SOME_OTHER_VAR"] == "x"
+
+
+def test_an_inherited_loader_or_import_root_key_still_costs_the_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only that one inert key is left out. A loader variable or a relocated import
+    root is an overlay the fence must see, and a target that loses the token keeps
+    every inherited key: it may be what lets the server start or import itself."""
+    judged: list[dict[str, str]] = []
+    userbase = str(tmp_path / "userbase")
+    env = _kirocrew_core_fallback_env(
+        monkeypatch,
+        tmp_path,
+        judged,
+        {
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONUSERBASE": userbase,
+            "LD_LIBRARY_PATH": "/opt/python/lib",
+        },
+    )
+
+    assert STUB_SESSION_TOKEN_ENV not in env
+    assert judged[0]["PYTHONUSERBASE"] == userbase
+    assert judged[0]["LD_LIBRARY_PATH"] == "/opt/python/lib"
+    assert env["PYTHONUSERBASE"] == userbase
+    assert env["LD_LIBRARY_PATH"] == "/opt/python/lib"
+    assert env["PYTHONUNBUFFERED"] == "1"
+
+
+def test_a_declared_pythonunbuffered_still_trips_the_fence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A ``PYTHONUNBUFFERED`` the server's own config declares is an overlay on the
+    control plane's interpreter and reaches the fence, even when the runtime
+    exports the same value."""
+    judged: list[dict[str, str]] = []
+    env = _kirocrew_core_fallback_env(
+        monkeypatch, tmp_path, judged, {"PYTHONUNBUFFERED": "1"}, {"PYTHONUNBUFFERED": "1"}
+    )
+
+    assert judged[0]["PYTHONUNBUFFERED"] == "1"
+    assert STUB_SESSION_TOKEN_ENV not in env
+    assert env["PYTHONUNBUFFERED"] == "1"
+
+
 def test_a_reserved_name_on_a_foreign_binary_does_not_get_the_token(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

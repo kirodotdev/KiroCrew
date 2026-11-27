@@ -60,6 +60,13 @@ from kiro_crew.validation import (
     MAX_SHORT_STRING,
 )
 
+# CHANNEL_ID_RE in plain words, for a refusal a person reads.
+_CHANNEL_ID_HINT = (
+    "a Slack channel ID starts with C, D, G or W followed by capital letters or "
+    "digits, like C0123ABC; in Slack, open the channel's details and copy the "
+    "Channel ID at the bottom"
+)
+
 
 def _format_schedule(schedule: object, *, tz_name: str = "") -> str:
     """Human-readable schedule description (CLI shows full date for 'at' jobs)."""
@@ -385,8 +392,8 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             _cron_add_fail("--at is outside the supported timestamp range")
 
     # ── Fields validated up front so an invalid value never strands a job ──
-    if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
-        _cron_add_fail(f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})")
+    if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel)):
+        _cron_add_fail(f"invalid channel ID format: {_CHANNEL_ID_HINT}")
     try:
         model = _cron_model(model)
     except ValueError as e:
@@ -865,9 +872,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                         kwargs[field] = ""
                         kwargs["thread_ts"] = ""
                         continue
-                    if len(val) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(val):
+                    if len(val) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(val):
                         print(
-                            f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})",
+                            f"Error: invalid channel ID format: {_CHANNEL_ID_HINT}",
                             file=sys.stderr,
                         )
                         sys.exit(1)

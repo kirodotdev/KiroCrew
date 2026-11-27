@@ -59,7 +59,7 @@ def installs(monkeypatch) -> list[tuple[str, ...]]:
     """Every install the job runs, by components; the fake succeeds at once."""
     seen: list[tuple[str, ...]] = []
 
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         seen.append(components)
         return harness_install.install_state(home)
 
@@ -133,7 +133,7 @@ async def test_the_fallback_gets_chromium_too_and_a_headless_one_is_warmed(
         tmp_path, kind="kiro_chromium", headless=True, installed=False, chromium=False
     )
 
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         installs.append(components)
         sup.installed, sup.chromium_present = True, True
         return harness_install.install_state(home)
@@ -180,7 +180,7 @@ async def test_a_failure_is_one_attempt_and_stays_on_the_job(tmp_path, monkeypat
     _current(monkeypatch, False)
     calls: list[tuple[str, ...]] = []
 
-    async def failing_install(home, progress, *, components, refresh=False):
+    async def failing_install(home, progress, *, components, refresh=False, before_clear=None):
         calls.append(components)
         raise harness_install.InstallError(harness_install.STAGE_INSTALLING_HARNESS, "offline")
 
@@ -233,7 +233,7 @@ async def test_startup_leaves_a_job_started_during_discovery_alone(
             await await_until(resume_discovery, what="startup discovery released")
         return await to_thread(func, *args, **kwargs)
 
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         runs.append(components)
         if len(runs) == 1:
             installing.set()
@@ -289,7 +289,7 @@ async def test_settings_sees_the_auto_job_running_and_refuses_a_second(
 
     entered = asyncio.Event()
 
-    async def slow_install(home, progress, *, components, refresh=False):
+    async def slow_install(home, progress, *, components, refresh=False, before_clear=None):
         entered.set()
         await release.wait()
         return harness_install.install_state(home)
@@ -456,7 +456,7 @@ async def test_two_repairs_at_once_start_one_job_and_keep_its_failure(
     _current(monkeypatch, False)
     runs: list[tuple[str, ...]] = []
 
-    async def failing_install(home, progress, *, components, refresh=False):
+    async def failing_install(home, progress, *, components, refresh=False, before_clear=None):
         runs.append(components)
         raise harness_install.InstallError("preparing", "boom")
 

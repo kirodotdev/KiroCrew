@@ -19,8 +19,9 @@ nothing here touches the sandbox or the governance strip. The tool gate's
 own-server grant follows such a record through ``builtin_adoption_gate``, which
 asks :func:`carried_server` of the installed entry again at every boot.
 
-The ceiling is the wheel built-in's own declaration, never more: no server name
-it did not declare, no ``autoApprove`` tool it did not auto-approve, no ``env``
+The ceiling is the wheel built-in's own declaration, never more (once a release
+deleted the wheel copy, the declaration its pin row froze from that copy, which is the
+same data): no server name it did not declare, no ``autoApprove`` tool it did not auto-approve, no ``env``
 entry it did not set with the same value (a value is as much a launch input as a
 key: ``PYTHONPATH`` or ``PYTHONSTARTUP`` would point the server at code outside the
 tree), a server it shipped disabled stays disabled, and no other field. Narrowing is allowed, since it only removes reach. Nothing here names an
@@ -103,18 +104,25 @@ def carried_server(name: str, cfg: Any, tree_root: Path, shipped_servers: Any) -
 
 
 def adopted_mcp_servers_refusal(
-    manifest: Any, tree_root: Path, shipped_manifest: Any
+    manifest: Any, tree_root: Path, shipped_manifest: Any, *, frozen_servers: Any = None
 ) -> str | None:
     """``pinned_feature_unsupported`` unless every server in *manifest* may be carried.
 
     *manifest* is the pinned tree's parsed manifest at *tree_root*, and
-    *shipped_manifest* the wheel built-in's. A tree that declares no server passes;
-    with no wheel manifest to compare against, any server is refused.
+    *shipped_manifest* the wheel built-in's. With no wheel manifest, *frozen_servers*
+    is the ceiling: the ``mcpServers`` the pin row froze from the deleted copy
+    (``builtin_adoption_baseline.no_copy_limit_input``), never read beside a wheel
+    manifest. A tree that declares no server passes; with neither to compare against,
+    any server is refused.
     """
     servers = getattr(manifest, "mcpServers", None) or {}
     if not servers:
         return None
-    shipped = getattr(shipped_manifest, "mcpServers", None)
+    shipped = (
+        getattr(shipped_manifest, "mcpServers", None)
+        if shipped_manifest is not None
+        else frozen_servers
+    )
     if not isinstance(servers, dict) or not isinstance(shipped, dict):
         return "pinned_feature_unsupported"
     for name, cfg in servers.items():

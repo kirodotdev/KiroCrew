@@ -8,11 +8,10 @@
  *
  * Only the capture DEVICE is substituted. `navigator.mediaDevices.getUserMedia`
  * is replaced with one that returns a MediaStream synthesized by Web Audio,
- * shaped like speech (syllable bursts, phrase-level amplitude drift, a sweeping
- * carrier so the spectral centroid moves, and real pauses between sentences).
- * Everything downstream is the unmodified production path: the same
- * `useVoiceInput` → `createLevelMeter` → `AnalyserNode` → 50ms-attack /
- * 250ms-release envelope → WebGL2 shader chain that runs with a live mic.
+ * shaped like speech (syllable bursts, phrase-level amplitude drift, and real
+ * pauses between sentences). Everything downstream is the unmodified production
+ * path: the same `useVoiceInput` → `createLevelMeter` → `AnalyserNode` →
+ * 50ms-attack / 250ms-release envelope → scrolling level bars.
  *
  * The substitution is necessary, not a shortcut: headless Chromium has no audio
  * input device, so real `getUserMedia({audio:true})` rejects with
@@ -20,7 +19,7 @@
  * MediaStream keeps the harness headless and CI-runnable.
  *
  * Records video because the change is animated — a still frame cannot show the
- * strands tracking input level, which is the whole point of the surface.
+ * bars tracking input level, which is the whole point of the surface.
  *
  * Usage: node scripts/capture-dictation-panel.mjs [outDir]
  */
@@ -64,7 +63,7 @@ function installSyntheticMic() {
   const ctx = new AC()
   const dest = ctx.createMediaStreamDestination()
 
-  // Carrier + harmonics, so the spectral centroid has something to move over.
+  // Carrier + harmonics keep the synthetic speech from becoming a flat tone.
   const gain = ctx.createGain()
   gain.gain.value = 0
   for (const [mult, level] of [[1, 0.6], [2, 0.25], [3.5, 0.15]]) {
@@ -88,8 +87,8 @@ function installSyntheticMic() {
   gain.connect(dest)
 
   // Syllable envelope, scheduled ahead in 6s blocks: ~2.6Hz bursts for 5s of
-  // "sentence", then a 2s pause. A constant tone would pin the shader to a flat
-  // line and prove nothing about the envelope.
+  // "sentence", then a 2s pause. A constant tone would pin the waveform to a
+  // flat line and prove nothing about the envelope.
   const SENTENCE = 5, PAUSE = 2
   let at = ctx.currentTime + 0.1
   const schedule = () => {
@@ -131,9 +130,7 @@ function installSyntheticMic() {
 
 const { srv, base } = await serveDist()
 
-const browser = await chromium.launch({
-  args: ['--use-gl=angle', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
-})
+const browser = await chromium.launch()
 
 const context = await browser.newContext({
   viewport: { width: 1280, height: 820 },

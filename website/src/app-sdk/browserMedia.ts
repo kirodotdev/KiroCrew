@@ -11,6 +11,10 @@
  * through the scoped client, so the app's `permissions.api` must declare
  * `/api/browser/media` (`BROWSER_MEDIA_PATH`).
  *
+ * `runRecipe(name)` (level 15) runs one of the app's approved
+ * `permissions.browserRecipes` on the same tab: fixed clicks on selectors, no model.
+ * Its answer says which step failed, so the page can ask its agent instead.
+ *
  * The hook draws nothing: the app lays out its own buttons and reads `media`.
  */
 import { useCallback, useContext, useEffect, useRef, useState } from 'react'
@@ -51,6 +55,15 @@ export interface BrowserMedia {
   setVolume(volume: number): Promise<void>
   /** Read the state again without changing it. */
   refresh(): Promise<void>
+  /** Run the approved browser recipe *name* on the tab (level 15). */
+  runRecipe(name: string): Promise<BrowserRecipeResult>
+}
+
+/** What a recipe run answered: `ok`, or the refusal `code` and the failed `step` (from 0). */
+export interface BrowserRecipeResult {
+  readonly ok: boolean
+  readonly code?: string
+  readonly step?: number
 }
 
 type Action = 'state' | 'play' | 'pause' | 'seek' | 'volume'
@@ -156,6 +169,26 @@ export function useBrowserMedia(
     }
   }, [api, sessionKey])
 
+  const runRecipe = useCallback(async (name: string): Promise<BrowserRecipeResult> => {
+    if (!api) return { ok: false, code: 'not_declared' }
+    try {
+      const answer = await api.post<{ ok?: boolean; code?: string; step?: unknown }>(
+        BROWSER_MEDIA_PATH, { session_key: sessionKey, action: 'recipe', recipe: name },
+      )
+      if (answer?.ok) return { ok: true }
+      return { ok: false, code: answer?.code || 'browser_error', ...(typeof answer?.step === 'number' ? { step: answer.step } : {}) }
+    } catch (err) {
+      if (err instanceof AppApiPermissionError) return { ok: false, code: 'not_declared' }
+      let code = 'browser_error'
+      try {
+        code = JSON.parse((err as { body?: string })?.body || '{}').code || code
+      } catch {
+        // A body that is not JSON keeps the generic code.
+      }
+      return { ok: false, code }
+    }
+  }, [api, sessionKey])
+
   const pollMs = pollInterval(options.pollMs)
   useEffect(() => {
     setMedia(null)
@@ -187,5 +220,6 @@ export function useBrowserMedia(
     seek: useCallback((seconds: number) => send('seek', seconds), [send]),
     setVolume: useCallback((volume: number) => send('volume', volume), [send]),
     refresh: useCallback(() => send('state'), [send]),
+    runRecipe,
   }
 }

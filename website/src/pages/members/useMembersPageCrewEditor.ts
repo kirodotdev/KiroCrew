@@ -9,11 +9,12 @@
  * a component's effects in registration order, so moving one is a behaviour
  * change even when every test of the moved code still passes.
  */
-import { useCallback, useMemo, useRef, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { type SetURLSearchParams } from 'react-router-dom'
 import { api } from '../../api/client'
 import { type KiroCrewAgent } from '../../components/AgentSelector'
 import { useCrewEditor } from '../../components/crew/useCrewEditor'
+import { type CrewEditorSectionKey } from '../../components/crew/CrewEditorModal'
 import { useQuery, type QueryClient } from '@tanstack/react-query'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import { type MembersPageRosterRead } from './useMembersPageRoster'
@@ -96,7 +97,21 @@ export function useMembersPageCrewEditor({
     void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
     void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
   }, [queryClient])
-  const closeCrewEditor = useCallback(() => setEditingCrew(''), [setEditingCrew])
+  // The section the editor lands on, when the opener names one. The dialog
+  // keeps its section across opens, so a Danger zone landing is turned into a
+  // General one on close: the next bot opened from the identity pill must not
+  // start on its Danger zone.
+  const [crewLandingSection, setCrewLandingSection] = useState<CrewEditorSectionKey>()
+  const closeCrewEditor = useCallback(() => {
+    setCrewLandingSection((section) => (section === 'danger' ? 'general' : section))
+    setEditingCrew('')
+  }, [setEditingCrew])
+  // The way to Delete bot from a notice on the thread: the editor, opened on
+  // its Danger zone. The delete itself stays the editor's own two-step confirm.
+  const openCrewDangerZone = useCallback((name: string) => {
+    setCrewLandingSection('danger')
+    setEditingCrew(name)
+  }, [setEditingCrew])
   // Points at `releaseSchedRetention` (defined in MembersPageProfile.tsx with the
   // schedule guard machinery) so `onCrewDeleted` above can stand down the retention when
   // a confirmed crew delete clears the URL. A ref because the fn is declared
@@ -183,7 +198,8 @@ export function useMembersPageCrewEditor({
   crewModalBusyRef.current = crewModalBusy
 
   return {
-    profileRegistryQuery, crewAgentsQuery, closeCrewEditor, releaseSchedRef, crewEditor, crewModalAtStake,
+    profileRegistryQuery, crewAgentsQuery, closeCrewEditor, crewLandingSection, openCrewDangerZone,
+    releaseSchedRef, crewEditor, crewModalAtStake,
     crewModalAtStakeRef, crewModalBusy, crewModalBusyRef,
   }
 }

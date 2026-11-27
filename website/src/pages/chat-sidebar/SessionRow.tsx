@@ -2,7 +2,7 @@
  *  ordered state resolver, the slot-scoped live state it subscribes to, its
  *  menus and its drag and keyboard gestures. The shell builds the row's `view`
  *  (./rows) and its one `actions` object; the row's memo compares both. */
-import { useRef, useEffect, useState, memo, useMemo, useContext, type ReactNode } from 'react'
+import { useRef, useEffect, memo, useMemo, useContext, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, Split, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical, Moon } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
@@ -32,7 +32,7 @@ import { normalizeRunSessionKey } from '../../components/workflows/runModel'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatTag, CrewWorkFacts } from '../../types'
 import { hasLiveSessionWork } from '../chat/sessionLane'
-import { crewNeedsYou, crewWorkCounts, longestStalledWork, stalledWorkKeys, useCrewWorkClock } from '../../lib/crewWork'
+import { crewWorkCounts, useCrewWorkClock } from '../../lib/crewWork'
 import { isMemoryWait, queuedWaitText } from '../chat/subagentQueuedReason'
 import { focusSiblingSessionRow } from '../chat/sessionRowNav'
 import { fmtRelativeTime, slotActivityTs } from '../chat/sessionOrder'
@@ -57,13 +57,11 @@ import { useSessionCardLines, cardLineClass } from './cardLines'
 import { RowTrailingMeta, SearchHitTail } from './searchHits'
 import { connectedChannelLinks } from './connectedChannelLinks'
 import { ConductorModeTitleMark } from '../../components/crew/CrewModeMarks'
-import { crewRootOf } from '../../lib/crewMode'
-import { summarizeCrewWorkers, crewRowCounts } from '../../lib/crewWorkers'
-import { CrewRowAttention, crewRowTooltip } from './CrewRowCounts'
+import { CrewRowAttention } from '../../components/crew/CrewRowCounts'
+import { useCrewRootAttention } from '../../components/crew/useCrewRootAttention'
 import { CrewStateWord, crewRowOwnState, type CrewRowOwnState } from './CrewRowState'
 // Moved to ./CrewRowState with the state words; this path keeps serving its callers.
 export { crewRowOwnState, type CrewRowOwnState } from './CrewRowState'
-import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 import { crewWaitingApprovals, openedSessionRunning } from '../chat/command-center/model'
 import ErrorNotice from '../../components/ErrorNotice'
 import { MemberRowHead } from './MemberRowFace'
@@ -252,58 +250,27 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
   /** The root itself holds an approval or a question for the person. */
   rootOwes?: number
 }) {
-  // The server's groups (the worker list API), so the row, the panel and the
-  // breadcrumb agree. Only what needs attention is drawn (CrewRowAttention); the
-  // full counts live in the tooltip. A failed poll says so in the status line.
-  const { lastWorkers, failed, paused } = useCrewWorkerSummary(root)
-  const { groups, done, total } = summarizeCrewWorkers(lastWorkers ?? [])
-  const rowCounts = crewRowCounts(groups)
-  const running = rowCounts.find(c => c.bucket === 'working')?.count ?? 0
-  // The ledger's own stall rule (the Board's Milestones read the same one).
-  useCrewWorkClock(work ? [work] : [])
-  const stall = useAppSelector(st => {
-    const now = Date.now()
-    const counts = crewWorkCounts(work, st.dashboard.slots, now)
-    // A running conductor turn is picking its stalls up: none are shown meanwhile.
-    const handling = !!st.dashboard.slots.find(x => x.key === root)?.running
-    // The crew members whose live row waits on a tool approval, as one string so
-    // the selector compares by value.
-    const live = st.dashboard.slots.filter(x => x.pending_approval && crewRootOf(x) === root).map(x => x.key).join(' ')
-    return { person: counts?.person ?? 0, stalled: handling ? 0 : counts?.stalled ?? 0, keys: handling ? '' : stalledWorkKeys(work, st.dashboard.slots, now), live }
-  }, shallowEqual)
-  // A stalled line's duration reads the clock: step it once a minute while shown.
-  const [, setMinute] = useState(0)
-  useEffect(() => {
-    if (stall.stalled <= 0) return
-    const id = setInterval(() => setMinute(n => n + 1), 60_000)
-    return () => clearInterval(id)
-  }, [stall.stalled])
-  const longest = longestStalledWork(stall.keys, worker => {
-    const at = lastWorkers?.find(w => w.key === worker)?.last_activity
-    return at ? Date.parse(at) : NaN
-  })
-  const longestSlot = useAppSelector(st => (longest?.worker ? st.dashboard.slots.find(x => x.key === longest.worker)?.title ?? '' : ''))
-  const needsYou = crewNeedsYou(lastWorkers, stall.live ? stall.live.split(' ') : [], stall.person, work?.person_workers) + rootOwes
-  const member = longest ? lastWorkers?.find(w => w.key === longest.worker) : undefined
-  const stalledForMs = longest ? Date.now() - longest.since : 0
-  const stalledName = member?.title || member?.agent || longestSlot || i18nT('commandCenter.worker_untitled')
-  const title = crewRowTooltip(total, rowCounts, stall.stalled, needsYou)
+  // The server's groups (the worker list API), so the row, the panel, the
+  // breadcrumb and the reply's status row agree (`useCrewRootAttention`). Only
+  // what needs attention is drawn (CrewRowAttention); the full counts live in
+  // the tooltip. A failed poll says so in the status line.
+  const { failed, paused, total, done, running, needsYou, stalled, stalledName, stalledForMs, title } = useCrewRootAttention(root, work, rootOwes)
   // Finished only when the main chat is settled too, and, with a ledger, the gateway's run verdict says done.
   const allDone = (work?.run ? work.run.settled === 'done' : total > 0 && done === total) && !own
   // An interrupted turn or a stalled goal loop of the main chat is said first.
   const ownFirst = !paused && own && (own.kind === 'paused' || own.kind === 'stalled') ? own : null
   // Nothing needs attention and the crew is not finished (or paused): the row's usual line.
-  if (!failed && !paused && !ownFirst && !allDone && needsYou === 0 && stall.stalled === 0 && running === 0) return <>{fallback}</>
+  if (!failed && !paused && !ownFirst && !allDone && needsYou === 0 && stalled === 0 && running === 0) return <>{fallback}</>
   return (
     <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">{dot}
       {/* The row's own state outranks a failed crew read: it is said first. */}
       {failed && own && <CrewStateWord kind={own.kind} title={own.title} />}
       {!failed && ownFirst && <CrewStateWord kind={ownFirst.kind} title={ownFirst.title} />}
       {failed ? (
-        <ErrorNotice variant="inline" askAgent className="min-w-0" messageClassName="truncate" message={i18nT('commandCenter.workers_error')} />
+        <ErrorNotice variant="inline" askAgent className="min-w-0" messageClassName="truncate" messageTooltip={i18nT('commandCenter.workers_error')} message={i18nT('commandCenter.workers_error')} />
       ) : (
-        <CrewRowAttention needsYou={needsYou} stalled={stall.stalled} running={running} done={allDone} paused={paused}
-          stalledName={stall.stalled > 0 ? stalledName : undefined} stalledForMs={stall.stalled > 0 ? stalledForMs : undefined} title={title} />
+        <CrewRowAttention needsYou={needsYou} stalled={stalled} running={running} done={allDone} paused={paused}
+          stalledName={stalled > 0 ? stalledName : undefined} stalledForMs={stalled > 0 ? stalledForMs : undefined} title={title} />
       )}
     </div>
   )
@@ -367,7 +334,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const {
     connected, mode, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
     recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort,
-    guideOnRowControl, showUnreadDot, manualReorderOff,
+    guideOnRowControl, showUnreadDot, expandLinkedItems, manualReorderOff,
   } = view.shell
   const {
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
@@ -1930,7 +1897,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                     rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
                 : <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />}
               // A session whose chips are turned off shows no linked-items count and no chips.
-              slotKey={s.key} links={s.source_links_off ? undefined : s.source_links} total={s.source_links_total} connected={connected} isActive={isActive} onOpenSource={onOpenSource}
+              slotKey={s.key} links={s.source_links_off ? undefined : s.source_links} total={s.source_links_total} defaultOpen={expandLinkedItems} connected={connected} isActive={isActive} onOpenSource={onOpenSource}
               onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true })); onSelectSlot?.(s.key) }} />
             {/* No tag chips here: every tag renders in the meta line above as
              *  tinted `· name` text. A chip row would print each tag twice. */}

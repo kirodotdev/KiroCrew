@@ -144,8 +144,8 @@ describe('AboutPanel desktop auto-download toggle', () => {
   })
 
   it('holds the row, anchor included, until a slow getInfo() answers', async () => {
-    // A search deep link probes for the row once, ~100 ms after the tab opens;
-    // a getInfo() slower than that must not leave it nothing to find.
+    // A search deep link rings the row once it is on the page; a slow getInfo()
+    // must not hold that back until it answers.
     mount(new Promise(resolve => setTimeout(() => resolve({ ...BASE_INFO, autoDownload: false }), 150)) as never,
       vi.fn().mockResolvedValue({ ok: true }))
     const entry = SETTINGS_REGISTRY.find(e => e.id === 'about.install-app-updates-automatically')

@@ -104,7 +104,7 @@ def _line_may_name_ssh_verb(text_lower: str) -> bool:
     return any(_may_name_ssh_verb(_resolve_line_assignments(t)) for t in (raw, spliced))
 
 
-def _substitution_reaches_self(text_lower: str) -> bool:
+def _substitution_reaches_self(text_lower: str, raw_text: "str | None" = None) -> bool:
     """True if a substitution body that bash runs in *text_lower* reaches this host,
     judged as a command line of its own.
 
@@ -112,21 +112,35 @@ def _substitution_reaches_self(text_lower: str) -> bool:
     never resolve (one holding ``$``, a backtick or a paren) is replaced by one word,
     and is judged on its own when its turn comes. So each level is read once, and the
     work grows linearly with the nesting depth.
+
+    *raw_text* is *text_lower* as written. A body is judged with its words as written,
+    as the line itself is (``sudo -H`` takes no value, ``sudo -h`` does), where they
+    read to the same spans and bodies; elsewhere, in a shell payload, and when it holds
+    ``<<``, it is judged lowered.
     """
     if not _line_may_name_ssh_verb(text_lower):
         return False
-    seen: set[tuple[str, bool]] = set()
-    # (text, judge it, allow join): the caller judged the line itself.
-    work = [(text_lower, False, True)]
+    seen: "set[tuple[str, str | None, bool]]" = set()
+    # (text, as written, judge it, allow join): the caller judged the line itself.
+    work: "list[tuple[str, str | None, bool, bool]]" = [(text_lower, raw_text, False, True)]
     while work:
-        text, judge, allow_join = work.pop()
+        text, cased, judge, allow_join = work.pop()
         live = "$(" in text or "`" in text
         subs = _live_substitutions(text) if live else []
-        view = text
+        written = subs if not live or cased is None or cased == text else _live_substitutions(cased)
+        if cased is not None and (
+            cased.lower() != text or [(s, e, b.lower()) for s, e, b in written] != subs
+        ):
+            cased, written = None, subs
+        view, cased_view = text, cased
         for start, end, body in reversed(subs):
             if any(c in body for c in "$`()"):
                 view = view[:start] + "_" + view[end:]
-        if judge and _is_ssh_to_self(view):
+                if cased_view is not None:
+                    cased_view = cased_view[:start] + "_" + cased_view[end:]
+        # What a body prints is the line's to run (``eval "$(cat <<EOF ...)"``), so a
+        # body holding ``<<`` gets no here-document data view.
+        if judge and _is_ssh_to_self(view, raw_text=None if "<<" in view else cased_view):
             return True
         if live:
             # A payload with no substitution opener holds no body; the line's own
@@ -136,14 +150,15 @@ def _substitution_reaches_self(text_lower: str) -> bool:
             nested = _nested_shell_payloads(
                 _self_tokens(text), allow_join=allow_join, joined_out=joined_here
             )
-            fresh = [p for p in nested if (p, False) not in seen]
-            seen.update((p, False) for p in fresh)
-            work += [(p, False, p not in joined_here) for p in fresh]
-        for _start, _end, body in subs:
+            fresh = [p for p in nested if (p, None, False) not in seen]
+            seen.update((p, None, False) for p in fresh)
+            work += [(p, None, False, p not in joined_here) for p in fresh]
+        for (_start, _end, body), (_s, _e, cased_body) in zip(subs, written):
             body = _without_quoted_heredoc_text(body)
-            if (body, True) not in seen:
-                seen.add((body, True))
-                work.append((body, True, True))
+            kept = None if cased is None else _without_quoted_heredoc_text(cased_body)
+            if (body, kept, True) not in seen:
+                seen.add((body, kept, True))
+                work.append((body, kept, True, True))
     return False
 
 
@@ -210,13 +225,15 @@ def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bo
     refuses, and so does the line read with Windows path backslashes as ``/``
     (:func:`_with_backslash_path_separators`); the bodies are judged once, in the
     quote-aware reading. *raw_text* is the command as submitted, for the wrapper option
-    words of the line itself."""
+    words of the line and its bodies."""
     scripts = _quoted_assignment_scripts(text_lower)
     if _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
         map(_is_ssh_to_self, scripts)
     ):
         return True
-    if _substitution_reaches_self(text_lower) or any(map(_substitution_reaches_self, scripts)):
+    if _substitution_reaches_self(text_lower, raw_text) or any(
+        map(_substitution_reaches_self, scripts)
+    ):
         return True
     # Extra pass, ADDED to the readings above: escape the quote an own-line body
     # leaves open so the text after the closing line reads unquoted, catching a

@@ -265,8 +265,15 @@ def agent_spec_sources(project_dirs: tuple[Path, ...] = ()) -> list[tuple[str, P
     is the specs Kiro Crew does NOT own. Provider agent sidecars
     (``scope.agent_mcp_file``) are included for the same reason -- the purge
     strips them, so they must be able to speak for their own entries.
+
+    The Bot folder (``mate_agents_dir``) is read too: a Bot's own file adds MCP
+    servers to its workers (``mate_worker.ADDITION_KEYS``), and a worker on KAS
+    reads the same saved sign-in by url as any chat. Its specs are ``agent:``
+    sharers, labelled by full path so a Bot and a user-level agent of one name
+    stay in separate buckets, and never purge targets: the Bot's file is the
+    user's, edited on the Bot's page.
     """
-    from kiro_crew.config.paths import kiro_agents_dir, project_agents_dir
+    from kiro_crew.config.paths import kiro_agents_dir, mate_agents_dir, project_agents_dir
     from kiro_crew.dashboard.handlers.mcp import _extra_mcp_scopes
 
     sources: list[tuple[str, Path]] = []
@@ -296,21 +303,21 @@ def agent_spec_sources(project_dirs: tuple[Path, ...] = ()) -> list[tuple[str, P
     for scope in _extra_mcp_scopes():
         if scope.agent_mcp_file is not None:
             sources.append((f"{_MIRROR_PREFIX}{scope.id}", scope.agent_mcp_file))
-    # Deduped against the user-level dir and against each other: a project whose
-    # checkout IS the kiro home would otherwise be read twice, and a repeated read
-    # under one label merges two buckets, where first-definition-wins can drop the
-    # entry that would have kept a grant alive.
+    # The Bot folder, then each open project. Deduped against the user-level dir
+    # and against each other: a project whose checkout IS the kiro home would
+    # otherwise be read twice, and a repeated read under one label merges two
+    # buckets, where first-definition-wins can drop the entry that would have kept
+    # a grant alive.
     enumerated = {agents_dir}
-    for project_dir in project_dirs:
-        spec_dir = project_agents_dir(project_dir)
+    for spec_dir in (mate_agents_dir(), *(project_agents_dir(p) for p in project_dirs)):
         if spec_dir in enumerated:
             continue
         enumerated.add(spec_dir)
-        project_names = _json_spec_names(spec_dir)
-        if project_names is None:
+        spec_names = _json_spec_names(spec_dir)
+        if spec_names is None:
             sources.append((f"agent:{spec_dir}/", spec_dir))
             continue
-        sources.extend((f"agent:{spec_dir / name}", spec_dir / name) for name in project_names)
+        sources.extend((f"agent:{spec_dir / name}", spec_dir / name) for name in spec_names)
     return sources
 
 

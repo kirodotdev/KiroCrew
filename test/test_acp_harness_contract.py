@@ -346,11 +346,11 @@ async def test_a_missing_binary_aborts_the_spawn(monkeypatch, tmp_path, backend)
 
     monkeypatch.setattr(claude_harness, "_resolve_claude_acp_bin", lambda: (None, "/nowhere"))
     monkeypatch.setattr(claude_harness, "_claude_acp_argv_cache", launch_mod._UNRESOLVED)
-    # goose resolves through the shared self-served ladder and its per-backend
-    # cache; emptied too, so a developer machine with goose installed still sees
-    # the refusal instead of a plan.
+    # goose's self-served ladder and cache are emptied too (an installed goose must
+    # still be refused), and the floor passes: DeepSeek checks it before its lookup.
     monkeypatch.setattr(launch_mod, "_resolve_self_served_bin", lambda b: (None, "/nowhere"))
     monkeypatch.setattr(launch_mod, "_self_served_bin_caches", {})
+    monkeypatch.setattr(launch_mod, "_sandbox_preflight", lambda backend, mode: ())
     with pytest.raises(AcpRuntimeError, match="not found") as raised:
         await harness_for(backend).resolve_spawn(_ctx(tmp_path))
     # The two kiro-cli hosts tag the refusal so the chat row can offer the
@@ -490,6 +490,32 @@ async def test_kas_projects_the_agent_spec(kas_projection_stubbed, monkeypatch, 
     )
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
     assert [without_own_agents_deny(a) for a in extras.custom_agents] == projected
+
+
+@pytest.mark.asyncio
+async def test_kas_gives_a_bots_own_chat_on_a_user_agent_the_goal_tools(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """A Bot bound to a user agent sets goals in its chat, so that chat gains
+    ``kirocrew-mate``; the file on disk and a plain chat on the agent do not."""
+    monkeypatch.setattr(
+        agent_mod, "managed_mcp_spec_entry", lambda name, **_k: {"command": "kirocrew"}
+    )
+    seen: list[dict] = []
+
+    def build(_d, _a, spec, **_kw):
+        seen.append(spec)
+        return [{"id": "a"}]
+
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", build)
+    harness = harness_for(ACP_BACKEND_KAS)
+    await harness.session_extras("a", work_dir=str(tmp_path), session_key="dashboard:member-bot")
+    await harness.session_extras("a", work_dir=str(tmp_path), session_key="dashboard:chat-1")
+    bot_chat, plain_chat = seen
+    assert "@kirocrew-mate" in bot_chat["tools"]
+    assert "kirocrew-mate" in bot_chat["mcpServers"]
+    assert "kirocrew-mate" not in (plain_chat.get("mcpServers") or {})
+    assert json.loads((tmp_path / "a.json").read_text())["tools"] == []
 
 
 @pytest.mark.asyncio

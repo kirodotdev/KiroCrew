@@ -16,18 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from kiro_crew.agent_sdk.backends import (
-    ACP_BACKEND_ANTIGRAVITY,
-    ACP_BACKEND_CLAUDE,
-    ACP_BACKEND_CODEX,
-    ACP_BACKEND_COPILOT,
-    ACP_BACKEND_DEEPSEEK,
-    ACP_BACKEND_GOOSE,
-    ACP_BACKEND_MIMOCODE,
-    ACP_BACKEND_OPENCODE,
-    ACP_BACKEND_PI,
-    ACP_BACKEND_STRANDS,
-)
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_KNOWN
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.messaging.link import telemetry_channel_of
@@ -73,25 +63,24 @@ _SESSIONS_HISTORY_DAYS = 30
 #: provider that writes those transcripts is counted from them and never twice.
 _SHARD_COUNTED_PROVIDERS = frozenset({PROVIDER_CLAUDE_CODE})
 
+
 #: The same rule for a row's ``harness`` (the ``kirocrew.harness`` vocabulary,
 #: :func:`kiro_crew.metrics.harness.harness_of`), which tells a Codex turn from a
-#: kiro-cli one where ``provider`` cannot: both record ``acp``. Positive: kiro-cli
-#: and KAS are not members, since their transcripts are read, and a row with no
-#: ``harness`` (written before the field) or one outside the set counts as before.
-_SHARD_COUNTED_HARNESSES = frozenset(
-    {
-        ACP_BACKEND_ANTIGRAVITY,
-        ACP_BACKEND_CLAUDE,
-        ACP_BACKEND_CODEX,
-        ACP_BACKEND_COPILOT,
-        ACP_BACKEND_DEEPSEEK,
-        ACP_BACKEND_GOOSE,
-        ACP_BACKEND_MIMOCODE,
-        ACP_BACKEND_OPENCODE,
-        ACP_BACKEND_PI,
-        ACP_BACKEND_STRANDS,
-    }
-)
+#: kiro-cli one where ``provider`` cannot: both record ``acp``. Every known backend
+#: whose capability record says it writes no transcript the parse reads
+#: (``SessionCapabilities.writes_crew_readable_transcript``); kiro-cli and KAS are
+#: not members. A row with no ``harness`` (written before the field) or one that
+#: names no known backend counts as before.
+def _shard_counted_harnesses() -> frozenset[str]:
+    """The known backends whose sessions are counted from the usage rows."""
+    return frozenset(
+        backend
+        for backend in ACP_BACKENDS_KNOWN
+        if not capabilities_for(backend).writes_crew_readable_transcript
+    )
+
+
+_SHARD_COUNTED_HARNESSES = _shard_counted_harnesses()
 
 
 def _token_usage_dir() -> Path:
@@ -350,11 +339,15 @@ def is_session_slot(slot: str) -> bool:
     return bool(slot) and telemetry_channel_of(slot) not in _NON_SESSION_CHANNELS
 
 
-def session_category(slot: str) -> str:
+def session_category(slot: str, app: str = "") -> str:
     """Classify *slot* into the session taxonomy the panel groups by.
 
-    Returns ``bg`` for a session that runs unattended, otherwise the transport it
-    came from (``dashboard``, ``telegram``, ``slack``, …). Built on
+    Returns ``app:<name>`` when the row was stamped with the app that owns the
+    session (*app*, the token row's ``app`` field), because an app's slot key
+    (``<app>-<id>``) matches no transport and would otherwise land in ``other``.
+    Without a stamp it returns ``bg`` for a session that runs unattended,
+    otherwise the transport it came from (``dashboard``, ``telegram``, ``slack``,
+    …). Built on
     :func:`telemetry_channel_of` rather than matching key shapes here: that is
     the one place that knows every session-key form, so a surface it learns
     about is classified consistently for metrics and for this panel.
@@ -364,6 +357,8 @@ def session_category(slot: str) -> str:
     its own new category — visible, reportable, fixable — whereas an allowlist of
     "real" transports would silently file it as background and bury it.
     """
+    if app:
+        return f"app:{app}"
     channel = telemetry_channel_of(slot) if slot else "unknown"
     return "bg" if channel in _BACKGROUND_CHANNELS else channel
 

@@ -61,6 +61,11 @@ def get_session_for_thread(self: SessionManager, thread_ts: str) -> str | None:
     return self._session_map.get_session_for_thread(thread_ts)
 
 
+def slack_thread_owners(self: SessionManager, channel_id: str) -> list[str]:
+    """Return the session keys that own a Slack thread in *channel_id*."""
+    return self._session_map.slack_thread_owners(channel_id)
+
+
 def channel_key_for_stem(self: SessionManager, stem: str) -> str:
     """The real channel session key behind a transcript filename *stem*.
 

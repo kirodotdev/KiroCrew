@@ -754,16 +754,29 @@ async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(
     ready = tmp_path / "ready"
 
     async def wait_for_file(path, writer=None):
-        def _ready():
+        """Return the file's text once a read of it succeeds.
+
+        A file the helper has just renamed into place can still be held open by
+        that rename or by a scanner, and Windows refuses the open with a sharing
+        violation (``PermissionError``), so the read itself is the readiness
+        signal and that refusal means "not yet".
+        """
+
+        def _read():
             if path.exists():
-                return True
+                return path.read_text(encoding="utf-8")
             if writer is not None and writer.returncode is not None:
                 raise AssertionError(
                     f"fixture exited with {writer.returncode} before writing {path.name}"
                 )
-            return False
+            return None
 
-        await async_wait_until(_ready, describe=lambda: f"fixture never wrote {path.name}")
+        return await async_wait_until(
+            _read,
+            describe=lambda: f"fixture never wrote {path.name}",
+            ignoring=(PermissionError,),
+            off_loop=True,
+        )
 
     # The child writes `ready` once it runs. The file's existence is the whole
     # signal and nothing reads its content, so a plain write needs no
@@ -824,8 +837,7 @@ async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(
                 stderr=asyncio.subprocess.DEVNULL,
                 creationflags=pc.CREATE_NEW_PROCESS_GROUP | 0x00000008,  # DETACHED_PROCESS
             )
-            await wait_for_file(attached, helper)
-            outcome = attached.read_text(encoding="utf-8")
+            outcome = await wait_for_file(attached, helper)
             assert outcome == "1 0", f"helper did not attach (result, error: {outcome})"
         go.touch()
         assert (

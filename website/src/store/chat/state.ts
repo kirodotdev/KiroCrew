@@ -23,8 +23,8 @@ const ACTIVITY_OPEN_PREFIX = 'mc-activity-open:'          // one key per slot
 /** Read every persisted per-slot activityOpen flag (mc-activity-open:<slot>). */
 const loadActivityOpenMap = (): Record<string, boolean> => {
   const out: Record<string, boolean> = {}
-  if (typeof localStorage === 'undefined') return out
   try {
+    if (typeof localStorage === 'undefined') return out
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i)
       if (!k || !k.startsWith(ACTIVITY_OPEN_PREFIX)) continue
@@ -502,6 +502,11 @@ export interface ChatState {
    *  gateway, or nothing labelled), and the chips then keep their default
    *  "queued behind the concurrency limit" text. Cleared with the count. */
   subagentQueuedReason: Record<string, SubagentQueuedReason>
+  /** What the gateway's durable replay left out of a slot's finished runs, from
+   *  `subagent_replay_truncated`: `n` runs past its row cap, and `atLeast` when
+   *  the log's own retain limit makes `n` a floor. Absent when nothing was cut.
+   *  Cleared on a new subscription and by "Dismiss done". */
+  subagentReplayCut?: Record<string, { n: number; atLeast: boolean }>
   /** Ids of the cards held when a subagent replay began that the replay has
    *  not named yet. `subagentReplayDone` drops what is left. Null outside a
    *  replay. No surface reads it. */
@@ -848,6 +853,7 @@ export const initialState: ChatState = {
   subagents: {},
   subagentQueued: {},
   subagentQueuedReason: {},
+  subagentReplayCut: {},
   subagentReplayUnconfirmed: null,
   automations: {},
   selectedSubagentId: null,

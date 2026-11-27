@@ -31,6 +31,7 @@ from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token, tag_
 from kiro_crew.sel import sel
 from kiro_crew.session import unlink_queued_temp_paths
 from kiro_crew.session_lifecycle import hand_queue_to_successor
+from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_no_reactions
 from kiro_crew.slack.handler import (
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
@@ -119,13 +120,31 @@ _stops_in_flight: weakref.WeakKeyDictionary[Any, dict[str, _StopHold]] = weakref
 _router_task_threads: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
 
 
+#: The Slack user whose message each router task was started for. A turn's tool
+#: prompts answer to that person (a shared user may approve, and Trust, their own),
+#: so the mid-turn steer reads this before it adds another person's words.
+_router_task_openers: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
+
+
 def _track_router_task(
-    orch: GatewayOrchestrator, session_key: str, task: Any, thread_ts: Any
+    orch: GatewayOrchestrator, session_key: str, task: Any, thread_ts: Any, sender_id: str = ""
 ) -> None:
-    """Register *task* as *session_key*'s router task, noting the thread it serves."""
+    """Register *task* as *session_key*'s router task, noting its thread and its sender."""
     orch._session_tasks[session_key] = task
     if thread_ts:
         _router_task_threads[task] = str(thread_ts)
+    if sender_id:
+        _router_task_openers[task] = sender_id
+
+
+def _track_drained_task(
+    orch: GatewayOrchestrator, session_key: str, task: Any, kwargs: dict[str, Any] | None
+) -> None:
+    """:func:`_track_router_task` for a queued entry, read from the kwargs it was queued with."""
+    kwargs = kwargs or {}
+    _track_router_task(
+        orch, session_key, task, kwargs.get("thread_ts"), str(kwargs.get("sender_id") or "")
+    )
 
 
 def router_task_thread(task: Any) -> str | None:
@@ -134,6 +153,14 @@ def router_task_thread(task: Any) -> str | None:
         return _router_task_threads.get(task)
     except TypeError:  # a test double that cannot be weakly referenced
         return None
+
+
+def router_task_opener(task: Any) -> str:
+    """The Slack user whose message started a router task, or ``""`` when unknown."""
+    try:
+        return _router_task_openers.get(task, "")
+    except TypeError:  # a test double that cannot be weakly referenced
+        return ""
 
 
 def _key_busy(orch: GatewayOrchestrator, session_key: str) -> bool:
@@ -383,6 +410,19 @@ def resume_held_slack_drains(orch: GatewayOrchestrator) -> None:
         _spawn_tracked(_drain_slack_queue(orch, session_key), owner=orch)
 
 
+async def _mark_queued(orch: GatewayOrchestrator, channel: str, msg_ts: str) -> None:
+    """Put the ⏳ reaction on a message that waits behind a running turn.
+
+    Cosmetic: the message is queued either way. ``_dispatch_queued`` takes the
+    reaction off when the message's own turn starts.
+    """
+    if orch.slack and not code_channel_no_reactions(channel):
+        try:
+            await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
+        except Exception:
+            logger.debug("Failed to add queue reaction", exc_info=True)
+
+
 def _take_queued(orch: GatewayOrchestrator, session_key: str) -> list[tuple[str, str, dict]]:
     """Remove and return every entry queued for *session_key* (session queue, then stash)."""
     taken: list[tuple[str, str, dict]] = []
@@ -524,7 +564,7 @@ async def _drain_slack_queue(orch: GatewayOrchestrator, session_key: str) -> Non
     # The client is read in the same step as the dequeue, so a reconnect that
     # clears ``orch.slack`` later cannot leave the entry with no client.
     task = asyncio.ensure_future(_dispatch_queued(orch, session_key, *_next, slack=orch.slack))
-    _track_router_task(orch, session_key, task, (_next[2] or {}).get("thread_ts"))
+    _track_drained_task(orch, session_key, task, _next[2])
     orch._handler_tasks.add(task)
 
     def _after(done: asyncio.Task) -> None:  # type: ignore[type-arg]
@@ -632,8 +672,12 @@ async def _dispatch_queued(
         getattr(getattr(slack_cfg(orch), "messaging", None), "use_transport", False) is True
         and _activation != ACTIVATION_REVIEW
     )
-    # This entry's own files, never the ones of the message whose task queued it.
+    # This entry's own files, never the ones of the message whose task queued it,
+    # and no steer: it was queued, and that message's ts is not this entry's.
     set_linked_thread_files(kwargs.get("image_temp_paths") or [])
+    from kiro_crew.slack import midturn  # deferred: no name served through the facade
+
+    midturn.set_inbound(None)
     try:
         if _use_transport:
             await handle_message_transport(

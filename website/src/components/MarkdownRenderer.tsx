@@ -56,7 +56,7 @@ import {
 } from './RedactionCards'
 import FoldableDiffBlock from './FoldableDiffBlock'
 import EditableCodeBlock from './EditableCodeBlock'
-import { useRevealFailure } from './FilePathMenu'
+import FilePathMenu, { useRevealFailure } from './FilePathMenu'
 import { SmoothResize } from './SmoothResize'
 import type { ContentBlock } from '../types'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -90,6 +90,7 @@ import {
 } from './markdown/contexts'
 import { artifactSlugFromHref, classifySessionLink, soleLinkInParagraph, useSessionChip, useUnfurlHref } from './markdown/linkTargets'
 import { dashboardPreviewRef, dashboardPreviewTargetFromHref } from '../utils/dashboardPreview'
+import { openInternalLink } from '../utils/internalNav'
 import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
 import { activatePath, isFileLinkDest, isPathCandidate, splitLineRef, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
@@ -332,14 +333,13 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       e.preventDefault()
     }
   }
-  const pathResolution = usePathResolution(
-    localHref ?? '',
-    probeEnabled
-      && !claimed
-      && !!localHref
-      && !artifactSlugFromHref(localHref)
-      && !!(actions.onFileOpen || actions.onFolderOpen),
-  )
+  // Every gate on the probe but the streaming one (`probeEnabled`), which
+  // opens when the block closes.
+  const probeable = !claimed
+    && !!localHref
+    && !artifactSlugFromHref(localHref)
+    && !!(actions.onFileOpen || actions.onFolderOpen)
+  const pathResolution = usePathResolution(localHref ?? '', probeEnabled && probeable)
   // A path-shaped link to a FILE (not a route, see `isFileLinkDest`) whose probe
   // says `missing` carries a local-path href, which the browser resolves against
   // the dashboard origin into a new tab that names nothing. It drops its
@@ -521,9 +521,40 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   // joins `ext` here (after `editorLink` is read, which a local-path href already
   // excludes) so the anchor's target/rel branch stays untouched.
   if (missingFileLink) ext = true
+  // A link the probe confirmed as a file or folder gets the path chip's
+  // right-click menu. Its text is the author's, not the path, so the menu
+  // names the path before any row opens or runs it. A link that can get the
+  // menu is wrapped from its first render, probed yet or not, with the menu
+  // off until the probe confirms it: wrapping only then would replace the
+  // <a>, dropping its focus or hover. So the wrap reads no input that the
+  // probe or a closing stream changes.
+  const pathMenuLink = probeable && pathResolution.shaped && !sessionHrefSid
+  const pathMenuKind = pathMenuLink && pathResolution.candidate && (pathResolution.kind === 'file' || pathResolution.kind === 'dir') ? pathResolution.kind : null
+  const withPathMenu = (el: React.ReactElement) => (pathMenuLink
+    ? (
+        <FilePathMenu
+          filePath={pathResolution.path}
+          kind={pathMenuKind ?? undefined}
+          disabled={!pathMenuKind}
+          onFileOpen={actions.onFileOpen && pathMenuKind ? () => activatePath(pathResolution.path, pathMenuKind, false, actions, reveal.onError, pathResolution.line, pathResolution.endLine) : undefined}
+          onFolderOpen={actions.onFolderOpen}
+          showPath
+        >
+          {el}
+        </FilePathMenu>
+      )
+    : el)
+  // A touch hold on a path chip inside the label, or a gesture from inside that
+  // chip's open menu (a portal, outside this anchor), belongs to the chip: a
+  // cancelled event makes the link's own trigger stand aside.
+  const leaveToNestedMenu = (e: React.PointerEvent<HTMLAnchorElement> | React.MouseEvent<HTMLAnchorElement>) => {
+    if ('pointerType' in e && e.pointerType === 'mouse') return
+    const target = e.target as Element
+    if (!e.currentTarget.contains(target) || target.closest('[data-path-kind]')) e.preventDefault()
+  }
   return (
     <>
-    <a
+    {withPathMenu(<a
       {...sp(node)}
       href={sessionHref ?? href}
       // A `/chat?sid=` href is never a path, so the session branch wins outright.
@@ -553,6 +584,10 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       className={missingFileLink || (sessionHrefNamesSession && !sessionLink && sessionRouting)
         ? 'text-muted'
         : 'text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent'}
+      // Before the tip's handlers: a link with an address tip is never a path
+      // link, so neither pair overrides the other.
+      onPointerDown={pathMenuKind ? leaveToNestedMenu : undefined}
+      onContextMenu={pathMenuKind ? leaveToNestedMenu : undefined}
       {...addressTip.handlers}
     >
       <InsideLinkCtx.Provider value={linkKind}>{children}</InsideLinkCtx.Provider>
@@ -569,7 +604,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       {sessionHrefNotOpen && (
         <span className="sr-only">{` (${i18nT('components.markdownRenderer.session_closed_link_disabled')})`}</span>
       )}
-    </a>
+    </a>)}
     {addressTip.bubble}
     {/* The sentence's own punctuation, before the notice: "See the old run."
         keeps its full stop beside the link, and the notice follows the
@@ -1334,8 +1369,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   const textPatternGen = useSyncExternalStore(scanText ? subscribeTextPatterns : noSubscribe, textPatternGeneration, textPatternGeneration)
 
   /** Chip activation lives on the chip itself (see InlineCode); this handler is
-   *  only link delegation: `#heading` jumps, `/artifacts/<slug>` links and
-   *  staged-dashboard links. */
+   *  only link delegation: `#heading` jumps, `/artifacts/<slug>` links,
+   *  staged-dashboard links and in-app dashboard links. */
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = e.target as HTMLElement
     // `#heading` links scroll within THIS message, never the whole document:
@@ -1373,7 +1408,17 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       if (previewTarget) {
         e.preventDefault()
         onArtifactOpen(dashboardPreviewRef(previewTarget))
+        return
       }
+    }
+    // A link to a page of this dashboard opens in place, through the router and
+    // the page's leave check, rather than in a new tab. Last, and only when no
+    // handler above or on the anchor (a session link, a file path) took the
+    // click. A plain click only: a modified or middle click keeps the anchor's
+    // own new-tab target, and a link `openInternalLink` refuses keeps it too.
+    if (!e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      const anchor = el.closest('a[href]')
+      if (anchor && openInternalLink(anchor.getAttribute('href'))) e.preventDefault()
     }
   }, [onArtifactOpen])
 

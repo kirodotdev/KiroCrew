@@ -1,7 +1,6 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
-  ArrowLeft,
   Building2,
   Check,
   Copy,
@@ -29,9 +28,10 @@ import {
   type ShellAsideCopy,
 } from './OnboardingChapterShell'
 import GithubLogo from './icons/GithubLogo'
-import { Btn, IconButton } from './ui'
+import { Btn } from './ui'
 import { initialCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
+import KasProfileChoice from './KasProfileChoice'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
 import { openAuthTab, useKasLoginFlow, type KasLoginExtra, type KasLoginFellBack } from '../hooks/useKasLogin'
@@ -180,13 +180,28 @@ function ViewShell({ aside, children }: { aside: ShellAsideCopy; children: React
  * in a new tab (a click is a user gesture, so a popup blocker lets it through),
  * and a separate always-visible button copies it for approval on ANOTHER device.
  */
+/** A `Btn` drawn as quiet text: the code screen's Copy link and its way back. */
+export const SIGN_IN_TEXT_BUTTON =
+  'border-transparent bg-transparent px-1 py-0.5 text-muted hover:border-transparent hover:bg-transparent hover:text-text disabled:opacity-50'
+
+/** The device screen's way back to the choices, as handed to a host. */
+export interface SignInBack {
+  onBack: () => void
+  disabled: boolean
+}
+
 /**
- * Where a surface that hosts the flow in its own header (the sign-in dialog) puts
- * the device screen's back control. `set(null)` takes it away. Without a host the
- * device screen draws its own back button.
+ * Where a surface that hosts the flow puts the device screen's back control
+ * (the sign-in dialog: in its header; Settings > Kiro account: above the
+ * screen). `set(null)` takes it away. Without a host the device screen draws its
+ * own back control. `ownsHeading`: the host also draws the screen's heading and
+ * its one-line hint in its own header (Settings' centered header), so the
+ * screen leaves them out; the dialog's header says "Sign in to Kiro", so there
+ * the screen keeps them.
  */
 export interface SignInBackSlot {
-  set: (back: { onBack: () => void; disabled: boolean } | null) => void
+  set: (back: SignInBack | null) => void
+  ownsHeading?: boolean
 }
 export const SignInBackContext = createContext<SignInBackSlot | null>(null)
 
@@ -213,10 +228,13 @@ function FellBackLine({ fellBack, className }: { fellBack?: KasLoginFellBack | f
 }
 
 /**
- * The device-code screen in card chrome (the sign-in dialog): one heading, one
- * button that opens the issuer's page with a small copy control, the code in a
- * plain box with its own copy control, one waiting line, and a back control to
- * the choices. A copy that fails shows the value to select by hand.
+ * The device-code screen in card chrome (the sign-in dialog and Settings > Kiro
+ * account): a heading and one-line hint unless the host draws them, a full-width
+ * button that opens the issuer's page, a Copy link text button under it, the
+ * code in a box the same width, one waiting line, and a back control to the
+ * choices (the host's, else its own). The code has no copy control: it is only
+ * compared by eye against the issuer's page, never typed. A copy that fails
+ * shows the link to select by hand.
  */
 function DeviceCodeCard({
   session,
@@ -232,89 +250,77 @@ function DeviceCodeCard({
   onCancel: () => void
 }) {
   const href = safeHref(session.verification_uri_complete)
-  const [copied, setCopied] = useState<'link' | 'code' | null>(null)
-  const [copyFailed, setCopyFailed] = useState<'link' | 'code' | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
-  const copy = async (what: 'link' | 'code', value: string) => {
+  const copyLink = async () => {
     // copyCode-style contract: false when both clipboard paths failed.
-    if (!(await copyToClipboard(value))) {
-      setCopyFailed(what)
+    if (!(await copyToClipboard(session.verification_uri_complete))) {
+      setCopyFailed(true)
       return
     }
-    setCopyFailed(null)
-    setCopied(what)
+    setCopyFailed(false)
+    setCopied(true)
     if (timer.current) clearTimeout(timer.current)
-    timer.current = setTimeout(() => setCopied(null), 1500)
+    timer.current = setTimeout(() => setCopied(false), 1500)
   }
   const back = useContext(SignInBackContext)
   const cancelRef = useRef(onCancel)
   cancelRef.current = onCancel
-  useEffect(() => {
+  // Layout effects: the host's header and back control change in the same
+  // paint as this screen, never one frame later with the chooser's header.
+  useLayoutEffect(() => {
     back?.set({ onBack: () => cancelRef.current(), disabled: busy })
   }, [back, busy])
-  useEffect(() => () => back?.set(null), [back])
-  const linkLabel = copied === 'link' ? i18nT('components.kasLogin.copied') : i18nT('components.kasLogin.copy_link')
-  const codeLabel = copied === 'code' ? i18nT('components.kasLogin.copied') : i18nT('components.kasLogin.copy_code')
+  useLayoutEffect(() => () => back?.set(null), [back])
   return (
-    <div className="w-full">
-      <div className="flex items-center gap-2">
-        {back ? null : (
-          <IconButton aria-label={i18nT('components.kasLogin.use_different_sign_in')} disabled={busy} onClick={onCancel}>
-            <ArrowLeft size={16} aria-hidden="true" />
-          </IconButton>
-        )}
-        <h2 className="text-[15px] font-semibold text-text-strong">{i18nT('components.kasLogin.finish_in_browser')}</h2>
-      </div>
-      <FellBackLine fellBack={fellBack} className="mt-2" />
-      <div className="mt-4 flex items-center gap-2">
-        {href ? (
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-testid="kas-login-verification-link"
-            className="btn-sweep inline-flex min-h-9 items-center rounded-lg bg-accent px-4 text-sm font-semibold text-accent-fg hover:bg-accent-hover focus-ring"
-          >
-            {i18nT('components.kasLogin.open_sign_in_page')}
-          </a>
-        ) : (
-          <code className="min-w-0 overflow-x-auto font-mono text-[13px] text-text-strong">{session.verification_uri_complete}</code>
-        )}
-        <IconButton aria-label={linkLabel} onClick={() => void copy('link', session.verification_uri_complete)}>
-          {copied === 'link' ? <Check size={14} className="text-ok" aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-        </IconButton>
-      </div>
-      {copyFailed === 'link' ? (
+    <div className="flex w-full flex-col items-stretch text-center" data-testid="kas-login-device-code">
+      {back?.ownsHeading ? null : (
+        <div className="mb-4" data-testid="kas-login-code-heading">
+          <h2 className="text-[15px] font-semibold text-text-strong">{i18nT('components.kasLogin.finish_in_browser')}</h2>
+          <p className="mt-1 text-[13px] text-muted">{i18nT('components.kasLogin.check_code')}</p>
+        </div>
+      )}
+      <FellBackLine fellBack={fellBack} className="mb-3" />
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="kas-login-verification-link"
+          className="btn-sweep inline-flex h-11 w-full items-center justify-center rounded-lg bg-accent px-4 text-sm font-semibold text-accent-fg hover:bg-accent-hover focus-ring"
+        >
+          {i18nT('components.kasLogin.open_sign_in_page')}
+        </a>
+      ) : (
+        <code className="min-w-0 overflow-x-auto font-mono text-[13px] text-text-strong">{session.verification_uri_complete}</code>
+      )}
+      <Btn type="button" onClick={() => void copyLink()} className={`mx-auto mt-2 ${SIGN_IN_TEXT_BUTTON}`} data-testid="kas-login-copy-link-text">
+        {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+        {copied ? i18nT('components.kasLogin.copied') : i18nT('components.kasLogin.copy_link')}
+      </Btn>
+      {copyFailed ? (
         <ErrorNotice
-          className="mt-2"
+          className="mt-2 text-left"
           variant="inline"
           message={i18nT('components.kasLogin.copy_link_failed', { url: session.verification_uri_complete })}
-          onDismiss={() => setCopyFailed(null)}
+          onDismiss={() => setCopyFailed(false)}
           noHandoffReason="a sign-in is in progress in this dialog and the agent may run as the very sign-in being replaced; the value is shown to select by hand"
           testId="kas-login-copy-link-failed"
         />
       ) : null}
-      <p className="mt-5 text-[13px] text-text">{i18nT('components.kasLogin.check_code')}</p>
-      <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-border bg-bg-elevated py-2 pl-4 pr-2">
+      {back ? null : (
+        <Btn type="button" disabled={busy} onClick={onCancel} className={`mx-auto mt-1 ${SIGN_IN_TEXT_BUTTON}`} data-testid="kas-login-back-to-options">
+          {i18nT('components.kasLogin.use_another_way')}
+        </Btn>
+      )}
+      <div className="mt-4 flex h-14 w-full items-center justify-center rounded-lg border border-border bg-bg-elevated">
         <span className="font-mono text-2xl font-bold tracking-[0.2em] text-text-strong" data-testid="kas-login-user-code">
           {session.user_code}
         </span>
-        <IconButton aria-label={codeLabel} onClick={() => void copy('code', session.user_code)}>
-          {copied === 'code' ? <Check size={14} className="text-ok" aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-        </IconButton>
       </div>
-      {copyFailed === 'code' ? (
-        <ErrorNotice
-          className="mt-2"
-          variant="inline"
-          message={i18nT('components.kasLogin.copy_code_failed')}
-          onDismiss={() => setCopyFailed(null)}
-          noHandoffReason="a sign-in is in progress in this dialog and the agent may run as the very sign-in being replaced; the value is shown to select by hand"
-          testId="kas-login-copy-code-failed"
-        />
-      ) : null}
-      <p className="mt-4 flex items-center gap-2 text-[13px] text-muted" aria-live="polite" data-testid="kas-login-code-expiry">
+      <p className="mt-3 flex items-center justify-center gap-2 text-[13px] text-muted" aria-live="polite" data-testid="kas-login-code-expiry">
         <Loader2 className="lucide-inline animate-spin text-accent" aria-hidden="true" />
         {i18nT('components.kasLogin.waiting_code_expires', { time: fmtTime(session.expires_at) })}
       </p>
@@ -1250,6 +1256,28 @@ function KasLoginFlow({
           onStartOver={flow.startOver}
           onCancel={flow.reset}
         />
+      )
+    }
+    if (pollQuery.data?.status === 'choose_profile') {
+      return (
+        <ViewShell
+          aside={{
+            ariaLabel: i18nT('components.kasLogin.choose_profile_title'),
+            panelHeadline: i18nT('components.kasLogin.aside_headline'),
+            panelBody: i18nT('components.kasLogin.aside_body'),
+            panelFootnote: i18nT('components.kasLogin.aside_footnote'),
+          }}
+        >
+          <KasProfileChoice
+            profiles={pollQuery.data.profiles ?? []}
+            selected={pollQuery.data.selected ?? ''}
+            busy={pollQuery.isFetching || settling}
+            notice={settleError}
+            askAgent={chrome.card}
+            onContinue={flow.chooseProfile}
+            onCancel={flow.reset}
+          />
+        </ViewShell>
       )
     }
     if (session.kind === 'loopback') {

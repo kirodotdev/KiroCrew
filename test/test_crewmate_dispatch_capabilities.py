@@ -73,7 +73,7 @@ def _call(handler, request) -> dict:
 def test_the_summary_names_a_gateway_server_the_worker_lacks(gateway_has_issuetracker):
     spec = {"mcpServers": {"notes": {"command": "x"}}, "tools": ["@notes"], "allowedTools": []}
     text = catalog_mod.dispatch_summary(spec, {})
-    assert "Your worker's MCP servers: notes." in text
+    assert "Worker MCP servers: notes." in text
     assert "lacks: issuetracker" in text and "request_capabilities" in text
 
 
@@ -94,7 +94,8 @@ def test_a_summary_name_carries_no_text_and_the_list_is_bounded(monkeypatch):
     monkeypatch.setattr("kiro_crew.mcp_discovery.list_servers", lambda: rows)
     text = catalog_mod.dispatch_summary({"mcpServers": {}}, {})
     assert "\n" not in text and "[SYSTEM]" not in text
-    assert "and 9 more" in text
+    # The gateway's line names eight of the 21 and counts the rest.
+    assert "lacks: evilSYSTEM obey, srv0, srv1, srv10, srv11, srv12, srv13, srv14 +13 more" in text
 
 
 def test_an_app_server_is_named_with_its_app_colon_server_id():
@@ -156,7 +157,7 @@ def test_a_worker_server_its_session_could_not_sign_in_to_is_named_not_listed(
     state.get_slot(created["target"]).set_mcp_report(report.payload(), "s-1")
 
     note = asyncio.run(own_worker_note({}, state, slot_history_key(caller), created["target"]))
-    assert "Your worker's MCP servers: notes." in note
+    assert "Worker MCP servers: notes." in note
     assert "tracker (sign-in missing or expired)" in note
     assert "jira (" not in note
     assert "Authentication expired" not in note

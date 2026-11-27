@@ -17,7 +17,8 @@ settings and the rest of the owner's dashboard. Three things stay the machine
 owner's (:func:`is_owner_only_for_teammates`):
 
 * the integrated Terminal and the external-terminal launcher
-  (:data:`TERMINAL_PATH_PREFIXES`);
+  (:data:`TERMINAL_PATH_PREFIXES`), and the managed-environment lane's routes
+  (:data:`MANAGED_ENV_PATH_PREFIXES`);
 * every route the relay refuses a remote caller by its path alone
   (``kiro_relay.limits.remote_route_limit``): remote instances, whose routes mint a
   peer's owner token; Crew's local tokens and secrets, the vault, an app secret, a
@@ -56,6 +57,7 @@ from typing import Any
 __all__ = [
     "CHANNEL_CONNECTION_WRITES",
     "CRON_SECRET_GRANTS",
+    "MANAGED_ENV_PATH_PREFIXES",
     "REMOTE_ACCESS_WRITES",
     "TEAMMATE_WS_FLAG",
     "TERMINAL_PATH_PREFIXES",
@@ -69,6 +71,10 @@ __all__ = [
 
 #: Every route that opens, drives, lists or launches a host shell.
 TERMINAL_PATH_PREFIXES = ("/api/terminal", "/api/ws/terminal")
+
+#: The managed-environment lane's routes: a session is a root shell on the owner's
+#: environment, and stop or delete act on the owner's account.
+MANAGED_ENV_PATH_PREFIXES = ("/api/managed-environments",)
 
 
 #: Writes that create, change, link or remove a channel connection. Each holds the
@@ -97,14 +103,20 @@ TEAMMATE_WS_FLAG = "_shared_crew_teammate"
 
 #: Config subtrees that open a listener, open tunnels from this machine to other
 #: machines, or name who may reach the Crew.
-_ADMISSION_CONFIG_ROOTS = ("dashboard.shared_crew", "dashboard.tailscale", "instances", "tunnel")
+_ADMISSION_CONFIG_ROOTS = (
+    "dashboard.shared_crew",
+    "dashboard.tailscale",
+    "dashboard.entry_port",
+    "instances",
+    "tunnel",
+)
 
 
 def is_admission_config_key(path: str) -> bool:
     """Whether config key *path* opens a listener or a tunnel, or is an allow-list.
 
-    The Shared Crew, Tailscale, remote-instance (``instances``) and tunnel subtrees, and
-    any allow-list or DM policy by
+    The Shared Crew, Tailscale, remote-instance (``instances``) and tunnel subtrees,
+    the entry listener (``dashboard.entry_port``), and any allow-list or DM policy by
     its name (a segment starting ``allow``, or ``dm_policy``), so a channel added later
     is covered without a table.
     """
@@ -121,6 +133,8 @@ def is_owner_only_for_teammates(request: Any) -> bool:
 
     path = str(getattr(request, "path", "") or "")
     if is_terminal_request(request) or remote_route_limit(path) is not None:
+        return True
+    if any(path == p or path.startswith(p + "/") for p in MANAGED_ENV_PATH_PREFIXES):
         return True
     if CRON_SECRET_GRANTS.match(path):
         return True

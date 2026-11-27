@@ -3,7 +3,7 @@ import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
-import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentQueued, reconcileSubagentQueuedFromSlots, sseSubagentDone, sseSubagentTool, sseSubagentStalled } from '../store/chatSlice'
+import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentQueued, reconcileSubagentQueuedFromSlots, sseSubagentDone, sseSubagentTool, sseSubagentStalled, subagentReplayTruncated, clearTerminalSubagents } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -473,6 +473,17 @@ describe('SubagentProgressBar — why the queued agents wait', () => {
     expect(line.textContent).not.toMatch(/free now|not enough free memory/)
   })
 
+  it('says the free-memory check did not answer, not that memory is short, when the read timed out', () => {
+    const store = makeStore(['a1'])
+    store.dispatch(sseSubagentQueued({
+      slot: SLOT, queued: 1, reason: 'low_memory', required_gb: 8.3, cause: 'host_read_unanswered',
+    }))
+    renderBar(store)
+    const line = screen.getByTestId('subagent-wait-reason')
+    expect(line.textContent).toContain('the free-memory check did not answer in time')
+    expect(line.textContent).not.toMatch(/free now|not enough free memory|free up memory/)
+  })
+
   it('renders no extra line for a bare count (older gateway) or the capacity wait', () => {
     const store = makeStore(['a1'])
     store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 2 }))
@@ -578,5 +589,58 @@ describe('SubagentProgressBar — histogram counts speak in words', () => {
     renderBar(makeStore(['a1'], 'p1'))
     expect(screen.getByTestId('subagent-awaiting-count').querySelector('.sr-only')?.textContent)
       .toBe('1 agent waiting for approval')
+  })
+})
+
+describe('SubagentProgressBar — finished runs the reload left out', () => {
+  /** One running agent keeps the chip mounted; two finished ones give it a done count. */
+  function cutStore() {
+    const store = makeStore(['a1'])
+    for (const id of ['d1', 'd2']) {
+      store.dispatch(sseSubagentSpawn({ slot: SLOT, id, task: `task ${id}`, agent: 'kirocrew' }))
+      store.dispatch(sseSubagentDone({ slot: SLOT, id, elapsed: 1, outcome: 'completed' }))
+    }
+    return store
+  }
+  const header = () => screen.getByTestId('subagent-histogram')
+
+  it('says how many older runs are not shown, right after the done count', () => {
+    const store = cutStore()
+    store.dispatch(subagentReplayTruncated({ slots: { [SLOT]: { n: 61, at_least: false } } }))
+    renderBar(store)
+    const note = screen.getByTestId('subagent-replay-cut')
+    expect(note).toHaveTextContent('+61 older not shown')
+    expect(note.previousElementSibling).toBe(screen.getByTestId('subagent-done-count'))
+    expect(screen.getByTestId('subagent-done-count')).toHaveTextContent('2')
+  })
+
+  it('states a floor without a number and without calling the runs older', () => {
+    const store = cutStore()
+    store.dispatch(subagentReplayTruncated({ slots: { [SLOT]: { n: 7, at_least: true } } }))
+    renderBar(store)
+    const note = screen.getByTestId('subagent-replay-cut')
+    expect(note).toHaveTextContent('Some finished runs not shown')
+    expect(note.textContent).not.toMatch(/\d|older/)
+  })
+
+  it('renders the header as it does today when nothing was cut', () => {
+    const plain = renderBar(cutStore())
+    const before = header().outerHTML
+    plain.unmount()
+    // A cut for another slot, and a zero count for this one, change nothing here.
+    const store = cutStore()
+    store.dispatch(subagentReplayTruncated({ slots: { [SLOT]: { n: 0, at_least: false }, other: { n: 5, at_least: false } } }))
+    renderBar(store)
+    expect(screen.queryByTestId('subagent-replay-cut')).not.toBeInTheDocument()
+    expect(header().outerHTML).toBe(before)
+  })
+
+  it('drops the note on Dismiss done', () => {
+    const store = cutStore()
+    store.dispatch(subagentReplayTruncated({ slots: { [SLOT]: { n: 61, at_least: false } } }))
+    renderBar(store)
+    expect(screen.getByTestId('subagent-replay-cut')).toBeInTheDocument()
+    act(() => { store.dispatch(clearTerminalSubagents({ slot: SLOT })) })
+    expect(screen.queryByTestId('subagent-replay-cut')).not.toBeInTheDocument()
   })
 })

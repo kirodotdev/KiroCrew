@@ -36,6 +36,7 @@ import DashedOutline from './DashedOutline'
 import { shapeLook, swatchStyle, textInk } from './shapeLook'
 import TextToolbar from './TextToolbar'
 import ShapeToolbar from './ShapeToolbar'
+import { textBoxType, useFittedCanvas } from './textFit'
 import {
   SIDES, connectorRoute, movedSegment, pointBox, segmentDrag, sideAnchor, sideNear, type SegmentDrag, type Side,
 } from './connectorGeometry'
@@ -48,7 +49,7 @@ const EDGE_CURSOR: Record<'n' | 'e' | 's' | 'w', string> = { n: 'ns-resize', s: 
 
 type Drag =
   | { kind: 'pan'; sx: number; sy: number; view0: View }
-  | { kind: 'move'; start: Pt; origin: Map<string, Pt>; snapshot: Canvas; moved: boolean }
+  | { kind: 'move'; start: Pt; origin: Map<string, Pt>; snapshot: Canvas; moved: boolean; copy: boolean; sel: Set<string> }
   | { kind: 'resize'; id: string; corner: Corner; start: Pt; box0: Shape; snapshot: Canvas }
   | { kind: 'marquee'; sx: number; sy: number; cx: number; cy: number; base: Set<string> }
   // A new connector from a shape; `fromSide` is the connect dot it was dragged from.
@@ -149,7 +150,7 @@ export function dotSpacing(zoom: number): number {
   return gap * 2 ** halvings
 }
 
-/** Snap a world coordinate to the snap grid; Alt held during a drag turns it off. */
+/** Snap a world coordinate to the snap grid; Ctrl held during a drag turns it off. */
 const snap = (v: number, on: boolean) => (on ? Math.round(v / SNAP) * SNAP : Math.round(v))
 
 const TOOL_KEYS: { tool: Tool; key: string }[] = [
@@ -178,9 +179,13 @@ export interface CanvasEditorProps {
   epoch?: number
 }
 
-export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch = 0 }: CanvasEditorProps) {
+export default function CanvasEditor({ canvas: stored, onChange: save, readOnly = false, epoch = 0 }: CanvasEditorProps) {
   const { t } = useTranslation()
   const root = useRef<HTMLDivElement>(null)
+  // Everything here works on the canvas as shown, each text box at the height its
+  // text takes; what goes out, and into the undo history, is what the file says.
+  const { canvas, toFile } = useFittedCanvas(stored, root)
+  const onChange = useCallback((next: Canvas) => save(toFile(next)), [save, toFile])
   const [view, setView] = useState<View>({ x: 120, y: 100, zoom: 1 })
   const [tool, setTool] = useState<Tool>('select')
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -217,10 +222,11 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
 
   const commit = useCallback((next: Canvas, before: Canvas = canvasRef.current) => {
     liveColour.current = false
-    undo.current = [...undo.current, { before, after: next }].slice(-HISTORY_CAP)
+    const after = toFile(next)
+    undo.current = [...undo.current, { before: toFile(before), after }].slice(-HISTORY_CAP)
     redo.current = []
-    onChange(next)
-  }, [onChange])
+    save(after)
+  }, [save, toFile])
 
   // Going read-only (a past version opened, say) drops whatever was mid-edit.
   useEffect(() => {
@@ -254,6 +260,11 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
   const byId = useMemo(() => new Map(canvas.shapes.map(s => [s.id, s])), [canvas.shapes])
   const selShapes = canvas.shapes.filter(s => selected.has(s.id))
   const selBox = boundsOf(selShapes)
+  // The selection toolbar acts on shapes of one kind: a single shape, or several
+  // of the same kind so ten cards take a colour at once. Kinds mixed together
+  // share no controls, so the toolbar stays away; such a selection still moves,
+  // deletes and copies as one.
+  const oneKind = selShapes.length > 0 && selShapes.every(s => s.kind === selShapes[0].kind)
   const hoveredShape = hovered ? byId.get(hovered) : undefined
   // Connect dots: on the hovered shape or the one selected, never on a section, and not
   // when zoomed out so far that you are looking at the overall picture, not joining things.
@@ -363,7 +374,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
   }
 
   const editStart = useRef<Canvas | null>(null)
-  useEffect(() => { if (editing) editStart.current = canvasRef.current }, [editing])
+  useEffect(() => { if (editing) editStart.current = toFile(canvasRef.current) }, [editing, toFile])
   /**
    * Ends the text edit and returns the document it leaves. A handler that goes on
    * to read the canvas reads this, since the render that carries it comes later.
@@ -375,18 +386,21 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     if (!id) return b
     const shape = b.shapes.find(s => s.id === id)
     // An empty text box is nothing: it goes, the way it does in FigJam.
-    const next = shape && shape.kind === 'text' && !shape.text.trim() ? removeShapes(b, new Set([id])) : b
+    const removed = !!shape && shape.kind === 'text' && !shape.text.trim()
+    const shown = removed ? removeShapes(b, new Set([id])) : b
+    // Compared as the file says it: a box fitted on screen but not edited is no change.
+    const next = toFile(shown)
     const top = undo.current[undo.current.length - 1]
-    if (next !== b && top && JSON.stringify(top.before) === JSON.stringify(next)) {
+    if (removed && top && JSON.stringify(top.before) === JSON.stringify(next)) {
       // A new text box left empty: the canvas is back where it was before the box
       // was made, so the step that made it goes rather than a second step being
       // added, and one undo never brings back an empty placeholder box.
       undo.current.pop()
-      onChange(next)
+      save(next)
     } else if (editStart.current && JSON.stringify(editStart.current) !== JSON.stringify(next)) commit(next, editStart.current)
-    else if (next !== b) onChange(next)
+    else if (removed) save(next)
     editStart.current = null
-    return next
+    return shown
   }
 
   const removeShapes = (b: Canvas, ids: Set<string>): Canvas => ({
@@ -443,9 +457,9 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
   /** Live colours replace one history entry, retaining the gesture's first state. */
   const restyleLive = (patch: Partial<Pick<Shape, 'hex' | 'borderHex' | 'inkHex'>>, final: boolean, fresh: boolean) => {
     const b = canvasRef.current
-    const next = { ...b, shapes: b.shapes.map(s => (selected.has(s.id) ? { ...s, ...patch } : s)) }
+    const next = toFile({ ...b, shapes: b.shapes.map(s => (selected.has(s.id) ? { ...s, ...patch } : s)) })
     const top = liveColour.current && !fresh ? undo.current.pop() : undefined
-    const before = top?.before ?? b
+    const before = top?.before ?? toFile(b)
     undo.current = [...undo.current, { before, after: next }].slice(-HISTORY_CAP)
     redo.current = []
     liveColour.current = !final
@@ -467,9 +481,9 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
   }, [epoch])
 
   /**
-   * A new text size for every selected shape that holds text. A text box grows to
-   * fit its lines at the new size and never shrinks below what was drawn, so
-   * nothing is cut off; a shape keeps its size and its text reflows inside it.
+   * A new text size for every selected shape that holds text. A text box takes
+   * the height its text needs at the new size (see `textFit.ts`) and widens to
+   * hold a few characters; a shape keeps its size and its text reflows inside it.
    */
   const resizeText = (size: number) => {
     const b = canvasRef.current
@@ -481,12 +495,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
         const { fontSize: _was, ...plain } = s
         void _was
         if (s.kind !== 'text') return { ...plain, ...fontSizeOf(s.kind, px) }
-        const lines = Math.max(1, s.text.split('\n').length)
-        const h = Math.max(s.h * px / (s.fontSize ?? defaultFontSize(s.kind)), Math.ceil(lines * px * 1.3 + 8))
-        const w = Math.max(s.w, Math.ceil(px * 4))
-        const { fontSize: _old, ...rest } = s
-        void _old
-        return { ...rest, ...(px !== DEFAULT_TEXT_SIZE ? { fontSize: px } : {}), w: Math.round(w), h: Math.round(h) }
+        return { ...plain, ...(px !== DEFAULT_TEXT_SIZE ? { fontSize: px } : {}), w: Math.round(Math.max(s.w, px * 4)) }
       }),
     })
   }
@@ -521,15 +530,15 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     liveColour.current = false
     const prev = undo.current.pop()
     if (!prev) return
-    redo.current.push({ before: prev.before, after: canvasRef.current })
-    onChange(prev.before)
+    redo.current.push({ before: prev.before, after: toFile(canvasRef.current) })
+    save(prev.before)
   }
   const doRedo = () => {
     liveColour.current = false
     const next = redo.current.pop()
     if (!next) return
-    undo.current.push({ before: canvasRef.current, after: next.after })
-    onChange(next.after)
+    undo.current.push({ before: toFile(canvasRef.current), after: next.after })
+    save(next.after)
   }
 
   // ---- pointer gestures ------------------------------------------------------------
@@ -595,7 +604,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
       const carried = new Set(next)
       for (const s of doc.shapes) if (s.kind === 'section' && next.has(s.id)) sectionMembers(doc.shapes, s).forEach(m => carried.add(m.id))
       const origin = new Map(doc.shapes.filter(s => carried.has(s.id)).map(s => [s.id, { x: s.x, y: s.y }]))
-      setDrag({ kind: 'move', start: world, origin, snapshot: doc, moved: false })
+      setDrag({ kind: 'move', start: world, origin, snapshot: doc, moved: false, copy: e.altKey, sel: next })
       return
     }
     const r = root.current!.getBoundingClientRect()
@@ -607,7 +616,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     if (!drag) return
     const move = (e: PointerEvent) => {
       const world = toWorld(e.clientX, e.clientY)
-      const b = canvasRef.current
+      let b = canvasRef.current
       if (drag.kind === 'pan') {
         setView({ ...drag.view0, x: drag.view0.x + e.clientX - drag.sx, y: drag.view0.y + e.clientY - drag.sy })
       } else if (drag.kind === 'move') {
@@ -615,20 +624,32 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
         const dy = world.y - drag.start.y
         if (!drag.moved && Math.hypot(dx, dy) * viewRef.current.zoom < 3) return
         drag.moved = true
+        if (drag.copy) {
+          // Option at the start of the drag: the originals stay, and the
+          // dragged selection becomes copies of the carried shapes (a
+          // section's contents included). Connectors are not copied.
+          drag.copy = false
+          const ids = new Map<string, string>()
+          const copies = b.shapes.filter(s => drag.origin.has(s.id)).map(s => { const id = newId(); ids.set(s.id, id); return { ...s, id } })
+          drag.origin = new Map([...drag.origin].map(([id, o]) => [ids.get(id)!, o]))
+          setSelected(new Set([...drag.sel].map(id => ids.get(id)!)))
+          b = { ...b, shapes: [...b.shapes, ...copies] }
+        }
         // The grabbed group moves as one: snapping its first shape decides the
         // step, so shapes keep their spacing relative to each other.
         const lead = drag.origin.values().next().value
-        const sdx = lead ? snap(lead.x + dx, !e.altKey) - lead.x : Math.round(dx)
-        const sdy = lead ? snap(lead.y + dy, !e.altKey) - lead.y : Math.round(dy)
+        const sdx = lead ? snap(lead.x + dx, !e.ctrlKey) - lead.x : Math.round(dx)
+        const sdy = lead ? snap(lead.y + dy, !e.ctrlKey) - lead.y : Math.round(dy)
         onChange({ ...b, shapes: b.shapes.map(s => { const o = drag.origin.get(s.id); return o ? { ...s, x: o.x + sdx, y: o.y + sdy } : s }) })
       } else if (drag.kind === 'resize') {
         const { box0, corner } = drag
-        const on = !e.altKey
+        const on = !e.ctrlKey
         const left = corner.includes('w')
         const top = corner.includes('n')
-        // An edge moves one side only; a corner moves both.
+        // An edge moves one side only; a corner moves both. A text box's height
+        // follows its text, so every handle on one sets its width alone.
         const movesX = corner !== 'n' && corner !== 's'
-        const movesY = corner !== 'e' && corner !== 'w'
+        const movesY = corner !== 'e' && corner !== 'w' && box0.kind !== 'text'
         // The dragged side lands on the grid; the opposite side stays put.
         const cx = snap((left ? box0.x : box0.x + box0.w) + world.x - drag.start.x, on)
         const cy = snap((top ? box0.y : box0.y + box0.h) + world.y - drag.start.y, on)
@@ -660,13 +681,13 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
         setDrag({ ...drag, at: world })
       } else if (drag.kind === 'segment') {
         const { seg } = drag
-        const value = snap(seg.points[seg.seg][seg.axis] + world[seg.axis] - drag.start[seg.axis], !e.altKey)
+        const value = snap(seg.points[seg.seg][seg.axis] + world[seg.axis] - drag.start[seg.axis], !e.ctrlKey)
         const route = movedSegment(seg, value)
         onChange({ ...b, connectors: b.connectors.map(c => (c.id === drag.id ? { ...c, route } : c)) })
       } else if (drag.kind === 'create') {
         // Below a few screen pixels it is still a click, not a drag.
         if (!drag.id && Math.hypot(world.x - drag.start.x, world.y - drag.start.y) * viewRef.current.zoom < 4) return
-        const box = dragBox(drag.shape, drag.start, world, e.altKey)
+        const box = dragBox(drag.shape, drag.start, world, e.ctrlKey)
         if (!drag.id) {
           drag.id = newId()
           const shape: Shape = { id: drag.id, kind: drag.shape, ...box, text: '', color: defaultColor(drag.shape) }
@@ -905,7 +926,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
       })}
       {/* Edges of the selected shape: hover one and drag to move just that side.
           Drawn before the corner handles, so a corner still wins where they meet. */}
-      {showFrame && selShapes.length === 1 && !editing && !selShapes[0].locked && (['n', 'e', 's', 'w'] as const).map(c => {
+      {showFrame && selShapes.length === 1 && !editing && !selShapes[0].locked && (selShapes[0].kind === 'text' ? ['e', 'w'] as const : ['n', 'e', 's', 'w'] as const).map(c => {
         const r = screenBox(selShapes[0])
         const th = 10
         const pos = c === 'n' ? { left: r.x, top: r.y - th / 2, width: r.w, height: th }
@@ -997,9 +1018,8 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
         }} />
       )}
 
-      {/* The selection toolbar: kind, colours, outline, delete. It is for one
-          shape only; a selection of several moves, deletes and copies as one. */}
-      {showChrome && selShapes.length === 1 && selBox && !editing && (() => {
+      {/* The selection toolbar: kind, colours, outline, delete, over the whole selection. */}
+      {showChrome && oneKind && selBox && !editing && (() => {
         const r = screenBox(selBox)
         return (
           <ToolbarPlace narrow={narrow} at={toolbarAt(r.x + r.w / 2, r.y, r.y + r.h)}>
@@ -1119,7 +1139,9 @@ function ToolbarPlace({ at, narrow, children }: { at: { style: CSSProperties; be
       mutations.disconnect()
       for (const panel of panels) { panel.style.left = ''; panel.style.maxWidth = '' }
     }
-  }, [at, narrow, widths])
+    // The numbers, not the object: React can replay a queued width update and
+    // hand back an equal but new object, which would re-measure without end.
+  }, [at, narrow, widths.canvas, widths.toolbar])
   const half = widths.toolbar / 2
   const left = widths.canvas ? Math.max(12 + half, Math.min(Number(at.style.left), widths.canvas - 12 - half)) : at.style.left
   return (
@@ -1225,10 +1247,7 @@ function ShapeView({ shape: s, editing, zoom, onText, onEndEdit }: { shape: Shap
   const text: CSSProperties = s.kind === 'sticky'
     ? { fontSize: s.fontSize ?? defaultFontSize(s.kind), lineHeight: 1.35, color: look.ink, textAlign: s.align ?? defaultAlign(s.kind), padding: 16 }
     : s.kind === 'text'
-      ? {
-        fontSize: s.fontSize ?? defaultFontSize(s.kind), lineHeight: 1.3, color: textInk(s), textAlign: s.align ?? defaultAlign(s.kind), padding: '4px 2px',
-        fontWeight: s.bold ? 700 : 500, textDecoration: s.strike ? 'line-through' : undefined,
-      }
+      ? { ...textBoxType(s), color: textInk(s), textAlign: s.align ?? defaultAlign(s.kind), textDecoration: s.strike ? 'line-through' : undefined }
       : { fontSize: s.fontSize ?? defaultFontSize(s.kind), lineHeight: 1.35, color: look.ink, textAlign: s.align ?? defaultAlign(s.kind), padding: s.kind === 'diamond' ? '18% 22%' : 14 }
   // Each shape is its own stacking context, so its text (raised over its own
   // paint) never shows through a shape stacked above it.
@@ -1291,7 +1310,7 @@ function ShapeView({ shape: s, editing, zoom, onText, onEndEdit }: { shape: Shap
           onFocus={e => e.currentTarget.select()}
           onKeyDown={e => { e.stopPropagation(); if (e.key === 'Escape') e.currentTarget.blur() }}
           onPointerDown={e => e.stopPropagation()}
-          style={{ ...text, position: 'relative', zIndex: 1, width: '100%', height: centred ? undefined : '100%', maxHeight: '100%', resize: 'none', border: 'none', outline: 'none', background: 'transparent', font: 'inherit', fontSize: text.fontSize, fontWeight: text.fontWeight, textDecoration: text.textDecoration, overflow: 'hidden' }}
+          style={{ ...text, position: 'relative', zIndex: 1, width: '100%', height: centred ? undefined : '100%', maxHeight: '100%', resize: 'none', border: 'none', outline: 'none', background: 'transparent', fontFamily: 'inherit', fontSize: text.fontSize, fontWeight: text.fontWeight, textDecoration: text.textDecoration, overflow: 'hidden' }}
         />
       ) : (
         // A text box's text spans the box, so its alignment has room to act; in the

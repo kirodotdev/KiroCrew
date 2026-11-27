@@ -663,10 +663,14 @@ export const SETTINGS_CARD_STAGGER_MS = 60
  * class to key on, so any node inserted anywhere restyles the whole subtree of
  * the elements after it (frontend-conventions.md, Styling). `:where()` keeps the
  * specificity of a single class.
+ *
+ * A link or button that is itself a row spans the box edge to edge, so its focus
+ * ring is drawn inside it, where the box's `overflow-hidden` cannot cut it.
  */
 const SETTINGS_BOX_CLASS =
   'rounded-xl overflow-hidden border border-[var(--border)] bg-[var(--card)] empty:hidden '
-  + '[&>*]:px-4 [&>*]:py-3 [&>:where(:not(:first-child))]:border-t [&>:where(:not(:first-child))]:border-[var(--border)] [&_[data-settings-card]]:mb-0'
+  + '[&>*]:px-4 [&>*]:py-3 [&>:where(:not(:first-child))]:border-t [&>:where(:not(:first-child))]:border-[var(--border)] [&_[data-settings-card]]:mb-0 '
+  + '[&>:is(a,button):focus-visible]:outline-offset-[-2px] [&>:is(a,button):first-child:focus-visible]:rounded-t-[inherit] [&>:is(a,button):last-child:focus-visible]:rounded-b-[inherit]'
 
 export function SettingsCard({ index, children }: {
   /**

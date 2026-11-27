@@ -2,20 +2,23 @@
 
 A KAS sub-agent (``invoke_sub_agent``) runs inside its parent's turn under the
 entry the session's ``customAgents`` batch registers for its name. This module
-builds that entry for a plain helper: built-in tools, its parent's MCP servers,
-no hooks, no skills. It exists only in memory, in the batch of a session that
-mounts it; Kiro Crew writes no agent file for it.
+builds that entry: the chat's own agent, the one an unnamed ``spawn_run`` runs.
+It is a copy of the parent's projected entry (built-in tools, ``allowedTools``,
+``permissions``, prompt, resources) under the helper's id, less what an in-turn
+sub-agent cannot have: Kiro Crew's own servers, the sub-agent tool itself, and
+the per-run options of a ``spawn_run`` (:data:`CHILD_NOTE` tells it so). It
+exists only in memory, in the batch of a session that mounts it; Kiro Crew
+writes no agent file for it.
 
 The helper holds the servers its parent holds (:func:`shared_servers`) and no
 other. The engine hands a sub-agent the session-level array and the servers its
-own entry declares, never its parent's block, so the helper lists each of the
-parent's servers in ``tools`` as the parent's ``tools`` name it, repeats the
-parent's projected block entry byte for byte (the engine keys a running server
-by its name and declaration, so the helper is handed the parent's process and
-starts none), and carries every ``excludedTools`` entry the parent holds for
-them. The parent's ``permissions`` rules reach the helper's calls in the engine,
-which intersects a sub-agent's policy with its parent's, so what the parent runs
-unasked, is asked about or is denied, the helper is too.
+own entry declares, never its parent's block, so the helper keeps the parent's
+``tools`` entries for each of those servers, repeats the parent's projected
+block entry byte for byte (the engine keys a running server by its name and
+declaration, so the helper is handed the parent's process and starts none), and
+carries every ``excludedTools`` entry the parent holds. The engine intersects a
+sub-agent's policy with its parent's, and the copy's policy is the parent's, so
+what the parent runs unasked, is asked about or is denied, the helper is too.
 
 Kiro Crew's own servers stay out, whole (:func:`own_servers`): each is launched
 with the parent session's identity, so inside it a helper's call is the
@@ -39,97 +42,38 @@ logger = logging.getLogger(__name__)
 #: same name never takes its place (:func:`helper_entry` builds its own).
 KAS_HELPER_AGENT = "kirocrew-helper"
 
-#: The helper's built-in tools, kiro-cli names: the default agent's built-ins
-#: without the sub-agent tool, the tool loader and the session tools.
-_HELPER_TOOLS = (
-    "fs_read",
-    "fs_write",
-    "execute_bash",
-    "grep",
-    "glob",
-    "code",
-    "web_fetch",
-    "web_search",
-)
-#: What the helper's own spec runs without asking: nothing. Its parent's rules
-#: decide each call in the engine, and what they keep at ask reaches Kiro Crew's
-#: gate, which answers it as it answers the parent's.
-_HELPER_ALLOWED: tuple[str, ...] = ()
-
-_HELPER_PROMPT = (
-    "You are a helper that Kiro Crew's chat agent hands one short, independent task. "
-    "Do that task with your tools and reply with the result only. "
-    "You cannot start other agents, and nothing you do outlives this reply. "
-    "If the task needs a tool you do not have, say so in your reply instead of "
+#: What the helper's prompt says after its parent's: what this in-turn run cannot
+#: do that a ``spawn_run`` child can. Its tool list holds none of Kiro Crew's own
+#: tools (:func:`own_servers`) and no sub-agent tool, and the engine starts it with
+#: none of ``spawn_run``'s per-run options.
+CHILD_NOTE = (
+    "You are running as a sub-agent inside another agent's turn, not in a chat of "
+    "your own. Do the one task you were given and reply with the result only. You "
+    "have no Kiro Crew tool (no memory, cron, messaging or spawn tool), you cannot "
+    "start sub-agents, and no model, folder or turn limit was set for this run. If "
+    "the task needs something you do not have, say so in your reply instead of "
     "working around it."
 )
 
-#: Where the default agent's standing rules on what a shell or file tool must not do
-#: start: the first words of each of those bullets in the ``## Rules`` section of the
-#: shipped ``config/prompt.md``, the one source the parent's prompt is built from. The
-#: helper carries each whole bullet as that file has it (:func:`helper_tool_rules`), so
-#: no second copy of the text exists; ``test_kas_engine_subagent_target.py`` fails when
-#: the source loses one. Guidance only: what the helper may do is bounded by the same
-#: gate and sandbox as its parent.
-HELPER_RULE_ANCHORS: tuple[str, ...] = (
-    "- Do NOT run `git push` to protected branches",
-    "- Do NOT run destructive commands",
-    "- A blocked call is a policy decision, not a puzzle.",
-    "- Do NOT read credential files directly",
-    "- You CAN run AWS CLI commands",
-    "- If you need to serve files over HTTP",
+#: The line the engine lists under its sub-agent tool, where the parent picks an agent.
+HELPER_DESCRIPTION = (
+    "Runs one short, independent task as this chat's own agent, without Kiro Crew's "
+    "own tools or sub-agents, and reports the result back."
 )
-_RULES_HEADING = "## Rules"
 
 
-def helper_tool_rules() -> tuple[str, ...]:
-    """The ``## Rules`` bullets of the shipped prompt that :data:`HELPER_RULE_ANCHORS` names.
+def _uncopied_keys() -> frozenset[str]:
+    """Keys of the parent's projected entry the helper's copy leaves out.
 
-    Read from the file at build time, in anchor order, each whole bullet as written.
-    An anchor the section does not hold is left out and logged; an unreadable file
-    gives none, and the helper keeps only its own three sentences.
+    Kiro Crew's own records of what it answers for the session agent: the gate
+    stamps the session agent's on the helper's requests from the session, never from
+    the helper's entry (``session_handle_permissions._stamp_parent_grants``). The
+    mcp.json settings stamp among them: the helper gets its own.
     """
-    from kiro_crew.agent import _BUNDLED_CFG_DIR
+    from kiro_crew.acp.kas_parent_limits import CREW_PARENT_LIMITS_KEY
+    from kiro_crew.acp.kas_permissions import CREW_ONLY_ENTRY_KEYS
 
-    try:
-        lines = (_BUNDLED_CFG_DIR / "prompt.md").read_text(encoding="utf-8").splitlines()
-        start = lines.index(_RULES_HEADING) + 1
-    except (OSError, ValueError):
-        logger.warning("the shipped prompt's Rules could not be read for the helper", exc_info=True)
-        return ()
-    section: list[str] = []
-    for line in lines[start:]:
-        if line.startswith("## "):
-            break
-        section.append(line)
-    found: list[str] = []
-    for anchor in HELPER_RULE_ANCHORS:
-        match = next((line for line in section if line.startswith(anchor)), None)
-        if match is None:
-            logger.warning("the shipped prompt's Rules hold no bullet starting %r", anchor)
-        else:
-            found.append(match)
-    return tuple(found)
-
-
-def helper_spec() -> dict[str, Any]:
-    """The helper's agent spec, in kiro-cli's shape, built fresh on every call."""
-    return {
-        "name": KAS_HELPER_AGENT,
-        # The engine lists this line under its sub-agent tool, where the parent
-        # picks an agent, so it says what the helper holds (:func:`shared_servers`)
-        # and what it does not (:func:`own_servers`).
-        "description": (
-            "Runs one short, independent task with built-in tools and the chat "
-            "agent's MCP servers (no Kiro Crew tool) and reports the result back."
-        ),
-        "prompt": "\n\n".join((_HELPER_PROMPT, "\n".join(helper_tool_rules()))),
-        "tools": list(_HELPER_TOOLS),
-        "allowedTools": list(_HELPER_ALLOWED),
-        "mcpServers": {},
-        "includeMcpJson": False,
-        "resources": [],
-    }
+    return CREW_ONLY_ENTRY_KEYS | {CREW_PARENT_LIMITS_KEY}
 
 
 #: What the engine reads after ``@`` in a ``tools`` entry as a tag of its own,
@@ -215,72 +159,70 @@ def shared_servers(parent: dict[str, Any], stub_server_names: Iterable[str]) -> 
     return out
 
 
-def _with_parents_servers(
-    entry: dict[str, Any], parent: dict[str, Any], shared: dict[str, Any]
-) -> dict[str, Any]:
-    """The helper's *entry* holding the *shared* servers exactly as *parent* does.
-
-    Its ``tools`` gain the parent's own entries for each server, its
-    ``excludedTools`` every entry the parent holds for one of them (a switched-off
-    tool, a ``disabledTools`` name or glob), and its block the parent's entries.
-    """
-    if not shared:
-        return entry
-    tools = entry.get("tools")
-    refs = [ref for name in shared for ref in _refs(parent.get("tools"), name)]
-    held = parent.get("excludedTools")
-    carried = [
-        t
-        for t in (held if isinstance(held, list) else [])
-        if isinstance(t, str) and t.startswith("@") and t[1:].split("/", 1)[0] in shared
-    ]
-    current = entry.get("excludedTools")
-    out = {
-        **entry,
-        "tools": list(dict.fromkeys([*(tools if isinstance(tools, list) else []), *refs])),
-        "excludedTools": list(
-            dict.fromkeys([*(current if isinstance(current, list) else []), *carried])
-        ),
-    }
-    block = {name: declaration for name, declaration in shared.items() if declaration is not None}
-    if block:
-        out["mcpServers"] = block
-    return out
-
-
 def helper_entry(
-    agents_dir: Path,
     parent_entry: dict[str, Any],
     *,
     stub_server_names: frozenset[str],
-    session_key: str,
     settings_dir: str | Path | None,
     other_servers: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """The helper's projected ``customAgents`` entry for this session.
+    """The helper's ``customAgents`` entry for this session: a copy of its parent's.
 
-    Projected through the same translation as every other agent
-    (``kas_agents.build_kas_custom_agents``), then given its parent's servers
-    (:func:`shared_servers`). Every other server that could reach it is excluded
-    whole: Kiro Crew's own, the pooled stubs and the parent's block servers it
-    does not share, and *other_servers* (a sub-agent target's). The ``mcp.json``
-    settings stamp marks it not opted in, with the shared servers as its own.
+    *parent_entry* is the session agent's projected entry before the mount, the
+    agent an unnamed ``spawn_run`` runs. The copy keeps its built-in tools,
+    ``allowedTools``, ``permissions``, ``excludedTools``, prompt and resources,
+    under the helper's id and description, with :data:`CHILD_NOTE` after the
+    prompt. It leaves out Kiro Crew's own records of the parent
+    (:func:`_uncopied_keys`) and the sub-agent tool: ``invoke_sub_agent`` leaves its
+    tools and joins its ``excludedTools``, and every engine sub-agent is denied
+    (``kas_subagent_targets.deny_every_subagent``). Of the parent's block it keeps
+    the servers :func:`shared_servers` names; every other server that could reach
+    it is excluded whole: Kiro Crew's own, the pooled stubs and the parent's block
+    servers it does not share, and *other_servers* (a sub-agent target's). The
+    ``mcp.json`` settings stamp marks it not opted in, with the shared servers as
+    its own.
     """
-    from kiro_crew.acp import kas_agents as kas_agents_mod
+    import copy
+
     from kiro_crew.acp import kas_env_launch
     from kiro_crew.acp.kas_settings_mcp import stamp_settings_mcp
-    from kiro_crew.acp.kas_subagent_targets import _excluding_switched_off
+    from kiro_crew.acp.kas_subagent_targets import (
+        KAS_SUBAGENT_TOOL,
+        _excluding_switched_off,
+        deny_every_subagent,
+    )
 
-    spec = helper_spec()
-    [entry] = kas_agents_mod.build_kas_custom_agents(
-        agents_dir,
-        KAS_HELPER_AGENT,
-        spec,
-        stub_server_names=stub_server_names,
-        session_key=session_key,
+    uncopied = _uncopied_keys()
+    entry = {k: copy.deepcopy(v) for k, v in parent_entry.items() if k not in uncopied}
+    prompt = entry.get("prompt")
+    entry.update(
+        id=KAS_HELPER_AGENT,
+        description=HELPER_DESCRIPTION,
+        prompt=f"{prompt}\n\n{CHILD_NOTE}" if isinstance(prompt, str) and prompt else CHILD_NOTE,
     )
     shared = shared_servers(parent_entry, stub_server_names)
-    entry = _with_parents_servers(entry, parent_entry, shared)
+    tools = entry.get("tools")
+    if isinstance(tools, list):
+        # A server it does not share leaves its list too (it is excluded below):
+        # what remains names built-ins, engine tags and the shared servers.
+        entry["tools"] = [
+            t
+            for t in tools
+            if t != KAS_SUBAGENT_TOOL
+            and not (
+                isinstance(t, str)
+                and t.startswith("@")
+                and (server := t[1:].split("/", 1)[0]) not in shared
+                and server not in _ENGINE_TAGS
+            )
+        ]
+    excluded = entry.get("excludedTools")
+    entry["excludedTools"] = list(
+        dict.fromkeys([*(excluded if isinstance(excluded, list) else []), KAS_SUBAGENT_TOOL])
+    )
+    entry["mcpServers"] = {
+        name: declaration for name, declaration in shared.items() if declaration is not None
+    }
     # The repeated declarations name the parent's launch snapshots, and the batch
     # is released once per entry that names one: hold each once more.
     kas_env_launch.retain_batch([{"mcpServers": entry.get("mcpServers")}])
@@ -292,7 +234,9 @@ def helper_entry(
     [entry] = stamp_settings_mcp(
         [entry], KAS_HELPER_AGENT, settings_dir, declared=sorted(shared), opted_in=False
     )
-    return entry
+    return deny_every_subagent(
+        entry, "kas_engine_subagent_helper_leaf", "the helper starts no sub-agent of its own"
+    )
 
 
 def only_helper_rule() -> dict[str, Any]:
@@ -400,14 +344,13 @@ def mount_deny_last(custom_agents: list[dict[str, Any]], agent: str) -> list[dic
 
 
 __all__ = [
+    "CHILD_NOTE",
     "DIRECT_CHILD_DEPTH",
-    "HELPER_RULE_ANCHORS",
+    "HELPER_DESCRIPTION",
     "KAS_HELPER_AGENT",
     "engine_names_the_helper",
     "helper_entry",
     "helper_is_the_only_child",
-    "helper_spec",
-    "helper_tool_rules",
     "mount_deny_last",
     "only_helper_rule",
     "own_servers",

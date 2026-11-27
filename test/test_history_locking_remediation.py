@@ -614,9 +614,12 @@ class TestOnLoopPersistDiscipline:
 
         async def _run() -> None:
             append_off_loop(log, "k", "assistant", "offloaded-ok")
+            # Read off the loop: on it the transcript read retries without a pause,
+            # so on Windows the worker's open handle fails all three tries at once.
             await async_wait_until(
                 lambda: any(m.get("content") == "offloaded-ok" for m in log.read_messages("k")),
                 describe=lambda: f"messages: {log.read_messages('k')}",
+                off_loop=True,
             )
 
         asyncio.run(_run())

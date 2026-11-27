@@ -118,7 +118,7 @@ export function rowLabel(m: RosterRowLike): string {
  *  agree on what "the search reaches" means -- the template term is how the
  *  chip's search has always reached a row by what it RUNS (`kirocrew-oncall`)
  *  rather than by what it is called. */
-function matchesSearch(m: RosterRowLike, needle: string): boolean {
+export function matchesSearch(m: RosterRowLike, needle: string): boolean {
   return (
     m.name.toLowerCase().includes(needle) ||
     rowLabel(m).toLowerCase().includes(needle) ||

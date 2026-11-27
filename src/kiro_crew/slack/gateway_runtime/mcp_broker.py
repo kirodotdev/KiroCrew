@@ -811,6 +811,10 @@ async def _refresh_mcp_overlays(
     The refresh never writes launch approvals: a probe that makes any launch
     decision the approval store does not already hold also reports a restart as
     needed, so that decision is made, recorded and audited by the next start.
+
+    An applied answer also names the stub set the running broker serves
+    (``serving_stub_servers``, read under the lock), which a stub change saved
+    since start does not reach.
     """
     from kiro_crew.mcp_gateway.overlay_refresh import changes_a_launch_decision, rewrite_policy
     from kiro_crew.mcp_gateway.rewriter import take_pass_inputs as rewriter_take_pass_inputs
@@ -851,7 +855,8 @@ async def _refresh_mcp_overlays(
         if register is not None and not await register():
             return {"applied": False, "restart_required": False}
         inputs = getattr(self, "_mcp_rewrite_inputs", None)
-        if self._mcp_gateway_manager is None or not self._mcp_stub_servers_started or not inputs:
+        serving = self._mcp_stub_servers_started
+        if self._mcp_gateway_manager is None or not serving or not inputs:
             return {"applied": False, "restart_required": False}
         applied, reason = await asyncio.get_running_loop().run_in_executor(
             maintenance_executor(),
@@ -864,7 +869,8 @@ async def _refresh_mcp_overlays(
         logger.warning(
             "mcp-gateway: overlays left unchanged until the next gateway restart: %s", reason
         )
-    return {"applied": applied, "restart_required": not applied}
+        return {"applied": False, "restart_required": True}
+    return {"applied": True, "restart_required": False, "serving_stub_servers": sorted(serving)}
 
 
 def _wire_mcp_gateway_dashboard(self: GatewayOrchestrator) -> None:

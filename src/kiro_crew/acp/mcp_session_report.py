@@ -50,12 +50,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 from kiro_crew.acp._dispatch import classify_notification
-from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure
+from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure, is_start_timeout_failure
 from kiro_crew.acp.mcp_report_bound import keep, read_status_snapshot
 from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
@@ -738,6 +739,11 @@ class McpSessionReport:
     #: failed bucket lists. Set by :meth:`record_pruned_omitted`; counted and said
     #: in the payload and the summary like :attr:`no_tools_omitted`.
     pruned_omitted: int = 0
+    #: The servers :meth:`record_pruned` recorded: the ones Crew left out of this
+    #: session before it was sent (an array prune, or a spec-writer drop). Read for
+    #: the session-start notice that names them; not part of :meth:`payload`, whose
+    #: failed bucket already lists each.
+    crew_left_out: tuple[str, ...] = ()
     #: Bumped by every :meth:`begin_session`, so a session-open mount check
     #: (:mod:`kiro_crew.acp.mcp_mount_check`) started for one attempt can tell
     #: that the report has moved on to another and write nothing.
@@ -825,6 +831,12 @@ class McpSessionReport:
     #: :meth:`restart_to_load`: the next turn may bring them up. Set by the
     #: session handle through :meth:`set_reattempting`.
     _reattempting: frozenset[str] = frozenset()
+    #: Servers whose latest failure was a start that ran out of time
+    #: (:func:`~kiro_crew.acp.mcp_reattempt.is_start_timeout_failure`). Kept
+    #: while the host starts one again, when ``_failures`` holds no reason for it,
+    #: so :meth:`given_up` can tell that re-attempt apart.
+    #: Holds only names the report tracks (:meth:`_tracked`).
+    _start_timed_out: set[str] = field(default_factory=set)
     #: Servers a config write added or changed after this session started, on a
     #: backend that applies no such change to a running session. Listed in
     #: :meth:`restart_to_load` until the next session, which loads them. Set
@@ -837,6 +849,9 @@ class McpSessionReport:
     #: session that has reported nothing yet" — see ``payload``. Without it, the
     #: kiro-cli path (whose wire roster is empty by design) reads as no session.
     _started: bool = False
+    #: ``time.monotonic()`` when :meth:`begin_session` last ran: how long this
+    #: session's servers have had to start (:meth:`given_up`).
+    began_at: float = 0.0
 
     def begin_session(self, servers: Any) -> None:
         """Start a report for a new session attempt, discarding any prior one.
@@ -851,6 +866,7 @@ class McpSessionReport:
         is a session-establishment point, which is why the clear belongs here and
         not at any one of them.
         """
+        self.began_at = time.monotonic()
         self._cut.clear()
         self.configured, _ = self._keep("configured", _roster(servers))
         self.unresolved_refs = ()
@@ -861,6 +877,7 @@ class McpSessionReport:
         self.no_tools = ()
         self.no_tools_omitted = 0
         self.pruned_omitted = 0
+        self.crew_left_out = ()
         self.generation += 1
         self.declared = ()
         self.declared_omitted = 0
@@ -880,6 +897,7 @@ class McpSessionReport:
         self._sign_in_suspected.clear()
         self._failures.clear()
         self._reattempting = frozenset()
+        self._start_timed_out.clear()
         self._reload_pending = ()
         self._unauthorized = frozenset()
 
@@ -1078,6 +1096,33 @@ class McpSessionReport:
         settled = {*self.switched_off, *self._host_disabled, *self.registry_dropped}
         return tuple(n for n in self.unreported(tuple(names)) if n not in settled)
 
+    def given_up(self, after_secs: float) -> tuple[str, ...]:
+        """The servers this session's host is not bringing up, in report order.
+
+        For another session on the same host and config that is about to wait for
+        the same servers (a sub-agent of this session): waiting there for one of
+        these only spends its bound. Two kinds, read from :meth:`not_ready`:
+
+        * ``failed``: the host gave up on it, and does not try it again on its own
+          (:meth:`set_reattempting`).
+        * ``connecting``: still starting although this session began more than
+          *after_secs* ago, so it is hung, or queued behind hung ones.
+
+        Not one the host is re-attempting (it may come up now, say with a
+        credential it lacked), unless its last failure was a start that ran out
+        of time: a second start takes as long as the first, longer than another
+        session's wait for it.
+
+        Nothing else: a server waiting for a sign-in has reported, so no wait
+        holds for it, and one switched off or dropped by a registry is never
+        waited for.
+        """
+        states = self.not_ready()
+        late = time.monotonic() - self.began_at > after_secs if self._started else False
+        given_up = (*states.get("failed", ()), *(states.get("connecting", ()) if late else ()))
+        retrying = self._reattempting - self._start_timed_out
+        return tuple(name for name in given_up if name not in retrying)
+
     def note_turn_told(self, mark: str, named: Iterable[str]) -> None:
         """A block marked *mark* spells out the servers *named* as still starting."""
         self.turn_told = (mark, frozenset(named))
@@ -1131,6 +1176,7 @@ class McpSessionReport:
         for name in stale:
             self._failures.pop(name, None)
             self._reported.pop(name, None)
+        self._start_timed_out -= stale
         self._host_disabled -= stale
         self._host_pending -= stale
         if dropped_stale:
@@ -1177,9 +1223,12 @@ class McpSessionReport:
         clean = sanitize_sink_text(str(name or ""), _NAME_CAP)
         if not clean:
             return False
-        return self._record(
+        changed = self._record(
             _ACTION_INIT_FAILURE, clean, sanitize_sink_text(str(reason or ""), _ERROR_CAP)
         )
+        if clean in self._failed and clean not in self.crew_left_out:
+            self.crew_left_out = (*self.crew_left_out, clean)
+        return changed
 
     def has_reported(self, name: Any) -> bool:
         """True when *name* is in any bucket: it sent a frame of its own."""
@@ -1364,6 +1413,7 @@ class McpSessionReport:
             tracked = self._tracked()
             for name in [name for name in self._reported if name not in tracked]:
                 del self._reported[name]
+            self._start_timed_out &= tracked
             more = snapshot.omitted + self._cut.get("reports", 0) - refused
             if more:
                 logger.warning(
@@ -1476,6 +1526,7 @@ class McpSessionReport:
                 evicted = target.pop(0)
                 self._refuse_report(evicted)
                 self._failures.pop(evicted, None)
+                self._start_timed_out.discard(evicted)
                 if evicted not in self._host_disabled and evicted not in self._host_pending:
                     self._reported.pop(evicted, None)
             target.append(name)
@@ -1495,7 +1546,12 @@ class McpSessionReport:
                 self._failures[name] = error
             else:
                 self._failures.pop(name, None)
+            if is_start_timeout_failure(error):
+                self._start_timed_out.add(name)
+            else:
+                self._start_timed_out.discard(name)
         else:
+            self._start_timed_out.discard(name)
             # A server that has since initialized (or gone back to asking for
             # authorization) must not keep showing the stale reason it failed
             # with, which is exactly the misleading evidence this view removes.

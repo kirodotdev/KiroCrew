@@ -1397,9 +1397,10 @@ export function composerVoiceInputProps(cv: ComposerVoice) {
     voiceDictationPanel: cv.sttDictationPanel,
     voiceSubmitOnRelease: cv.submitOnRelease,
     voiceSlideToSend: cv.slideToSend,
-    voiceStreaming: voice.streamEnabled,
+    /** Transport of this composer's recording in flight. The saved streaming
+     *  setting describes only the next recording. */
+    voiceTransport: voiceOwned ? voice.transport : null,
     voiceSampleRef: voice.sampleRef,
-    voicePartial: voiceOwned ? voice.partial : '',
     voiceDownload: voiceOwned ? voice.download : null,
     voiceCaretRef: cv.voiceCaretRef,
     voicePendingCaretRef: cv.voicePendingCaretRef,

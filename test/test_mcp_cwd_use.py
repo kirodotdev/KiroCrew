@@ -68,15 +68,19 @@ def _config(tmp_path) -> dict:
 def _boot_rewrite(tmp_path, agents):
     """The next gateway start: the routed set comes from config, as boot reads it."""
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.mcp_gateway.launch_resolve import rewrite_kwargs
 
-    stubs = frozenset(KiroCrewConfig.load().mcp_gateway.stub_servers)
-    _results, target_env = rewriter.rewrite_agents(
+    cfg = KiroCrewConfig.load()
+    stubs = frozenset(cfg.mcp_gateway.stub_servers)
+    inputs = rewrite_kwargs(cfg, stubs)
+    inputs.update(
         source_dir=agents,
         overlay_dir=tmp_path / "boot" / "mcp-gateway" / "agents",
         socket_path=tmp_path / "gw.sock",
         work_dir=tmp_path / "work",
-        stub_servers=stubs,
-        approvals=_approval_module().load_approvals(),
+    )
+    _results, target_env = rewriter.rewrite_agents(
+        **inputs, approvals=_approval_module().load_approvals()
     )
     return stubs, target_env
 
@@ -406,10 +410,9 @@ async def test_a_failed_scan_keeps_an_unbound_answer_working(tmp_path, rows_home
     _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
     expected = await _expected_launch()
 
-    def _boom():
-        raise OSError("scan failed")
+    from kiro_crew.mcp_gateway.folder_use import FolderDeclarations
 
-    monkeypatch.setattr(mcp_mod, "_collect_server_rows", _boom)
+    monkeypatch.setattr(mcp_mod, "_folder_declarations", lambda: FolderDeclarations(complete=False))
     status, _body = await _post(
         {"name": "srv", "stub": True, "expected_launch": expected, "cwd_use": "not_used"}
     )

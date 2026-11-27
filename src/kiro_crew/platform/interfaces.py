@@ -664,11 +664,40 @@ class McpToolingProvider(Protocol):
         server that :meth:`extra_mcp_servers` supplies on this host to the spec a
         session runs on a custom agent (a user-level spec Crew did not write), under
         the same opt-outs as Crew's own servers. It is added at spawn, never written
-        into the user's file, never auto-approved, and not added while a wildcard in
-        the agent's own ``allowedTools`` would approve it unasked. Which spawns add
+        into the user's file, and never auto-approved: where a wildcard in the
+        agent's own ``allowedTools`` would approve it unasked, KAS gets it with an
+        ``ask`` rule over its tools and kiro-cli does not get it. Which spawns add
         it, and so the spec an edition check that reports where it is mounted
         judges, is ``acp.default_crew_servers.session_spec_on(backend, agent, spec)``.
         The public Default returns ``()``.
+        """
+        ...
+
+    def launch_token_normalizer(self, token: str) -> str:
+        """*token* (one argument of an MCP launch) with a known version folder folded.
+
+        WIRED: ``mcp_gateway.launch_approval_normalize.normalized_command_hash``
+        maps each argument through this in the gateway's rewrite pass and in the
+        operator's approval writer, so an approved launch whose only change is a
+        folded argument keeps its approval. The program path is never passed
+        here and stays literal in that digest, so a changed program is still
+        refused. It never reaches ``hashing.hash_command``: the pool key, the
+        broker stub and gatewayd's check stay literal. Fold only a segment that
+        names a version of the same program, such as a package manager's
+        per-update folder. A launch whose arguments this leaves unchanged, or a
+        call that raises or returns a non-string, folds nothing. The public
+        Default returns *token* unchanged.
+        """
+        ...
+
+    def folder_free_mcp_servers(self) -> FrozenSet[str]:
+        """MCP server names the edition knows do not work on the project folder.
+
+        WIRED: ``mcp_gateway.folder_use`` reads it, so MCP Management shares a
+        listed server with the page-wide switch like Kiro Crew's own, instead of
+        keeping it in each chat until the person turns its Share switch on. List
+        only servers that take full paths or call a service and never read the
+        folder they start in. The public Default returns an empty set.
         """
         ...
 

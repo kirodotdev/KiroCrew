@@ -36,7 +36,7 @@ kirocrew cron add "board" "" --every 1800 --script ~/.kiro/crew/crons/board.py:r
 kirocrew cron add "disk" "" --every 600 --command "df -h /" --timeout 30 --timeout-secs 60  # zero-token command job
 kirocrew cron add "digest" "summarize the news" --every 86400 --folder "Veille"  # filed in a Schedule-page folder
 kirocrew cron update <job-id> --name "new name" --message "new prompt" --approval-mode auto
-kirocrew cron update <job-id> --folder "Reports"   # move to a folder; --folder "" moves it out
+kirocrew cron update <job-id> --folder "Reports"   # move to a folder; --folder= moves it out
 kirocrew cron update <job-id> --model <id> --timezone America/New_York --no-persistent-session --minimal-context
 kirocrew cron list
 kirocrew cron list --folder "Veille"                # only that folder; --folder - lists ungrouped jobs
@@ -49,7 +49,7 @@ With `--script`, `--agent` must name a Bot. The job is then bound to that Bot, a
 
 A `--script` file must already live under `~/.kiro/crew/crons/`; the CLI registers it, it does not copy it. `--script` and `--command` are mutually exclusive, as are `--every`/`--cron`/`--at`; `--agent` goes with `--script` only as a Bot name (above). Every refusal prints on stderr and exits non-zero with nothing written (2 for a flag-combination error, 1 for a validation, security or store refusal), so an installer can register a job headlessly.
 
-`cron update` changes a job in place, so its id and run history stay. It takes `--model`, `--timezone`, `--[no-]persistent-session`, `--[no-]minimal-context`, `--[no-]hide-in-chat` and `--[no-]silent`, with the meanings they have on `cron add`; a flag left out leaves its setting alone. `--model ""` clears the model override and `--timezone ""` puts the job back on the configured timezone.
+`cron update` changes a job in place, so its id and run history stay. It takes `--model`, `--timezone`, `--[no-]persistent-session`, `--[no-]minimal-context`, `--[no-]hide-in-chat` and `--[no-]silent`, with the meanings they have on `cron add`; a flag left out leaves its setting alone. `--model=` clears the model override and `--timezone=` puts the job back on the configured timezone.
 
 ### Via Slack
 
@@ -229,6 +229,10 @@ cron_add(
 | `persistent_session: false` | `cron:{id}:{uuid}` (fresh each run) | Clean slate, no `last_result` | Polling, scanners, alerting |
 
 The reaper tracks per-run session keys so it can still SIGKILL stuck ephemeral sessions.
+
+### A Reminder Only (`notify_only`)
+
+A job's `message` is a prompt: at each run an agent reads it and acts on it, with its tools. For "remind me to X", set `notify_only: true`. Each run then delivers the message to you as written (the dashboard bell, plus the job's channel or Slack) and starts no agent turn, so no tool runs. It cannot be combined with `command` or `script`.
 
 ### A New Chat per Run (`new_chat_per_run`)
 

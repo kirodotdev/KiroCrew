@@ -209,6 +209,9 @@ class PullRequestFacts:
     #: body rewritten in place -- so it is the digest that catches a verdict a
     #: thread or status digest cannot see.
     pr_comment_body_digest: str = ""
+    #: What a person other than the author wrote, in comments and reviews; set by
+    #: the GitHub adapter only, and non-empty on a read that found nobody.
+    person_comment_digest: str = ""
 
     def __post_init__(self) -> None:
         if not is_pull_request_monitor_kind(self.kind):
@@ -243,6 +246,8 @@ class PullRequestFacts:
             raise ValueError("checks_complete must be a boolean")
         if not isinstance(self.pr_comment_body_digest, str):
             raise ValueError("pr_comment_body_digest must be a string")
+        if not isinstance(self.person_comment_digest, str):
+            raise ValueError("person_comment_digest must be a string")
 
 
 @dataclass(frozen=True)
@@ -263,17 +268,20 @@ def build_pull_request_probe_result(
 ) -> PullRequestProbeResult:
     """Build the shared canonical snapshot, fingerprint, and classification."""
     canonical = canonical_pull_request_facts(facts)
+    previous: Mapping[str, object] = (
+        previous_observation if isinstance(previous_observation, Mapping) else {}
+    )
+    settled = _board_settled(facts)
+    settled_head = _checks_settled_head(canonical, previous, settled=settled)
+    if settled_head:
+        canonical["checks_settled_head"] = settled_head
     status, reason_code = classify_pull_request_facts(facts)
     fingerprint_facts = (
         actionable_fingerprint_facts(canonical)
         if status is MonitorObservationStatus.ACTIONABLE
         else canonical
     )
-    previous_head = (
-        previous_observation.get("head_revision")
-        if isinstance(previous_observation, Mapping)
-        else None
-    )
+    previous_head = previous.get("head_revision")
     head_changed = (
         facts.state == "open"
         and isinstance(previous_head, str)
@@ -281,6 +289,15 @@ def build_pull_request_probe_result(
         and bool(facts.head_revision)
         and previous_head != facts.head_revision
     )
+    # An ACTIONABLE subject carries its blockers, which the coalescing window
+    # reads. A PENDING one carries only the edges that happened on this tick,
+    # which ``decide_monitor`` wakes on directly.
+    if status is MonitorObservationStatus.ACTIONABLE:
+        conditions = pull_request_conditions(canonical)
+    elif status is MonitorObservationStatus.PENDING:
+        conditions = pull_request_waiting_conditions(canonical, previous, settled=settled)
+    else:
+        conditions = ()
     return PullRequestProbeResult(
         response=facts if response is None else response,
         canonical=canonical,
@@ -290,15 +307,7 @@ def build_pull_request_probe_result(
             supplemental_provider_error=supplemental_provider_error,
             reason_code=reason_code,
             head_changed=head_changed,
-            # Conditions are carried only for an ACTIONABLE subject, because the
-            # coalescing window is the only thing that reads them and nothing
-            # else is put through it. A PENDING subject naming conditions would
-            # be state with no reader, which is the shape that rots.
-            conditions=(
-                pull_request_conditions(canonical)
-                if status is MonitorObservationStatus.ACTIONABLE
-                else ()
-            ),
+            conditions=conditions,
         ),
     )
 
@@ -393,6 +402,9 @@ def canonical_pull_request_facts(facts: PullRequestFacts) -> dict[str, object]:
     # fact.
     if facts.pr_comment_body_digest:
         canonical["pr_comment_body_digest"] = facts.pr_comment_body_digest
+    # Kept out of the public projection for the same reason as the digest above.
+    if facts.person_comment_digest:
+        canonical["person_comment_digest"] = facts.person_comment_digest
     return canonical
 
 
@@ -555,6 +567,105 @@ def pull_request_conditions(canonical: Mapping[str, object]) -> tuple[MonitorCon
         seen.add(condition.key)
         unique.append(condition)
     return tuple(unique[:MAX_MONITOR_CONDITIONS])
+
+
+def _board_settled(facts: PullRequestFacts) -> bool:
+    """Whether every check finished, with at least one pass and none failed.
+
+    Read from the facts: the canonical cuts a passed list past the per-bucket cap
+    and marks the board incomplete there, though every row was read. An empty
+    board is not settled: right after a push the host can report no checks for a
+    moment before the new head's checks are queued.
+    """
+    states = {check.state for check in facts.checks}
+    return (
+        facts.checks_complete
+        and "passed" in states
+        and not states & {"failed", "pending", "unknown"}
+    )
+
+
+def _checks_settled(canonical: Mapping[str, object]) -> bool:
+    """Whether a stored reading's board shows it settled, as ``_board_settled`` would."""
+    checks = canonical.get("checks")
+    if canonical.get("checks_complete") is not True or not isinstance(checks, Mapping):
+        return False
+    return bool(checks.get("passed")) and not any(
+        checks.get(state) for state in ("failed", "pending", "unknown")
+    )
+
+
+def _settled_before(previous: Mapping[str, object], head: object) -> bool:
+    """Whether *head*'s board already read settled since its last failure or draft reading.
+
+    Either the previous reading is a settled board of that head, or it is an
+    unsettled one that carries the latch. A draft reading is no evidence: it woke
+    nobody, and marking a pull request ready re-runs some checks on the same head.
+    """
+    return (
+        previous.get("head_revision") == head
+        and previous.get("draft") is False
+        and (previous.get("checks_settled_head") == head or _checks_settled(previous))
+    )
+
+
+def _checks_settled_head(
+    canonical: Mapping[str, object], previous: Mapping[str, object], *, settled: bool
+) -> str:
+    """The head a board already read settled on, until a check fails or the head moves.
+
+    It is what lets ``checks_settled`` fire once per head between drafts: a
+    board that reads incomplete or pending again on the same head -- a failed
+    read, a re-run of green checks -- carries the latch, so its next settled
+    reading is not news. A failure drops it, so a re-run that turns a red board
+    green is. A settled board is its own evidence and carries none, so its
+    canonical keeps the shape every provider shares, unless its canonical cut the
+    passed list and so cannot show it settled.
+    """
+    head = canonical.get("head_revision")
+    if not isinstance(head, str) or not head:
+        return ""
+    if settled:
+        return "" if _checks_settled(canonical) else head
+    checks = canonical.get("checks")
+    if isinstance(checks, Mapping) and checks.get("failed"):
+        return ""
+    return head if _settled_before(previous, head) else ""
+
+
+def pull_request_waiting_conditions(
+    canonical: Mapping[str, object],
+    previous: Mapping[str, object],
+    *,
+    settled: bool,
+) -> tuple[MonitorCondition, ...]:
+    """Name what happened on THIS tick to a pull request that waits on people.
+
+    A PENDING pull request is not blocked on its author, so what the author must
+    hear is a change: the checks finishing, or a person writing. Each is an edge
+    against the previous reading, so it is named on one tick only. The checks
+    edge fires once per head between drafts (``_checks_settled_head``); the
+    person edge once per change of what people wrote. A reading with nothing to
+    compare against is a baseline -- a watch's first one, a previous one without
+    a board or a person digest, and for the checks edge a current one without a
+    head -- so arming on a green board or under old comments names nothing.
+    """
+    head = canonical.get("head_revision")
+    conditions: list[MonitorCondition] = []
+    if (
+        head
+        and previous.get("head_revision")
+        and isinstance(previous.get("checks"), Mapping)
+        and canonical.get("draft") is False
+        and settled
+        and not _settled_before(previous, head)
+    ):
+        conditions.append(MonitorCondition(key="checks_settled"))
+    person = canonical.get("person_comment_digest")
+    person_before = previous.get("person_comment_digest")
+    if isinstance(person, str) and isinstance(person_before, str) and person != person_before:
+        conditions.append(MonitorCondition(key="person_comment"))
+    return tuple(conditions)
 
 
 def classify_pull_request_facts(

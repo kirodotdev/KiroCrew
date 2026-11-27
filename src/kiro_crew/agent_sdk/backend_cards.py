@@ -519,13 +519,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "session it does not know"
     ),
     "ACP_BACKENDS_TOOL_TITLE_REFINEMENT": (
-        "which frame names a call on a Crew-spawned subagent's Subagents card -- the "
-        "tool_call_update that refines the call's first title for this set, the "
-        "tool_call and its permission request alone elsewhere. The card's tool list "
-        "is the same on every harness, so the membership selects a reader rather than "
-        "a feature someone choosing a harness gains. A wrong membership is a defect: "
-        "a member's card keeps a generic title, or a non-member's better title is "
-        "replaced by a bare tool name"
+        "which frame names a call on a Crew-spawned subagent's Subagents card and on a "
+        "channel turn's task card -- the tool_call_update that refines the call's first "
+        "title for this set, the tool_call (and, on the Subagents card, its permission "
+        "request) alone elsewhere. The card's tool list is the same on every harness, "
+        "so the membership selects a reader rather than a feature someone choosing a "
+        "harness gains. A wrong membership is a defect: a member's card keeps a generic "
+        "title, or a non-member's better title is replaced by a bare tool name"
     ),
     "ACP_BACKENDS_COMPACTION_SUMMARY": (
         "which frames carry a harness's compaction summary to the chat's compaction card "
@@ -698,10 +698,11 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "silent compaction dropped would be withheld"
     ),
     "ACP_BACKENDS_COMPACTION_REPORTED": (
-        "whether the engine is sent the reply-format rules once per conversation and "
-        "again after a compaction, or with every message. The model has the rules "
-        "either way; outside the set each message carries one more copy, and a wrong "
-        "membership is a defect -- rules a silent compaction dropped would not return"
+        "whether the engine is sent the reply-format rules and the unchanged [RUNTIME] "
+        "and [PROJECT] lines once per conversation and again after a compaction, or "
+        "with every message. The model has them either way; outside the set each "
+        "message carries one more copy, and a wrong membership is a defect -- rules "
+        "a silent compaction dropped would not return"
     ),
     "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": (
         "what answers a full context on a harness Crew cannot hand /compact to. The "
@@ -847,6 +848,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "whether an advertised <model>[<effort>] id is applied as two writes. The "
         "model switch either lands or is refused, which its own line already says"
     ),
+    "ACP_BACKENDS_MODEL_PER_SESSION": (
+        "whether a sub-agent started on a model of its own takes a session on its "
+        "parent's process or a process of its own. It runs on that model either "
+        "way; a wrong membership leaves a shared sub-agent off the model it was "
+        "started on, which is a defect, not a feature a harness is picked by"
+    ),
     "ACP_BACKENDS_SPEC_FILE_GRANTS": (
         "whether a start on a crew-bound spec Kiro Crew does not own is refused "
         "while that file's grants exceed the ceiling, because the host reads them. "
@@ -882,8 +889,10 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "it matters, on each pre-registered provider's card, and the answer "
         "covers only those providers: a server that registers its own client "
         "signs in on every backend that serves remote MCP at all. KAS from "
-        "0.66.104 takes a public client but withholds a confidential one, and "
-        "every pre-registered provider is confidential, so KAS is not a member"
+        "0.66.104 takes a public client; a confidential one signs in only on an "
+        "engine that takes its secret (0.66.135, with sign-ins kept in Crew's "
+        "vault), which the page cannot tell before a chat starts. Every "
+        "pre-registered provider is confidential, so KAS is not a member"
     ),
     "ACP_BACKENDS_NO_MCP_INIT_FRAMES": (
         "whether the drain after session/new folds only the frames already "

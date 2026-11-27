@@ -54,7 +54,8 @@ def is_valid_effort(level: object) -> bool:
 # ``/effort`` on ``claude-haiku-5.5`` with "Effort set to <level>" for all five
 # levels and advertises ``effortLevels`` for it in ``_kiro.dev/metadata``, while
 # ``claude-haiku-4.5`` still gets "Effort configuration is currently not
-# available". A Haiku id with no readable version stays refused.
+# available". A Haiku id with no readable version is decided by the registry
+# row that owns it, or refused when none does.
 HAIKU_EFFORT_MIN_VERSION: tuple[int, int] = (5, 5)
 
 # ``haiku-5.5``, ``haiku-5-5`` (Bedrock), ``haiku-6``. One or two digits per
@@ -68,12 +69,22 @@ def haiku_supports_effort(model: str) -> bool:
 
     Reads the version that follows ``haiku`` in either naming convention
     (``claude-haiku-5.5``, ``global.anthropic.claude-haiku-5-5``); a missing
-    minor counts as ``0``. An id whose version cannot be read answers False, so
-    an unknown Haiku keeps the slider hidden.
+    minor counts as ``0``.
+
+    An id with no readable version is the bare family alias (``haiku``), which
+    Claude Code resolves to its current Haiku and passes through unversioned
+    (``model_registry.CLAUDE_CODE_PASSTHROUGH_ALIASES``). The registry row that
+    lists that alias says which release the alias names, so its declared
+    ``supports_effort`` answers, as it does for ``opus`` and ``sonnet``. A
+    spelling no row owns answers False, so an unknown Haiku keeps the slider
+    hidden.
     """
     match = _HAIKU_VERSION_RE.search(model.lower())
     if match is None:
-        return False
+        try:
+            return bool(model_registry.supports_effort(model))
+        except Exception:
+            return False
     version = (int(match.group(1)), int(match.group(2) or 0))
     return version >= HAIKU_EFFORT_MIN_VERSION
 
@@ -103,8 +114,8 @@ def model_supports_effort(model: str | None) -> bool:
     if not model:
         return False
     m = model.lower()
-    # Haiku is decided by its version alone, a hard rule that must win even over
-    # the registry. On the acp path a kiro Haiku id (``claude-haiku-4.5``) has
+    # A versioned Haiku is decided by its version alone, a hard rule that must win
+    # even over the registry. On the acp path a kiro Haiku id (``claude-haiku-4.5``) has
     # its own canonical entry (``haiku-4.5``) with no ``supports_effort`` flag; on
     # the claude_code path it is an ALIAS of Sonnet-4.6 (the cheapest valid fold,
     # which IS effort-capable), so asking the registry would hand an old Haiku

@@ -12,7 +12,7 @@ import { invalidateRefreshQueries, refreshMayChangeRegistry, TURN_END_CRON_REFRE
 const KEYS = [
   ['cron-jobs'], ['crons', 'crew-wake', 'ada'], ['cron-history-all'],
   ['agents-installed'], ['kirocrew-agents'], ['kirocrew-agents', 'members-roster'],
-  ['default-agent'], ['agent-templates'], ['workspaces'], ['kirocrewConfig'],
+  ['default-agent'], ['agent-templates'], ['workspaces'], ['kirocrewConfig'], ['cloud', 'provisioners'],
   ['resolved-model'], ['agent-resolved-model'], ['artifacts', 'all-tags'], ['artifact-folders'],
 ]
 

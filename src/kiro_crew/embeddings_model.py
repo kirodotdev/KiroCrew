@@ -27,6 +27,7 @@ from kiro_crew.embeddings_settings import (
     _DEFAULT_DIM,
     _GGUF_FILENAME,
     _GGUF_MIN_BYTES,
+    _MODEL_ID,
     _MODEL_PATH_ENV,
     _MODELS_DIR_NAME,
     _POOLING_TYPE_LAST,
@@ -84,6 +85,31 @@ def model_pooling_type(model_id: str) -> int:
     if label == _CUSTOM_LABEL and digest and pooling in _POOLING_TYPES:
         return _POOLING_TYPES[pooling]
     return _POOLING_TYPE_LAST
+
+
+# ── Query-side instruction ──
+
+#: The query instruction Qwen3-Embedding ships as its ``query`` prompt
+#: (``config_sentence_transformers.json``). The model is trained with an
+#: instruction on the query side only; stored text stays plain. On the memory
+#: recall dev set it beat an instruction written for our task.
+QWEN3_QUERY_TASK = "Given a web search query, retrieve relevant passages that answer the query"
+
+
+def query_instruction_applies(model_id: str) -> bool:
+    """Whether a recall query for *model_id* is embedded with an instruction.
+
+    Only Qwen3-Embedding: the bundled model and an Ollama ``qwen3-embedding``
+    tag. Models that also want a document-side prefix (EmbeddingGemma, nomic,
+    E5) are left plain, because stored memories are never re-embedded for it,
+    and a custom GGUF names no model family in its id.
+    """
+    return model_id == _MODEL_ID or model_id.startswith("ollama:qwen3-embedding")
+
+
+def query_instruction_text(text: str, task: str = QWEN3_QUERY_TASK) -> str:
+    """*text* as Qwen3-Embedding expects a query: ``Instruct: <task>\\nQuery:<text>``."""
+    return f"Instruct: {task}\nQuery:{text}"
 
 
 # ── Model paths ──

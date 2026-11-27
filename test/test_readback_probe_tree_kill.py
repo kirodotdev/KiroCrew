@@ -1,9 +1,9 @@
 """A harness probe that times out ends everything it started.
 
-The pi and opencode read-backs, and the version probes beside them, run the harness
+The pi, opencode and MiMo Code read-backs, and the version probes beside them, run the harness
 (or the Node it runs under) once before a chat starts. When the
 probe outlives its timeout, the kill must take the probe's descendants too, not only
-the probe. Each test runs a real stand-in that starts a long-lived grandchild, and
+the probe. Each probe runs a real stand-in that starts a long-lived grandchild, and
 forces the timeout only once both pids are on disk, so the outcome never depends on
 how fast the runner is.
 """
@@ -23,10 +23,15 @@ from spawn_test_helpers import LONG_CHILD_WITH_GRANDCHILD, await_gone, await_pid
 
 from kiro_crew import platform_compat
 from kiro_crew.acp import client as client_mod
+from kiro_crew.acp.harness import mimocode as mimocode_mod
 from kiro_crew.acp.harness import opencode as opencode_mod
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness import pi_node as pi_node_mod
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_OPENCODE, ACP_BACKEND_PI
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
+)
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 #: How long the forced timeout gives the probe once its pids are written.
@@ -87,6 +92,18 @@ def _run_opencode_version(tmp_path: Path, argv: list[str]) -> None:
     assert opencode_mod._opencode_reported_major(client, argv) is None
 
 
+def _run_mimocode(tmp_path: Path, argv: list[str]) -> None:
+    issue, _remedy = mimocode_mod._verify_mimocode_routing(
+        _client(tmp_path, ACP_BACKEND_MIMOCODE), ACP_BACKEND_MIMOCODE, argv, "{}"
+    )
+    assert "could not read MiMo Code's settings" in issue
+
+
+def _run_mimocode_version(tmp_path: Path, argv: list[str]) -> None:
+    client = _client(tmp_path, ACP_BACKEND_MIMOCODE)
+    assert mimocode_mod._mimocode_reported_version(client, argv) is None
+
+
 def _run_node_version(tmp_path: Path, argv: list[str]) -> None:
     # ``node --version`` is spelled by the probe itself, so the stand-in is a
     # script named ``node`` that ignores its argument and runs *argv*.
@@ -96,6 +113,25 @@ def _run_node_version(tmp_path: Path, argv: list[str]) -> None:
     assert pi_node_mod._node_version(str(node), os.environ.get("PATH", ""), str(tmp_path)) is None
 
 
+def test_a_pidfile_whose_open_is_refused_for_a_moment_is_read_once_it_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Windows sharing violation a scanner causes on a freshly renamed file, once.
+    pidfile = tmp_path / "pids"
+    pidfile.write_text("11 22", encoding="utf-8")
+    refusals = [PermissionError(13, "Permission denied", str(pidfile))]
+    read_text = Path.read_text
+
+    def _refused_once(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == pidfile and refusals:
+            raise refusals.pop()
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _refused_once)
+    assert await_pids(pidfile) == (11, 22)
+    assert refusals == []
+
+
 @pytest.mark.parametrize(
     "probe",
     [
@@ -103,16 +139,30 @@ def _run_node_version(tmp_path: Path, argv: list[str]) -> None:
         _run_pi,
         _run_opencode,
         _run_opencode_version,
+        _run_mimocode,
+        _run_mimocode_version,
         pytest.param(
             _run_node_version,
             marks=pytest.mark.skipif(not platform_compat.IS_POSIX, reason="a /bin/sh stand-in"),
         ),
     ],
-    ids=["run_killing_tree_on_timeout", "pi", "opencode", "opencode-version", "node-version"],
+    ids=[
+        "run_killing_tree_on_timeout",
+        "pi",
+        "opencode",
+        "opencode-version",
+        "mimocode",
+        "mimocode-version",
+        "node-version",
+    ],
 )
 def test_a_timed_out_probe_is_killed_with_everything_it_started(
     probe: Callable[[Path, list[str]], None], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The MiMo Code read-back refuses before any child when the runner's own
+    # environment sets one of its variables (MIMOCODE_HOME), so clear them.
+    for name in [n for n in os.environ if n.startswith("MIMOCODE_") or n == "MIMO_BIN"]:
+        monkeypatch.delenv(name, raising=False)
     pidfile = tmp_path / "pids"
     monkeypatch.setattr(subprocess, "Popen", _times_out_once_started(pidfile))
     pids: tuple[int, ...] = ()

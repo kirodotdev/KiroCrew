@@ -274,34 +274,39 @@ def _snap_back(buf: str, cut: int) -> int:
 
 
 def _word_start(buf: str, cut: int) -> int:
-    """The detectors' ``cut`` moved back to whitespace, as the natural cut ends at one.
+    """The detectors' ``cut`` moved back to the start of its word, as the natural cut ends at one.
 
     Their hold is a fixed tail, so it can land on a non-class character inside a
     word (``?data=!`` in a URL) and commit half of something a later pass reads
     whole. A word longer than ``_STREAM_HOLDBACK_MAX`` keeps the class-run snap,
-    so the hold stays bounded.
+    so the hold stays bounded. Where a word starts: ``compat.word_start``.
     """
-    start = _token_start(buf, cut)
+    start = _submodule(_SEAM).word_start(buf, cut)
     if cut - start <= _STREAM_HOLDBACK_MAX:
         return start
     return _snap_back(buf, cut)
 
 
-def _outside_batch_spans(buf: str, cut: int) -> int:
+def _outside_batch_spans(buf: str, cut: int, context: str = "") -> int:
     """``cut`` moved back so no span the batch plan replaces in ``buf`` straddles it.
 
-    The detectors' hold, once snapped back to whitespace, can land inside a value the
-    plan reads whole (a token glued to the word before the cut). Each move walks back
-    to whitespace, as :func:`_aws_label_cut` does, and is checked again against every
-    span, so the commit never splits one.
+    The detectors' hold, once snapped back to a word start, can land inside a value the
+    plan reads whole (a token glued to the word before the cut), or right at its end.
+    Each move walks back to whitespace, as :func:`_aws_label_cut` does, and is checked
+    again against every span, so the commit never splits one. The plan reads ``buf``
+    after ``context``, the raw text already sent, as the committed window is read: a
+    value whose label went out earlier is still a span.
     """
-    spans = [(start, end) for start, end in _batch_spans(buf) if start < cut]
+    with _submodule(_SEAM).look_behind(context, buf):
+        spans = [(start, end) for start, end in _batch_spans(buf) if start < cut]
     # One walk from the last span back. A move only lowers ``cut`` to at most the start
     # of the span that moved it, so a span that starts later cannot straddle the new
     # cut, and every earlier one is still ahead. Restarting the scan after each move
     # would cost quadratic time in the spans an attacker can chain.
+    # A cut right at a span's end, with more text after it, would commit the span
+    # without the character it was decided by (a closing quote).
     for start, end in sorted(spans, reverse=True):
-        if start < cut < end:
+        if start < cut < end or start < cut == end < len(buf):
             cut = _snap_back(buf, _token_start(buf, start))
     return cut
 
@@ -332,6 +337,7 @@ class StreamRedactor:
         "_ctx",
         "_engine_tail",
         "_engine_pad",
+        "_engine_seen",
         "_boundary",
         "_armour_from",
         "_armour_blocks",
@@ -349,6 +355,7 @@ class StreamRedactor:
         self._ctx = ""
         self._engine_tail = ""
         self._engine_pad = 0
+        self._engine_seen = ""  # what a line drop has read so far (``compat.line_drop_tail``)
         self._boundary = False
         # Where the last committed private-key block's END line ends, and the blocks
         # the detectors' last read ended, all in offsets from the buffer's start.
@@ -392,6 +399,9 @@ class StreamRedactor:
     def _engine_discard(self) -> str | None:
         """Drop a structured unit's continuation; None once the unit has ended."""
         seam = _submodule(_SEAM)
+        self._engine_tail, self._engine_seen = seam.line_drop_tail(
+            self._engine_tail, self._engine_seen, self._buf
+        )
         dropped, self._engine_pad, done = seam.discard_run(
             self._engine_tail, self._engine_pad, self._buf
         )
@@ -553,12 +563,26 @@ class StreamRedactor:
         # A unit the detectors have not decided yet is held whole, and one decided
         # while still running is dropped to its end.
         engine = self._engine_read(boundary=self._boundary)
-        if engine is not None and engine.tail:
+        # A held value's line drop stays with this pass when one of its STRONG
+        # anchors also reads the value: its own ceiling (Phase B) fails closed on it.
+        # Only that line drop: a drop that runs to the end of the text (an enclosing
+        # private-key block) is the detectors' and is never skipped.
+        anchored_value = (
+            engine is not None
+            and engine.held
+            and (
+                partial_jwt is not None
+                or bearer_anchor is not None
+                or aws_keyed_anchor is not None
+                or strong_token_anchor
+            )
+        )
+        if engine is not None and engine.tail and not anchored_value:
             commit, raw = self._buf[: engine.cut], self._buf[engine.cut :]
             self._buf = ""
             out = self._redact_window(commit) if commit else ""
             self._left(raw)
-            self._engine_tail, self._engine_pad = engine.tail, 0
+            self._engine_tail, self._engine_pad, self._engine_seen = engine.tail, 0, engine.seen
             return out + engine.tag
         if engine is not None:
             # Snapped back like the natural cut, and out of any span the plan replaces,
@@ -566,7 +590,9 @@ class StreamRedactor:
             # own cut already sits outside every hit, so only a snap that moved it is read.
             snapped = _word_start(self._buf, engine.cut)
             engine_cut = (
-                snapped if snapped == engine.cut else _outside_batch_spans(self._buf, snapped)
+                snapped
+                if snapped == engine.cut
+                else _outside_batch_spans(self._buf, snapped, self._ctx)
             )
             safety_cuts.append(engine_cut)
 
@@ -731,7 +757,7 @@ class StreamRedactor:
             # detectors' own cut, kept out of any span the plan replaces; a run
             # they hold nothing in keeps the floor.
             if engine is not None and engine.undecided:
-                i = min(i, _outside_batch_spans(self._buf, engine.cut))
+                i = min(i, _outside_batch_spans(self._buf, engine.cut, self._ctx))
 
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold

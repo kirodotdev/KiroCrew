@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import os
 import shutil
-from typing import TYPE_CHECKING
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import render
@@ -342,18 +343,9 @@ def _doctor_unreadable_allowed_commands(
         return
     findings: list[tuple[str, str, str, str]] = []
     try:
-        directories = [cli_doctor._agents_dir()]
-        if project_dir and not cli_doctor.is_sensitive_path(str(project_dir)):
-            directories.append(cli_doctor.project_agents_dir(project_dir))
-        for directory in directories:
-            for path in cli_doctor._strict_agent_json_specs(directory):
-                data = cli_doctor._read_agent_spec(path, operation="doctor", source="cli")
-                if not isinstance(data, dict):
-                    continue
-                name = data.get("name")
-                agent = name if isinstance(name, str) and name else path.stem
-                for key, entry, reason in unreadable_allowed_commands(data.get("toolsSettings")):
-                    findings.append((agent, key, entry, reason))
+        for agent, tools_settings in _spec_tools_settings(project_dir):
+            for key, entry, reason in unreadable_allowed_commands(tools_settings):
+                findings.append((agent, key, entry, reason))
     except Exception:  # noqa: BLE001 -- doctor must survive a broken spec tree
         cli_doctor.logger.debug("doctor: allowedCommands scan failed", exc_info=True)
         return
@@ -373,6 +365,77 @@ def _doctor_unreadable_allowed_commands(
         "toolsSettings."
     )
     issues.append("an agent spec has allowedCommands entries Kiro Crew cannot read")
+
+
+def _spec_tools_settings(project_dir: str | None) -> Iterator[tuple[str, Any]]:
+    """Each agent spec's name and ``toolsSettings``: the user-level specs, then the project's.
+
+    The project tree is skipped when it is a sensitive path. A spec the hardened
+    reader refuses is left out: the model-pin audit reports it. Raises on a tree
+    it cannot walk, so each caller decides how its row survives that.
+    """
+    directories = [cli_doctor._agents_dir()]
+    if project_dir and not cli_doctor.is_sensitive_path(str(project_dir)):
+        directories.append(cli_doctor.project_agents_dir(project_dir))
+    for directory in directories:
+        for path in cli_doctor._strict_agent_json_specs(directory):
+            data = cli_doctor._read_agent_spec(path, operation="doctor", source="cli")
+            if not isinstance(data, dict):
+                continue
+            name = data.get("name")
+            yield (name if isinstance(name, str) and name else path.stem), data.get("toolsSettings")
+
+
+def _doctor_codex_unenforced_allowlists(
+    cfg: KiroCrewConfig, project_dir: str | None, issues: list[str]
+) -> None:
+    """Name each agent spec whose shell or write allowlist a Codex session does not apply.
+
+    A spec's shell ``denyByDefault`` and write ``fallbackAction: "deny"`` are
+    enforced by kiro-cli itself, and by Kiro Crew's gate on the backends in
+    ``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS``. Codex is in neither: no
+    codex-acp mode makes every shell command and edit ask Kiro Crew, so the gate
+    never sees them and neither allowlist restricts anything. A new chat already
+    says so in its session-start notice; scheduled jobs and crewmate workers get
+    no notice, so this row is where an operator learns it. Shown only when a
+    selected role runs Codex (a positive test), and silent once Codex joins that
+    set. Scans the specs ``_doctor_unreadable_allowed_commands`` scans.
+    """
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKEND_CODEX,
+        ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
+    )
+    from kiro_crew.agent_sdk.tools_settings_reach import deny_by_default_allowlists
+
+    if ACP_BACKEND_CODEX in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
+        return
+    if not cli_doctor._selected_roles_run_codex(cfg):
+        return
+    findings: list[tuple[str, str]] = []
+    try:
+        for agent, tools_settings in _spec_tools_settings(project_dir):
+            allowlists = deny_by_default_allowlists(tools_settings)
+            if allowlists:
+                findings.append((agent, " and ".join(allowlists)))
+    except Exception:  # noqa: BLE001 -- doctor must survive a broken spec tree
+        cli_doctor.logger.debug("doctor: codex allowlist scan failed", exc_info=True)
+        return
+    if not findings:
+        return
+    # The agent name comes from a spec's own text, so it is shown through _safe_display.
+    for agent, lists in findings:
+        print(
+            f"  allowlists:  ⚠  {render._safe_display(agent)} sets a {lists} allowlist "
+            "that Codex sessions do not apply"
+        )
+    render._print_wrapped(
+        "On the Codex backend neither Codex nor Kiro Crew applies an agent spec's "
+        "toolsSettings shell or write allowlist: Codex's own mode and Kiro Crew's "
+        "approval settings decide what runs, and nothing refuses a command or write "
+        "because the allowlist leaves it out. Run an agent that relies on one on "
+        "kiro-cli, KAS, claude or opencode."
+    )
+    issues.append("an agent spec sets an allowlist that Codex sessions do not apply")
 
 
 def _doctor_claude_backend(issues: list[str], *, required: bool) -> None:

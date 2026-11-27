@@ -15,7 +15,7 @@ const LIVE: ReadonlySet<string> = new Set(['pending', 'applying'])
 export function useChangeCards(slot: string | null) {
   const queryClient = useQueryClient()
   const key = cardsQueryKey(slot)
-  const { data: cards = [], error, isFetched } = useQuery({
+  const { data: cards = [], error, isSuccess } = useQuery({
     queryKey: key,
     queryFn: () => cardsApi.pending(slot as string),
     enabled: !!slot,
@@ -38,7 +38,10 @@ export function useChangeCards(slot: string | null) {
     queryClient.setQueryData<Card[]>(cardsQueryKey(slot), prev => (prev ?? []).filter(c => c.id !== id))
   }, [queryClient, slot])
 
-  return { cards, error, isFetched, store, refresh, remove }
+  // `isSuccess` says `cards` is the slot's loaded list: while a failed first
+  // read is re-read the query is pending again with no error, and the `[]`
+  // default is not an answer.
+  return { cards, error, isSuccess, store, refresh, remove }
 }
 
 export { CHANGE_CARDS_QUERY_PREFIX } from '../api/cards'

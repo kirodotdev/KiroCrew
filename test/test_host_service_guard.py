@@ -498,7 +498,7 @@ class TestLaunchdRedirect:
         self._assert_under(launchd_live_program(), _xdg_config_root)
 
     def test_install_writes_the_launcher_into_tmp_not_the_real_home(
-        self, _xdg_config_root
+        self, _xdg_config_root, monkeypatch
     ) -> None:
         """The exact leak raised in review: install() ignores the PLIST_* pins.
 
@@ -508,8 +508,11 @@ class TestLaunchdRedirect:
         constant. Subprocess is stubbed here because ``launchctl load`` is a
         mutating verb the execution guard would (correctly) refuse.
         """
+        from service_helpers import pin_posix_installer_path
+
         from kiro_crew.service import macos
 
+        pin_posix_installer_path(monkeypatch)
         with mock.patch.object(macos, "_launchctl", return_value=SimpleNamespace(
             returncode=0, stdout="", stderr=""
         )), mock.patch.object(macos, "kirocrew_bin", return_value="/usr/bin/true"), \

@@ -1,0 +1,11 @@
++17
+The ssh self-target floor judges each substitution body with its words as written, as
+it already judges the line itself, so a wrapper's option words keep their case inside
+a body (sudo -H takes no value, sudo -h does). The lines carry the written text beside
+each lowered work item, keep it only where it reads to the same spans and bodies, blank
+the same nested spans in it, and pass it to the existing cased reading; a shell payload
+and any body whose written words read otherwise keep the lowered reading. The wrapper
+table lists three value-taking options in their written case (sudo -T, xargs -S,
+env -U), so the cased reading takes their values too; those entries add no lines.
+A body holding a here-document is judged lowered, so it never gets the
+here-document data view (two comment lines).

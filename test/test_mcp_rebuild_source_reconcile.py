@@ -183,10 +183,18 @@ class TestADeclaringSourceOwnsDisabledTools:
 
     def test_a_placeholder_keeps_the_entrys_own_list(self, tmp_path: Path) -> None:
         """A dashboard stub declares nothing, so it must not delete the list."""
+        from kiro_crew.mcp_provenance import COPIED_KEY
+
         cfg_dir = _bundled_defaults(tmp_path)
         cmd = _exe(tmp_path, "srv")
 
         _kiro(tmp_path, cfg_dir, {"command": cmd, "disabledTools": ["a", "b"]})
+        # A stub launches nothing, so it would retire the rebuild's stamped copy;
+        # the entry here is the user's own, which stays (mcp_provenance.COPIED_KEY).
+        spec_path = tmp_path / "kiro_agents" / "kirocrew.json"
+        cfg = json.loads(spec_path.read_text(encoding="utf-8"))
+        assert cfg["mcpServers"][SERVER].pop(COPIED_KEY) is True
+        spec_path.write_text(json.dumps(cfg), encoding="utf-8")
         merged = _kiro(tmp_path, cfg_dir, {"disabled": True})[SERVER]
         assert merged["disabledTools"] == ["a", "b"]
         merged = _kiro(tmp_path, cfg_dir, {})[SERVER]

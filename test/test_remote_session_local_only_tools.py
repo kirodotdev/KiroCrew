@@ -468,7 +468,7 @@ def test_workspace_shell_meets_the_gateway_deny_floor():
 #: Core tools reviewed as safe for a remote session: they act on gateway state on
 #: purpose (artifacts, memory, crons, chats) or take content, never a gateway path.
 REMOTE_SAFE_CORE_TOOLS = frozenset("""
-artifact_delete artifact_delete_comment artifact_folder_create artifact_folder_delete
+app_store_search artifact_delete artifact_delete_comment artifact_folder_create artifact_folder_delete
 artifact_folder_list artifact_folder_move artifact_folder_rename artifact_get
 artifact_get_comments artifact_list artifact_mark_review artifact_move artifact_post_comment
 artifact_reply_comment artifact_revert artifact_save artifact_update artifact_versions

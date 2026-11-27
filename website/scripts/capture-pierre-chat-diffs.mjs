@@ -397,7 +397,7 @@ async function main() {
     // 12-13px header type and 7px diffstat cells render soft at 1x on GitHub.
     deviceScaleFactor: 2,
   })
-  const page = await context.newPage()
+  let page = null
 
   /** Slot list + per-slot detail + the DiffBlock "Open" existence probe. */
   const extra = async (path, route) => {
@@ -417,9 +417,6 @@ async function main() {
     if (path === '/api/recent-projects') return json(route, { dirs: [PROJECT] }), true
     return false
   }
-
-  await stubDashboardApi(page, { slots, extra })
-  logPageProblems(page)
 
   /**
    * Count / read elements matching `sel` ANYWHERE, including inside Pierre's
@@ -459,8 +456,9 @@ async function main() {
     wrote.push({ file, w, h, over: !!flag })
   }
 
-  /** Load a surface: seed localStorage (theme + onboarded + active slot) so the
-   *  first-run theme modal never mounts over the transcript, then navigate.
+  /** Load a surface on a fresh page, stubbed once with its seed (theme +
+   *  onboarded + active slot) so the first-run theme modal never mounts over
+   *  the transcript, then navigate.
    *
    *  The slot is selected by the `?sid=` deep link, which ChatPage activates on
    *  mount — that is deterministic where the localStorage key is not: the
@@ -474,21 +472,24 @@ async function main() {
    *  element screenshot of the chips card it lands on top of the first row and
    *  hides its ±counts. */
   async function load(surface) {
-    await page.addInitScript(key => {
-      localStorage.clear()
-      localStorage.setItem('mc-theme', 'dark')
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-active-slot-chat', key)
-      localStorage.setItem('mc-chat-config', JSON.stringify({
-        pinLastPrompt: false,
-        // 'expanded' is the default already; pinned so the card (not the
-        // minimal glass pills) is what these frames capture regardless of any
-        // future default flip.
-        fileChipStyle: 'expanded',
-        // No reveal animation to race the screenshot.
-        streamMode: 'immediate',
-      }))
-    }, surface.key)
+    await page?.close()
+    page = await context.newPage()
+    await stubDashboardApi(page, {
+      slots, extra,
+      localStorageEntries: {
+        'mc-active-slot-chat': surface.key,
+        'mc-chat-config': JSON.stringify({
+          pinLastPrompt: false,
+          // 'expanded' is the default already; pinned so the card (not the
+          // minimal glass pills) is what these frames capture regardless of any
+          // future default flip.
+          fileChipStyle: 'expanded',
+          // No reveal animation to race the screenshot.
+          streamMode: 'immediate',
+        }),
+      },
+    })
+    logPageProblems(page)
     await page.goto(base + '/?sid=' + encodeURIComponent(surface.key), { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)
     // Escape + any close button, the way the pod-e2e runner does it: belt and

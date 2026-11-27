@@ -27,8 +27,9 @@ export type PttMode = 'toggle' | 'ptt' | 'hybrid'
 
 /**
  * A binding, keyed by `KeyboardEvent.code` so it is POSITIONAL — the physical key
- * matters, not the glyph the current layout paints on it (the same convention
- * `useKeyboardShortcuts` uses).
+ * matters, not the glyph the current layout paints on it. Unlike the dashboard's
+ * letter chords, a held key's keyup must name the key that went down, and the
+ * glyph can change between the two (a modifier released first).
  *
  * Two shapes share this one type:
  * - **bare modifier** — `code` is itself a modifier (`AltRight`) and every flag is

@@ -224,7 +224,8 @@ describe('mate responsive Send', () => {
     await waitFor(() => expect(box).toHaveValue('read this'))
     expect(userRows(store)).toHaveLength(0)
     expect(screen.getByText('report.pdf')).toBeInTheDocument()
-    expect(screen.getByText(/request refused/)).toBeInTheDocument()
+    // The card is the visible copy; the transcript's live region speaks the same text.
+    expect(screen.getByTestId('error-card')).toHaveTextContent(/request refused/)
   })
 
   it.each(['receipt first', 'push first'])('a real queued receipt keeps the one bubble in place (%s), with no queue card or interrupt', async (order) => {
@@ -545,7 +546,7 @@ describe('mate chat order and typing while a send waits', () => {
     await send('will be refused')
     expect(screen.getByTestId('crewmate-live-activity')).toBeInTheDocument()
     await settle({ ok: false, error: 'request refused' }, 409)
-    await screen.findByText(/request refused/)
+    expect(await screen.findByTestId('error-card')).toHaveTextContent(/request refused/)
     expect(screen.queryByTestId('crewmate-live-activity')).toBeNull()
   })
 })

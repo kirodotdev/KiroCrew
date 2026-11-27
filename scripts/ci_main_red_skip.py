@@ -21,6 +21,14 @@ It has two halves, so the trust rules live in one place:
         A shard step before the tests, as the runner identity: lists the same
         node ids, with the issue link, in the shard's job summary.
 
+    python3 scripts/ci_main_red_skip.py measure <pytest args>
+        Shard 1 of a full-suite run, after its tests: runs the same node ids
+        once more with the coverage arguments it is given, and adds what they
+        cover to the shard's coverage only when that pytest run exits 0. Without it a file
+        only those tests reach reads low in the coverage `Coverage Gate` judges,
+        and the pull request fails for a file it never touched. It never fails
+        the step.
+
 Guards (each is pinned by `test/test_ci_main_red_skip.py`):
 
 1. Only an OPEN issue with the `main-red` label is considered, and of those
@@ -518,10 +526,59 @@ def cmd_summary(env: dict[str, str]) -> int:
     return 0
 
 
+# The measure pass's own coverage data file: see `cmd_measure`.
+MEASURE_DATA = ".coverage-measure"
+
+
+def cmd_measure(env: dict[str, str], pytest_args: list[str]) -> int:
+    """Run the deselected node ids once more, for coverage only; never fails the step.
+
+    The pass writes its own data file, and only a pytest run that exits 0 is
+    renamed to where the shard's `coverage combine` folds it in: a red test that
+    fails can reach lines a passing run does not, and counting those would let a
+    real drop through. The ids reach pytest as argv elements built here, never as
+    shell words.
+    """
+    repo = env.get("GITHUB_REPOSITORY", "")
+    try:
+        plan = read_plan(env.get(ENV_NAME), repo)
+    except (ValueError, TypeError) as exc:
+        print(f"::warning::{ENV_NAME} ignored ({exc}); nothing to measure.")
+        return 0
+    if plan is None:
+        print("Main-red skip: nothing deselected, nothing to measure.")
+        return 0
+    nodeids = [without_group(nodeid) for nodeid in plan[1]]
+    # Without GITHUB_ACTIONS the suite writes no ::error annotation for them:
+    # they are main's reds, not this pull request's.
+    child = {key: value for key, value in env.items() if key != "GITHUB_ACTIONS"}
+    child["COVERAGE_FILE"] = MEASURE_DATA
+    done = subprocess.run(
+        [sys.executable, "-m", "pytest", *pytest_args, *nodeids], env=child, check=False
+    )
+    counted = "not counted"
+    if done.returncode == 0:
+        counted = "counted"
+        for path in Path.cwd().glob(MEASURE_DATA + "*"):
+            path.rename(path.with_name(".coverage.measure" + path.name[len(MEASURE_DATA) :]))
+    print(
+        f"Main-red skip: ran {len(nodeids)} test(s) red on main for coverage only; "
+        f"pytest exit {done.returncode}, {counted}."
+    )
+    return 0
+
+
 COMMANDS = {"decide": cmd_decide, "summary": cmd_summary}
 
+
+def main(argv: list[str], env: dict[str, str]) -> int:
+    if argv[:1] == ["measure"]:
+        return cmd_measure(env, argv[1:])
+    if len(argv) != 1 or argv[0] not in COMMANDS:
+        print("usage: ci_main_red_skip.py decide|summary|measure <pytest args>", file=sys.stderr)
+        return 2
+    return COMMANDS[argv[0]](env)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in COMMANDS:
-        print("usage: ci_main_red_skip.py decide|summary", file=sys.stderr)
-        sys.exit(2)
-    sys.exit(COMMANDS[sys.argv[1]](dict(os.environ)))
+    sys.exit(main(sys.argv[1:], dict(os.environ)))

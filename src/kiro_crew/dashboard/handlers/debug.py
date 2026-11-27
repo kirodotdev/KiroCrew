@@ -902,7 +902,12 @@ def _parse_window(since: str) -> float | None:
         return None
     units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
     if value[-1] in units and value[:-1].replace(".", "", 1).isdigit():
-        return time.time() - float(value[:-1]) * units[value[-1]]
+        try:
+            return time.time() - float(value[:-1]) * units[value[-1]]
+        except ValueError:
+            # ``str.isdigit`` also passes "²" and "①", which ``float`` refuses:
+            # read the value as no window, like any other unreadable one.
+            pass
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
     except ValueError:

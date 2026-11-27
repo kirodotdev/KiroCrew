@@ -1097,11 +1097,17 @@ class TestRenderTogglesAreWiredPerTurn:
     @pytest.mark.asyncio
     async def test_the_dispatcher_reads_the_toggles_fresh_for_each_turn(self) -> None:
         d, _cli, _sess = _dispatcher({"u1"})
-        seen: list[tuple[bool, bool]] = []
+        seen: list[tuple[bool, bool, bool]] = []
         real = td_mod.DiscordRenderer
 
         def _spy(*args: Any, **kwargs: Any) -> Any:
-            seen.append((kwargs["reactions_enabled"], kwargs["show_thinking"]))
+            seen.append(
+                (
+                    kwargs["reactions_enabled"],
+                    kwargs["show_thinking"],
+                    kwargs["show_timing_footer"],
+                )
+            )
             return real(*args, **kwargs)
 
         # The dispatcher also reads `DiscordRenderer.channel_type` as a CLASS
@@ -1110,20 +1116,20 @@ class TestRenderTogglesAreWiredPerTurn:
 
         with (
             mock.patch.object(td_mod, "DiscordRenderer", _spy),
-            _live_discord(reactions_enabled=False, show_thinking=True),
+            _live_discord(reactions_enabled=False, show_thinking=True, show_timing_footer=False),
         ):
             await d.handle_message(_inbound("hi"))
         # Read per TURN, not off the boot config, so the dashboard toggle takes
         # effect on the next message instead of the next restart.
-        assert seen == [(False, True)]
+        assert seen == [(False, True, False)]
 
     def test_an_unreadable_config_keeps_the_shipped_defaults(self) -> None:
         """Neither toggle is a security control, so a failed load must not fail
-        the turn: reactions stay on (the loud default) and reasoning stays off
-        (the quiet one)."""
+        the turn: reactions and the timing footer stay on (the loud defaults) and
+        reasoning stays off (the quiet one)."""
         d, _cli, _sess = _dispatcher({"u1"})
         with mock.patch("kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError):
-            assert d._render_config() == (True, False)
+            assert d._render_config() == (True, False, True)
 
 
 class TestGuildCommandRefusalsAreVisible:
@@ -1447,3 +1453,22 @@ class TestAgentCommand:
         assert any("No agent named" in t for t, _ in cli.sent)
         await d.handle_message(self._msg("hi"))
         assert sess.last_agent == "kirocrew"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["!agent", "!agents", "/agents"])
+    async def test_bare_agent_points_at_bot(self, monkeypatch, command) -> None:
+        # A user who calls their Bots "agents" must be told where Bots are.
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        d, cli, _ = _dispatcher({"u1"})
+        assert not cli.sent
+        await d.handle_message(self._msg(command))
+        assert "isn't a command" not in cli.sent[-1][0]
+        assert cli.sent[-1][0].endswith("Looking for a Bot? Send `!bot` in a DM.")
+
+    @pytest.mark.asyncio
+    async def test_agent_switch_carries_no_bot_hint(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        d, cli, _ = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!agents beta"))
+        assert any("Agent set to `beta`" in t for t, _ in cli.sent)
+        assert not any("Looking for a Bot?" in t for t, _ in cli.sent)

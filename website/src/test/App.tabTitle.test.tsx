@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, it, expect, vi, onTestFinished } from 'vitest'
-import { act, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -24,7 +24,14 @@ import App from '../App'
 import { ThemeProvider } from '../hooks/useTheme'
 import { BrandingProvider } from '../hooks/useBranding'
 import type { ChatSlot } from '../types'
+import { namedCeiling } from './namedCeiling'
 
+// Counts shell renders: `useAppShell` runs once per render of the whole shell.
+const shellRenders = vi.hoisted(() => ({ count: 0 }))
+vi.mock('../shell/appShell', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../shell/appShell')>()
+  return { ...actual, useAppShell: () => { shellRenders.count++; return actual.useAppShell() } }
+})
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => <div data-testid="schedule-page">SchedulePage</div> }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {}, subscribeSubagents: () => {}, forceReconnect: () => {} }) }))
@@ -47,6 +54,11 @@ vi.mock('../api/client', () => ({
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
     approvals: vi.fn().mockResolvedValue([]),
     branding: vi.fn().mockResolvedValue({ bot_name: 'Kiro Crew', avatar: '/logo.png' }),
+    // These reads retry on a 1s, 2s, 4s backoff through a failure, and each
+    // settled retry renders the shell, so they are answered.
+    themes: vi.fn().mockResolvedValue({ themes: [] }),
+    members: vi.fn().mockResolvedValue({ members: [] }),
+    configPending: vi.fn().mockResolvedValue({ enforcing: false, count: 0, pending: [] }),
   },
   isAuthBannerShown: vi.fn(() => false),
   ApiError: class extends Error { status: number; constructor(s: number, m: string) { super(m); this.status = s } },
@@ -62,6 +74,8 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 
+let queryClient: QueryClient
+
 function renderAt(route: string) {
   const store = configureStore({
     reducer: {
@@ -72,6 +86,7 @@ function renderAt(route: string) {
     },
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  queryClient = qc
   render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
@@ -88,6 +103,20 @@ function renderAt(route: string) {
   return store
 }
 
+// Everything the shell starts at mount re-renders it once when it lands: the
+// queries, and the 600ms timer that retires the entrance class when no
+// `animationend` arrives (jsdom plays no animation). A render-count snapshot
+// is taken only once the entrance is retired and every query is idle.
+const SHELL_SETTLED = namedCeiling('SHELL_SETTLED', 5000)
+async function shellSettled() {
+  const shell = screen.getByTestId('dashboard-shell')
+  fireEvent.animationEnd(shell, { animationName: 'rise' })
+  await waitFor(() => {
+    expect(shell).not.toHaveClass('animate-rise')
+    expect(queryClient.isFetching()).toBe(0)
+  }, SHELL_SETTLED)
+}
+
 const slot = (key: string, title: string) => ({ key, title, agent: 'kirocrew' }) as unknown as ChatSlot
 
 describe('main window tab title', () => {
@@ -98,6 +127,37 @@ describe('main window tab title', () => {
       store.dispatch(setActiveSlot('s1'))
     })
     await waitFor(() => expect(document.title).toBe('Fix the login page — Chat — Kiro Crew'))
+  })
+
+  it('retitles the tab on a session switch without rendering the whole shell again', async () => {
+    const store = renderAt('/chat')
+    act(() => {
+      store.dispatch(addSlotOptimistic(slot('s1', 'Fix the login page')))
+      store.dispatch(addSlotOptimistic(slot('s2', 'Other work')))
+      store.dispatch(setActiveSlot('s1'))
+    })
+    await waitFor(() => expect(document.title).toBe('Fix the login page — Chat — Kiro Crew'))
+    await shellSettled()
+    const before = shellRenders.count
+    act(() => { store.dispatch(setActiveSlot('s2')) })
+    await waitFor(() => expect(document.title).toBe('Other work — Chat — Kiro Crew'))
+    expect(shellRenders.count).toBe(before)
+  })
+
+  it('switches to a session in another project without rendering the whole shell again', async () => {
+    const store = renderAt('/chat')
+    const inProject = (key: string, title: string, project: string) => ({ key, title, agent: 'kirocrew', project }) as unknown as ChatSlot
+    act(() => {
+      store.dispatch(addSlotOptimistic(inProject('p1', 'Fix the login page', '/work/a')))
+      store.dispatch(addSlotOptimistic(inProject('p2', 'Other work', '/work/b')))
+      store.dispatch(setActiveSlot('p1'))
+    })
+    await waitFor(() => expect(document.title).toBe('Fix the login page — Chat — Kiro Crew'))
+    await shellSettled()
+    const before = shellRenders.count
+    act(() => { store.dispatch(setActiveSlot('p2')) })
+    await waitFor(() => expect(document.title).toBe('Other work — Chat — Kiro Crew'))
+    expect(shellRenders.count).toBe(before)
   })
 
   it('names Chat alone when no session is selected', async () => {

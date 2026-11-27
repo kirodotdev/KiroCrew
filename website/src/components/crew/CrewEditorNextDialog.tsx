@@ -23,7 +23,7 @@ import CrewAvatar from '../CrewAvatar'
 import CrewAvatarBuilder from '../CrewAvatarBuilder'
 import CrewAvatarButton from './CrewAvatarButton'
 import { retiredCueFrom, motionsFrom, soundsFrom } from '../../lib/crewAvatarState'
-import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, EffortField, SessionColorField, memberMemoryState } from './crewFields'
+import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, EffortField, SessionColorField, TriggersField, memberMemoryState } from './crewFields'
 import ErrorNotice from '../ErrorNotice'
 import { useDialogConfirm } from './useDialogConfirm'
 import { effortLabel } from '../../lib/effort'
@@ -305,6 +305,7 @@ export default function CrewEditorNextDialog({
   ctl,
   initialSection,
   onSectionChange,
+  onOpenProfile,
 }: {
   ctl: CrewEditorController
   /** The section to show when the editor opens on a crewmate (a deep link's
@@ -313,6 +314,11 @@ export default function CrewEditorNextDialog({
   /** Told which section is showing while the editor is open, and `null` once it
    *  closes, so a host can report guide facts about it. */
   onSectionChange?: (section: NextSection | null) => void
+  /** Opens the edited bot's Profile card on its Profile tab, and closes this
+   *  editor. The card holds the settings this editor does not (its sessions
+   *  and their list switch, goals, permission, harness, workers), so General
+   *  points there. Run through the editor's leave guard. */
+  onOpenProfile?: (name: string) => void
 }) {
   // Which sidebar section is showing. Local; hook declared before any early
   // return so hook order stays stable.
@@ -447,7 +453,7 @@ export default function CrewEditorNextDialog({
   }
 
   const {
-    editing, editingAgent, displayName, setDisplayName, sessionColor, setSessionColor,
+    editing, editingAgent, displayName, setDisplayName, sessionColor, setSessionColor, triggers, setTriggers,
     kiroAgent, kiroAgentOptions, templateFieldLabel, persistTemplateSwitch, templateSwitchError,
     templateProvenance, capabilityDirty, capabilityBusy, capabilityLoading, capabilityReadFailed,
     editAvatar, openAvatarBuilder, avatarBuilderOpen, applyAvatar, closeAvatarBuilder, onAvatarImageError,
@@ -665,11 +671,30 @@ export default function CrewEditorNextDialog({
                     </div>
                   </div>
 
+                  {/* The bot's other settings page: a person looking here for
+                      its sessions or permission finds the way to them. */}
+                  {onOpenProfile && (
+                    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-accent px-3 py-2.5" data-testid="next-open-profile-row">
+                      <span className="min-w-0 flex-1 break-words text-[12px] text-muted">
+                        {i18nT('crewEditorNext.more_on_profile', { name: displayName.trim() || editing })}
+                      </span>
+                      <Btn
+                        className="shrink-0"
+                        onClick={() => ctl.leaveGate(() => onOpenProfile(editing))}
+                        disabled={navBlocked}
+                        data-testid="next-open-profile"
+                      >
+                        {i18nT('crewEditorNext.open_profile')}
+                      </Btn>
+                    </div>
+                  )}
+
                   {/* Single clean column — each field is itself: label on top,
                       control, hint below. No side-by-side columns, no row
                       wrappers wrapping components that already carry their own
                       label/hint. This is the layout these fields are built for. */}
                   <DisplayNameField value={displayName} onChange={setDisplayName} fallback={editing} />
+                  <TriggersField value={triggers} onChange={setTriggers} subject="member" />
                   <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" />
 
                   {ownsFile ? (
@@ -1121,18 +1146,19 @@ export default function CrewEditorNextDialog({
                         </span>
                       )}
                     </div>
+                    {/* Filled, with the strong edge: the plain edge vanishes on the tint. */}
                     <div ref={confirmRef} className="flex items-center gap-2">
                       {confirmDelete ? (
                         <>
-                          <Btn onClick={() => setConfirmDelete(false)} data-testid="next-cancel-delete-crew">
+                          <Btn className="border-border-strong bg-bg-elevated" onClick={() => setConfirmDelete(false)} data-testid="next-cancel-delete-crew">
                             {i18nT('pages.kiroCrewAgentsPage.cancel')}
                           </Btn>
-                          <Btn danger onClick={deleteCrew} disabled={sheetBusy} data-testid="next-confirm-delete-crew">
+                          <Btn danger className="border-border-strong bg-bg-elevated" onClick={deleteCrew} disabled={sheetBusy} data-testid="next-confirm-delete-crew">
                             {i18nT('pages.kiroCrewAgentsPage.yes_delete_it')}
                           </Btn>
                         </>
                       ) : (
-                        <Btn danger onClick={() => setConfirmDelete(true)} disabled={sheetBusy} data-testid="next-delete-crew" {...uiLocation('agents.delete')}>
+                        <Btn danger className="border-border-strong bg-bg-elevated" onClick={() => setConfirmDelete(true)} disabled={sheetBusy} data-testid="next-delete-crew" {...uiLocation('agents.delete')}>
                           {i18nT('pages.kiroCrewAgentsPage.delete_crew')}
                         </Btn>
                       )}

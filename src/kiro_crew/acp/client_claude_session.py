@@ -9,16 +9,17 @@ Each function here whose first parameter is ``self`` is a ``ClaudeAcpClient`` me
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_claude_held_asks``, ``_claude_held_mcp``, ``_claude_inline_settings``,
+Instance fields written: ``_claude_held_asks``, ``_claude_held_mcp``,
+``_claude_held_project_servers``, ``_claude_inline_settings``, ``_claude_project_mcp_unreadable``,
 ``_claude_local_settings_excluded``, ``_claude_side_read_denies``, ``_claude_tools_withheld_reason``,
 ``_claude_worker_builtin_tools``, ``_last_substitution_model``, ``_model``,
 ``_resolved_model_id``, ``_session_mcp_cache``, ``claude_mode_pinned_notice``.
 
-Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_include_memory``,
+Instance fields read: ``_agent``, ``_agent_version``, ``_agent_version_read``, ``_include_memory``,
 ``_launch_mcp_servers``, ``_mcp_mount_servers``, ``_permission_mode``, ``_session_id``,
 ``_session_key``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
 ``_side_read_only``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
-``_spec_zero_tools``, ``memory_mode``.
+``_spec_zero_tools``, ``_work_dir``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ from kiro_crew.acp.types import (
     METHOD_SET_MODE,
 )
 from kiro_crew.agent_sdk.backends import resolve_cc_pin_inherited_mode
+from kiro_crew.agent_sdk.held_project_refusal import ClaudeHeldProjectServersUnroutable
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.security import (
     redact_credentials,
@@ -491,14 +493,64 @@ def _claude_session_needs_options(self: ClaudeAcpClient) -> bool:
 
     Its project tier is left out, it is a Side Chat, its spec declares
     ``"tools": []``, or its built-in tools are narrowed (a worker's excludes or a
-    named agent's ``tools`` list): each of those
+    named agent's ``tools`` list), or it holds a project MCP server: each of those
     rides ``_meta.claudeCode.options``, which an adapter below the floor may ignore.
     """
+    return bool(getattr(self, "_claude_held_project_servers", ())) or (
+        _claude_needs_options_besides_held(self)
+    )
+
+
+def _claude_needs_options_besides_held(client: ClaudeAcpClient) -> bool:
+    """:func:`_claude_session_needs_options`, leaving out the held project servers."""
     return bool(
-        self._claude_session_excludes_local()
-        or getattr(self, "_side_read_only", False)
-        or getattr(self, "_spec_zero_tools", False)
-        or getattr(self, "_claude_worker_builtin_tools", None) is not None
+        client._claude_session_excludes_local()
+        or getattr(client, "_side_read_only", False)
+        or getattr(client, "_spec_zero_tools", False)
+        or getattr(client, "_claude_worker_builtin_tools", None) is not None
+        or getattr(client, "_claude_project_mcp_unreadable", False)
+    )
+
+
+def _claude_below_floor_refusal(
+    client: ClaudeAcpClient, version: str, stopped: bool
+) -> AcpToolGateUnroutable:
+    """The refusal of an option-bound session on an adapter below the floor.
+
+    *version* is the adapter's version, ``""`` when it reported none. *stopped*
+    says whether a process was started and stopped, or none ran.
+    """
+    floor = ".".join(str(part) for part in CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION)
+    named = f"claude-agent-acp {_scrub_observed(version)}" if version else ""
+    upgrade = f"npm i -g {claude_mod.CLAUDE_ACP_NPM_PKG}"
+    if getattr(client, "_claude_held_project_servers", ()) and not (
+        _claude_needs_options_besides_held(client)
+    ):
+        # The one need is the hold: allowing the servers removes it, so the text
+        # names that way beside the upgrade.
+        return ClaudeHeldProjectServersUnroutable.for_surface_without_cards(
+            backend=client.backend,
+            agent=getattr(client, "_agent", None) or "",
+            folder=os.fspath(getattr(client, "_work_dir", None) or ""),
+            lead=(
+                f"{named or 'This claude-agent-acp'} can't hold back the .mcp.json servers "
+                f"you haven't allowed ({floor} or newer can), so this chat didn't start."
+            ),
+            upgrade=upgrade,
+        )
+    # Two sentences, for the person reading it in a chat: what happened, then the
+    # command that fixes it.
+    if stopped:
+        adapter = "The claude-agent-acp that answered"
+        what = "the chat was stopped before its first prompt"
+    else:
+        adapter, what = named, "the chat was not started"
+    return AcpToolGateUnroutable(
+        f"{adapter} is not verified to honour settingSources or the other session "
+        f"options this chat needs ({floor} or newer is), so {what}. Upgrade it, then "
+        f"start a new chat: {upgrade}",
+        transient=False,
+        user_worded=True,
     )
 
 
@@ -524,17 +576,7 @@ def _refuse_claude_session_below_floor_before_spawn(
         return
     if not self._claude_session_needs_options():
         return
-    floor = ".".join(str(part) for part in CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION)
-    # Two sentences, for the person reading it in a chat: what happened, then the
-    # command that fixes it.
-    raise AcpToolGateUnroutable(
-        f"claude-agent-acp {_scrub_observed(version)} is not verified to honour "
-        f"settingSources or the other session options this chat needs ({floor} or newer "
-        "is), so the chat was not started. Upgrade it, then start a new chat: "
-        f"npm i -g {claude_mod.CLAUDE_ACP_NPM_PKG}",
-        transient=False,
-        user_worded=True,
-    )
+    raise _claude_below_floor_refusal(self, version, stopped=False)
 
 
 def _log_claude_adapter_below_floor(
@@ -574,7 +616,7 @@ async def _prepare_claude_side_read_denies(self: ClaudeAcpClient) -> None:
 
 
 async def _prepare_claude_held_asks(self: ClaudeAcpClient) -> None:
-    """Read the held-limit asks of the Bot behind this session off the loop, before its envelope.
+    """Read the session's project-server holds and its Bot's held-limit asks off the loop.
 
     ``mate_held_rules.claude_ask_rules`` reads the migration ledger and the
     session's execution record from disk. Any session attributed to a Bot with
@@ -582,7 +624,11 @@ async def _prepare_claude_held_asks(self: ClaudeAcpClient) -> None:
     every other session.
     """
     from kiro_crew import mate_held_rules
+    from kiro_crew.agent_sdk.project_mcp_holds import project_hold
 
+    hold = await asyncio.to_thread(project_hold, self.backend, self._agent, self._work_dir)
+    self._claude_held_project_servers = tuple(sorted({s.name for s in hold.pending}))
+    self._claude_project_mcp_unreadable = bool(hold.unreadable)
     key = getattr(self, "_session_key", None) or ""
     if not key:
         self._claude_held_asks = ()
@@ -617,6 +663,9 @@ def _bridged_server_asks(client: ClaudeAcpClient) -> list[str]:
 def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
     """The ``_meta`` envelope for a claude ``session/new`` or ``session/load``.
 
+    Held project servers ride ``settings.disabledMcpjsonServers`` independently
+    of the seed's ownership and the session's setting sources.
+
     Empty options, unless this session leaves a project-owned
     ``settings.local.json`` out: then ``settingSources`` is ``user`` alone,
     Crew's payload rides ``settings``, and ``allowDangerouslySkipPermissions``
@@ -638,6 +687,9 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
     One whose crewmate file excludes a native tool, and a named agent whose spec
     ``tools`` list leaves out a built-in, gets ``tools`` limited to the built-ins
     of the native tools it keeps (``SessionProjection.builtin_tools``).
+
+    A ``spawn_run`` sub-agent (session key ``subagent:<id>``) gets ``strictMcpConfig``
+    too, for the same reason.
 
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
@@ -674,6 +726,12 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
             inline = getattr(self, "_session_mcp_inline_settings", None)
         if isinstance(inline, dict) and inline:
             options["settings"] = dict(inline)
+    held_project = getattr(self, "_claude_held_project_servers", ())
+    if held_project:
+        carried_settings = dict(options.get("settings") or {})
+        rejected = set(carried_settings.get("disabledMcpjsonServers") or [])
+        carried_settings["disabledMcpjsonServers"] = sorted(rejected.union(held_project))
+        options["settings"] = carried_settings
     adopted = getattr(self, "_adopted_substitute_model", None)
     if adopted and adopted == self._model:
         # The model a substitution retry names rides the flag tier as well as the
@@ -729,10 +787,20 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
         # server in the user's own config, the project's ``.mcp.json`` and
         # plugins, once per worker.
         options["strictMcpConfig"] = True
+    if str(getattr(self, "_session_key", None) or "").startswith("subagent:"):
+        # A ``spawn_run`` sub-agent runs the servers its spec's ``tools``
+        # allowlist grants, which the wire array already carries. Without this
+        # the harness also adds the user's, the project's and plugins' servers,
+        # including ones the spec leaves out.
+        options["strictMcpConfig"] = True
     if getattr(self, "_claude_held_mcp", False):
         # The held ``mcp__<server>`` asks name only the servers Crew sends: a
         # server from the user's own config, the project's or a plugin's, which
         # an allow rule there may pre-approve, would run unasked beside them.
+        options["strictMcpConfig"] = True
+    if getattr(self, "_claude_project_mcp_unreadable", False):
+        # The folder's ``.mcp.json`` cannot be read, so no server in it can be
+        # checked: the whole file is held.
         options["strictMcpConfig"] = True
     # Read off the loop before the envelope is built (_prepare_claude_held_asks).
     held_asks = getattr(self, "_claude_held_asks", ())
@@ -940,7 +1008,9 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     worker whose native-tool excludes narrow ``tools``, or a named agent whose
     spec ``tools`` list does (``_claude_worker_builtin_tools``), is stopped below
     the floor for the same reason; above it, its mode is handled as any other
-    session's.
+    session's. So is a session that holds a project MCP server, or runs with
+    ``strictMcpConfig`` because its project MCP file could not be read: the
+    hold rides the same options.
 
     Observed on claude-agent-acp 0.84.0
     (``test/fixtures/claude_mode_pin/``): ``session/new`` and
@@ -957,9 +1027,10 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     side = getattr(self, "_side_read_only", False)
     zero_tools = getattr(self, "_spec_zero_tools", False)
     depends_on_options = excludes_local or side or zero_tools
-    narrowed = getattr(self, "_claude_worker_builtin_tools", None) is not None
     pin_inherited = not depends_on_options and resolve_cc_pin_inherited_mode()
-    if not (depends_on_options or narrowed or pin_inherited):
+    # Narrowed built-ins and a held project server also ride the options, so they
+    # reach the floor check below even though they need no mode pin.
+    if not (pin_inherited or self._claude_session_needs_options()):
         return
     below_floor = self._claude_adapter_below_setting_sources_floor()
     if below_floor and self._claude_session_needs_options():
@@ -967,15 +1038,8 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
         # version: it may have ignored the session's options. A fresh process
         # answers the same, so the refusal is not retried.
         await self._claude_stop_session()
-        floor = ".".join(str(part) for part in CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION)
-        raise AcpToolGateUnroutable(
-            "The claude-agent-acp that answered is not verified to honour settingSources "
-            f"or the other session options this chat needs ({floor} or newer is), so "
-            "the chat was stopped before its first prompt. Upgrade it, then start a new "
-            "chat: "
-            f"npm i -g {claude_mod.CLAUDE_ACP_NPM_PKG}",
-            transient=False,
-            user_worded=True,
+        raise _claude_below_floor_refusal(
+            self, getattr(self, "_agent_version", "") or "", stopped=True
         )
     # The array this start sent. The re-seed after the capture cleared the
     # projection cache, so deriving it again here would read the spec and the

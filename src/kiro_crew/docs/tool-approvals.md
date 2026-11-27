@@ -12,8 +12,10 @@ Either of these turns it on, and the next call no longer asks. No restart is
 needed.
 
 - **In MCP Servers** (`/mcp`): on the server's row, click the tool count (for
-  example "12 tools") to open its list, then turn on **Always allow** beside the
-  tool.
+  example "12 tools") to open its list in a panel under the row, then turn on
+  the switch beside the tool. The words **Always allow** show beside a switch
+  only while it is on, and the panel says how many of its tools are always
+  allowed.
 - **On the approval card** in a chat: open **Trust** on the card and choose
   **Always allow this tool**. This call runs, and later calls of the tool do not
   ask.

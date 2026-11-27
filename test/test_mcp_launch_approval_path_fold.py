@@ -10,13 +10,14 @@ The gateway part is pinned for the broker's life and handed to gatewayd, so a
 live ``PATH`` change cannot make the two sides fold differently. Only that
 current part folds: a value saved already expanded asks once after the part
 moves, and no earlier part can hide an entry after the own entries. An
-approval stored before the fold is asked for again once, and an adopted
-gatewayd pinned to another part is replaced.
+approval stored before the fold carries over for the same launch, and an
+adopted gatewayd pinned to another part is replaced.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -226,28 +227,126 @@ def test_a_changed_own_entry_is_still_refused(tmp_path, monkeypatch):
     assert not _targets_running(target_env, _APPROVED_CMD)
 
 
-def test_an_approval_stored_before_the_fold_asks_once(tmp_path, monkeypatch):
-    """A store written before the fold holds the literal digests. They match no
-    folded identity, so the launch is refused once and the person approves it
-    again; nothing is carried over without them."""
-    mod = _approval_module()
-    store = tmp_path / "approvals.json"
-    _gateway_path(monkeypatch, tmp_path, "bin")
-    env = _agent(tmp_path)
+def _store_before_the_fold(mod, store: Path, env: dict[str, str]) -> None:
+    """Write the literal digests a store held before approvals folded ``PATH``."""
     approvals = mod.LaunchApprovals()
     command_hash = rewriter.hash_command(_APPROVED_CMD, _ARGS)
-    approvals.approved["SRV"] = {
-        f"{command_hash}:{hashing.hash_declared_env(env)}",
-    }
+    approvals.approved["SRV"] = {f"{command_hash}:{hashing.hash_declared_env(env)}"}
     approvals.approved_pairs["SRV"] = {
         mod.launch_pair(command_hash, hashing.hash_declared_env(env))
     }
     approvals.names["SRV"] = "srv"
     mod._write(store, mod._document(approvals, {}))
 
-    refused, target_env = _rewrite_and_persist(tmp_path, mod, store)
 
-    assert refused.refused.get("SRV") == mod.REFUSED_CHANGED
+def test_an_approval_stored_before_the_fold_carries_over(tmp_path, monkeypatch):
+    """A store written before the fold holds the literal digests of a launch that
+    has not changed. That launch keeps its approval with no prompt, and its folded
+    digest is stored, so a later move of the gateway's PATH pauses nothing."""
+    mod = _approval_module()
+    store = tmp_path / "approvals.json"
+    _gateway_path(monkeypatch, tmp_path, "bin")
+    mod.pin_gateway_part()
+    _store_before_the_fold(mod, store, _agent(tmp_path))
+
+    approvals, target_env = _rewrite_and_persist(tmp_path, mod, store)
+
+    assert approvals.refused == {}
+    assert _targets_running(target_env, _APPROVED_CMD)
+    stored = mod.load_approvals(store)
+    folded = mod.launch_fingerprint(_APPROVED_CMD, _ARGS, {"PATH": env_mod.spec_env_path(_OWN)})
+    assert folded in stored.approved["SRV"]
+
+    _next_start(monkeypatch, tmp_path, mod, "sbin", "node-22.24.0")
+    _agent(tmp_path)
+    approvals, target_env = _rewrite_and_persist(tmp_path, mod, store)
+
+    assert approvals.refused == {}
+    assert _targets_running(target_env, _APPROVED_CMD)
+
+
+def test_a_cached_prefold_refusal_is_rebuilt_on_upgrade(tmp_path, monkeypatch):
+    """An unchanged launch must not keep a refusal cached before carry-over existed."""
+    from kiro_crew.mcp_gateway import launch_approval_heal
+
+    mod = _approval_module()
+    store = tmp_path / "approvals.json"
+    _gateway_path(monkeypatch, tmp_path, "bin")
+    mod.pin_gateway_part()
+    env = _agent(tmp_path)
+    _store_before_the_fold(mod, store, env)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(rewriter, "_FINGERPRINT_SCHEMA", 15)
+        patch.setattr(launch_approval_heal, "prefold_approval_of", lambda *args: None)
+        approvals, target_env = _rewrite_and_persist(tmp_path, mod, store)
+    assert approvals.refused.get("SRV") == mod.REFUSED_CHANGED
+    assert not _targets_running(target_env, _APPROVED_CMD)
+    fingerprint = tmp_path / "home" / "mcp-gateway" / "agents" / rewriter._FINGERPRINT_NAME
+    cached = json.loads(fingerprint.read_text(encoding="utf-8"))
+    assert cached["inputs"]["schema"] == 15
+    assert cached["inputs"]["launch_approvals"] == mod.load_approvals(store).digest()
+
+    approvals, target_env = _rewrite_and_persist(tmp_path, mod, store)
+
+    assert approvals.full_pass
+    assert approvals.refused == {}
+    assert _targets_running(target_env, _APPROVED_CMD)
+    folded = mod.launch_fingerprint(_APPROVED_CMD, _ARGS, env)
+    assert folded in mod.load_approvals(store).approved["SRV"]
+
+
+def test_many_carried_over_launches_count_once_against_the_cap(tmp_path, monkeypatch):
+    """Forty agents each give the server their own PATH. Each carried-over launch
+    replaces its pre-fold digest, so forty launches stay under the per-server cap
+    instead of counting twice."""
+    mod = _approval_module()
+    store = tmp_path / "approvals.json"
+    _gateway_path(monkeypatch, tmp_path, "bin")
+    mod.pin_gateway_part()
+    command_hash = rewriter.hash_command(_APPROVED_CMD, _ARGS)
+    approvals = mod.LaunchApprovals()
+    agents = tmp_path / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    for i in range(40):
+        env = {"PATH": env_mod.spec_env_path(host_abs("opt", f"tools{i}", "bin"))}
+        (agents / f"a{i}.json").write_text(
+            json.dumps(
+                {
+                    "name": f"a{i}",
+                    "tools": ["*"],
+                    "mcpServers": {"srv": {"command": _APPROVED_CMD, "args": _ARGS, "env": env}},
+                }
+            )
+        )
+        literal = hashing.hash_declared_env(env)
+        approvals.approved.setdefault("SRV", set()).add(f"{command_hash}:{literal}")
+        approvals.approved_pairs.setdefault("SRV", set()).add(
+            mod.launch_pair(command_hash, literal)
+        )
+    approvals.names["SRV"] = "srv"
+    mod._write(store, mod._document(approvals, {}))
+
+    approvals, target_env = _rewrite_and_persist(tmp_path, mod, store)
+
+    assert approvals.refused == {}
+    assert _targets_running(target_env, _APPROVED_CMD)
+    assert len(mod.load_approvals(store).approved["SRV"]) == 40
+
+
+def test_a_prefold_approval_of_another_launch_is_still_refused(tmp_path, monkeypatch):
+    """Only the same bytes carry over: an own ``PATH`` entry the person never
+    approved is a changed launch, as it is under a folded approval."""
+    mod = _approval_module()
+    store = tmp_path / "approvals.json"
+    _gateway_path(monkeypatch, tmp_path, "bin")
+    mod.pin_gateway_part()
+    _store_before_the_fold(mod, store, {"PATH": env_mod.spec_env_path(_OWN)})
+    _agent(tmp_path, own=os.pathsep.join([host_abs("opt", "evil", "bin"), _OWN]))
+
+    approvals, target_env = _rewrite_and_persist(tmp_path, mod, store)
+
+    assert approvals.refused.get("SRV") == mod.REFUSED_CHANGED
     assert not _targets_running(target_env, _APPROVED_CMD)
 
 

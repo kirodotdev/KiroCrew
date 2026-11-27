@@ -504,11 +504,13 @@ def _load_json_file(path: Path) -> Any:
     handing them to ``json.loads``, which decodes a second full copy internally:
     the raw bytes are never resident beside the decoded text and the document,
     which is a whole body's worth less peak memory on a large import. The decode
-    is ``surrogatepass``, the same one ``json.loads`` applies to bytes, so a lone
-    surrogate an exported transcript can legitimately carry (``\\ud800``)
-    round-trips as the same character instead of raising.
+    is ``utf-8-sig`` with ``surrogatepass``, the one ``json.loads`` applies to
+    UTF-8 bytes: one leading byte-order mark, which a Windows editor writes when
+    it saves "UTF-8 with BOM", is dropped, and a lone surrogate an exported
+    transcript can legitimately carry (``\\ud800``) round-trips as the same
+    character instead of raising.
     """
-    with open(path, encoding="utf-8", errors="surrogatepass") as f:
+    with open(path, encoding="utf-8-sig", errors="surrogatepass") as f:
         return json.loads(f.read())
 
 

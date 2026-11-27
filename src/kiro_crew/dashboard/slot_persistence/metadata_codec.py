@@ -611,6 +611,12 @@ def _read_created_by(r: _Read) -> None:
         # ``session_revive.reconfirm_restored_creators``, which re-checks it on each tree
         # change and lifts the fence only when the crew log names this creator.
         r.slot._unconfirmed_creator = "" if verified else claimed
+        # A worker a Bot's own thread created is thread-born (``members.worker_conducts``);
+        # only the verified creator says so, so an unverified claim marks nothing here,
+        # and ``reconfirm_restored_creators`` marks it if the tree confirms it later.
+        from kiro_crew import members as members_mod  # members imports artifacts: see cp
+
+        members_mod.note_worker_lineage(r.slot.key, r.slot._created_by)
         # A mode a person set on this session lived in memory and did not survive,
         # so the session follows its creator's next mode change again. A raise
         # still needs the crew log's creation record (``approval_inheritance``).
@@ -1026,6 +1032,15 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s.reasoning_effort),
         merge=_or_cleared(lambda s: s.reasoning_effort, ""),
         why="restored with the model",
+    ),
+    # The merge cannot delete a key, so it writes the cleared False.
+    Field(
+        "effort_overlay_clear",
+        _STARTUP,
+        attr="_effort_overlay_clear",
+        line=_flag(lambda s: s._effort_overlay_clear),
+        merge=lambda s, f: bool(s._effort_overlay_clear),
+        why="restored with the model, beside the Default it belongs to",
     ),
     Field(
         "autocompact_pct",
@@ -1589,6 +1604,7 @@ LINE_ORDER: tuple[str, ...] = (
     "agent",
     "model",
     "reasoning_effort",
+    "effort_overlay_clear",
     "autocompact_pct",
     "turn_timeout_secs",
     "dismissed_source_links",
@@ -1650,6 +1666,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "mode",
     "artifact",
     "reasoning_effort",
+    "effort_overlay_clear",
     "color_index",
     "color_hex",
     "color_theme",

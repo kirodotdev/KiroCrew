@@ -75,6 +75,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
+    ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
     ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_SESSION_SHARING,
@@ -152,6 +153,17 @@ class AcpProvider(LLMProvider):
     #: harness shared only for chats (``acp_lifecycle._chat_takes_shared_runtime``),
     #: consumed by the runtime start. None otherwise.
     _prejoined_chat_share: Any = None
+    #: Forwarded from the inner ``AcpSessionProvider`` after ``shutdown()``.
+    #: Set to True when a shared-KAS ``session/close`` was not confirmed (timeout
+    #: or refusal).  Read by ``discard_conversation(confirm_teardown=True)``
+    #: callers (bot app stop) so they can treat the unconfirmed case as a failure.
+    #: Declared here so ``getattr(session.provider, "_kas_shutdown_unconfirmed")``
+    #: on this outer wrapper is not a blind guess at a private attribute.
+    _kas_shutdown_unconfirmed: bool = False
+    #: Saved runtime for a later retry of the remote session/close.
+    _kas_unconfirmed_runtime: Any = None
+    #: Saved session_id for a later retry of the remote session/close.
+    _kas_unconfirmed_session_id: str | None = None
 
     reports_effort_support = True
     approval_withdrawable = True
@@ -186,6 +198,7 @@ class AcpProvider(LLMProvider):
         disposable_work_dir: bool = False,
         side_read_only: bool = False,
         include_memory: bool = True,
+        clear_effort_overlay: bool = False,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -345,11 +358,19 @@ class AcpProvider(LLMProvider):
         # a repository can track at any size. ``start()`` recovers the levels the
         # overlay holds and writes the effort and Tool Search keys, off the loop.
         self._effort_overlay_recovered = False
+        # A Default the slot recorded with no live clear: the first start removes
+        # this model's level from that file (``_clear_default_overlay_entry``).
+        self._effort_overlay_clear_pending = bool(clear_effort_overlay)
 
     @property
     def client(self) -> AcpClient:
         """Expose underlying client for backward compat (e.g. is_ready check)."""
         return self._client
+
+    @property
+    def effort_overlay_clear_pending(self) -> bool:
+        """True while a recorded Default's overlay clear has not landed; the slot keeps its mark."""
+        return self._effort_overlay_clear_pending
 
     @property
     def work_scratch_dir(self) -> Path | None:
@@ -819,8 +840,20 @@ class AcpProvider(LLMProvider):
         process per session) and is not a member, so subagents fall back to the
         legacy per-process path — and neither does any harness added later,
         until someone adds it deliberately.
+
+        On KAS membership is necessary, not sufficient: this provider's own
+        process must also qualify (``acp.kas_subagent_sharing.runtime_hosts_subagents``),
+        or its sub-agents keep the dedicated path.
         """
-        return self._client.backend in ACP_BACKENDS_SESSION_SHARING
+        backend = self._client.backend
+        if backend == ACP_BACKEND_KAS and backend in ACP_BACKENDS_SESSION_SHARING:
+            from kiro_crew.acp.kas_subagent_sharing import runtime_hosts_subagents
+
+            return runtime_hosts_subagents(
+                getattr(self._client, "_runtime", None),
+                chat_shared=getattr(self._client, "_shared_runtime", False) is True,
+            )
+        return backend in ACP_BACKENDS_SESSION_SHARING
 
     @property
     def manual_compact_unsupported_backend(self) -> str | None:
@@ -1029,9 +1062,11 @@ class AcpProvider(LLMProvider):
         """
         return self._client.mcp_session_report()
 
-    async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
+    async def wait_for_declared_mcp(
+        self, timeout: float, skip: tuple[str, ...] = ()
+    ) -> tuple[str, ...]:
         """Hold the first prompt until the spec's servers report (see the client)."""
-        return await self._client.wait_for_declared_mcp(timeout)
+        return await self._client.wait_for_declared_mcp(timeout, skip)
 
     def get_valid_effort_levels(self) -> list[str]:
         """Effort levels the backend reported for the CURRENT model, in ACP order.
@@ -1118,7 +1153,7 @@ class AcpProvider(LLMProvider):
     def native_steering(self) -> bool:
         # Kiro ACP manual/fileMatch support depends on version and engine;
         # the fallback keeps those guides reachable without a false capability.
-        return self._client.backend == ACP_BACKEND_KAS
+        return self.capabilities.loads_steering_natively
 
     @property
     def reports_compaction(self) -> bool:
@@ -1279,9 +1314,15 @@ class AcpProvider(LLMProvider):
             # needs too: the member DM mount and channel ride ``session/new``
             # (``_start_kiro_runtime``), the essentials delivered to the old
             # conversation are not in the new one, and an effort pushed as a
-            # per-session config option (KAS, codex) is back at the default.
+            # per-session config option (KAS, codex) is back at the default. The key
+            # is read off the loop where one can exist (a Bot worker's answer reads its
+            # Bot's record); every other host stops at the membership read (H13).
             await self._client.new_conversation(
-                member_session_key=self._member_session_key(),
+                member_session_key=(
+                    await asyncio.to_thread(self._member_session_key)
+                    if self._client.backend in ACP_BACKENDS_MEMBER_DISPATCH
+                    else ""
+                ),
                 channel_id=self._owning_channel_id() or "",
             )
             self.essential_delivery.invalidate()
@@ -1474,6 +1515,7 @@ class AcpProvider(LLMProvider):
     # The workspace ``cli.json`` overlay a spawn reads: ``kiro_crew.providers.acp_cli_overlay``.
     _apply_effort_overlay = _acp_cli_overlay._apply_effort_overlay
     _recover_effort_overlay = _acp_cli_overlay._recover_effort_overlay
+    _clear_default_overlay_entry = _acp_cli_overlay._clear_default_overlay_entry
     _apply_tool_search_overlay = _acp_cli_overlay._apply_tool_search_overlay
     # The model and reasoning effort the session runs at: ``kiro_crew.providers.acp_model_effort``.
     maybe_refresh_available_models = _acp_model_effort.maybe_refresh_available_models
@@ -1487,6 +1529,7 @@ class AcpProvider(LLMProvider):
     reapply_live_effort = _acp_model_effort.reapply_live_effort
     set_model = _acp_model_effort.set_model
     clear_effort = _acp_model_effort.clear_effort
+    forget_effort = _acp_model_effort.forget_effort
     _apply_initial_effort = _acp_model_effort._apply_initial_effort
     ultracode_enabled = _acp_model_effort.ultracode_enabled
     set_ultracode = _acp_model_effort.set_ultracode

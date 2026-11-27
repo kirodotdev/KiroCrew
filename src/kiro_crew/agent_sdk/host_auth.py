@@ -810,16 +810,17 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # on the operator's own machine needs no key at all.
         sign_in_remedy=(
             "DeepSeek Harness reaches a hosted model with a provider key Kiro Crew "
-            "holds for it. Save the key under Settings → Secrets, then map it in "
-            "agent.deepseek_env under the environment-variable name the provider "
-            "expects, such as DEEPSEEK_API_KEY. A model served locally on this "
-            "machine needs no key: point a provider route at it instead."
+            "holds for it. Save the key under Settings → Agent Harness → DeepSeek "
+            "Harness → Provider key, which keeps it in Settings → Secrets. A model "
+            "served locally on this machine needs no key: point a provider route at "
+            "it instead. Another provider route's key is mapped in agent.deepseek_env "
+            "under the name that route reads."
         ),
         signed_out_message=(
-            "DeepSeek Harness has no provider key. Save one under Settings > Secrets "
-            "and map it in `agent.deepseek_env` (for example "
-            "`DEEPSEEK_API_KEY: secret://my-dsh-key`), or point a provider route at a "
-            "model served locally on this machine, then start a new chat."
+            "DeepSeek Harness has no provider key. Save one under Settings > Agent "
+            "Harness > DeepSeek Harness > Provider key, which keeps it in Settings > "
+            "Secrets, or point a provider route at a model served locally on this "
+            "machine, then start a new chat."
         ),
         # Excluded deliberately, and for this harness the reason is stronger than a
         # separate store: there is no host credential on the wire at all, so a
@@ -1176,7 +1177,8 @@ def bedrock_auth_remedy(backend: str) -> str:
             "Bedrock authentication failed. Strands runs sandboxed and cannot read ~/.aws "
             "profiles: pick Bedrock under Settings > Agent Harness > Strands > Model "
             "provider and save its AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key) and "
-            "AWS_REGION there, then start a new chat."
+            "AWS_REGION there, then start a new chat. A Bedrock Mantle model also needs "
+            "the key's IAM identity to allow bedrock-mantle:CallWithBearerToken."
         )
     return ""
 

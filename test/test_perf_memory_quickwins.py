@@ -19,7 +19,9 @@ import builtins
 import hashlib
 import json
 import re
+import struct
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -518,17 +520,22 @@ class TestEpisodicSqliteCosineNumpy:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opened
     ) -> None:
         """Reverting the vectorization makes this fail: the numpy path must not
-        touch ``struct.unpack``, which is exactly what the old per-row loop did."""
+        touch ``struct.unpack``, which is exactly what the old per-row loop did.
+
+        Only the search module's own ``struct`` binding is replaced: the stdlib
+        module is shared with xdist's receiver thread, which decodes every
+        frame from the controller with ``struct.unpack``."""
         if not _HAS_NUMPY:
             pytest.skip("numpy not available on this platform")
-        import kiro_crew.vector_memory as vm
+        from kiro_crew.vector_memory_runtime import episodic_search
 
         store = self._seed_store(tmp_path, opened=opened)
 
         def _boom(*args: object, **kwargs: object) -> None:
             raise AssertionError("struct.unpack called on the numpy branch")
 
-        monkeypatch.setattr(vm.struct, "unpack", _boom)
+        stand_in = SimpleNamespace(**{**vars(struct), "unpack": _boom})
+        monkeypatch.setattr(episodic_search, "struct", stand_in)
         results = self._search(store, monkeypatch, use_numpy=True)
         assert {r["id"] for r in results} == {"ep-1", "ep-2", "ep-3", "ep-4"}
 

@@ -61,6 +61,8 @@ async def test_bot_lists_only_bot_threads_and_a_press_binds_like_sessions(tmp_pa
     await dispatcher.handle_message(_message("!bot"))
 
     assert _labels(client) == ["1. Radar"]
+    # A Bot whose thread was never opened is not offered, and the list says so.
+    assert "Bot not listed? Open it once on the dashboard's Bots page" in client.sent[-1][0]
     custom_id, message_id = _picker_button(client)
     await dispatcher.on_interaction(_interaction(custom_id, message_id))
     assert sessions.mirror_links[BOT_KEY] == ChannelLink("discord", channel_id="c1")
@@ -78,6 +80,16 @@ async def test_bot_with_a_name_connects_at_once_and_routes_the_next_message(tmp_
     assert any("Resumed: Radar" in text for _, text, _ in client.edits)
     await dispatcher.handle_message(_message("how are the workers doing?"))
     assert sessions.last_key == BOT_KEY
+
+
+@pytest.mark.asyncio
+async def test_bare_agent_in_a_resumed_conversation_still_points_at_bot(tmp_path) -> None:
+    dispatcher, client, _ = _bot_dm(tmp_path)
+    await dispatcher.handle_message(_message("!bot RAD"))
+    assert dispatcher._session_resume.resumed_session("c1") == BOT_KEY
+    await dispatcher.handle_message(_message("!agent"))
+    assert "changed from the dashboard" in client.sent[-1][0]
+    assert client.sent[-1][0].endswith("Looking for a Bot? Send `!bot` in a DM.")
 
 
 @pytest.mark.asyncio

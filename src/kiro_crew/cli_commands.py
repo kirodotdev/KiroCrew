@@ -323,8 +323,9 @@ def _tailnet(args: argparse.Namespace) -> None:
         if action == "down":
             print(
                 "   To withdraw right now without touching the config, run: "
-                f"`tailscale serve --https {tailnet_serve.SERVE_HTTPS_PORT} "
-                f"--set-path={tailnet_serve.SERVE_MOUNT} off`",
+                "`tailscale serve --https <port> "
+                f"--set-path={tailnet_serve.SERVE_MOUNT} off`, where <port> is "
+                "dashboard.tailscale.https_port (443 unless set)",
                 file=sys.stderr,
             )
         sys.exit(1)
@@ -362,6 +363,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         # parse that would have to repeat that guard.
         port = resolve_client_port(None)
     enabled = bool(cfg.dashboard.tailscale.enabled)
+    https_port = cfg.dashboard.tailscale.https_port
 
     if action == "up":
         # Asked first, so an LTS build whose policy does not turn tailnet on
@@ -417,7 +419,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         # startup value. Conflating them is how "resolvable" gets rendered as
         # "in the allowlist".
         name = tailnet.self_dns_name()
-        state = tailnet_serve.serve_state(port)
+        state = tailnet_serve.serve_state(port, https_port=https_port)
         print("👻 Tailnet dashboard access")
         if pinned:
             print(
@@ -428,11 +430,12 @@ def _tailnet(args: argparse.Namespace) -> None:
             f"(dashboard.tailscale.enabled)"
         )
         print(f"   Name:       {name or '— (no tailnet name resolvable right now)'}")
+        print(f"   Port:       {https_port} (dashboard.tailscale.https_port)")
         published = state.published
         label = {True: "yes", False: "no", None: "unknown"}[published]
         print(f"   Published:  {label} — {state.detail}")
         if name and published is True:
-            print(f"   URL:        https://{name}")
+            print(f"   URL:        {tailnet.tailnet_https_origin(name, https_port)}")
         if name and enabled and published is not True:
             print("   Next:       kirocrew tailnet up")
         return
@@ -442,7 +445,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     if action == "down":
-        result = tailnet_serve.unpublish(port)
+        result = tailnet_serve.unpublish(port, https_port=https_port)
         print(("✅ " if result.ok else "❌ ") + result.detail)
         if result.ok:
             # The trust setting is deliberately left ON. It contributes one origin
@@ -490,7 +493,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    result = tailnet_serve.publish(port, audit_tool="tailnet_cli_up")
+    result = tailnet_serve.publish(port, https_port=https_port, audit_tool="tailnet_cli_up")
     if not result.ok:
         print(f"❌ {result.detail}", file=sys.stderr)
         sys.exit(1)
@@ -498,7 +501,7 @@ def _tailnet(args: argparse.Namespace) -> None:
 
     name = tailnet.self_dns_name()
     if name:
-        print(f"👻 URL:        https://{name}")
+        print(f"👻 URL:        {tailnet.tailnet_https_origin(name, https_port)}")
     else:
         print(
             "⚠️  No tailnet name is resolvable right now, so the gateway will not "
@@ -958,6 +961,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _warn_hooks_need_restart,
     )
     from kiro_crew.cli_commands_cron import (  # noqa: F401
+        _CHANNEL_ID_HINT,
         _CRON_LIST_UNGROUPED,
         _cron,
         _cron_add,

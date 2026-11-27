@@ -41,7 +41,13 @@ _BOT_ALIASES = frozenset(("!bot", "/bot", "!bots", "/bots"))
 # ``!models`` (plural) is a typo-safe alias for the same reason.
 _MODEL_ALIASES = frozenset(("!model", "/model", "!models", "/models"))
 _STATUS_ALIASES = frozenset(("!status", "/status"))
-_AGENT_ALIASES = frozenset(("!agent", "/agent"))
+# ``!agents`` (plural) is a typo-safe alias for the same reason.
+_AGENT_ALIASES = frozenset(("!agent", "/agent", "!agents", "/agents"))
+# Privacy modifiers, Slack's ``!temporary`` / ``!incognito`` with the same modes
+# (``messaging/privacy_mode.py``). Read as a leading token, as Telegram reads its
+# ``/temporary``: ``!temporary <msg>`` marks the conversation and answers <msg>.
+_TEMPORARY_ALIASES = frozenset(("!temporary", "/temporary"))
+_INCOGNITO_ALIASES = frozenset(("!incognito", "/incognito"))
 
 _PREFIXES = ("!", "/")
 
@@ -55,8 +61,8 @@ def parse_command_argument(text: str) -> str:
 def parse_command(text: str) -> str | None:
     """Return the command name for *text*, or None when it is not a command.
 
-    One of 'new', 'compact', 'model', 'agent', 'status', 'sessions', 'bot',
-    'link', 'unlink', 'stop', 'help'.
+    One of 'new', 'compact', 'model', 'agent', 'temporary', 'incognito',
+    'status', 'sessions', 'bot', 'link', 'unlink', 'stop', 'help'.
     """
     stripped = text.strip()
     if not stripped.startswith(_PREFIXES):
@@ -79,6 +85,10 @@ def parse_command(text: str) -> str | None:
         return "model"
     if cmd in _AGENT_ALIASES:
         return "agent"
+    if cmd in _TEMPORARY_ALIASES:
+        return "temporary"
+    if cmd in _INCOGNITO_ALIASES:
+        return "incognito"
     if cmd in _STATUS_ALIASES:
         return "status"
     if cmd in _HELP_ALIASES:
@@ -140,6 +150,8 @@ COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("compact", "Compress the context when it gets long"),
     ("model", "Choose the model from a list"),
     ("agent", "Show the agent, or switch it by name"),
+    ("temporary", "This conversation reads and saves no memory"),
+    ("incognito", "This conversation may read memory but saves nothing"),
     ("status", "Show gateway runtime stats and the approval mode"),
     ("sessions", "Continue a recent or matching session here (owner only)"),
     ("bot", "Talk to one of your Bots here, in its own thread (owner only)"),
@@ -169,13 +181,28 @@ _APP_COMMAND_CONTEXTS = (_APP_CONTEXT_GUILD, _APP_CONTEXT_BOT_DM)
 #: ``value`` is what comes back in ``DiscordInteraction.options``, so it has to
 #: be a token the ``!`` text handlers already accept: the slash and text paths
 #: share one parser.
+#:
+#: ``autocomplete`` makes Discord ask for matches as the user types (an
+#: interaction of type 4, answered in ``transport_dispatch_interactions``). It
+#: suggests; it does not restrict, so a typed value still reaches the same
+#: handler and is checked there.
 _COMMAND_OPTIONS: dict[str, tuple[dict[str, Any], ...]] = {
+    "model": (
+        {
+            "type": _APP_OPTION_STRING,
+            "name": "name",
+            "description": "The model to switch to; leave empty for the list",
+            "required": False,
+            "autocomplete": True,
+        },
+    ),
     "agent": (
         {
             "type": _APP_OPTION_STRING,
             "name": "name",
             "description": "The agent to switch to, or default",
             "required": False,
+            "autocomplete": True,
         },
     ),
     "sessions": (
@@ -184,6 +211,7 @@ _COMMAND_OPTIONS: dict[str, tuple[dict[str, Any], ...]] = {
             "name": "query",
             "description": "Match a session by title or slot name",
             "required": False,
+            "autocomplete": True,
         },
     ),
     "bot": (
@@ -192,6 +220,7 @@ _COMMAND_OPTIONS: dict[str, tuple[dict[str, Any], ...]] = {
             "name": "name",
             "description": "Match a Bot by its name",
             "required": False,
+            "autocomplete": True,
         },
     ),
 }
@@ -239,6 +268,9 @@ def application_command_payload() -> list[dict[str, Any]]:
 
 _HELP_HEADER = "🦞 **Kiro Crew — Discord**"
 _HELP_FOOTER = (
+    "`!temporary <msg>` / `!incognito <msg>` — make this conversation private, "
+    "then answer <msg>\n"
+    "\n"
     "While a reply is running, prefix a message to control it:\n"
     "`!queue <msg>` — answer it after the current turn\n"
     "`!steer <msg>` — fold it into the running turn now\n"

@@ -195,7 +195,7 @@ function RemoteCrewNamesError() {
 export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode; shelf: React.ReactNode } {
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
-    closeRefused, columnsError, columnsFailed, creatorFilter, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
+    closeRefused, columnsError, columnsFailed, columnsReady, creatorFilter, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
     dismissUnfiledAboveFoldersError, dispatch,
     filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, folderActionError, groupByKind, toggleGroupByKind,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
@@ -1263,8 +1263,10 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
            * failure. It must not show under a toggle-SAVE failure: there its
            * "Try again" label would promise to retry the save but instead seed
            * lanes into a board the user never switched to (UX Review). The
-           * save-failure copy already carries its own next step. */}
-          {!toggleSaveFailed && (
+           * save-failure copy already carries its own next step. It also stays
+           * hidden until the columns read succeeds: seeding needs the loaded
+           * list, and while that read has failed its own Retry is the way on. */}
+          {!toggleSaveFailed && columnsReady && (
             <div>
               <Btn
                 type="button"

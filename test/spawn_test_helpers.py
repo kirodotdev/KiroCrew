@@ -59,13 +59,20 @@ LONG_CHILD_WITH_GRANDCHILD = (
 
 
 def await_pids(pidfile: Path, budget: float = 30.0) -> tuple[int, ...]:
-    """The pids :data:`LONG_CHILD_WITH_GRANDCHILD` wrote, once it wrote them."""
-    wait_until(
-        pidfile.exists,
+    """The pids :data:`LONG_CHILD_WITH_GRANDCHILD` wrote, once they can be read.
+
+    On Windows a file that exists is not yet readable: a scanner on the runner can
+    hold the freshly renamed file for a moment, and the open is refused with a
+    sharing violation (``PermissionError``). That refusal means "not yet", like a
+    missing file, so a caller never sees it.
+    """
+    text = wait_until(
+        lambda: pidfile.read_text(encoding="utf-8"),
         timeout=budget,
-        describe=lambda: f"the build child never wrote {pidfile}",
+        ignoring=(FileNotFoundError, PermissionError),
+        describe=lambda: f"the build child never wrote a readable {pidfile}",
     )
-    return tuple(int(part) for part in pidfile.read_text(encoding="utf-8").split())
+    return tuple(int(part) for part in text.split())
 
 
 def await_gone(pid: int, budget: float = 10.0) -> bool:

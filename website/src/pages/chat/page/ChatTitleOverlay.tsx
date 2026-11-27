@@ -1,6 +1,6 @@
 import { forwardRef, type ComponentPropsWithoutRef, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import { CrewWorkerBreadcrumb } from '../../../components/crew/CrewWorkerBreadcrumb'
-import { Undo2, ExternalLink, Columns2 } from 'lucide-react'
+import { Undo2, ExternalLink, Columns2, Search } from 'lucide-react'
 import type { SidePanelDock } from '../../../hooks/useSidePanelDock'
 import type { SplitDir } from '../../../hooks/useSessionGrid'
 import type { AppDispatch } from '../../../store'
@@ -24,6 +24,7 @@ import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 import { crewRootOf, mateRootOf } from '../../../lib/crewMode'
 import { platformShortcut } from '../../../utils/platform'
+import { historySearchHint } from '../../../components/chatHistorySearch/searchShortcut'
 
 interface ChatTitleOverlayProps {
   embedMode?: 'chat' | 'sessions'
@@ -72,6 +73,8 @@ interface ChatTitleOverlayProps {
   mobileSessionsToggle: JSX.Element
   onPromote: () => void
   promoting: boolean
+  /** Opens this chat's history search (`useMessageSearch`). */
+  onOpenSearch: () => void
 }
 
 /**
@@ -80,13 +83,14 @@ interface ChatTitleOverlayProps {
  * holds back for about a second. The tip's state lives in this component, so
  * it mounts and unmounts with the control: the pop-out and side-panel toggles
  * each go away under the pointer when pressed, and a tip held above them
- * would paint again, stale, when the control came back.
+ * would paint again, stale, when the control came back. `tip` replaces the
+ * label in the bubble when it says more (Search names its shortcut).
  */
 // Forwards its ref so a `uiLocation` marker spread on it registers the real
 // control, as it did when the call sites rendered `Clickable` directly.
-const TipClickable = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<typeof Clickable> & { 'aria-label': string }>(
-  function TipClickable({ children, ...props }, ref) {
-    const tip = useLabelTip(props['aria-label'])
+const TipClickable = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<typeof Clickable> & { 'aria-label': string; tip?: string }>(
+  function TipClickable({ children, tip: tipText, ...props }, ref) {
+    const tip = useLabelTip(tipText ?? props['aria-label'])
     return (
       <Clickable ref={ref} {...props} {...tip.handlers}>
         {children}
@@ -103,13 +107,27 @@ export default function ChatTitleOverlay({
   embedMode, popout, activeSlot, dispatch, filteredSlots, isMobile, titleInTopbar, activityOpen, setActionError, showActionError, onPinCollapsedHeight, pinCardRef, pinExpanded, pinFoldRef, pinned,
   scrollToPinnedPrompt, scrollTranscriptBy, setPinExpanded, activePoppedOut, focusActivePopout, openActivePopout, returnSelfToMain, splitFeatureEnabled, currentSlot, headerColorStyle, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarPinned, sidebarAutoHidden, sidebarPinned, sidePanelDock, splitAnchorForActive, toggleAct, openSidebar, sidebarOnScreen,
-  sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, onPromote, promoting,
+  sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, onPromote, promoting, onOpenSearch,
 }: ChatTitleOverlayProps) {
   const currentCrewRoot = crewRootOf(currentSlot)
   // A crewmate's session, which its Bot's Sessions tab lists: the same
   // breadcrumb, back to the mate.
   const currentMateRoot = currentCrewRoot ? '' : mateRootOf(currentSlot)
   const breadcrumbRoot = currentCrewRoot || currentMateRoot
+  const searchHint = historySearchHint()
+  // The chat's history search, the shortcut's visible way in.
+  const searchButton = (
+    <TipClickable
+      className="flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 text-muted hover:text-text pointer-events-auto"
+      onClick={onOpenSearch}
+      aria-label={i18nT('components.chatHistorySearch.open')}
+      aria-keyshortcuts={searchHint.keyshortcuts}
+      tip={searchHint.tip}
+      data-testid="chat-header-search"
+    >
+      <Search size={15} />
+    </TipClickable>
+  )
   return (
     <>
       {/* Claude-style title row — absolute overlay, solid top fading to transparent.
@@ -143,6 +161,8 @@ export default function ChatTitleOverlay({
           <div className={`relative pr-4 ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : 'pl-4'} pt-[9px] pb-2 flex items-center bg-bg border-b border-border`} data-testid="crew-worker-header">
             {/* Keyed by member: a reopen-failed notice belongs to the member it was about. */}
             <CrewWorkerBreadcrumb key={currentSlot.key} root={breadcrumbRoot} worker={currentSlot} mate={!!currentMateRoot} />
+            {/* A phone has Search in the shell bar's ⋯ menu (MobileTopBar). */}
+            {!isMobile && <span className="ml-1.5 flex shrink-0">{searchButton}</span>}
             {/* The panel's open control, which the title row carries and the
                 breadcrumb replaces: with the panel closed, one click brings the
                 Workers list back beside the worker. */}
@@ -198,6 +218,10 @@ export default function ChatTitleOverlay({
             promoting={promoting}
             newSessionHere={embedMode !== 'chat' && isMobile ? mobileNewSessionItem : undefined}
             onSplitDown={!embedMode && splitFeatureEnabled && activeSlot && !(splitAnchorForActive && !activeIsSplitAnchor) ? () => enterSplit(activeSlot, 'down') : undefined}
+            // The trailing group already holds its peers (pop-out, panel
+            // opener, split view), so Search is this menu's first row. A
+            // phone has it in the shell bar's ⋯ menu (MobileTopBar).
+            onOpenSearch={!isMobile ? onOpenSearch : undefined}
           />
           </div>
           {/* Shared with every split-view pane header (#9727). The editor
@@ -296,6 +320,8 @@ export default function ChatTitleOverlay({
             fullText={pinned.full}
             images={pinned.images}
             bodyBeyondPreview={pinned.bodyBeyondPreview}
+            meta={pinned.meta}
+            slotKey={activeSlot || undefined}
             pushUp={pinned.push}
             liveH={pinned.liveH}
             maxH={pinned.maxH}

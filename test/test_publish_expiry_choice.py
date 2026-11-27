@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -21,10 +22,12 @@ from publish_sync_helpers import (  # noqa: F401 -- fixtures are requested by na
 )
 
 from kiro_crew import publish_provider, publish_sync
+from kiro_crew.artifact_store.records import parse_publication
 from kiro_crew.artifacts import ArtifactStore, ArtifactValidationError
 from kiro_crew.publish_provider import (
     PROVIDER_DEFAULT_EXPIRY,
     PublishConflictError,
+    PublishError,
     PublishResult,
     SharingModel,
 )
@@ -248,6 +251,118 @@ async def test_two_first_publishes_racing_cannot_both_report_their_expiry(store,
     assert len(provider.called("upload")) == 1
 
 
+# ── the recorded expiry ──────────────────────────────────────────────────────
+
+_PAST = "2000-01-01T00:00:00+00:00"
+
+
+async def _published_then_expired(store, provider) -> None:
+    store.create(name="Doc", content="v1", kind="text", slug="d")
+    await publish_sync.publish("d", provider_name="expiring", expires_in_days=30)
+    store.update_publication("d", expires_at=_PAST)
+    provider.calls.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_first_publish_records_when_it_expires(store, expiring):
+    expiring()
+    store.create(name="Doc", content="hi", kind="text", slug="d")
+    await publish_sync.publish("d", provider_name="expiring", expires_in_days=730)
+
+    pub = store.get("d").publication
+    published = datetime.fromisoformat(pub.published_at)
+    assert datetime.fromisoformat(pub.expires_at) == published + timedelta(days=730)
+    assert pub.is_expired() is False
+
+
+@pytest.mark.asyncio
+async def test_no_expiry_and_a_destination_without_choices_record_none(store, expiring):
+    expiring(model=_OPEN_ENDED)
+    store.create(name="Never", content="hi", kind="text", slug="never")
+    store.create(name="Plain", content="hi", kind="text", slug="plain")
+    await publish_sync.publish("never", provider_name="expiring", expires_in_days=None)
+    await publish_sync.publish("plain")
+
+    assert store.get("never").publication.expires_at == ""
+    assert store.get("plain").publication.expires_at == ""
+
+
+def test_a_record_without_the_field_never_expires():
+    pub = parse_publication({"artifact_id": "uuid-1", "view_url": "https://x.example/a"})
+
+    assert (pub.expires_at, pub.is_expired()) == ("", False)
+
+
+@pytest.mark.asyncio
+async def test_auto_sync_skips_an_expired_publication(store, expiring):
+    provider = expiring()
+    await _published_then_expired(store, provider)
+    store.update("d", content="v2", snapshot=True)
+
+    await publish_sync.push_version_by_slug("d")
+
+    assert provider.calls == []
+    pub = store.get("d").publication
+    assert (pub.last_synced_kirocrew_version, pub.last_error) == (1, "")
+
+
+@pytest.mark.asyncio
+async def test_an_expired_publication_is_withdrawn_then_published_again(store, expiring):
+    provider = expiring()
+    await _published_then_expired(store, provider)
+    provider.upload_response = {**provider.upload_response, "artifactId": "uuid-456"}
+
+    summary = await publish_sync.publish("d", expires_in_days=90)
+
+    assert [name for name, _ in provider.calls] == ["delete", "expiry", "upload"]
+    assert provider.called("delete") == [{"artifact_id": "uuid-123"}]
+    assert provider.called("expiry") == [{"expires_in_days": 90}]
+    pub = store.get("d").publication
+    assert (pub.artifact_id, pub.provider, pub.is_expired()) == ("uuid-456", "expiring", False)
+    assert (summary["artifact_id"], summary["expired"]) == ("uuid-456", False)
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_withdrawal_keeps_the_expired_record(store, expiring):
+    provider = expiring()
+    await _published_then_expired(store, provider)
+    provider.delete_response = {"error": "throttled"}
+
+    with pytest.raises(PublishError):
+        await publish_sync.publish("d", expires_in_days=90)
+
+    assert provider.called("upload") == []
+    pub = store.get("d").publication
+    assert (pub.artifact_id, pub.expires_at) == ("uuid-123", _PAST)
+
+
+@pytest.mark.asyncio
+async def test_an_expired_publication_needs_a_chosen_expiry(store, expiring):
+    provider = expiring()
+    await _published_then_expired(store, provider)
+
+    with pytest.raises(PublishConflictError):
+        await publish_sync.publish("d")
+
+    assert provider.calls == []
+    assert store.get("d").publication.artifact_id == "uuid-123"
+
+
+@pytest.mark.asyncio
+async def test_the_served_artifact_says_whether_its_publication_expired(store, expiring):
+    from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import _serialize
+
+    provider = expiring()
+    store.create(name="Live", content="hi", kind="text", slug="live")
+    await publish_sync.publish("live", provider_name="expiring")
+    await _published_then_expired(store, provider)
+
+    live = _serialize(store.get("live"))["publication"]
+    gone = _serialize(store.get("d"))["publication"]
+    assert (bool(live["expires_at"]), live["expired"]) == (True, False)
+    assert (gone["expires_at"], gone["expired"]) == (_PAST, True)
+
+
 # ── the dashboard route ──────────────────────────────────────────────────────
 
 
@@ -310,6 +425,33 @@ async def test_the_route_refuses_a_malformed_expiry(route_publish, bad):
 
     assert resp.status == 400
     route_publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_republish_naming_no_provider_publishes_where_it_was_gated(
+    route_publish, monkeypatch
+):
+    # publish() re-reads the artifact under its lock; were it handed the default, a record
+    # cleared in between would send the upload to a destination the gate never saw.
+    from kiro_crew.artifacts import ArtifactPublication, get_default_store
+    from kiro_crew.dashboard.handlers import artifacts as handlers
+
+    get_default_store().set_publication(
+        "doc",
+        ArtifactPublication(
+            artifact_id="uuid-1", view_url="https://x.example/a", provider="expiring"
+        ),
+    )
+    gated: list[str] = []
+    monkeypatch.setattr(
+        handlers, "_publish_governance_denied", lambda request, name: gated.append(name)
+    )
+
+    resp = await handlers.api_artifact_publish(_publish_request({"visibility": "PRIVATE"}))
+
+    assert resp.status == 200
+    assert gated == ["expiring"]
+    assert route_publish.await_args.kwargs["provider_name"] == "expiring"
 
 
 @pytest.mark.asyncio

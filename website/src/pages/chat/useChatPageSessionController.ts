@@ -28,7 +28,7 @@ import { isChatPageSurface } from '../../utils/channelOrigin'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import { isSafeReload } from '../../lib/safeReload'
 import { useFeaturePreviewLockSettled } from '../../utils/editionLocks'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { PANE_SLOT_HINT_PARAM, relayActiveSlotToParent } from '../../lib/paneLastSlot'
 import { withoutSpentCrewLink } from '../../lib/crewDeepLink'
 import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessionUrlHistory'
@@ -1448,7 +1448,7 @@ export function useChatPageSessionController({
       // tab and popout rewrites it on each slots frame, so once this window has
       // shown a chat, its own recency stack decides where it lands.
       const recent = hadActiveSlotRef.current ? (slotHistoryRef.current ?? []).filter(k => eligibleKeys.has(k)).pop() : undefined
-      const saved = hadActiveSlotRef.current ? null : localStorage.getItem(slotStorageKey)
+      const saved = hadActiveSlotRef.current ? null : safeGetItem(slotStorageKey)
       const hint = slotHintRef.current
       slotHintRef.current = null
       // The hub's hint is the page's own pick too, so it never lands on a

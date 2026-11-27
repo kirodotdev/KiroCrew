@@ -572,3 +572,128 @@ def test_autonudge_stop_with_a_null_reason_still_stops(gateway_posts):
     assert [(p, b["tool"]) for p, b in gateway_posts] == [
         ("/api/session-directive", "autonudge_stop")
     ]
+
+
+_PR_A = "https://github.com/acme/widgets/pull/7"
+_PR_B = "https://github.com/acme/widgets/pull/8"
+
+
+def test_monitor_watch_carries_also_wake_on_normalized_and_collapsed(gateway_posts):
+    with (
+        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1"),
+        patch("kiro_crew.mcp_core._get", return_value={"active": False, "monitor": None}),
+    ):
+        result = control.monitor_watch(
+            "monitor_watch",
+            {
+                "kind": "github_pull_request",
+                "target": _PR_A,
+                "objective": "review_ready",
+                "also_wake_on": ["https://www.github.com/acme/widgets/pull/8", _PR_A, _PR_B],
+            },
+        )
+
+    args = session_directive.decode(result, "monitor_watch")
+    assert args is not None
+    assert args["also_wake_on"] == [_PR_B]
+
+
+def test_monitor_watch_refuses_also_wake_on_for_another_kind(gateway_posts):
+    with patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1"):
+        result = control.monitor_watch(
+            "monitor_watch",
+            {
+                "kind": "gitlab_merge_request",
+                "target": "https://gitlab.com/acme/widgets/-/merge_requests/8",
+                "objective": "review_ready",
+                "also_wake_on": ["https://gitlab.com/acme/widgets/-/merge_requests/9"],
+            },
+        )
+
+    assert result.startswith("Error: also_wake_on is available only on a github_pull_request")
+    assert session_directive.decode(result, "monitor_watch") is None
+    assert gateway_posts == []
+
+
+@pytest.mark.parametrize("tool_name", ["monitor_watch", "monitor_update"])
+def test_a_fourth_also_wake_on_entry_is_refused_by_the_schema(tool_name):
+    from kiro_crew.validation import (
+        MONITOR_UPDATE_SCHEMA,
+        MONITOR_WATCH_SCHEMA,
+        ValidationError,
+        validate_tool_args,
+    )
+
+    schema = MONITOR_WATCH_SCHEMA if tool_name == "monitor_watch" else MONITOR_UPDATE_SCHEMA
+    args = {"also_wake_on": [f"https://github.com/acme/widgets/pull/{n}" for n in range(8, 12)]}
+    if tool_name == "monitor_watch":
+        args.update(kind="github_pull_request", target=_PR_A, objective="review_ready")
+    with pytest.raises(ValidationError, match="also_wake_on"):
+        validate_tool_args(args, schema)
+    args["also_wake_on"] = args["also_wake_on"][:3]
+    assert validate_tool_args(args, schema)["also_wake_on"] == args["also_wake_on"]
+
+
+def test_monitor_update_emits_also_wake_on_as_a_replacement(gateway_posts):
+    with (
+        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1"),
+        patch(
+            "kiro_crew.mcp_core._get",
+            return_value={"active": True, "monitor": {"kind": "github_pull_request"}},
+        ),
+    ):
+        update = control.monitor_update("monitor_update", {"also_wake_on": [_PR_B, _PR_B]})
+        cleared = control.monitor_update("monitor_update", {"also_wake_on": []})
+
+    assert session_directive.decode(update, "monitor_update") == {
+        "patch": {"also_wake_on": [_PR_B]}
+    }
+    assert session_directive.decode(cleared, "monitor_update") == {"patch": {"also_wake_on": []}}
+
+
+@pytest.mark.parametrize(
+    ("reading", "expected"),
+    [
+        (
+            {"active": True, "autonudge_loop": {"active": True}, "monitor": None},
+            "plain monitor_start loop",
+        ),
+        (
+            {"active": True, "monitor": {"kind": "gitlab_merge_request"}},
+            "only on a github_pull_request watch",
+        ),
+    ],
+)
+def test_monitor_update_refuses_also_wake_on_in_band_from_the_session_reading(
+    reading, expected, gateway_posts
+):
+    with (
+        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1"),
+        patch("kiro_crew.mcp_core._get", return_value=reading),
+    ):
+        result = control.monitor_update("monitor_update", {"also_wake_on": [_PR_B]})
+
+    assert result.startswith("monitor_update: NOT applied")
+    assert expected in result
+    assert session_directive.decode(result, "monitor_update") is None
+    assert gateway_posts == []
+
+
+def test_monitor_inspect_lists_the_extras_and_their_states():
+    extras = {
+        "also_wake_on": [_PR_B],
+        "also_wake_state": {
+            _PR_B: {"state": "merged", "at": 300.0, "read_errors": 0, "wake_claimed": True}
+        },
+        "also_wake_claim": {},
+    }
+    with (
+        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1"),
+        patch(
+            "kiro_crew.mcp_core._get",
+            return_value={"active": True, "monitor": {"kind": "github_pull_request", **extras}},
+        ),
+    ):
+        payload = json.loads(control.monitor_inspect("monitor_inspect", {}))
+
+    assert {key: payload["monitor"][key] for key in extras} == extras

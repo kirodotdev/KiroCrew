@@ -218,6 +218,122 @@ def test_a_registry_symlink_referent_is_a_separate_seal_target(
 
 
 @_POSIX_ONLY
+def test_a_registry_symlink_is_read_once_and_its_value_decides_where_to_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A screen of the name followed by a second resolve of it lets a link swapped
+    # in between pick where the gateway publishes; the one readlink value decides.
+    registry = _registry_home(tmp_path, monkeypatch)
+    registry.parent.mkdir()
+    elsewhere = tmp_path / "dotfiles-mcp.json"
+    registry.symlink_to(elsewhere)
+    targets = sandbox._resolved_kiro_mcp_registry_targets()
+    monkeypatch.setattr(sandbox, "_resolved_kiro_mcp_registry_targets", lambda: targets)
+    read: list[str] = []
+    real_readlink, real_realpath = os.readlink, os.path.realpath
+    decoy = tmp_path / "decoy.json"
+
+    def readlink(p, *a, **k):
+        read.append(os.fspath(p))
+        return real_readlink(p, *a, **k)
+
+    def realpath(p, *a, **k):
+        # Resolving the registry NAME again would land on the decoy.
+        return str(decoy) if os.fspath(p) == str(registry) else real_realpath(p, *a, **k)
+
+    monkeypatch.setattr(os, "readlink", readlink)
+    monkeypatch.setattr(os.path, "realpath", realpath)
+    assert str(elsewhere) in sandbox._materialize_kiro_mcp_registry()
+    assert read.count(str(registry)) == 1
+    assert not decoy.exists()
+    assert json.loads(elsewhere.read_text(encoding="utf-8")) == {"mcpServers": {}}
+
+
+@_POSIX_ONLY
+def test_a_registry_chain_is_followed_hop_by_hop_to_its_absent_far_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # registry -> hop -> store/final.json (absent, store exists): the far end is
+    # published and so sealed, each hop read once with readlink.
+    registry = _registry_home(tmp_path, monkeypatch)
+    registry.parent.mkdir()
+    final = tmp_path / "store" / "final.json"
+    final.parent.mkdir()
+    hop = tmp_path / "hop.json"
+    hop.symlink_to(final)
+    registry.symlink_to(hop)
+    read: list[str] = []
+    real_readlink = os.readlink
+
+    def readlink(p, *a, **k):
+        read.append(os.fspath(p))
+        return real_readlink(p, *a, **k)
+
+    targets = sandbox._resolved_kiro_mcp_registry_targets()
+    assert str(final) in targets
+    monkeypatch.setattr(os, "readlink", readlink)
+    assert sandbox._materialize_kiro_mcp_registry() == [str(final)]
+    assert json.loads(final.read_text(encoding="utf-8")) == {"mcpServers": {}}
+    assert hop.is_symlink() and registry.is_symlink()
+    # The chain walk reads the hop with readlink (realpath reads links its own way).
+    assert str(hop) in read
+
+
+@_POSIX_ONLY
+def test_a_registry_chain_whose_far_folder_is_missing_creates_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The real target list also names the chain's resolved far end; it must not
+    # be created through the plain branch's folder step either.
+    registry = _registry_home(tmp_path, monkeypatch)
+    registry.parent.mkdir()
+    hop = tmp_path / "hop.json"
+    final = tmp_path / "missing" / "final.json"
+    hop.symlink_to(final)
+    registry.symlink_to(hop)
+    assert str(final) in sandbox._resolved_kiro_mcp_registry_targets()
+    with caplog.at_level("WARNING", logger="kiro_crew.sandbox"):
+        assert sandbox._materialize_kiro_mcp_registry() == []
+    assert not (tmp_path / "missing").exists()
+    assert hop.is_symlink() and registry.is_symlink()
+    assert "left unsealed for this spawn" in caplog.text
+
+
+@_POSIX_ONLY
+def test_a_registry_link_loop_is_left_unsealed_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    registry = _registry_home(tmp_path, monkeypatch)
+    registry.parent.mkdir()
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    registry.symlink_to(a)
+    with caplog.at_level("WARNING", logger="kiro_crew.sandbox"):
+        assert sandbox._materialize_kiro_mcp_registry() == []
+    assert "left unsealed for this spawn" in caplog.text
+
+
+@_POSIX_ONLY
+def test_a_working_registry_chain_is_left_alone_without_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A dotfiles or home-manager layout: registry -> store link -> real file.
+    registry = _registry_home(tmp_path, monkeypatch)
+    registry.parent.mkdir()
+    final = tmp_path / "store" / "mcp.json"
+    final.parent.mkdir()
+    final.write_text('{"mcpServers": {"x": {"command": "x"}}}', encoding="utf-8")
+    hop = tmp_path / "hop.json"
+    hop.symlink_to(final)
+    registry.symlink_to(hop)
+    with caplog.at_level("WARNING", logger="kiro_crew.sandbox"):
+        assert sandbox._materialize_kiro_mcp_registry() == []
+    assert "x" in final.read_text(encoding="utf-8")
+    assert "left unsealed" not in caplog.text
+
+
+@_POSIX_ONLY
 @pytest.mark.parametrize("parent_name", ["missing", "missing/nested"])
 def test_a_registry_symlink_with_a_missing_parent_warns_without_creating_directories(
     tmp_path: Path,

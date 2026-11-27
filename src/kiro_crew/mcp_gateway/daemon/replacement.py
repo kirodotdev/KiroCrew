@@ -280,7 +280,7 @@ async def _respawn_backend_for_stub_unrecorded(
     # digest this respawn never reserved and drop a concurrent pooled
     # connection's eviction protection.
     respawn_exclusive_uuid = stub_uuid if old_backend.exclusive_token else ""
-    if not respawn_exclusive_uuid and hazards.observed_codes(
+    if not respawn_exclusive_uuid and hazards.retreat_codes(
         pool_key.server_name,
         hazards.launch_identity(
             pool_key.command_args_hash,

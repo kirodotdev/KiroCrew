@@ -11,19 +11,23 @@ and builders are in ``app_manager_helpers.py``.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
+import stat
+import sys
 from pathlib import Path
 
 import pytest
 from app_manager_helpers import app_home_fixture  # noqa: F401 - fixture
 from app_manager_helpers import _DATA_IS_A_FILE, _DATA_IS_A_LINK, _make_app_source
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
+    INSTALLED_META_FILENAME,
     _read_installed,
     _validate_source_path,
     disable_app,
@@ -36,7 +40,12 @@ from kiro_crew.apps.manager import (
     uninstall_app,
     update_app,
 )
+from kiro_crew.apps.version import MIN_VERSION_REFUSAL_CODE
 from kiro_crew.dashboard.token_auth import read_app_secret
+
+_root_ignores_modes = pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0, reason="root ignores read-only modes"
+)
 
 # App-name admission contract
 
@@ -198,6 +207,45 @@ class TestInstall:
         with registry_source_repository("https://example.test/owner/test-app"):
             assert update_app(_make_app_source(tmp_path / "v2", version="1.1.0")).ok
         assert _read_installed("test-app").origin == "local"
+
+    def test_an_update_whose_manifest_fails_validation_is_coded(self, tmp_path, app_home):
+        """The code lets the App Store name the app and say who can fix it."""
+        assert install_app(_make_app_source(tmp_path / "v1")).ok
+        src = _make_app_source(tmp_path / "v2", version="1.1.0")
+        raw = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        raw["ui"] = {"overlays": [{"id": "launcher", "replaces": "quick-search"}]}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(raw))
+        result = update_app(src)
+        assert not result.ok
+        assert result.error_code == "app_update_invalid"
+        assert "ui.overlays" in result.error
+        assert result.to_dict()["code"] == "app_update_invalid"
+        assert _read_installed("test-app").version == "1.0.0"
+
+    def test_an_update_that_only_needs_a_newer_kiro_crew_keeps_the_version_code(
+        self, tmp_path, app_home
+    ):
+        """Its maker has nothing to fix, so it is not coded as an invalid version."""
+        assert install_app(_make_app_source(tmp_path / "v1")).ok
+        src = _make_app_source(tmp_path / "v2", version="1.1.0", minKiroCrewVersion="999.0.0")
+        result = update_app(src)
+        assert not result.ok
+        assert result.error_code == MIN_VERSION_REFUSAL_CODE
+        assert "999.0.0" in result.error
+        assert _read_installed("test-app").version == "1.0.0"
+
+    def test_an_update_with_a_manifest_error_and_a_newer_kiro_crew_is_invalid(
+        self, tmp_path, app_home
+    ):
+        """The manifest error still needs the maker, so it decides the code."""
+        assert install_app(_make_app_source(tmp_path / "v1")).ok
+        src = _make_app_source(tmp_path / "v2", version="1.1.0", minKiroCrewVersion="999.0.0")
+        raw = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        raw["ui"] = {"overlays": [{"id": "launcher", "replaces": "quick-search"}]}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(raw))
+        result = update_app(src)
+        assert result.error_code == "app_update_invalid"
+        assert _read_installed("test-app").version == "1.0.0"
 
     def test_install_creates_data_dir(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)
@@ -582,9 +630,11 @@ class TestUninstall:
         return exc
 
     def _hold_app_dir(self, monkeypatch, app_root, *, releases_after, exc_factory):
-        """Make ``rmtree`` of *app_root* fail ``releases_after`` times, then delete it."""
+        """Exercise the Windows path with a held app tree until the named attempt."""
         import kiro_crew.platform_compat_files as files_mod
+        from kiro_crew.apps import manager_uninstall as uninstall_mod
 
+        monkeypatch.setattr(uninstall_mod, "_APP_DELETE_USES_DIR_FD", False)
         monkeypatch.setattr(files_mod, "_RMTREE_BACKOFF_SECONDS", 0)
         real_rmtree = shutil.rmtree
         attempts = []
@@ -634,7 +684,8 @@ class TestUninstall:
         assert len(attempts) == files_mod._RMTREE_MAX_ATTEMPTS
         assert str(app_root / "backend.log") in result.error
         assert "held open by another process" in result.error
-        assert (app_root / APP_MANIFEST_FILENAME).is_file()
+        assert (app_root / INSTALLED_META_FILENAME).is_file()
+        assert get_app("test-app") is not None
 
     def test_uninstall_does_not_retry_a_permission_error_that_is_not_a_sharing_violation(
         self, tmp_path, app_home, monkeypatch
@@ -653,7 +704,174 @@ class TestUninstall:
 
         assert not result.ok
         assert len(attempts) == 1
-        assert (app_root / APP_MANIFEST_FILENAME).is_file()
+        assert (app_root / INSTALLED_META_FILENAME).is_file()
+        assert get_app("test-app") is not None
+
+    @staticmethod
+    def _read_only_assets(src):
+        """Give the app source a read-only ``assets/`` folder holding a read-only file."""
+        assets = src / "assets"
+        assets.mkdir()
+        (assets / "logo.txt").write_text("logo\n", encoding="utf-8")
+        os.chmod(assets / "logo.txt", stat.S_IREAD)
+        os.chmod(assets, stat.S_IRUSR | stat.S_IXUSR)
+
+    @staticmethod
+    def _make_writable(folder):
+        """Undo :meth:`_read_only_assets` so the temp folder can be removed."""
+        if folder.is_dir():
+            os.chmod(folder, stat.S_IRWXU)
+            for entry in folder.iterdir():
+                os.chmod(entry, stat.S_IRUSR | stat.S_IWUSR)
+
+    @_root_ignores_modes
+    @pytest.mark.parametrize("keep_data", [True, False])
+    def test_uninstall_removes_an_app_holding_read_only_entries(
+        self, tmp_path, app_home, keep_data
+    ):
+        """A read-only folder and file the install copied from the source do not stop it."""
+        src = _make_app_source(tmp_path)
+        self._read_only_assets(src)
+        app_root = app_home / "apps" / "test-app"
+        try:
+            assert install_app(src).ok
+            # The installed copy kept the source's read-only modes.
+            assert not os.access(app_root / "assets" / "logo.txt", os.W_OK)
+
+            result = uninstall_app("test-app", keep_data=keep_data)
+
+            assert result.ok, result.error
+            assert not (app_root / "assets").exists()
+            assert not (app_root / APP_MANIFEST_FILENAME).exists()
+            assert get_app("test-app") is None
+        finally:
+            self._make_writable(src / "assets")
+            self._make_writable(app_root / "assets")
+
+    def test_an_uninstall_that_cannot_finish_keeps_the_app_listed_for_a_retry(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """An entry that stays fails the uninstall while the app's record is still in place.
+
+        A refused unlink stands in for a file Windows keeps while another process
+        holds it. The name sorts after ``installed.json``, so a delete in name order
+        reaches the record first.
+        """
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        (app_root / "zz-held.log").write_text("open\n", encoding="utf-8")
+        real_unlink = os.unlink
+
+        def held_unlink(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == "zz-held.log":
+                raise PermissionError(errno.EACCES, "Access is denied", os.fspath(path))
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", held_unlink)
+        result = uninstall_app("test-app", keep_data=False)
+
+        assert not result.ok
+        assert get_app("test-app") is not None
+        assert "zz-held.log" in result.error
+        # Once the entry can go, the same uninstall finishes.
+        monkeypatch.setattr(os, "unlink", real_unlink)
+        retried = uninstall_app("test-app", keep_data=False)
+        assert retried.ok, retried.error
+        assert not app_root.exists()
+        assert get_app("test-app") is None
+
+    def test_uninstall_of_a_linked_app_folder_removes_the_link_and_keeps_its_target(
+        self, tmp_path, app_home
+    ):
+        """The entry-by-entry removal never runs through a link standing at the app folder."""
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        target = tmp_path / "linked-app"
+        os.replace(app_root, target)
+        make_dir_link(app_root, target)
+
+        result = uninstall_app("test-app", keep_data=False)
+
+        assert result.ok, result.error
+        assert not os.path.lexists(app_root)
+        assert (target / APP_MANIFEST_FILENAME).is_file()
+        assert (target / INSTALLED_META_FILENAME).is_file()
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="descriptor-relative app removal is POSIX-only",
+    )
+    def test_uninstall_does_not_follow_app_root_swapped_after_listing(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """Deleting listed children stays inside the app directory that was opened."""
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        displaced = tmp_path / "displaced-app"
+        decoy = tmp_path / "outside"
+        decoy.mkdir()
+        decoy_file = decoy / APP_MANIFEST_FILENAME
+        decoy_file.write_text("outside\n", encoding="utf-8")
+        opened = os.stat(app_root)
+        app_identity = (opened.st_dev, opened.st_ino)
+        real_scandir = os.scandir
+        swapped = []
+
+        class SwapAfterScan:
+            def __init__(self, entries):
+                self.entries = entries
+
+            def __enter__(self):
+                return self.entries.__enter__()
+
+            def __exit__(self, *exc):
+                outcome = self.entries.__exit__(*exc)
+                if exc[0] is None:
+                    os.replace(app_root, displaced)
+                    app_root.symlink_to(decoy, target_is_directory=True)
+                    swapped.append(True)
+                return outcome
+
+        def swap_after_listing(path):
+            entries = real_scandir(path)
+            try:
+                info = os.fstat(path) if isinstance(path, int) else os.lstat(path)
+            except OSError:
+                return entries
+            if swapped or (info.st_dev, info.st_ino) != app_identity:
+                return entries
+            return SwapAfterScan(entries)
+
+        monkeypatch.setattr(os, "scandir", swap_after_listing)
+
+        uninstall_app("test-app", keep_data=False)
+
+        assert swapped == [True]
+        assert decoy_file.read_text(encoding="utf-8") == "outside\n"
+
+    @_root_ignores_modes
+    def test_reinstall_replaces_a_leftover_folder_holding_read_only_entries(
+        self, tmp_path, app_home
+    ):
+        """A folder with no record that holds read-only entries does not block the install."""
+        src = _make_app_source(tmp_path)
+        self._read_only_assets(src)
+        app_root = app_home / "apps" / "test-app"
+        try:
+            assert install_app(src).ok
+            # What an uninstall that stopped partway can leave: entries, but no record.
+            (app_root / APP_MANIFEST_FILENAME).unlink()
+            (app_root / INSTALLED_META_FILENAME).unlink()
+            assert get_app("test-app") is None
+
+            result = install_app(src)
+
+            assert result.ok, result.error
+            assert get_app("test-app") is not None
+            assert (app_root / "assets" / "logo.txt").read_text(encoding="utf-8") == "logo\n"
+        finally:
+            self._make_writable(src / "assets")
+            self._make_writable(app_root / "assets")
 
     def test_uninstall_removes_the_agent_lock_and_gateway_overlay(
         self, tmp_path, app_home, monkeypatch
@@ -856,7 +1074,7 @@ class TestUninstall:
         """A raise after data/ was moved to its temp name must move it BACK:
         the app is still installed, and its user data must not be orphaned
         under a hidden dot-name."""
-        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps import manager_uninstall as uninstall_mod
 
         src = _make_app_source(tmp_path)
         install_app(src)
@@ -865,14 +1083,10 @@ class TestUninstall:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("keep me")
 
-        real_rmtree = mgr.shutil.rmtree
+        def failing_rmtree_app_dir(dest):
+            raise OSError("simulated: app dir resists deletion")
 
-        def failing_rmtree(path, *args, **kwargs):
-            if str(path) == str(app_root):
-                raise OSError("simulated: app dir resists deletion")
-            return real_rmtree(path, *args, **kwargs)
-
-        monkeypatch.setattr(mgr.shutil, "rmtree", failing_rmtree)
+        monkeypatch.setattr(uninstall_mod, "_rmtree_app_dir", failing_rmtree_app_dir)
         result = uninstall_app("test-app", keep_data=True)
         assert not result.ok
         assert marker.exists(), "preserved data must be restored to data/"

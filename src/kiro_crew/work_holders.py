@@ -7,17 +7,18 @@ one walk. ``quiescence.assess`` reads the census twice in one synchronous step,
 once for the counts that decide and once for the names, which describe them and
 decide nothing.
 
-A holder's ``name`` is one of two identifiers its one reader is already listed:
+A holder's ``name`` is one of two identifiers its readers already see listed:
 a dashboard slot key (``GET /api/chat/slots``) or a cron job name
 (``GET /api/crons``). Every other kind of work is counted unnamed. It is never message text, a session title or a path, and it is
 cleaned for a terminal and redacted where it is made (:func:`clean_name`). Names
-identify other sessions' work, so they are for the host only: see
-``Quiescence.named_holders``. Work that is
+identify other sessions' work, so they go only to a caller entitled to see all
+of it: see ``Quiescence.named_holders``. Work that is
 counted but has no identifier (sub-agents, callbacks) is a holder with an empty
 name and a ``count``.
 
 This module imports nothing from the gateway, so the CLI renders the same
-sentence from the payload a gateway answered.
+sentence from the payload a gateway answered, and a Remote Crew hub reads back
+the entries a crew's CLI relayed with :func:`read_payload`.
 """
 
 from __future__ import annotations
@@ -174,6 +175,38 @@ def payload(holders: Iterable[Holder]) -> tuple[list[dict[str, object]], int]:
         for h in listed[:LIST_CAP]
     ]
     return entries, max(0, len(listed) - LIST_CAP)
+
+
+def read_payload(entries: object, more: object = 0) -> tuple[list[dict[str, object]], int] | None:
+    """The entries of :func:`payload` as another process sent them, re-cleaned, or ``None``.
+
+    Strict: anything that is not a list of entries, any entry of the wrong
+    shape, or a *more* that is not a non-negative integer reads as ``None``.
+    Each kind and name is cleaned again (the sender is another process), at
+    most :data:`LIST_CAP` entries are kept, and the rest are added to the count
+    left out.
+    """
+    if not isinstance(entries, list) or type(more) is not int or more < 0:
+        return None
+    kept: list[dict[str, object]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None
+        kind, name = entry.get("kind"), entry.get("name")
+        since, count = entry.get("since_secs"), entry.get("count")
+        if not isinstance(kind, str) or not isinstance(name, str):
+            return None
+        if since is not None and (type(since) is not int or since < 0):
+            return None
+        if type(count) is not int or count < 0:
+            return None
+        clean_kind = _cut(_printable(kind))
+        if not clean_kind:
+            return None
+        kept.append(
+            {"kind": clean_kind, "name": clean_name(name), "since_secs": since, "count": count}
+        )
+    return kept[:LIST_CAP], more + max(0, len(kept) - LIST_CAP)
 
 
 def _age(secs: object) -> str:

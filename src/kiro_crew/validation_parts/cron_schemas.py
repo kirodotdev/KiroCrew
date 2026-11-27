@@ -67,6 +67,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("minimal_context", bool),
         FieldSpec("hide_in_chat", bool),
         FieldSpec("new_chat_per_run", bool),
+        FieldSpec("notify_only", bool),
         FieldSpec("on_tab_close", str, allowed=frozenset(ON_TAB_CLOSE_VALUES)),
         FieldSpec("strict_schedule", bool),
         # SECURITY NOTE: the patterns below are input-SHAPE checks, NOT security

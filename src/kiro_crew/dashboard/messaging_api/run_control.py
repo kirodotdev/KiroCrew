@@ -289,7 +289,11 @@ async def _spawn_scope_refusal(
         return refusal
     app_token = _app_token_caller(request)
     if request.get("internal_auth") is not True and not app_token:
-        return None  # the dashboard owner's own surface
+        # The dashboard surface is the owner's, or a teammate's: another dashboard
+        # session holds the same empty app claim and is refused here.
+        from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+        return await require_owner_for_dashboard_caller(request, "spawn.access")
     caller = request.headers.get("X-Session-Key", "")
     state = request.app["state"]
     run_id = request.match_info["agent_id"]
@@ -511,6 +515,11 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
     close the wave early. The stuck-wave sweep safely handles truly lost
     transport submissions after its grace period.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "spawn.lost")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)
@@ -568,6 +577,11 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     on a tab that shows the parent (``_settle_inline``, through
     :func:`_settle_collected_on_slot`).
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "spawn.mark_collected")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -1244,6 +1258,11 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
 
 async def api_spawn_stop_all(request: web.Request) -> web.Response:
     """POST /api/spawn/stop-all — stop one chat's running and queued subagents."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "spawn.stop_all")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     request_app = request.get("app", "")
     if "app" not in request or request_app:

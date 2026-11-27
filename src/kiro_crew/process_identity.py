@@ -598,6 +598,20 @@ async def process_survived_async(handle: ProcessHandle) -> bool:
     return await loop.run_in_executor(subprocess_executor(), process_survived, handle)
 
 
+def _log_pending_drain(
+    exc: platform_compat.WindowsTreeDrainPending, root: str, *, who: str, key: str
+) -> None:
+    """Log a Windows tree drain the cleanup sweep still owns as one WARNING, not an ERROR."""
+    logger.warning(
+        "%s: Windows tree of %s did not finish one bounded drain pass for %s (%d member(s) "
+        "pending cleanup); its handles stay pinned and the cleanup sweep keeps reaping it",
+        who,
+        root,
+        key,
+        exc.pending,
+    )
+
+
 async def _finish_gone_leader(handle: ProcessHandle, *, who: str, key: str) -> str | None:
     """Finish the tree a gone leader left behind, or say why it could not be.
 
@@ -664,6 +678,9 @@ async def _finish_gone_leader(handle: ProcessHandle, *, who: str, key: str) -> s
                 handle.start_id,
                 platform_compat.SIGKILL,
             )
+        except platform_compat.WindowsTreeDrainPending as exc:
+            _log_pending_drain(exc, f"exited pid {pid}", who=who, key=key)
+            return f"Windows tree cleanup incomplete for exited pid {pid}: {failure_name(exc)}"
         except Exception as exc:
             failure = failure_name(exc)
             logger.error(
@@ -852,6 +869,9 @@ async def _kill_pinned_windows_tree(
     except ValueError as exc:
         logger.error("%s: kill guard refused pid %r for %s", who, pid, key)
         return failure_name(exc)
+    except platform_compat.WindowsTreeDrainPending as exc:
+        _log_pending_drain(exc, f"pid {pid}", who=who, key=key)
+        return f"Windows tree cleanup incomplete for pid {pid}: {failure_name(exc)}"
     except Exception as exc:
         failure = failure_name(exc)
         logger.error(
@@ -1479,7 +1499,9 @@ async def kill_verified_process(
                 failure = await _finish_gone_leader(handle, who=who, key=key)
             except OSError as exc:
                 failure = failure_name(exc)
-        if failure is not None:
+        # A pending drain is logged once, as a WARNING, where it is caught
+        # (``_log_pending_drain``): the sweep still owns it, so no second ERROR.
+        if failure is not None and platform_compat.WindowsTreeDrainPending.__name__ not in failure:
             logger.error("%s: SIGKILL of pid %d failed for %s: %s", who, pid, key, failure)
         return join_failures(
             failure,

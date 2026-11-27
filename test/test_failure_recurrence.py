@@ -67,6 +67,19 @@ def test_mcp_dispatch_refusals_keep_the_tool_name():
     assert find_recurring(rows) == []
 
 
+def test_a_finding_carries_its_most_common_source_outside_the_signature():
+    rows = [
+        _row(session="a", tool_kind="", error="", source="dashboard"),
+        _row(session="b", tool_kind="", error="", source="dashboard"),
+        _row(session="c", tool_kind="", error="", source="agent"),
+    ]
+    [found] = find_recurring(rows)
+    assert (found.tool_kind, found.source, found.hits) == ("unknown", "dashboard", 3)
+    assert "dashboard" not in found.signature
+    [bare] = find_recurring([_row(session="a"), _row(session="b")])
+    assert bare.source == ""
+
+
 def test_turn_limit_is_one_class_whatever_tool_was_running():
     rows = [
         _row(session="a", tool_kind="mcp", operation="fs_write", error="turn_limit"),

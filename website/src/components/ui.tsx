@@ -6,6 +6,7 @@ import { useLabelTip } from './InstantTip'
 import { i18nT } from '../i18n/t'
 import { haptic } from '../lib/haptic'
 import { autoSiteRef } from '../uiLocations/targetRegistry'
+import { forwardUiLocation } from '../uiLocations/uiLocation'
 
 /* ── Shared UI primitives ── */
 
@@ -14,13 +15,15 @@ import { autoSiteRef } from '../uiLocations/targetRegistry'
  * becomes the group heading ABOVE the box, and the rest sits in one plain
  * rounded box (no glow, no shadow) at the Settings content width. Settings
  * provides it around its pane, so a panel's cards line up with the grouped
- * `SettingsCard` rows beside them.
+ * `SettingsCard` rows beside them. `grouped-wide` draws the same group with no
+ * width cap, for a Settings pane whose content is data tables that fill the pane
+ * (the Memory page), so its cards line up with its full-width tab bar.
  */
-export const CardFrameContext = React.createContext<'framed' | 'grouped'>('framed')
+export const CardFrameContext = React.createContext<'framed' | 'grouped' | 'grouped-wide'>('framed')
 
 export function Card({ children, className = '', ...rest }: Omit<React.ComponentPropsWithoutRef<'div'>, 'dangerouslySetInnerHTML'>) {
   const frame = React.useContext(CardFrameContext)
-  if (frame === 'grouped') {
+  if (frame !== 'framed') {
     const { style, ...restNoStyle } = rest
     const items = React.Children.toArray(children)
     const first = items[0]
@@ -41,7 +44,7 @@ export function Card({ children, className = '', ...rest }: Omit<React.Component
     const lede = React.isValidElement(second) && second.type === 'p' && items.length > 2 ? second : null
     const body = items.slice((title ? 1 : 0) + (lede ? 1 : 0))
     return (
-      <div className={twMerge('mb-8 animate-rise max-w-[720px]', className, 'border-0 bg-transparent shadow-none rounded-none p-0 md:px-0')} {...restNoStyle}>
+      <div className={twMerge(`mb-8 animate-rise ${frame === 'grouped' ? 'max-w-[720px]' : ''}`, className, 'border-0 bg-transparent shadow-none rounded-none p-0 md:px-0')} {...restNoStyle}>
         {title}
         {lede && <div className="-mt-1 mb-2 px-4 [&>p]:m-0">{lede}</div>}
         {/* A caller's style (a hero background) paints the box, not the
@@ -82,7 +85,7 @@ export function Card({ children, className = '', ...rest }: Omit<React.Component
 
 export function CardTitle({ children, className, ...rest }: Omit<React.ComponentPropsWithoutRef<'h3'>, 'dangerouslySetInnerHTML'>) {
   const frame = React.useContext(CardFrameContext)
-  if (frame === 'grouped') {
+  if (frame !== 'framed') {
     return <h3 className={twMerge('text-base font-semibold text-text-strong mb-2 px-4 flex items-center gap-2 [&_svg.lucide-inline]:hidden', className)} {...rest}>{children}</h3>
   }
   return <h3 className={twMerge("text-sm font-semibold tracking-tight text-text-strong mb-3.5 flex items-center gap-2", className)} {...rest}>{children}</h3>
@@ -515,7 +518,7 @@ export function PageHeader({ title, subtitle, actions }: { title: React.ReactNod
   )
 }
 
-export function Toggle({ checked, onChange, disabled, busy, label, describedBy, id, tone = 'accent', 'data-ui-auto': uiAuto }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; /** Opt-in: the switch is writing its own change right now. It stays in the tab order (not `tabIndex={-1}`, which drops a keyboard user to the page) and ignores presses while the write runs, announced as `aria-disabled` + `aria-busy`. Default unset keeps today's behaviour. `busy` wins when both are set. */ busy?: boolean; label?: string; describedBy?: string; /** Lets a `<label htmlFor>` point at the switch, so a click on the label's text presses it. */ id?: string; tone?: 'accent' | 'muted'; /** The build's auto-tier marker (scripts/lib/ui-auto-stamp.mjs), put on the switch a guide points at. */ 'data-ui-auto'?: string }) {
+export const Toggle = React.forwardRef<HTMLButtonElement, { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; /** Opt-in: the switch is writing its own change right now. It stays in the tab order (not `tabIndex={-1}`, which drops a keyboard user to the page) and ignores presses while the write runs, announced as `aria-disabled` + `aria-busy`. Default unset keeps today's behaviour. `busy` wins when both are set. */ busy?: boolean; label?: string; describedBy?: string; /** Lets a `<label htmlFor>` point at the switch, so a click on the label's text presses it. */ id?: string; tone?: 'accent' | 'muted'; /** The build's auto-tier marker (scripts/lib/ui-auto-stamp.mjs), put on the switch a guide points at. */ 'data-ui-auto'?: string; /** A registered find_ui location (`{...uiLocation(id)}` spread on the switch), put on the switch with the spread's ref. */ 'data-ui-location'?: string }>(function Toggle({ checked, onChange, disabled, busy, label, describedBy, id, tone = 'accent', 'data-ui-auto': uiAuto, 'data-ui-location': uiLocationId }, forwardedRef) {
   // While busy the switch refuses presses but stays focusable, so it keeps a
   // tab stop; a non-busy `disabled` leaves the tab order as before.
   const inert = disabled || busy
@@ -528,7 +531,7 @@ export function Toggle({ checked, onChange, disabled, busy, label, describedBy, 
       role="switch"
       id={id}
       data-ui-auto={uiAuto}
-      ref={autoSiteRef<HTMLButtonElement>(uiAuto)}
+      {...forwardUiLocation<HTMLButtonElement>(uiLocationId, autoSiteRef<HTMLButtonElement>(uiAuto, forwardedRef))}
       aria-checked={checked}
       // Without this a screen reader announces a disabled switch as actionable:
       // the disabled state was carried only by `tabIndex={-1}` and an opacity
@@ -560,7 +563,7 @@ export function Toggle({ checked, onChange, disabled, busy, label, describedBy, 
       <span className={`absolute left-0 top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
     </button>
   )
-}
+})
 
 /* ── Slider ── */
 

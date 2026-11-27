@@ -138,7 +138,12 @@ class TestSkillGuard:
         commands = [shlex.split(line) for line in message.splitlines() if line.startswith("  git ")]
         assert commands == [
             ["git", "-C", str(clone), "fetch", "origin", "main"],
-            ["git", "-C", str(clone), *"worktree add ../<name> -b <branch> origin/main".split()],
+            [
+                "git",
+                "-C",
+                str(clone),
+                *"worktree add --no-track ../<name> -b <branch> origin/main".split(),
+            ],
         ]
 
     def test_a_windows_shell_gets_the_root_in_double_quotes(self, guard, monkeypatch):

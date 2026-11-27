@@ -24,6 +24,7 @@ import {
   isRefusedHostedDefault,
   isRefusedSageMaker,
   providerPermitted,
+  stillSendingSentence,
 } from './decisionsProviderQuery'
 
 /** Preset id for the hosted provider; the gateway's `local_models.PRESET_JEV`. */
@@ -515,12 +516,18 @@ export function DecisionsProviderPicker({
   // entry, the sentence saying it is saved and refused and the button that clears it
   // (writes `none`), labelled for exactly that. A pick of another option takes over
   // with the usual button at the foot of the picker.
+  const stillSending = stillSendingSentence(data)
   const clearSaved = (id: string, name: string) =>
     savedRefusedId === id ? (
       <div className="flex flex-col gap-1" data-testid="decisions-saved-refused">
         <p className="text-[12px] text-warn m-0">
           {i18nT('pages.developer.featurePreviewsTab.decisions_hosted_refused', { name })}
         </p>
+        {stillSending && (
+          <p className="text-[12px] text-warn m-0" data-testid="decisions-still-sending">
+            {stillSending}
+          </p>
+        )}
         {selected === null && (
           <div>
             <Btn

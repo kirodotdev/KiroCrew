@@ -48,7 +48,9 @@ const dashboardState = {
 
 function renderMenu() {
   const store = createTestStore({ dashboard: { ...dashboardState, slots: [{ key: 'chat-1-100' }] } })
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // The app client's `staleTime: Infinity` default, so a query that does not opt
+  // out keeps serving its first answer here as it does in the app.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   const utils = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -81,12 +83,61 @@ describe('ChatHeaderMenu — MCP submenu and colour-pick close', () => {
     fireEvent.keyDown(sub.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
 
     await waitFor(() => {
-      expect(api.mcpActive).toHaveBeenCalledWith('default')
+      expect(api.mcpActive).toHaveBeenCalledWith('default', 'chat-1-100')
       expect(api.mcpServers).toHaveBeenCalled()
       expect(api.kirocrewConfig).toHaveBeenCalled()
     })
     // The per-server tool list the panel derives from the full server list.
     expect(await screen.findByText('github')).toBeInTheDocument()
+  })
+
+  it('asks the server again each time the submenu opens', async () => {
+    const utils = renderMenu()
+    const sub = await screen.findByText('MCP servers')
+    const trigger = sub.closest('[role="menuitem"]')!
+    fireEvent.keyDown(trigger, { key: 'ArrowRight' })
+    await waitFor(() => expect(api.mcpActive).toHaveBeenCalledTimes(1))
+    // The answer depends on the chat's live session, which can start in between:
+    // close the whole menu, open it and the submenu again.
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByText('MCP servers')).not.toBeInTheDocument())
+    fireEvent.keyDown(utils.container.querySelector('button')!, { key: 'Enter' })
+    const again = await screen.findByText('MCP servers')
+    fireEvent.keyDown(again.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+    await waitFor(() => expect(api.mcpActive).toHaveBeenCalledTimes(2))
+  })
+
+  it('says a refused server read failed instead of staying on Loading', async () => {
+    vi.mocked(api.mcpActive).mockRejectedValueOnce(new Error('mcp_config_busy'))
+    renderMenu()
+    const sub = await screen.findByText('MCP servers')
+    fireEvent.keyDown(sub.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+    expect(await screen.findByText("Couldn't load the MCP servers")).toBeInTheDocument()
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
+  })
+
+  it('says there are no servers when the answer is empty', async () => {
+    vi.mocked(api.mcpActive).mockResolvedValueOnce([])
+    renderMenu()
+    const sub = await screen.findByText('MCP servers')
+    fireEvent.keyDown(sub.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+    expect(await screen.findByText('None loaded')).toBeInTheDocument()
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
+  })
+
+  it('drops the earlier list when a later read fails', async () => {
+    const utils = renderMenu()
+    const sub = await screen.findByText('MCP servers')
+    fireEvent.keyDown(sub.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+    expect(await screen.findByText('github')).toBeInTheDocument()
+    vi.mocked(api.mcpActive).mockRejectedValueOnce(new Error('mcp_config_busy'))
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByText('MCP servers')).not.toBeInTheDocument())
+    fireEvent.keyDown(utils.container.querySelector('button')!, { key: 'Enter' })
+    const again = await screen.findByText('MCP servers')
+    fireEvent.keyDown(again.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+    expect(await screen.findByText("Couldn't load the MCP servers")).toBeInTheDocument()
+    expect(screen.queryByText('github')).not.toBeInTheDocument()
   })
 
   it('closes the menu after a swatch pick', async () => {

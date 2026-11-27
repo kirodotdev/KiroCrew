@@ -226,7 +226,11 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "destroy": ("function", True, "958babeb61c8", "teardown"),
     "destroy_if": ("function", True, "b2e16ab8f2dd", "teardown"),
     "detach_queue": ("function", False, "197b82a5019f", "claims"),
-    "discard_conversation": ("function", True, "69405409fda2", "teardown"),
+    "discard_conversation": ("function", True, "882e8ae87fe9", "teardown"),
+    # Added confirm_teardown (bool) and unconfirmed_handle_out (list | None):
+    # confirm_teardown=True makes shared-KAS close failures visible to callers
+    # (trust-revocation path), unconfirmed_handle_out receives the runtime handle
+    # for a later retry.
     "drain_active_turns": ("function", True, "5944c6af44b2", "teardown"),
     "drain_all_providers": ("function", True, "612085521485", "teardown"),
     "drain_warm_pool": ("function", True, "f5423acdeebc", "runtimes"),
@@ -259,6 +263,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_subagent_runtime": ("function", True, "6bc33ba9df46", "runtimes"),
     "get_thread": ("function", False, "4b576121a346", "links"),
     "has_mirror_row": ("function", False, "1eda252b53bd", "links"),
+    "has_queued": ("function", False, "1eda252b53bd", "claims"),
     "has_session": ("function", False, "1eda252b53bd", "claims"),
     "identity_sweep_waiting_on": ("property", False, "9d5ab4ea1828", "state_views"),
     "inbound_callback_count": ("property", False, "fa6cfecd5574", "state_views"),
@@ -290,7 +295,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "note_turn_landed": ("function", False, "958babeb61c8", "claims"),
     "open_replay_gap": ("function", False, "958babeb61c8", "teardown"),
     "has_open_replay_gap": ("function", False, "1eda252b53bd", "teardown"),
-    "open_task_session": ("function", True, "79d5142a16be", "runtimes"),
+    "open_task_session": ("function", True, "b6982a2383ce", "runtimes"),
     "parent_work_scratch_dir": ("function", False, "b0a47dac7d8f", "claims"),
     "pause_turn_admission_for_update": ("function", True, "a6632a57e602", "claims"),
     "pending_identity_sweep_fingerprint": ("property", False, "bb418bb7ece8", "state_views"),
@@ -354,6 +359,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_unbind_listener": ("staticmethod", False, "de25b1a3a879", "session"),
     "settle_turn": ("function", False, "958babeb61c8", "claims"),
     "slack_link_nonce": ("function", False, "f1d40e624ae4", "links"),
+    "slack_thread_owners": ("function", False, "97707b44cd84", "links"),
     "start_pool": ("function", True, "255a2f05f73c", "runtimes"),
     "starting_agent": ("function", False, "f1d40e624ae4", "claims"),
     "stop_generation": ("function", False, "028659ce42ac", "teardown"),

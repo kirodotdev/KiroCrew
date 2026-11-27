@@ -19,8 +19,11 @@ import { renderHookWithProviders, renderWithProviders } from './helpers'
 const deleteTerminal = vi.fn()
 const disposeTerminal = vi.fn()
 
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: ({ sessionId }: { sessionId: string }) => <div data-testid={`cli-${sessionId}`} />,
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: (id: string) => disposeTerminal(id),
   useDeleteTerminalSession: () => ({ mutate: deleteTerminal, mutateAsync: vi.fn() }),
 }))

@@ -605,11 +605,12 @@ def _rule_sensitive_path(facts: GateFacts, target: str) -> str | None:
     tool, not a file, so resolving it as a path is a category error that under a
     resolver stall refused the call fail-closed with a "Path:" wording naming no
     path. Only an exact verified-identity match is spared; any other title, and
-    every argument, stays gated.
+    every argument, stays gated. A proven fetch's URL title is spared too (``names_fetch_url``).
     """
     return (
         sensitive_path_refusal(target)
         if target not in (facts.exempt_command, facts.exempt_identity)
+        and not (target == facts.judged_normalized and facts.call.names_fetch_url(target))
         else None
     )
 
@@ -1387,7 +1388,7 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
         return None
     if _spec_command_composed(call, ("execute_bash",), allowlist):
         return ToolHookResult.deny_policy(
-            "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
+            "Blocked by this agent's spec: its shell settings set denyByDefault "
             "and this command matches allowedCommands, but a chain (&&, ||, ;, |) matches only "
             "when every command in it does and it holds no quote, backslash, non-ASCII "
             "character or --%, and $(), backticks or a redirect before the command never "
@@ -1399,7 +1400,7 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     # The projection carries each entry Kiro Crew cannot read; it matched nothing
     # above, and naming it is all an unattended run's record can show of it.
     return ToolHookResult.deny_policy(
-        "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
+        "Blocked by this agent's spec: its shell settings set denyByDefault "
         "and the command matches none of its allowedCommands"
         + allowed_commands.unreadable_note(tuple(allowlist))
     )
@@ -1513,7 +1514,7 @@ def _tier_spec_write_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     allowlist = call.spec_write_allowlist
     if allowlist is None or call.mcp_server or not _is_spec_write_call(call):
         return None
-    prefix = "Blocked by this agent's spec: toolsSettings.fs_write.fallbackAction is deny and "
+    prefix = "Blocked by this agent's spec: its write settings set fallbackAction to deny and "
     candidates = edit_target_candidates(call.raw_params, call.diff_path, tool_kind=call.kind)
     if candidates.truncated or candidates.unanchored or not candidates:
         return ToolHookResult.deny_policy(prefix + "the write's target path could not be read")

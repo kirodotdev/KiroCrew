@@ -221,7 +221,7 @@ async def _handle_connection(
     # the same topology it would have with no gateway at all. The cost of a
     # wrong retreat is therefore lost process reuse, never a broken server.
     if poolable_requested:
-        observed = hazards.observed_codes(
+        observed = hazards.retreat_codes(
             pool_key.server_name,
             hazards.launch_identity(
                 pool_key.command_args_hash,

@@ -95,12 +95,12 @@ export interface StashChordEvent {
  *  dashboard. Shift+Cmd+S is left alone so it keeps its "save as" meaning, and a
  *  keystroke that is part of an IME composition is never claimed.
  *
- *  The key is matched POSITIONALLY through the shortcut registry's
- *  `eventKeyToken` (`e.code` first, `e.key` only without a code), the same way
- *  the registry's own `stash-prompt` entry resolves. On a Cyrillic or Greek
- *  layout Ctrl+physical-S carries `key: 'ы'` but `code: 'KeyS'`; comparing the
- *  glyph would leave the chord dead there and let the browser's save dialog
- *  through. */
+ *  The key is read through the shortcut registry's `eventKeyToken`, the same
+ *  way the registry's own `stash-prompt` entry resolves: the S the layout types
+ *  (on Dvorak the key at QWERTY's semicolon), and the physical S key only where
+ *  no Latin letter is typed. On a Cyrillic or Greek layout Ctrl+physical-S
+ *  carries `key: 'ы'` but `code: 'KeyS'`; comparing the glyph alone would leave
+ *  the chord dead there and let the browser's save dialog through. */
 export function isStashChord(e: StashChordEvent): boolean {
   if (e.isComposing) return false
   if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return false

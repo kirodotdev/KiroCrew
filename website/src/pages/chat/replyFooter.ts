@@ -4,6 +4,8 @@ import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 import type { TurnStats } from './AssistantMessage'
 import { isSystemNoticeRow } from './CompactionCard'
 import { opensTurn } from './RecoveryCard'
+import { isSubagentCompletionMessage } from './subagentCompletion'
+import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 
 /**
  * Whether the reply at `index` draws its end-of-turn footer: the stats line
@@ -45,6 +47,27 @@ export function replyShowsFooter(m: ChatMessage, messages: readonly ChatMessage[
     if (later.role === 'assistant' || later.role === 'streaming') return false
   }
   return !running
+}
+
+/**
+ * The newest reply in `messages` that draws a footer, or null: the row a
+ * live status line under the latest reply belongs to (`CrewReplyStatus`). The
+ * walk goes back from the end, past rows that draw no reply bubble (a hidden
+ * or invisible reply, and the assistant-role cards: a system notice such as a
+ * compaction, a workflow or sub-agent completion), to the newest drawn reply. A streaming row there means the reply is still being written,
+ * and a finished one whose turn goes on (`replyShowsFooter` false) is not done
+ * either: both answer null, so no older reply is picked in their place.
+ */
+export function latestFooterReply(messages: readonly ChatMessage[], running: boolean): ChatMessage | null {
+  for (let j = messages.length - 1; j >= 0; j--) {
+    const row = messages[j]
+    if (row.role === 'streaming') return null
+    if (row.role !== 'assistant') continue
+    if (isHiddenReplyAt(row, messages, j) || isHiddenInvisibleAssistantRow(row)) continue
+    if (isSystemNoticeRow(row) || isWorkflowCompletionMessage(row) || isSubagentCompletionMessage(row)) continue
+    return replyShowsFooter(row, messages, j, running) ? row : null
+  }
+  return null
 }
 
 /**

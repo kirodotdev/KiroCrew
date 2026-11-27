@@ -88,7 +88,11 @@ test("registerShell answers the preload's shell channels and is idempotent", () 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
-  assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
+  assert.match(GATEWAY_SOURCE, /fadeBootReveal\(ipcMain, webContents, timeoutMs\)/);
+  assert.match(
+    fs.readFileSync(path.join(__dirname, "..", "boot-reveal.js"), "utf8"),
+    /ipcMain\.on\("boot-complete", onComplete\)/,
+  );
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -1119,6 +1123,99 @@ test("bind and unregister remain owned by the dedicated hotkey helper", () => {
   h.registrar.unregisterGlobalHotkey();
   assert.equal(h.hotkey.state.unregisters, 1);
   assert.equal(h.hotkey.state.current, "");
+});
+
+test("global-hotkey:set stores the recorded shortcut and binds it without a restart", async () => {
+  const h = harness({ storeValues: { globalHotkey: "" } });
+  h.registrar.registerShell();
+  const set = h.handlers.get("global-hotkey:set");
+
+  assert.deepEqual(await set(wslEvent(), "Alt+Shift+J"), {
+    accelerator: "Alt+Shift+J",
+    requested: "Alt+Shift+J",
+    default: "Test+Shift+K",
+  });
+  assert.equal(h.store.data.globalHotkey, "Alt+Shift+J");
+  assert.equal(h.hotkey.state.binds.length, 1);
+  assert.equal(h.hotkey.state.binds[0].saved, "Alt+Shift+J");
+  assert.strictEqual(h.hotkey.state.binds[0].handler, h.registrar.summonDashboard);
+
+  // Clearing stores "", the spelling that means "turned off".
+  assert.deepEqual(await set(wslEvent(), ""), {
+    accelerator: "",
+    requested: "",
+    default: "Test+Shift+K",
+  });
+  assert.strictEqual(h.store.data.globalHotkey, "");
+  assert.equal(h.hotkey.state.binds.length, 2);
+});
+
+test("global-hotkey:set refuses a value the recorder cannot produce", async () => {
+  const h = harness({ storeValues: { globalHotkey: "Alt+Shift+J" } });
+  h.registrar.registerShell();
+  for (const bad of ["K", "Shift+K", 7, null, undefined]) {
+    await assert.rejects(
+      () => h.handlers.get("global-hotkey:set")(wslEvent(), bad),
+      { message: "global-hotkey:set: not a shortcut the recorder can produce" },
+    );
+  }
+  assert.deepEqual(h.store.writes, [], "a refused value is never stored");
+  assert.deepEqual(h.hotkey.state.binds, [], "a refused value is never bound");
+});
+
+test("global-hotkey:set rejects a sender that is not the local dashboard", async () => {
+  for (const [why, opts, event] of NOT_LOCAL_WINDOWS) {
+    const h = harness({ storeValues: { globalHotkey: "" }, ...opts });
+    h.registrar.registerShell();
+    await assert.rejects(
+      () => h.handlers.get("global-hotkey:set")(event(), "Alt+Shift+J"),
+      { message: "global-hotkey:set is restricted to the local dashboard" },
+    );
+    assert.deepEqual(h.store.writes, [], `${why}: a rejected sender stores nothing`);
+    assert.deepEqual(h.hotkey.state.binds, [], `${why}: a rejected sender binds nothing`);
+  }
+});
+
+test("global-hotkey:set applies requests in arrival order, whichever gate probe ends first", async () => {
+  const h = harness({ storeValues: { globalHotkey: "Alt+Shift+K" } });
+  h.registrar.registerShell();
+  const set = h.handlers.get("global-hotkey:set");
+  // The first request's port probe is held open; the second one's is instant.
+  let releaseFirstProbe;
+  const firstProbe = new Promise((resolve) => { releaseFirstProbe = () => resolve("kirocrew"); });
+  let probes = 0;
+  h.gateway.probePrimaryPortOwner = () => {
+    probes += 1;
+    return probes === 1 ? firstProbe : Promise.resolve("kirocrew");
+  };
+
+  const recorded = set(wslEvent(), "Alt+Shift+J");
+  const cleared = set(wslEvent(), "");
+  // Give the later request every chance to overtake before the first is let go.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(h.store.writes, [], "the Clear waits behind the recording sent before it");
+  releaseFirstProbe();
+
+  assert.equal((await recorded).accelerator, "Alt+Shift+J");
+  assert.equal((await cleared).accelerator, "");
+  assert.deepEqual(h.store.writes, [["globalHotkey", "Alt+Shift+J"], ["globalHotkey", ""]]);
+  assert.strictEqual(h.store.data.globalHotkey, "", "the user's last action wins");
+});
+
+test("a refused global-hotkey:set does not block the requests after it", async () => {
+  const h = harness({ storeValues: { globalHotkey: "" } });
+  h.registrar.registerShell();
+  const set = h.handlers.get("global-hotkey:set");
+  await assert.rejects(() => set(wslEvent(), "K"));
+  assert.equal((await set(wslEvent(), "Alt+Shift+J")).accelerator, "Alt+Shift+J");
+});
+
+test("the preload withholds the hotkey setter from a window on a remote gateway", () => {
+  const preload = fs.readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
+  assert.match(
+    preload,
+    /\.\.\.\(REMOTE_GATEWAY \? \{\} : \{\s*setGlobalHotkey: \(accelerator\) =>\s*ipcRenderer\.invoke\("global-hotkey:set", String\(accelerator\)\),\s*\}\),/,
+  );
 });
 
 test("every channel a preload calls has a main-process owner", () => {

@@ -18,25 +18,30 @@ backend has for the same sign-ins, which kiro-cli keeps host-wide in
 What is stored, and where:
 
 - Only keys of the engine's MCP namespace are accepted,
-  ``kiro.mcp.<sha256 hex>.(client|kiro-path-client|tokens|verifier|discovery)``.
-  The hash is the engine's own digest of the server URL, headers and OAuth
-  config, so a changed server config reads as a different key and never inherits
-  a grant. The engine's organization (identity provider) sign-in, set by an
-  ``identityProvider`` block in ``mcp.json``, is one more key,
-  ``kiro.mcp.idp.<sha256 hex>.session``, hashed from the issuer and client id.
+  ``kiro.mcp.<sha256 hex>.<kind>``. The hash is the engine's own digest of the
+  server URL, headers and OAuth config, so a changed server config reads as a
+  different key and never inherits a grant. The engine's organization (identity
+  provider) sign-in, set by an ``identityProvider`` block in ``mcp.json``, is one
+  more key, ``kiro.mcp.idp.<sha256 hex>.session``, hashed from the issuer and
+  client id. A stored client secret is ``kiro.mcp.client-secret.<sha256 hex>``
+  and the issuer it was accepted by ``kiro.mcp.client-secret-issuer.<sha256 hex>``.
   Any other key, and a value over :data:`MAX_VALUE_CHARS`, is refused,
   so the engine cannot use Crew as a general key-value store.
-- ``client``, ``kiro-path-client`` (the client registration, under either kind)
-  and ``tokens``, and the organization ``session``, persist, in a DEDICATED vault at
+- ``client``, ``kiro-path-client`` (the client registration, under either kind),
+  ``tokens``, ``kiro-path-tokens`` (the sign-in, under either kind), the two
+  client-secret keys, and the organization ``session``, persist, in a DEDICATED vault at
   ``<data_home>/kas/mcp-grants/.vault/``. It has its own key
   file and is neither the user Secrets vault (so it is not listed in Settings ->
   Secrets and cannot be granted to a cron) nor the Kiro sign-in vault (so a Kiro
   logout leaves MCP grants alone and the reverse). The whole ``kas`` directory is
   a keystone leaf the agent can neither read nor write, and is hidden from the
   sandbox.
-- ``verifier`` and ``discovery`` only matter while a sign-in is running, so they
-  stay in this runtime's memory and die with the engine process, exactly as every
-  key does with the feature off.
+- ``verifier``, ``discovery`` and ``first-party-document-refused`` only matter
+  while a sign-in is running, so they stay in this runtime's memory and die with
+  the engine process, exactly as every key does with the feature off. So does a
+  ``<kind>`` Crew does not know yet (a plain label only), with one WARNING per
+  kind per gateway process naming the kind: a newer engine keeps connecting, and
+  the line shows a kind that should be saved.
 
 Values never leave this module except as the ``get`` answer on the engine's own
 pipe: they are not logged (failures log an exception TYPE only), not put in an
@@ -53,7 +58,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.mcp_grant_kas import PERSISTED_KINDS, persistence_enabled
+from kiro_crew.mcp_grant_kas import PERSISTED_KINDS, TOKENS_KINDS, persistence_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -89,25 +94,37 @@ def is_secret_method(method: object) -> bool:
     return isinstance(method, str) and method in SECRET_METHODS
 
 
-#: The engine's MCP OAuth key shape: ``kiro.mcp.<sha256 hex>.<kind>``.
-_KEY_RE = re.compile(
-    r"\Akiro\.mcp\.[0-9a-f]{64}\.("
-    + "|".join(re.escape(kind) for kind in (*PERSISTED_KINDS, "verifier", "discovery"))
-    + r")\Z"
-)
+#: Kinds that only matter while a sign-in runs, kept in runtime memory.
+#: ``first-party-document-refused`` (KAS 0.66.123) records that an authorization
+#: server refused Kiro's client-metadata document; losing it costs one retry, and
+#: keeping it would hold a stale refusal until a Disconnect.
+_MEMORY_KINDS = ("verifier", "discovery", "first-party-document-refused")
+#: The engine's MCP OAuth key shape: ``kiro.mcp.<sha256 hex>.<kind>``, any kind.
+#: Which kinds are known, persisted or kept in memory is decided after the match.
+_KEY_RE = re.compile(r"\Akiro\.mcp\.[0-9a-f]{64}\.([^.]+)\Z")
 #: The engine's organization sign-in key: ``kiro.mcp.idp.<sha256 hex>.session``.
 #: It holds that sign-in's tokens, so it persists like ``tokens``.
 _IDP_SESSION_RE = re.compile(r"\Akiro\.mcp\.idp\.[0-9a-f]{64}\.session\Z")
+#: A stored client secret, ``kiro.mcp.client-secret.<sha256 hex>``, and the issuer
+#: it was accepted by, ``kiro.mcp.client-secret-issuer.<sha256 hex>`` (KAS 0.66.135,
+#: ``client-secret-store.ts``). The hash covers the url and client id. A server
+#: with a ``clientId`` reads the secret key on every connect and refuses to
+#: connect when the read fails, so both persist.
+_CLIENT_SECRET_RE = re.compile(r"\Akiro\.mcp\.client-secret\.[0-9a-f]{64}\Z")
+_CLIENT_SECRET_ISSUER_RE = re.compile(r"\Akiro\.mcp\.client-secret-issuer\.[0-9a-f]{64}\Z")
 #: Kinds that outlive the engine process. The rest stay in runtime memory.
 _PERSISTED_KINDS = frozenset(PERSISTED_KINDS)
+_KNOWN_KINDS = _PERSISTED_KINDS | frozenset(_MEMORY_KINDS)
+#: Unknown kinds already warned about in this gateway process, so each says so once.
+_WARNED_UNKNOWN_KINDS: set[str] = set()
 #: Largest value accepted, in characters. A client registration or token set is a
 #: few KB; the cap stops a runaway value from bloating a vault that every get
 #: re-reads whole.
 MAX_VALUE_CHARS = 64 * 1024
 
 
-#: The entry kind that IS the sign-in; the only one gateway.log reports on.
-_TOKENS_KIND = "tokens"
+#: The entry kinds that ARE the sign-in; the only ones gateway.log reports on.
+_TOKENS_KINDS = frozenset(TOKENS_KINDS)
 _KEY_PREFIX = "kiro.mcp."
 #: How many hex characters of the engine's connection hash name a server in
 #: gateway.log. The hash is the engine's digest of the server's connection
@@ -119,9 +136,35 @@ class SecretStorageRefused(Exception):
     """A secret request Crew will not serve. The message never holds a value."""
 
 
-def _server_id(key: str) -> str:
-    """The short server name a log line uses for an already-validated *key*."""
-    return key[len(_KEY_PREFIX) :][:_SERVER_ID_CHARS]
+def _is_secret_key(key: str) -> bool:
+    return _CLIENT_SECRET_RE.match(key) is not None
+
+
+def _log_subject(key: str) -> str | None:
+    """What a log line calls an already-validated *key*, or ``None`` if it is not logged.
+
+    Only the entries a connection stands or falls on are logged: the tokens and
+    a stored client secret. Each is named by a hash prefix, never by its value.
+    A client-secret key has no server hash, so it gets its own label.
+    """
+    if _is_secret_key(key):
+        return f"MCP client secret {key.rsplit('.', 1)[-1][:_SERVER_ID_CHARS]}"
+    match = _KEY_RE.match(key)
+    if match is not None and match.group(1) in _TOKENS_KINDS:
+        return f"MCP sign-in for server {key[len(_KEY_PREFIX) :][:_SERVER_ID_CHARS]}"
+    return None
+
+
+def _warn_unknown_kind(kind: str) -> None:
+    """Say once per gateway process that *kind* (a plain label) is kept in memory only."""
+    if kind in _WARNED_UNKNOWN_KINDS:
+        return
+    _WARNED_UNKNOWN_KINDS.add(kind)
+    logger.warning(
+        "MCP grant store: engine key kind %r is not known to Crew; keeping it in this"
+        " engine's memory only, so it is not saved across sessions",
+        kind,
+    )
 
 
 #: A refused key's last segment is named in the refusal only when it has this
@@ -137,10 +180,6 @@ def _namespace_refusal(key: str) -> SecretStorageRefused:
         if _KIND_LABEL_RE.match(kind) is not None:
             return SecretStorageRefused(f"key kind {kind!r} is outside the MCP sign-in namespace")
     return SecretStorageRefused("key is outside the MCP sign-in namespace")
-
-
-def _is_tokens_key(key: str) -> bool:
-    return key.endswith("." + _TOKENS_KIND)
 
 
 def with_secret_storage(capabilities: dict[str, Any]) -> dict[str, Any]:
@@ -242,11 +281,14 @@ class SecretStorageServer:
         # again with the same answer adds no line. Bounded like ``_locks``.
         self._logged_read: dict[str, str] = {}
 
-    def _log_read(self, key: str, outcome: str) -> None:
-        if not _is_tokens_key(key) or self._logged_read.get(key) == outcome:
+    def _log_read(self, key: str, outcome: str, client_key_outcome: str) -> None:
+        subject = _log_subject(key)
+        if _is_secret_key(key):
+            outcome = client_key_outcome
+        if subject is None or self._logged_read.get(key) == outcome:
             return
         self._logged_read[key] = outcome
-        logger.info("MCP sign-in for server %s: %s", _server_id(key), outcome)
+        logger.info("%s: %s", subject, outcome)
 
     async def answer(self, method: str, params: Any) -> dict[str, Any]:
         """Build the result for one secret request, or raise :class:`SecretStorageRefused`."""
@@ -256,8 +298,20 @@ class SecretStorageServer:
         if not isinstance(key, str):
             raise SecretStorageRefused("key is outside the MCP sign-in namespace")
         if (match := _KEY_RE.match(key)) is not None:
-            persisted = match.group(1) in _PERSISTED_KINDS
-        elif _IDP_SESSION_RE.match(key) is not None:
+            kind = match.group(1)
+            if kind not in _KNOWN_KINDS:
+                # A kind a newer engine added: serve it from memory rather than
+                # fail the connection, and say so once. Only a plain label is
+                # accepted (and named), so a key never echoes arbitrary text.
+                if _KIND_LABEL_RE.match(kind) is None:
+                    raise _namespace_refusal(key)
+                _warn_unknown_kind(kind)
+            persisted = kind in _PERSISTED_KINDS
+        elif (
+            _IDP_SESSION_RE.match(key) is not None
+            or _CLIENT_SECRET_RE.match(key) is not None
+            or _CLIENT_SECRET_ISSUER_RE.match(key) is not None
+        ):
             persisted = True
         else:
             raise _namespace_refusal(key)
@@ -294,21 +348,21 @@ class SecretStorageServer:
         try:
             found = await self._guarded(asyncio.to_thread(self._store.get, key))
         except SecretStorageRefused:
-            self._log_read(key, "saved sign-in not read (store error)")
+            self._log_read(key, "saved sign-in not read (store error)", "not read (store error)")
             raise
         if found is None:
             self._seen[key] = None
-            self._log_read(key, "no saved sign-in, the server will ask to sign in")
+            self._log_read(key, "no saved sign-in, the server will ask to sign in", "none saved")
             return None
         value, self._seen[key] = found
-        self._log_read(key, "saved sign-in found")
+        self._log_read(key, "saved sign-in found", "found")
         return str(value)
 
     async def _store_value(self, key: str, value: str, persisted: bool) -> None:
         if persisted:
             self._seen[key] = await self._guarded(self._store.store(key, value))
-            if _is_tokens_key(key):
-                logger.info("MCP sign-in for server %s: sign-in saved", _server_id(key))
+            if (subject := _log_subject(key)) is not None:
+                logger.info("%s: %s", subject, "saved" if _is_secret_key(key) else "sign-in saved")
             return
         self._memory[key] = value
 
@@ -332,8 +386,10 @@ class SecretStorageServer:
         self._seen[key] = None
         # The only record of a clear: the branch tells this engine's own clear
         # from one by an engine that never read the sign-in.
-        if _is_tokens_key(key):
-            logger.info("MCP sign-in for server %s: %s", _server_id(key), outcome)
+        if (subject := _log_subject(key)) is not None:
+            if _is_secret_key(key):
+                outcome = outcome.replace("saved sign-in", "saved secret")
+            logger.info("%s: %s", subject, outcome)
 
     @staticmethod
     async def _guarded(awaitable: Any) -> Any:

@@ -89,6 +89,18 @@ _LOOPBACK_HOST_NAMES: frozenset[str] = frozenset(
 _GLOB_CHARS: frozenset[str] = frozenset("*?[")
 
 
+def _glob_matches(name: str, pattern: str) -> bool:
+    """``fnmatch.fnmatchcase(name, pattern)``; for a *name* without ``[``, linear in *pattern*.
+
+    ``fnmatch`` scans the rest of the pattern for a ``]`` at each ``[`` that never
+    closes, so a long run of them is quadratic. Such a ``[`` is a literal, and a
+    name without one cannot match it.
+    """
+    if "[" not in name and "[" in pattern[pattern.rfind("]") + 1 :]:
+        return False
+    return fnmatch.fnmatchcase(name, pattern)
+
+
 # A hostname the textual layers cannot classify may still resolve to a
 # loopback or local address (a DNS alias pointed at 127.0.0.1).  Resolution
 # is a blocking network call, so it runs in a worker off the event loop:
@@ -1049,7 +1061,7 @@ def _host_is_self(host: str, *, dns_fallback: bool = True, match_globs: bool = T
         if not match_globs:
             return False
         candidates = set(_LOOPBACK_HOST_NAMES) | {"127.0.0.1", "::1"} | _own_host_names()
-        return any(fnmatch.fnmatchcase(cand, host) for cand in candidates)
+        return any(_glob_matches(cand, host) for cand in candidates)
     if host in _LOOPBACK_HOST_NAMES:
         return True
     try:

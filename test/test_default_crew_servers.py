@@ -222,6 +222,14 @@ class TestHelper:
             {"capability": "mcp", "effect": "deny", "exclude": ["kirocrew-core/*"]},
             {"capability": "mcp", "effect": "ask"},
             {"capability": "shell", "effect": "deny"},
+            # Past the array's glob bounds (33 globs, over `_GLOB_COUNT_CAP`), and a
+            # `[` class, the kiro-cli add rule still matches as written.
+            {
+                "capability": "mcp",
+                "effect": "deny",
+                "match": [f"x{i}*/*" for i in range(33)],
+            },
+            {"capability": "mcp", "effect": "deny", "match": ["gh[-_]x"]},
         ],
     )
     def test_a_narrower_permissions_rule_is_not_an_opt_out(self, managed, rule):
@@ -334,6 +342,23 @@ def test_the_app_s_servers_are_not_added(managed, monkeypatch, spec, enabled):
     out = defaults.with_default_crew_servers("mine", spec)
     assert set(out["mcpServers"]) == {"kirocrew-core", "kirocrew-cron"}
     assert f"@{_APP_KEY}" not in out["tools"]
+
+
+@pytest.mark.parametrize("allowed", [[" * "], [" @* "], [" @pinger:* "], ["\t@pinger:*\n"]])
+def test_app_wildcards_are_read_as_kas_reads_them(managed, monkeypatch, allowed):
+    _install_app(monkeypatch)
+    spec = {"tools": ["fs_read", "tool_search"], "allowedTools": allowed}
+    kas = defaults.with_default_crew_servers("mine", spec, edition_ask_rules=True)
+    assert set(kas["mcpServers"]) == {"kirocrew-core", "kirocrew-cron"}
+    assert f"@{_APP_KEY}" not in kas["tools"]
+    assert kas["allowedTools"] == allowed
+    kiro = defaults.with_default_crew_servers("mine", spec, edition_ask_rules=False)
+    assert kiro == {
+        **spec,
+        "tools": ["fs_read", "tool_search", "@kirocrew-core", "@kirocrew-cron", f"@{_APP_KEY}"],
+        "mcpServers": {"kirocrew-core": _CORE, "kirocrew-cron": _CRON, _APP_KEY: _APP_ENTRY},
+    }
+    assert spec == {"tools": ["fs_read", "tool_search"], "allowedTools": allowed}
 
 
 def test_an_app_server_the_agent_approves_by_name_is_added(managed, monkeypatch):
@@ -487,6 +512,136 @@ def test_an_edition_server_approved_by_name_is_added(managed, edition):
 def test_a_tool_less_agent_gets_no_edition_server(managed, edition, tools):
     spec = {} if tools is None else {"tools": tools}
     assert defaults.with_default_crew_servers("mine", spec) is spec
+
+
+# --- a host that applies an ask rule (KAS) ---------------------------------------
+
+_VEND_ASK = {"capability": "mcp", "match": ["edition-vend/*"], "effect": "ask"}
+
+
+@pytest.mark.parametrize(
+    "allowed",
+    [["*"], ["@*"], ["@edition-*", "@edition-vend"]],
+    ids=["wildcard", "mcp-wildcard", "glob"],
+)
+def test_a_wildcard_agent_gets_the_edition_server_with_an_ask_rule(managed, edition, allowed):
+    spec = {"tools": ["fs_read"], "allowedTools": allowed}
+    out = defaults.with_default_crew_servers("mine", spec, edition_ask_rules=True)
+    assert out["mcpServers"]["edition-vend"] == _EDITION_ENTRY
+    assert "@edition-vend" in out["tools"]
+    assert out["permissions"] == {"rules": [_VEND_ASK]}
+    assert out["allowedTools"] == allowed, "the author's wildcard stays as written"
+
+
+@pytest.mark.parametrize("tools", [[], ["fs_read"], ["*"]])
+@pytest.mark.parametrize(
+    "allowed",
+    [["*"], [" * "], [" @* "], ["@edition-vend", " * "]],
+    ids=["wildcard", "padded-wildcard", "padded-mcp-wildcard", "named-and-padded-wildcard"],
+)
+def test_the_ask_rule_reaches_kas_past_the_wildcard_s_allow(managed, edition, tools, allowed):
+    """KAS picks the most restrictive rule, so the projected ask beats the wildcard's allow."""
+    from kiro_crew.acp.kas_agents import to_client_custom_agent
+
+    spec = {"tools": tools, "allowedTools": allowed}
+    out = defaults.with_default_crew_servers("mine", spec, edition_ask_rules=True)
+    assert out["mcpServers"]["edition-vend"] == _EDITION_ENTRY
+    assert out["permissions"] == {"rules": [_VEND_ASK]}
+    assert out["allowedTools"] == allowed
+    rules = to_client_custom_agent("mine", out, "p")["permissions"]["rules"]
+    assert _VEND_ASK in rules
+    assert spec == {"tools": tools, "allowedTools": allowed}, "the input is not mutated"
+
+
+@pytest.mark.parametrize("tools", [[], ["fs_read"]])
+def test_kas_keeps_an_edition_server_approved_by_name(managed, edition, tools):
+    from kiro_crew.acp.kas_agents import to_client_custom_agent
+
+    spec = {"tools": tools, "allowedTools": ["@edition-vend"]}
+    out = defaults.with_default_crew_servers("mine", spec, edition_ask_rules=True)
+    assert out["mcpServers"]["edition-vend"] == _EDITION_ENTRY
+    assert out["allowedTools"] == ["@edition-vend"]
+    assert "permissions" not in out
+    rules = to_client_custom_agent("mine", out, "p")["permissions"]["rules"]
+    assert _VEND_ASK not in rules
+
+
+@pytest.mark.parametrize("tools", [[], ["fs_read"]])
+@pytest.mark.parametrize("allowed", [[" * "], ["web_fetch"]])
+def test_kas_leaves_out_an_edition_server_if_its_ask_rule_cannot_travel(
+    managed, edition, tools, allowed
+):
+    spec = {"tools": tools, "allowedTools": allowed, "permissions": {"rules": "all"}}
+    out = defaults.with_default_crew_servers("mine", spec, edition_ask_rules=True)
+    assert "edition-vend" not in out.get("mcpServers", {})
+    assert "@edition-vend" not in out["tools"]
+    assert out["permissions"] == spec["permissions"]
+
+
+@pytest.mark.parametrize("tools", [[], ["fs_read"]])
+def test_kas_asks_for_an_edition_server_beside_unrelated_approvals(managed, edition, tools):
+    spec = {"tools": tools, "allowedTools": ["web_fetch"]}
+    out = defaults.with_default_crew_servers("mine", spec, edition_ask_rules=True)
+    assert out["mcpServers"]["edition-vend"] == _EDITION_ENTRY
+    assert out["permissions"] == {"rules": [_VEND_ASK]}
+
+
+def test_the_ask_rule_joins_the_author_s_own_rules(managed, edition):
+    own = {"capability": "mcp", "match": ["mine/*"], "effect": "deny"}
+    spec = {"tools": ["fs_read"], "allowedTools": ["*"], "permissions": {"rules": [own]}}
+    out = defaults.with_default_crew_servers("mine", spec, edition_ask_rules=True)
+    assert out["permissions"] == {"rules": [own, _VEND_ASK]}
+    assert spec["permissions"] == {"rules": [own]}, "the author's spec is not edited"
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"tools": ["fs_read"], "allowedTools": ["*"], "excludedTools": ["@edition-vend"]},
+        {
+            "tools": ["fs_read"],
+            "allowedTools": ["*"],
+            "permissions": {
+                "rules": [{"capability": "mcp", "match": ["edition-vend/*"], "effect": "deny"}]
+            },
+        },
+        {"tools": ["fs_read"], "allowedTools": ["*"], "permissions": {"rules": "all"}},
+        {"tools": ["fs_read"], "allowedTools": ["*"], "permissions": {"bogus": []}},
+    ],
+    ids=["excluded", "denied", "rules-not-a-list", "refused-block"],
+)
+def test_an_opt_out_or_a_block_that_cannot_carry_the_rule_keeps_it_out(managed, edition, spec):
+    out = defaults.with_default_crew_servers("mine", spec, edition_ask_rules=True)
+    assert "edition-vend" not in out["mcpServers"]
+    assert "@edition-vend" not in out["tools"]
+    assert out.get("permissions") == spec.get("permissions")
+
+
+@pytest.mark.parametrize("tools", [[], None])
+def test_a_tool_less_agent_gets_only_the_edition_server_on_kas(managed, edition, tools):
+    spec = {} if tools is None else {"tools": tools}
+    out = defaults.with_default_crew_servers("mine", spec, edition_ask_rules=True)
+    assert set(out["mcpServers"]) == {"edition-vend"}, "Crew's own servers stay off"
+    assert out["tools"] == ["@edition-vend"]
+    assert "permissions" not in out, "no allow reaches it, so KAS asks already"
+
+
+def test_crew_s_own_specs_are_unchanged_on_kas(managed, edition):
+    spec = {"tools": ["fs_read"], "allowedTools": ["*"]}
+    assert defaults.with_default_crew_servers("kirocrew", spec, edition_ask_rules=True) is spec
+
+
+def test_kas_mounts_the_wildcard_agent_s_edition_server_and_kiro_cli_does_not(
+    managed, edition, projects
+):
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+
+    projects(True)
+    spec = {"tools": ["fs_read"], "allowedTools": ["*"]}
+    kas = defaults.session_spec_on(ACP_BACKEND_KAS, "mine", spec)
+    assert "edition-vend" in kas["mcpServers"] and _VEND_ASK in kas["permissions"]["rules"]
+    kiro = defaults.session_spec_on(ACP_BACKEND_KIRO, "mine", spec)
+    assert "edition-vend" not in kiro["mcpServers"]
 
 
 def test_a_crew_mode_conductor_gets_no_edition_server(managed, edition, monkeypatch):
@@ -733,6 +888,45 @@ def test_one_pass_hands_each_agent_its_own_entry(managed, edition):
     assert second["mcpServers"]["edition-vend"] == _EDITION_ENTRY
 
 
+def test_one_pass_keeps_the_reads_every_agent_owner_lookup_repeats():
+    # ``owning_app_for_agent`` keeps each app's declared agents through
+    # ``build_reuse.reuse``, which keeps nothing outside ``one_build``. A skill-view
+    # pass asks it once per agent, so without a block it re-reads every app's
+    # manifest for every agent on every session start.
+    from kiro_crew import build_reuse
+
+    reads = []
+
+    def read():
+        reads.append(1)
+        return ("app", True, frozenset())
+
+    with defaults.one_pass():
+        for _ in range(3):
+            build_reuse.reuse(("app-agents", "/apps/pinger"), read, weight=lambda kept: 1)
+    assert reads == [1]
+    build_reuse.reuse(("app-agents", "/apps/pinger"), read, weight=lambda kept: 1)
+    assert reads == [1, 1], "outside a pass every lookup reads afresh"
+
+
+def test_one_pass_reads_the_app_s_servers_once_for_every_agent(managed, monkeypatch):
+    _install_app(monkeypatch)
+    owned_reads = []
+    monkeypatch.setattr(
+        "kiro_crew.agent_materialization.mcp_sources._app_owned_mcp_keys",
+        lambda: owned_reads.append(1) or {_APP_KEY: True},
+    )
+    spec = {"tools": ["fs_read", "tool_search"]}
+    with defaults.one_pass():
+        first = defaults.with_default_crew_servers("mine", spec)
+        first["mcpServers"][_APP_KEY]["args"].append("edited")
+        second = defaults.with_default_crew_servers("yours", spec)
+    assert owned_reads == [1]
+    assert second["mcpServers"][_APP_KEY] == _APP_ENTRY, "each agent gets its own entry"
+    defaults.with_default_crew_servers("theirs", spec)
+    assert owned_reads == [1, 1], "outside a pass every call reads afresh"
+
+
 def test_one_pass_asks_the_skill_view_admission_once(managed, edition, projects):
     from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 
@@ -796,6 +990,25 @@ async def test_kas_projects_the_edition_server_without_writing_the_file(kas_layo
 
     assert "@edition-vend" in entry["tools"]
     assert entry["mcpServers"]["edition-vend"]["command"] == _EDITION_ENTRY["command"]
+    assert "edition-vend" not in (user / "mine.json").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_a_kas_session_on_a_wildcard_agent_asks_for_the_edition_server(kas_layout, edition):
+    """The whole spawn path: the session's own entry carries the ask beside the
+    wildcard's allow, and the most-restrictive reading holds the server back."""
+    from kiro_crew.acp.kas_permissions import HELD_MCP_PREFIX, auto_approved_capabilities
+
+    user, checkout = kas_layout
+    _write(user, "mine", {"name": "mine", "prompt": "p", "tools": ["*"], "allowedTools": ["*"]})
+
+    entry = await _kas_entry("mine", checkout, session_key="chat-abc")
+
+    assert entry["mcpServers"]["edition-vend"]["command"] == _EDITION_ENTRY["command"]
+    assert _VEND_ASK in entry["permissions"]["rules"]
+    approved = auto_approved_capabilities(entry["permissions"])
+    assert "mcp" in approved, "the wildcard still approves the other servers"
+    assert HELD_MCP_PREFIX + "edition-vend/*" in approved, "the edition server is held to ask"
     assert "edition-vend" not in (user / "mine.json").read_text(encoding="utf-8")
 
 

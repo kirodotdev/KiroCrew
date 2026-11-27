@@ -99,14 +99,30 @@ def _without_hold_asks(mate_file: dict[str, Any], old: dict[str, Any]) -> dict[s
     the old agent itself states is kept, and the carry writes back each ask still
     needed.
     """
+    from kiro_crew.mate_held_rules import _ASKABLE
+
     if not _carries_hold_asks(mate_file):
         return mate_file
-    perms = mate_file["permissions"]
+    return _without_bare_asks(mate_file, set(_ASKABLE), old)
+
+
+def _without_bare_asks(
+    mate_file: dict[str, Any], caps: set[str], old: dict[str, Any]
+) -> dict[str, Any]:
+    """*mate_file* without its bare ``ask`` rules on *caps*, keeping each one *old* states.
+
+    *mate_file* itself when none is removed; ``permissions`` goes when nothing is left in it.
+    """
+    perms = mate_file.get("permissions")
+    if not isinstance(perms, dict) or not isinstance(perms.get("rules"), list):
+        return mate_file
+    rules = perms["rules"]
     old_perms = old.get("permissions")
     old_rules = old_perms.get("rules") if isinstance(old_perms, dict) else None
     own = old_rules if isinstance(old_rules, list) else []
-    rules = perms["rules"]
-    kept = [r for r in rules if not (_is_bare_ask(r) and r not in own)]
+    kept = [r for r in rules if not (_is_bare_ask(r) and r["capability"] in caps and r not in own)]
+    if len(kept) == len(rules):
+        return mate_file
     out = dict(mate_file)
     if kept or set(perms) - {"rules"}:
         out["permissions"] = {**perms, "rules": kept}

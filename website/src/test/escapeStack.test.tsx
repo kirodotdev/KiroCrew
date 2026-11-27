@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useState } from 'react'
 import { screen, fireEvent, act, render } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { LocalOverlayRoot } from '../components/overlayRoot'
 import { useEscapeLayer, type EscapeVerdict } from '../hooks/useEscapeLayer'
 import { useHoverIntent } from '../hooks/useHoverIntent'
+import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import Modal from '../components/Modal'
 import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
+import { clickOptimize } from './optimizeRow'
 
 /**
  * The page-wide Escape stack (issue #25202). The first block pins the stack's
@@ -88,7 +92,7 @@ describe('Escape while the rich-text composer is locked for an optimize', () => 
   const startOptimize = async (index: number) => {
     const roots = await screen.findAllByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
     act(() => { roots[index].focus() })
-    fireEvent.click(screen.getAllByRole('button', { name: 'Optimize prompt' })[index])
+    clickOptimize(index)
     await vi.waitFor(() => expect(roots[index].getAttribute('contenteditable')).toBe('false'))
   }
 
@@ -182,5 +186,73 @@ describe('Escape while the rich-text composer is locked for an optimize', () => 
     view.rerender(<LocalOverlayRoot hidden={false}><ChatInput {...props} /></LocalOverlayRoot>)
     await escapeOn(document.body)
     expect(signals[0].aborted).toBe(true)
+  })
+})
+
+describe('Escape with a list menu (useListKeyboardNav) open', () => {
+  function Menu({ open, onClose }: { open: boolean; onClose: () => void }) {
+    useListKeyboardNav({ open, count: 2, onChoose: () => {}, onClose })
+    return null
+  }
+
+  it('closes only the list menu while the flyout is open, then the flyout on the next press', () => {
+    const closed: string[] = []
+    function Surfaces() {
+      const hover = useHoverIntent()
+      const [menu, setMenu] = useState(false)
+      return (
+        <>
+          <button onClick={hover.openNow}>{hover.open ? 'flyout open' : 'flyout closed'}</button>
+          <button onClick={() => setMenu(true)}>open menu</button>
+          <Menu open={hover.open && menu} onClose={() => { closed.push('menu'); setMenu(false) }} />
+        </>
+      )
+    }
+    render(<Surfaces />)
+    // The flyout opens first, then a menu inside it: the order in which a
+    // page-wide listener registered used to decide that one press closed both.
+    fireEvent.click(screen.getByRole('button', { name: 'flyout closed' }))
+    fireEvent.click(screen.getByRole('button', { name: 'open menu' }))
+    act(() => { fireEvent.keyDown(document.body, { key: 'Escape' }) })
+    expect(closed).toEqual(['menu'])
+    expect(screen.getByRole('button', { name: 'flyout open' })).toBeInTheDocument()
+    act(() => { fireEvent.keyDown(document.body, { key: 'Escape' }) })
+    expect(closed).toEqual(['menu'])
+    expect(screen.getByRole('button', { name: 'flyout closed' })).toBeInTheDocument()
+  })
+
+  it('still closes a list menu alone, and leaves a flyout alone when no menu is open', () => {
+    const onClose = vi.fn()
+    const view = render(<Menu open onClose={onClose} />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+    view.unmount()
+    function Flyout() {
+      const hover = useHoverIntent()
+      return <button onClick={hover.openNow}>{hover.open ? 'flyout open' : 'flyout closed'}</button>
+    }
+    render(<Flyout />)
+    fireEvent.click(screen.getByRole('button', { name: 'flyout closed' }))
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(screen.getByRole('button', { name: 'flyout closed' })).toBeInTheDocument()
+  })
+
+  it('closes a list menu inside a dialog first, then the dialog on the next press', () => {
+    const closed: string[] = []
+    function Host() {
+      const [dialog, setDialog] = useState(true)
+      const [menu, setMenu] = useState(true)
+      return (
+        <Modal open={dialog} onClose={() => { closed.push('dialog'); setDialog(false) }} title="Dialog">
+          <Menu open={menu} onClose={() => { closed.push('menu'); setMenu(false) }} />
+        </Modal>
+      )
+    }
+    renderWithProviders(<Host />)
+    const target = screen.getByRole('dialog')
+    act(() => { fireEvent.keyDown(target, { key: 'Escape' }) })
+    expect(closed).toEqual(['menu'])
+    act(() => { fireEvent.keyDown(target, { key: 'Escape' }) })
+    expect(closed).toEqual(['menu', 'dialog'])
   })
 })

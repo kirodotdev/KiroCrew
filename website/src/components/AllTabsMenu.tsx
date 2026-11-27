@@ -103,7 +103,7 @@ export function AllTabsMenu({ groups, currentId, onSelect, label, offlineVerb, f
 
   return (
     <DropdownMenu open={open} onOpenChange={handleOpenChange} guideScope={guideScope} guideProbe={guideProbe}>
-      <DropdownMenuTrigger asChild ref={triggerRef} onPointerDown={layer.rememberOpener} onKeyDown={layer.rememberOpener}>
+      <DropdownMenuTrigger asChild ref={triggerRef} onPointerDown={layer.rememberOpener} onKeyDown={layer.rememberOpener} onClick={layer.rememberOpener}>
         {trigger ?? (
         <IconButton
           // mc-touch-hit-y gives a 44px coarse-pointer height without overlapping the adjacent +.

@@ -11,6 +11,7 @@ HTTP requests and must appear in nothing that crosses the wire.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import http.client
 import io
@@ -161,6 +162,23 @@ class _FakeRemote(BaseHTTPRequestHandler):
     seen: list[dict]
     sse = False
     tool_result: dict | None = None
+    #: The id each ``initialize`` hands out, and the ids the server does not know
+    #: (it restarted): a request carrying one is answered 404.
+    session_id = "sess-1"
+    forgotten: frozenset[str] = frozenset()
+    #: When set, a request carrying a forgotten id waits here before its 404, so
+    #: concurrent requests meet the stale session together.
+    stale_barrier: threading.Barrier | None = None
+    hold_request_id: int | None = None
+    held_request_gate: tuple[threading.Event, threading.Event] | None = None
+    initialized_gate: tuple[threading.Event, threading.Event] | None = None
+    refuse_initialize: int | None = None
+    refuse_initialize_once = False
+    initialize_answer: str | None = None
+    drop_initialize = False
+    renewal_without_session_id = False
+    refuse_initialized: int | None = None
+    refuse_tool_call: int | None = None
 
     def log_message(self, *_a):  # quiet
         pass
@@ -177,12 +195,77 @@ class _FakeRemote(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        gate = self.initialized_gate
+        if (
+            gate is not None
+            and body.get("method") == "notifications/initialized"
+            and self.headers.get("Mcp-Session-Id") == self.session_id
+        ):
+            gate[0].set()
+            if not gate[1].wait(default_timeout()):
+                self._reply(500)
+                return
         self.seen.append({"path": self.path, "headers": _lower(self.headers), "body": body})
         if self.path == "/moved":
             self._reply(302, Location="/elsewhere")
             return
+        if self.path == "/gone":
+            self._reply(404)
+            return
         if self.headers.get("Authorization") != CANARY:
             self._reply(401, b'{"error":"no token"}')
+            return
+        if self.headers.get("Mcp-Session-Id") in self.forgotten:
+            if self.stale_barrier is not None:
+                with contextlib.suppress(threading.BrokenBarrierError):
+                    self.stale_barrier.wait()
+            self._reply(404)
+            return
+        held = self.held_request_gate
+        if held is not None and body.get("id") == self.hold_request_id:
+            held[0].set()
+            if not held[1].wait(default_timeout()):
+                self._reply(500)
+                return
+        renewing = (
+            body.get("method") == "initialize"
+            and not self.headers.get("Mcp-Session-Id")
+            and bool(self.forgotten)
+        )
+        if renewing and self.drop_initialize:
+            with contextlib.suppress(OSError):
+                self.connection.shutdown(socket.SHUT_RDWR)
+            self.connection.close()
+            return
+        if renewing and self.refuse_initialize is not None:
+            status = self.refuse_initialize
+            if self.refuse_initialize_once:
+                type(self).refuse_initialize = None
+            self._reply(status)
+            return
+        if renewing and self.initialize_answer is not None:
+            if self.initialize_answer == "error":
+                answer = {"error": {"code": -32603, "message": "no"}}
+            elif self.initialize_answer == "noversion":
+                answer = {"result": {}}
+            else:
+                answer = {}
+            payload = json.dumps({"jsonrpc": "2.0", "id": body["id"], **answer}).encode()
+            self._reply(200, payload, Mcp_Session_Id=self.session_id)
+            return
+        if (
+            self.refuse_initialized is not None
+            and body.get("method") == "notifications/initialized"
+            and self.headers.get("Mcp-Session-Id") == self.session_id
+        ):
+            self._reply(self.refuse_initialized)
+            return
+        if (
+            self.refuse_tool_call is not None
+            and body.get("method") == "tools/call"
+            and self.headers.get("Mcp-Session-Id") == self.session_id
+        ):
+            self._reply(self.refuse_tool_call)
             return
         if "id" not in body:
             self._reply(202)
@@ -193,15 +276,21 @@ class _FakeRemote(BaseHTTPRequestHandler):
             else self.tool_result or {"text": "authorized"}
         )
         payload = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result}).encode()
+        response_session_id = self.headers.get("Mcp-Session-Id")
+        if response_session_id is None and not (
+            self.renewal_without_session_id and bool(self.forgotten)
+        ):
+            response_session_id = self.session_id
+        response_headers = {"Mcp_Session_Id": response_session_id} if response_session_id else {}
         if self.sse:
             self._reply(
                 200,
                 b"event: message\ndata: " + payload + b"\n\n",
                 "text/event-stream",
-                Mcp_Session_Id="sess-1",
+                **response_headers,
             )
         else:
-            self._reply(200, payload, Mcp_Session_Id="sess-1")
+            self._reply(200, payload, **response_headers)
 
     def do_GET(self):  # noqa: N802
         # Where a followed 302 lands: urllib turns the POST into a GET and keeps
@@ -402,6 +491,15 @@ def _lines(out: io.BytesIO) -> list[dict]:
     return [json.loads(line) for line in out.getvalue().splitlines()]
 
 
+def _event_stream(body: bytes) -> io.BytesIO:
+    """An open ``text/event-stream`` answer holding *body*, as urllib hands it over."""
+    headers = http.client.HTTPMessage()
+    headers["Content-Type"] = "text/event-stream"
+    stream = io.BytesIO(body)
+    stream.headers = headers  # type: ignore[attr-defined]
+    return stream
+
+
 def _msg(**fields) -> bytes:
     return json.dumps({"jsonrpc": "2.0", **fields}).encode() + b"\n"
 
@@ -478,6 +576,315 @@ class TestBridge:
         bridge.send(_msg(id=3, method="tools/list"))
         assert [r["path"] for r in handler.seen] == ["/moved"], "the header went nowhere else"
         assert "redirect" in _lines(out)[0]["error"]["message"]
+
+    def _initialized(self, base: str) -> tuple[Bridge, io.BytesIO, io.StringIO]:
+        """A bridge whose engine has initialized and holds the server's ``sess-1``."""
+        bridge, out, err = _bridge(base + "/mcp")
+        bridge.send(_msg(id=1, method="initialize", params={"clientInfo": {"name": "engine"}}))
+        bridge.send(_msg(method="notifications/initialized"))
+        return bridge, out, err
+
+    def test_a_session_the_server_forgot_is_started_again_and_the_request_retried(self, remote):
+        # An IDE's built-in server restarts with the IDE and answers 404 to the id
+        # it issued before; the transport spec has the client initialize again.
+        handler, base = remote
+        bridge, out, err = self._initialized(base)
+        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+        bridge.send(_msg(id=2, method="tools/call", params={}))
+        assert [(m["id"], "result" in m) for m in _lines(out)] == [(1, True), (2, True)]
+        posts = [(r["body"]["method"], r["headers"].get("mcp-session-id")) for r in handler.seen]
+        assert posts == [
+            ("initialize", None),
+            ("notifications/initialized", "sess-1"),
+            ("tools/call", "sess-1"),
+            ("initialize", None),
+            ("notifications/initialized", "sess-2"),
+            ("tools/call", "sess-2"),
+        ]
+        assert handler.seen[3]["body"]["params"] == {"clientInfo": {"name": "engine"}}
+        assert "sess-" not in out.getvalue().decode() + err.getvalue(), "never a header value"
+
+    @pytest.mark.parametrize("renewal_without_session_id", [False, True])
+    def test_a_late_old_session_answer_does_not_replace_the_renewed_session(
+        self, remote, renewal_without_session_id
+    ):
+        handler, base = remote
+        bridge, out, _err = self._initialized(base)
+        handler.renewal_without_session_id = renewal_without_session_id
+        entered, release = threading.Event(), threading.Event()
+        handler.hold_request_id = 2
+        handler.held_request_gate = (entered, release)
+        old = threading.Thread(
+            target=bridge.send, args=(_msg(id=2, method="tools/call", params={}),)
+        )
+        old.start()
+        assert entered.wait(default_timeout())
+        try:
+            handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+            bridge.send(_msg(id=3, method="tools/call", params={}))
+        finally:
+            release.set()
+        old.join(default_timeout())
+        assert not old.is_alive()
+
+        bridge.send(_msg(id=4, method="tools/call", params={}))
+
+        assert sorted(m["id"] for m in _lines(out) if "result" in m) == [1, 2, 3, 4]
+        assert sum(r["body"]["method"] == "initialize" for r in handler.seen) == 2
+        calls = [
+            (r["body"]["id"], r["headers"].get("mcp-session-id"))
+            for r in handler.seen
+            if r["body"]["method"] == "tools/call"
+        ]
+        renewed = None if renewal_without_session_id else "sess-2"
+        assert calls == [(2, "sess-1"), (3, "sess-1"), (3, renewed), (4, renewed)]
+
+    def test_a_renewal_without_a_protocol_version_omits_the_protocol_header(self, remote):
+        handler, base = remote
+        bridge, out, _err = self._initialized(base)
+        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+        handler.initialize_answer = "noversion"
+
+        bridge.send(_msg(id=2, method="tools/call", params={}))
+
+        assert _lines(out)[1]["result"] == {"text": "authorized"}
+        fresh = [r for r in handler.seen if r["headers"].get("mcp-session-id") == "sess-2"]
+        assert [r["body"]["method"] for r in fresh] == [
+            "notifications/initialized",
+            "tools/call",
+        ]
+        assert all("mcp-protocol-version" not in r["headers"] for r in fresh)
+
+    def test_a_forgotten_session_without_a_recorded_initialize_is_reported(self, remote):
+        handler, base = remote
+        bridge, out, err = _bridge(base + "/mcp")
+        bridge.send(_msg(id=1, method="tools/list"))
+        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+
+        bridge.send(_msg(id=2, method="tools/call", params={}))
+        bridge.send(_msg(id=3, method="tools/call", params={}))
+
+        replies = _lines(out)
+        assert [reply["id"] for reply in replies] == [1, 2, 3]
+        assert all("HTTP 404" in reply["error"]["message"] for reply in replies[1:])
+        assert [r["body"]["method"] for r in handler.seen] == [
+            "tools/list",
+            "tools/call",
+            "tools/call",
+        ]
+        assert "sess-" not in out.getvalue().decode() + err.getvalue(), "never a header value"
+
+    @pytest.mark.parametrize("status", [404, 503])
+    def test_a_retried_request_failure_is_reported_without_a_second_try(self, remote, status):
+        handler, base = remote
+        bridge, out, _err = self._initialized(base)
+        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+        handler.refuse_tool_call = status
+        bridge.send(_msg(id=2, method="tools/call", params={}))
+        reply = _lines(out)[1]
+        assert reply["id"] == 2 and f"HTTP {status}" in reply["error"]["message"]
+        methods = [r["body"]["method"] for r in handler.seen]
+        assert methods == [
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+        ]
+        handler.refuse_tool_call = None
+        if status == 404:
+            handler.forgotten |= frozenset({"sess-2"})
+            handler.session_id = "sess-3"
+        bridge.send(_msg(id=3, method="tools/call", params={}))
+        assert _lines(out)[2]["result"] == {"text": "authorized"}
+        expected_initializes = 3 if status == 404 else 2
+        assert (
+            sum(r["body"]["method"] == "initialize" for r in handler.seen) == expected_initializes
+        )
+
+    def test_requests_meeting_a_forgotten_session_together_share_one_new_one(self, remote):
+        handler, base = remote
+        bridge, out, _err = self._initialized(base)
+        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+        stale_barrier = threading.Barrier(2, timeout=default_timeout())
+        handler.stale_barrier = stale_barrier
+        calls = [
+            threading.Thread(target=bridge.send, args=(_msg(id=i, method="tools/call", params={}),))
+            for i in (2, 3)
+        ]
+        for call in calls:
+            call.start()
+        for call in calls:
+            call.join(default_timeout())
+            assert not call.is_alive()
+        assert not stale_barrier.broken
+        assert sorted(m["id"] for m in _lines(out) if "result" in m) == [1, 2, 3]
+        methods = [r["body"]["method"] for r in handler.seen]
+        assert methods.count("initialize") == 2, "one new session for both"
+        tool_calls = [
+            r["headers"].get("mcp-session-id")
+            for r in handler.seen
+            if r["body"]["method"] == "tools/call"
+        ]
+        assert tool_calls == ["sess-1", "sess-1", "sess-2", "sess-2"]
+
+    @pytest.mark.parametrize(
+        ("failure", "reason"),
+        [
+            (404, "HTTP 404"),
+            (503, "HTTP 503"),
+            ("error", "refused to start a new session"),
+            ("missing", "refused to start a new session"),
+            ("network", "could not be reached"),
+        ],
+    )
+    def test_a_failed_renewal_keeps_the_stale_session(self, remote, failure, reason):
+        handler, base = remote
+        bridge, out, err = self._initialized(base)
+        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+        if isinstance(failure, int):
+            handler.refuse_initialize = failure
+        elif failure == "network":
+            handler.drop_initialize = True
+        else:
+            handler.initialize_answer = failure
+
+        bridge.send(_msg(id=2, method="tools/call", params={}))
+
+        failed = _lines(out)[1]
+        assert failed["id"] == 2 and reason in failed["error"]["message"]
+        assert not any(
+            r["body"]["method"] == "tools/call" and r["headers"].get("mcp-session-id") == "sess-2"
+            for r in handler.seen
+        )
+        assert "sess-" not in out.getvalue().decode() + err.getvalue(), "never a header value"
+        handler.refuse_initialize = None
+        handler.drop_initialize = False
+        handler.initialize_answer = None
+        bridge.send(_msg(id=3, method="tools/call", params={}))
+        assert _lines(out)[2]["result"] == {"text": "authorized"}
+        assert sum(r["body"]["method"] == "initialize" for r in handler.seen) == 3
+
+    def test_a_renewal_event_stream_past_its_deadline_is_given_up(self):
+        from kiro_crew.kas_http_bridge import _REPEAT_ID, _answer_to
+
+        answer = (
+            b": keep-alive\n\n" * 3
+            + b'event: message\ndata: {"jsonrpc":"2.0","id":"'
+            + _REPEAT_ID.encode()
+            + b'","result":{"protocolVersion":"2025-06-18"}}\n\n'
+        )
+        expired = _event_stream(answer)
+        assert _answer_to(_REPEAT_ID, expired, deadline=0) is None
+        assert expired.tell() == len(b": keep-alive\n")
+        assert _answer_to(_REPEAT_ID, _event_stream(answer)) == {"protocolVersion": "2025-06-18"}
+
+    @pytest.mark.parametrize("first_failure_only", [True, False])
+    def test_a_waiter_renews_after_its_predecessor_fails(self, remote, first_failure_only):
+        handler, base = remote
+        bridge, out, _err = self._initialized(base)
+        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+        stale_barrier = threading.Barrier(2, timeout=default_timeout())
+        handler.stale_barrier = stale_barrier
+        handler.refuse_initialize = 503
+        handler.refuse_initialize_once = first_failure_only
+        calls = [
+            threading.Thread(target=bridge.send, args=(_msg(id=i, method="tools/call", params={}),))
+            for i in (2, 3)
+        ]
+        for call in calls:
+            call.start()
+        for call in calls:
+            call.join(default_timeout())
+            assert not call.is_alive()
+        assert not stale_barrier.broken
+        handler.stale_barrier = None
+
+        replies = [reply for reply in _lines(out) if reply["id"] in (2, 3)]
+        errors = [reply for reply in replies if "error" in reply]
+        results = [reply for reply in replies if "result" in reply]
+        assert len(errors) == (1 if first_failure_only else 2)
+        assert len(results) == (1 if first_failure_only else 0)
+        assert all("HTTP 503" in reply["error"]["message"] for reply in errors)
+
+        handler.refuse_initialize = None
+        bridge.send(_msg(id=4, method="tools/call", params={}))
+        assert next(reply for reply in _lines(out) if reply["id"] == 4)["result"] == {
+            "text": "authorized"
+        }
+        expected_initializes = 3 if first_failure_only else 4
+        assert (
+            sum(r["body"]["method"] == "initialize" for r in handler.seen) == expected_initializes
+        )
+
+    def test_a_renewed_session_is_not_published_until_initialized(self, remote):
+        handler, base = remote
+        bridge, out, _err = self._initialized(base)
+        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+        entered, release = threading.Event(), threading.Event()
+        handler.initialized_gate = (entered, release)
+        renewing = threading.Thread(
+            target=bridge.send, args=(_msg(id=2, method="tools/call", params={}),)
+        )
+        renewing.start()
+        assert entered.wait(default_timeout())
+        concurrent = threading.Thread(
+            target=bridge.send, args=(_msg(id=3, method="tools/call", params={}),)
+        )
+        concurrent.start()
+        try:
+            wait_until(
+                lambda: any(r["body"].get("id") == 3 for r in handler.seen),
+                describe=lambda: handler.seen,
+            )
+        finally:
+            release.set()
+        for call in (renewing, concurrent):
+            call.join(default_timeout())
+            assert not call.is_alive()
+        fresh = [r for r in handler.seen if r["headers"].get("mcp-session-id") == "sess-2"]
+        assert fresh[0]["body"]["method"] == "notifications/initialized"
+        assert sorted(m["id"] for m in _lines(out) if "result" in m) == [1, 2, 3]
+
+    @pytest.mark.parametrize("status", [404, 503])
+    def test_a_failed_renewal_notification_keeps_the_stale_session(self, remote, status):
+        handler, base = remote
+        bridge, out, err = self._initialized(base)
+        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+        handler.refuse_initialized = status
+
+        bridge.send(_msg(id=2, method="tools/call", params={}))
+
+        failed = _lines(out)[1]
+        assert failed["id"] == 2 and f"HTTP {status}" in failed["error"]["message"]
+        assert not any(
+            r["body"]["method"] == "tools/call" and r["headers"].get("mcp-session-id") == "sess-2"
+            for r in handler.seen
+        )
+        assert "sess-" not in out.getvalue().decode() + err.getvalue(), "never a header value"
+        handler.refuse_initialized = None
+        bridge.send(_msg(id=3, method="tools/call", params={}))
+        assert _lines(out)[2]["result"] == {"text": "authorized"}
+        assert sum(r["body"]["method"] == "initialize" for r in handler.seen) == 3
+
+    def test_a_404_with_no_session_is_reported_as_before(self, remote):
+        handler, base = remote
+        bridge, out, _err = _bridge(base + "/gone")
+        bridge.send(_msg(id=3, method="tools/list"))
+        assert "HTTP 404" in _lines(out)[0]["error"]["message"]
+        assert len(handler.seen) == 1, "nothing to initialize again"
+
+    def test_an_initialize_404_falls_back_without_renewing(self, remote):
+        handler, base = remote
+        bridge, out, err = _bridge(base + "/gone")
+        bridge.send(_msg(id=1, method="initialize", params={}))
+        assert "event stream" in _lines(out)[0]["error"]["message"]
+        assert [(r["path"], (r["body"] or {}).get("method")) for r in handler.seen] == [
+            ("/gone", "initialize"),
+            ("/gone", None),
+        ]
+        assert "starting a new one" not in err.getvalue()
 
     def test_an_unreachable_server_answers_the_request_with_the_cause(self):
         bridge, out, err = _bridge(f"http://127.0.0.1:{_closed_port()}/mcp")
@@ -653,6 +1060,38 @@ class TestLegacySse:
         bridge.send(_msg(id=1, method="initialize", params={}))
         assert "HTTP 405" in _lines(out)[0]["error"]["message"]
         assert len(handler.seen) == 1, "no GET"
+
+    def test_the_connection_bridge_relays_a_forgotten_session_without_a_replay(self, remote):
+        # The proxy's approval covers one forwarded call; a replay would be refused.
+        handler, base = remote
+        out, err = io.BytesIO(), io.StringIO()
+        bridge = ConnectionBridge(
+            base + "/mcp", {"Authorization": CANARY}, server="c", out=out, err=err
+        )
+        bridge.send(_msg(id=1, method="initialize", params={}))
+        bridge.send(_msg(method="notifications/initialized"))
+        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
+        bridge.send(_msg(id=2, method="tools/call", params={}))
+        reply = _lines(out)[1]
+        assert reply["id"] == 2 and "error" in reply, "the provider's answer, not a resent call's"
+        assert "HTTP 404 from the provider" in reply["error"]["message"]
+        bridge.send(_msg(id=3, method="tools/call", params={}))
+        assert _lines(out)[2]["result"] == {
+            "text": "authorized"
+        }, "the next call uses the new session"
+        calls = [
+            (r["body"]["method"], r["headers"].get("mcp-session-id"))
+            for r in handler.seen
+            if r["body"]["method"] in ("initialize", "tools/call")
+        ]
+        assert calls == [
+            ("initialize", None),
+            ("tools/call", "sess-1"),
+            ("initialize", None),
+            ("tools/call", "sess-2"),
+        ]
+        assert CANARY not in out.getvalue().decode() + err.getvalue()
+        assert "sess-" not in out.getvalue().decode() + err.getvalue()
 
 
 @pytest.mark.parametrize(

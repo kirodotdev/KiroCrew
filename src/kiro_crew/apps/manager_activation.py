@@ -270,9 +270,11 @@ def enable_app(
             # A family the stored set predates approves what is declared. An
             # explicit-only family is never absent here (``_parse_approved_grants``).
             kept = list(current_grants[family] if family in current_grants else declared[family])
-            kept += [e for e in declared[family] if e in shown and e not in kept]
+            kept_set = set(kept)
+            kept += [e for e in declared[family] if e in shown and e not in kept_set]
+            kept_set.update(kept)
             approved[family] = kept
-            still_staged = still_staged or any(e not in kept for e in declared[family])
+            still_staged = still_staged or any(e not in kept_set for e in declared[family])
         _write_approved_grants(name, approved)
         meta.approvedGrantsStored = True
         sel().log_api_access(

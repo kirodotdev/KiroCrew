@@ -24,15 +24,15 @@ def _harness_of(provider: Any, backend: str) -> tuple[str, bool]:
     """``(provider_type, native_steering)`` for a live provider, else for *backend*.
 
     The cold answer resolves the label the way ``provider_label`` does, and
-    ``native_steering`` the way ``AcpProvider`` reports it (KAS owns conditional
-    steering).
+    ``native_steering`` from the same capability a live provider reports it from
+    (``SessionCapabilities.loads_steering_natively``).
     """
     if provider is not None:
         return str(provider.context_provider_type), bool(provider.native_steering)
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
     from kiro_crew.agent_sdk.drivers.acp import provider_label_for_backend
 
-    return provider_label_for_backend(backend), backend == ACP_BACKEND_KAS
+    return provider_label_for_backend(backend), capabilities_for(backend).loads_steering_natively
 
 
 def _resolved_agent(slot: Any, session_key: str, project: str | None) -> tuple[str | None, bool]:

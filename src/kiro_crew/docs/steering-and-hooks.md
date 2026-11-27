@@ -206,10 +206,10 @@ audits calls sees a call that asks for approval twice there: once at the notice
 and once at its approval request.
 
 On every other event a non-zero exit is warn-only: the run is recorded against
-the hook with its error, and the turn continues. The gateway log also gets one
-WARNING, `Hook <name> (<event>) failed: <detail>`, where the detail is the
-hook's error, its stderr tail, or `exited with code N`, so a hook that fails
-without printing anything still shows up there.
+the hook with its error, and the turn continues. Any exit other than 0 or 2, on
+any event, also leaves one WARNING in the gateway log,
+`Hook <name> (<event>) failed: <detail>`, whose detail is the error, else the
+end of the hook's stderr, else `exited with code N`.
 
 **Exit 0 discards both streams except where the table says otherwise.** On
 `PostToolUse` and `Stop` a successful run surfaces nothing — stderr included — and
@@ -355,6 +355,19 @@ chat, a channel thread); `subagent_id` and `parent_session_key` appear only on
 an event a spawned subagent fired. To tell a person's turn from a subagent's,
 check for `subagent_id`, not `parent_session_key`.
 
+In a dashboard chat, Kiro Crew can send a prompt again, unchanged, when an
+attempt the prompt hooks already ran for did not finish the turn: it failed, was
+refused, or stopped early. The hooks fire again for the re-send, and that
+`UserPromptSubmit` carries `"replay": true`, so a hook can tell it from a new
+message and choose to skip it or still process the text. A continuation Kiro
+Crew writes to resume a turn is never marked, even when re-sent, and a queued
+re-send you edit is a new prompt and is not marked. The re-sent prompt is an earlier one from
+this chat that got no reply, not always the one just before it: a message sent
+while it waited can run first. The key is absent on every other prompt. Channel
+turns fire `UserPromptSubmit` once per message and never carry it. On kiro-cli's
+older v2 engine kiro-cli runs the agent's own hooks itself, and they do not get
+it.
+
 An agent spec's own `hooks` that Kiro Crew runs itself (for a chat session, a
 subagent or the task runner) also get the session's ACP id, as
 `KIRO_SESSION_ID` in the environment and as `session_id` on stdin, the same
@@ -484,7 +497,11 @@ dedup, same per-event and total caps. Fourteen triggers are accepted, each in
 kiro-agent's own PascalCase, its IDE camelCase spelling, its CLI alias, or the
 Open Plugins alias `afterFileEdit` — the whole table from kiro-agent's
 `packages/kiro-agent/src/hooks/trigger-names.ts`, plus `PreCompact` and
-`PostCompact` from the pinned engine, matched without regard to case. Five map onto the five kiro-cli event
+`PostCompact` from the pinned engine, matched without regard to case. The engine's
+`PermissionRequest` trigger (`permissionRequest`) is not one of them: on the engine a
+hook there can allow or deny the permission request itself, and Kiro Crew keeps that
+answer in its own approval flow, so such a hook is skipped with an
+`unknown trigger` warning; to refuse a tool call, use a `PreToolUse` hook. Five map onto the five kiro-cli event
 names: `PreToolUse` to `preToolUse`, `PostToolUse` to `postToolUse`,
 `UserPromptSubmit` to `userPromptSubmit`, `SessionStart` to `agentSpawn`, `Stop`
 to `stop`. Only those five reach kiro-cli; a hook on `SessionEnd`, `PreTaskExec`,
@@ -528,6 +545,21 @@ hook, which Kiro Crew does not fire, takes no number. The list applies where Kir
 fires the hooks (Kiro Agent, goose, opencode, Strands); on the kiro-cli
 backend kiro-cli runs them itself.
 
+A hook document with a `name` of its own also answers to
+`<agent>/<Event>/<name>`, such as `my-agent/PreToolUse/read-guard`, which
+reordering does not change, and the refusal prints it beside the number. It
+names the hook, not its command: an update that keeps the name and changes the
+command is still admitted. A deny of either name refuses the hook. Each name
+is judged by the policy and the profile together, so when both carry a `hooks`
+list, name the hook the same way in both. These keep only the number: a
+document with no `name`, whose `<Trigger>-<n>` name is positional too, a name
+that is all digits or holds `/`, `\`, `*`, `?` or `[`, a name two of the
+agent's hook documents share, and every hook in the object form, which has no
+name. The list takes `fnmatch` globs: `my-agent/PreToolUse/*` lets
+every `preToolUse` hook of that agent run, including one a later update adds,
+and a glob meets these names too, so `*-guard` admits a document named
+`read-guard`.
+
 **On kiro-cli's v2 engine a `userPromptSubmit` hook reads the whole prompt.** A
 session runs on that older engine when a Kiro CLI choice meets a kiro-cli without
 its v3 engine (the gateway log then says Kiro Crew "keeps running kiro-cli's v2
@@ -536,8 +568,9 @@ kiro-cli runs the agent spec's `userPromptSubmit` hooks itself, on the text Kiro
 Crew sends the model, with your message inside it. A session's first message
 carries the full session-start context: the agent prompt, the critical rules,
 memory and session context. The first message after a compaction carries part of
-it again (the agent prompt, the memory index, skills and lessons), and later
-messages carry Kiro Crew's per-turn context instead. A room or guest conversation
+it again (the agent prompt, the critical rules, the memory index, skills and
+lessons), and later messages carry Kiro Crew's per-turn context instead. A room or
+guest conversation
 gets less at both points, without the rules or memory. In every case that hook's
 stdin `prompt` is not the message you typed, and a hook that checks `prompt` for
 words also checks text you did not write. A Hooks-tab `UserPromptSubmit` hook

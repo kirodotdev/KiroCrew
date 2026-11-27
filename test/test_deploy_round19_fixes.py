@@ -4,12 +4,13 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from redaction_structured_cases import github_classic
+
+from kiro_crew.testing.module_table import patched_sys_modules
 
 #: A synthetic GitHub token with a valid checksum, which the credential plan redacts.
 _TOKEN = github_classic(seed=45)
@@ -134,7 +135,7 @@ def test_f4_reaper_dist_tag_mismatch_skips(capsys):
     mock_boto.client.side_effect = lambda svc, **kw: {
         "s3": mock_s3, "cloudformation": mock_cfn, "cloudfront": mock_cf
     }.get(svc, MagicMock())
-    with _patch.dict(sys.modules, {"boto3": mock_boto, "botocore": MagicMock(), "botocore.exceptions": MagicMock()}):
+    with patched_sys_modules({"boto3": mock_boto, "botocore": MagicMock(), "botocore.exceptions": MagicMock()}):
         with _patch.dict(os.environ, {"BUCKET": "test-bucket", "DIST_ID": "EDIST123"}):
             spec.loader.exec_module(mod)
 

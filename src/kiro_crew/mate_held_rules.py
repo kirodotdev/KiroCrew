@@ -17,8 +17,11 @@ it speaks about, and:
 - under a held ``subagent`` limit, Crew's own spawn admission starts none of the
   Bot's sub-agents on its own either (:func:`held_spawn_limits`).
 
-Nothing clears a hold: picking the Bot's approval mode does not, since an ``auto``
-cron's approval does not depend on that mode. Every other call behaves as before.
+Picking the Bot's approval mode does not clear a hold, since an ``auto`` cron's
+approval does not depend on that mode; what does is a person's release on the Bot's
+Profile tab (:func:`release_held`), the move undoing a hold it just recorded
+(:func:`drop_held`), or the startup recheck of a Bot held on every call finding it no
+longer needed (``mate_policy_repair``). Every other call behaves as before.
 Blocking file I/O; never raises from the gate.
 """
 
@@ -30,7 +33,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from kiro_crew.user_json import copy_json_document
 
@@ -319,7 +322,7 @@ def _held_rule(text: str, capability: str, paths: list[str] | None) -> dict[str,
 
 
 def record_held(name: str, member_id: str, held: list[dict[str, str]]) -> None:
-    """Record *held* as Bot *name*'s restrictions that need a person; none clears it."""
+    """Record *held* as Bot *name*'s restrictions that need a person, until one releases them."""
     from kiro_crew.mate_ledger_lock import ledger_lock
 
     with ledger_lock():
@@ -336,6 +339,113 @@ def drop_held(name: str, member_id: str) -> None:
         entry = entries.get(name) if isinstance(entries, dict) else None
         if isinstance(entry, dict) and str(entry.get("member_id") or "") == member_id:
             _record_held(name, member_id, [])
+
+
+def _is_bots(entry: Any, member_id: str) -> TypeGuard[dict[str, Any]]:
+    """Whether *entry*, the one recorded under a Bot's name, is that Bot's, as the gate matches it."""
+    if not isinstance(entry, dict):
+        return False
+    recorded = str(entry.get("member_id") or "")
+    return not recorded or recorded == member_id
+
+
+def _as_shown(rules: Any) -> list[Any]:
+    """*rules* as the Profile tab shows them: each ``text`` with its credentials redacted."""
+    from kiro_crew.security import redact
+
+    shown: list[Any] = []
+    for rule in rules or []:
+        if isinstance(rule, dict) and isinstance(rule.get("text"), str):
+            rule = {**rule, "text": redact(rule["text"])}
+        shown.append(rule)
+    return shown
+
+
+def held_rules_of(name: str, member_id: str) -> list[Any] | None:
+    """Bot *name*'s held restrictions, ``[]`` when none, ``None`` while the record is unreadable.
+
+    Each text has its credentials redacted (:func:`_as_shown`).
+    """
+    entries = _held_entries()
+    if entries is None:
+        return None
+    entry = entries.get(name)
+    return _as_shown(entry.get("rules")) if _is_bots(entry, member_id) else []
+
+
+def release_held(name: str, member_id: str, shown: list[Any]) -> bool:
+    """Clear Bot *name*'s held restrictions only while they still equal *shown*.
+
+    *shown* is compared with the redacted view :func:`held_rules_of` returns.
+    Also removes the asks the hold wrote into the Bot's file (:func:`_drop_hold_asks`).
+    Raises :class:`~kiro_crew.mate_config_migration.LedgerUnreadable` or
+    :class:`OSError` when the record cannot be read; ``False`` writes nothing.
+    """
+    from kiro_crew.agent import agents_spec_lock
+    from kiro_crew.config import paths as paths_mod
+    from kiro_crew.mate_config_migration import _read_ledger
+    from kiro_crew.mate_ledger_lock import ledger_lock
+
+    # The order the startup repair takes both locks in (``mate_policy_repair``).
+    with agents_spec_lock(paths_mod.mate_agents_dir()):
+        with ledger_lock():
+            data = _read_ledger()
+            entries = data.get(HELD_KEY)
+            entry = entries.get(name) if isinstance(entries, dict) else None
+            if (
+                not shown
+                or not _is_bots(entry, member_id)
+                or _as_shown(entry.get("rules")) != shown
+            ):
+                return False
+            threads = data.get("threads")
+            thread = threads.get(name) if isinstance(threads, dict) else None
+            source = thread.get("from") if isinstance(thread, dict) else None
+            # Cleared first: with the asks gone while the hold stands, an allow
+            # rule would run a held call with no request for the gate to see.
+            _record_held(name, member_id, [])
+        _drop_hold_asks(name, source if isinstance(source, str) else "", shown)
+    return True
+
+
+def _drop_hold_asks(name: str, source: str, released: list[Any]) -> None:
+    """Remove from Bot *name*'s file the bare asks a hold of *released* wrote.
+
+    An ask its old agent *source* states stays. When that agent cannot be read the
+    file is left as it is, so it only asks more.
+    """
+    from kiro_crew.config import paths as paths_mod
+    from kiro_crew.mate_config import write_mate_spec
+    from kiro_crew.mate_mount_repair import _old_agent
+    from kiro_crew.mate_policy_repair import _without_bare_asks
+
+    caps = {
+        c for r in released if isinstance(r, dict) and isinstance(c := r.get("capability"), str)
+    }
+    asks = set(_ASKABLE) if ANY in caps else caps & _ASKABLE
+    if not asks:
+        return
+    try:
+        path = paths_mod.mate_agents_dir() / f"{name}.json"
+        try:
+            mate_file = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(mate_file, dict):
+            return
+        old = _old_agent(source) if source else None
+        if old is None:
+            logger.warning(
+                "held Bot rules: %s's old agent unreadable; its file keeps its asks", name
+            )
+            return
+        fixed = _without_bare_asks(mate_file, asks, old)
+        if fixed is not mate_file:
+            write_mate_spec(name, fixed)
+    except Exception:  # noqa: BLE001 - the hold is already ended; a kept ask only asks more
+        logger.warning(
+            "held Bot rules: the asks in %s's file were not removed", name, exc_info=True
+        )
 
 
 def _record_held(name: str, member_id: str, held: list[dict[str, str]]) -> None:

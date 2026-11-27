@@ -1,9 +1,9 @@
 """The context-management guide's SHARES and rules are pinned to the code.
 
 ``scripts/docs_lint.py`` gates a doc's SYMBOLS (``dead-identifier``) and its PATHS
-(``path-exists``), never what it claims about them. So a doc saying "skills get 15%
-of the base" keeps a resolving symbol and a resolving path after someone changes
-``_SKILLS_CAP`` to ``_budget(0.10)`` -- lint stays green and the doc confidently
+(``path-exists``), never what it claims about them. So a doc saying "lessons get
+22.6% of the base" keeps a resolving symbol and a resolving path after someone changes
+``_LESSONS_CAP`` to ``_budget(0.10)`` -- lint stays green and the doc confidently
 lies, which is worse than saying nothing because a reader has no reason to doubt it.
 
 This module closes that gap for ``docs/architecture/context-management.md``.
@@ -82,7 +82,6 @@ SHARE_ROWS = (
     ("_MEMORY_HISTORY_CAP", ctx._MEMORY_HISTORY_CAP),
     ("_LESSONS_CAP", ctx._LESSONS_CAP),
     ("_SEMANTIC_MEMORY_CAP", ctx._SEMANTIC_MEMORY_CAP),
-    ("_SKILLS_CAP", ctx._SKILLS_CAP),
     ("_PREAMBLE_HEADROOM", ctx._PREAMBLE_HEADROOM),
 )
 

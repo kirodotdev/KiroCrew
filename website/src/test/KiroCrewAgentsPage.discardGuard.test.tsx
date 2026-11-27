@@ -24,7 +24,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
-import { useLocation } from 'react-router-dom'
+import { Route, Routes, useLocation } from 'react-router-dom'
 import { i18nT } from '../i18n/t'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
 
@@ -154,6 +154,50 @@ beforeEach(() => {
   mockApi.deleteKirocrewAgent.mockResolvedValue({})
   mockApi.setDefaultAgent.mockResolvedValue({})
   mockApi.createWorkspace.mockResolvedValue({})
+})
+
+function ProfileLocationProbe() {
+  const { pathname, search, state } = useLocation()
+  return <output data-testid="profile-location">{JSON.stringify({ pathname, search, state })}</output>
+}
+
+describe('crew editor — Customize opens the Bot profile', () => {
+  it.each([
+    { name: 'oncall', dirty: false, search: '?member=oncall' },
+    { name: 'ops & support', dirty: true, search: '?member=ops%20%26%20support' },
+  ])('opens $name on its Profile tab after leaving the editor (dirty: $dirty)', async ({ name, dirty, search }) => {
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [{ name, kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' }],
+      default_agent: 'kirocrew',
+    })
+    renderWithProviders(
+      <NavigationLeaveGuardProvider>
+        <Routes>
+          <Route path="/capabilities" element={<KiroCrewAgentsPage embedded />} />
+          <Route path="/members" element={<ProfileLocationProbe />} />
+        </Routes>
+      </NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=crews' },
+    )
+    fireEvent.click(await screen.findByTestId('crew-card'))
+    // Wait for the lazy CrewEditorModal chunk and its fresh roster read.
+    const sheet = await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+    if (dirty) makeDirty(sheet)
+    fireEvent.click(await within(sheet).findByRole('button', { name: 'Open profile' }))
+    if (dirty) {
+      await waitFor(() => expect(confirmBox()).toBeInTheDocument())
+      expect(screen.queryByTestId('profile-location')).not.toBeInTheDocument()
+      fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
+    }
+    const location = await screen.findByTestId('profile-location')
+    expect(JSON.parse(location.textContent!)).toEqual({
+      pathname: '/members',
+      search,
+      state: { openMateSessions: true, tab: 'profile', leaveGranted: true },
+    })
+    expect(screen.queryByTestId('crew-editor-next-dialog')).not.toBeInTheDocument()
+    expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
+  })
 })
 
 describe('crew editor — dirty dismissal is guarded on every pane', () => {

@@ -87,6 +87,11 @@ class ConnectionBridge(Bridge):
 
     #: The proxy speaks streamable HTTP only, so its refusal is the answer to relay.
     falls_back_to_sse = False
+    #: The proxy's one-shot approval covers exactly one forwarded ``tools/call``,
+    #: so a resent call would be refused and audited as a denial. The provider's
+    #: 404 is relayed as it is; the new session, whose ``initialize`` the proxy
+    #: forwards ungated, serves the next approved call.
+    resends_after_renewal = False
 
     def _http_error_reason(self, exc: urllib.error.HTTPError) -> str:
         # Only an answer the proxy marked as its own refusal is Kiro Crew's; any

@@ -85,6 +85,9 @@ export type McpManagedServer = {
   // Optional: an older gateway does not send them.
   cwd_use?: McpCwdUse | null
   cwd_proven?: boolean
+  // The gateway saw this server ask a chat for its roots (`roots/list`): it reads
+  // the chat's project folder, so it cannot share and is never asked.
+  cwd_roots?: boolean
   // True when stubbing this server cannot produce a SHARED backend anyway: the
   // rewriter leaves an env-declaring entry unwrapped rather than spawn a pooled
   // backend without a declared key. Optional for the same reason as
@@ -96,6 +99,9 @@ export type McpManagedServer = {
   // confirm for turning sharing on can leave it out of what will share.
   // Optional: an older gateway does not send it.
   pooling_blocked_by_env_when_shared?: boolean
+  // "Always trust changes to this server": a changed launch stays shared.
+  // Optional: an older gateway does not send it.
+  trust_changes?: boolean
   // Sharing is on and the server's env names a vault secret, so the gateway
   // starts it on a backend of its own instead of sharing one or leaving it to
   // the session.
@@ -151,7 +157,15 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
 
     mcpCustomUpdate: (name: string, spec: import('../../types').McpCustomSpec) =>
       put(`/api/mcp/custom/${encodeURIComponent(name)}`, { spec }).then(j) as Promise<{ ok: boolean; name: string; agent_spec_rewritten?: boolean }>,
-    mcpActive: (agent?: string) => fetch('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : '')).then(j),
+    /** `slot` names the chat whose live session's backend the server asks; the
+     *  backend is never sent from here. */
+    mcpActive: (agent?: string, slot?: string) => {
+      const params = new URLSearchParams()
+      if (agent) params.set('agent', agent)
+      if (slot) params.set('slot', slot)
+      const query = params.toString()
+      return fetch('/api/mcp/active' + (query ? `?${query}` : '')).then(j)
+    },
     mcpProbe: () => post('/api/mcp/probe').then(j),
     mcpProbeOne: (name: string) =>
       post(`/api/mcp/probe/${encodeURIComponent(name)}`).then(j) as Promise<McpServer>,
@@ -176,7 +190,7 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
 
   const gateway = {
     // MCP Gateway (shared pool)
-    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; share_refused?: Record<string, string>; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval' | 'too_many_launches'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string; launch_cap?: number }> }>,
+    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; share_refused?: Record<string, string>; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval' | 'too_many_launches'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; changed_env_keys?: string[]; complete?: boolean; expected_launch?: string; launch_cap?: number }> }>,
     mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean; restart_required?: boolean }>,
     /** What the open chats' MCP servers cost this host now, and with sharing
      *  (PSS read from /proc; null when not every process could be read), and
@@ -189,9 +203,14 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
     // is written against and is present only when every command could be shown.
     mcpGatewayLaunchPreview: (name: string) => fetch(`/api/mcp-gateway/servers/launch?name=${encodeURIComponent(name)}`).then(j) as Promise<{ name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>,
     mcpGatewayLaunchPreviews: (names: string[]) => post('/api/mcp-gateway/servers/launch', { names }).then(j) as Promise<{ launches: Record<string, { name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>; errors: Record<string, string> }>,
-    mcpGatewaySetStub: (name: string, stub: boolean, expectedLaunch?: string, resolveEligibility = false, cwdUse?: McpCwdUse) => post('/api/mcp-gateway/servers/stub', { name, stub, ...(expectedLaunch ? { expected_launch: expectedLaunch } : {}), ...(resolveEligibility ? { resolve_eligibility: true } : {}), ...(cwdUse ? { cwd_use: cwdUse } : {}) }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; stubbed?: string[]; skipped?: Array<{ name: string; reason: string }>; sharing_on?: boolean; enabled?: boolean; applied?: boolean; restart_required?: boolean; stub_servers?: string[] }>,
+    mcpGatewaySetStub: (name: string, stub: boolean, expectedLaunch?: string, resolveEligibility = false, cwdUse?: McpCwdUse, trustChanges = false) => post('/api/mcp-gateway/servers/stub', { name, stub, ...(expectedLaunch ? { expected_launch: expectedLaunch } : {}), ...(resolveEligibility ? { resolve_eligibility: true } : {}), ...(cwdUse ? { cwd_use: cwdUse } : {}), ...(trustChanges ? { trust_changes: true } : {}) }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; stubbed?: string[]; skipped?: Array<{ name: string; reason: string }>; sharing_on?: boolean; enabled?: boolean; applied?: boolean; restart_required?: boolean; stub_servers?: string[] }>,
+    // Takes "Always trust changes to this server" off; the share stays.
+    mcpGatewayStopTrustingChanges: (name: string) => post('/api/mcp-gateway/servers/stub', { name, trust_changes: false }).then(j) as Promise<{ ok: boolean; name: string; trust_changes: false }>,
+    // Turns it back on from the Sharing row, for a shared server whose launch is approved.
+    mcpGatewayTrustChanges: (name: string) => post('/api/mcp-gateway/servers/stub', { name, trust_changes: true }).then(j) as Promise<{ ok: boolean; name: string; trust_changes: true }>,
     // Records the answer to "share this server across chats?" alone.
-    mcpGatewaySetCwdUse: (name: string, cwdUse: McpCwdUse) => post('/api/mcp-gateway/servers/stub', { name, cwd_use: cwdUse }).then(j) as Promise<{ ok: boolean; name: string; restart_required?: boolean }>,
+    // `routing_changed` is true when the answer routed or unrouted the server.
+    mcpGatewaySetCwdUse: (name: string, cwdUse: McpCwdUse) => post('/api/mcp-gateway/servers/stub', { name, cwd_use: cwdUse }).then(j) as Promise<{ ok: boolean; name: string; applied?: boolean; restart_required?: boolean; routing_changed?: boolean }>,
     mcpResolveRefresh: () => post('/api/mcp-gateway/resolve-refresh', {}).then(j) as Promise<{ ok: boolean; reason?: string; resolved: Record<string, 'ready' | 'unresolved' | 'error'>; ready?: string[] }>,
     // Starting a measurement pass returns immediately: it spawns two processes per
     // unmeasured server, so the answer arrives through the progress read, not here.

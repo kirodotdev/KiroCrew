@@ -545,10 +545,11 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                     "Injected timeout error for subagent %s into slot %s", info.id, slot_name
                 )
             self.dashboard_state.broadcast_ws(etype, {**base, **extra})
-        elif etype == "subagent_chunk":
-            # Heavy data — only to subscribed clients. At scale (>threshold
-            # active agents) the coalescer absorbs it into the ~1s
-            # subagent_batch_chunks frame instead of a per-event frame.
+        elif etype in ("subagent_chunk", "subagent_thinking"):
+            # Heavy data (the agent's text, or its reasoning) — only to
+            # subscribed clients. At scale (>threshold active agents) the
+            # coalescer absorbs it into the ~1s subagent_batch_chunks frame
+            # instead of a per-event frame.
             if self._subagent_coalescer().handle(etype, {**base, **extra}):
                 return
             self.dashboard_state.broadcast_ws_subagent_subscribers(etype, {**base, **extra})

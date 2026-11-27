@@ -5,7 +5,8 @@
 // in ChatInputTestUtils.tsx.
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, screen, fireEvent } from '@testing-library/react'
+import { act, screen, fireEvent, within } from '@testing-library/react'
+import { registerComposerUpload, reportComposerUploadProgress, unregisterComposerUpload } from '../utils/composerSendHolds'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { sseDisconnected } from '../store/dashboardSlice'
@@ -16,6 +17,7 @@ const INPUT_DRAG_MIN_H = 93
 import { SlotProvider } from '../providers/SlotContext'
 import { defaultProps } from './ChatInputTestUtils'
 import { formatToken } from '../utils/pasteTokens'
+import { clickOptimize, isOptimizeDisabled, optimizeRow } from './optimizeRow'
 
 // isTouchDevice gates the autoFocusKey effect (tapping a session must not pop
 // the soft keyboard). Default false so the desktop cases behave as before; a
@@ -172,24 +174,25 @@ describe('ChatInput', () => {
       expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled()
     })
 
-    it('disables Optimize button when connected=false even with text', () => {
+    it('disables the Optimize row when connected=false even with text', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hello" connected={false} />)
-      // "Optimize prompt", not "Optimize": the offline name now reuses this
-      // control's own online accessible name instead of a second raw literal, so
-      // the two agree. It was the only offline name here that disagreed.
-      const btn = screen.getByRole('button', { name: /Optimize prompt disabled/ })
-      expect(btn).toBeDisabled()
+      expect(isOptimizeDisabled(optimizeRow())).toBe(true)
     })
 
-    it('exposes offline-aware aria-label and tooltip on Optimize button', () => {
+    it('gives the offline Optimize row the reconnect tooltip', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hi" connected={false} />)
-      const btn = screen.getByLabelText('Optimize prompt disabled — gateway offline')
-      expect(btn).toHaveAttribute('title', 'Gateway offline — reconnect to optimize')
+      expect(optimizeRow()).toHaveAttribute('title', 'Gateway offline — reconnect to optimize')
     })
 
-    it('keeps Optimize enabled when connected=true with text', () => {
+    it('keeps the Optimize row enabled when connected=true with text', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hi" />)
-      expect(screen.getByRole('button', { name: 'Optimize prompt' })).not.toBeDisabled()
+      expect(isOptimizeDisabled(optimizeRow())).toBe(false)
+    })
+
+    it('puts no Optimize button in the send cluster (#41795)', () => {
+      renderWithProviders(<ChatInput {...defaultProps} value="hi" onUploadFiles={vi.fn()} />)
+      expect(screen.queryByRole('button', { name: 'Optimize prompt' })).not.toBeInTheDocument()
+      expect(optimizeRow()).toHaveTextContent('Optimize prompt')
     })
 
     // Keyboard send must not bypass the offline gate. Without it, hitting Enter
@@ -405,6 +408,9 @@ describe('ChatInput', () => {
     it('shows prefill hint when enabled', () => {
       renderWithProviders(<ChatInput {...defaultProps} prefillHint />)
       expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
+      expect(screen.getByText(/Prompt pre-filled/).parentElement!.className).toMatch(/\bglass-thick\b.*\bglass-accent\b/)
+      // Inset inside the composer's pane, so its corner stays inside the composer's.
+      expect(screen.getByText(/Prompt pre-filled/).parentElement).toHaveClass('m-1.5')
     })
 
     it('does not show prefill hint by default', () => {
@@ -440,48 +446,58 @@ describe('ChatInput', () => {
       clickSpy.mockRestore()
     })
 
-    it('disables the + menu button when uploading', () => {
+    /* "+" stays "+" while uploads run: each upload is a chip of its own, so
+     * the menu (Upload file, Optimize prompt, ...) stays reachable. */
+    it('keeps the + menu button usable while uploading', () => {
       renderWithProviders(<ChatInput {...defaultProps} isMac onUploadFiles={vi.fn()} onScreenshot={vi.fn()} uploading />)
-      expect(screen.getByTitle('Add files & options')).toBeDisabled()
+      const plus = screen.getByTitle('Add files & options')
+      expect(plus).toBeEnabled()
+      fireEvent.click(plus)
+      expect(screen.getByText('Upload file')).toBeInTheDocument()
     })
 
-    /* #5744: while an upload is in flight every attach entry point is
-     * disabled, so without this control the only way out of a slow transfer
-     * is reloading the page. */
-    it('offers a cancel control only while uploading', () => {
-      const { unmount } = renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={vi.fn()} />)
-      expect(screen.queryByRole('button', { name: 'Cancel upload' })).not.toBeInTheDocument()
-      unmount()
-      renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={vi.fn()} uploading />)
-      expect(screen.getByRole('button', { name: 'Cancel upload' })).toBeInTheDocument()
-    })
+    describe('upload chips', () => {
+      const slot = 'chip-slot'
+      const live: AbortController[] = []
+      afterEach(() => { act(() => { live.splice(0).forEach(c => unregisterComposerUpload(slot, c)) }) })
+      const start = (name: string) => {
+        const c = new AbortController()
+        live.push(c)
+        act(() => registerComposerUpload(slot, c, name))
+        return c
+      }
 
-    it('renders no cancel control when the host passes no onCancelUpload', () => {
-      renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} uploading />)
-      expect(screen.queryByRole('button', { name: 'Cancel upload' })).not.toBeInTheDocument()
-    })
+      it('shows one chip per upload in flight, each with its own cancel', () => {
+        renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} uploadSlot={slot} />)
+        expect(screen.queryByTestId('composer-upload-chip')).not.toBeInTheDocument()
+        start('a.png')
+        start('b.pdf')
+        expect(screen.getAllByTestId('composer-upload-chip').map(c => c.getAttribute('aria-label'))).toEqual(['a.png', 'b.pdf'])
+        const cancel = screen.getByRole('button', { name: 'Cancel uploading b.pdf' })
+        expect(cancel).toHaveAttribute('title', 'Cancel uploading b.pdf')
+        expect(screen.getByRole('button', { name: 'Cancel uploading a.png' })).toBeInTheDocument()
+      })
 
-    it('calls onCancelUpload when the cancel control is pressed', () => {
-      const onCancelUpload = vi.fn()
-      renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={onCancelUpload} uploading />)
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel upload' }))
-      expect(onCancelUpload).toHaveBeenCalledTimes(1)
-    })
+      it('cancels only the chip\'s own upload', () => {
+        renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} uploadSlot={slot} />)
+        const a = start('a.png')
+        const b = start('b.pdf')
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel uploading a.png' }))
+        expect([a.signal.aborted, b.signal.aborted]).toEqual([true, false])
+      })
 
-    /* #13071: one press aborts every upload in flight, so with two or more the
-     * label says how many stop rather than claiming a single one. */
-    it('names the count on the cancel control only when more than one upload is live', () => {
-      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={vi.fn()} uploading uploadCount={1} />)
-      const single = screen.getByRole('button', { name: 'Cancel upload' })
-      expect(single).toHaveAttribute('title', 'Cancel upload')
+      it('shows the share sent on the chip', () => {
+        renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} uploadSlot={slot} />)
+        const a = start('a.png')
+        act(() => reportComposerUploadProgress(a, 512, 1024))
+        expect(within(screen.getByRole('group', { name: 'a.png' })).getByTestId('composer-upload-progress')).toHaveTextContent('50%')
+      })
 
-      rerender(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={vi.fn()} uploading uploadCount={2} />)
-      const counted = screen.getByRole('button', { name: 'Cancel 2 uploads' })
-      expect(counted).toHaveAttribute('title', 'Cancel 2 uploads')
-      expect(screen.queryByRole('button', { name: 'Cancel upload' })).not.toBeInTheDocument()
-
-      rerender(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={vi.fn()} uploading uploadCount={1} />)
-      expect(screen.getByRole('button', { name: 'Cancel upload' })).toBeInTheDocument()
+      it('renders no chip for another slot\'s upload', () => {
+        renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} uploadSlot="elsewhere" />)
+        start('a.png')
+        expect(screen.queryByTestId('composer-upload-chip')).not.toBeInTheDocument()
+      })
     })
 
     /* A send fired mid-upload left without the file, and the file then landed
@@ -1430,8 +1446,8 @@ describe('ChatInput', () => {
       try {
         const onChange = vi.fn()
         const { rerender } = renderInSlot('slot-A', { value: 'fix bug', onChange, disabled: true })
-        const btn = screen.getByRole('button', { name: 'Optimize prompt' })
-        expect(btn).toBeDisabled()
+        const btn = optimizeRow()
+        expect(isOptimizeDisabled(btn)).toBe(true)
         await act(async () => {
           fireEvent.click(btn)
           chord()
@@ -1470,7 +1486,7 @@ describe('ChatInput', () => {
         const onChange = vi.fn()
         const onOptimizeResult = vi.fn()
         const { rerender } = renderInSlot('slot-A', { value: 'fix bug', onChange, onOptimizeResult })
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         // Let the mutation start so variables.slotId is captured as 'slot-A'.
         await new Promise(r => setTimeout(r, 10))
         // Switch to slot B (new slotId + that session's draft as value).
@@ -1509,7 +1525,7 @@ describe('ChatInput', () => {
         const onChange = vi.fn()
         const onOptimizeResult = vi.fn()
         const { rerender } = renderInSlot('slot-A', { value: 'fix bug', onChange, onOptimizeResult })
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         await new Promise(r => setTimeout(r, 10))
         rerenderInSlot(rerender, 'slot-B', { value: 'review CR-123', onChange, onOptimizeResult })
         await new Promise(r => setTimeout(r, 10))
@@ -1539,7 +1555,7 @@ describe('ChatInput', () => {
         const onChange = vi.fn()
         const onOptimizeResult = vi.fn()
         renderInSlot('slot-A', { value: 'fix bug', onChange, onOptimizeResult })
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         await new Promise(r => setTimeout(r, 10))
         execSpy.mockClear()
         resolveFetch!(new Response(
@@ -1568,7 +1584,7 @@ describe('ChatInput', () => {
       try {
         const onChange = vi.fn()
         const { rerender } = renderInSlot('slot-A', { value: 'fix bug', onChange })
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         await new Promise(r => setTimeout(r, 10))
         // Overlay present on the originating session.
         expect(screen.getByText(/Optimizing prompt/)).toBeInTheDocument()
@@ -1597,14 +1613,15 @@ describe('ChatInput', () => {
       try {
         const onChange = vi.fn()
         const { rerender } = renderInSlot('slot-A', { value: 'fix bug', onChange })
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         await new Promise(r => setTimeout(r, 10))
         // Navigate to slot B — its own draft, its own value, request still pending.
         rerenderInSlot(rerender, 'slot-B', { value: 'review CR-123', onChange })
         await new Promise(r => setTimeout(r, 10))
-        // Button is present under a busy-aware label and is disabled.
-        const btn = screen.getByRole('button', { name: /busy optimizing another chat/i })
-        expect(btn).toBeDisabled()
+        // The row is present under a busy-aware label and is disabled.
+        const btn = optimizeRow()
+        expect(btn).toHaveTextContent(/busy optimizing another chat/i)
+        expect(isOptimizeDisabled(btn)).toBe(true)
         expect(btn).toHaveAttribute('title', 'Optimizing another chat — please wait')
       } finally {
         fetchSpy.mockRestore()
@@ -1625,7 +1642,7 @@ describe('ChatInput', () => {
         const { rerender } = renderWithProviders(
           <ChatInput {...defaultProps} value="fix bug" onChange={onChange} />,
         )
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         await new Promise(r => setTimeout(r, 10)) // mutation starts → optimizing = true
         // Two streamed chunks arrive as prop updates while optimizing. Each must
         // be skipped by the recording effect (not recorded as its own boundary).

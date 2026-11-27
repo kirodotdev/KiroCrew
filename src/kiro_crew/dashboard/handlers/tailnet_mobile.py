@@ -44,7 +44,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal, NamedTuple
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -52,7 +55,9 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     ConfigReadError,
     PendingEditBlocksSave,
+    config_local_path,
     config_path,
+    read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.dashboard import tailnet, tailnet_serve
@@ -126,6 +131,8 @@ def _derive_step(
     startup_host: str,
     published: bool | None,
     port_free: bool | None,
+    https_port: int = 443,
+    startup_https_port: int = 443,
 ) -> Step:
     """The one next action, derived HERE and nowhere else.
 
@@ -156,7 +163,8 @@ def _derive_step(
        answers 403. Config first.
     5. ``restart_gateway`` — configured and resolvable NOW, but the running
        server does not trust this exact name (it may have booted before tailscaled
-       or the node name may have changed). The fixed request boundary is rebuilt
+       or the node name may have changed), or its origin carries a different
+       ``https_port`` than the one configured now. The fixed request boundary is rebuilt
        only by the formal gateway restart path.
     6. ``occupied`` — serve holds this port/mount for something that is not this
        dashboard, or its state could not be determined. Publishing would REPLACE
@@ -202,7 +210,7 @@ def _derive_step(
         return "enable_https"
     if not trusted:
         return "trust_off"
-    if startup_host != probe.name:
+    if startup_host != probe.name or startup_https_port != https_port:
         return "restart_gateway"
     if published is True:
         return "ready"
@@ -313,7 +321,9 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
             # mint one last boot-bound QR before exiting.
             "boot_id": current_boot_id(),
             "step": live.step,
-            "origin": f"https://{probe.name}" if probe.name else "",
+            "origin": (
+                tailnet.tailnet_https_origin(probe.name, live.https_port) if probe.name else ""
+            ),
             # The OTHER devices on this tailnet. Carried because publishing and
             # the QR both succeed on a tailnet of one, and the scan then fails in
             # the phone's browser with nothing on this machine to blame.
@@ -339,7 +349,7 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
             # ``occupied`` before and could not resolve it: it runs the very
             # publish path that just refused.
             "serve_command": (
-                tailnet_serve.manual_publish_command(port)
+                tailnet_serve.manual_publish_command(port, https_port=live.https_port)
                 if port and (probe.refused_cli or live.step == "occupied")
                 else ""
             ),
@@ -361,6 +371,8 @@ class _LiveState(NamedTuple):
     #: The name the RUNNING server resolved at startup. Empty means the origin is
     #: not trusted by this process yet, however resolvable the name is right now.
     startup_host: str
+    #: The configured ``dashboard.tailscale.https_port``, which every serve read uses.
+    https_port: int
 
 
 async def _live_state(request: web.Request, port: int) -> _LiveState:
@@ -387,6 +399,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         logger.debug("tailnet mobile: config unreadable", exc_info=True)
         trusted = False
         keep_awake = True
+    https_port = await asyncio.to_thread(tailnet_serve.configured_https_port)
 
     try:
         # A pure read, like the pin probe below (no SEL row per refresh).
@@ -416,13 +429,15 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         # Both are subprocess round trips; neither may run on the event loop.
         probe = await asyncio.to_thread(tailnet.probe_daemon)
         if probe.name and port:
-            state = await asyncio.to_thread(tailnet_serve.serve_state, port)
+            state = await asyncio.to_thread(tailnet_serve.serve_state, port, https_port=https_port)
             published = state.published
             port_free = state.port_free
             serve_detail = state.detail
 
     startup_host = tailnet.running_tailnet_origin(request.app)[0]
     step = _derive_step(
+        https_port=https_port,
+        startup_https_port=tailnet.running_tailnet_https_port(request.app),
         policy_off=policy_off,
         pinned=pinned,
         probe=probe,
@@ -440,6 +455,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         keep_awake=keep_awake,
         pinned=pinned,
         startup_host=startup_host,
+        https_port=https_port,
     )
 
 
@@ -661,6 +677,81 @@ def _effective_mobile_setup(cfg: KiroCrewConfig, login: str) -> tuple[bool, list
     return persistent, conflicts
 
 
+#: Every field :func:`_effective_mobile_setup` can name: the only keys the clear
+#: route removes, so no request reaches any other ``config.local.json`` key.
+_OVERLAY_SETUP_FIELDS = frozenset(
+    {
+        "dashboard.tailscale.enabled",
+        "dashboard.tailscale.trust_identity",
+        "dashboard.tailscale.allowed_logins",
+        "dashboard.qr_session_persist_across_restart",
+    }
+)
+
+
+def _holder(doc: object, field: str) -> dict | None:
+    """The object in *doc* that sets the dotted *field*'s last key, or ``None``."""
+    *parents, leaf = field.split(".")
+    node = doc
+    for part in parents:
+        node = node.get(part) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) and leaf in node else None
+
+
+def _overlay_overrides(conflicts: list[str]) -> list[dict[str, object]]:
+    """The *conflicts* ``config.local.json`` itself sets (blocking I/O).
+
+    Each row carries the overlay's value and the ``config.json`` value that
+    applies once the overlay entry is gone, so the owner sees both before
+    confirming the removal. A conflict the overlay does not set, or that
+    ``config.json`` does not set either, is left out: removing the overlay key
+    cannot fix it.
+    """
+    local = read_merged_config_files(config_local_path())
+    base = read_merged_config_files(config_path())
+    rows: list[dict[str, object]] = []
+    for field in conflicts:
+        leaf = field.rsplit(".", 1)[-1]
+        holder, applies = _holder(local, field), _holder(base, field)
+        if holder is not None and applies is not None:
+            rows.append({"field": field, "local": holder[leaf], "applies": applies[leaf]})
+    return rows
+
+
+async def _write_locked(
+    request: web.Request,
+    operation: str,
+    path: Path,
+    mutate: Callable[[dict], dict | None],
+    *,
+    stamp_meta: bool = True,
+) -> web.Response | None:
+    """One locked read-modify-write of *path*: the error response, or ``None``."""
+    try:
+        async with _get_config_lock():
+            await asyncio.to_thread(
+                update_config_locked, path, mutate=mutate, stamp_meta=stamp_meta
+            )
+    except ConfigReadError:
+        await _audit_async(request, operation, "error", "config-read-failed")
+        return web.json_response(
+            {"error": "failed to read config file", "code": "config_read_failed"}, status=500
+        )
+    except PendingEditBlocksSave:
+        # A ValueError, so ahead of the arm below; the dashboard chain answers it 409.
+        await _audit_async(request, operation, "error", "file-pending-review")
+        raise
+    except ValueError as exc:
+        await _audit_async(request, operation, "error", "config-invalid")
+        return web.json_response({"error": str(exc), "code": "config_invalid"}, status=500)
+    except OSError:
+        await _audit_async(request, operation, "error", "config-write-failed")
+        return web.json_response(
+            {"error": "failed to write config file", "code": "config_write_failed"}, status=500
+        )
+    return None
+
+
 def _running_tailnet_trust_ready(request: web.Request, login: str) -> bool:
     """Whether this process can enforce a persistent phone session right now.
 
@@ -735,26 +826,9 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
         )
         return data if changed else None
 
-    try:
-        async with _get_config_lock():
-            await asyncio.to_thread(update_config_locked, config_path(), mutate=_mutate)
-    except ConfigReadError:
-        await _audit_async(request, "tailnet.mobile.configure", "error", "config-read-failed")
-        return web.json_response(
-            {"error": "failed to read config file", "code": "config_read_failed"}, status=500
-        )
-    except PendingEditBlocksSave:
-        # A ValueError, so ahead of the arm below; the dashboard chain answers it 409.
-        await _audit_async(request, "tailnet.mobile.configure", "error", "file-pending-review")
-        raise
-    except ValueError as exc:
-        await _audit_async(request, "tailnet.mobile.configure", "error", "config-invalid")
-        return web.json_response({"error": str(exc), "code": "config_invalid"}, status=500)
-    except OSError:
-        await _audit_async(request, "tailnet.mobile.configure", "error", "config-write-failed")
-        return web.json_response(
-            {"error": "failed to write config file", "code": "config_write_failed"}, status=500
-        )
+    refusal = await _write_locked(request, "tailnet.mobile.configure", config_path(), _mutate)
+    if refusal is not None:
+        return refusal
 
     effective = await asyncio.to_thread(KiroCrewConfig.load)
     persistent, conflicts = _effective_mobile_setup(effective, probe.login)
@@ -766,6 +840,7 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
             "denied",
             "config-local-override",
         )
+        overrides = await asyncio.to_thread(_overlay_overrides, conflicts)
         return web.json_response(
             {
                 "error": (
@@ -775,6 +850,7 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
                 ),
                 "code": "config_overlay_conflict",
                 "fields": conflicts,
+                "overrides": overrides,
             },
             status=409,
         )
@@ -797,6 +873,57 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
     # ``persistent`` remain server-side inputs to restart/audit decisions; a
     # successful 2xx response already carries the success bit.
     return web.json_response({"restart_required": bool(result.get("restart_required"))})
+
+
+async def api_tailnet_mobile_clear_overrides(request: web.Request) -> web.Response:
+    """POST /api/tailnet/mobile/clear-overrides — the card's Fix this action.
+
+    Runs after the owner confirmed the ``overrides`` a ``config_overlay_conflict``
+    answer listed. It deletes exactly the requested keys from
+    ``config.local.json`` and takes only fields in :data:`_OVERLAY_SETUP_FIELDS`,
+    so no other overlay key can change. The card retries setup next, and that
+    retry is the re-check.
+    """
+    refusal = _guard(request)
+    if refusal is not None:
+        await _audit_async(
+            request, "tailnet.mobile.clear_overrides", "denied", "restricted-session"
+        )
+        return refusal
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    fields = body.get("fields") if isinstance(body, dict) else None
+    if not (
+        isinstance(fields, list)
+        and fields
+        and all(isinstance(field, str) and field in _OVERLAY_SETUP_FIELDS for field in fields)
+    ):
+        return web.json_response(
+            {"error": "fields must name phone-access settings", "code": "invalid_fields"},
+            status=400,
+        )
+    requested: list[str] = fields
+    removed: list[str] = []
+
+    def _drop(data: dict) -> dict | None:
+        for field in requested:
+            holder = _holder(data, field)
+            if holder is not None:
+                del holder[field.rsplit(".", 1)[-1]]
+                removed.append(field)
+        return data if removed else None
+
+    refusal = await _write_locked(
+        request, "tailnet.mobile.clear_overrides", config_local_path(), _drop, stamp_meta=False
+    )
+    if refusal is not None:
+        return refusal
+    await _audit_async(
+        request, "tailnet.mobile.clear_overrides", "success", ",".join(removed) or "none"
+    )
+    return web.json_response({"removed": removed})
 
 
 async def api_tailnet_mobile_publish(request: web.Request) -> web.Response:
@@ -826,8 +953,9 @@ async def api_tailnet_mobile_publish(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    https_port = await asyncio.to_thread(tailnet_serve.configured_https_port)
     result = await asyncio.to_thread(
-        tailnet_serve.publish, port, audit_tool="tailnet_mobile_publish"
+        tailnet_serve.publish, port, https_port=https_port, audit_tool="tailnet_mobile_publish"
     )
     await _audit_async(
         request,
@@ -864,7 +992,8 @@ async def api_tailnet_mobile_unpublish(request: web.Request) -> web.Response:
         await _audit_async(request, "tailnet.mobile.unpublish", "denied", "restricted-session")
         return refusal
     port = _dashboard_port(request)
-    result = await asyncio.to_thread(tailnet_serve.unpublish, port)
+    https_port = await asyncio.to_thread(tailnet_serve.configured_https_port)
+    result = await asyncio.to_thread(tailnet_serve.unpublish, port, https_port=https_port)
     await _audit_async(
         request,
         "tailnet.mobile.unpublish",
@@ -970,7 +1099,8 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
             {"error": f"{sentence} {detail}".strip() if detail else sentence, "code": code},
             status=409,
         )
-    host = live.probe.name
+    # The QR URL's authority: the tailnet name, with the HTTPS port when it is not 443.
+    host = urlsplit(tailnet.tailnet_https_origin(live.probe.name, live.https_port)).netloc
 
     # The QR session lifetime is fixed at the endpoint default. A caller-supplied
     # ``ttl`` was accepted here once, but no caller ever sent one — both the card

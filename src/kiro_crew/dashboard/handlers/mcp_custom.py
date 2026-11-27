@@ -54,6 +54,10 @@ _MAX_SERVERS_PER_ADD = 20
 # The only keys a v1 custom spec may carry.  Tight allowlist: unknown keys
 # are rejected by name rather than silently dropped or passed through to
 # the process spawner.
+# ``env`` values are often credentials (API keys, tokens), so reads redact them
+# like header values. Unlike headers, env stays fully editable: names may be
+# added or removed, and only a value sent back as the exact placeholder keeps
+# its stored value (``_merge_stored_env``).
 _STDIO_KEYS = {"command", "args", "env"}
 # ``scopes`` and ``clientId`` are OAuth hints carried to the runtime verbatim.
 # Kiro Crew validates only their SHAPE and never interprets them: the runtime
@@ -175,6 +179,11 @@ def _validate_spec(spec: object, carried_keys: frozenset[str] = frozenset()) -> 
         not isinstance(k, str) or not isinstance(v, str) for k, v in env.items()
     ):
         return "'env' must be an object of string values"
+    # Same reason as headers: the marker from a read is not a value. An edit of
+    # an entry with stored env tolerates it (``carried_keys``) and resolves it
+    # per name against what is on disk.
+    if "env" not in carried_keys and MCP_REDACTED_HEADER_VALUE in env.values():
+        return "'env' values are redacted in copied specs — enter the real value"
     return None
 
 
@@ -208,8 +217,11 @@ def _update_refusal(submitted: object, existing: dict) -> tuple[str, str] | None
     approves does not fail on Apply.
     """
     carried = _update_carried(existing)
+    # Stored env values make the read's placeholder a legal value in this PUT.
+    stored_env = {"env"} if _stored_env(existing) else set()
     err = _validate_spec(
-        submitted, frozenset(carried) | {KIRO_SCOPES_KEY, KIRO_OAUTH_KEY, MARKER_KEY}
+        submitted,
+        frozenset(carried) | {KIRO_SCOPES_KEY, KIRO_OAUTH_KEY, MARKER_KEY} | stored_env,
     )
     if err:
         return err, "invalid_spec"
@@ -289,6 +301,42 @@ def _merge_stored_headers(stored: dict, submitted: object) -> tuple[dict[str, st
                 f"'{name}' mixes \"{marker}\" with other text. Put back"
                 f' "{marker}" exactly to keep its saved value, or type a new value.'
             )
+    return merged, ""
+
+
+def _stored_env(existing: dict) -> dict[str, str]:
+    """The stored entry's env map, or ``{}`` when it holds none a read redacted."""
+    env = existing.get("env")
+    return env if isinstance(env, dict) and env else {}
+
+
+def _merge_stored_env(stored: dict, submitted: dict) -> tuple[dict[str, str] | None, str]:
+    """Submitted env with each placeholder resolved to its stored value, or why not.
+
+    A value that is exactly the placeholder keeps the value stored under that
+    same name; a name with no stored value cannot keep one. A value that only
+    contains the placeholder is refused, because it is neither a kept value nor
+    a typed one. Any other value is the user's, and names not submitted are
+    removed, as on an edit without redaction. The reason names only env names,
+    which a read already shows.
+    """
+    marker = MCP_REDACTED_HEADER_VALUE
+    merged: dict[str, str] = {}
+    for name, value in submitted.items():
+        if value == marker:
+            if name not in stored:
+                return None, (
+                    f"'{name}' has no saved value to keep. Type its value instead of"
+                    f' "{marker}".'
+                )
+            merged[name] = stored[name]
+        elif marker in value:
+            return None, (
+                f"'{name}' mixes \"{marker}\" with other text. Put back"
+                f' "{marker}" exactly to keep its saved value, or type a new value.'
+            )
+        else:
+            merged[name] = value
     return merged, ""
 
 
@@ -390,6 +438,12 @@ def _build_update_spec(
             if replaced_headers is None:
                 return None, (header_refusal, "stored_headers_not_editable")
     spec = _clean_spec(submitted)
+    stored_env = _stored_env(existing)
+    if stored_env and spec.get("env"):
+        merged_env, env_refusal = _merge_stored_env(stored_env, spec["env"])
+        if merged_env is None:
+            return None, (env_refusal, "env_placeholder_refused")
+        spec["env"] = merged_env
     spec.update(carried)  # preserved verbatim, never dropped
     if replaced_headers is not None:
         spec["headers"] = replaced_headers
@@ -638,8 +692,9 @@ async def api_mcp_custom_get(request: web.Request) -> web.Response:
 
     The servers list endpoint intentionally omits ``env``; the edit modal
     must prefill from the full spec or a save would silently drop the
-    user's env vars. Header names remain visible, but their values are
-    preserve-only redaction markers. Reads the same scope PUT writes.
+    user's env vars. Env and header names remain visible, but their values
+    are redaction markers that a PUT resolves back to the stored values.
+    Reads the same scope PUT writes.
     """
     name = request.match_info.get("name", "")
     if not _is_valid_mcp_name(name):
@@ -654,8 +709,9 @@ async def api_mcp_custom_get(request: web.Request) -> web.Response:
     # Disabled row agree on a non-boolean ``disabled``.
     enabled = not mcp_entry_is_muted(entry)
     spec = {k: v for k, v in entry.items() if k != "disabled"}
-    if "headers" in spec:
-        spec["headers"] = redact_mcp_headers(spec["headers"])
+    for secret_map in ("headers", "env"):
+        if secret_map in spec:
+            spec[secret_map] = redact_mcp_headers(spec[secret_map])
     return web.json_response({"name": name, "spec": spec, "enabled": enabled})
 
 
@@ -680,6 +736,10 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
     name; any other non-empty value replaces it. Adding, removing or
     renaming a stored header, or changing ``url``, still means removing and
     re-adding the server.
+
+    ``env`` is redacted on read the same way but stays editable: an env value
+    that is exactly the placeholder keeps the value stored under that name,
+    any other value replaces it, and names may be added or removed.
 
     The authorship marker is the one exception: it records that Kiro Crew
     wrote an entry into a file it does NOT own, so it has no meaning in the

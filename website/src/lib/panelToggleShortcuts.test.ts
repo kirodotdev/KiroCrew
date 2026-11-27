@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   DEFAULT_PANEL_TOGGLE_BINDINGS,
+  isTerminalClearEvent,
   loadPanelToggleOverrides,
   matchPanelToggleEvent,
   PANEL_TOGGLE_IDS,
@@ -10,6 +11,8 @@ import {
   PANEL_TOGGLE_SHORTCUTS_KEY,
   resolvePanelToggleBinding,
   setPanelToggleBinding,
+  TERMINAL_FOCUS_PANEL_TOGGLE_IDS,
+  TERMINAL_PANEL_TOGGLE_IDS,
 } from './panelToggleShortcuts'
 
 afterEach(() => {
@@ -96,7 +99,19 @@ describe('defaults', () => {
   })
 
   it('covers exactly the known panel command ids', () => {
-    expect([...PANEL_TOGGLE_IDS].sort()).toEqual(['left-sidebar', 'session-panel', 'side-panel', 'side-terminal', 'terminal', 'terminal-close', 'terminal-new', 'terminal-next', 'terminal-prev'])
+    expect([...PANEL_TOGGLE_IDS].sort()).toEqual(['left-sidebar', 'session-panel', 'side-panel', 'side-terminal', 'terminal', 'terminal-clear', 'terminal-close', 'terminal-new', 'terminal-next', 'terminal-prev'])
+  })
+
+  /* Clear terminal is answered by the focused terminal's own handler, never at
+     the workbench, so it must not join the skip-shell set (whose capture
+     listener would claim it with no action behind it) and must sort last, where
+     a chord it shares cannot shadow another id in the first-match walk. */
+  it('ships Clear terminal unbound, terminal-scoped, last, and outside the skip-shell set', () => {
+    expect(DEFAULT_PANEL_TOGGLE_BINDINGS['terminal-clear']).toBeNull()
+    expect(TERMINAL_FOCUS_PANEL_TOGGLE_IDS.has('terminal-clear')).toBe(true)
+    expect(TERMINAL_PANEL_TOGGLE_IDS.has('terminal-clear')).toBe(true)
+    expect(PANEL_TOGGLES_SKIPPING_SHELL.has('terminal-clear')).toBe(false)
+    expect(PANEL_TOGGLE_IDS[PANEL_TOGGLE_IDS.length - 1]).toBe('terminal-clear')
   })
 
   /* Mirrors VS Code's `terminal.integrated.commandsToSkipShell`: only the commands
@@ -111,6 +126,36 @@ describe('defaults', () => {
     for (const id of PANEL_TOGGLE_IDS) {
       if (!id.endsWith('terminal') && !id.startsWith('terminal')) expect(PANEL_TOGGLES_SKIPPING_SHELL.has(id)).toBe(false)
     }
+  })
+})
+
+describe('isTerminalClearEvent', () => {
+  it('never matches while unbound', () => {
+    expect(isTerminalClearEvent(ke({ key: 'k', code: 'KeyK', metaKey: true }), {}, true)).toBe(false)
+  })
+
+  it('matches the bound chord with the platform primary modifier', () => {
+    const overrides = { 'terminal-clear': { key: 'k', mod: true } }
+    expect(isTerminalClearEvent(ke({ key: 'k', code: 'KeyK', metaKey: true }), overrides, true)).toBe(true)
+    expect(isTerminalClearEvent(ke({ key: 'k', code: 'KeyK', ctrlKey: true }), overrides, false)).toBe(true)
+    expect(isTerminalClearEvent(ke({ key: 'k', code: 'KeyK', ctrlKey: true }), overrides, true)).toBe(false)
+  })
+
+  /* Inside a terminal the other ids either yield to the shell or were taken by
+     the capture-phase listener, so the clear chord must win regardless of list
+     order — first-match would hand a shared Cmd+B to the session panel. */
+  it('matches even when an earlier id shares the chord', () => {
+    const overrides = { 'terminal-clear': { key: 'b', mod: true } }
+    const e = ke({ key: 'b', code: 'KeyB', metaKey: true })
+    expect(matchPanelToggleEvent(e, overrides, true)).toBe('session-panel')
+    expect(isTerminalClearEvent(e, overrides, true)).toBe(true)
+  })
+
+  it('reads the stored overrides live by default', () => {
+    const e = ke({ key: 'p', code: 'KeyP', metaKey: true, shiftKey: true })
+    expect(isTerminalClearEvent(e, undefined, true)).toBe(false)
+    localStorage.setItem(PANEL_TOGGLE_SHORTCUTS_KEY, JSON.stringify({ 'terminal-clear': { key: 'p', mod: true, shift: true } }))
+    expect(isTerminalClearEvent(e, undefined, true)).toBe(true)
   })
 })
 

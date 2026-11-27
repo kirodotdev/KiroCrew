@@ -160,7 +160,7 @@ async def test_slot_is_not_reachable_unhydrated_during_the_folder_unhide(tmp_pat
     log = state.conversation_log
     log.append("dashboard:race3", "user", "history-1")
     log.append("dashboard:race3", "assistant", "history-2")
-    log.update_metadata("dashboard:race3", {"folder_id": "fldr00000001"})
+    await asyncio.to_thread(log.update_metadata, "dashboard:race3", {"folder_id": "fldr00000001"})
 
     unhide_entered = asyncio.Event()
     may_finish = asyncio.Event()
@@ -431,7 +431,7 @@ async def test_a_folder_filed_during_the_read_is_not_erased_by_a_stale_existence
     # ``_unhide_folder`` reports False -- the verdict that drives the drop.
     gone_id = "fldrGONE0001"
     live_id = "fldrLIVE0001"
-    log.update_metadata(key, {"folder_id": gone_id})
+    await asyncio.to_thread(log.update_metadata, key, {"folder_id": gone_id})
     # ...and the folder the reconciliation files it into DOES exist.
     state._folders.append({"id": live_id, "name": "Filed By Reconciliation", "order": 0})
     assert not any(f["id"] == gone_id for f in state._folders), (
@@ -510,7 +510,7 @@ async def test_a_dangling_folder_id_unchanged_across_the_read_is_still_dropped(
     log.append(key, "user", "history-1")
 
     gone_id = "fldrGONE0002"
-    log.update_metadata(key, {"folder_id": gone_id})
+    await asyncio.to_thread(log.update_metadata, key, {"folder_id": gone_id})
     assert not any(
         f["id"] == gone_id for f in state._folders
     ), "fixture expected the folder to be absent so the existence verdict is False"
@@ -546,7 +546,7 @@ async def test_a_close_landing_during_the_read_is_not_cleared_by_the_stale_snaps
     log.append(key, "user", "history-1")
     log.append(key, "assistant", "history-2")
     # The SOURCE session is closed, so the resume takes the clear_closed path.
-    log.update_metadata(key, {"closed": True, "closed_at": time.time()})
+    await asyncio.to_thread(log.update_metadata, key, {"closed": True, "closed_at": time.time()})
     assert log.get_metadata(key).get("closed"), "fixture expected a closed source session"
 
     read_entered = threading.Event()
@@ -651,7 +651,7 @@ async def test_a_session_closed_before_the_resume_still_has_its_flag_cleared(tmp
     key = "dashboard:closenormal1"
     log.append(key, "user", "history-1")
     closed_at = 1_700_000_000.0
-    log.update_metadata(key, {"closed": True, "closed_at": closed_at})
+    await asyncio.to_thread(log.update_metadata, key, {"closed": True, "closed_at": closed_at})
     assert log.get_metadata(key).get("closed"), "fixture expected a closed session"
     persisted_before = json.loads(log._path(key).read_text(encoding="utf-8").splitlines()[0])
     assert persisted_before["closed"] is True
@@ -697,7 +697,7 @@ async def test_a_metadata_only_session_removed_during_the_read_is_not_republishe
     log = state.conversation_log
     key = "dashboard:mdonly1"
     # METADATA-ONLY: a metadata line and no messages at all.
-    log.update_metadata(key, {"title": "metadata only"})
+    await asyncio.to_thread(log.update_metadata, key, {"title": "metadata only"})
     pre_meta = log.get_metadata(key)
     assert pre_meta, "fixture expected a nonempty pre-read metadata line"
     assert pre_meta.get("created_at"), "fixture expected created_at for the identity arm"
@@ -778,7 +778,7 @@ async def test_a_legitimately_empty_session_that_still_exists_still_resumes(tmp_
     state = _make_state(tmp_path)
     log = state.conversation_log
     key = "dashboard:mdonly2"
-    log.update_metadata(key, {"title": "still here"})
+    await asyncio.to_thread(log.update_metadata, key, {"title": "still here"})
     assert log.get_metadata(key), "fixture expected the session to exist"
     assert list(log.read_messages_chained(key)) == [], "fixture expected an empty transcript"
 
@@ -801,7 +801,7 @@ async def test_a_failing_slots_broadcast_does_not_500_a_committed_resume(
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
     key = "dashboard:poisoned1"
-    state.conversation_log.update_metadata(key, {"title": "still here"})
+    await asyncio.to_thread(state.conversation_log.update_metadata, key, {"title": "still here"})
 
     def _fail():
         raise TypeError("Object of type object is not JSON serializable")
@@ -857,7 +857,8 @@ async def test_resume_does_not_apply_the_remote_binding_from_disk(tmp_path, monk
     log.append(key, "assistant", "history-2")
     # Plant the remote binding on the persisted metadata line, exactly as a
     # remote-invocation session persists it.
-    log.update_metadata(
+    await asyncio.to_thread(
+        log.update_metadata,
         key,
         {
             "executor": "remote",
@@ -1361,7 +1362,9 @@ async def test_resuming_a_closed_session_refreshes_the_older_sessions_listing(
     log = state.conversation_log
     key = "dashboard:listed1"
     log.append(key, "user", "history-1")
-    log.update_metadata(key, {"closed": True, "closed_at": 1_700_000_000.0})
+    await asyncio.to_thread(
+        log.update_metadata, key, {"closed": True, "closed_at": 1_700_000_000.0}
+    )
     push_listing_refresh = MagicMock()
     monkeypatch.setattr(state, "push_listing_refresh", push_listing_refresh)
 
@@ -1408,7 +1411,9 @@ async def test_a_listing_during_the_resume_tail_is_corrected_on_publish(tmp_path
     log = state.conversation_log
     key = "dashboard:tail1"
     log.append(key, "user", "history-1")
-    log.update_metadata(key, {"closed": True, "closed_at": 1_700_000_000.0})
+    await asyncio.to_thread(
+        log.update_metadata, key, {"closed": True, "closed_at": 1_700_000_000.0}
+    )
     pushes: list[bool] = []
     monkeypatch.setattr(
         state, "push_listing_refresh", lambda: pushes.append("tail1" in state._slots)

@@ -7,23 +7,6 @@
 import type { UiLocationArea } from '../types'
 
 export const LOCATIONS = {
-  // Settings > Overview, the Memory card's "View details" (OverviewPage's
-  // MemorySummaryCard): opens the memory browser at ?view=memory, the
-  // user-facing way to see and edit what is remembered (preferences, projects,
-  // history, lessons). Developer > Memory is only the memory graph.
-  'overview.memory-details': {
-    kind: 'button',
-    aliasKeys: ['pages.overviewPage.memory'],
-    terms: {
-      en: [
-        'see my memory', 'view my memory', 'edit my memory', 'what do you remember about me',
-        'what the bot remembers', 'what the assistant remembers', 'memory browser', 'manage memory',
-        'delete a memory', 'forget something', 'my preferences memory', 'saved lessons',
-      ],
-      'zh-CN': ['查看记忆', '编辑记忆', '管理记忆', '你记得我什么', '删除记忆', '记忆浏览', '让它忘掉', '我的偏好'],
-    },
-    placements: [{ surface: 'settings', parent: 'settings.tab.overview', entry: 'content' }],
-  },
   // Settings > Import / Export, "Back up & restore configuration"
   // (PortabilityTab): downloads a zip of settings, memory, skills and schedules.
   'backup.export': {
@@ -50,5 +33,38 @@ export const LOCATIONS = {
       'zh-CN': ['恢复备份', '从备份恢复', '导入备份', '导入设置', '导入配置', '还原设置'],
     },
     placements: [{ surface: 'settings', parent: 'settings.tab.imports', entry: 'content' }],
+  },
+  'memory.more-actions': {
+    kind: 'button',
+    label: { from: 'attr', attr: 'aria-label', key: 'memoryPage.more_actions' },
+    placements: [{ surface: 'settings', parent: 'settings.tab.memory', entry: 'header', requires: [{ kind: 'viewport', value: 'desktop' }] }],
+  },
+  // Settings > Memory, Test recall in the header's ⋯ menu: what a bot gets
+  // at session start and for a typed message.
+  'memory.test-recall': {
+    kind: 'menu-item',
+    label: { from: 'text', key: 'memoryPage.test_recall' },
+    terms: {
+      en: [
+        'memory inspector', 'what does the bot remember', 'preview injected memory',
+        'what memory does the bot get', 'context preview', 'what gets injected into the prompt',
+      ],
+      'zh-CN': ['测试召回', '记忆检查', '机器人记得什么', '预览注入的记忆', '会话开始时的记忆'],
+    },
+    placements: [{ surface: 'settings', parent: 'memory.more-actions', entry: 'menu' }],
+  },
+  // Settings > Memory, the Audit tab: every write the store made or refused,
+  // with the value before and after and why a refusal happened.
+  'memory.audit-tab': {
+    kind: 'tab',
+    label: { from: 'text', key: 'memoryPage.tab_audit' },
+    terms: {
+      en: [
+        'memory audit', 'memory audit trail', 'memory history', 'memory log', 'what changed in memory',
+        'why was a memory refused', 'refused memories', 'blocked memory', 'who changed this memory',
+      ],
+      'zh-CN': ['记忆审计', '审计记录', '记忆历史', '记忆日志', '记忆改了什么', '为什么拒绝保存记忆', '被拒绝的记忆'],
+    },
+    placements: [{ surface: 'settings', parent: 'settings.tab.memory', entry: 'tab' }],
   },
 } as const satisfies UiLocationArea

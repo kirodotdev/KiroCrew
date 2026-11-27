@@ -352,8 +352,9 @@ def test_an_authored_ask_or_deny_keeps_its_built_ins_at_the_prompt(
                     "rules": [{"capability": "shell", "effect": "ask"}],
                 }
             },
-            [],
+            ["fs_read"],
         ),
+        ({"permissions": {"policies": ["dev-shell"]}}, ["execute_bash", "fs_read"]),
         ({"permissions": {"rules": "not-a-list"}}, []),
         ({"permissions": {"rules": [], "extra": 1}}, []),
         ({"permissions": ["not", "an", "object"]}, []),
@@ -383,7 +384,8 @@ def test_an_authored_ask_or_deny_keeps_its_built_ins_at_the_prompt(
         ({"toolsSettings": "nonsense"}, []),
     ],
     ids=[
-        "refused-bundle-with-ask",
+        "bundle-with-shell-ask",
+        "bundle-only",
         "malformed-rules",
         "unknown-key",
         "not-an-object",
@@ -398,9 +400,11 @@ def test_an_authored_ask_or_deny_keeps_its_built_ins_at_the_prompt(
 def test_a_restriction_a_merge_drops_still_keeps_its_built_ins_at_the_prompt(
     extra: dict[str, Any], kept: list[str]
 ) -> None:
-    """A merge refuses a bundle-bearing, malformed or oversized ``permissions`` block
-    and a translation may not carry a ``toolsSettings`` entry; the author's
-    restriction must still keep the grant from answering the call."""
+    """A merge refuses a malformed or oversized ``permissions`` block, leaves out a
+    ``policies`` bundle, and a translation may not carry a ``toolsSettings`` entry;
+    the author's restriction must still keep the grant from answering the call,
+    and only the capability it names: a shell ``ask`` beside a bundle leaves the
+    read grant answered."""
     spec = _spec(allowedTools=["fs_read", "shell"], **extra)
     out = kas_agents.to_client_custom_agent("a", spec, "p")
     assert out.get(CREW_ANSWERED_BUILTINS_KEY, []) == kept
@@ -409,17 +413,10 @@ def test_a_restriction_a_merge_drops_still_keeps_its_built_ins_at_the_prompt(
 @pytest.mark.parametrize(
     ("permissions", "named"),
     [
-        (
-            {
-                "policies": ["read-only-shell"],
-                "rules": [{"capability": "fs_read", "effect": "allow"}],
-            },
-            True,
-        ),
         ({"rules": "not-a-list"}, True),
         ({"rules": [{"capability": "fs_read", "effect": "allow"}]}, False),
     ],
-    ids=["named-bundle", "malformed", "accepted"],
+    ids=["malformed", "accepted"],
 )
 def test_the_notice_names_a_permissions_block_the_projection_refuses(
     permissions: dict[str, Any], named: bool
@@ -430,8 +427,32 @@ def test_the_notice_names_a_permissions_block_the_projection_refuses(
     spec = _spec(permissions=permissions)
     lost = kas_agents.spec_keys_without_carrier(spec, translates_tools_settings=True)
     assert ("permissions" in lost) is named
-    assert ("policies bundle" in _spec_keys_notice("a", lost)) is named
+    assert ("not sent at all" in _spec_keys_notice("a", lost)) is named
     assert "permissions" not in kas_agents.spec_keys_without_carrier(spec)
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        {"policies": ["read-only-shell"], "rules": [{"capability": "fs_read", "effect": "allow"}]},
+        {"policies": ["read-only-shell"]},
+    ],
+    ids=["beside-an-allow", "bundle-only"],
+)
+def test_the_notice_names_a_policies_bundle_the_projection_leaves_out(
+    permissions: dict[str, Any],
+) -> None:
+    """A bundle is left out with the allows beside it, while its deny and ask rules
+    travel: the notice names the bundle, not the whole block."""
+    spec = _spec(permissions=permissions)
+    lost = kas_agents.spec_keys_without_carrier(spec, translates_tools_settings=True)
+    assert "permissions" not in lost and "permissions.policies" in lost
+    notice = _spec_keys_notice("a", lost)
+    assert (
+        "Allow rules beside a policies bundle aren't used, so those tools ask first. "
+        "To skip the ask, write the rules out without the bundle, or list the tools "
+        "in allowedTools."
+    ) in notice
 
 
 @pytest.mark.parametrize(("excluded", "named"), [(65, True), (64, False)], ids=["over", "at"])

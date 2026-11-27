@@ -221,6 +221,8 @@ export interface RowShell {
   recentTintCount: number
   /** `dashboard.show_unread_dot`: false hides the per-row unread dot. Absent reads as shown. */
   showUnreadDot?: boolean
+  /** `dashboard.expand_linked_items`: true starts each row's linked-items strip open. Absent reads as folded. */
+  expandLinkedItems?: boolean
   /** "Group by kind" splits the list (`./kindSections`): the unpinned rows are then
    *  no manual-order targets, like a ranked search, since the drawn order is the
    *  sections' and a place between two rows would not be the one the order saves.

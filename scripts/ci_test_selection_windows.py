@@ -12,7 +12,10 @@ No lane runs fewer tests because of it.
 2. the bundle's `windows_targeting` test files the scorer put in tiers A to D;
 3. the whole guard tier: it is there for what the map cannot see reach a test,
    and an OS effect is of that kind;
-4. tiers A to D of the OS-sensitive changed files scored as a diff of their own:
+4. the test files that read a changed prose doc or frontend file
+   (`scripts/ci_test_data_readers.py`): what they read is the same on Windows;
+5. the test files the map has no entry for: it cannot say what they run;
+6. tiers A to D of the OS-sensitive changed files scored as a diff of their own:
    a changed `.py` file the bundle's `os_sensitive` table names, or one whose
    added lines hit a pattern of `ci_test_os_tables` (W1, W2 or W3). The added
    lines are matched as they are, comments included, and with no added lines
@@ -28,8 +31,8 @@ The verdict is `full`, first match wins, when
   (now, for a diff with no head), or is missing or unreadable (`bundle_stale`);
 * anything here raises (`error`).
 
-`would_run_share` weighs each test file Windows collects by its node-id count
-in the map (1 for a file the map lacks), as the Linux share does.
+`would_run_share` weighs each test file Windows collects as the Linux share
+does (`ci_test_map.node_weights`).
 """
 
 from __future__ import annotations
@@ -61,10 +64,10 @@ def full(reason: str) -> dict[str, Any]:
     return {"verdict": "full", "reason": reason, "run": [], "would_run_share": 1.0}
 
 
-def path_bucket(root: Path) -> list[str]:
-    """The globs of the `windows` bucket in ci.yml's `changes` job path filter.
+def path_bucket(root: Path, bucket: str = "windows") -> list[str]:
+    """The globs of one bucket (`windows`) in ci.yml's `changes` job path filter.
 
-    Read line by line (the scorer is stdlib only): the `windows:` key, then its
+    Read line by line (the scorer is stdlib only): the bucket's key, then its
     quoted list items up to the next key. Anything else there raises, so a
     bucket this cannot read is never taken for an empty one.
     """
@@ -73,7 +76,7 @@ def path_bucket(root: Path) -> list[str]:
     for line in (root / CI_WORKFLOW).read_text(encoding="utf-8").splitlines():
         body = line.strip()
         if indent is None:
-            if body == "windows:":
+            if body == f"{bucket}:":
                 indent = len(line) - len(line.lstrip())
             continue
         if not body or body.startswith("#"):
@@ -82,10 +85,10 @@ def path_bucket(root: Path) -> list[str]:
             break
         item = re.fullmatch(r"-\s+'([^']+)'", body)
         if item is None:
-            raise ValueError(f"{CI_WORKFLOW}: cannot read the windows filter line {body!r}")
+            raise ValueError(f"{CI_WORKFLOW}: cannot read the {bucket} filter line {body!r}")
         globs.append(item.group(1))
     if not globs:
-        raise ValueError(f"{CI_WORKFLOW}: no windows path filter")
+        raise ValueError(f"{CI_WORKFLOW}: no {bucket} path filter")
     return globs
 
 
@@ -187,12 +190,16 @@ def block(
     ignored: set[str],
     at: datetime,
     score: Callable[[Changes], Mapping[str, Any]],
+    readers: Iterable[str] = (),
+    unknown: Iterable[str] = (),
 ) -> dict[str, Any]:
     """The `windows` block for one diff the scorer gave the verdict body `linux`.
 
     `guard` is the guard tier the scorer used. `score` tiers a diff as the scorer
     did this one; `added` is `added_lines` of the diff, None when there are none
-    to read; `at` is the head's commit time.
+    to read; `at` is the head's commit time; `readers` is the test files that
+    read a changed doc or frontend file (`ci_test_map.data_rows`); `unknown` is
+    the test files the map has no entry for.
     """
     if linux["verdict"] != "select":
         return full(f"linux_full: {linux['reason']}")
@@ -214,6 +221,9 @@ def block(
     run = {paths[-1] for _status, paths in changes if paths and ctm.is_test_file(paths[-1])}
     run |= set(bundle["windows_targeting"]) & run_tiers(linux)
     run |= set(guard)
+    run |= set(readers)
+    # The map cannot say what a test file it has no entry for runs, on any system.
+    run |= set(unknown)
     sensitive = os_sensitive_changes(changes, bundle["os_sensitive"], added)
     if sensitive:
         scored = score(sensitive)
@@ -222,7 +232,9 @@ def block(
         run |= run_tiers(scored)
     run -= ignored
     counts: Mapping[str, int] = bundle.get("tests", {})
+    listed = bundle.get(ctm.UNRECORDED)
+    weigh = ctm.node_weights(counts, listed if isinstance(listed, list) else ())
     collected = (set(universe) | run) - ignored
-    total = sum(counts.get(test, 1) for test in collected)
-    share = sum(counts.get(test, 1) for test in run) / total if total else 1.0
+    total = sum(weigh(test) for test in collected)
+    share = sum(weigh(test) for test in run) / total if total else 1.0
     return {"verdict": "select", "reason": None, "run": sorted(run), "would_run_share": share}

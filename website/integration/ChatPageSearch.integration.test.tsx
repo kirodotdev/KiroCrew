@@ -127,18 +127,20 @@ function renderChatPage(messages: ChatMessage[]) {
 beforeEach(() => localStorage.clear())
 
 describe('ChatPage in-session search integration', () => {
-  it('Cmd+F opens search state (SearchBar renders in chat area)', async () => {
+  it('Cmd+F opens the history search of the chat', async () => {
     renderChatPage(testMessages)
-    expect(screen.queryByPlaceholderText('Find in chat…')).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Search')).not.toBeInTheDocument()
     await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true })) })
-    expect(screen.getByPlaceholderText('Find in chat…')).toBeInTheDocument()
+    // Wait for ChatSidePanels' lazy ChatHistorySearch chunk.
+    expect(await screen.findByPlaceholderText('Search', {}, { timeout: 5000 })).toBeInTheDocument()
   })
 
-  it('Escape closes SearchBar', async () => {
+  it('Escape closes the history search', async () => {
     renderChatPage(testMessages)
     await act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true })) })
-    expect(screen.getByPlaceholderText('Find in chat…')).toBeInTheDocument()
+    // Wait for ChatSidePanels' lazy ChatHistorySearch chunk.
+    expect(await screen.findByPlaceholderText('Search', {}, { timeout: 5000 })).toBeInTheDocument()
     await act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
-    expect(screen.queryByPlaceholderText('Find in chat…')).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Search')).not.toBeInTheDocument()
   })
 })

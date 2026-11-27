@@ -19,7 +19,6 @@ in ``argv_floor_self`` and the host verdicts in ``argv_floor_hosts``, both below
 from __future__ import annotations
 
 import contextvars
-import fnmatch
 import functools
 import re
 import shlex
@@ -27,7 +26,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Iterator
 
 # The reader names a test instruments on the facade are reached as attributes of
 from ..trust_patterns import ENV_ASSIGNMENT_RE
@@ -37,11 +36,11 @@ from ..trust_patterns import ENV_ASSIGNMENT_RE
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import argv_rules as _argv_rules
 from . import shell_normalizer as _shell_normalizer
-from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
+from .argv_floor_hosts import _GLOB_CHARS, _glob_matches, _host_is_self
 from .argv_floor_self import (
     _SELF_FLOOR_QUOTE_JUNK_RE,
     _heredoc_data_view,
-    _self_token_frames,
+    _self_frames,
     _static_substitution_output,
 )
 from .argv_floor_ssh_gate import (  # noqa: F401  (served under these names from here too)
@@ -113,16 +112,16 @@ from .shell_normalizer import (
 # same class the verdict cache refuses to latch.  The one definite failure,
 # "no such name", is not an allow on its own either: it counts as not this
 # host only for a HostName rewrite without a proxy, one ProxyJump without a
-# ProxyCommand, or exactly ``ssh [-q] -W %h:%p host`` (either option order).
+# ProxyCommand, ``ssh [-q] -W %h:%p host``, or a plain program dialing %h.
 # The literal hop must pass the live IP-host guard for every DNS address;
 # a matching Host or Match block that sets a destination key (HostName,
 # ProxyJump, ProxyCommand, Canonical*) refuses it. Proxy forms require a
 # literal final HostName and check every locally resolved address, or its IP
 # literal, without checking its Host block. A literal final name with no
-# local DNS answer is left for the proxy to resolve. Other proxy commands,
-# flags, multi-hop routes and unresolved hop destinations stay refused.
+# local DNS answer is left for the proxy to resolve. Shell syntax, ssh-family
+# proxies, multi-hop routes and unresolved hop destinations stay refused.
 # The proof runs inside the agent's sandbox on sandbox-read config bytes;
-# unreadable Includes, Includes inside blocks, unsupported Match criteria,
+# unreadable Includes, a block's Include opening a block, bad Match criteria,
 # tier off and a missing backend keep refusing. A route-cleared name has
 # the same standing as a DNS-cleared name: outer -F/-S/rsync -e routing
 # remains the documented network-fence residual. Failed revalidation drops
@@ -536,21 +535,68 @@ def _ssh_verb_basename(token: str) -> str:
     return base[: -len(".exe")] if base.endswith(".exe") else base
 
 
-def _ssh_family_verb(token: str) -> "str | None":
-    """The ssh-family verb *token* invokes, or None.
+def _ssh_family_verbs(token: str) -> "tuple[str, ...]":
+    """Every ssh-family verb *token* can invoke, in sorted order; empty if none.
 
     Path-qualified (``/usr/bin/ssh``) and Windows (``ssh.exe``) spellings
     resolve to the bare verb.  A glob basename that CAN expand to one
-    (``s?h``, see ``_GLOB_CHARS``) resolves to the verb it can name.
+    (``s?h``, see ``_GLOB_CHARS``) resolves to every verb it can name:
+    ``s??`` names ``scp`` and ``ssh``, and the walk judges the line as each.
+    The order is fixed, so no verdict follows the per-process hash seed.
     """
     base = _ssh_verb_basename(token)
     if base in _SSH_FAMILY_VERBS:
-        return base
-    if _GLOB_CHARS.intersection(base):
-        for verb in _SSH_FAMILY_VERBS:
-            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
-                return verb
-    return None
+        return (base,)
+    if not _GLOB_CHARS.intersection(base):
+        return ()
+    return tuple(
+        verb
+        for verb in sorted(_SSH_FAMILY_VERBS)
+        if _glob_matches(verb, base) or _glob_matches(verb + ".exe", base)
+    )
+
+
+def _ssh_family_verb(token: str) -> "str | None":
+    """The first verb ``_ssh_family_verbs`` gives for *token*, or None."""
+    verbs = _ssh_family_verbs(token)
+    return verbs[0] if verbs else None
+
+
+def _frame_verb_choices(
+    tokens: "list[str]",
+    executed: "set[int]",
+    run_globs: "set[int]",
+    bound: "dict[str, tuple[str, ...]]",
+    case_patterns: "set[int]",
+) -> "Iterator[tuple[int, str, str | None, bool]]":
+    """``(index, token, verb, glob_verb)`` per token, once per verb it can be (``s??``
+    comes as ``scp`` and as ``ssh``, toward deny); ``None`` when it names none.
+    Lazy, so a copy the walk binds in *bound* applies to later tokens. A glob bash
+    does not run that ends its command (``git add *;``) is an operand. ``glob_verb``
+    marks a bare glob bash RUNS (``s?h``, ``env s?h``): its operands keep host glob
+    matching, while the same glob as an operand, or a lone ``*``, is a file name.
+    That test reads *run_globs*, *executed* plus the glued-split run positions.
+    A ``case`` arm's pattern word (*case_patterns*) is never a verb.
+    """
+    for i, token in enumerate(tokens):
+        if i in case_patterns:
+            yield i, token, None, False
+            continue
+        verbs = _ssh_family_verbs(token)
+        globbed = bool(verbs) and _ssh_verb_basename(token) not in verbs
+        if globbed and i not in executed and token.endswith((";", "|")):
+            verbs = ()
+        glob_verb = (
+            bool(verbs)
+            and globbed
+            and not any(sep in token for sep in "/\\")
+            and (i not in run_globs or not token.strip("*"))
+        )
+        if not verbs and bound:
+            stripped = token.strip("\"'")
+            verbs = bound.get(stripped, ()) or bound.get(_program_basename(stripped), ())
+        for verb in verbs or (None,):
+            yield i, token, verb, glob_verb
 
 
 # ssh_config keywords that SET the destination.  ``-o hostname=…`` rewrites
@@ -1075,6 +1121,119 @@ class _FrameEnvironment:
 _MAX_SSH_READING_DEPTH = 32
 _ssh_reading_depth = contextvars.ContextVar("_ssh_reading_depth", default=0)
 
+#: Words that open or close a compound command; one inside an arm body makes the
+#: ``case`` statement not plain.
+_CASE_BODY_KEYWORDS = frozenset(
+    {"case", "esac", "if", "then", "elif", "else", "fi", "for", "while", "until", "select"}
+    | {"do", "done", "function", "{", "}", "!", "[[", "]]", "in"}
+)
+
+
+def _plain_case_word(word: str) -> bool:
+    """True if *word* is only letters, digits and ``@ / . - _ * ? |``, as written."""
+    return bool(word) and all((c.isascii() and c.isalnum()) or c in "@/.-_*?|" for c in word)
+
+
+def _plain_case_patterns(written: "list[str]") -> "list[str] | None":
+    """The ``)``-ending pattern words of each ``case`` in *written*, or ``None``.
+
+    *written* is the frame's words as the user wrote them, quotes, backslashes
+    and letter case kept. Every word that reads as ``case`` must be the keyword
+    written plainly at the start of a command, followed by a plain word or
+    ``"$NAME"``, then ``in``, then arms of a pattern, simple words and ``;;``,
+    then ``esac`` or ``esac;`` alone. Anything else is ``None``.
+    """
+    found: list[str] = []
+    i, n = 0, len(written)
+    while i < n:
+        word = written[i]
+        if _shell_normalizer._dequote_token(word).lower() != "case":
+            i += 1
+            continue
+        prev = written[i - 1] if i else ";"
+        opens = prev in ("&&", "||", "then", "do", "else", "{") or prev.endswith(";")
+        subject = written[i + 1] if i + 1 < n else ""
+        # ``"$NAME"``: a double-quoted simple variable.
+        var = subject[2:-1] if subject.startswith('"$') and subject.endswith('"') else ""
+        named = var[:1] not in ("", *"0123456789") and all(
+            (c.isascii() and c.isalnum()) or c == "_" for c in var
+        )
+        if not (
+            word == "case"
+            and opens
+            and i + 2 < n
+            and written[i + 2] == "in"
+            and (_plain_case_word(subject) or named)
+        ):
+            return None
+        i += 3
+        while True:
+            # A newline arrives as a ``;`` word; bash allows one between arms.
+            while i < n and written[i] == ";":
+                i += 1
+            if i >= n:
+                return None
+            if written[i] in ("esac", "esac;"):
+                i += 1
+                break
+            # The pattern list: ``a | b)`` or ``a|b)``, one ``)`` at its end only.
+            start = i
+            while i < n and not written[i].endswith(")"):
+                i += 1
+            if i >= n:
+                return None
+            pattern = "".join(written[start : i + 1])[:-1]
+            if pattern.startswith("("):
+                pattern = pattern[1:]
+            if not _plain_case_word(pattern) or written[start] in ("esac", "esac;"):
+                return None
+            found.append(written[i].lower())
+            i += 1
+            # The arm body: simple words up to the ``;;`` that ends the arm, or an
+            # ``esac`` right after the last arm's body.
+            while True:
+                if i >= n:
+                    return None
+                word = written[i]
+                if word in ("esac", "esac;"):
+                    break
+                i += 1
+                if word == ";;":
+                    break
+                if word == ";":
+                    continue  # a newline inside the arm body
+                closes = word.endswith(";;")
+                word = word[:-2] if closes else word
+                if word in _CASE_BODY_KEYWORDS or any(c in word for c in "()`$<>|&;\\'\""):
+                    return None
+                if closes:
+                    break
+    return found
+
+
+def _plain_case_pattern_indices(tokens: "list[str]", written: "str | None") -> "set[int]":
+    """The closing pattern words (``*)``) of each ``case`` in *tokens*, or nothing.
+
+    The set is returned only when *written*, the frame's source as the user wrote
+    it, is a plainly written case (:func:`_plain_case_patterns`) whose pattern
+    words are exactly the ``)``-ending ones that
+    :func:`_argv_rules._case_arm_pattern_indices` finds in *tokens*. Without the
+    written source, or on any other shape, it returns an empty set, so every word
+    keeps its verb reading.
+    """
+    reader = {
+        i for i in _argv_rules._case_arm_pattern_indices(tokens)[0] if tokens[i].endswith(")")
+    }
+    if not reader or written is None:
+        return set()
+    # A newline ends a command, as in the frame's own tokens.
+    spaced = "".join(
+        " ; " if step.active and step.char == "\n" else step.text
+        for step in _shell_normalizer._iter_shell_chars(written)
+    )
+    patterns = _plain_case_patterns(_shell_normalizer._split_shell_words(spaced))
+    return reader if patterns == [tokens[i] for i in sorted(reader)] else set()
+
 
 def _bounded_ssh_reading(read: "Callable[..., bool]") -> "Callable[..., bool]":
     """*read*, refused (True) once ``_MAX_SSH_READING_DEPTH`` readings are open."""
@@ -1243,8 +1402,9 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     # an ssh-family binary, bound to the verb they now carry.  Shared across
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
-    bound_program_verbs: "dict[str, str]" = {}
-    frames = _self_token_frames(text_lower, literal)
+    bound_program_verbs: "dict[str, tuple[str, ...]]" = {}
+    framed = _self_frames(text_lower, literal)
+    frames = [tokens for _source, tokens in framed]
     # A wrapper's option words are read in the case they were written in
     # (``sudo -H`` takes no value, ``sudo -h`` does), so the caller's own line
     # goes through the same rewrites into frames that keep its case.  A line
@@ -1257,15 +1417,36 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
         cased_text = _mask_quoted_separators(
             _ssh_floor_unmasked_text(cased_text), blank_bodies=True
         )
-        cased_all = _self_token_frames(cased_text, literal)
+        cased_framed = _self_frames(cased_text, literal)
+        cased_all = [tokens for _source, tokens in cased_framed]
         if len(cased_all) == len(frames):
             cased_frames = [
                 cased if [t.lower() for t in cased] == tokens else None
                 for cased, tokens in zip(cased_all, frames)
             ]
-    for tokens, cased_tokens in zip(frames, cased_frames):
+    # Each frame's source as written, for the case reading below: the lowered
+    # source when the line had no upper case, the cased one where its frame lines
+    # up, else none (a line reached by recursion has no submitted text).
+    written_sources: "list[str | None]" = [source if same_case else None for source, _ in framed]
+    if cased_text is not None and len(cased_all) == len(frames):
+        written_sources = [
+            source if cased is not None else None
+            for (source, _), cased in zip(cased_framed, cased_frames)
+        ]
+    for tokens, cased_tokens, written_source in zip(frames, cased_frames, written_sources):
         programs = _argv_programs(tokens)
         executed = _argv_rules._executed_program_indices(tokens, cased_tokens)
+        # A ``case`` arm's closing pattern word (``*)``, ``ssh|scp)``) is matched
+        # against the case word, never run, so it is not an ssh verb; the arm body
+        # after the ``)`` is still walked like any command.  The skip applies only
+        # when every case in the frame is plainly written, judged on the words as
+        # the user wrote them; any other shape reads every word as a possible verb.
+        case_patterns = _plain_case_pattern_indices(tokens, written_source)
+        # Bash runs ``s?h`` in ``cd tmp;s?h``. The glued-split reading only adds
+        # run positions, and only the glob verb test reads them.
+        run_globs = executed | _argv_rules._executed_program_indices(
+            tokens, cased_tokens, glue_split=True
+        )
         # Only a submitted line that is one simple ``git add`` gets this reading.
         file_operands = (
             _argv_rules._file_operand_indices(tokens, cased_tokens)
@@ -1282,50 +1463,14 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
         xargs_prefix_index: "int | None" = None  # a bare ``xargs`` in this simple command
         # Once per FRAME, not once per verb token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
-        for i, token in enumerate(tokens):
-            verb = _ssh_family_verb(token)
-            # A glob that bash does not run and that ends its command (``git add
-            # *; curl localhost:3000``) is that command's last operand, not an
-            # ssh verb whose operand scan would run on past the ``;``.
-            if (
-                verb is not None
-                and _ssh_verb_basename(token) != verb
-                and i not in executed
-                and token.endswith((";", "|"))
-            ):
-                verb = None
-            # A bare glob (``s?h``) that bash RUNS -- program
-            # position, or the program a wrapper runs (``env s?h``) -- is an ssh
-            # verb whose glob operands (``local*``) keep host glob matching.  The
-            # same glob as another program's operand (``tar … s* *.*``,
-            # ``find s* l*``) is a filename: it already spends the one filesystem
-            # expansion this floor models, so a glob after it is not read as this
-            # host.  Two wildcard words in a row are every five-field cron
-            # schedule (``0 * * * *``), and a working directory that expands both
-            # into a self connection also makes a lone ``*`` that whole command
-            # line, which no static floor reads.  A verb glob with a directory part
-            # (``/usr/bin/s?h``) expands outside it, so its operands keep glob
-            # host matching.  A word of only ``*`` keeps the filename reading
-            # wherever it sits: it is the field of a cron schedule
-            # (``* * * * * root …``) far more often than a program.
-            glob_verb = (
-                verb is not None
-                and _ssh_verb_basename(token) != verb
-                and not any(sep in token for sep in "/\\")
-                and (i not in executed or not token.strip("*"))
-            )
-            # A wildcard that is a plain ``git add`` operand (``_file_operand_indices``)
-            # is a file name: the words after it get no DNS lookup, only the own-name
-            # and literal loopback checks. Any slot not proven a file operand keeps
-            # the DNS check (``sshpass s?h <alias>``, ``find -exec s?h …``).
+        for i, token, verb, glob_verb in _frame_verb_choices(
+            tokens, executed, run_globs, bound_program_verbs, case_patterns
+        ):
+            # A plain ``git add`` operand glob (``_file_operand_indices``) is a file name:
+            # the words after it skip the DNS lookup, never the own-name/loopback checks.
             filename_glob = (
                 verb is not None and _ssh_verb_basename(token) != verb and i in file_operands
             )
-            if verb is None and bound_program_verbs:
-                stripped_prog = token.strip("\"'")
-                verb = bound_program_verbs.get(stripped_prog) or bound_program_verbs.get(
-                    _program_basename(stripped_prog)
-                )
             if verb is None:
                 stripped_tok = token.strip("\"'")
                 if rsync_env.observe(token, stripped_tok, i in executed):
@@ -1360,11 +1505,11 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
                         operands.append(peeked)
                     if len(operands) >= 2:
                         for source in operands[:-1]:
-                            bound_verb = _ssh_family_verb(source)
-                            if bound_verb is not None:
+                            bound_verbs = _ssh_family_verbs(source)
+                            if bound_verbs:
                                 dest = operands[-1]
-                                bound_program_verbs[dest] = bound_verb
-                                bound_program_verbs[_program_basename(dest)] = bound_verb
+                                bound_program_verbs[dest] = bound_verbs
+                                bound_program_verbs[_program_basename(dest)] = bound_verbs
                                 break
                 cmd_start = _ends_argv(token) or (
                     cmd_start and _ENV_ASSIGN_PREFIX_RE.match(stripped_tok) is not None
@@ -1449,6 +1594,14 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
                     if _proxyjump_value_targets_self(_unmask_separators(stripped)):
                         return True
                 elif ">" in stripped or "<" in stripped:
+                    # A quoted ``>``/``<`` can sit inside an option's value
+                    # (``-o proxycommand='ssh h >x'``): check that value as the
+                    # option and operand branches below do.
+                    option_word = not opts_terminated and stripped.startswith("-")
+                    if _routing_option_value_targets_self(
+                        _unmask_separators(stripped), value_slot=option_shadow or option_word
+                    ):
+                        return True
                     # A redirection construct.  The part before the operator is
                     # an ordinary word when non-numeric
                     # (``localhost>/dev/null``); a bare or fd-prefixed operator

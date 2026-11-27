@@ -9,6 +9,7 @@ import { isMateManaged } from '../../utils/mateFolders'
 import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select'
 import { Glass } from '../../components/Glass'
 import { COMPOSER_RADIUS } from '../../components/composerRadius'
+import TruncatedText from '../../components/TruncatedText'
 
 export interface FolderSuggestionCardProps {
   /** The folder the backend suggested — preselected in the dropdown. */
@@ -139,14 +140,13 @@ export default function FolderSuggestionCard({
       <FolderInput size={14} className="shrink-0" aria-hidden="true" style={{ color: 'var(--accent)' }} />
 
       {applied ? (
-        <span
-          className="text-[12px] leading-tight truncate"
-          style={{ color: 'var(--text)', flex: '1 1 auto', minWidth: 0 }}
-          title={suggestionLabel}
+        <TruncatedText
+          full={suggestionLabel}
+          className="text-[12px] leading-tight flex-auto min-w-0 text-text"
           data-testid="folder-suggestion-applied"
         >
           {i18nT('components.folderSuggestionCard.filed_in_folder', { folder: suggestionLabel })}
-        </span>
+        </TruncatedText>
       ) : (<>
       {/* A real <label htmlFor>, not aria-label: the visible sentence IS the
           select's accessible name, and clicking it focuses the control. */}

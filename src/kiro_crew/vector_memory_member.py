@@ -49,6 +49,7 @@ from kiro_crew.vector_memory_constants import (
     _MAX_SEMANTIC_PER_CONSOLIDATION,
 )
 from kiro_crew.vector_memory_runtime import bulk_ingest as _bulk_ingest
+from kiro_crew.vector_memory_runtime import embedding_repair as _embedding_repair
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -527,6 +528,9 @@ def apply_consolidation(
 
     Embeddings remain NULL until the writer's maintenance sweep. No provider,
     transcript or filesystem operation takes place inside this transaction.
+    After the commit the rows it wrote are queued for that sweep
+    (``embedding_repair.queue_fresh_vectors``), so they get their vector ahead
+    of any backlog instead of waiting their turn behind it.
 
     *kind_routing* is the ``route_consolidation_by_kind`` answer for this
     *result*; its bounded log is written inside the same transaction, so a
@@ -560,6 +564,7 @@ def apply_consolidation(
     fields_dropped = metadata_rejected = 0
     dedup = lesson_dedup.DedupLog(lesson_dedup_mode)
     new_lessons: list[str] = []
+    fresh: dict[str, list[str]] = {"fact": [], "episode": [], "directive": []}
     with self._db_lock:
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -653,6 +658,7 @@ def apply_consolidation(
                 )
                 if not rejection:
                     receipt["semantic"] += 1
+                    fresh["fact"].append(key)
                     if facets:
                         self.db.execute(
                             memory_schema.FACET_STAMP_SQL,
@@ -712,6 +718,7 @@ def apply_consolidation(
                         memory_schema.facet_stamp_params(item_id, facets),
                     )
                 receipt["episodic"] += 1
+                fresh["episode"].append(item_id)
             lessons = result.get("lessons")
             for item in (lessons if isinstance(lessons, list) else [])[
                 :_MAX_LESSONS_PER_CONSOLIDATION
@@ -783,6 +790,7 @@ def apply_consolidation(
                     _consolidation=True,
                 ):
                     receipt["lessons"] += 1
+                    fresh["directive"].append(key)
                     # A textual copy shadow already counted is not queued again,
                     # so shadow counts what enforce would fold, once.
                     if existed is None and leader is None and dedup.mode != lesson_dedup.MODE_OFF:
@@ -824,6 +832,8 @@ def apply_consolidation(
             self.db.rollback()
             raise
     self._invalidate_episodic_scoring()
+    for kind, identities in fresh.items():
+        _embedding_repair.queue_fresh_vectors(self, kind, identities)
     return receipt
 
 

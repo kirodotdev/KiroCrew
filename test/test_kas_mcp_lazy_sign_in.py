@@ -455,7 +455,7 @@ async def test_a_child_of_another_session_blocks_delivery(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_link_during_an_explicit_sign_in_of_that_server_goes_to_its_slot(monkeypatch):
     """The engine tags a link opened after the handshake ``notification`` even then."""
-    runtime = _runtime(("s1", ["remote"]), ("s2", ["remote"]))
+    runtime = _runtime(("s1", ["other"]), ("s2", ["remote"]))
     replies = _answers(runtime, monkeypatch)
     runtime._mcp_sign_in = ("s2", "remote")
 
@@ -464,6 +464,23 @@ async def test_a_link_during_an_explicit_sign_in_of_that_server_goes_to_its_slot
     assert replies == [("result", 5, {"success": True})]
     assert _frames(runtime, "s1") == []
     assert len(_frames(runtime, "s2")) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("s2_servers", [["remote"], ["other"]], ids=["both-hold-it", "s2-lacks-it"])
+async def test_a_link_during_a_sign_in_the_holder_is_not_running_is_refused(
+    monkeypatch, s2_servers
+):
+    """The link may be either session's, so neither gets it, nor its completion."""
+    runtime = _runtime(("s1", ["remote"]), ("s2", s2_servers))
+    replies = _answers(runtime, monkeypatch)
+    runtime._mcp_sign_in = ("s2", "remote")
+
+    await runtime._answer_open_external_url(5, _lazy())
+    await _complete(runtime, serverName="remote", success=True, oauthFlowId="flow-1")
+
+    assert [kind for kind, _id, _msg in replies] == ["error"]
+    assert _frames(runtime, "s1") == [] and _frames(runtime, "s2") == []
 
 
 # ── a completion reaches only the queue that was shown the link ──────────────

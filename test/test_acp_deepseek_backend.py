@@ -15,6 +15,7 @@ import pathlib
 import subprocess
 import sys
 import threading
+import types
 from unittest.mock import AsyncMock
 
 import pytest
@@ -33,6 +34,7 @@ from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -96,9 +98,11 @@ def test_every_capability_is_an_explicit_decision(membership: frozenset, expecte
     assert (ACP_BACKEND_DEEPSEEK in membership) is expected
 
 
-def test_the_resume_set_is_the_only_member_and_says_why() -> None:
-    """Sole membership is the claim: no other harness Crew carries lacks the verb."""
-    assert ACP_BACKENDS_RESUME_WITHOUT_LOAD == frozenset({ACP_BACKEND_DEEPSEEK})
+def test_the_resume_set_names_each_member() -> None:
+    """Membership is the claim: this harness lacks ``session/load``, and codex serves
+    it but, of its two restore requests, holds only a ``session/resume`` reply for its MCP
+    startup."""
+    assert ACP_BACKENDS_RESUME_WITHOUT_LOAD == frozenset({ACP_BACKEND_DEEPSEEK, ACP_BACKEND_CODEX})
 
 
 def test_the_effort_option_id_is_this_harness_own_spelling() -> None:
@@ -253,6 +257,17 @@ class _FakeProbeProcess:
         self.kill()
 
 
+class _module_with:  # noqa: N801 -- read as a call at the patch site
+    """*module* with *overrides* in front, so one importer's name can be faked alone."""
+
+    def __init__(self, module: types.ModuleType, **overrides: object) -> None:
+        self._module = module
+        self.__dict__.update(overrides)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._module, name)
+
+
 def _deepseek_gate_verifier(tmp_path, monkeypatch, marker_writer, *, names: tuple[str, ...] = ()):
     """Return a verifier closure whose fake probe places the requested marker shape.
 
@@ -267,10 +282,15 @@ def _deepseek_gate_verifier(tmp_path, monkeypatch, marker_writer, *, names: tupl
     def fake_popen(argv, **kwargs):
         return _FakeProbeProcess(argv, marker_writer, marker_path, **kwargs)
 
-    monkeypatch.setattr(deepseek_mod.subprocess_mod, "Popen", fake_popen)
+    # Replace the module's own ``subprocess_mod`` and ``platform_compat`` names, never
+    # an attribute of the shared modules: anything else on the worker that spawns or
+    # kills a child inside the test (the subprocess pool's helper) must get the real one.
     # The fake has no pid for the tree kill to signal: record the tree kill on it instead.
+    monkeypatch.setattr(deepseek_mod, "subprocess_mod", _module_with(subprocess, Popen=fake_popen))
     monkeypatch.setattr(
-        deepseek_mod.platform_compat, "kill_popen_tree", _FakeProbeProcess.kill_tree
+        deepseek_mod,
+        "platform_compat",
+        _module_with(deepseek_mod.platform_compat, kill_popen_tree=_FakeProbeProcess.kill_tree),
     )
     # The probe waits for the marker up to the read-back budget; a fake that never
     # writes one must fail in test time rather than in a minute.
@@ -344,6 +364,23 @@ def test_a_probe_whose_plugin_never_writes_a_marker_is_refused_and_ended(
     probe = probe_process()
     assert probe.killed, "a harness that produced no marker in time must be ended"
     assert probe.tree_killed, "the harness must be ended with everything it started"
+
+
+def test_the_probe_fake_leaves_the_shared_spawn_and_kill_untouched(tmp_path, monkeypatch) -> None:
+    """Faking the probe swaps only the probe module's names; the worker's other children
+    (the subprocess pool's helper among them) still spawn and die for real."""
+    from kiro_crew import platform_compat
+
+    real_popen = subprocess.Popen
+    real_kill_tree = platform_compat.kill_popen_tree
+    verify, _marker_path, probe_process = _deepseek_gate_verifier(
+        tmp_path, monkeypatch, lambda path: None
+    )
+
+    verify()
+    assert probe_process().tree_killed
+    assert subprocess.Popen is real_popen
+    assert platform_compat.kill_popen_tree is real_kill_tree
 
 
 #: A ``dsh`` stand-in that starts a worker, publishes the gate's marker and then

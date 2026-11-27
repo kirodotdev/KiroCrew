@@ -599,10 +599,14 @@ def main() -> None:
 
     cli_parser_agent.register_knowledge_parser(sub)
     cli_parser_admin.register_secrets_parser(sub)
+    from kiro_crew.connected_computers.cli import register_parser as register_connected_computer
+
+    register_connected_computer(sub)
     cli_parser_admin.register_pod_parser(sub)
     cli_parser_gateway.register_update_parser(sub)
     cli_parser_gateway.register_stop_parser(sub)
     cli_parser_gateway.register_restart_parser(sub)
+    cli_parser_gateway.register_resume_parser(sub)
     cli_parser_gateway.register_gateway_pid_parser(sub)
     cli_parser_gateway.register_mcp_parser(sub)
     cli_parser_gateway.register_service_parser(sub)
@@ -1264,6 +1268,10 @@ def main() -> None:
             from kiro_crew.cli_server import _restart
 
             _restart(args.port)
+    elif args.command == "resume":
+        from kiro_crew.cli_resume import resume_cmd
+
+        resume_cmd(args)
     elif args.command == "gateway-pid":
         from kiro_crew.cli_server import _gateway_pid
 
@@ -1296,6 +1304,10 @@ def main() -> None:
         from kiro_crew.cli_server import _token
 
         _token(args)
+    elif args.command == "connected-computer":
+        from kiro_crew.connected_computers.cli import run as connected_computer_cmd
+
+        sys.exit(connected_computer_cmd(args))
     elif args.command == "open":
         from kiro_crew.cli_open import cmd_open
 
@@ -1303,7 +1315,14 @@ def main() -> None:
     elif args.command == "logout":
         from kiro_crew.cli_server import _logout, resolve_client_port
 
-        _logout(resolve_client_port(args.port))
+        # An omitted --link (None) revokes everything and a given one, blank
+        # included, is passed on for `_logout` to judge, so the two stay apart.
+        link = getattr(args, "link", None)
+        port = resolve_client_port(args.port)
+        if link is None:
+            _logout(port)
+        else:
+            _logout(port, link)
     elif args.command == "status":
         from kiro_crew.cli_server import _status
 

@@ -311,7 +311,7 @@ class UnitRowsCache:
 
     def __init__(self, *, max_units: int = _MAX_UNITS) -> None:
         self._lock = threading.Lock()
-        self._rows: OrderedDict[str, tuple[tuple, str | None, dict, float]] = OrderedDict()
+        self._rows: OrderedDict[str, tuple[tuple, str | None, dict, float, bool]] = OrderedDict()
         self._folding: dict[str, threading.Event] = {}
         self._max_units = max_units
         #: Folds actually run, for tests and benchmarks.
@@ -322,7 +322,7 @@ class UnitRowsCache:
             self._rows.clear()
             self.folds = 0
 
-    def _cached(self, directory: str, identity: tuple) -> tuple[str | None, dict] | None:
+    def _cached(self, directory: str, identity: tuple) -> tuple[str | None, dict, bool] | None:
         with self._lock:
             held = self._rows.get(directory)
             if held is None or held[0] != identity:
@@ -330,23 +330,26 @@ class UnitRowsCache:
             if held[1] is None and time.monotonic() - held[3] >= UNOWNED_RETRY_SECS:
                 return None
             self._rows.move_to_end(directory)
-            return held[1], held[2]
+            return held[1], held[2], held[4]
 
-    def _fold(self, unit_id: str) -> tuple[str | None, dict]:
-        """The owner and ``subagents`` rows, folded now."""
+    def _fold(self, unit_id: str) -> tuple[str | None, dict, bool]:
+        """The owner, ``subagents`` rows and whether the fold's retain cap cut a finished run."""
         from kiro_crew.crew_log import projection as _projection
         from kiro_crew.crew_log import read as _crew_log_read
+        from kiro_crew.crew_log.projection_side_panel import OPEN_RETAIN_LIMIT
 
         recorded = _crew_log_read.recorded_class(unit_id)
-        rows = (
-            _projection.fold_session(unit_id, ("subagents",))
-            .projection("subagents")
-            .value.get("by_id")
-            or {}
-        )
+        value = _projection.fold_session(unit_id, ("subagents",)).projection("subagents").value
+        rows = value.get("by_id") or {}
+        # Past the limit the fold keeps the FIRST dispatches, so the cut ones are
+        # the newest and no row count here can say how many of them are finished;
+        # a cut one that finished left a closer that matched no row.
+        retained = len(rows) + int(value.get("dismissed") or 0)
+        unmatched = int((value.get("totals") or {}).get("closed_unmatched") or 0)
+        capped = retained >= OPEN_RETAIN_LIMIT and bool(value.get("omitted")) and unmatched > 0
         with self._lock:
             self.folds += 1
-        return (None if recorded is None else str(recorded.get("app") or "")), rows
+        return (None if recorded is None else str(recorded.get("app") or "")), rows, capped
 
     def rows(self, unit_id: str) -> tuple[str | None, dict]:
         """``(owner app or None, rows by agent id)`` for *unit_id*.
@@ -356,6 +359,11 @@ class UnitRowsCache:
         card. A unit whose identity cannot be read is folded and not cached. Raises
         what the folds raise. Blocking; call it off the event loop.
         """
+        app, rows, _capped = self.rows_and_cap(unit_id)
+        return app, rows
+
+    def rows_and_cap(self, unit_id: str) -> tuple[str | None, dict, bool]:
+        """:meth:`rows`, plus whether the unit's own retain cap cut a finished run."""
         directory, identity = _unit_identity(unit_id)
         while True:
             if identity is None:
@@ -372,13 +380,13 @@ class UnitRowsCache:
             running.wait()
             directory, identity = _unit_identity(unit_id)
         try:
-            app, rows = self._fold(unit_id)
+            app, rows, capped = self._fold(unit_id)
             with self._lock:
-                self._rows[directory] = (identity, app, rows, time.monotonic())
+                self._rows[directory] = (identity, app, rows, time.monotonic(), capped)
                 self._rows.move_to_end(directory)
                 while len(self._rows) > self._max_units:
                     self._rows.popitem(last=False)
-            return app, rows
+            return app, rows, capped
         finally:
             with self._lock:
                 self._folding.pop(directory, None)

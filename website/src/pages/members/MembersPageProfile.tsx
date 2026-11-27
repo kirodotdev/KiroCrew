@@ -59,6 +59,7 @@ import { type MembersPageLayout } from './useMembersPageLayout'
 import { type MembersPageRosterSignals } from './useMembersPageRoster'
 import { type AutomationRecord, type LegacyGoalLoop } from '../../monitoring/automation'
 import { readSessionAutomationSnapshot } from '../../monitoring/sessionAutomationSnapshot'
+import { memoryRoute } from '../settings/memoryRoute'
 
 // Lazy for the same reason as `CrewEditorDialog` in MembersPage.tsx: its fields come from the crew manager page module.
 const CrewProfileSettings = lazy(() => import('./CrewProfileSettings'))
@@ -757,7 +758,7 @@ export function MembersPageProfileCard({
       // Only a crewmate's OWN (V2) store has a page to manage; the shared
       // global store is not this crewmate's, so that tile stays a readout.
       onOpenMemory={memberMemoryDisplay(activeView) === 'private' && activeView.memory_store
-        ? () => { const destination = `/settings/overview?view=memory&store=${encodeURIComponent(activeView.memory_store ?? '')}`; leave(() => navigate(destination), destination) }
+        ? () => { const destination = memoryRoute({ store: activeView.memory_store ?? '' }); leave(() => navigate(destination), destination) }
         : undefined}
       initialTab={profile.tab}
       schedules={schedulesForActive}

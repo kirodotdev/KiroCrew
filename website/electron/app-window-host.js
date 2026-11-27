@@ -72,6 +72,7 @@ const {
 const { boundShortcuts, createMachinePrefs } = require("./app-window-prefs");
 const { WORK_AREA_MARGIN, placeBesideAnchor } = require("./app-window-placement");
 const { SPAN_CHANNELS, createDisplayMemory, createSpans, spanKey } = require("./app-window-span");
+const { APP_VIEW_PATH, reportShortcutOpen } = require("./app-window-telemetry");
 const { shellShortcutReservations } = require("./shell-shortcut-reservations");
 const { loadDashboardWithToken } = require("./token-retry");
 
@@ -191,7 +192,7 @@ function pointInRegions(regions, x, y) {
  *   now?: () => number,
  *   reservations?: {isReserved: (a: string) => boolean, onChange: (fn: () => void) => () => void},
  *   displayMemoryPath?: string,
- *   showDashboardSession?: (slotKey: string) => boolean,
+ *   showDashboardSession?: (slotKey: string, crewId: string) => boolean,
  *   openExternal?: (url: string) => void,
  *   timers?: {setInterval?: Function, clearInterval?: Function, setTimeout?: Function, clearTimeout?: Function},
  *   registerCaptureSurface?: (wc: object, url: string) => boolean,
@@ -337,6 +338,16 @@ function createAppWindowHost(deps) {
     } catch {
       return null;
     }
+  }
+
+  /** A shortcut press, reported to this shell's own gateway only (`app-window-telemetry.js`). */
+  function reportShortcut(app) {
+    if (!backendOrigin || targetOf(app).instanceId !== SELF_GATEWAY) return;
+    const request = async () => {
+      const auth = await authFor(false);
+      return auth.value ? withAuth(APP_VIEW_PATH, auth) : null;
+    };
+    reportShortcutOpen({ app, fetchImpl, request, timeoutMs: PROBE_TIMEOUT_MS });
   }
 
   /** @returns {Promise<{state: "ok"|"unauthorized"|"unknown", body?: unknown}>} */
@@ -524,6 +535,11 @@ function createAppWindowHost(deps) {
     const background = decl.kind === "background";
     return {
       ...bounds,
+      // macOS shows a window on another app's full-screen Space only when it is a
+      // non-activating panel, so an overlay or panel is one there (as Mochi's pet and
+      // chat panel are). `type` values are per platform: "panel" is not a legal value
+      // on Windows or Linux, and a background window is never shown.
+      ...(platform === "darwin" && !background ? { type: "panel" } : {}),
       frame: false,
       transparent: overlay || decl.transparent === true,
       alwaysOnTop: !background,
@@ -674,6 +690,9 @@ function createAppWindowHost(deps) {
       // Not in the user's screenshots, recordings or screen shares.
       win.setContentProtection(true);
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      // Above a full-screen app and ordinary always-on-top windows on macOS, where
+      // the default "floating" level sits beneath them.
+      if (platform === "darwin") win.setAlwaysOnTop(true, "screen-saver");
     } else if (decl.kind === "panel") {
       win.setAlwaysOnTop(true, "floating");
       // A panel opened beside a box belongs to it, and the box (an avatar on an
@@ -951,6 +970,7 @@ function createAppWindowHost(deps) {
   function deliverShortcut(app, shortcut) {
     const decl = declared(app, shortcut.window);
     if (!decl || suspended) return;
+    reportShortcut(app);
     if (isSpanning(decl)) {
       if (openWindow(app, decl, { focus: true })) spans.deliver(app, decl.id, CHANNELS.shortcut, shortcut.id);
       return;
@@ -1431,7 +1451,8 @@ function createAppWindowHost(deps) {
       if (!rec || suspended || typeof slotKey !== "string" || slotKey.length > MAX_SLOT_KEY_LENGTH) return false;
       if (!deps.showDashboardSession) return false;
       try {
-        return deps.showDashboardSession(slotKey) === true;
+        const crewId = rec.target.instanceId === SELF_GATEWAY ? "" : rec.target.instanceId;
+        return deps.showDashboardSession(slotKey, crewId) === true;
       } catch {
         return false;
       }

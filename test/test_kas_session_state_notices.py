@@ -13,6 +13,11 @@ from acp_runtime_helpers import _drain, _feed, _make_runtime, _register, _start_
 
 # The payloads kiro-cli 3.5.0 sends, with the inventories emptied.
 _NOTICES = {
+    "_kiro/governance/state": {
+        "sessionId": "sess-new",
+        "isEnterprise": False,
+        "features": {"mcpEnabled": True, "webToolsEnabled": True},
+    },
     "_kiro/powers/items_changed": {"sessionId": "sess-new", "status": "success", "powers": []},
     "_kiro/steering/documents_changed": {
         "sessionId": "sess-new",

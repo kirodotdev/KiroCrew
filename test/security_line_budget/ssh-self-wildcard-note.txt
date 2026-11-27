@@ -1,0 +1,5 @@
++4
+The sandbox-escape-ssh-self refusal note gains a fourth labelled case, WILDCARD,
+that names the floor's reading of a `*` word as a possible ssh and a later bare `0`
+as this machine, and the spelling that passes (Sunday as `7`). Text only: no
+verdict changes.

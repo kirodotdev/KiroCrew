@@ -54,6 +54,7 @@ const RemoteGitPanel = lazyRetry(() => import('./RemoteGitPanel'), {
   askAgent: false,
 })
 import SessionSummaryTab from './SessionSummaryTab'
+import ThinkingBlock from './ThinkingBlock'
 import { i18nT } from '../../i18n/t'
 import { isNeverStarted, neverStartedKind, queuedWaitText } from './subagentQueuedReason'
 import GitReposPanel from '../../components/GitReposPanel'
@@ -541,6 +542,8 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       {/* Output (streaming body) */}
       {!isPending && !retired && !collapsed && (
       <>
+      {/* The agent's reasoning, collapsed like the transcript's; never part of Output. */}
+      {a.thinking && <div className="px-3 pb-1" data-testid="subagent-thinking"><ThinkingBlock content={a.thinking} /></div>}
       <div className="px-3 pb-2">
         <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.output')}</div>
         {/* Sub-agent output is usually markdown (fences, lists, tables): render it
@@ -1149,7 +1152,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   pins?: ChatPin[]
   pinsLoading?: boolean
   onJumpToPin?: (messageTs: string, mid?: string) => void
-  onPutPinInComposer?: (messageTs: string, mid?: string) => void
+  onPutPinInComposer?: (messageTs: string, mid?: string) => boolean | void
   onUnpin?: (id: string) => void
   slotTitle?: string
   chatMode?: string

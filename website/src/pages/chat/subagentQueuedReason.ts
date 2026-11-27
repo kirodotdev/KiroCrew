@@ -35,10 +35,13 @@ const KINDS = [
 
 export type SubagentQueuedReasonKind = (typeof KINDS)[number]
 
-/** The gate's `MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE`, the one cause the chip
- *  renders on its own; any other cause parses to `undefined`. */
-export type SubagentQueuedCause = 'cgroup_usage_unreadable'
+/** The gate's `MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE` and
+ *  `MEMORY_CAUSE_READ_UNANSWERED`, the causes the chip words on their own; any
+ *  other cause parses to `undefined`. */
+const CAUSES = ['cgroup_usage_unreadable', 'host_read_unanswered'] as const
+export type SubagentQueuedCause = (typeof CAUSES)[number]
 const CAUSE_USAGE_UNREADABLE: SubagentQueuedCause = 'cgroup_usage_unreadable'
+const CAUSE_READ_UNANSWERED: SubagentQueuedCause = 'host_read_unanswered'
 
 export type SubagentQueuedReason = {
   reason: SubagentQueuedReasonKind
@@ -47,9 +50,11 @@ export type SubagentQueuedReason = {
   available_gb?: number
   /** The bar that measurement fell short of, in GB (`low_memory` only). */
   required_gb?: number
-  /** Why the measurement is missing (`low_memory` only). Only
-   *  `cgroup_usage_unreadable` is kept: a memory limit is set but its usage
-   *  file cannot be read, so the free figure is unknown rather than zero. */
+  /** Why the measurement is missing (`low_memory` only).
+   *  `cgroup_usage_unreadable`: a memory limit is set but its usage file
+   *  cannot be read, so the free figure is unknown rather than zero.
+   *  `host_read_unanswered`: the gateway's memory reading did not answer in
+   *  time, so nothing was measured and the gateway reads again. */
   cause?: SubagentQueuedCause
   /** How long the rows may wait for memory before they give up, in seconds:
    *  the live `agent.subagent_queue_max_wait_secs`. `0` waits forever;
@@ -85,7 +90,8 @@ export function parseSubagentQueuedReason(ev: SubagentQueuedEvent): SubagentQueu
   if (required !== undefined) out.required_gb = required
   const maxWait = finiteOrUndefined(ev.max_wait_secs)
   if (maxWait !== undefined && maxWait >= 0) out.max_wait_secs = Math.floor(maxWait)
-  if (out.reason === 'low_memory' && ev.cause === CAUSE_USAGE_UNREADABLE) out.cause = CAUSE_USAGE_UNREADABLE
+  const cause = CAUSES.find(known => known === ev.cause)
+  if (out.reason === 'low_memory' && cause !== undefined) out.cause = cause
   return out
 }
 
@@ -131,6 +137,13 @@ export function queuedWaitText(reason: SubagentQueuedReason | undefined): string
         if (limit !== undefined) return i18nT('pages.chat.subagentQueued.low_memory_unknown_limit', { limit })
         if (unbounded) return i18nT('pages.chat.subagentQueued.low_memory_unknown_no_limit')
         return i18nT('pages.chat.subagentQueued.low_memory_unknown')
+      }
+      // A reading that did not answer measured nothing: the wait is not a
+      // shortage, and nothing the person frees would end it.
+      if (reason.cause === CAUSE_READ_UNANSWERED) {
+        if (limit !== undefined) return i18nT('pages.chat.subagentQueued.low_memory_unanswered_limit', { limit })
+        if (unbounded) return i18nT('pages.chat.subagentQueued.low_memory_unanswered_no_limit')
+        return i18nT('pages.chat.subagentQueued.low_memory_unanswered')
       }
       if (reason.required_gb !== undefined && reason.available_gb !== undefined) {
         const figures = { required: gb(reason.required_gb), available: gb(reason.available_gb) }

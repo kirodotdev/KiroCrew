@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { animate, type MotionValue } from 'framer-motion'
 import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold'
 import { deepActiveElement } from '../utils/editableTarget'
@@ -410,6 +410,8 @@ interface DrawerRuntime {
   /** Compositor animations currently carrying the panel, so a new gesture can
    *  take them over instead of writing the same channel underneath them. */
   running: Animation[]
+  /** Elements promoted to their own compositor layer for a finger drag. */
+  layered: HTMLElement[]
 }
 
 /**
@@ -436,8 +438,47 @@ const runtimes = new WeakMap<MotionValue<number>, DrawerRuntime>()
  * is what makes this registration safe — see ChatSidebar.staticRows.test.tsx.
  */
 export function registerDrawerTargets(x: MotionValue<number>, targets: DrawerTargets): () => void {
-  runtimes.set(x, { targets, running: [] })
+  runtimes.set(x, { targets, running: [], layered: [] })
   return () => runtimes.delete(x)
+}
+
+/**
+ * Give the panel and its scrim their own compositor layers while a finger
+ * drives them.
+ *
+ * A drag writes `transform` and `opacity` from the main thread on every
+ * touchmove. Without a layer of its own the panel is painted into the page's
+ * layer, so each write repaints the panel, the long chat under it and the
+ * scrim's blurred backdrop — measured in Chromium at about three paints and
+ * 1.5M CSS px per frame, which a phone rasterizes at 3x on the main thread.
+ * With the layer the same frame has no paint at all; only the compositor
+ * moves the layer. The settle needs none of this, because a WAAPI transform
+ * animation is layered by the browser on its own.
+ *
+ * Promoted for the drag only and dropped on arrival (`unlayerDrawer`), so a
+ * panel at rest — the app shell's nav drawer stays mounted — holds no extra
+ * layer memory. Idempotent and cheap, so the move handler calls it per sample:
+ * an opening drag's panel mounts a render or two after the gesture locks.
+ */
+function layerDrawer(x: MotionValue<number>): void {
+  const rt = runtimes.get(x)
+  if (!rt) return
+  const panel = rt.targets.panel()
+  const scrim = rt.targets.scrim()
+  if (!panel || (rt.layered[0] === panel && (rt.layered[1] ?? null) === scrim)) return
+  unlayerDrawer(rt)
+  panel.style.willChange = 'transform'
+  rt.layered.push(panel)
+  if (scrim) {
+    scrim.style.willChange = 'opacity'
+    rt.layered.push(scrim)
+  }
+}
+
+function unlayerDrawer(rt: DrawerRuntime | undefined): void {
+  if (!rt) return
+  for (const el of rt.layered) el.style.willChange = ''
+  rt.layered = []
 }
 
 /** Scrim opacity for a panel offset: 0 fully closed, 1 at rest. Direction-
@@ -568,7 +609,7 @@ export function animateDrawer(x: MotionValue<number>, to: number, onDone?: () =>
     const controls = animate(x, to, {
       ...curve,
       onStop: () => { stopped = true; unbind?.() },
-      onComplete: () => { if (stopped) return; paint?.(to); unbind?.(); releaseStreamingFlushes(); onDone?.() },
+      onComplete: () => { if (stopped) return; paint?.(to); unbind?.(); unlayerDrawer(rt); releaseStreamingFlushes(); onDone?.() },
     })
     return () => { unbind?.(); controls.stop() }
   }
@@ -646,6 +687,7 @@ export function animateDrawer(x: MotionValue<number>, to: number, onDone?: () =>
       panel.style.transform = `translate3d(${to}px, 0, 0)`
       if (scrim instanceof HTMLElement) scrim.style.opacity = String(scrimOpacity(to, travel))
       jumpTo(x, to)
+      unlayerDrawer(rt)
     }
     const settled = () => {
       if (rt.running !== anims) return // taken over by a newer gesture
@@ -877,12 +919,17 @@ interface DrawerSwipeOptions {
   onCommit?: (open: boolean) => void
 }
 
-/** @returns whether a drag currently owns the panel (suppress transitions). */
+/**
+ * @returns a ref whose `current` says whether a drag owns the panel right now.
+ * A ref rather than state: the drag starting and ending must not re-render the
+ * consumer (for the chat drawer that is the whole chat page, under the finger).
+ * Read it in a handler, at the moment it matters.
+ */
 export function useDrawerSwipe(
   ref: React.RefObject<HTMLElement | null>,
   { enabled, side = 'left', travel, open, x, onGestureOpen, onSettle, onCommit }: DrawerSwipeOptions,
-): boolean {
-  const [dragging, setDragging] = useState(false)
+): { readonly current: boolean } {
+  const dragging = useRef(false)
 
   // Everything the move handler reads lives in a ref. A touchmove fires at
   // frame rate and this hook is bound inside the chat pane, so a re-render per
@@ -1080,7 +1127,7 @@ export function useDrawerSwipe(
     const reset = () => {
       phase.current = 'idle'
       endSuppression()
-      setDragging(false)
+      dragging.current = false
     }
 
     /**
@@ -1252,7 +1299,7 @@ export function useDrawerSwipe(
         // compositor settle is not an animation ON the value at all, which is
         // why this goes through takeOverDrawer rather than `x.stop()`.
         takeOverDrawer(x)
-        setDragging(true)
+        dragging.current = true
         if (!openRef.current) {
           // Seat the panel offscreen BEFORE it mounts, so the first painted
           // frame is the closed offset rather than a flash at rest position.
@@ -1271,6 +1318,7 @@ export function useDrawerSwipe(
       // Clamped to the panel's own range: dragging past open must not lift the
       // panel off its edge, and dragging past closed must not gap it further.
       x.set(clampOffset(gestureBase.current + dx))
+      layerDrawer(x)
     }
 
     const onTouchEnd = (e: TouchEvent) => {
@@ -1339,7 +1387,7 @@ export function useDrawerSwipe(
       // armed on a timer: these listeners live on `window`, so a deferred
       // release would outlive the hook and eat a tap on whatever replaced it.
       suppressing.current?.release()
-      setDragging(false)
+      dragging.current = false
     }
     // `open` is intentionally absent — see the header note. The callbacks are
     // held in refs for the same reason.

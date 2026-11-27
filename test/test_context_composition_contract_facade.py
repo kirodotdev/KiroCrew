@@ -232,7 +232,7 @@ _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
     "_remember_startup_lessons": ("method", "(self, session_key: 'str', block: 'str') -> 'None'"),
     "_resolve_agent_prompt": (
         "method",
-        "(self, agent: 'str | None', *, project: 'str | None', mode: 'str', session_key: 'str | None', is_cc: 'bool', private_owner: 'bool', session_start: 'bool') -> 'str'",
+        "(self, agent: 'str | None', *, project: 'str | None', mode: 'str', session_key: 'str | None', private_owner: 'bool', session_start: 'bool') -> 'str'",
     ),
     "_resolve_prompt_templates": (
         "static",

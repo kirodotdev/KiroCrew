@@ -109,6 +109,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # Same home and same reason: the profile card's Dynamic capabilities
         # preview switch (``kiro_crew.crewmate_dynamic_capabilities``).
         "dynamic_capabilities",
+        # Same home and same reason: the owner's Workers can conduct switch,
+        # read at each worker's session start (``members.conducting_worker_session``).
+        "worker_conducts",
     }
 )
 

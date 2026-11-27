@@ -25,6 +25,7 @@ contract and the identical failure posture.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -38,12 +39,16 @@ from kiro_crew.computer_use.types import (
 )
 from kiro_crew.config import loader as config_loader
 from kiro_crew.config import loosening_provenance
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
 # Owner-only: the file records a security decision, and its ``allowed_apps`` list
 # names applications the operator automates — mildly sensitive on its own.
 _STATE_FILE_MODE = 0o600
+
+#: The governance scope that turns desktop control on.
+_GOVERNANCE_SCOPE = "capabilities.computer_use"
 
 
 def computer_use_state_path() -> Path:
@@ -63,28 +68,85 @@ def computer_use_state_path() -> Path:
     return config_loader.config_dir() / STATE_FILE_NAME
 
 
+#: The unusable file version the last WARNING named: (path, problem, content digest).
+#: The path is part of the key, so a read of another data home (each test's own
+#: ``tmp_path``) never matches it; ``None`` after a usable or absent read, so the
+#: next breakage is named again. An unreadable file has no bytes, so every
+#: unreadable version of one path is one version here.
+#: shortcut: unlocked, so two threads reading one new bad version may both warn;
+#: add a lock if duplicate lines ever matter.
+_warned_version: "tuple[str, str, bytes] | None" = None
+
+
+def _read_state() -> "tuple[dict, str | None, tuple[str, str, bytes] | None]":
+    """The keystone state, why a PRESENT file gave none, and that file version's key.
+
+    The reason is fixed text naming the error type, never the file's contents.
+    It and the key are ``None`` for an absent file and for a usable one.
+    """
+    path = None
+    try:
+        path = computer_use_state_path()
+        # Where the namespace sandbox seals this file, serve the gateway-endorsed copy
+        # when the on-disk bytes differ or the file is missing or unreadable, so a
+        # direct in-sandbox rewrite or delete of ``enabled`` (or any key) is ignored;
+        # the plain read off Linux. See loosening_provenance.
+        eff = loosening_provenance.reconciled_bytes(loosening_provenance.LEAF_COMPUTER_USE, path)
+    except Exception as exc:
+        logger.debug("computer_use.json load failed; treating as disabled", exc_info=True)
+        problem = f"could not be read ({type(exc).__name__})"
+        return {}, problem, (str(path), problem, b"")
+    if eff is None:
+        return {}, None, None
+    digest = hashlib.sha256(eff).digest()
+    try:
+        # One leading UTF-8 byte-order mark (a Windows editor's "UTF-8 with BOM") is
+        # not content, as for denied_commands.json; anything else that fails stays off.
+        raw = loads_user_json(eff.decode("utf-8"))
+    except Exception as exc:
+        logger.debug("computer_use.json load failed; treating as disabled", exc_info=True)
+        problem = f"could not be parsed ({type(exc).__name__})"
+        return {}, problem, (str(path), problem, digest)
+    if not isinstance(raw, dict):
+        problem = "is not a JSON object"
+        return {}, problem, (str(path), problem, digest)
+    return raw, None, None
+
+
+def _problem_text(problem: str) -> str:
+    return f"{STATE_FILE_NAME} {problem}; computer use stays off. Fix or re-save the file."
+
+
 def load_state() -> dict:
     """Read the keystone state (fail-soft to ``{}``).
 
     Returns ``{}`` — which :func:`is_enabled` reads as DISABLED — when the file
     is absent, unreadable, not valid JSON, or not a JSON object. A corrupt
-    ceiling file must not be interpreted generously.
+    ceiling file must not be interpreted generously. A file saved with one
+    leading UTF-8 byte-order mark reads like the same file without it. A file
+    that is present but unusable logs a WARNING naming the file and the error
+    type, once per version of the file.
     """
-    try:
-        # Where the namespace sandbox seals this file, serve the gateway-endorsed copy
-        # when the on-disk bytes differ or the file is missing or unreadable, so a
-        # direct in-sandbox rewrite or delete of ``enabled`` (or any key) is ignored;
-        # the plain read off Linux. See loosening_provenance.
-        eff = loosening_provenance.reconciled_bytes(
-            loosening_provenance.LEAF_COMPUTER_USE, computer_use_state_path()
-        )
-        if eff is None:
-            return {}
-        raw = json.loads(eff.decode("utf-8"))
-    except Exception:
-        logger.debug("computer_use.json load failed; treating as disabled", exc_info=True)
-        return {}
-    return raw if isinstance(raw, dict) else {}
+    global _warned_version
+    state, problem, version = _read_state()
+    if problem is None:
+        _warned_version = None
+        return state
+    if version != _warned_version:
+        _warned_version = version
+        logger.warning("%s", _problem_text(problem))
+    return state
+
+
+def load_state_for_report() -> "tuple[dict, str | None]":
+    """One read of the keystone for ``kirocrew computer doctor``: the state
+    :func:`load_state` would return, and why a present file gave none.
+
+    The reason is ``None`` when the file is absent or usable. Never raises and logs
+    no WARNING: the doctor prints the reason itself.
+    """
+    state, problem, _version = _read_state()
+    return state, None if problem is None else _problem_text(problem)
 
 
 def is_enabled(state: "dict | None" = None, *, audit_tool: str = "") -> bool:
@@ -114,7 +176,14 @@ def locked_by_policy(*, audit_tool: str = "") -> bool:
     """
     from kiro_crew.edition_locks import policy_permits
 
-    return not policy_permits("capabilities.computer_use", audit_tool=audit_tool)
+    return not policy_permits(_GOVERNANCE_SCOPE, audit_tool=audit_tool)
+
+
+def locked_by_edition() -> bool:
+    """True when this build keeps desktop control off and no policy term can turn it on."""
+    from kiro_crew.edition_locks import locked_by_edition as scope_locked_by_edition
+
+    return scope_locked_by_edition(_GOVERNANCE_SCOPE)
 
 
 def load_policy_config(state: "dict | None" = None) -> PolicyConfig:

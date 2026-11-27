@@ -380,8 +380,10 @@ Seven things to know before touching it:
 Known limits of the render gate, named rather than papered over:
 
 - **A PR whose base is neither `main` nor a release branch never runs `ci.yml`
-  at all**, because `pull_request: branches: [main, "release/**"]` filters on the
-  base branch. A stacked PR gets no render gate until it is rebased.
+  at all** unless it is in a GitHub-native stack, because `pull_request:
+  branches: [main, "release/**"]` filters on the base branch (on a native stack,
+  the stack's trunk). A hand-made stacked PR (base set to another branch, no
+  native stack) gets no render gate until it is retargeted.
 - **`main` verdicts are sampled, not per-commit, on a push the merge queue did
   not land** (`MERGE_QUEUE_ENABLED` not `'true'`, or a push by anyone but
   `github-merge-queue[bot]`). The concurrency group permits one pending run and

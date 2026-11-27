@@ -386,6 +386,9 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith(`Trust ${cmd} for an hour`))!)
     const chip = await screen.findByText(cmd, { selector: '[role="status"] span' })
     expect(chip.closest('[role="status"]')!.textContent).toMatch(/^Trusted echo “hi” until .+, then it asks again$/)
+    // The plain pane: a grant is not a warning, so no warn tint.
+    expect(chip.closest('[role="status"]')!.className).toMatch(/\bglass-thick\b/)
+    expect(chip.closest('[role="status"]')!.className).not.toMatch(/glass-(warn|danger|accent)/)
   })
 
   it('Trust dropdown timed family row names the family it trusted', async () => {
@@ -752,6 +755,7 @@ describe('ChatInput orphaned approval (404)', () => {
     await waitFor(() => {
       expect(screen.getByRole('status')).toHaveTextContent('Already rejected elsewhere')
     })
+    expect(screen.getByRole('status').className).toMatch(/\bglass-thick\b.*\bglass-warn\b/)
     expect(screen.queryByText(/local-app/)).toBeNull()
     expect(store.getState().chat.messages[1].meta!.resolved).toBe('rejected')
   })
@@ -832,6 +836,11 @@ describe('ChatInput orphaned approval (404)', () => {
       expect(screen.getByTestId('approval-decision-error')).toBeInTheDocument()
     })
     expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
+    // On its own thick danger pane, so the transcript under the dock does not
+    // show through; nested, so the notice draws no second box on it.
+    const pane = screen.getByTestId('approval-decision-error').parentElement!
+    expect(pane.className).toMatch(/\bglass-thick\b.*\bglass-danger\b/)
+    expect(screen.getByTestId('approval-decision-error').className).not.toContain('rounded-lg')
     // A transient server error is not evidence the approval is gone — the
     // buttons must remain live rather than dismissing a still-valid request.
     expect(screen.getByText('Allow once')).toBeInTheDocument()
@@ -1166,6 +1175,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
       )
     })
     expect(screen.getByTestId('spawn-liveness-error')).toHaveAttribute('role', 'alert')
+    expect(screen.getByTestId('spawn-liveness-error').parentElement!.className).toMatch(/\bglass-thick\b.*\bglass-danger\b/)
     // Beside the refusal, not over it: the failed read lands a microtask after
     // the refusal is shown, and one shared notice would leave no surface
     // reporting the refusal this banner sent.

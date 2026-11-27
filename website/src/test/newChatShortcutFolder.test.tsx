@@ -80,7 +80,7 @@ function harness(activeFolder: string | undefined, folders: ChatFolder[] | undef
   )
   renderHook(() => useShellKeyboard({
     toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: false,
-    isEmbed: false, terminalPoppedOut: false, activeSlotProject: undefined,
+    isEmbed: false, terminalPoppedOut: false,
   }), { wrapper })
   return store
 }

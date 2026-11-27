@@ -92,12 +92,14 @@ class _SharingPlan(NamedTuple):
 
     ``shared`` is True only when the run takes the shared-runtime arm; the
     other fields are the run's effective model / effort pins, which force the
-    dedicated arm when set and which the run hands its provider.
+    dedicated arm when set and which the run hands its provider. ``reason``
+    says why a dedicated plan is not shared ("" when shared).
     """
 
     eff_model: str
     eff_effort: str
     shared: bool
+    reason: str = ""
 
 
 def _dedicated_start_price_gb(

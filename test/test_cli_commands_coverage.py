@@ -548,7 +548,7 @@ class TestAppCli:
             cc._handle_app(_ns(app_action="enable", name="demo"))
 
         assert exc.value.code == 1
-        assert timeouts == [5, 300]
+        assert timeouts == [20, 300]
         err = capsys.readouterr().err
         assert "… applying enable for demo through the running gateway" in err
         assert "⏳ the gateway did not finish enable for demo within 300 s" in err

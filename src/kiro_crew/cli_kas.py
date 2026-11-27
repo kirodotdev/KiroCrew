@@ -40,7 +40,7 @@ def add_kas_parser(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             f"Engine version to install (default: this release's pin, {KAS_PIN_VERSION}; "
-            f"{KAS_PIN_AL2_VERSION} on a linux-x64 host below glibc 2.28). "
+            f"{KAS_PIN_AL2_VERSION} on a Linux host below glibc 2.28). "
             "Any other version needs --unpinned"
         ),
     )
@@ -180,7 +180,7 @@ def _install_now(args: argparse.Namespace) -> int:
     from kiro_crew.config.loader import KiroCrewConfig
 
     on_progress = _progress_printer()
-    # This host's pin: the AL2 republish on a linux-x64 host below glibc 2.28.
+    # This host's pin: the AL2 republish on a Linux host below glibc 2.28.
     pin = host_pin_version()
     pin_sha256 = KAS_PIN_MANIFESTS[pin]
 

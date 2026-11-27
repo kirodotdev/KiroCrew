@@ -245,6 +245,9 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_utils import slot_history_key  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import internal_memory_scope  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
+        require_owner_for_dashboard_caller,
+    )
     from kiro_crew.dashboard.interaction_coordinator import _slot_decision  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.history import ConversationLog  # noqa: F401
@@ -281,6 +284,7 @@ if TYPE_CHECKING:
     from kiro_crew.runtime_ownership import release_session_lease  # noqa: F401
     from kiro_crew.sandbox import configured_sandbox_mode  # noqa: F401
     from kiro_crew.sandbox import wrap_argv  # noqa: F401
+    from kiro_crew.search_shown_text import shown_text  # noqa: F401
     from kiro_crew.security import redact  # noqa: F401
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401

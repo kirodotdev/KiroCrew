@@ -728,7 +728,7 @@ class WhatsAppTransport(MessagingTransport):
             user_id=user_id,
             conversation_id=chat,
             text=text,
-            is_mention=bool(verdict and not verdict.unprompted and is_group),
+            is_mention=bool(verdict and not verdict.unprompted),
         )
 
         # 5. Authorize. A DM is judged by dm_policy. A group message is judged

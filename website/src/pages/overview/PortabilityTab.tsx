@@ -6,7 +6,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 
 import { i18nT } from '../../i18n/t'
-import { fmtBytes, fmtDateTime, fmtList } from '../../i18n/format'
+import { fmtBytes, fmtDateTime, fmtList, fmtNumber } from '../../i18n/format'
 import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
@@ -478,6 +478,20 @@ export default function PortabilityTab() {
           const more: number = summary.missing_agent_templates_more || 0
           const crews = joinWithMore(missing.map(m => `${m.crew} → ${m.kiro_agent}`), more)
           warnings.push(i18nT('pages.overview.portabilityTab.import_templates_missing', { crews }))
+        }
+        // No archive carries an app: the apps the other machine had that this one
+        // has not set up. Two apps may share a name, so a repeat is kept.
+        const missingApps: string[] = Array.isArray(summary.missing_apps)
+          ? summary.missing_apps.filter((n: unknown): n is string => typeof n === 'string')
+          : []
+        if (missingApps.length) {
+          const names = joinWithMore(missingApps, summary.missing_apps_more || 0)
+          warnings.push(i18nT('pages.overview.portabilityTab.import_apps_missing', { names }))
+        }
+        // The apps past the archive's list: nothing here checked them, so only counted.
+        const unlistedApps: unknown = summary.missing_apps_unlisted
+        if (typeof unlistedApps === 'number' && Number.isSafeInteger(unlistedApps) && unlistedApps > 0) {
+          warnings.push(i18nT('pages.overview.portabilityTab.import_apps_unlisted', { number: fmtNumber(unlistedApps) }))
         }
         // A refused item is a failure, not a caveat: it renders as an error even
         // though the import as a whole succeeded.

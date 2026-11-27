@@ -259,9 +259,13 @@ class TestRefusals:
     def test_a_deleted_test_is_neither_coverage_nor_a_deferral_pin(
         self, clone, monkeypatch, capsys, test_id
     ):
-        # main gains test_old.py; the feature branch lacks it, so it is in the diff but not in HEAD
+        # main gains test_old.py and the feature branch, rebased on it, deletes it, so it
+        # is in the diff but not in HEAD
         _land_on_main(clone, {"test/test_old.py": "def test_old():\n    pass\n"}, "test: old")
         _git(clone, "checkout", "-q", "feature/x")
+        _git(clone, "rebase", "-q", "refs/remotes/origin/main")
+        _git(clone, "rm", "-q", "test/test_old.py")
+        _git(clone, "commit", "-q", "-m", "test: drop old")
         sites = (f"- {A}:2  fixed", f"- {B}:2  covered-by {test_id}")
         rc, err = _refused(_mod(), clone, _entry(sites=sites), monkeypatch, capsys, counts={})
         assert rc == 40 and "does not exist in HEAD (a deleted test covers nothing)" in err
@@ -272,6 +276,20 @@ class TestRefusals:
         assert rc == 40 and "does not exist in HEAD" in err
 
     def test_fixed_must_name_a_path_the_diff_touches(self, clone, monkeypatch, capsys):
+        sites = (f"- {A}:2  fixed", f"- {B}:2  fixed")
+        rc, err = _refused(_mod(), clone, _entry(sites=sites), monkeypatch, capsys, counts={})
+        assert rc == 40 and "`fixed` but the diff does not touch" in err
+
+    def test_a_path_only_the_moved_base_touched_is_not_in_the_diff(
+        self, clone, monkeypatch, capsys
+    ):
+        """The diff is what HEAD changes since it left the base: work the base took on
+        later is not the branch's, so `fixed` on it is refused."""
+        _git(clone, "checkout", "-q", "-b", "upstream", "refs/remotes/origin/main")
+        Path(clone, B).write_text("# the base's own later change\n")
+        _git(clone, "commit", "-q", "-am", "upstream: touch b.py")
+        _git(clone, "update-ref", "refs/remotes/origin/main", "HEAD")
+        _git(clone, "checkout", "-q", "-")
         sites = (f"- {A}:2  fixed", f"- {B}:2  fixed")
         rc, err = _refused(_mod(), clone, _entry(sites=sites), monkeypatch, capsys, counts={})
         assert rc == 40 and "`fixed` but the diff does not touch" in err

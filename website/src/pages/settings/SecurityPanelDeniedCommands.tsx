@@ -4,7 +4,7 @@
  * and their add input, and the policy-pinned and floor-locked tooltip keys the
  * governance rows reuse. One of the sections `SecurityPanel.tsx` composes.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { Lock, AlertTriangle, ArrowDownAZ, ChevronRight, ChevronDown, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react'
@@ -230,6 +230,7 @@ function CustomDenyRow({ rule, onToggle, onEdit, onDelete, menu, error, errorHan
               aria-label={i18nT('pages.settings.securityPanel.pattern_actions', { name: rule.pattern })}
               onPointerDown={menu.rememberOpener}
               onKeyDown={menu.rememberOpener}
+              onClick={menu.rememberOpener}
             >
               <MoreHorizontal size={14} />
             </IconButton>
@@ -266,8 +267,9 @@ type EditFields = { pattern?: string; note?: string }
  *  fields the reader changed are sent, and the server checks each exactly as it
  *  checks an add, so a rejection (a regex Python cannot compile, an unsafe one,
  *  a note carrying the refusal prefix) shows here and keeps the drafts. Closing
- *  (Cancel, Escape) changes nothing. */
-function EditDenyModal({ target, onChange, onSave, onClose, busy, error }: { target: EditTarget | null; onChange: (next: EditTarget) => void; onSave: (fields: EditFields) => void; onClose: () => void; busy: boolean; error: string }) {
+ *  (Cancel, Escape) changes nothing. On close, focus goes back to the row menu
+ *  trigger that opened it (`returnFocusTo`). */
+function EditDenyModal({ target, onChange, onSave, onClose, returnFocusTo, busy, error }: { target: EditTarget | null; onChange: (next: EditTarget) => void; onSave: (fields: EditFields) => void; onClose: () => void; returnFocusTo: RefObject<HTMLElement | null>; busy: boolean; error: string }) {
   const ime = useImeGuard()
   // The pattern is a regex, where a space is part of what it matches, so it is
   // compared and sent exactly as typed; trimming only decides "is it blank".
@@ -285,6 +287,7 @@ function EditDenyModal({ target, onChange, onSave, onClose, busy, error }: { tar
     <Modal
       open={target !== null}
       onClose={onClose}
+      returnFocusTo={returnFocusTo}
       guideTrustRoot
       guardAccidentalDismiss={changed}
       dismissDisabled={busy}
@@ -493,17 +496,13 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
     onSuccess: (snap: DeniedCommandsData) => {
       applySnapshot(snap)
       setEditing(null)
-      menu.returnFocus()
     },
   })
   const openEdit = (rule: DeniedUserRule) => {
     editUser.reset()
     setEditing({ rule, pattern: rule.pattern, note: rule.note ?? '' })
   }
-  const closeEdit = () => {
-    setEditing(null)
-    menu.returnFocus()
-  }
+  const closeEdit = () => setEditing(null)
   const deleteUser = useMutation({
     mutationFn: (id: string) => api.deleteUserDeniedCommand(id),
     onMutate: () => setRuleError(null),
@@ -823,6 +822,7 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
         onChange={next => { editUser.reset(); setEditing(next) }}
         onSave={fields => editing && editUser.mutate({ id: editing.rule.id, fields })}
         onClose={closeEdit}
+        returnFocusTo={menu.openerRef}
         busy={editUser.isPending}
         error={editUser.isError ? trustFailureMessage(editUser.error) : ''}
       />

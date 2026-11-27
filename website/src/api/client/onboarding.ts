@@ -84,7 +84,9 @@ export interface KiroPrerequisiteStatus {
   sandbox_detail: string
   /**
    * Machine-readable host mechanism behind a Linux user-namespace denial:
-   * 'apparmor_userns' | 'max_user_namespaces' | 'no_user_ns' | 'userns_denied' | ''.
+   * 'apparmor_userns' | 'max_user_namespaces' | 'userns_cap_zero' | 'no_user_ns' |
+   * 'userns_denied' | ''. 'userns_cap_zero' is the cap read as 0 (user namespaces
+   * disabled), on either failure kind.
    * Selects which concrete remedy the gate renders — the errno alone leaves the
    * user with nothing to act on.
    */
@@ -318,6 +320,18 @@ export interface KasLoginSources {
   same_account: boolean | null
   /** Removing this app's own sign-in would put sessions on kiro-cli's. */
   can_use_kiro_cli: boolean
+  /**
+   * The main harness is Kiro CLI (kiro-cli's own launch), which runs only on
+   * kiro-cli's sign-in: this app's own is used by Kiro Agent alone. Absent from
+   * a gateway that predates the field, which reads as false.
+   */
+  kiro_cli_harness?: boolean
+  /**
+   * A Kiro Agent session with no sign-in stored here would run on kiro-cli's.
+   * Asked on every harness. Absent from a gateway that predates the field, which
+   * reads as false.
+   */
+  relay_runs_on_kiro_cli?: boolean
 }
 
 export interface KasLoginDeviceSession {
@@ -331,8 +345,15 @@ export interface KasLoginDeviceSession {
   expires_at: string
 }
 
+/** One Kiro profile a company sign-in offers on `choose_profile`. */
+export interface KasLoginProfile {
+  arn: string
+  name: string
+  region: string
+}
+
 export interface KasLoginPollResult {
-  status: 'pending' | 'authorized' | 'expired' | 'error'
+  status: 'pending' | 'authorized' | 'expired' | 'error' | 'choose_profile'
   /**
    * Machine-readable failure code — error responses carry one too. On an
    * `authorized` answer it can be `previous_identity_not_removed`: the new
@@ -344,6 +365,10 @@ export interface KasLoginPollResult {
   /** On `authorized` after a begin with `replaces`: every other stored slot the
    *  switch removed so the new account is the one the store resolves to. */
   replaced?: string[]
+  /** On `choose_profile`: the profiles of every Kiro region this company sign-in
+   *  can use, and the one to preselect. The sign-in waits until a poll names one. */
+  profiles?: KasLoginProfile[]
+  selected?: string
 }
 
 /**
@@ -470,8 +495,12 @@ export function createOnboardingEndpoints({ get, post, put, j, jNullable, jKasLo
       post('/api/kas-login/device', { provider, ...(extra ?? {}) }).then(
         j,
       ) as Promise<KasLoginDeviceSession>,
-    kasLoginPoll: (login_id: string) =>
-      post('/api/kas-login/poll', { login_id }).then(j) as Promise<KasLoginPollResult>,
+    // `profile_arn` picks one of a `choose_profile` answer's profiles; a profile the
+    // sign-in did not offer answers 400 `unknown_profile`.
+    kasLoginPoll: (login_id: string, profile_arn?: string) =>
+      post('/api/kas-login/poll', profile_arn ? { login_id, profile_arn } : { login_id }).then(
+        j,
+      ) as Promise<KasLoginPollResult>,
     // Loopback begin answers 409 `loopback_unavailable` when this install shape
     // cannot receive the callback (or every allowlisted port is busy); the gate
     // treats that as "start the device flow instead", not as a failure.

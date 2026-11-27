@@ -15,11 +15,13 @@ earlier writer left in the file.
 
 from __future__ import annotations
 
+import copy
 import math
 from typing import Any
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import kiro_cli
+from kiro_crew.build_reuse import reuse
 from kiro_crew.env import sanitize_spec_env
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.platform.governance import CU_MCP_SERVER
@@ -284,6 +286,16 @@ _LAUNCHER_EXEC_ENV_KEYS: frozenset[str] = frozenset(
 
 
 def _mcp_registry_mode() -> bool:
+    """:func:`_read_mcp_registry_mode`, read once per :func:`kiro_crew.build_reuse.one_build`.
+
+    A skill-view preparation asks this for every agent and every managed server it
+    projects; inside one session start's block the effective config is loaded once.
+    Outside a block it is read on every call, as before.
+    """
+    return reuse(("managed_mcp.registry_mode",), _read_mcp_registry_mode, weight=lambda _: 1)
+
+
+def _read_mcp_registry_mode() -> bool:
     """True when the operator has declared this install registry-governed.
 
     An enterprise Kiro profile with an MCP Registry URL puts the client in
@@ -508,7 +520,21 @@ def managed_mcp_spec_entry(name: str, *, include_opt_in: bool = False) -> dict[s
 
     Never raises: an invocation that cannot be resolved yields ``None``, because
     the caller is on a spawn path where no MCP server is better than no session.
+
+    Inside one :func:`kiro_crew.build_reuse.one_build` block (one session start)
+    the entry is resolved once per name and each caller gets its own copy; a
+    skill-view preparation otherwise re-resolves the launcher for every agent.
     """
+    entry = reuse(
+        ("managed_mcp.spec_entry", name, include_opt_in),
+        lambda: _resolve_managed_mcp_spec_entry(name, include_opt_in=include_opt_in),
+        weight=lambda value: len(repr(value)),
+    )
+    return copy.deepcopy(entry)
+
+
+def _resolve_managed_mcp_spec_entry(name: str, *, include_opt_in: bool) -> dict[str, Any] | None:
+    """:func:`managed_mcp_spec_entry`, resolved live."""
     spec = agent_mod._MANAGED_MCP_SERVERS.get(name)
     if not isinstance(spec, dict):
         return None

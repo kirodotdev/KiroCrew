@@ -52,6 +52,7 @@ from kiro_crew.hidden_leaf_staging import EnvStagingRefused
 from kiro_crew.host_timezone import LOCAL_TIMEZONE, detect_host_timezone, is_local_timezone
 from kiro_crew.sandbox import (
     REMEDY_APPARMOR_USERNS,
+    REMEDY_USERNS_CAP_ZERO,
     configured_sandbox_mode,
     effective_sandbox_mode,
     unavailable_kind,
@@ -769,7 +770,7 @@ def _verify_slack_owner_id(bot_token: str, owner_id: str) -> tuple[bool | None, 
     Only :data:`_SLACK_OWNER_REJECTIONS` indicts the id; every other Slack error
     degrades to unverifiable.
     """
-    if not USER_ID_RE.match(owner_id):
+    if not USER_ID_RE.fullmatch(owner_id):
         return False, (
             "not a member ID — 'C…' is a channel and 'B…' is a bot; yours starts "
             "with U (or W on Enterprise Grid), from your profile → ⋯ More → Copy member ID"
@@ -1398,6 +1399,15 @@ def _setup_sandbox_consent() -> bool:
         kind = unavailable_kind()
     except Exception as exc:  # pragma: no cover — defensive
         print(f"  ⚠️  Could not probe for a sandbox backend: {exc}")
+        return False
+    if kind == "transient" and unavailable_remedy() == REMEDY_USERNS_CAP_ZERO:
+        # Still not grounds for an opt-in (the verdict is uncached, like any
+        # transient one), but the cause is certain, so it is named instead of
+        # being called momentary pressure that a retry clears.
+        print("── Sandbox ──\n")
+        print("  User namespaces are disabled on this host (user.max_user_namespaces=0),")
+        print("  so Kiro Crew cannot build its sandbox and no opt-in is offered.")
+        print("  Run `kirocrew doctor` for the fix.\n")
         return False
     if kind == "transient":
         # A momentary fork/resource failure is NOT grounds for a permanent

@@ -64,6 +64,19 @@ describe('RegistryManager', () => {
     expect(screen.getByPlaceholderText(/app-registry/)).toBeInTheDocument()
   })
 
+  it('gives the add form buttons a resting fill and a strong edge on its tint', async () => {
+    mockListRegistries.mockResolvedValue({ registries: [] })
+    render(<RegistryManager />, { wrapper: Wrapper })
+    await waitFor(() => screen.getByText('Add Registry'))
+    fireEvent.click(screen.getByText('Add Registry'))
+    for (const name of ['Cancel', 'Add Registry']) {
+      const button = screen.getByRole('button', { name })
+      expect(button).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(button).not.toHaveClass('bg-transparent')
+      expect(button).not.toHaveClass('border-border')
+    }
+  })
+
   it('shows main as the branch placeholder (backend owns the default)', async () => {
     mockListRegistries.mockResolvedValue({ registries: [] })
     render(<RegistryManager />, { wrapper: Wrapper })

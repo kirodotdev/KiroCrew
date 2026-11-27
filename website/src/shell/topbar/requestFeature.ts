@@ -5,6 +5,7 @@ import { createChatForView, reportCreateFailure, showCreatedChat } from '../../l
 import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { mintSendId } from '../../utils/sendDelivery'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
+import { announceSentIn } from '../../hooks/useTranscriptAnnouncement'
 import { api } from '../../api/client'
 import { FEATURE_REQUEST_ROW_META_KEY } from '../../prompts/featureRequest'
 import { feedbackTracker } from '../../feedbackTracker'
@@ -103,6 +104,9 @@ export function useRequestFeature(colorTheme: string) {
     // persists it on the user row and echoes it, so the echo reconciles the
     // optimistic bubble by `sendId` and the persisted row keeps the stamp the
     // transcript reads the refusal by.
+    // Spoken at the send, as the composer's own send is, in the new session
+    // when the reader was brought to it.
+    announceSentIn(slot, visibleMessage)
     const receipt = await sendTurn({ message: visibleMessage, slot, colorTheme, meta })
     // Resolution is not success: `refused` means the server accepted neither
     // `ok` nor `queued`, so no turn started and no WS response is coming, and

@@ -508,8 +508,13 @@ def test_a_real_task_round_trips_through_create_run_and_delete(cfg):
         assert created.returncode == 0, created.stderr or created.stdout
         assert win.task_exists(cfg, name) is True
         assert win.schtasks("/Run", "/TN", tn).returncode == 0
-        wait_until(marker.exists, timeout=30, describe=lambda: "the task never ran its action")
+        ran = wait_until(
+            marker.read_text,
+            timeout=30,
+            ignoring=(FileNotFoundError, PermissionError),
+            describe=lambda: "the task never ran its action",
+        )
     finally:
         win.schtasks("/Delete", "/TN", tn, "/F")
     assert win.task_exists(cfg, name) is False
-    assert marker.read_text() == f"0x{subprocess.NORMAL_PRIORITY_CLASS:x}"
+    assert ran == f"0x{subprocess.NORMAL_PRIORITY_CLASS:x}"

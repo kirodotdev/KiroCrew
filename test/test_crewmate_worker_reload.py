@@ -146,6 +146,77 @@ def test_a_busy_worker_is_reloaded_once_its_turn_ends(reloads):
     assert reloads == [("w1", slot)]
 
 
+def test_a_reload_deferred_to_the_turn_end_keeps_the_notice_it_was_asked_with(reloads, monkeypatch):
+    from kiro_crew.dashboard import chat_handlers
+
+    notices: list[str] = []
+    fake = chat_handlers.reload_slot_session
+
+    async def noting(state, slot, name, **kw):
+        response = await fake(state, slot, name, **kw)
+        if response.status < 400:
+            notices.append(kw["notice"])
+        return response
+
+    monkeypatch.setattr(chat_handlers, "reload_slot_session", noting)
+    state = _state("w1")
+    slot = state._slots["w1"]
+    provider = state.sessions.providers["dashboard_w1"]
+    provider.busy = True
+    assert asyncio.run(reload_mod.reload_if_idle(state, slot, notice="app tools")) == (
+        reload_mod.BUSY
+    )
+
+    async def turn_ends_then_settles():
+        reload_mod.note_turn_end(state, slot)
+        await asyncio.sleep(0)
+        provider.busy = False
+        await asyncio.gather(*list(state._crewmate_reload_tasks))
+
+    asyncio.run(turn_ends_then_settles())
+    assert notices == ["app tools"]
+
+
+def test_the_follow_up_runs_once_and_only_after_the_deferred_reload(reloads):
+    """Run the follow-up on BUSY, or drop it from what the turn end retries, and
+    the count below is wrong: the Bot is told before, or never."""
+    told: list[str] = []
+    state = _state("w1")
+    slot = state._slots["w1"]
+    provider = state.sessions.providers["dashboard_w1"]
+    provider.busy = True
+    outcome = asyncio.run(
+        reload_mod.reload_if_idle(state, slot, notice="n", on_reloaded=lambda: told.append("n"))
+    )
+    assert outcome == reload_mod.BUSY and told == []
+
+    async def turn_ends_then_settles():
+        reload_mod.note_turn_end(state, slot)
+        await asyncio.sleep(0)
+        provider.busy = False
+        await asyncio.gather(*list(state._crewmate_reload_tasks))
+
+    asyncio.run(turn_ends_then_settles())
+    assert reloads == [("w1", slot)] and told == ["n"]
+    asyncio.run(turn_ends_then_settles())
+    assert told == ["n"]
+
+
+def test_a_refused_reload_runs_no_follow_up(reloads, monkeypatch):
+    from kiro_crew.dashboard import chat_handlers
+
+    async def refused(*_a, **_kw):
+        return web.json_response({"code": "nope"}, status=500)
+
+    monkeypatch.setattr(chat_handlers, "reload_slot_session", refused)
+    told: list[str] = []
+    state = _state("w1")
+    outcome = asyncio.run(
+        reload_mod.reload_if_idle(state, state._slots["w1"], on_reloaded=lambda: told.append("x"))
+    )
+    assert outcome == reload_mod.GONE and told == []
+
+
 def test_the_capabilities_route_schedules_the_reload(monkeypatch):
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -437,9 +508,9 @@ def test_a_worker_busy_through_every_retry_stays_owed(reloads, monkeypatch):
     tries: list[str] = []
     real = reload_mod.reload_if_idle
 
-    async def counted(st, sl):
+    async def counted(st, sl, **kw):
         tries.append(sl.key)
-        return await real(st, sl)
+        return await real(st, sl, **kw)
 
     monkeypatch.setattr(reload_mod, "reload_if_idle", counted)
     reload_mod._mark(state, slot, True)

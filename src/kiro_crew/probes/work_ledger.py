@@ -102,11 +102,11 @@ _UNDELIVERED_KEY = "undelivered"
 #: there would otherwise make every finished ledger read as a failure in silence.
 ACCEPTED_STATE = "accepted"
 
-#: Key prefix of the one wake for "every item is closed, and every item's bar was
-#: met". The rest of the key is a digest of the closed board.
+#: Key of the TERMINAL for "every item is closed, and every item's bar was met"
+#: (:func:`_finished`). The one end of this watch that counts as a success.
 ACCEPTED_KEY = "all-accepted"
 
-#: Key prefix of the one wake for "every item is closed, and at least one was NOT
+#: Key of the TERMINAL for "every item is closed, and at least one was NOT
 #: accepted" (rejected or abandoned).
 CLOSED_KEY = "all-closed"
 
@@ -119,11 +119,31 @@ _ALL_CLOSED_ENTRY = "_all_closed"
 _NO_REPORTS = "no-reports"
 
 
+def _finished(items: list[work_ledger.WorkItem]) -> irq.Observation:
+    """The TERMINAL that ends a finished board's patrol: accepted, or closed short."""
+    accepted = sum(1 for item in items if item.state == ACCEPTED_STATE)
+    if accepted == len(items):
+        key, said = ACCEPTED_KEY, f"every item is closed and accepted ({len(items)} total)"
+    else:
+        key, said = CLOSED_KEY, f"every item is closed, {accepted} accepted of {len(items)}"
+    return irq.Observation(
+        key, irq.Severity.TERMINAL, f"[work-ledger] {said}; the gateway ended the patrol."
+    )
+
+
+def _is_channel_conductor(conductor_key: str) -> bool:
+    """Whether *conductor_key* names a messaging-channel session, not a dashboard slot."""
+    from kiro_crew.autonudge_service.model import is_channel_key
+
+    return is_channel_key(conductor_key)
+
+
 def _always_idle(_session_key: str) -> bool:
     """Default liveness resolver: nothing is running.
 
     Not ``True``: an unknown liveness must not be able to SUPPRESS a stall wake.
-    See the module docstring for the full argument.
+    See the module docstring for the full argument. On a board whose every item is
+    closed it ends the watch at once; a next item's bind arms a new patrol.
     """
     return False
 
@@ -192,6 +212,11 @@ class WorkLedgerProbe(irq.Probe):
         #: back. A ledger read with no worker report yet still gets a token, so an
         #: early, quiet board is recognised as unchanged too.
         self.revision: str | None = None
+        #: The store key and ``change_mark`` the last board read was taken at, or
+        #: ``None``. A driver ending the watch on a finished board compares the mark
+        #: with the key's mark then: a write since (the next item's create or bind)
+        #: keeps the watch.
+        self.board_mark: tuple[str, int] | None = None
 
     # -- Probe contract ---------------------------------------------------
 
@@ -241,6 +266,7 @@ class WorkLedgerProbe(irq.Probe):
             # cheap failure is to keep firing on the existing timer.
             return irq.Tick(fetch_ok=False, detail="work ledger unreadable")
         items, all_readable, tails = read.items, read.all_readable, read.tails
+        self.board_mark = (key, read.mark)
         # Open items only: a closed item never wakes again, and every observation
         # this probe raises is ``ResetsOn.NEVER``, which an epoch reset keeps.
         newest = {item_id: events[-1].id for item_id, events in tails.items() if events}
@@ -255,16 +281,28 @@ class WorkLedgerProbe(irq.Probe):
             ledger_wake.forget_items(key, closed)
 
         if items and all_readable and len(closed) == len(items):
-            # Every item closed is NOT the end of the goal: a lead closes item N
-            # and waits for item N+1, a conductor closes a round and opens the
-            # next. So it is one wake that says so, and the watch stays armed;
-            # only a stop or the loop's own bounds end it. Requires at least one
-            # item, so an empty ledger (a watch armed before the first item) says
-            # nothing.
-            return irq.Tick(
-                epoch=epoch,
-                observations=self._all_closed(key, items) + self._posture_observations(key, items),
-            )
+            # Every item closed. The conductor sends its final report in the turn
+            # that closes the last item, and opens the next item in that same turn
+            # when the goal goes on. So while that turn runs or is queued the tick
+            # stays quiet, and once it is over with no new item the watch ENDS: a
+            # wake would only buy a turn to stop the loop. A next round dispatched
+            # later is patrolled again by its bind (``conductor_patrol``) or the
+            # conductor's own ``monitor_start``. Requires at least one item, so an
+            # empty ledger (a watch armed before the first item) says nothing.
+            #
+            # A channel conductor (Slack, Discord) keeps the one "every item is
+            # closed" wake and stops the loop itself: the liveness resolver reads
+            # dashboard slots only, and a channel terminal settles through an owed
+            # turn whose awaited settlement a concurrent bind could race.
+            if _is_channel_conductor(key):
+                return irq.Tick(
+                    epoch=epoch,
+                    observations=self._all_closed(key, items)
+                    + self._posture_observations(key, items),
+                )
+            if self._worker_running(key):
+                return irq.Tick(epoch=epoch, observations=self._posture_observations(key, items))
+            return irq.Tick(epoch=epoch, observations=[_finished(items)])
 
         observations: list[irq.Observation] = self._posture_observations(key, items)
         for item in items:
@@ -276,6 +314,15 @@ class WorkLedgerProbe(irq.Probe):
         # as pending would hold a ``question`` wake for the window's hard cap while
         # the worker it blocks waits for the answer.
         return irq.Tick(epoch=epoch, observations=observations)
+
+    def board_moved_since_read(self) -> bool:
+        """Whether the store was written here since the last board read, or no read is
+        recorded. In memory, no file read, so a driver can ask with no await between
+        the answer and what it does on it."""
+        if self.board_mark is None:
+            return True
+        key, mark = self.board_mark
+        return work_ledger.change_mark(key) != mark
 
     def wake_suffix(self) -> str:
         """Said once per wake, not once per item."""

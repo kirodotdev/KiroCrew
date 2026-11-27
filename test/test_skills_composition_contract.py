@@ -261,7 +261,7 @@ _LOADER_SIGNATURES = {
     "find_similar": "(self, description: 'str', threshold: 'float' = 0.85, *, exclude: 'str' = '') -> 'str | None'",
     "get_always_skills": "(self, project_dir: 'str | Path | None' = None) -> 'list[str]'",
     "get_auto_skill_version": "(self, name: 'str') -> 'int'",
-    "get_context": "(self, budget: 'int | None' = None, only: 'list[str] | None' = None, project_dir: 'str | Path | None' = None, project_body_budget: 'int | None' = None, *, discovery_only: 'bool' = False, required_parts_out: 'list[str] | None' = None) -> 'str'",
+    "get_context": "(self, budget: 'int | None' = None, only: 'list[str] | None' = None, project_dir: 'str | Path | None' = None, project_body_budget: 'int | None' = None, *, discovery_only: 'bool' = False, required_parts_out: 'list[str] | None' = None, index_counts_out: 'dict[str, int] | None' = None) -> 'str'",
     "get_pending_skill": "(self, slug: 'str') -> 'dict | None'",
     "get_triggered_skills": "(self, text: 'str', project_dir: 'str | Path | None' = None, *, select: 'Callable[[], list[str] | None] | None' = None, unusable: 'Collection[str]' = ()) -> 'list[str]'",
     "has_dollar_candidate": "(text: 'str') -> 'bool'",

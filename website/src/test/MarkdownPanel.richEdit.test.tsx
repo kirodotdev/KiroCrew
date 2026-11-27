@@ -185,6 +185,25 @@ describe('MarkdownPanel: a partial buffer is never saved', () => {
     expect(editButton()).toBeNull()
   })
 
+  it('says the preview is of a cut file while a rich viewer shows it', () => {
+    renderPanel({ filePath: '/home/user/deck.html', content: '<html><head><style>', partial: 'truncated' })
+    expect(screen.getByTestId('rich-viewer')).toBeInTheDocument()
+    const notice = screen.getByTestId('markdown-panel-partial-notice').textContent
+    expect(notice).toBe(i18nT('components.markdownPanel.partial_copy_preview', { reason: i18nT('components.markdownPanel.partial_reason_truncated') }))
+    expect(notice).toMatch(/cut short at the gateway's size limit/)
+  })
+
+  it('shows no partial notice over a capped svg its image viewer fetches whole', () => {
+    renderPanel({ filePath: '/home/user/chart.svg', content: '<svg><g>', partial: 'truncated' })
+    expect(screen.queryByTestId('markdown-panel-partial-notice')).toBeNull()
+  })
+
+  it('shows no partial notice over a whole rich file', () => {
+    renderPanel({ filePath: '/home/user/deck.html', content: '<p>whole</p>' })
+    expect(screen.getByTestId('rich-viewer')).toBeInTheDocument()
+    expect(screen.queryByTestId('markdown-panel-partial-notice')).toBeNull()
+  })
+
   it('still lets an editor whose read turned partial go back to its viewer', () => {
     const { rerenderPanel } = renderPanel({ filePath: '/home/user/sources.json', content: '{}' })
     fireEvent.click(editButton()!)

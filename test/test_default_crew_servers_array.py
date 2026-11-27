@@ -6,9 +6,10 @@ user-level spec Crew did not write. kiro-cli and KAS apply it on their own paths
 ``ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY`` get it from the shared translation
 their ``session/new`` array is built from. These tests pin that array for a custom
 agent, its parity with Crew's default agent, the servers left out because those
-mirrors mount a server whole and apply no ``excludedTools`` (every app server, and
-a default one an exclusion may reach), the residual they keep, the absent audit
-record, and the cases that stay as written.
+mirrors mount a server whole and apply no per-tool ``excludedTools`` (every app
+server, and a default one an exclusion may reach), a server the spec excludes whole
+kept out of the array and out of the missing-server reports, the per-tool residual
+they keep, the absent audit record, and the cases that stay as written.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from kiro_crew.acp import session_mcp
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
 )
@@ -187,7 +189,7 @@ def test_kas_keeps_a_per_tool_narrowed_server(custom):
     ids=["loader", "loader-and-one-app-tool", "star"],
 )
 def test_no_app_server_is_added_on_these_mirrors(custom, monkeypatch, granted):
-    """Both mount a server with every tool and apply no ``excludedTools``, and codex
+    """Both mount a server with every tool and apply no per-tool ``excludedTools``, and codex
     runs an app tool marked ``readOnlyHint`` without asking, so an app's server,
     third-party code, is never added there. KAS still adds it, and narrows it."""
     launch = {"command": "/opt/app", "args": []}
@@ -207,23 +209,153 @@ def test_no_app_server_is_added_on_these_mirrors(custom, monkeypatch, granted):
 @pytest.mark.parametrize(
     "spec",
     [
-        {"tools": ["*"], "excludedTools": ["@kirocrew-core"]},
         {"tools": ["*"], "excludedTools": ["@kirocrew-core/spawn_run"]},
         {"tools": ["fs_read", "@kirocrew-core"], "excludedTools": ["@kirocrew-core/spawn_run"]},
         {"tools": ["fs_read", "@kirocrew-core/skill_search"]},
     ],
-    ids=["star-opt-out", "star-one-tool", "named-one-tool", "per-tool-grant"],
+    ids=["star-one-tool", "named-one-tool", "per-tool-grant"],
 )
 def test_a_control_plane_server_the_spec_names_still_mounts_whole(custom, spec):
-    """Pins a residual these mirrors had before Crew added any server: when the spec's
-    own ``tools`` names ``kirocrew-core``, the array re-adds it whole
-    (``session_mcp_servers``) and nothing reads ``excludedTools``. Deferred, and
-    stated in agent-spec-fields.md and the agent-host-contract row; a change that
-    narrows it updates both and this test."""
+    """Pins the per-tool residual these mirrors had before Crew added any server: when
+    the spec's own ``tools`` names ``kirocrew-core``, the array re-adds it whole
+    (``session_mcp_servers``) and no per-tool entry narrows it. Deferred, and stated
+    in agent-spec-fields.md and the agent-host-contract row; a change that narrows it
+    updates both and this test."""
     custom(spec)
     assert "kirocrew-core" in _claude_names("mine")
     codex = codex_projection("mine", session_key="dashboard:chat-1")
     assert "kirocrew-core" in _by_name(codex.params["mcpServers"])
+
+
+_GLEAN = {"glean": {"command": "/opt/glean", "args": []}}
+
+
+@pytest.mark.parametrize(
+    ("spec", "gone"),
+    [
+        ({"tools": ["*"], "excludedTools": ["@kirocrew-core"]}, "kirocrew-core"),
+        (
+            {
+                "tools": ["fs_read", "@kirocrew-core", "@kirocrew-cron"],
+                "excludedTools": ["@kirocrew-core"],
+            },
+            "kirocrew-core",
+        ),
+        ({"tools": ["*"], "excludedTools": ["@kirocrew-core/*"]}, "kirocrew-core"),
+        (
+            {
+                "tools": ["@glean", "@kirocrew-cron"],
+                "mcpServers": _GLEAN,
+                "excludedTools": ["@glean"],
+            },
+            "glean",
+        ),
+        (
+            {"tools": ["*"], "managedToolPolicy": {"excludeServers": ["kirocrew-core"]}},
+            "kirocrew-core",
+        ),
+        (
+            {
+                "tools": ["@glean", "@kirocrew-cron"],
+                "mcpServers": _GLEAN,
+                "permissions": {
+                    "rules": [{"effect": "deny", "capability": "mcp", "match": ["glean/*"]}]
+                },
+            },
+            "glean",
+        ),
+    ],
+    ids=[
+        "star-opt-out",
+        "named-opt-out",
+        "named-star-opt-out",
+        "declared",
+        "exclude-servers",
+        "permissions",
+    ],
+)
+def test_a_server_the_spec_excludes_whole_stays_out_of_the_array(custom, spec, gone):
+    """The spec's own whole-server exclusion holds here, a server its ``tools`` names
+    included, and no report calls the server it withheld missing."""
+    custom(spec)
+    claude = _claude_names("mine")
+    assert gone not in claude and "kirocrew-cron" in claude
+    codex = set(
+        _by_name(codex_projection("mine", session_key="dashboard:chat-1").params["mcpServers"])
+    )
+    assert gone not in codex and "kirocrew-cron" in codex
+    assert gone not in {e["name"] for e in session_mcp.session_mcp_servers("mine")}
+    from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs
+
+    found, rows = agent_spec_mcp_refs(
+        "mine", backends=[ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KIRO]
+    )
+    assert found and len(rows) == 3
+    assert all(f"@{gone}" not in unresolved for _backend, unresolved, _mirror in rows)
+
+
+def test_the_spec_is_read_once_however_many_names_are_judged(monkeypatch):
+    """A spec a checkout can write is read once, so the cost stays linear in the names."""
+    reads = []
+    real = defaults._whole_opt_outs
+    monkeypatch.setattr(defaults, "_whole_opt_outs", lambda spec: reads.append(1) or real(spec))
+    names = [f"s{i}" for i in range(500)]
+    spec = {"excludedTools": [f"@s{i}" for i in range(0, 500, 2)]}
+    assert defaults.withheld_whole(spec, names) == {f"s{i}" for i in range(0, 500, 2)}
+    assert reads == [1]
+
+
+def test_glob_work_past_a_cap_withholds_every_name():
+    """Glob count, length and matching work are bounded; past a bound, fail closed.
+    Past the first line, no glob matches the name it is judged against."""
+
+    def spec(*globs: str) -> dict:
+        rule = {"effect": "deny", "capability": "mcp", "match": list(globs)}
+        return {"permissions": {"rules": [rule]}}
+
+    assert defaults.withheld_whole(spec("x3*"), ["glean", "x3y"]) == {"x3y"}
+    count = defaults._GLOB_COUNT_CAP
+    assert defaults.withheld_whole(spec(*(f"x{i}*" for i in range(count))), ["a"]) == set()
+    assert defaults.withheld_whole(spec(*(f"x{i}*" for i in range(count + 1))), ["a"]) == {"a"}
+    assert defaults.withheld_whole(spec("[" * 300_000), ["a"]) == {"a"}
+    assert defaults.withheld_whole(spec("[kg]lean"), ["a"]) == {"a"}
+    length = defaults._GLOB_LENGTH_CAP
+    assert defaults.withheld_whole(spec("?" * length), ["a"]) == set()
+    assert defaults.withheld_whole(spec("?" * (length + 1)), ["a"]) == {"a"}
+    width = defaults._GLOB_WORK_CAP // defaults._GLOB_LENGTH_CAP // 4 + 1
+    names = [f"{i:0{width}d}" for i in range(4)]
+    glob = "*" + "a" * (defaults._GLOB_LENGTH_CAP - 2) + "b"
+    assert defaults.withheld_whole(spec(glob), names) == set(names)
+
+
+def test_every_array_mirror_leaves_it_out(custom):
+    """One seam builds every session-array host's array, so each one withholds it."""
+    from kiro_crew.providers.mirrors import mirror_for
+
+    custom({"tools": ["fs_read", "@kirocrew-core"], "excludedTools": ["@kirocrew-core"]})
+    for backend in sorted(ACP_BACKENDS_SESSION_MCP_ARRAY):
+        mirror = mirror_for(backend)
+        if mirror is None:
+            continue
+        params = mirror.session_params("mine", permission_surface_owned=True)
+        assert "kirocrew-core" not in {e.get("name") for e in params["mcpServers"]}, backend
+
+
+@pytest.mark.parametrize(
+    ("excluded", "expected"),
+    [(["@notes"], _CREW | {"mail"}), (["@*"], set())],
+    ids=["one-server", "every-server"],
+)
+def test_a_pooled_stub_the_spec_excludes_whole_is_withheld_too(custom, excluded, expected):
+    """Both halves of the array, as for a server switched off whole."""
+    custom({"tools": ["*"], "excludedTools": excluded})
+    names = ("notes", "mail")
+    stubs = [{"name": name, "command": "/opt/stub", "args": []} for name in names]
+    assert _claude_names("mine", stub_server_names=names, stub_elements=stubs) == expected
+    codex = codex_projection(
+        "mine", session_key="dashboard:chat-1", stub_server_names=names, stub_elements=stubs
+    )
+    assert set(_by_name(codex.params["mcpServers"])) == expected
 
 
 def test_the_server_s_own_disabled_tools_still_turn_one_tool_off(custom):

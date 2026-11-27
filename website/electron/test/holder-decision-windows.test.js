@@ -22,6 +22,7 @@ function windowsHolder({
   pids = [4242],
   health = { app: "kirocrew", version: "0.11.0" },
   commandAfterDialog = null,
+  fs = null,
 } = {}) {
   const dialogs = [];
   const stops = [];
@@ -34,6 +35,7 @@ function windowsHolder({
     dialog: {
       async showMessageBox(options) { dialogs.push(options); dialogShown = true; return { response }; },
     },
+    fs,
     path: path.win32,
     processObj: { platform: "win32", resourcesPath: "C:\\New\\resources", env: {} },
     port: 5476,
@@ -142,4 +144,24 @@ test("only a command line that opens with a quoted, non-empty path names an exec
     assert.deepStrictEqual(await decision.resolveGatewayConflict(), FOREIGN_HOLDER);
     assert.strictEqual(dialogs.length, 0);
   }
+});
+
+test("the update stop's bundle check reads the listener's executable on Windows, without case", async () => {
+  const executable = "c:\\new\\Resources\\backend-dist\\kirocrew-backend\\python.exe";
+  const own = `"${executable}" ${executable} -m kiro_crew gateway --no-open --port 5476`;
+  const { decision } = windowsHolder({ command: own });
+  assert.strictEqual(await decision.isCurrentBundleGatewayForUpdate(), true);
+  assert.strictEqual(await decision.isCurrentBundleGateway(), false, "every other caller keeps the Windows answer");
+  const sibling = "C:\\New\\resources\\backend-dist-old\\python.exe";
+  for (const command of [OLD_COMMAND, `"${sibling}" ${sibling} -m kiro_crew gateway --no-open --port 5476`]) {
+    assert.strictEqual(await windowsHolder({ command }).decision.isCurrentBundleGatewayForUpdate(), false, command);
+  }
+  // A Toolbox-style install: the app runs through a `current` junction and
+  // Windows reports the gateway by the version folder it resolved to.
+  const resolvedExe = "C:\\Toolbox\\0.12.0\\resources\\backend-dist\\kirocrew-backend\\python.exe";
+  const junction = windowsHolder({
+    command: `"${resolvedExe}" ${resolvedExe} -m kiro_crew gateway --no-open --port 5476`,
+    fs: { realpathSync: { native: () => "C:\\Toolbox\\0.12.0\\resources" } },
+  });
+  assert.strictEqual(await junction.decision.isCurrentBundleGatewayForUpdate(), true);
 });

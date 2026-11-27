@@ -15,6 +15,7 @@ import { onSlotUploadFailureHeld, takeSlotUploadFailure } from '../../../utils/s
 import type { SessionRef } from '../../../utils/sessionRefs'
 import type { useKnowledgeFetch } from '../useKnowledgeFetch'
 import type { ComposerStaging } from './composerStaging'
+import { safeGetSessionItem } from '../../../utils/safeStorage'
 
 /**
  * Per-slot composer drafts: the four stores (text, staged files, collapsed
@@ -289,7 +290,7 @@ export function useComposerDraftLifecycle({
     // gone once it shows a chat, unless the carry above moved it, so its
     // dictation record goes too.
     if (prevSlotVal === null && activeSlot !== null) clearDictated(null)
-    const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
+    const raw = safeGetSessionItem(PREFILL_STORAGE_KEY)
     const storedDraft = activeSlot ? drafts.current[activeSlot] ?? '' : ''
     const draftFallback = carried !== null ? appendTypedText(storedDraft, carried) : storedDraft
     // What this switch put in the composer, for the create-carry re-arm below.

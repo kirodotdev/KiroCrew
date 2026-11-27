@@ -9,20 +9,25 @@ watchdog to exit the gateway. An idle worker does not help, because the lock is
 taken before the stdlib looks for one.
 
 :class:`EnqueueOnlyThreadPoolExecutor` takes only its own lock in ``submit`` and
-starts no thread there: one grower thread per pool starts the workers, so a slow
-start delays only work still waiting for a new worker, while idle workers keep
-taking work. It backs the loop's default executor and the off-loop spawn pool.
-The other pools keep the stdlib executor, so a loop-thread ``run_in_executor`` on
-one of them still takes the process-wide lock.
+starts no thread there. Building a pool starts its first worker and then its grower
+thread, both on the building thread, so a pool always has a worker, and a start the
+host refuses raises to the builder as the stdlib's first ``submit`` raised it to its
+caller. The grower starts the rest, so a slow start delays only work still waiting
+for a new worker, while the running workers keep taking work. It backs the loop's
+default executor, the off-loop spawn pool and every thread pool
+``kiro_crew.executors`` builds.
 
 It subclasses ``ThreadPoolExecutor`` because ``loop.set_default_executor`` accepts
 nothing else, and keeps the parent's ``_work_queue`` so readers of its depth
-(``turn_timing``) still see the backlog. It runs none of the parent's thread code.
-Its threads are daemons: a pool shut down without ``wait`` (``loop.close()``,
-``atexit``) never holds interpreter exit, and a pool dropped without a shutdown
-stops its threads the way the stdlib's do, through a weak reference. A call queued
-before ``shutdown()`` still runs (unless the pool is dropped before its grower wakes),
-and ``shutdown(wait=True)`` returns once it has.
+(``turn_timing``, ``cron_queue_depth``) still see the backlog. It runs none of the
+parent's thread code. Its threads are daemons, and a pool dropped without a shutdown
+stops them the way the stdlib's do, through a weak reference. A call queued before
+``shutdown()`` still runs, and ``shutdown(wait=True)`` returns once it has. At
+interpreter exit the pools' work is joined as the stdlib joins its own: one hook,
+registered where the stdlib registers its own, makes every pool refuse new work from
+then on, as the stdlib's do, shuts each pool registered by then down behind its queued
+work and waits for every worker recorded by then, including those of a pool already
+shut down without ``wait`` and dropped.
 """
 
 from __future__ import annotations
@@ -40,12 +45,23 @@ logger = logging.getLogger(__name__)
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
+# For the exit hook: every live pool, and every worker a pool started with its queue,
+# kept apart from the pool as the stdlib's ``_threads_queues`` keeps its own.
+_registry_lock = threading.Lock()
+_pools: weakref.WeakSet[EnqueueOnlyThreadPoolExecutor] = weakref.WeakSet()
+_workers: weakref.WeakKeyDictionary[threading.Thread, queue.SimpleQueue[Any]] = (
+    weakref.WeakKeyDictionary()
+)
+# Set when the exit hook starts: from then on every pool refuses new work, as the
+# stdlib's pools refuse it after interpreter shutdown.
+_exiting = False
+
 
 class EnqueueOnlyThreadPoolExecutor(ThreadPoolExecutor):
     """A ``ThreadPoolExecutor`` whose ``submit`` only enqueues the call."""
 
     # The parent's attributes, holding this pool's own items: ``(future, fn, args,
-    # kwargs)`` calls and the ``None`` stop, and the workers the grower started.
+    # kwargs)`` calls and the ``None`` stop, and the pool's workers.
     _work_queue: queue.SimpleQueue[Any]
     _threads: set[threading.Thread]
 
@@ -53,20 +69,29 @@ class EnqueueOnlyThreadPoolExecutor(ThreadPoolExecutor):
         super().__init__(max_workers=max_workers, thread_name_prefix=thread_name_prefix)
         # One release per worker the grower should try to start.
         self._wanted = threading.Semaphore(0)
+        _start_worker(self)  # a refused start raises here, before anything else runs
         stop = functools.partial(_stop_threads, self._work_queue, self._wanted)
-        self._grower = threading.Thread(
-            target=_grow,
-            args=(weakref.ref(self, stop), self._wanted),
-            name=f"{self._thread_name_prefix}_grow",
-            daemon=True,
-        )
-        self._grower.start()
+        try:
+            self._grower = threading.Thread(
+                target=_grow,
+                args=(weakref.ref(self, stop), self._wanted),
+                name=f"{self._thread_name_prefix}_grow",
+                daemon=True,
+            )
+            self._grower.start()
+        except BaseException:
+            self._work_queue.put(None)  # stop the worker started above
+            raise
+        with _registry_lock:
+            _pools.add(self)
 
     def submit(self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs) -> Future[_T]:
         future: Future[_T] = Future()
         with self._shutdown_lock:
             if self._shutdown:
                 raise RuntimeError("cannot schedule new futures after shutdown")
+            if _exiting:
+                raise RuntimeError("cannot schedule new futures after interpreter shutdown")
             self._work_queue.put((future, fn, args, kwargs))
         if not self._idle_semaphore.acquire(timeout=0):
             self._wanted.release()
@@ -86,11 +111,38 @@ class EnqueueOnlyThreadPoolExecutor(ThreadPoolExecutor):
             self._work_queue.put(None)
         self._wanted.release()
         if wait:
-            # Only the grower adds workers, and it stops once it has seen the
-            # shutdown, so after it the set holds every worker that will run.
+            # Only the grower adds workers after the first, and it stops once it has
+            # seen the shutdown, so after it the set holds every worker that will run.
             self._grower.join()
             for worker in list(self._threads):
                 worker.join()
+
+
+def _join_at_exit() -> None:
+    """Finish every pool's queued and running work before the interpreter exits."""
+    global _exiting
+    with _registry_lock:
+        _exiting = True
+        pools = list(_pools)
+    for pool in pools:
+        pool.shutdown(wait=False)
+    # A grower can be inside a worker start; once the growers stop, the registry
+    # holds every worker that will run.
+    for pool in pools:
+        pool._grower.join()
+    with _registry_lock:
+        workers = list(_workers.items())
+    # A stop behind each queue's work, as the stdlib's hook puts one: it also stops the
+    # idle workers of a pool built between the two snapshots, which takes no work.
+    for _worker, queued in workers:
+        queued.put(None)
+    for worker, _queued in workers:
+        worker.join()
+
+
+# The stdlib's own pools join their workers through this same private hook, run
+# before the non-daemon threads are joined and before ``atexit``.
+threading._register_atexit(_join_at_exit)  # type: ignore[attr-defined]
 
 
 def _stop_threads(work: queue.SimpleQueue[Any], wanted: threading.Semaphore, _ref: object) -> None:
@@ -99,57 +151,37 @@ def _stop_threads(work: queue.SimpleQueue[Any], wanted: threading.Semaphore, _re
     wanted.release()
 
 
+def _start_worker(pool: EnqueueOnlyThreadPoolExecutor) -> None:
+    worker = threading.Thread(
+        target=_work,
+        args=(pool._work_queue, pool._idle_semaphore),
+        name=f"{pool._thread_name_prefix}_{len(pool._threads)}",
+        daemon=True,
+    )
+    worker.start()
+    pool._threads.add(worker)
+    with _registry_lock:
+        _workers[worker] = pool._work_queue
+
+
 def _grow(
     pool_ref: weakref.ref[EnqueueOnlyThreadPoolExecutor], wanted: threading.Semaphore
 ) -> None:
-    """Start the pool's workers, up to its cap, off every caller's thread."""
+    """Start the pool's workers past its first, up to its cap, off every caller's thread."""
     while True:
         wanted.acquire()
         pool = pool_ref()
-        if pool is None:
+        if pool is None or pool._shutdown:
             return
-        stopping = pool._shutdown
-        # A shut-down pool with no worker still starts one, which runs the calls
-        # queued before the shutdown and then stops.
-        if len(pool._threads) < (1 if stopping else pool._max_workers):
+        if len(pool._threads) < pool._max_workers:
             try:
-                worker = threading.Thread(
-                    target=_work,
-                    args=(pool._work_queue, pool._idle_semaphore),
-                    name=f"{pool._thread_name_prefix}_{len(pool._threads)}",
-                    daemon=True,
-                )
                 # The slow call: it delays only work waiting for this worker.
-                worker.start()
-                pool._threads.add(worker)
+                _start_worker(pool)
             except Exception as exc:  # noqa: BLE001 - RuntimeError or MemoryError
-                # No thread can start now (thread or commit exhaustion): the next
-                # submit asks again. A pool with no worker at all fails what is
-                # queued, as the stdlib's submit raised this to its caller.
+                # No thread can start now (thread or commit exhaustion): the running
+                # workers keep taking the queue, and the next submit asks again.
                 logger.warning("%s could not start a worker: %s", pool._thread_name_prefix, exc)
-                if not pool._threads:
-                    _fail_queued(pool, exc)
-        if stopping:
-            return
         del pool
-
-
-def _fail_queued(pool: EnqueueOnlyThreadPoolExecutor, exc: Exception) -> None:
-    stopped = False
-    with pool._shutdown_lock:
-        while True:
-            try:
-                item = pool._work_queue.get_nowait()
-            except queue.Empty:
-                break
-            if item is None:
-                stopped = True
-            elif item[0].set_running_or_notify_cancel():
-                error = RuntimeError(f"cannot start a pool worker: {exc}")
-                error.__cause__ = exc
-                item[0].set_exception(error)
-        if stopped:
-            pool._work_queue.put(None)
 
 
 def _work(work: queue.SimpleQueue[Any], idle: threading.Semaphore) -> None:

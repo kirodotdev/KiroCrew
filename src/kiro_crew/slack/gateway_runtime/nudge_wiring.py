@@ -977,7 +977,25 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
             settled = getattr(loop.monitor, "outcome", None) if loop.monitor else None
             decided = getattr(settled, "value", settled) or owed
             merged = decided == "success"
-            if merged:
+            if getattr(loop.monitor, "kind", "") == "work-ledger":
+                # A work-ledger patrol ends when every item is closed; there is no
+                # pull request, so the wording below would invent one. An accepted
+                # board needs nothing from the user and stays passive like a merge.
+                if decided == "success":
+                    title = "Patrol finished — every task was accepted"
+                    body = (
+                        f"The work-ledger patrol stopped after {loop.cycle_count} cycles "
+                        "because every task is closed and accepted. The conductor's "
+                        "final report is in its session. No action needed."
+                    )
+                else:
+                    title = "Patrol finished — some tasks were not accepted"
+                    body = (
+                        f"The work-ledger patrol stopped after {loop.cycle_count} cycles "
+                        "because every task is closed, and at least one was rejected or "
+                        "abandoned. Read the conductor's final report in its session."
+                    )
+            elif merged:
                 title = "Monitoring loop finished — what it was watching is done"
                 body = (
                     f"The loop stopped after {loop.cycle_count} cycles because "

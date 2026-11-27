@@ -150,7 +150,7 @@ async function main() {
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 2,
   })
-  const page = await context.newPage()
+  let page = null
 
   const extra = async (path, route) => {
     if (path === '/api/chat/slots') return json(route, slots), true
@@ -166,9 +166,6 @@ async function main() {
     return false
   }
 
-  await stubDashboardApi(page, { slots, extra })
-  logPageProblems(page)
-
   const wrote = []
   async function shot(locator, name) {
     const file = `${OUT}/${name}.png`
@@ -179,22 +176,25 @@ async function main() {
     wrote.push({ file, w, h, over: !!flag })
   }
 
-  /** Seed localStorage and navigate. `diffSplit` is the persisted preference
-   *  under test: undefined leaves `mc-diff-split` ABSENT (the unseeded default
-   *  path), '0'/'1' plant a prior choice. */
+  /** Open a fresh page, stubbed once with its seed, and navigate. `diffSplit`
+   *  is the persisted preference under test: undefined leaves `mc-diff-split`
+   *  ABSENT (the unseeded default path), '0'/'1' plant a prior choice. */
   async function load(surface, { diffSplit } = {}) {
-    await page.addInitScript(([key, split]) => {
-      localStorage.clear()
-      localStorage.setItem('mc-theme', 'dark')
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-active-slot-chat', key)
-      if (split !== null) localStorage.setItem('mc-diff-split', split)
-      localStorage.setItem('mc-chat-config', JSON.stringify({
-        pinLastPrompt: false,
-        fileChipStyle: 'expanded',
-        streamMode: 'immediate',
-      }))
-    }, [surface.key, diffSplit ?? null])
+    await page?.close()
+    page = await context.newPage()
+    await stubDashboardApi(page, {
+      slots, extra,
+      localStorageEntries: {
+        'mc-active-slot-chat': surface.key,
+        ...(diffSplit == null ? {} : { 'mc-diff-split': diffSplit }),
+        'mc-chat-config': JSON.stringify({
+          pinLastPrompt: false,
+          fileChipStyle: 'expanded',
+          streamMode: 'immediate',
+        }),
+      },
+    })
+    logPageProblems(page)
     await page.goto(base + '/?sid=' + encodeURIComponent(surface.key), { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)
     await page.keyboard.press('Escape')

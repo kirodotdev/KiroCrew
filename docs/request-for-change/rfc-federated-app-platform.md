@@ -186,7 +186,7 @@ The `backend` field from the current manifest is **removed**. Apps do not host t
 ### 3.4 AppHost Component
 
 ```tsx
-// frontend/src/components/AppHost.tsx
+// website/src/components/AppHost.tsx
 import { Suspense, lazy, useMemo } from 'react'
 import ErrorBoundary from './ErrorBoundary'
 import { AppApiProvider } from '@kirocrew/app-sdk'
@@ -311,7 +311,7 @@ function createScopedApi(allowedPaths: string[]): AppApi {
 
 ### 3.6 UI Component Library (`@kirocrew/ui`)
 
-The existing shared components in `frontend/src/components/ui.tsx` are extracted into a standalone package. App developers `import { Card, Btn, Badge, PageHeader } from '@kirocrew/ui'` and get themed components that match the host.
+The existing shared components in `website/src/components/ui.tsx` are extracted into a standalone package. App developers `import { Card, Btn, Badge, PageHeader } from '@kirocrew/ui'` and get themed components that match the host.
 
 The package exports:
 - `Card`, `CardTitle`
@@ -505,7 +505,7 @@ The app author doesn't think about:
 
 - Remove `backend.py`, `BackendConfig`, iframe `AppLoader`, process management
 - Keep existing app system for agent/skill/cron bundles
-- Extract `@kirocrew/ui` from `frontend/src/components/ui.tsx`
+- Extract `@kirocrew/ui` from `website/src/components/ui.tsx`
 - Add import map to `index.html`
 - Build `AppHost.tsx` with dynamic `import()` + ErrorBoundary
 - Build `@kirocrew/app-sdk` with `useAppApi`, `useAppEvents`, `useTheme`
@@ -515,7 +515,7 @@ The app author doesn't think about:
 
 - Extract Agent Worlds as the proof-of-concept app
   - Create `KiroCrewApp-AgentWorlds` package
-  - Move scene components from `frontend/src/pages/scenes/` to the app
+  - Move scene components from `website/src/pages/scenes/` to the app
   - Move `WorldsPage.tsx` logic into the app's `index.tsx`
   - Remove Worlds from KiroCrew core's router and sidebar
   - Install the app via `kirocrew app install` — it appears in the sidebar as before
@@ -553,8 +553,8 @@ The following modules are removed in Phase 1, replaced by the federated loading 
 |--------|---------|-------------|
 | `apps/backend.py` | Spawn local HTTP servers for apps | Removed — apps don't host backends |
 | `apps/manifest_sections.py` `BackendConfig` | Backend config in manifest | Removed from schema |
-| `frontend/src/components/AppLoader.tsx` | iframe embedding | `AppHost.tsx` with dynamic import |
-| `frontend/src/pages/AppPage.tsx` | iframe + backend status UI | `AppHost.tsx` handles all app rendering |
+| `AppLoader.tsx` (no longer on main) | iframe embedding | `website/src/components/AppHost.tsx` with dynamic import |
+| `website/src/pages/AppPage.tsx` | iframe + backend status UI | `AppHost.tsx` handles all app rendering |
 
 The following modules are **kept** and enhanced:
 
@@ -565,7 +565,7 @@ The following modules are **kept** and enhanced:
 | `apps/bridges_agents.py`, `bridges_skills.py`, `bridges_crons.py` | Register agents/skills/crons | No change needed |
 | `apps/scaffold.py` | `kirocrew app init` | Add `--with-ui` flag, Vite config generation |
 | `apps/routes.py` | REST API for app management | Add bundle serving endpoint |
-| `frontend/src/pages/AppsPage.tsx` | App Store UI | Add Browse tab with registry integration |
+| `website/src/pages/apps/` (`DiscoverPage.tsx`, `LibraryPage.tsx`) | App Store UI | Add Browse tab with registry integration |
 
 ## 8. Open Questions
 

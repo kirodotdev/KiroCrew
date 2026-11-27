@@ -382,6 +382,8 @@ function ChatSidebarBody({
   const recentRank = useMemo(() => computeRecentRank(localSlots, recentTintCount), [localSlots, recentTintCount])
   // Settings → Display → Sidebar. Only a literal `false` hides the per-row dot.
   const showUnreadDot = mcCfg?.dashboard?.show_unread_dot !== false
+  // Same page. Only a literal `true` starts each row's linked-items strip open.
+  const expandLinkedItems = mcCfg?.dashboard?.expand_linked_items === true
 
   const {
     folderSortRead, folderSortMode, folderCompare: folderModeCompare, folderReorderable: folderModeReorderable,
@@ -422,7 +424,7 @@ function ChatSidebarBody({
   })
   const {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
-    hideEmptyFolderBody, countSubfolderContents, hideEmptyFolders, orderedColumns,
+    columnsReady, boardColumnsLoading, hideEmptyFolderBody, countSubfolderContents, hideEmptyFolders, orderedColumns,
   } = useBoardColumns()
   // After the columns: only board view may widen the sidebar past SIDEBAR_MAX.
   const {
@@ -446,7 +448,7 @@ function ChatSidebarBody({
   const {
     updateColumnMutation, deleteColumnMutation, reorderColumnsMutation, addColumnAfterMutation,
     dropSlotMutation, missingLanes, seedStateLanesMutation,
-  } = useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, paintedWidthRef, widenForBoard, setSeedError })
+  } = useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, columnsReady, paintedWidthRef, widenForBoard, setSeedError })
   // Read over every row, crew members included: a worker the person's list leaves
   // out still decides whether its conductor's crew is moving.
   // Re-read at each item's stale moment, so the lanes move on a quiet board too.
@@ -817,7 +819,7 @@ function ChatSidebarBody({
 
   const {
     revealFlash,
-  } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders: allFolders, drawnFolders: folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView, hideEmptyFolders })
+  } = useSidebarReveal({ sidebarRootRef, rowsWithheld: boardColumnsLoading, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders: allFolders, drawnFolders: folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView, hideEmptyFolders })
   const renameCommit = useCallback((id: string, name: string): boolean => {
     // Re-checked here, not only where the editor opens: the gateway can drop
     // while an editor is open. Keep the editor and its draft, and say why,
@@ -880,7 +882,7 @@ function ChatSidebarBody({
 
   const {
     remoteCrewChatPreview,
-    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation,
+    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation, createAppSessionMutation,
   } = useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, onSelectSlot, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession })
   // A conductor-lane member anchor opens on the Members page (see renderSessionRow).
   const navigate = useNavigate()
@@ -942,13 +944,13 @@ function ChatSidebarBody({
   const guideView = useGuide()?.view
   const guideOnRowControl = guideStepOnRowControl(guideView?.ownedHere && !guideView.needsEnter ? guideView.step : null)
   const rowShell: RowShell = useMemo(() => ({
-    connected, mode, defaultAgent, installedAgents: tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot,
+    connected, mode, defaultAgent, installedAgents: tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot, expandLinkedItems,
     // A session row on any touch screen (an iPad too) gets the single ⋯ menu,
     // not the overlay cluster.
     isMobile: isMobile || isTouchDevice,
     dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort, manualReorderOff, guideOnRowControl,
   }), [
-    connected, mode, defaultAgent, tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot,
+    connected, mode, defaultAgent, tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot, expandLinkedItems,
     isMobile, isTouchDevice, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex,
     manualSort, manualReorderOff, guideOnRowControl,
   ])
@@ -1042,13 +1044,13 @@ function ChatSidebarBody({
   // factories run once per render, so the row stamps belong to this pass.
   const scope: SidebarScope = { searchHeader, searchLaneActive, activeDrag, activeFilters, activeModelKeys, activeModelRows, dragOpenSlot,
     activeTagIds, activeTagNames, addColumnAfterMutation, allHiddenFolders, armHold, attachStripEdges,
-    autoTitleError, availableLanes, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
+    autoTitleError, availableLanes, boardColumnsLoading, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
     broadcastOpen, bulkModel, changeRecentUnit, citedCreatorExists, cleanupOpen,
     clearClosedSessionsWithConfirm, clearHiddenFilters, clearModelFilter, clearTagFilter, closeColumnPopover,
     closeRefused, collapseAllFolders, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
-    columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, commitRecentAmount, creatorFilter,
+    columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, columnsReady, commitRecentAmount, creatorFilter,
     conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
-    createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
+    createAppSessionMutation, createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
     creatingSlot, crewEnable, cycleLane, defaultAgent, deleteColumnWithConfirm,
     deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dismissUnfiledAboveFoldersError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,
@@ -1201,7 +1203,9 @@ function ChatSidebarBody({
         {searchSent && slotSearchFailed && <SearchFailedNotice />}
       </>}>
       <LayoutGroup id="chat-slots">
-        {conductorLaneActive ? (
+        {boardColumnsLoading && !searchActive ? (
+          board.renderColumnsLoading()
+        ) : conductorLaneActive ? (
           <SidebarSearchContext.Provider value={searchView}>{lanes.renderConductorLane()}</SidebarSearchContext.Provider>
         ) : flatLaneActive ? (
           <SidebarSearchContext.Provider value={searchView}>{lanes.renderFlatLane()}</SidebarSearchContext.Provider>

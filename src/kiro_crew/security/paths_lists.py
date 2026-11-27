@@ -120,8 +120,11 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 # readable OR writable through the shared file gate (``is_sensitive_path``):
 #
 #   .env                          channel/API credentials (Slack/Discord/…)
-#   browser-cookies.txt           reusable browser-auth session cookies …
-#   playwright-storage-state.json … and the Playwright storage-state they become
+#   browser-cookies.txt           a browser session cookie jar …
+#   playwright-storage-state.json … and the Playwright storage state built from
+#                                 one; nothing in the tree reads or writes
+#                                 either, and a copy a backup restores is a live
+#                                 login again
 #   sel_hmac.key                  Security Event Log HMAC key — signs the
 #   security_events.jsonl         tamper-evident audit chain (``sel.py``);
 #   trust                         the key now lives at ``trust/sel_hmac.key``
@@ -364,10 +367,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # any more, so the entry costs a retired name and refuses nothing legitimate --
     # the same reasoning the retired browser leaves above are kept under.
     "ledgers",
-    # The optional Playwright extension token. It removes the browser-side approval
-    # click for an attach, so a process that could read it could attach to the
-    # operator's logged-in browser without them seeing a prompt. The gateway hands
-    # it to the CLI through the environment, so nothing legitimate opens the file.
+    # The retired Playwright extension token, an attach credential for the
+    # operator's logged-in browser. Nothing in the tree reads or writes the file;
+    # the name stays fenced because a copy a backup restores is that credential.
     "playwright-extension-token",
     # The Browser Harness venv the gateway executes for its daemon and helper
     # worker, with Kiro's Chromium beside it (``browser_harness.install``).
@@ -582,19 +584,13 @@ _CREW_SECRET_LEAVES: list[str] = [
     # no OS mask: their directory is a read-only bind that in-sandbox loaders read.
     "config-provenance/endorsed/denied_commands.json",
     "config-provenance/endorsed/computer_use.json",
-    # Browser Mode's durable ENABLE gate. Same class of control as
-    # ``computer_use.json`` directly above: while it is present the browse proxy
-    # is registered and the ``browser_*`` tools are in the agent's tool list,
-    # which lets the agent operate a real browser — and in attach mode that is
-    # the operator's own running, logged-in browser. Presence alone is the
-    # authorization, so a bare ``touch`` of this file would be a prompt-injected
-    # self-grant of browser operation. It gets read+write keystone protection on
-    # both the tool path (``is_sensitive_path``) and the shell forms (``touch``,
-    # ``>``, ``tee``, extraction verbs). The dashboard PUT handler is the only
-    # writer and opens the path directly, not through this gate, so the Settings
-    # toggle still works. The sibling ``browser-engine`` leaf is protected too:
-    # it selects the browser Playwright launches, so an agent-authored value
-    # could steer the launch, and it must not diverge from the enable beside it.
+    # Browser Mode's ENABLE switch and its sibling engine choice, both retired:
+    # nothing in the tree reads or writes them. They keep read+write keystone
+    # protection on the tool path (``is_sensitive_path``) and the shell forms
+    # (``touch``, ``>``, ``tee``, extraction verbs) because a build that still
+    # reads the switch, which a downgrade can bring back, takes its presence alone
+    # as authorization to operate a real browser, in attach mode the operator's
+    # own logged-in one.
     "browser-mode-enabled",
     "browser-engine",
     # Ops Mission Control's third-party provider tokens (PagerDuty / Datadog
@@ -646,6 +642,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Steering files each chat switched off: a writable record would let an agent
     # drop its own rules. Only ``PUT /api/chat/slots/{slot}/steering`` writes it.
     "chat_steering_off.json",
+    # The owner's acknowledgement of the YOLO confirmation: it lets the owner's later
+    # YOLO pick skip the confirmation, so a writable record would let an agent
+    # pre-satisfy a human gate. Only the owner's ``PUT /api/chat/yolo-ack`` writes it.
+    "yolo_ack.json",
     # Recorded consent to send memory to a provider app that keeps it off this
     # machine (``egress: "remote"``). Same class as ``decisions_consent.json``:
     # the record AUTHORIZES preferences, lessons and transcripts to leave, so an
@@ -756,9 +756,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     "webhooks",
     # Holder records carry server-defined URIs and choose restored session/server pairs.
     "mcp-resource-subscriptions",
-    # Pinned installer provenance authorizes an executable to receive staged
-    # Kiro identity credentials. Agent reads/writes must not be able to replace
-    # this trust decision.
+    # The retired installer-provenance record: nothing in the tree reads or writes
+    # it. A build that reads it lets it authorize an executable to receive staged
+    # Kiro identity credentials, so the file tools neither read a copy a backup
+    # restores nor write one.
     ".kiro_cli_binary_trust.json",
     # MCP Apps spool (SEP-1865). Defense-in-depth: the per-render callback
     # capability (`callback_secret`) is delivered owner-WS-only and never

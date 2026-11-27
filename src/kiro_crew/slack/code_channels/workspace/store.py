@@ -78,8 +78,16 @@ class WorkspaceRecord:
     #: checkout when it was found. Shown and kept only while that still matches.
     pr_for: str = ""
     pr_title: str = ""
+    #: The PR's review decision and mergeable state (:class:`.pr.PullRequest`).
+    pr_review: str = ""
+    pr_mergeable: str = ""
+    #: The CI the last read that settled it found for this PR (``pr_ci`` drops a
+    #: stale one for the bar); ``context_bar.PR_CI_UNREAD`` until one does.
+    pr_ci_read: str = "unread"
     #: Digest of the ``agent_resource`` last sent for the channel's PR.
     resource_hash: str = ""
+    #: Digest of the ``pr_status`` last sent (the value and the PR it came from).
+    pr_status_hash: str = ""
     #: A channel-specific Slack error that turned this channel's views off.
     slack_off: str = ""
     updated_at: float = field(default_factory=time.time)

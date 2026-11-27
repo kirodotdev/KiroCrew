@@ -4,9 +4,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -366,6 +368,7 @@ def test_windows_aws_lookup_skips_the_drive_less_posix_dirs(monkeypatch, platfor
 
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("ProgramFiles", raising=False)
     probed: list[str] = []
     checked: list[str] = []
     monkeypatch.setattr(engine.shutil, "which", lambda _name, path: probed.append(path))
@@ -383,6 +386,75 @@ def test_windows_aws_lookup_skips_the_drive_less_posix_dirs(monkeypatch, platfor
         brew, local = "/opt/homebrew/bin", "/usr/local/bin"
         # The resolver probes each dir once, then the sweep once per tool.
         assert probed == [brew, local, brew, brew, local, local]
+
+
+def _windows_plugin_install(monkeypatch, tmp_path):
+    """A plugin in its Windows installer folder under a scratch ``%ProgramFiles%``,
+    absent from a PATH that holds nothing; both provenance checks pass."""
+    from kiro_crew import github_runner
+
+    plugin_dir = tmp_path / "Amazon" / "SessionManagerPlugin" / "bin"
+    plugin_dir.mkdir(parents=True)
+    plugin = plugin_dir / ("session-manager-plugin" + (".exe" if os.name == "nt" else ""))
+    plugin.write_text("")
+    plugin.chmod(0o755)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    # Only the engine's platform branch: shutil.which needs the host's real one.
+    monkeypatch.setattr(engine, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+    monkeypatch.setattr(github_runner, "validate_provider_directory", lambda d: d)
+    monkeypatch.setattr(github_runner, "validate_provider_executable", lambda c: c)
+    return plugin_dir, plugin
+
+
+def test_windows_finds_a_plugin_installed_after_start_in_its_installer_folder(
+    monkeypatch, tmp_path
+):
+    """The installer adds its folder to the registry PATH, never to this process's PATH."""
+    from kiro_crew.cloud import ssm
+
+    _plugin_dir, plugin = _windows_plugin_install(monkeypatch, tmp_path)
+
+    ssm.require_session_manager_plugin()
+    child_path = engine.tool_spawn_env(str(tmp_path / "aws"))["PATH"]
+    found = shutil.which("session-manager-plugin", path=child_path)
+    assert found is not None and os.path.samefile(found, plugin)
+
+
+def test_windows_keeps_a_refused_plugin_in_its_installer_folder_off_the_child_path(
+    monkeypatch, tmp_path
+):
+    from kiro_crew import github_runner
+
+    plugin_dir, plugin = _windows_plugin_install(monkeypatch, tmp_path)
+
+    def _refuse(_candidate):
+        raise ValueError("owned by another account")
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse)
+
+    engine.refresh_aws_tool_trust()
+
+    refusal = engine.refused_aws_tool("session-manager-plugin")
+    assert refusal is not None and os.path.samefile(refusal.path, plugin)
+    child_path = engine.tool_spawn_env(str(tmp_path / "aws"))["PATH"]
+    assert str(plugin_dir) not in child_path.split(os.pathsep)
+
+
+def test_windows_child_path_is_unchanged_when_the_gateway_already_has_the_folder(
+    monkeypatch, tmp_path
+):
+    """The installer's PATH entry can end in a separator; it is not appended again."""
+    plugin_dir, _plugin = _windows_plugin_install(monkeypatch, tmp_path)
+    inherited = str(plugin_dir) + os.sep
+    monkeypatch.setenv("PATH", inherited)
+
+    engine.refresh_aws_tool_trust()
+
+    assert engine.tool_spawn_env(str(tmp_path / "aws"))["PATH"] == inherited
 
 
 # --- the same minimal-PATH gap for session-manager-plugin -------------

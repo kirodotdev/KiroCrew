@@ -12,11 +12,13 @@ and a clean turn on another harness, end as they ended.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from kiro_crew import deny_notice, subagent
+from kiro_crew.agent_sdk.capabilities import UNKNOWN_BACKEND_CAPABILITIES
 from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
 from kiro_crew.execution_context import execution_for_store
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_DENY, ToolHookResult
@@ -62,7 +64,12 @@ class _Provider:
     def __init__(
         self, cancel_turns: int, stop_reason: str = "cancelled", *, opencode: bool = False
     ) -> None:
-        self.is_opencode_backend = opencode
+        if opencode:
+            # opencode's one trait this file drives, and nothing else of its
+            # record: a reject ends the turn.
+            self.capabilities = dataclasses.replace(
+                UNKNOWN_BACKEND_CAPABILITIES, ends_turn_on_permission_reject=True
+            )
         self.prompts: list[str] = []
         self.rejected = 0
         #: Permission requests each cancelled turn makes before it ends.

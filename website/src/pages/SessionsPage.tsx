@@ -295,7 +295,7 @@ export default function SessionsPage() {
                 {groups[g].map((s, i) => (
                   <button
                     key={s.key}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-left cursor-pointer hover:bg-bg-hover border-border ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-left cursor-pointer hover:bg-bg-hover border-border focus-visible:outline-offset-[-2px] focus-visible:rounded-md ${
                       i < groups[g].length - 1 ? 'border-b' : 'border-b md:border-b-0'
                     }`}
                     onClick={() => navigate(`/chat?sid=${encodeURIComponent(s.key)}`)}

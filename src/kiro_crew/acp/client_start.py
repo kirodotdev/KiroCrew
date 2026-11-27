@@ -16,7 +16,7 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_mode_frame_superseded``, ``_native_skill_projection``, ``_pid``, ``_process``,
 ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_resume_session_id``, ``_resumed``, ``_scope_unit``, ``_session_id``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
+``_spawn_start_token``, ``_spawned``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
 
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``,
 ``_channel_id``, ``_extra_env``, ``_model``, ``_modes_advertised``, ``_sandbox_mode``,
@@ -35,7 +35,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import __version__, acp_tool_gate, agent_scratch
 from kiro_crew import kiro_cli as kiro_cli_mod
@@ -52,6 +52,7 @@ from kiro_crew.acp.client_spawn_env import (
     _KiroExecutableTrustError,
     _launch_tools,
     _resolve_kiro_bin_for_spawn,
+    _resolve_spawn_env,
     finish_suspended_spawn,
     kiro_cli_not_found_message,
 )
@@ -122,6 +123,7 @@ from kiro_crew.agent_sdk.backends import (
     can_restore_session,
     launch_for,
 )
+from kiro_crew.bot_chat_ending_fence import client_session_start
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.constants import KIROCREW_SPAWN_HOME_ENV, KIROCREW_SPAWN_INSTANCE_ENV
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
@@ -143,10 +145,6 @@ if TYPE_CHECKING:
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
-
-#: Bound by ``kiro_crew.acp.client``, which defines it: the spawn audit, the
-#: subprocess-encoding baseline and the cross-platform gate key it on that path.
-_resolve_spawn_env: Callable[..., dict[str, str]]
 
 
 #: The name sent as ``clientInfo.name``. It IS the kiro-cli client-application
@@ -527,6 +525,7 @@ async def _spawn(self: AcpClient) -> None:
         _launch_tools(),
     )
     self._process = launched.process
+    self._spawned = True
     self._pid = self._process.pid
     self._kill_sent = None
     self._process_tree_confirmed_dead = False
@@ -872,6 +871,7 @@ async def _start_exit_error(client: AcpClient, exc: AcpError, stage: str) -> Acp
     )
 
 
+@client_session_start
 async def _initialize_session(self: AcpClient) -> None:
     """Handshake: initialize → session/load or session/new → set_mode → set_model."""
     # 1. Initialize, once systemd has admitted the spawn's scope. Inside the try, so

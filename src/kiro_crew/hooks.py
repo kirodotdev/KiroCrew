@@ -34,6 +34,7 @@ from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dataclasses_replace  # noqa: F401 - owners read it
 from pathlib import Path
 from typing import Any, Literal, NamedTuple  # noqa: F401
+from urllib.parse import urlsplit  # noqa: F401 - read by the owners
 
 from kiro_crew import jsonl_util, pinned_fs, platform_compat, security, webhooks  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
@@ -250,7 +251,9 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     event_is_spawn_run,
     hook_gate_kwargs,
     identity_grant_covers_child,
+    is_fetch_url_text,
     mcp_identity_ref,
+    proven_fetch_url,
     set_builtin_app_agents,
     set_builtin_app_mcp_servers,
     set_builtin_app_names,
@@ -1347,11 +1350,16 @@ class ScriptHook:
     #: stdout ``run_script_hook`` returns, cut after redaction and marked. ``0``
     #: leaves only the stream cap. In memory only, like ``spec_origin``.
     max_output_size: int = 0
+    #: An agent spec hook document's own ``name``, when it can also name the hook in
+    #: a policy's ``hooks`` list (``hook_event_governance.hook_stable_name``); ``""``
+    #: otherwise. In memory only, like ``spec_origin``.
+    spec_name: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data.pop("spec_origin", None)
         data.pop("max_output_size", None)
+        data.pop("spec_name", None)
         return data
 
     @classmethod

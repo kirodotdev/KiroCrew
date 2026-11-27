@@ -994,6 +994,19 @@ def test_a_card_backed_ask_names_the_request_never_a_kind(monkeypatch) -> None:
     ]
 
 
+def test_the_memory_card_text_never_says_nothing_changes(monkeypatch) -> None:
+    """Banned UI copy: a bot repeats whatever its tool text tells it to say."""
+    from kiro_crew.mcp_mate_tool_list import _tool_definitions
+
+    tool = next(t for t in _tool_definitions() if t["name"] == "propose_memory_changes")
+    monkeypatch.setattr(mcp_mate, "_strict_session_key", lambda: ("dashboard:member-mate", ""))
+    monkeypatch.setattr(mcp_mate, "_post", lambda *_a, **_k: {"id": "c1", "status": "pending"})
+    out = mcp_mate._call_tool_inner("propose_memory_changes", {"changes": []})
+    assert "how many changes" in out
+    for text in (tool["description"], out):
+        assert "nothing changes" not in text.lower()
+
+
 def test_every_member_tool_is_granted_and_schema_checked() -> None:
     from kiro_crew.agent import _MATE_AUTO_GRANTS, _MATE_SERVER
     from kiro_crew.validation import MCP_MATE_SCHEMAS
@@ -1093,6 +1106,35 @@ def test_an_ask_fixes_the_kind_and_the_member_itself(_proposed) -> None:
         "draft": {"operations": [], "member": "x"},
     }
     assert all(p["slot_key"] == MATE_SLOT for p in _proposed)
+
+
+def test_a_memory_ask_names_the_callers_own_store_and_only_its_changes(
+    monkeypatch, _proposed
+) -> None:
+    from kiro_crew.dashboard import member_memory_records
+
+    _seed()
+    state = FakeState()
+    _thread(state, ASSISTANT_MEMBER_NAME).memory_store = "member-mate"
+    monkeypatch.setattr(member_memory_records, "own_store", lambda member: "member-mate")
+    changes = [{"kind": "fact", "id": "a", "action": "delete", "reason": "stale"}]
+    status, _ = _propose(state, {"request": "memory", "params": {"changes": changes}})
+    assert status == 200
+    assert _proposed[-1]["kind"] == "crewmate.memory"
+    assert _proposed[-1]["params"] == {
+        "member": ASSISTANT_MEMBER_NAME,
+        "store": "member-mate",
+        "changes": changes,
+    }
+    # The bot never names the store itself.
+    bad = {"changes": changes, "store": "member-other"}
+    status, answer = _propose(state, {"request": "memory", "params": bad})
+    assert (status, answer["code"]) == (400, "invalid_params")
+    # A thread on another store (the bot was deleted and made again) is refused.
+    monkeypatch.setattr(member_memory_records, "own_store", lambda member: "member-mate-new")
+    status, answer = _propose(state, {"request": "memory", "params": {"changes": changes}})
+    assert (status, answer["code"]) == (403, "not_own_store")
+    assert len(_proposed) == 1
 
 
 def test_only_a_crewmate_thread_can_ask(_proposed) -> None:

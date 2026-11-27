@@ -790,6 +790,8 @@ failure is operational except a positive permission-denied match, which is `sand
 neither can become `PodBackendAbsent`. Probe and unit operations
 resolve `systemctl` through `platform_compat.trusted_system_bin()` and pass that absolute path to
 the subprocess seam; a PATH entry can neither execute code nor forge the removal-safety verdict.
+On macOS `launchctl` resolves the same way, and a missing trusted `launchctl` raises
+`LaunchdError` instead of falling back to `PATH`.
 If no trusted executable exists, the operation fails closed. Dev Fleet therefore refuses
 removal instead of treating the host as unable to contain a live pod. Spawned probes use
 `LC_ALL=C`, distinguish a reachable manager,
@@ -819,7 +821,10 @@ worktree removal never blocks the gateway event loop.
   `run/gateway-<port>.secret`, and falls back to the shared `.local_secret` only
   for a gateway predating the per-listener file — the shared slot is one per data
   home, so a live second gateway leaves it naming the other generation
-- `runtime.recent_journal(cfg, name, n)` — journalctl tail (blocking, offloaded)
+- `runtime.recent_journal(cfg, name, n)` — journalctl tail (blocking, offloaded);
+  `journalctl` resolves through `platform_compat.trusted_system_bin()`, and with
+  none there the tail is a one-line "could not read the pod journal" note, never a
+  `PATH` lookup
 - `provision.has_venv(path)` / `provision.has_dist(path)` — "present AND built
   from the artifact's current build input" checks (offloaded): a filesystem probe
   gated by a per-checkout provenance stamp (see *Build-state provenance* below);
@@ -2535,6 +2540,21 @@ stale rather than certified against the post-build HEAD.
   `has_venv(path, require_stamp=False)` for the `is_main` row. A stamp check
   there would report a freshly synced main venv as unbuilt, which reads as "the
   cutover failed". Every other worktree keeps the stamp requirement.
+
+**Provision's own dist check is stricter than `has_dist`.** `has_dist` keeps a
+dist it cannot verify (presence-only) so the Fleet view never hides one, but
+`build_dist` decides whether to skip the build with
+`_dist_serves_current_source`, which also rebuilds when the dist cannot carry the
+source a pod would run: `website/` has uncommitted or untracked changes
+(`git status --porcelain --untracked-files=normal -- website`, so a repo's
+`status.showUntrackedFiles` cannot hide a new file, and a checkout that names a
+`filter.<name>.clean` driver reads dirty without running it, per
+`update_governance.repo_exec_driver_reason`; the stamp names `HEAD:website`, not the
+working tree), or the dist's `build-id.json` carries an empty `websiteTree`,
+which `vite.config.ts` writes when it built from a dirty tree. Otherwise a
+dist built mid-edit would be kept by every later provision after the edits are
+committed, and the pod would serve the old bundle. With no resolvable `HEAD:website`
+it keeps the dist, as `has_dist` does.
 
 The venv/`node_modules` manifest lives INSIDE the git directory (`git rev-parse
 --git-path kirocrew-provision.json`, a per-worktree private path), not in the

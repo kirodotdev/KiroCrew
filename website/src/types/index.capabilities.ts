@@ -172,6 +172,13 @@ export interface SkillBudgetResponse {
   window_days: number
   total_chars: number
   rows: SkillBudgetRow[]
+  /** The startup `[Skills:]` index, computed for the default agent with no
+   *  project open: its character allowance, and how many on-demand skills it
+   *  names of how many. Both counts are null when the index could not be
+   *  rendered; all three are absent from an older gateway. */
+  index_budget_chars?: number
+  index_listed?: number | null
+  index_total?: number | null
 }
 
 /** A single entry in a skill folder's tree listing. */
@@ -483,6 +490,11 @@ export interface McpServer {
    *  The table locks its Kiro Crew switch on and offers no Uninstall, and the
    *  backend refuses turning it off or removing it. */
   builtin?: boolean
+  /** The installed app whose manifest declares this server (`{app}:{server}`).
+   *  The agent rebuild re-derives it from the manifest, so Uninstall cannot
+   *  stick and the row has none; its Kiro Crew switch still works. Absent on
+   *  every other row. */
+  app?: string
   /** Which config switched the row off, from the backend — never inferred from
    *  `enabled` + `kirocrewManaged`. `kirocrew`: a disable in Kiro Crew's own
    *  store, which the Kiro Crew scope badge + Apply lifts (the consent step).

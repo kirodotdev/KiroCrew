@@ -1590,7 +1590,7 @@ async def _relay_download_progress(
             return await prepare_task
 
 
-async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
+async def api_ws_stt(request: web.Request) -> web.StreamResponse:
     """GET /api/ws/stt — streaming speech-to-text.
 
     Client sends binary PCM frames and text control messages
@@ -1606,6 +1606,14 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
         # boundary does not add a second, generic entry for the same refusal.
         mark_audit_claimed(request)
         raise web.HTTPForbidden(text="WebSocket origin not allowed")
+
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    # Dictation runs the owner's recogniser, and on Transcribe it bills the owner's
+    # AWS profile, so it serves the owner and teammates as the batch routes do.
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.stream")
+    if owner_denied is not None:
+        return owner_denied
 
     cfg = KiroCrewConfig.load()
     if (

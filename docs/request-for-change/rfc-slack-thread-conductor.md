@@ -476,7 +476,9 @@ which never puts a descendant above its creator. A worker's approval card is
 posted in the thread by `worker_approvals.py`, threaded under the anchor
 instead of top level. **Trust this channel** on such a card becomes **Trust
 this thread** and runs the same `approval_picker.set_channel_mode` mutation on
-the conductor's slot, with its warning line. Like every owner chat's Trust, it
+the conductor's slot, with its warning line. The conductor's own approval card
+in the thread offers the same **Trust this thread**, with the same owner gate,
+confirmation and mutation. Like every owner chat's Trust, it
 survives each gateway exit the owner did not choose and ends only on a stop the
 owner chose (`src/kiro_crew/dashboard/chat_trust_restart.py`, per
 [the 2026-11-18 decision](../decisions/2026-11-18-yolo-and-chat-trust-survive-every-exit-the-user-did-not-choose.md)).
@@ -511,7 +513,13 @@ edited in place. It reuses the board package
 - **One message.** The publisher (`board/publisher.py`) posts with `thread_ts`
   set to the anchor, and later edits it with `chat.update`. It is not pinned:
   `pins:write` is a code-channel scope, and a pin on a thread reply would
-  surface in the whole channel. The per-room records the publisher and the
+  surface in the whole channel. So replies would bury it: when the board
+  changes and `conversations.replies` shows a reply newer than it, the board is
+  posted again at the bottom, its new ts stored, and the old message deleted
+  with `chat.delete`. An old board Slack will not delete is edited to
+  one pointer line, and that thread's board is then edited in place for the
+  rest of the process. A stamp-only refresh never moves it, and a move waits
+  out the same edit gap as an edit. The per-room records the publisher and the
   surface store keep (`board_ts`, `board_digest`, the edit gap and retry maps)
   are keyed by the binding's room, `channel_id` for a code channel and
   `"<channel_id>:<anchor_ts>"` for a thread.

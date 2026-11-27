@@ -1,7 +1,8 @@
 import React from 'react'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { MotionGlobalConfig } from 'framer-motion'
 import ChatInput from '../components/ChatInput'
 import RunInTerminalBtn from '../components/RunInTerminalBtn'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
@@ -344,6 +345,8 @@ describe('direct terminal commands', () => {
     )
     const run = screen.getByRole('button', { name: 'Review terminal command' })
     const review = screen.getByRole('group', { name: 'Review and run in terminal' })
+    // The review row is part of the composer box, not a card floating above it.
+    expect(screen.getByTestId('input-wrapper')).toContainElement(review)
     expect(within(review).getAllByRole('button')).toEqual([run])
     expect(within(review).getByRole('status')).toHaveTextContent('Terminal panel · selected project')
     expect(run).toBeEnabled()
@@ -729,6 +732,10 @@ describe('direct terminal commands', () => {
     ['remote', false],
     ['remote', true],
   ] as const)('routes a %s draft without its terminal marker to chat (Lexical: %s)', async (refusal, lexicalComposer) => {
+    // The terminal header folds shut with a height animation; skip it so
+    // removing the ! unmounts the header at once.
+    MotionGlobalConfig.skipAnimations = true
+    onTestFinished(() => { MotionGlobalConfig.skipAnimations = false })
     terminal.enabled = refusal !== 'disabled'
     const user = userEvent.setup()
     const onSend = vi.fn()

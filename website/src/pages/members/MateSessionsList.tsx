@@ -31,7 +31,7 @@ import {
   mergeCrewWorkers,
   type CrewWorkerGroup,
 } from '../../lib/crewWorkers'
-import { crewWorkersQueryKey } from '../chat/command-center/CrewWorkerList'
+import { CrewShowOlder, crewWorkersQueryKey } from '../chat/command-center/CrewWorkerList'
 import { crewWorkersGapMs, readCrewWorkers } from '../../lib/crewWorkersPoll'
 import { timeAgo } from '../../utils/timeAgo'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
@@ -117,6 +117,8 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
   const groups = useMemo(() => groupCrewWorkers(workers), [workers])
   const [finishedOpen, setFinishedOpen] = useState(false)
   const failed = listed.isError && !crewRouteNotServed(listed.error)
+  // Closed sessions the answer left out: all done, so the Done count includes them.
+  const closedOmitted = listed.data?.closed_omitted ?? 0
 
   // No root (the thread slot is still resolving) reads nothing, so it is never pending.
   if (root && workers.length === 0 && (!slotsLoaded || listed.isPending) && !failed && !crewRouteNotServed(listed.error)) {
@@ -165,9 +167,10 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
               onToggle={e => setFinishedOpen((e.currentTarget as HTMLDetailsElement).open)}>
               <summary className="flex items-center gap-1 cursor-pointer list-none text-[12px] text-muted hover:text-text py-1">
                 <ChevronRight size={14} className="transition-transform group-open:rotate-90" aria-hidden="true" />
-                {`${label(group)} · ${rows.length}`}
+                {`${label(group)} · ${rows.length + closedOmitted}`}
               </summary>
               <div className="mt-1">{list}</div>
+              <CrewShowOlder root={root} omitted={closedOmitted} />
             </details>
           )
         }

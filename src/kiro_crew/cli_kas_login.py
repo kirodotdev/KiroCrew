@@ -15,7 +15,9 @@ The verbs speak the vocabulary the cloud sign-in already reads from kiro-cli:
   the one transport that needs no callback to reach this machine), and exits 0
   once the credential is in the vault. On a vault that already holds a usable
   identity it prints ``already signed in`` and exits 0, as ``kiro-cli login`` does
-  over a live session, so switching accounts is ``logout`` then ``login``.
+  over a live session, so switching accounts is ``logout`` then ``login``. A
+  company sign-in that lists several Kiro profiles never prompts: it keeps the
+  profile already signed in with when listed, else the first, and names it.
 - ``whoami`` exits 0 and prints the identity when signed in, exits 1 when not;
   ``--format json`` prints the ``kiro-cli whoami --format json`` document
   (:func:`kiro_crew.auth.whoami.whoami_document`).
@@ -348,10 +350,11 @@ async def _run_device_login(
         # Worded so the only "code: ..." in this output is the line above: the
         # cloud sign-in's parser takes the first match.
         print(f"Waiting for approval; this prompt expires at {begun['expires_at']} ...", flush=True)
+        pick: str | None = None
         while True:
             await asyncio.sleep(POLL_INTERVAL_SECS)
             try:
-                result = await service.poll_device(begun["login_id"])
+                result = await service.poll_device(begun["login_id"], profile_arn=pick)
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 # The service absorbs a few dropped polls itself; past its budget
                 # the outage is real, and the user gets a line, not a traceback.
@@ -371,6 +374,16 @@ async def _run_device_login(
                 return 1
             status = result.get("status")
             if status == "pending":
+                continue
+            if status == "choose_profile":
+                # Never a prompt: the profile signed in with now when offered, else the first.
+                pick = result["selected"]
+                name = next(p["name"] for p in result["profiles"] if p["arn"] == pick)
+                print(
+                    f"Using Kiro profile {name!r}. To choose another profile, sign out "
+                    "and sign in again from the dashboard.",
+                    flush=True,
+                )
                 continue
             if status == "authorized":
                 stored = result.get("provider") or provider

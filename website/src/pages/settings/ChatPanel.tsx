@@ -29,7 +29,7 @@ import { useChatPanelTypedFields } from './useChatPanelTypedFields'
 import { chatPanelConfigOpts, useChatPanelFallbackModels, useChatPanelModelDefaults } from './useChatPanelModels'
 import { AppModelsSection } from './AppModelsSection'
 import { FollowDefaultModelAction } from './FollowDefaultModelAction'
-import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
+import { KIRO_MODEL_SETTINGS_URL, KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { DefaultSessionFolderSetting } from './DefaultSessionFolderSetting'
 import { SessionsPerCreatorSetting } from './SessionsPerCreatorSetting'
 import { ShowAllBotsSessionsRow } from './ShowAllBotsSessionsRow'
@@ -282,7 +282,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     subagentModelMut, shownBackgroundEffort, shownSubagentEffort, bgEffortSupported,
     subEffortSupported, effortLabels, backgroundEffortMut, subagentEffortMut,
     memberEffortPinOverrides, showEffortPinNotice, resolvedEffortLabel, clearAgentEffortPinMut,
-    clearAgentEffortPinError,
+    clearAgentEffortPinError, shownOptimizerModel, optimizerModelOpts, optimizerModelLabels,
+    optimizerModelMut, shownOptimizerEffort, optimizerEffortLabels, optimizerEffortSupported,
+    optimizerEffortMut,
   } = useChatPanelModelDefaults({
     qc, setPathSaveError, clearOwnPathError, overlay, dashCfg, mcCfg, optimisticConfigOpts,
     fallbackModel, shownFallbackModel, refusalFallbackModel, shownRefusalFallbackModel,
@@ -547,7 +549,13 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               description: model.name === 'auto'
                 ? i18nT('pages.settings.chatPanel.auto_always_visible')
                 : model.description,
-              locked: model.name === 'auto',
+              locked: model.name === 'auto' || model.hiddenByAccount === true,
+              lockedReason: model.hiddenByAccount === true
+                ? {
+                    text: i18nT('pages.settings.chatPanel.kiro_account_hidden_model_row'),
+                    link: { label: i18nT('pages.settings.chatPanel.kiro_account_hidden_model_link'), href: KIRO_MODEL_SETTINGS_URL },
+                  }
+                : undefined,
             }))}
             selected={selectedModelIds}
             onToggle={toggleVisibleModel}
@@ -950,6 +958,24 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.inline_markdown_input')} hint={i18nT('pages.settings.chatPanel.inline_markdown_input_desc')} checked={chatCfg.inlineMarkdown} onChange={v => setChat('inlineMarkdown', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_optimize_prompt')} hint={i18nT('pages.settings.chatPanel.show_optimize_prompt_desc', { chord: platformShortcut('Cmd+Shift+Enter') })} checked={chatCfg.showOptimizePrompt} onChange={v => setChat('showOptimizePrompt', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.optimize_before_sending')} hint={i18nT('pages.settings.chatPanel.optimize_before_sending_desc', { chord: platformShortcut('Cmd+Z') })} checked={chatCfg.optimizeBeforeSend} onChange={v => setChat('optimizeBeforeSend', v)} disabled={!chatCfg.showOptimizePrompt} />
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.optimize_prompt_model')}
+            hint={i18nT('pages.settings.chatPanel.optimize_prompt_model_hint')}
+            value={shownOptimizerModel}
+            options={optimizerModelOpts}
+            optionLabels={optimizerModelLabels}
+            onChange={v => optimizerModelMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.optimize_prompt_effort')}
+            hint={i18nT('pages.settings.chatPanel.optimize_prompt_effort_hint')}
+            value={shownOptimizerEffort}
+            options={[...EFFORT_LEVELS]}
+            optionLabels={optimizerEffortLabels}
+            onChange={v => optimizerEffortMut.mutate(v)}
+            disabled={!mcQ.isSuccess || !optimizerEffortSupported}
+          />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_pasted_text_in_full')} description={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc_summary')} hint={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc', { chord: platformShortcut('Cmd+Shift+V') })} checked={chatCfg.showFullPastes} onChange={v => setChat('showFullPastes', v)} />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.follow_up_bar_layout')} hint={i18nT('pages.settings.chatPanel.multiline_wraps_suggestions_onto_multiple_rows_s')} value={chatCfg.followUpLayout} options={[{ value: "multiline", label: i18nT('pages.settings.chatPanel.multiline') }, { value: "scroll", label: i18nT('pages.settings.chatPanel.single_line') }]} onChange={v => setChat('followUpLayout', v as ChatConfig['followUpLayout'])} />
           <SettingsInput
@@ -973,7 +999,6 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             }}
             disabled={!mcQ.isSuccess}
           />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.double_escape_to_stop')} hint={i18nT('pages.settings.chatPanel.double_escape_to_stop_desc')} checked={chatCfg.doubleEscapeToStop} onChange={v => setChat('doubleEscapeToStop', v)} />
         </SettingsCard>
           )
 

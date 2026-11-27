@@ -289,11 +289,6 @@ def task_name(cfg: PodConfig, name: str) -> str:
     return rf"{TASK_FOLDER_ROOT}\{cfg.unit_prefix}\{name}"
 
 
-def task_folder(cfg: PodConfig) -> str:
-    """The plane's own task folder — every pod task is a direct child."""
-    return rf"{TASK_FOLDER_ROOT}\{cfg.unit_prefix}"
-
-
 def _plane_file(cfg: PodConfig, name: str, suffix: str) -> Path:
     """A per-pod sidecar under the plane's ``pods_dir``.
 

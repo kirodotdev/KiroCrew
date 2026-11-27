@@ -32,6 +32,7 @@ from kiro_crew.dashboard.agent_ipc import agent_socket_gate, request_on_agent_so
 from kiro_crew.dashboard.kiro_relay.admission import admit_relay_caller
 from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import (
+    is_entry_request,
     is_https_request,
     is_loopback,
     is_proxied_request,
@@ -75,8 +76,10 @@ from kiro_crew.dashboard.token_auth_app_scope import _enforce_app_scope, _prime_
 from kiro_crew.dashboard.token_auth_callers import (
     _derive_internal_caller_app,
     _internal_caller_record_missing,
+    _note_unattested_tcp_session_key,
     _unix_request_socket,
     _verify_unix_peer,
+    unattested_session_key_mode,
 )
 from kiro_crew.dashboard.token_auth_paths import (
     _APPS_UI_BYPASS_RE,
@@ -89,8 +92,12 @@ from kiro_crew.dashboard.token_auth_paths import (
     _log_auth,
     _log_query_token_refused,
 )
+from kiro_crew.dashboard.token_auth_sessionless import sessionless_internal_call_refused
 from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401  # re-export through this facade
+    ANCESTORS_CLAIM,
     APP_IAT_CLAIM,
+    FAMILY_CLAIM,
+    FAMILY_STATE_UNAVAILABLE,
     LINK_NOT_A_SESSION,
     MAX_SESSION_TTL_SECS,
     OWNER_MINT_CLAIM,
@@ -103,9 +110,13 @@ from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401  # re-export t
     bind_token_peer,
     check_token_peer,
     claims_an_app_unverified,
+    credential_family_refusal,
     generate_token,
     required_peer_key_unverified,
     requires_verified_peer_unverified,
+    token_ancestors,
+    token_family,
+    token_lineage,
     validate_token_with_app,
     validate_token_with_app_off_loop,
 )
@@ -133,6 +144,17 @@ def internal_path_matches(path: str, entries: Iterable[str]) -> bool:
 
 
 logger = logging.getLogger("kiro_crew.dashboard.token_auth")
+
+
+async def _strict_cookie_refusal(request: web.Request, path: str) -> web.Response | None:
+    """The owner gate for a cookie caller on a strict internal path, fail closed."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    try:
+        return await require_owner_dashboard_request(request, f"internal_auth {path}")
+    except Exception:  # no owner to compare against: refuse
+        logger.debug("strict-path owner check failed for %s", path, exc_info=True)
+        return _deny(request, "Forbidden")
 
 
 def token_auth_middleware(
@@ -513,6 +535,10 @@ def token_auth_middleware(
             """The pin key this request must satisfy (RFC §3)."""
             if peer is not None and tailnet_trust is not None:
                 return peer_pin_key(peer, tailnet_trust.pin_scope)
+            if is_entry_request(request):
+                # Every connection on the entry port is the same-machine proxy, and a
+                # proxy that dials ``localhost`` uses either loopback address.
+                return "ip:127.0.0.1"
             return f"ip:{request.remote or 'unknown'}"
 
         def _check_pin(
@@ -596,6 +622,8 @@ def token_auth_middleware(
                         source="token_auth",
                         resources=f"{repin_key} (first-use re-pin)",
                     )
+            if ok and is_entry_request(request):
+                _state.mark_address_pin_proxied(token, request_peer_key)
             return ok, mismatch
 
         # Internal API paths: loopback + secret grants immediate access.
@@ -603,6 +631,9 @@ def token_auth_middleware(
         # normal cookie auth so dashboard pages can call these routes.
         _matches_strict = internal_path_matches(path, internal_paths)
         _matches_mixed = internal_path_matches(path, mixed_internal_paths)
+        # Kept across the reclassification below: a strict path's cookie caller
+        # is owner-gated whether or not ``local_only`` reads it as mixed.
+        _declared_strict = _matches_strict and not _matches_mixed
         # local_only=False: treat ALL internal paths as mixed (backward compat
         # with mainline's local_only semantics — user opted into remote access)
         if not local_only and _matches_strict and not _matches_mixed:
@@ -720,6 +751,32 @@ def token_auth_middleware(
                         )
                         _log_auth(request, "internal", "denied", "delegated record missing")
                         return _deny(request, "Forbidden", "caller_record_missing")
+                    if _unix_sock is None and not _ipc_granted:
+                        # Records a TCP caller whose declared key nothing attests.
+                        # In the default "log" mode the request goes on exactly as
+                        # before; in "enforce" (opt-in) the unattested key is refused.
+                        _unattested = await _note_unattested_tcp_session_key(request)
+                        if _unattested and unattested_session_key_mode() == "enforce":
+                            _sel = _sel_fn()
+                            _sel.log_api_access(
+                                caller=_caller,
+                                forwarded=is_proxied_request(request),
+                                operation="internal_auth",
+                                outcome="denied",
+                                source="token_auth",
+                                resources=path,
+                                error="unattested session key",
+                            )
+                            _log_auth(request, "internal", "denied", "unattested session key")
+                            return _deny(request, "Forbidden", "session_required")
+                    # A call that names NO session reads as the person, which a
+                    # sandboxed process is not: logged, or refused when enforced. The
+                    # note above covers a DECLARED key; this covers the absent one.
+                    if await sessionless_internal_call_refused(
+                        request, path, capability_granted=_ipc_granted
+                    ):
+                        _log_auth(request, "internal", "denied", "sessionless sandboxed caller")
+                        return _deny(request, "Forbidden", "session_required")
                     await publish_actor(
                         request, trust=tailnet_trust, serve_peer=None, internal=True
                     )
@@ -825,6 +882,14 @@ def token_auth_middleware(
                 )
             _log_auth(request, _audit_uid(_uid), "granted", f"cookie auth for {_uid}")
             await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
+            if _declared_strict and not _app:
+                # A strict path is an agent tool's leg (it acts with the owner's
+                # messaging and session reach), so a cookie caller with no
+                # secret must be the owner or a teammate. Any other dashboard
+                # session is refused; an app token stays under its scope above.
+                _strict_denied = await _strict_cookie_refusal(request, path)
+                if _strict_denied is not None:
+                    return _strict_denied
             return await handler(request)  # type: ignore[operator]
         elif _matches_internal:
             if _matches_mixed:
@@ -936,6 +1001,12 @@ def token_auth_middleware(
                     f"mixed non-loopback cookie auth for {_uid}",
                 )
                 await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
+                if _declared_strict and not _app:
+                    # ``local_only=False`` read this strict path as mixed above; a
+                    # cookie caller still has to be the owner or a teammate.
+                    _strict_denied = await _strict_cookie_refusal(request, path)
+                    if _strict_denied is not None:
+                        return _strict_denied
                 return await handler(request)  # type: ignore[operator]
             else:
                 # INVARIANT: non-loopback access to strict internal paths is
@@ -1036,9 +1107,17 @@ def token_auth_middleware(
                 # The only place an app credential from local authorization is
                 # recognised. ``bearer`` is read on a Crew API path alone, so no
                 # other path ever carries one.
-                app_refusal = await crew_api_auth.refuse_app_credential(request, token)
-                if app_refusal is not None:
-                    return app_refusal
+                app_answer = await crew_api_auth.judge_app_credential(request, token)
+                if isinstance(app_answer, web.Response):
+                    return app_answer
+                if app_answer is not None:
+                    # Admitted by its route's row. The steps below judge a session,
+                    # and this caller holds none: the peer pin (the credential is
+                    # taken from this machine alone), the link exchange (no cookie
+                    # is minted) and the installed-app allowlist (the served list
+                    # decides, and this caller is no installed app).
+                    await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
+                    return await handler(request)  # type: ignore[operator]
         else:
             valid, user_id, reason, app_name = await validate_token_with_app_off_loop(
                 token, use_session_exp=from_cookie
@@ -1122,12 +1201,19 @@ def token_auth_middleware(
             _no_refresh = False
             _owner_minted = False
             _session_peer_key = ""
+            _family = ""
+            _ancestors = ""
             try:
                 payload_bytes = _b64url_decode(token.split(".")[0])
                 data = json.loads(payload_bytes)
                 session_exp = float(data.get("session_exp", 0.0))
                 _owner_minted = str(data.get(OWNER_MINT_CLAIM, "")) == "1"
                 _link_nonce = str(data.get("nonce", ""))
+                # The credential family: this link, the session it becomes and its
+                # refresh chain end together (``revoke_token_family``), and so
+                # do they when a family it descends from ends.
+                _family = token_family(data)
+                _ancestors = token_ancestors(data)
                 # Carry the multi-instance frame-ancestors claim (the embedding
                 # parent dashboard's port) THROUGH the exchange. The framed
                 # document is authenticated by the session cookie minted below,
@@ -1219,6 +1305,10 @@ def token_auth_middleware(
                 # again (see OWNER_MINT_CLAIM). Relabels a denial only.
                 if _owner_minted:
                     _carried[OWNER_MINT_CLAIM] = "1"
+                if _family:
+                    _carried[FAMILY_CLAIM] = _family
+                if _ancestors:
+                    _carried[ANCESTORS_CLAIM] = _ancestors
                 if app_name:
                     # An app session keeps the issue time of the app token it was
                     # exchanged from: a request whose token passed the check just
@@ -1438,7 +1528,14 @@ def token_auth_middleware(
                     max_age=0,
                     path=REFRESH_COOKIE_PATH,
                 )
-            else:
+            elif not app_name and not credential_family_refusal(_family, _ancestors):
+                # An app session gets no chain either: a rotation mints a plain
+                # session with no ``app`` claim, so one refresh would lift the app's
+                # scope. The app re-exchanges its secret when the session ends. A
+                # refresh cookie already in the browser is not this credential's, so
+                # unlike ``no_refresh`` it is left alone. The family is checked again
+                # because the owner may have ended it while the handler ran; nothing
+                # between this check and the mint below awaits.
                 try:
                     # The refresh chain inherits the boot binding. Without this
                     # the chain is the escape hatch: the access cookie would die
@@ -1480,6 +1577,8 @@ def token_auth_middleware(
                         require_peer=_refresh_require_peer,
                         peer_key=_refresh_peer_key,
                         owner_mint=_owner_minted,
+                        family=_family,
+                        ancestors=_ancestors,
                         embed_parent_port=_embed_parent_port,
                         embed_forward_port=_embed_forward_port,
                     )
@@ -1559,6 +1658,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         app_token_path_allowed,
     )
     from kiro_crew.dashboard.token_auth_callers import (  # noqa: F401
+        _SESSION_KEY_KINDS,
+        _WOULD_REFUSE_COUNTS,
+        _WOULD_REFUSE_LOG_INTERVAL_SECS,
         KNOWN_INTERNAL_CALLERS,
         MEMBER_CHAT_PRINCIPAL_KEY,
         _bound_session_keys_on_chain,
@@ -1566,10 +1668,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_job_owner,
         _key_segment,
         _live_session_keys_on_chain,
+        _route_template,
+        _session_key_kind,
         _slot_by_linked_key,
         _subagent_caller_record,
         _subagent_owner,
         _subagent_record_exists,
+        _would_refuse_log_last,
         app_owner_of_session_key,
         app_owns_transcript,
         caller_names_a_missing_slot,
@@ -1577,11 +1682,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         derive_caller_app,
         effective_request_app,
         folder_principal,
+        live_dashboard_mode,
         refuse_unattributable_caller,
         request_origin,
     )
     from kiro_crew.dashboard.token_auth_paths import (  # noqa: F401
         _403_HTML,
+        _403_SCRIPT,
+        _403_SCRIPT_HASH,
         _APP_WINDOW_EXCLUDED_PATHS,
         _APPS_SPA_EXCLUDED_RE,
         _BYPASS_EXACT_METHODS,
@@ -1599,17 +1707,34 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SPA_FALLBACK_EXCLUDED_PREFIXES,
         TEAMS_WEBHOOK_PATH,
         UPDATE_REVALIDATE_PATH,
+        _403_csp,
         _credential_fingerprint,
         is_csrf_exempt,
         register_app_window_paths,
     )
+    from kiro_crew.dashboard.token_auth_sessionless import (  # noqa: F401
+        _MAX_TRACKED,
+        _NO_SESSION_KEYS,
+        _SESSIONLESS_COUNTS,
+        LOG_WINDOW_SECS,
+        SESSIONLESS_INTERNAL_CALL_MODES,
+        _caller_on_host,
+        _names_no_session,
+        _platform_has_sandbox,
+        _sessionless_log_last,
+        sessionless_internal_call_mode,
+    )
     from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401
+        _FAMILY_KEY_PREFIX,
+        _FAMILY_RECORD_MARGIN_SECS,
         _REVOKED_NONCES_FILE,
         CONNECTOR_AUDIENCE,
         CONNECTOR_CREDENTIAL_REASON,
+        FAMILY_MARKER_CLAIM,
         LINK_TOKEN_MAX_CHARS,
         LINK_WINDOW_SECS,
         MAX_CONCURRENT_NONCES,
+        LegacyFamilyLink,
         RevokedNonceStore,
         TokenStateManager,
         _app_secret_move_lock,
@@ -1639,6 +1764,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         revoke_access_cookie,
         revoke_all_sessions,
         revoke_all_sessions_async,
+        revoke_token_family,
         token_embed_parent_port,
         token_owner_minted_unverified,
         try_consume,
@@ -1649,48 +1775,31 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
-    from kiro_crew import (  # noqa: F401
-        platform_compat,
-    )
-    from kiro_crew.atomic_write import (  # noqa: F401
-        retry_read_sharing_window,
-    )
+    from kiro_crew import platform_compat  # noqa: F401
+    from kiro_crew.atomic_write import retry_read_sharing_window  # noqa: F401
     from kiro_crew.dashboard.app_scope_refusal import (  # noqa: F401
         GrantFacts,
         ScopeRefusal,
         app_label,
         scope_refusal,
     )
-    from kiro_crew.dashboard.boot_id import (  # noqa: F401
-        current_boot_id,
-    )
-    from kiro_crew.dashboard.origin import (  # noqa: F401
-        request_is_unix_socket,
-    )
+    from kiro_crew.dashboard.boot_id import current_boot_id  # noqa: F401
+    from kiro_crew.dashboard.origin import request_is_unix_socket  # noqa: F401
     from kiro_crew.dashboard.revocation_gen import (  # noqa: F401
         persist_next_revocation_gen,
         publish_revocation_gen,
     )
-    from kiro_crew.executors import (  # noqa: F401
-        subprocess_executor,
-    )
+    from kiro_crew.executors import local_auth_executor, subprocess_executor  # noqa: F401
     from kiro_crew.mcp_gateway.socketsec import (  # noqa: F401
         PeerCredResult,
         check_peer_is_self,
         get_peer_pid,
     )
-    from kiro_crew.messaging.link import (  # noqa: F401
-        is_channel_session_key,
-    )
-    from kiro_crew.peer_resolve import (  # noqa: F401
-        resolve_peer_tenancy,
-    )
-    from kiro_crew.runtime_ownership import (  # noqa: F401
-        session_keys_bound_to_pid,
-    )
-    from kiro_crew.session_token_sig import (  # noqa: F401
-        verify_session_token,
-    )
+    from kiro_crew.member_memory_auth import session_key_is_attested  # noqa: F401
+    from kiro_crew.messaging.link import is_channel_session_key  # noqa: F401
+    from kiro_crew.peer_resolve import resolve_peer_tenancy  # noqa: F401
+    from kiro_crew.runtime_ownership import session_keys_bound_to_pid  # noqa: F401
+    from kiro_crew.session_token_sig import verify_session_token  # noqa: F401
 
 # This module is the facade of dashboard token authentication: every name is reached through
 # it as ``kiro_crew.dashboard.token_auth.<name>``. A read is served by the owner that binds
@@ -1702,12 +1811,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
 #   ``token_auth_tokens`` -- minting, validating, pinning and revoking session tokens
 #   ``token_auth_app_scope`` -- what an app token may reach
 #   ``token_auth_callers`` -- Unix-socket peer verification and request attribution
+#   ``token_auth_sessionless`` -- session-less internal calls from a sandboxed process
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.dashboard.token_auth_paths",
     "kiro_crew.dashboard.token_auth_tokens",
     "kiro_crew.dashboard.token_auth_app_scope",
     "kiro_crew.dashboard.token_auth_callers",
+    "kiro_crew.dashboard.token_auth_sessionless",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)

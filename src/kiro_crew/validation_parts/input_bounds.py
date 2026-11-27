@@ -375,7 +375,7 @@ def infer_use_case(session_key: str) -> str:
         return "dashboard"
     if session_key == "cli_chat" or session_key.startswith("cli_chat:"):
         return "cli"
-    if SLACK_THREAD_TS_RE.match(session_key):
+    if SLACK_THREAD_TS_RE.fullmatch(session_key):
         return "slack"
     return "unknown"
 

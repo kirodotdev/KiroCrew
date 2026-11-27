@@ -118,7 +118,7 @@ describe('the install dialog', () => {
     api.prepareMarketInstall.mockResolvedValue(prepared())
     withClient(<InstallFromSpaceDialog row={row()} onClose={() => {}} onInstalled={() => {}} />)
     const notice = await screen.findByTestId('market-permissions-notice')
-    expect(notice).toHaveTextContent('The app installs switched off and runs nothing until you turn it on.')
+    expect(notice).toHaveTextContent('The app installs switched off. Turning it on asks you to trust its code.')
     expect(notice.className).not.toContain('text-muted')
     expect(screen.queryByText('Declared by the publisher.')).toBeNull()
   })

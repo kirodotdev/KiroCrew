@@ -128,7 +128,7 @@ async def test_a_skipped_delete_leaves_nothing_that_refuses_a_later_resume(tmp_p
     key = "dashboard:inflight2"
     log.append(key, "user", "history-1")
     log.append(key, "assistant", "history-2")
-    log.update_metadata(key, {"pinned": True})
+    await asyncio.to_thread(log.update_metadata, key, {"pinned": True})
 
     assert log.delete_session(key, skip_pinned=True) is None, "a pinned session was deleted"
 
@@ -277,7 +277,7 @@ async def test_a_refused_resume_leaves_a_closed_session_closed_and_a_retry_opens
     log.append(key, "user", "history-1")
     log.append(key, "assistant", "history-2")
     closed_at = time.time() - 60
-    log.update_metadata(key, {"closed": True, "closed_at": closed_at})
+    await asyncio.to_thread(log.update_metadata, key, {"closed": True, "closed_at": closed_at})
 
     url = "/api/chat/slots/inflight5/resume"
     async with TestClient(TestServer(_make_app(state))) as client:
@@ -310,7 +310,9 @@ async def test_the_reopen_write_lands_before_the_publish(tmp_path, monkeypatch):
     key = "dashboard:inflight10"
     log.append(key, "user", "history-1")
     log.append(key, "assistant", "history-2")
-    log.update_metadata(key, {"closed": True, "closed_at": time.time() - 60})
+    await asyncio.to_thread(
+        log.update_metadata, key, {"closed": True, "closed_at": time.time() - 60}
+    )
     clear_entered = threading.Event()
     clear_release = threading.Event()
     clears = []
@@ -358,7 +360,9 @@ async def test_a_reopen_write_that_fails_publishes_nothing(tmp_path, monkeypatch
     log = state.conversation_log
     key = "dashboard:inflight11"
     log.append(key, "user", "history-1")
-    log.update_metadata(key, {"closed": True, "closed_at": time.time() - 60})
+    await asyncio.to_thread(
+        log.update_metadata, key, {"closed": True, "closed_at": time.time() - 60}
+    )
 
     def failing_clear(*args, **kwargs):
         raise OSError("disk full")
@@ -394,7 +398,9 @@ async def test_a_delete_starting_during_the_member_binding_read_is_seen(tmp_path
     key = "dashboard:member-alice"
     log.append(key, "user", "history-1")
     log.append(key, "assistant", "history-2")
-    log.update_metadata(key, {"mode": members_mod.DM_SLOT_MODE, "agent": "alice"})
+    await asyncio.to_thread(
+        log.update_metadata, key, {"mode": members_mod.DM_SLOT_MODE, "agent": "alice"}
+    )
 
     calls = {"n": 0}
     late_entered = threading.Event()
@@ -510,7 +516,7 @@ async def test_a_delete_opening_during_the_reopen_write_refuses_the_resume(tmp_p
     log.append(key, "user", "history-1")
     log.append(key, "assistant", "history-2")
     closed_at = time.time() - 60
-    log.update_metadata(key, {"closed": True, "closed_at": closed_at})
+    await asyncio.to_thread(log.update_metadata, key, {"closed": True, "closed_at": closed_at})
     original_clear = log.clear_closed
     windows = contextlib.ExitStack()
     opened = []

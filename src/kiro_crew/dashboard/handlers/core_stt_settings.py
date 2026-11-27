@@ -36,12 +36,14 @@ from kiro_crew.dashboard.chat_utils import drained_to_thread
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
     pip_extra_install_command,
+    require_owner_for_dashboard_caller,
 )
 from kiro_crew.dashboard.handlers.core_stt_access import (
     _audit_custom_model_disclosure,
     _deny_non_owner_stt_custom_model,
     _stt_custom_model_refusal,
     _stt_positive_int,
+    deny_non_owner_speech_fields,
 )
 from kiro_crew.dashboard.stt_stream import PROVIDER_LOCAL, streaming_providers
 from kiro_crew.speech_languages import COMMON_LANGUAGE_CODES
@@ -218,6 +220,11 @@ def _stt_threads_env() -> str | None:
 
 async def api_stt_config(request: web.Request) -> web.Response:
     """GET/PUT /api/config/stt — speech-to-text settings."""
+    # The settings name the AWS profile and region Transcribe spends on, and the
+    # polish consent, so only the owner or a teammate reads or writes them.
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.config")
+    if owner_denied is not None:
+        return owner_denied
     cfg = KiroCrewConfig.load()
     if request.method == "PUT":
         try:
@@ -237,6 +244,8 @@ async def api_stt_config(request: web.Request) -> web.Response:
         # part of this endpoint a non-owner caller may not touch. See
         # `_deny_non_owner_stt_custom_model` for why they and not the rest.
         denied = await _deny_non_owner_stt_custom_model(request, body)
+        if denied is None:
+            denied = deny_non_owner_speech_fields(request, body, "stt.config")
         if denied is not None:
             return denied
         refused = await asyncio.to_thread(_stt_custom_model_refusal, body)

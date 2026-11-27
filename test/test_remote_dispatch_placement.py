@@ -301,7 +301,6 @@ def test_a_refusal_other_than_busy_stops_the_placement(recorded, crews):
     "over",
     [
         {"state": "disconnected"},
-        {"version": "0.0.1"},
         {"headroom": {"mem_free_gb": 50, "disk_free_gb": 200, "load_per_cpu": 1.0}},
         {"headroom": {"mem_free_gb": 1.9, "disk_free_gb": 200, "load_per_cpu": 0}},
         {"headroom": {"mem_free_gb": 50, "disk_free_gb": 9.9, "load_per_cpu": 0}},
@@ -319,6 +318,17 @@ def test_an_ineligible_crew_is_skipped(recorded, crews, over):
 
     _run(crews, 1, body)
     assert crews.creates == ["b"]
+
+
+def test_a_version_skewed_crew_is_still_placed_on(recorded, crews):
+    crews.add("a", mem=99, version="0.0.1")
+    crews.add("b", mem=4)
+
+    async def body(state, items):
+        assert await _place(state, items[0]) == "a"
+
+    _run(crews, 1, body)
+    assert crews.creates == ["a"]
 
 
 def test_a_stalling_crew_probe_is_skipped(recorded, crews, monkeypatch):
@@ -634,8 +644,8 @@ def test_no_qualifying_crew_is_refused_naming_what_each_lacked(recorded, crews, 
 
 @pytest.mark.parametrize(
     "unread",
-    [{"headroom_status": 404}, {"version": "0.0.1"}],
-    ids=["headroom-404", "version-mismatch"],
+    [{"headroom_status": 404}],
+    ids=["headroom-404"],
 )
 def test_a_crew_that_could_not_be_read_is_named_in_the_refusal(recorded, crews, unread):
     crews.add("a", headroom=_room(tags=["cpu"]))

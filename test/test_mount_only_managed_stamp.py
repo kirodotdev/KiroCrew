@@ -128,6 +128,15 @@ def test_the_stamp_does_not_withhold_the_per_session_element(env):
     assert session_mcp.native_mount_withholding(DASH, entry, []) is None
 
 
+def test_the_app_source_stamp_does_not_withhold_the_per_session_element():
+    """An app's entry carries ``x-kirocrew-app-source``; kiro-cli never reads it."""
+    from kiro_crew.acp import session_mcp
+    from kiro_crew.mcp_provenance import SOURCE_KEY
+
+    entry = {"command": "kirocrew", "args": ["app", "mochi"], SOURCE_KEY: "mochi:mochi"}
+    assert session_mcp.native_mount_withholding("mochi:mochi", entry, []) is None
+
+
 def test_an_unstamped_opt_in_entry_is_refreshed_as_before(env):
     spec = _spec(env)
     entry = agent_mod._managed_opt_in_entry("mcp-debug")

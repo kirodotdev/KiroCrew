@@ -18,7 +18,7 @@ const CrewDynamicDashboard = lazy(() => import('./CrewDynamicDashboard'))
  * The tab holds the dashboard alone and offers no view switch. The raw crew-log
  * record is a diagnostics surface, reached from the chat panel's own Crew log
  * view, so the thread's slot is not part of this tab's input. */
-export default function CrewDashboardTab({ slug, member, displayName, avatar, onAct, onActKeep, onSend, onOpenProfileTab, preview = false, onLeavePreview }: {
+export default function CrewDashboardTab({ slug, member, displayName, avatar, onAct, onActKeep, onSend, onOpenProfileTab, onOpenLink, preview = false, onLeavePreview }: {
   slug: string
   member: string
   displayName: string
@@ -33,6 +33,8 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
   /** Called when the person clicks the one-click-send badge to go straight to
    *  the Profile tab where its switch lives. */
   onOpenProfileTab?: () => void
+  /** Claim a link the page asked for (see `CrewDynamicDashboard`). */
+  onOpenLink?: (url: string) => boolean
   /** Show the STAGED page under the shared preview label instead of the live one. */
   preview?: boolean
   /** The staged page is no longer staged (kept, discarded, applied by the agent or
@@ -79,6 +81,7 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
             onActKeep={onActKeep}
             onSend={onSend}
             onOpenProfileTab={onOpenProfileTab}
+            onOpenLink={onOpenLink}
             preview={showPreview}
             onPreviewGone={showPreview ? onPreviewGone : undefined}
             onPreviewLoaded={showPreview ? setStagedMs : undefined}

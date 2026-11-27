@@ -133,19 +133,25 @@ MANAGED_STUB_LEADER = "kirocrew-core"
 #: already declares, so an opt-in server still reaches only the agents granted it.
 #:
 #: This is ``mcp_discovery._MANAGED_SERVERS_CALLER_AWARE`` minus the leader,
-#: ``kirocrew-computer``, ``kirocrew-cron`` and ``kirocrew-secrets``. It is spelled out rather than
+#: ``kirocrew-computer`` and ``kirocrew-secrets``. It is spelled out rather than
 #: derived because this module may import only ``config.fields`` (the config
 #: boundary contract) and ``mcp_discovery`` pulls in aiohttp and the probe
 #: executor. A ratchet test pins the equality, so a new caller-aware server fails
 #: it until it is placed here or in the test's exclusions with a reason.
 #:
+#: ``kirocrew-cron`` keeps nothing per session in its process: every tool takes
+#: the caller from the injected block (``mcp_core_parts.identity``), the delivery
+#: channel too (gatewayd exports no ``KIROCREW_CHANNEL_ID`` to a pooled backend),
+#: and the job store is opened per call. Each KAS sub-agent otherwise started its
+#: own ``kirocrew mcp-cron``.
+#:
 #: ``kirocrew-computer`` drives the desktop and pools only behind a
 #: per-connection tenant nonce (``mcp_caller.POOLING_REQUIRES_TENANT_NONCE``), so
-#: it stays an explicit choice. ``kirocrew-cron`` is not excluded for a known
-#: hazard: it is simply outside what this layer was measured on, and stays one
-#: operator toggle away like any other server. ``kirocrew-secrets`` is the same:
-#: an opt-in, credential-bearing egress server this layer was not measured on.
+#: it stays an explicit choice. ``kirocrew-secrets`` is an opt-in,
+#: credential-bearing egress server this layer was not measured on, and stays one
+#: operator toggle away like any other server.
 MANAGED_STUB_FOLLOWERS: tuple[str, ...] = (
+    "kirocrew-cron",
     "kirocrew-guide",
     "kirocrew-mate",
     "kirocrew-panel",
@@ -795,7 +801,11 @@ class McpGatewayConfig:
             "A routed server runs in one fixed folder outside the project, shared "
             "by every chat, so MCP Management routes a server only after it is "
             "answered not_used, and a server answered uses_cwd is never routed. "
-            "Kiro Crew's own servers are not asked: they never read the folder. "
+            "Kiro Crew's own servers, and those the edition lists, are not asked: "
+            "they never read the folder. A server seen asking a chat for its roots "
+            "keeps one copy per chat and is not asked, unless it is answered "
+            "not_used, uses a secret:// reference, or the edition lists it; "
+            "then the usual rules apply. "
             "A server missing here is unanswered. Written by MCP Management.",
             restart=True,
         ),
@@ -1155,6 +1165,83 @@ class InstancesConfig:
             "HTTPS base URL of the Kiro web service that lists, creates and connects your "
             "managed environments. Empty (the default): every call is refused and names "
             "this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_start_url: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Sign-in Start URL",
+            "IAM Identity Center start URL whose Crew sign-in (Settings > Kiro account) the "
+            "managed-environment lane uses. Only that sign-in's token is sent to the service "
+            "endpoint. Signing in on this start URL turns off chat with the agent on this "
+            "computer while that sign-in is active. Empty (the default): the lane is signed out.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_profile_arn: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Kiro Profile",
+            "Kiro profile ARN pinned on the sign-in above, so that sign-in asks no control "
+            "plane for a profile, and sent with every call. Empty (the default): the lane "
+            "is signed out.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_ssh_region: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment SSH Region",
+            "AWS Region the Session Manager plugin is started in when ssh reaches a "
+            "managed environment. Empty (the default): a connect is refused and names "
+            "this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Endpoint",
+            "HTTPS runtime endpoint the Crew on a new managed environment runs its engine "
+            "against. Empty (the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_control_plane_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Control Plane",
+            "HTTPS control-plane endpoint for the engine of the Crew on a new managed "
+            "environment. Empty (the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_region: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Region",
+            "Region the two engine endpoints above serve. Empty (the default): a launch is "
+            "refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_token_path: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Machine Token File",
+            "Absolute path, on the managed environment, of the machine token file its "
+            "image keeps fresh. Empty (the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_env_drop: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Managed Environment Variables to Clear",
+            "Environment variable names the managed environment's image sets (its own "
+            "credentials or the machine token's variable) that are cleared before Crew "
+            "starts there. Empty by default.",
             tags=["remote-crew", "managed-environment"],
         ),
     )

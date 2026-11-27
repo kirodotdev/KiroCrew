@@ -59,9 +59,11 @@ describe('DeveloperPanel defers the memory graph', () => {
     expect(screen.queryByTestId('memory-graph')).toBeNull()
   })
 
-  it('loads it when the memory page is selected', async () => {
-    render(at('/settings/developer/memory'))
-    expect(await screen.findByTestId('memory-graph', {}, { timeout: LAZY_PAGE_TIMEOUT_MS })).toBeInTheDocument()
-    expect(probe.loads).toBe(1)
+  it('lists no memory page: the graph is a tab of Settings > Memory', async () => {
+    render(at('/settings/developer/logs'))
+    expect(await screen.findByTestId('log-viewer', {}, { timeout: LAZY_PAGE_TIMEOUT_MS })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /^Memory/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Memory/ })).toBeNull()
+    expect(probe.loads).toBe(0)
   })
 })

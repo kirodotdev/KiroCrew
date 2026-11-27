@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { clickOptimize } from './optimizeRow'
 
 /**
  * While "Optimize prompt" runs, the overlay's pill must show that work is in
@@ -34,7 +35,7 @@ describe('ChatInput optimize: the in-flight overlay shows progress', () => {
     renderWithProviders(
       <ChatInput value="my prompt" onChange={vi.fn()} onSend={vi.fn()} connected={true} />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+    clickOptimize()
 
     const label = await screen.findByText(/Optimizing prompt/)
     const pill = label.closest('.optimize-overlay-pill')

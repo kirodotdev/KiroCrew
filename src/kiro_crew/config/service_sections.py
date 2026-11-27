@@ -12,7 +12,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from kiro_crew.config.fields import _meta, field_default
-from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIME_CEILING_SECS
+from kiro_crew.monitoring.limits import (
+    DEFAULT_RUNTIME_CEILING_SECS,
+    MAX_BUDGET_NOTICE_PCT,
+    MAX_RUNTIME_CEILING_SECS,
+)
 from kiro_crew.work_vocab import (
     WORK_MAX_DEPTH_DEFAULT,
     WORK_MAX_DEPTH_MAX,
@@ -215,6 +219,21 @@ class MonitoringConfig:
             "retained USER_STOP outcome that refuses a re-arm, so moving such a "
             "session to the prompt loop needs its owner to clear that record in "
             "the dashboard's monitor popover first.",
+        ),
+    )
+
+    budget_notice_pct: int = field(
+        default=0,
+        metadata=_meta(
+            "Budget notice on a watch's wake (percent)",
+            "When a structured watch's wake arrives with this share or more of its agent "
+            "turns, tokens or runtime used, the wake carries one extra line stating the "
+            "used and the total of each bound, so the agent can ask for a larger budget "
+            "with monitor_update before the watch stops. 0 turns it off and the wake is "
+            "unchanged. Accepts 1 to 99; any other value reads as 0. Read on every wake, "
+            "so no restart is needed.",
+            min=0,
+            max=MAX_BUDGET_NOTICE_PCT,
         ),
     )
 

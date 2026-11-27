@@ -11,6 +11,8 @@ the answer. The inert lines themselves are pinned in
 
 from __future__ import annotations
 
+import pytest
+
 from kiro_crew import deny_guidance as dg
 from kiro_crew import security
 from kiro_crew.security import audit_bash_exfiltration as audit
@@ -38,22 +40,32 @@ class TestGuidanceNamesWhatPasses:
         assert "date -u -d @<epoch>" in text
         assert "let the user send it themselves" in text
 
-    def test_regex_tier_refusal_keeps_the_exfil_prose(self) -> None:
-        """The regex tier refuses inert lines this prose says pass, so it never gets it."""
+    def test_regex_tier_now_allows_the_inert_search_but_keeps_the_exfil_prose(
+        self, monkeypatch: "pytest.MonkeyPatch"
+    ) -> None:
+        """A raw regex-tier reason still classifies as the exfil shape, and a real
+        curl long-form is still refused there -- but an inert search the prose says
+        passes now passes the regex tier too (the carve-out reaches both tiers)."""
         rule = next(r for r in security.BUILTIN_DENIED_RULES if r.id == _FILE_BODY)
         reason = security._deny_reason(rule.pattern, None)
         assert dg.classify_deny(reason) == dg.DENY_CLASS_EXFIL_SHAPE
-        search = 'grep -rn "' + _CLIENT + ' --data @x" src'
-        tier_reason = security.is_denied(search) or ""
-        assert tier_reason
-        assert dg.classify_deny(tier_reason) == dg.DENY_CLASS_EXFIL_SHAPE
+        # POSIX-pinned: the regex-tier carve-out is off on Windows (cmd.exe reads
+        # the line differently), so this allow assertion is for the POSIX shell.
+        from kiro_crew.security import exfil_bash
 
-    def test_the_prose_names_the_pair_the_regex_tier_still_refuses(self) -> None:
+        monkeypatch.setattr(exfil_bash.platform_compat, "IS_WINDOWS", False)
+        search = 'grep -rn "' + _CLIENT + ' --data @x" src'
+        assert security.is_denied(search) is None
+        real = security.is_denied(_CLIENT + " --data @x" + _URL) or ""
+        assert real
+        assert dg.classify_deny(real) == dg.DENY_CLASS_EXFIL_SHAPE
+
+    def test_the_prose_names_grep_not_the_runner_searchers(self) -> None:
         search = 'grep -rn "' + _CLIENT + ' --data @x" src'
         assert audit(search) is None
-        assert security.is_denied(search)
         text = dg.REMEDIATION[dg.DENY_CLASS_FILE_BODY_TEXT]
-        assert "names `curl` together with a `--data @` form" in text
+        assert "`grep`" in text
+        assert "`rg`" not in text and "`ag`" not in text
         assert "file-search tool" in text
 
     def test_the_named_literal_conversion_is_allowed_by_both_gates(self) -> None:

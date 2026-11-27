@@ -899,4 +899,40 @@ describe('DrivePage sections: keyboard paths and honest copy', () => {
     // a synchronous read races it under shard load; wait for it to settle.
     await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
+
+  // A screen reader's activation, Switch Control and `element.click()` open a
+  // row menu with a click alone: no pointer or key event reaches the trigger,
+  // so only its `onClick` can remember it as the opener.
+  it.each([
+    { view: 'list', more: 'drive-more', share: 'drive-share' },
+    { view: 'grid', more: 'drive-grid-more', share: 'drive-grid-share' },
+    { view: 'search', more: 'drive-search-more', share: 'drive-search-share' },
+  ])('the share dialog returns focus to the $view menu that a click alone opened', async ({ view, more, share }) => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({
+      files: [{ key: 'report.pdf', size: 2048, modified: '2026-08-20T00:00:00Z' }], folders: [],
+    })
+    vi.mocked(awsControlApi.driveSearch).mockResolvedValue({
+      results: [{ key: 'docs/deep/report.pdf', size: 55, modified: '2026-09-01T00:00:00Z' }], capped: false, limit: 200,
+    })
+    await renderDrive('drive')
+    await screen.findByTestId('drive-file')
+    if (view === 'grid') {
+      fireEvent.click(screen.getByTitle('Grid view'))
+      await screen.findByTestId('drive-grid')
+    }
+    if (view === 'search') {
+      fireEvent.change(screen.getByTestId('drive-search-input'), { target: { value: 'report' } })
+    }
+    const trigger = await screen.findByTestId(more)
+
+    // `detail: 0` is the click a screen reader or `element.click()` sends.
+    fireEvent.click(trigger, { detail: 0 })
+    fireEvent.click(await screen.findByTestId(share))
+    await findTrappedDialog('share-dialog')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('share-dialog')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+  })
 })
