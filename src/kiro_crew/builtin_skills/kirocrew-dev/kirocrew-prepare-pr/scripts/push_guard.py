@@ -950,7 +950,7 @@ def _parse_args(argv=None):
     parser.add_argument(
         "--base",
         default="",
-        help="Base branch name (without origin/ prefix). "
+        help="Base branch name; a leading origin/ or refs/remotes/origin/ is dropped. "
         "Auto-detected from PR or origin/HEAD if omitted.",
     )
     parser.add_argument(
@@ -1003,6 +1003,12 @@ def _parse_args(argv=None):
         "mode but --check-index, paths you vouch for that this script did not commit.",
     )
     args = parser.parse_args(argv)
+    # The sibling scripts take the remote-qualified form, so accept it here too
+    # rather than fetching refs/heads/origin/<base>, which never exists.
+    for remote_prefix in (_remote_ref(""), "origin/"):
+        if args.base.startswith(remote_prefix):
+            args.base = args.base[len(remote_prefix) :]
+            break
     if args.paths_from_file is not None:
         try:
             with open(args.paths_from_file, "rb") as handle:

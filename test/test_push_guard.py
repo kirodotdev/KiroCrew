@@ -26,7 +26,7 @@ from pathlib import Path
 
 import push_guard_helpers
 from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
-from push_guard_helpers import _bless, _git, _run_push_guard
+from push_guard_helpers import _bless, _git, _run_push_guard, _run_push_guard_inprocess
 
 # pytest resolves a fixture in the requesting test's module, so each shared
 # fixture this module uses is bound here by name.
@@ -74,6 +74,23 @@ class TestPushGuardSafe:
         rc, stdout, stderr = _run_push_guard(clone_dir, ["--max-ahead", "3"])
         assert rc == 0, f"Expected safe (0), got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
         assert "SAFE TO PUSH" in stdout
+
+    def test_a_remote_qualified_base_names_the_same_branch(self, repo_pair, monkeypatch):
+        # The skill's other scripts take --base origin/<base>, so the guard reads
+        # that form as the bare branch instead of fetching refs/heads/origin/main.
+        clone_dir, _ = repo_pair
+        _git(clone_dir, "checkout", "-b", "feature/my-fix")
+        Path(clone_dir, "fix.py").write_text("# fix\n")
+        _git(clone_dir, "add", "fix.py")
+        _git(clone_dir, "commit", "-m", "fix: the bug")
+        _bless(clone_dir)
+
+        for base in ("origin/main", "refs/remotes/origin/main"):
+            rc, stdout, stderr = _run_push_guard_inprocess(
+                monkeypatch, clone_dir, extra_args=["--base", base]
+            )
+            assert rc == 0, f"{base}: got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
+            assert "SAFE TO PUSH" in stdout
 
 
 class TestPushGuardRefused:
