@@ -39,6 +39,7 @@ from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.sel import sel
 from kiro_crew.session_surface import (
+    cron_tab_name,
     dashboard_tab_name,
     has_dashboard_surface,
     set_dashboard_surfaced,
@@ -155,12 +156,6 @@ def _history_key_for(slot_key: str) -> str:
     while slot_key.startswith("dashboard_"):
         slot_key = slot_key[len("dashboard_") :]
     return f"dashboard:{slot_key}"
-
-
-def cron_tab_name(session_key: str) -> str:
-    """The tab that shows a cron session: ``cron:<id>`` is ``cron-<id>``, the
-    job's one tab, and a per-run ``cron:<id>:<run>`` is ``cron-<id>-<run>``."""
-    return "cron-" + session_key.removeprefix("cron:").replace(":", "-")
 
 
 def dashboard_slot_key(session_key: str) -> str:

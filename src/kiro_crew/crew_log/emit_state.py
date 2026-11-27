@@ -92,6 +92,12 @@ _last_class: "OrderedDict[str, tuple[str, str, bool, str]]" = OrderedDict()
 #: is bounded FIFO and released by the child's own terminal entry.
 _child_origin: "OrderedDict[str, tuple[str, int, bool, int]]" = OrderedDict()
 
+#: parent session id -> how many child closers were handed to the writer for it and have
+#: not landed or been dropped yet. The closer path releases a child's pin right after
+#: that hand-over, so this is what covers the unit from then until the closer resolves,
+#: the way ``TurnTracker.closing`` covers a turn's terminal. A key is dropped at zero.
+_child_closers_owed: "dict[str, int]" = {}
+
 #: Superseded crew logs whose tail THIS process has repaired, oldest first, so a
 #: predecessor walk (:func:`_walk_to_predecessor`) stops at one rather than walking
 #: the slot's whole history again on every supersede. Membership is only a
@@ -108,6 +114,14 @@ _repair_walked: "OrderedDict[str, None]" = OrderedDict()
 #: names no reader. Survives ``reset_caches``: a listener is installed once per
 #: process, and each writer generation reports growth through the same list.
 _growth_listeners: "list[Callable[[str], None]]" = []
+
+#: The process's answer to "which session-map key maps this session id", at most one,
+#: registered by the gateway (:func:`~kiro_crew.crew_log.emit_session.set_session_key_probe`).
+#: A list filled in place rather than a rebound global, so the facade's mirror needs no
+#: rebound slot for it. Empty means no probe: no slot carry runs and no unit is closed
+#: ``superseded``. Survives ``reset_caches``, like the growth listeners: it is a property
+#: of the process.
+_session_key_probe: "list[Callable[[str], str | None]]" = []
 
 #: Guards installing the collaborators ``emit_runtime`` holds. Its own lock, so a caller already
 #: holding :data:`_lock` (the handle cache trimming through the tracker) can install

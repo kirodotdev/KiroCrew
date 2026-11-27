@@ -68,9 +68,10 @@ _DOCUMENTED = {
 _SCHEMA_DIGESTS: dict[str, str] = {
     "crew/dispatch": "5820b02abe6583c997f2cf40fb1465ff",
     "crew/report": "46b293a4663ad9dc56da3afe016b8844",
-    "session/opened": "04ef8a56827e9c9078a86c3d509e96db",
+    "session/opened": "f5a8c1c46170fdd92b16059a5c162dd9",
     "session/class": "7524b2522063f07a57b88f8e09af6293",
-    "session/closed": "a71c964802e62a75e05ac609e252f45e",
+    "session/closed": "784f51f52c17e90dfc2fb0ca24a14a55",
+    "session/carried": "0e5c97335c12505d7a95181635222b62",
     "session/unrestored": "8e9b3dfe651250654e3a55429d30c595",
     "session/adopted": "525b48ab9bf5d674f4398dcf207417b1",
     "session/released": "f1a9ee739bac4c27677df8d0170d2feb",

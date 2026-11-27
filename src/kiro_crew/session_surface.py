@@ -65,6 +65,16 @@ def dashboard_tab_name(session_key: str) -> str:
     return next((name for key, name in _dashboard_tabs if key == session_key), "")
 
 
+def cron_tab_name(session_key: str) -> str:
+    """The tab that shows a cron session: ``cron:<id>`` is ``cron-<id>``, the
+    job's one tab, and a per-run ``cron:<id>:<run>`` is ``cron-<id>-<run>``.
+
+    Here rather than in the dashboard so a layer below it (the work ledger's slot
+    carry) names a cron key's tab without importing the dashboard.
+    """
+    return "cron-" + session_key.removeprefix("cron:").replace(":", "-")
+
+
 def dashboard_surfaced_keys() -> frozenset[str]:
     """The published set, for diagnostics. Callers must not mutate it."""
     return _dashboard_surfaced

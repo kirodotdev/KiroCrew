@@ -837,7 +837,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sync_dashboard_slots,
         apply_pending_slot_memory_mode,
         crew_log_slots_for,
-        cron_tab_name,
         dashboard_slot_key,
         effective_session_key,
         listing_slot_snapshot,
@@ -997,6 +996,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         allowed_hosts_for,
     )
     from kiro_crew.session_surface import (  # noqa: F401
+        cron_tab_name,
         dashboard_tab_name,
         has_dashboard_surface,
         set_dashboard_surfaced,
