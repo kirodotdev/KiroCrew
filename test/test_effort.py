@@ -131,15 +131,45 @@ class TestModelSupportsEffort:
             "claude-haiku-5",
             "claude-haiku-5.4",
             "claude-haiku",
-            "haiku",
         ],
     )
     def test_haiku_before_5_5_still_refuses_effort(self, model: str):
         # kiro-cli answers "Effort configuration is currently not available on
-        # claude-haiku-4.5"; an older or unversioned Haiku keeps the slider hidden
-        # even though the claude_code registry folds claude-haiku-4.5 onto an
-        # effort-capable Sonnet.
+        # claude-haiku-4.5"; an older Haiku, or an unversioned spelling no registry
+        # row owns, keeps the slider hidden even though the claude_code registry
+        # folds claude-haiku-4.5 onto an effort-capable Sonnet.
         assert model_supports_effort(model) is False
+
+    def test_bare_haiku_alias_takes_effort_from_the_row_that_owns_it(self):
+        # ``haiku`` carries no version: Claude Code resolves the bare alias to its
+        # current Haiku, and the registry row that lists the alias says which
+        # release that is, the same way ``opus`` and ``sonnet`` answer.
+        assert model_supports_effort("haiku") is True
+        assert resolve_effort_for_model("haiku", defaults={"haiku": "xhigh"}) == "xhigh"
+
+    @pytest.mark.parametrize("pin", ["haiku", "claude-haiku-5-5"])
+    def test_haiku_alias_and_long_id_pin_and_keep_effort_on_claude(self, monkeypatch, pin):
+        # The claude backend advertises bare family aliases only, while kiro
+        # advertises the versioned ``claude-haiku-5.5``. Both Haiku 5.5 spellings
+        # must stay pinned on claude, reach the wire as the alias the backend
+        # serves, and keep a requested effort, exactly as ``claude-opus-5-5`` /
+        # ``opus`` already do.
+        from kiro_crew import model_registry as mr
+        from kiro_crew import model_scope
+
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": ["default", "opus", "sonnet", "haiku"],
+                "acp": ["auto", "claude-opus-5.5", "claude-haiku-5.5"],
+            },
+        )
+        scoped = model_scope.scoped_pin(pin, "claude_code", source="spawn model")
+        assert scoped == pin
+        provider_id = mr.to_provider_id(scoped, "claude_code")
+        assert mr.resolve_wire_model_id(provider_id, "claude_code") == "haiku"
+        assert model_supports_effort(provider_id) is True
 
     def test_haiku_5_5_resolves_a_persisted_level(self):
         assert (

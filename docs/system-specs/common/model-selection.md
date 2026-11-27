@@ -629,6 +629,19 @@ the claude backend advertised that alias, so the adapter resolves its own curren
 model rather than the registry's versioned id. With a cold cache, or a backend that
 advertises only versioned ids, the registry fold applies.
 
+Every passthrough alias is also listed on a registry row (`haiku` on
+`haiku-5.5-1m`, as `opus` and `sonnet` are on their rows), and that row answers
+what the bare spelling cannot. It carries the alias's `supports_effort`: a
+version-less `haiku` has no version for `effort.haiku_supports_effort` to read, so
+the row that owns the alias decides, and a Haiku spelling no row owns stays
+refused. And it makes the versioned spellings (`claude-haiku-5.5`,
+`claude-haiku-5-5`) the claude backend's own vocabulary, so a pin spelled that way
+stays in scope on claude instead of being read as chosen for kiro, translates to
+the row's provider id, and reaches an adapter that advertises only the alias as
+`haiku` through the version-less-alias fallback above. Without the row the two
+checks disagree: the alias pins but drops the effort, and the versioned id keeps
+the effort but is scoped out.
+
 Three more sites apply the same rule on the wire, and one on the picker:
 `AcpClient._apply_startup_model`, `apply_configured_model` for a session on a
 shared runtime (above), the warm-pool post-claim switch in `session_allocation.py`
