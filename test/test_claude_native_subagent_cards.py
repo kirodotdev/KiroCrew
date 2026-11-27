@@ -194,7 +194,9 @@ async def test_the_childs_tool_call_is_attributed_before_it_renders() -> None:
     _, frames = _capture()
     events = await _turn(_client(), [JsonRpcMessage.from_dict(frame) for frame in frames])
     activity = [event for event in events if event.kind == EVENT_SUBAGENT_ACTIVITY]
-    assert [(a.sub_session_id, a.tool_call_id, a.title) for a in activity] == [
+    # The call's updates repeat its title-less mark, which every reader takes as a no-op.
+    assert {(a.sub_session_id, a.tool_call_id) for a in activity} == {(CHILD, HANDBACK_CALL)}
+    assert [(a.sub_session_id, a.tool_call_id, a.title) for a in activity if a.title] == [
         (CHILD, HANDBACK_CALL, "SubagentHandback")
     ]
     order = [
@@ -203,7 +205,8 @@ async def test_the_childs_tool_call_is_attributed_before_it_renders() -> None:
         if event.tool_call_id == HANDBACK_CALL
         and event.kind in (EVENT_SUBAGENT_ACTIVITY, EVENT_TOOL_CALL)
     ]
-    assert order == [EVENT_SUBAGENT_ACTIVITY, EVENT_TOOL_CALL]
+    assert order[:2] == [EVENT_SUBAGENT_ACTIVITY, EVENT_TOOL_CALL]
+    assert set(order[2:]) <= {EVENT_SUBAGENT_ACTIVITY}
 
 
 @pytest.mark.asyncio

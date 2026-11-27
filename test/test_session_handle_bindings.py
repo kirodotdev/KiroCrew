@@ -89,6 +89,12 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "aeeca3d9cefe",
         "session_handle_claude_children",
     ),
+    "_child_session_call_marks": (
+        "function",
+        False,
+        "31c8e10e96ef",
+        "session_handle_claude_children",
+    ),
     "_note_native_child_request": (
         "function",
         False,
