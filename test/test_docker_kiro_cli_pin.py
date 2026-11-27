@@ -43,11 +43,17 @@ def test_the_build_context_admits_exactly_the_two_pin_files() -> None:
     assert "packaging/*" in lines, "the rest of packaging/ stays out of the context"
 
 
+#: The zip the image installs per buildx arch. arm64 takes the statically linked
+#: musl build: the gnu aarch64 build's install.sh requires glibc 2.39, and the
+#: AL2023 base ships 2.34.
+_IMAGE_ZIPS = {"amd64": "kirocli-x86_64-linux.zip", "arm64": "kirocli-aarch64-linux-musl.zip"}
+
+
 def test_the_pin_has_a_linux_zip_line_for_every_image_arch() -> None:
     version = _text(_ROOT / "packaging" / "kiro-cli-version").strip()
     shas = _text(_ROOT / "packaging" / "kiro-cli-sha256").splitlines()
-    for arch in ("x86_64", "aarch64"):
-        want = f"{version}/kirocli-{arch}-linux.zip"
+    for zip_name in _IMAGE_ZIPS.values():
+        want = f"{version}/{zip_name}"
         hits = [ln for ln in shas if ln.split("  ", 1)[-1] == want]
         assert len(hits) == 1, f"no single sha line for {want}"
         assert re.fullmatch(r"[0-9a-f]{64}", hits[0].split()[0])
@@ -61,17 +67,25 @@ def test_the_publish_lane_labels_the_image_with_the_pin() -> None:
     assert "manifest.json" not in resolve["run"]
 
 
-def test_the_install_step_lands_every_kiro_cli_binary_in_usr_local_bin() -> None:
+def test_the_install_step_lands_kiro_cli_in_usr_local_bin_for_both_installer_layouts() -> None:
     text = _text(_DOCKERFILE)
-    # The binaries are installed directly: the release's install.sh refuses
-    # aarch64 below glibc 2.39, which the AL2023 base (2.34) is.
-    assert "/tmp/kirocli/install.sh" not in text
-    assert "for bin in kiro-cli kiro-cli-chat kiro-cli-term; do" in text
-    assert 'install -m 0755 "/tmp/kirocli/bin/${bin}" /usr/local/bin/' in text
-    # Nothing lands in, or links into, the home volume.
-    assert ".local/bin" not in text
-    assert "test -x /usr/local/bin/kiro-cli-chat;" in text
+    # Older installers read Q_INSTALL_GLOBAL, newer ones KIRO_CLI_INSTALL_GLOBAL.
+    assert "Q_INSTALL_GLOBAL=1" in text
+    assert "KIRO_CLI_INSTALL_GLOBAL=1" in text
+    # A per-user install is moved out of the home volume, never linked into it.
+    assert '"${HOME}"/.local/bin/kiro-cli*' in text
+    assert 'mv -f "${bin}" /usr/local/bin/' in text
+    assert not re.search(r"ln\s+-s\S*\s+\S*\.local/bin", text)
     assert "test -x /usr/local/bin/kiro-cli; \\\n    kiro-cli --version" in text
+
+
+def test_each_arch_installs_the_build_its_base_can_run() -> None:
+    text = _text(_DOCKERFILE)
+    for target_arch, zip_name in _IMAGE_ZIPS.items():
+        assert f'{target_arch}) KIRO_ZIP="{zip_name}" ;;' in text
+    assert 'ARTIFACT="${RESOLVED}/${KIRO_ZIP}"' in text
+    # The chat binary `kiro-cli acp` dispatches to must load in the image too.
+    assert "kiro-cli --version; \\\n    kiro-cli-chat --version" in text
 
 
 def test_the_pin_clears_the_kas_agent_prompt_floor() -> None:

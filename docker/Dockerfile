@@ -14,11 +14,8 @@
 # Base: Amazon Linux 2023 from its canonical registry, public.ecr.aws (anyone
 # can pull it anonymously), pinned by the multi-arch INDEX digest so the
 # builder's platform still selects the per-arch manifest. AL2023 ships glibc
-# 2.34. kiro-cli's gnu binaries reference nothing newer than GLIBC_2.34 on
-# x86_64 and GLIBC_2.30 on aarch64 (read from the 2.37.1 binaries' symbol
-# versions), so 2.34 covers both. Its install.sh refuses aarch64 below 2.39,
-# which is why the binaries are installed directly below rather than through
-# it. Python 3.12 comes from the AL2023 repos. The wheel itself is
+# 2.34, which meets kiro-cli's x86_64 gnu floor; arm64 uses kiro-cli's
+# statically linked musl build instead (see the kiro-cli step below). Python 3.12 comes from the AL2023 repos. The wheel itself is
 # py3-none-any — multi-arch needs no compilation. To bump:
 # `docker buildx imagetools inspect public.ecr.aws/amazonlinux/amazonlinux:2023`
 # and update the digest.
@@ -136,12 +133,21 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 COPY --from=tini-builder /usr/local/bin/tini /usr/local/bin/tini
 
 # kiro-cli — the agent runtime KiroCrew drives over ACP; chat sessions
-# require it. The three binaries the release ships (kiro-cli, kiro-cli-chat,
-# kiro-cli-term) are installed straight into /usr/local/bin, outside the home
-# volume. That is all the release's install.sh does for a global install with
-# setup skipped, but install.sh also refuses aarch64 hosts below glibc 2.39,
-# and AL2023 has 2.34 while the aarch64 binaries need only 2.30. `kiro-cli acp`
-# dispatches to kiro-cli-chat as a sibling on PATH, so both are asserted.
+# require it. Every kiro-cli* binary the release ships (kiro-cli, and
+# kiro-cli-chat / kiro-cli-term where present) ends up in /usr/local/bin.
+# Older installers honour Q_INSTALL_GLOBAL; newer ones read
+# KIRO_CLI_INSTALL_GLOBAL and otherwise install into $HOME/.local/bin, so
+# both are set and anything that still lands in $HOME/.local/bin is MOVED
+# (never linked: the home is the volume) into /usr/local/bin. Q_SKIP_SETUP
+# and KIRO_CLI_NO_MODIFY_PATH skip dotfile/shell edits that are meaningless
+# in a container. `kiro-cli acp` dispatches to kiro-cli-chat as a sibling on
+# PATH, so both are asserted and both answer --version.
+#
+# Which build, per arch: the gnu x86_64 build's install.sh requires glibc
+# 2.34, which AL2023 ships. Its gnu aarch64 build requires 2.39, which AL2023
+# does not, so arm64 installs the statically linked musl build, the remedy
+# that install.sh's own refusal names (and the build the EC2 lane already
+# uses). The musl binaries depend on no system libc at all.
 #
 # Supply-chain discipline (image inputs must be verifiable):
 #   1. Read the version from packaging/kiro-cli-version and the per-arch
@@ -157,8 +163,8 @@ COPY --from=tini-builder /usr/local/bin/tini /usr/local/bin/tini
 RUN --mount=type=bind,source=packaging,target=/tmp/kiro-cli-pin \
     set -eux; \
     case "${TARGETARCH}" in \
-        amd64) KIRO_ARCH="x86_64" ;; \
-        arm64) KIRO_ARCH="aarch64" ;; \
+        amd64) KIRO_ZIP="kirocli-x86_64-linux.zip" ;; \
+        arm64) KIRO_ZIP="kirocli-aarch64-linux-musl.zip" ;; \
         *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     RESOLVED="$(tr -d '[:space:]' < /tmp/kiro-cli-pin/kiro-cli-version)"; \
@@ -168,7 +174,7 @@ RUN --mount=type=bind,source=packaging,target=/tmp/kiro-cli-pin \
     if [ -n "${KIRO_CLI_VERSION}" ] && [ "${KIRO_CLI_VERSION}" != "${RESOLVED}" ]; then \
         echo "kiro-cli pin mismatch: lane expects ${KIRO_CLI_VERSION}, pin is ${RESOLVED}" >&2; exit 1; \
     fi; \
-    ARTIFACT="${RESOLVED}/kirocli-${KIRO_ARCH}-linux.zip"; \
+    ARTIFACT="${RESOLVED}/${KIRO_ZIP}"; \
     SHA256="$(awk -v want="${ARTIFACT}" '$2 == want { print $1 }' /tmp/kiro-cli-pin/kiro-cli-sha256)"; \
     if [ "$(printf '%s' "${SHA256}" | wc -w)" -ne 1 ]; then \
         echo "packaging/kiro-cli-sha256 has no single line for ${ARTIFACT}" >&2; exit 1; \
@@ -178,15 +184,19 @@ RUN --mount=type=bind,source=packaging,target=/tmp/kiro-cli-pin \
         -o /tmp/kirocli.zip; \
     echo "${SHA256}  /tmp/kirocli.zip" | sha256sum -c -; \
     unzip -q /tmp/kirocli.zip -d /tmp; \
-    for bin in kiro-cli kiro-cli-chat kiro-cli-term; do \
-        install -m 0755 "/tmp/kirocli/bin/${bin}" /usr/local/bin/; \
+    Q_INSTALL_GLOBAL=1 Q_SKIP_SETUP=1 KIRO_CLI_INSTALL_GLOBAL=1 KIRO_CLI_NO_MODIFY_PATH=1 \
+        /tmp/kirocli/install.sh; \
+    for bin in "${HOME}"/.local/bin/kiro-cli*; do \
+        [ -e "${bin}" ] || continue; \
+        mv -f "${bin}" /usr/local/bin/; \
     done; \
     rm -rf /tmp/kirocli /tmp/kirocli.zip; \
     mkdir -p /usr/local/share/kirocrew; \
     printf '%s\n' "${RESOLVED}" > /usr/local/share/kirocrew/kiro-cli-version; \
     test -x /usr/local/bin/kiro-cli-chat; \
     test -x /usr/local/bin/kiro-cli; \
-    kiro-cli --version
+    kiro-cli --version; \
+    kiro-cli-chat --version
 
 # The CI-built wheel (build-wheel.yml artifact). The glob keeps the Dockerfile
 # version-agnostic; the lane stages exactly one wheel into dist/.
