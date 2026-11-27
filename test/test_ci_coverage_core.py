@@ -10,6 +10,10 @@ are pinned here.
   branch arcs. An empty ``KC_COV_BRANCH`` is refused by coverage.py itself.
 * Fail closed. The check refuses a missing or empty log, an environment that does
   not carry what the event asks for, and coverage.py's own fallback warning.
+* The kill switch. The repository variable set to ``off`` makes every event
+  export nothing, so a pull-request run measures as a push does; unset, or any
+  other value, changes nothing. Every measuring step hands the variable to the
+  script.
 * The workflow. Every job whose data Coverage Combine downloads makes the same
   ``exports`` call, pipes its measured pytest through ``tee`` under ``pipefail``
   and runs the check on that log; no ``env:`` block sets either variable. Each
@@ -84,9 +88,19 @@ def _core(step: dict) -> str:
     return named.group(1) if named else "sysmon"
 
 
+def _coverage_steps(job: dict) -> list[dict]:
+    """Every step of the lane whose commands carry a ``--cov`` selector."""
+    return [s for s in job["steps"] if "--cov=" in str(s.get("run", ""))]
+
+
+def _delegates(step: dict) -> bool:
+    """Whether the step's measured pytest is started by another script, not by its shell."""
+    return not _measured_pytest(_commands(str(step["run"])))
+
+
 def _measuring_steps(job: dict, core: str | None = None) -> list[dict]:
-    """The lane's steps that run pytest with a ``--cov`` selector, for one core or all."""
-    steps = [s for s in job["steps"] if "--cov=" in str(s.get("run", ""))]
+    """The lane's steps whose own shell runs the measured pytest, for one core or all."""
+    steps = [s for s in _coverage_steps(job) if not _delegates(s)]
     return [s for s in steps if core is None or _core(s) == core]
 
 
@@ -96,12 +110,15 @@ def _measuring_step(job: dict) -> dict:
     return step
 
 
-#: Every measuring step of every lane, named ``<job>:<core>``.
-STEPS = {
-    f"{job_id}:{_core(step)}": step
-    for job_id, job in LANES.items()
-    for step in _measuring_steps(job)
-}
+def _steps() -> dict[str, dict]:
+    """Every measuring step of every lane, named ``<job>:<core>``."""
+    found: dict[str, dict] = {}
+    for job_id, job in LANES.items():
+        for step in _measuring_steps(job):
+            name = f"{job_id}:{_core(step)}"
+            assert name not in found, f"two {name} steps: name them apart before testing them"
+            found[name] = step
+    return found
 
 
 def _flag(core: str) -> str:
@@ -129,6 +146,9 @@ def _measured_pytest(commands: list[str]) -> list[str]:
     ]
 
 
+STEPS = _steps()
+
+
 def _env_blocks(node: object):
     """Every ``env:`` mapping anywhere in the workflow document."""
     if isinstance(node, dict):
@@ -150,9 +170,9 @@ def _option(monkeypatch: pytest.MonkeyPatch, environ: dict[str, str], name: str)
     return coverage.Coverage(config_file=str(SETUP_CFG), data_file=None).get_option(name)
 
 
-def _exported(event: str, core: str = "sysmon") -> dict[str, str]:
+def _exported(event: str, core: str = "sysmon", switch: str = "") -> dict[str, str]:
     """The variables the ``exports`` line for ``event`` and ``core`` sets, parsed back."""
-    line = coverage_core.exports(event, core)
+    line = coverage_core.exports(event, core, switch)
     if not line:
         return {}
     command, *assignments = line.split()
@@ -340,6 +360,98 @@ def test_marked_files_are_the_test_files_that_name_the_marker(tmp_path):
     assert coverage_core.marked_files(_tree(tmp_path / "bare", {})) == []
 
 
+# ── The kill switch ────────────────────────────────────────────────────────
+
+SWITCH = coverage_core.SWITCH_VARIABLE
+OFF = [coverage_core.SWITCH_OFF, coverage_core.SWITCH_OFF.upper(), f" {coverage_core.SWITCH_OFF}\n"]
+NOT_OFF = ["", "on", "true", "0", "disabled", coverage_core.SWITCH_OFF + "f", "no"]
+
+
+@pytest.mark.parametrize("core", CORES)
+@pytest.mark.parametrize("event", TRIGGERS)
+def test_only_off_turns_the_switch_off_and_then_every_event_measures_as_a_push(
+    event, core, tmp_path
+):
+    as_push = _exported("push", core)
+    assert as_push == {}
+    log = tmp_path / "pytest.log"
+    log.write_text(FELL_BACK, encoding="utf-8")
+    for value in OFF:
+        assert not coverage_core.switches(event, value)
+        assert _exported(event, core, value) == as_push
+        assert coverage_core.refusal(event, {}, log, core, value) == ""
+        assert coverage_core.refusal(event, SWITCHED, log, core, value) != ""
+    for value in NOT_OFF:
+        assert coverage_core.switches(event, value) is coverage_core.switches(event)
+        assert _exported(event, core, value) == _exported(event, core)
+
+
+@pytest.mark.parametrize("core", CORES)
+@pytest.mark.parametrize("event", TRIGGERS)
+def test_the_command_line_reads_the_switch_from_its_environment(
+    event, core, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+    monkeypatch.setenv(SWITCH, OFF[0])
+    for name in SWITCHED:
+        monkeypatch.delenv(name, raising=False)
+    flag = _flag(core).split()
+    assert coverage_core.main(["exports", *flag]) == 0
+    assert capsys.readouterr().out == ""
+    log = tmp_path / "pytest.log"
+    log.write_text(CLEAN, encoding="utf-8")
+    assert coverage_core.main(["check", *flag, str(log)]) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SWITCH)
+    assert coverage_core.main(["exports", *flag]) == 0
+    assert capsys.readouterr().out.strip() == coverage_core.exports(event, core)
+
+
+def test_every_step_that_measures_hands_the_repository_variable_to_the_script():
+    steps = [step for job in LANES.values() for step in _coverage_steps(job)]
+    for step in steps:
+        assert step.get("env", {}).get(SWITCH) == f"${{{{ vars.{SWITCH} }}}}", step["name"]
+    # One variable, read only where a lane measures.
+    for path in sorted(WORKFLOW_PATH.parent.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        assert text.count(f"vars.{SWITCH}") == (len(steps) if path == WORKFLOW_PATH else 0)
+
+
+@pytest.mark.parametrize("switch", ["", OFF[0]])
+@pytest.mark.parametrize("event", TRIGGERS)
+def test_a_step_that_delegates_its_pytest_gives_it_the_c_tracer_variables(
+    event, switch, monkeypatch, tmp_path
+):
+    """Its data file is folded into the shard's, so it records what the shard records."""
+    from scripts import ci_main_red_skip
+
+    delegating = [s for job in LANES.values() for s in _coverage_steps(job) if _delegates(s)]
+    assert delegating, "no lane delegates a measured run"
+    for step in delegating:
+        assert "scripts/ci_main_red_skip.py measure" in step["run"], step["name"]
+    seen: list[dict[str, str]] = []
+
+    def run(argv, env, check):
+        seen.append(env)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ci_main_red_skip.subprocess, "run", run)
+    plan = '{"issue": 900, "nodeids": ["test/test_a.py::test_b"]}'
+    env = {
+        ci_main_red_skip.ENV_NAME: plan,
+        "GITHUB_REPOSITORY": "kirodotdev/KiroCrew",
+        "GITHUB_EVENT_NAME": event,
+        SWITCH: switch,
+        # A core left in the environment by mistake must not reach the pass.
+        "COVERAGE_CORE": coverage_core.SWITCH_ENV["COVERAGE_CORE"],
+    }
+    assert ci_main_red_skip.cmd_measure(env, ["-q"]) == 0
+    (child,) = seen
+    expected = _exported(event, "ctrace", switch)
+    assert {name: child[name] for name in SWITCHED if name in child} == expected
+
+
 # ── The workflow ───────────────────────────────────────────────────────────
 
 
@@ -442,7 +554,14 @@ def test_every_deselected_test_runs_in_a_c_tracer_step_before_the_data_is_upload
             deselecting += 1
             kept = expression.replace(f" and not {MARKER}", "")
             assert MARKER not in kept, f"{job_id}: {expression!r} is not `<rest> and not {MARKER}`"
-            (second,) = _measuring_steps(job, "ctrace")
+            (second,) = [
+                s
+                for s in _measuring_steps(job, "ctrace")
+                if any(
+                    _marker_expression(m).startswith(MARKER)
+                    for m in _measured_pytest(_commands(s["run"]))
+                )
+            ]
             commands = _commands(second["run"])
             (measured,) = _measured_pytest(commands)
             # Together the two expressions select what `kept` alone selects: nothing is lost.
@@ -489,7 +608,15 @@ def _seen(event: str, core: str) -> str:
     return " ".join(exported.get(name, "<unset>") for name in coverage_core.SWITCH_ENV)
 
 
-def _run_lane(step: dict, tmp_path: Path, event: str, out: str, status: int = 0, repo: Path = ROOT):
+def _run_lane(
+    step: dict,
+    tmp_path: Path,
+    event: str,
+    out: str,
+    status: int = 0,
+    repo: Path = ROOT,
+    switch: str = "",
+):
     bash = shutil.which("bash")
     assert bash, "the lane steps are bash scripts"
     body = EXPRESSION.sub("1", str(step["run"]))
@@ -499,6 +626,7 @@ def _run_lane(step: dict, tmp_path: Path, event: str, out: str, status: int = 0,
         "RUNNER_TEMP": str(tmp_path),
         "RUNNER_OS": "Linux",
         "GITHUB_EVENT_NAME": event,
+        SWITCH: switch,
         "REAL_PYTHON": sys.executable,
         "REPO_ROOT": str(repo),
         "PYTEST_OUT": out,
@@ -538,6 +666,15 @@ def test_a_step_measures_with_what_its_event_exports_and_passes(name, event, tmp
     expected = _seen(event, _core(STEPS[name]))
     assert seen == [expected], "pytest ran with another environment, or an empty variable"
     assert CLEAN in result.stdout, "the tee must still show pytest's output in the job log"
+
+
+@lane_bodies
+@pytest.mark.parametrize("name", sorted(STEPS))
+@pytest.mark.parametrize("event", TRIGGERS)
+def test_a_step_with_the_switch_off_measures_as_a_push_does(name, event, tmp_path):
+    result, seen = _run_lane(STEPS[name], tmp_path, event, FELL_BACK, switch=OFF[0])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert seen == [_seen("push", _core(STEPS[name]))] == ["<unset> <unset>"]
 
 
 @lane_bodies

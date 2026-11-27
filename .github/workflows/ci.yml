@@ -1887,6 +1887,9 @@ jobs:
           # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
           # `changes` job). Read by the plugin from the environment only.
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+          # The kill switch for the sysmon core: `off` makes this run measure as a push does
+          # (scripts/ci/coverage_core.py). Unset reaches the script as an empty string.
+          CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
         run: |
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
@@ -2053,6 +2056,9 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+          # Read by the script: this pass records lines or branch arcs as the
+          # step above does, so its data file combines with the shard's.
+          CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
         run: |
           python3 scripts/ci_main_red_skip.py measure -q -n0 --dist no --timeout=120 -m "not ipv6_required and not real_venv" \
             --cov=kiro_crew --cov=sage_lib \
@@ -2088,6 +2094,9 @@ jobs:
         shell: /usr/local/bin/ci-shell {0}
         env:
           PYTHONPATH: ${{ github.workspace }}
+          # The kill switch for the sysmon core: `off` makes this run measure as a push does
+          # (scripts/ci/coverage_core.py). Unset reaches the script as an empty string.
+          CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
         run: |
           echo "::remove-matcher owner=python::"
           MARKED="$(python scripts/ci/coverage_core.py marked-files)"
@@ -2552,6 +2561,9 @@ jobs:
         env:
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
           LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
+          # The kill switch for the sysmon core: `off` makes this run measure as a push does
+          # (scripts/ci/coverage_core.py). Unset reaches the script as an empty string.
+          CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
         run: |
           echo "::remove-matcher owner=python::"
           COVERAGE=(--no-cov)
@@ -2649,6 +2661,9 @@ jobs:
           KIROCREW_LOCK_OWNER_STRICT: "1"
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
           LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
+          # The kill switch for the sysmon core: `off` makes this run measure as a push does
+          # (scripts/ci/coverage_core.py). Unset reaches the script as an empty string.
+          CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
         run: |
           echo "::remove-matcher owner=python::"
           test -z "${KIROCREW_LOCK_TEST_ROOT:-}"

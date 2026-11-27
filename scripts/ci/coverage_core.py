@@ -10,6 +10,12 @@ Gate reads the line rate and the per-file line verdict, which line data carries
 in full. A push to ``main`` or a release branch sets neither variable and
 records branch arcs with the C tracer.
 
+The repository variable ``CI_COVERAGE_SYSMON`` turns the switch off: set to
+``off`` (Settings, Secrets and variables, Actions, Variables), every event
+exports nothing and a pull-request run measures as a push does. Unset, or any
+other value, leaves it on. The steps hand the variable to this script in their
+environment, where an unset variable arrives as an empty string.
+
 Three subcommands, called from a lane's own ``run`` script:
 
 ``exports [--core sysmon|ctrace]``
@@ -36,6 +42,10 @@ Three subcommands, called from a lane's own ``run`` script:
 ``marked-files``
     Prints every test file under pytest's ``testpaths`` that names the
     ``at_recursion_limit`` marker, one per line.
+
+A step that starts its measured pytest from another script instead of its own
+shell (``scripts/ci_main_red_skip.py measure``) gets the same variables from
+:func:`step_env`, for the C tracer: its data file is folded into the shard's.
 
 All three lanes must switch together. Line data and branch data cannot be
 combined (``coverage combine`` stops), so a lane that decided on its own would
@@ -81,21 +91,32 @@ MARKER = "at_recursion_limit"
 #: The events whose runs switch. Every other event measures branch arcs.
 SWITCH_EVENTS = frozenset({"pull_request", "merge_group"})
 
+#: The repository variable that turns the switch off, and the one value that does.
+SWITCH_VARIABLE = "CI_COVERAGE_SYSMON"
+SWITCH_OFF = "off"
+
 #: The slug coverage.py appends, in parentheses, to the warning it prints when the
 #: requested ``sysmon`` core cannot be used and it measures with another core.
 FALLBACK_MARK = "(no-sysmon)"
 
 
-def switches(event: str) -> bool:
-    """Whether a run of this event measures with ``sysmon`` and without branch arcs."""
-    return event in SWITCH_EVENTS
+def switches(event: str, switch: str = "") -> bool:
+    """Whether a run of this event measures with ``sysmon`` and without branch arcs.
+
+    ``switch`` is the repository variable's value; only ``off`` turns the switch off.
+    """
+    return event in SWITCH_EVENTS and switch.strip().lower() != SWITCH_OFF
 
 
-def exports(event: str, core: str = "sysmon") -> str:
+def step_env(event: str, core: str = "sysmon", switch: str = "") -> dict[str, str]:
+    """The variables a step measuring with ``core`` runs with: none unless the run switches."""
+    return dict(CORE_ENV[core]) if switches(event, switch) else {}
+
+
+def exports(event: str, core: str = "sysmon", switch: str = "") -> str:
     """The shell line a step evaluates: one ``export`` when it switches, else nothing."""
-    if not switches(event):
-        return ""
-    return "export " + " ".join(f"{name}={value}" for name, value in CORE_ENV[core].items())
+    env = step_env(event, core, switch)
+    return "export " + " ".join(f"{name}={value}" for name, value in env.items()) if env else ""
 
 
 def test_sources(root: Path = ROOT) -> Iterator[tuple[str, str]]:
@@ -121,7 +142,9 @@ def marked_files(root: Path = ROOT) -> list[str]:
     return sorted(name for name, text in test_sources(root) if needle in text)
 
 
-def refusal(event: str, environ: Mapping[str, str], log: Path, core: str = "sysmon") -> str:
+def refusal(
+    event: str, environ: Mapping[str, str], log: Path, core: str = "sysmon", switch: str = ""
+) -> str:
     """Why this step's measurement cannot be trusted, or ``""`` when it can."""
     try:
         text = log.read_text(encoding="utf-8", errors="replace")
@@ -129,7 +152,7 @@ def refusal(event: str, environ: Mapping[str, str], log: Path, core: str = "sysm
         return f"the pytest log {log} cannot be read ({error.__class__.__name__})"
     if not text.strip():
         return f"the pytest log {log} is empty"
-    expected = dict(CORE_ENV[core]) if switches(event) else {}
+    expected = step_env(event, core, switch)
     actual = {name: environ[name] for name in SWITCH_ENV if name in environ}
     if actual != expected:
         return (
@@ -158,14 +181,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("\n".join(marked_files()))
         return 0
     event = os.environ.get("GITHUB_EVENT_NAME", "")
+    switch = os.environ.get(SWITCH_VARIABLE, "")
     if args.command == "exports":
-        line = exports(event, args.core)
+        line = exports(event, args.core, switch)
         if line:
             print(line)
         mode = f"{args.core} core, lines only" if line else "default core, branch arcs"
-        print(f"coverage core for event {event!r}: {mode}", file=sys.stderr)
+        print(
+            f"coverage core for event {event!r} with {SWITCH_VARIABLE}={switch!r}: {mode}",
+            file=sys.stderr,
+        )
         return 0
-    reason = refusal(event, os.environ, args.log, args.core)
+    reason = refusal(event, os.environ, args.log, args.core, switch)
     if reason:
         print(f"::error::coverage core check: {reason}")
         return 1
