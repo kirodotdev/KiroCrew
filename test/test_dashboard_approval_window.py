@@ -726,6 +726,43 @@ class TestTheRunnersApprovalWindow:
         assert kw["answerable"] is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("server", "trusted", "identity"),
+        [
+            ("corpsmtp", True, ("corpsmtp", "email_send")),
+            ("corpsmtp", False, ("", "")),
+            ("", False, ("", "")),
+        ],
+        ids=["proven", "unproven", "no-server"],
+    )
+    async def test_the_bridged_note_names_only_a_proven_mcp_server(
+        self, monkeypatch, server: str, trusted: bool, identity: tuple[str, str]
+    ) -> None:
+        # Two servers can expose one tool name, so a chat app's Approve names the
+        # server the call goes to, read from the trusted identity and never the title.
+        handed: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.notifications.bridge_approval_note.schedule_pending_approval",
+            lambda state, fut, **kw: handed.append(kw),
+        )
+        request = AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            request_id="req-1",
+            title="email_send",
+            tool_kind="other",
+            tool_name="email_send",
+            mcp_server_name=server,
+            mcp_identity_trusted=trusted,
+            tool_input='{"to":"a@example.com"}',
+        )
+        await run_turn(TurnScript(events=[request, _AFTER, _DONE]))
+        [kw] = handed
+        assert kw.get("mcp_identity", ("", "")) == identity, (
+            f"the hand-off for email_send on server {server!r} (trusted={trusted}) "
+            f"names {kw.get('mcp_identity')!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_a_muted_session_still_leaves_the_bell_note(self) -> None:
         # Muting a session hides the notes it publishes itself. This one is the
         # gateway's report about it, which a mute leaves alone.
