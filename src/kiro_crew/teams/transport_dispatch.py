@@ -4,8 +4,7 @@
 activity and hands the ``TeamsInbound`` (carrying ``conversation_id`` +
 ``service_url``) to :meth:`TeamsDispatcher.handle_message`:
 
-    command intercept (COMMAND_SPEC: /new /compact /stop /yolo /link /unlink
-                       /dashboard /help,
+    command intercept (every COMMAND_SPEC row in ``teams/commands.py``,
                        plus the /queue and /steer per-message directives)
     -> mid-turn routing: steer the running turn, or queue it behind a single
        in-place receipt bubble and drain the burst as ONE combined turn
