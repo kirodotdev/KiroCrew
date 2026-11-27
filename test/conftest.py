@@ -426,6 +426,9 @@ from conftest_resets_shared_crew import (  # noqa: E402,F401 -- bound for pytest
 from conftest_resets_token_auth import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_would_refuse_session_key_log,
 )
+from conftest_resets_workflows import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_workflow_shared_node_places,
+)
 
 # The in-memory Slack client and the Slack state resets.
 from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importers

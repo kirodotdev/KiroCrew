@@ -944,7 +944,9 @@ class AgentConfig:
             "and memory from about 0.55 GB to near-zero per subagent. Default ON for the "
             "eligible backends (kiro-cli, codex and KAS; on KAS only when the "
             "chat's own process can close a session and keep its record, runs "
-            "engine 0.66.104 or newer, and serves no other chat); every other ACP "
+            "engine 0.66.104 or newer, and serves no other chat; the agent steps of a "
+            "workflow run started from a KAS chat share that chat's process the same "
+            "way); every other ACP "
             "backend ignores it and runs a dedicated process per subagent. Set "
             "false to opt an eligible backend back onto per-subagent processes.",
         ),

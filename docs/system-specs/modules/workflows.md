@@ -1715,6 +1715,25 @@ never spawns `kiro-cli` in tests. Two production adapters:
   alone would not reap a `wf-pool:` key (its file-cleanup branch only fires for
   `subagent:` keys), leaking a warm `kiro-cli` process across runs.
 
+  **On the launching chat's KAS process** (`workflows/shared_nodes.py`). Both
+  executors acquire a step's session through `acquire_step_session`: when
+  `shared_host` names a runtime, the session opens there through
+  `SessionManager.open_task_session(runtime=...)` (registered like a task-run step,
+  its provider carrying the step key so its per-turn tenancy claim binds it), and a
+  model the step or run names is applied per session (`apply_configured_model`).
+  `shared_host` answers the launching chat's runtime only when `agent.session_sharing`
+  is on, the chat's provider is live and `is_session_sharing_eligible` (on KAS,
+  `runtime_hosts_subagents`), the runtime is KAS, the step names no effort, backend
+  or `session=`, the run carries no `extra_env`, member context or non-persistent
+  memory mode, the agent has no configured session effort, the step's `cwd` is unset
+  or the chat's folder, the chat's process carries no AWS profile the step would not,
+  and fewer than `KAS_SHARED_NODES_PER_PARENT` (8) steps sit on it. Otherwise, and
+  whenever the shared open raises or `open_task_session` takes its own dedicated
+  path, the step gets the `get_or_create` start above with every argument it had.
+  A shared step's session is always destroyed at its end on the cold path, and at
+  `shutdown` on the pool. Covered by `test/test_workflows_shared_nodes.py` and the
+  opt-in live lane `test/test_workflows_shared_nodes_real.py`.
+
   `_MAX_TURNS_PER_STEP` is imported from `agent_exec` rather than duplicated, so
   one edit retunes both paths; `test_workflows_agent_pool.py` pins them equal.
 

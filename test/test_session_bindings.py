@@ -295,7 +295,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "note_turn_landed": ("function", False, "958babeb61c8", "claims"),
     "open_replay_gap": ("function", False, "958babeb61c8", "teardown"),
     "has_open_replay_gap": ("function", False, "1eda252b53bd", "teardown"),
-    "open_task_session": ("function", True, "79d5142a16be", "runtimes"),
+    "open_task_session": ("function", True, "b6982a2383ce", "runtimes"),
     "parent_work_scratch_dir": ("function", False, "b0a47dac7d8f", "claims"),
     "pause_turn_admission_for_update": ("function", True, "a6632a57e602", "claims"),
     "pending_identity_sweep_fingerprint": ("property", False, "bb418bb7ece8", "state_views"),
