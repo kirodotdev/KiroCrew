@@ -5942,13 +5942,14 @@ host whose glibc is below the release's floor for its architecture the install
 refuses up front, before any download, naming the found glibc, the minimum, the
 Node key and why; nothing is published. There are two pins, one engine release:
 `KAS_PIN_VERSION` (nodejs.org Node and the npm onnxruntime, floor 2.28) and
-`KAS_PIN_AL2_VERSION` (`KAS_PIN_VERSION` plus `-al2`: the same engine and Node
+`KAS_PIN_AL2_VERSION` (`KAS_PIN_VERSION` plus `-al2.2`: the same engine and Node
 release republished with the Amazon Linux 2 builds from `packaging/kas-al2/` on
-linux-x64, floor 2.26). `kas_pin.host_pin_version()` picks the AL2 pin only on a
+linux-x64 and linux-arm64, floor 2.26). `kas_pin.host_pin_version()` picks the AL2 pin only on a
 Linux host whose glibc reads below 2.28 and whose Node key the AL2 pin lists in
-`KAS_PIN_GLIBC_FLOORS` below 2.28 (today linux-x64 only; linux-arm64 joins in the
-commit that pins an AL2 release carrying arm64 builds); every other host (arm64
-until then, macOS, Windows, Linux at 2.28+ or with an unreadable glibc) gets
+`KAS_PIN_GLIBC_FLOORS` below 2.28 (linux-x64 and linux-arm64, from the
+`-al2.2` republish that added the arm64 builds; `-al2.<n>` is the republish
+revision, since a published version is never overwritten); every other host
+(macOS, Windows, Linux at 2.28+ or with an unreadable glibc) gets
 `KAS_PIN_VERSION`.
 It is read on every call, so a host that moves to glibc 2.28+ installs the normal
 pin on its next install check, and one that stays at 2.28+ never picks the AL2 pin.

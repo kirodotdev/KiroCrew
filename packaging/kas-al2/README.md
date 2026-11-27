@@ -59,7 +59,7 @@ How inputs are trusted:
 `scripts/kas_bundle_publish.py` takes each architecture's two pieces, each with the sha256 you expect:
 
 ```bash
-python3 scripts/kas_bundle_publish.py --kas-dir <KAS build drop> --version 0.66.117-node22.23.4-al2 \
+python3 scripts/kas_bundle_publish.py --kas-dir <KAS build drop> --version 0.66.117-node22.23.4-al2.2 \
   --node-version 22.23.4 --out ./publish \
   --node-linux-x64 node-v22.23.4-linux-x64.tar.xz --node-linux-x64-sha256 <hex> \
   --onnx-overlay-linux-x64 onnxruntime-node-1.21.0-al2-x64.tar.xz --onnx-overlay-sha256 <hex> \
@@ -70,18 +70,18 @@ python3 scripts/kas_bundle_publish.py --kas-dir <KAS build drop> --version 0.66.
 - `--node-linux-<arch>` must be laid out like nodejs.org's tarball (`node-v<N>-linux-<arch>/bin/node`) and print exactly `v<N>`, which is checked by running it on the publishing host; its ELF header must name that architecture first, since emulation runs either one. That host must run both architectures' binaries when both are given: one architecture natively, the other through binfmt emulation (for example `qemu-user-static`). Every other Node key still comes from nodejs.org.
 - `--onnx-overlay-linux-<arch>` re-packs only that architecture's engine tarball. Every other platform's tar bytes stay the KAS build's.
 - `provenance.json` beside `manifest.json` records where each piece came from.
-- Name it `<KAS_PIN_VERSION>-al2`; a published version is never overwritten.
+- Name it `KAS_PIN_AL2_VERSION` (`<KAS_PIN_VERSION>-al2`, or `-al2.<n>` for a later republish of the same engine and Node release); a published version is never overwritten.
 
 ## Which host runs which pin
 
 | Host | Pin | glibc floor |
 |---|---|---|
-| Linux, glibc below 2.28, Node key the AL2 pin lists below 2.28 | `KAS_PIN_AL2_VERSION` (`<KAS_PIN_VERSION>-al2`) | 2.26 |
+| Linux, glibc below 2.28, Node key the AL2 pin lists below 2.28 | `KAS_PIN_AL2_VERSION` (`<KAS_PIN_VERSION>-al2.2`) | 2.26 |
 | Linux, any other key, or glibc 2.28+ or unreadable | `KAS_PIN_VERSION` | 2.28 |
 | macOS, Windows | `KAS_PIN_VERSION` | none |
 
-`KAS_PIN_GLIBC_FLOORS[KAS_PIN_AL2_VERSION]` is the list of architectures the AL2 pin carries AL2 builds for; today that is `linux-x64`. An architecture joins by pinning an AL2 release that carries its builds and adding its key at `(2, 26)` in the same commit.
+`KAS_PIN_GLIBC_FLOORS[KAS_PIN_AL2_VERSION]` is the list of architectures the AL2 pin carries AL2 builds for; today that is `linux-x64` and `linux-arm64`. An architecture joins by pinning an AL2 release that carries its builds and adding its key at `(2, 26)` in the same commit.
 
 Both pins are the same engine release, so every engine version check reads one value (`KAS_PIN_ENGINE_RELEASE`). The choice is made again on every install check: a host that moves to glibc 2.28+ installs the normal pin next time. `--unpinned`, `--from` with another version and `KIROCREW_KAS_VERSION` are held to 2.28.
 
-To move both pins, publish the normal release and its `-al2` republish, then change `KAS_PIN_VERSION`, `KAS_PIN_MANIFEST_SHA256` and `KAS_PIN_AL2_MANIFEST_SHA256` in `src/kiro_crew/acp/kas_pin.py` in one commit. `KAS_PIN_AL2_VERSION` follows `KAS_PIN_VERSION` by itself.
+To move both pins, publish the normal release and its AL2 republish, then change `KAS_PIN_VERSION`, `KAS_PIN_MANIFEST_SHA256` and `KAS_PIN_AL2_MANIFEST_SHA256` in `src/kiro_crew/acp/kas_pin.py` in one commit. `KAS_PIN_AL2_VERSION` is `KAS_PIN_VERSION` plus a hand-set `-al2` or `-al2.<n>` suffix: set it to the `--version` the AL2 republish was published as (a new engine or Node release starts again at `-al2`).
