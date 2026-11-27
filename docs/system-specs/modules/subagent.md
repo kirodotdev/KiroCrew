@@ -1479,6 +1479,11 @@ made; no gate reads it back. Two consumers:
   A low-memory wait on an unreadable cgroup usage file carries
   `cause: cgroup_usage_unreadable` and no `available_gb` (the 0 that usage
   contributes is not an amount), and the chip says free memory is unknown.
+  A low-memory wait on a host read that did not answer carries
+  `cause: host_read_unanswered` and no `available_gb` (nothing was read),
+  and the chip says the free-memory check did not answer and will run
+  again, never that memory is short. A wait the lane share holds carries no
+  cause, and the chip keeps the figure-less sentence.
   Both memory kinds also carry `max_wait_secs`, the live
   `agent.subagent_queue_max_wait_secs` read as the frame is published
   through `taskq_memory_wait_bound_secs` (the reader the sweep and the
