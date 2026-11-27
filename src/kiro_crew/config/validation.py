@@ -90,6 +90,18 @@ _APP_OWNED_TOP_KEYS: frozenset = _builtin_config_top_keys()
 #     SCHEMA_REGISTRY entry, so Crew never writes a default copy of it.
 _CORE_OWNED_TOP_KEYS: frozenset = frozenset({"voice_reply", "connections", "sel"})
 
+# Core-owned top-level sections whose kept shape is a JSON *array*, not an
+# object. Same rationale as _CORE_OWNED_TOP_KEYS, but the reader keeps a list,
+# so the dict gate below would still report them. Excluded only when the value
+# is a list, so a non-list written by hand keeps the one warning that says it is
+# being ignored.
+#   * channel_presets -- the persistent-channel message presets. The operator
+#     sets this list in config.json (documented in
+#     docs/system-specs/modules/persistent-agent-channels.md) and the dashboard
+#     reads it back via dashboard/handlers_channel.py::_load_presets, served at
+#     GET /api/channels/presets. No SCHEMA_REGISTRY entry.
+_CORE_OWNED_TOP_LIST_KEYS: frozenset = frozenset({"channel_presets"})
+
 try:
     import jsonschema
 
@@ -681,17 +693,22 @@ def validate_config_data(data: dict) -> dict:
     # shape the reader keeps -- a JSON object. A reader keeps only a dict and
     # silently falls back on anything else, so a scalar written by hand would
     # otherwise lose the one warning that tells the operator it is being ignored.
+    # A core-owned section whose reader keeps a list instead
+    # (_CORE_OWNED_TOP_LIST_KEYS) is excluded only when its value is a list, for
+    # the same reason.
     known_top_keys = {e.path for e in SCHEMA_REGISTRY if "." not in e.path and e.path != "*"}
     declared_app_keys = set(_APP_OWNED_TOP_KEYS)
     declared_app_keys.update(_installed_extension_config_keys())
     app_owned_sections = {k for k in declared_app_keys if isinstance(data.get(k), dict)}
     core_owned_sections = {k for k in _CORE_OWNED_TOP_KEYS if isinstance(data.get(k), dict)}
+    core_owned_lists = {k for k in _CORE_OWNED_TOP_LIST_KEYS if isinstance(data.get(k), list)}
     unknown = sorted(
         set(data.keys())
         - known_top_keys
         - CONFIG_RESERVED_TOP_KEYS
         - app_owned_sections
         - core_owned_sections
+        - core_owned_lists
     )
     if unknown:
         logger.warning("Config: unrecognized top-level keys: %s", ", ".join(unknown))
