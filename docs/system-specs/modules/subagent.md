@@ -645,8 +645,11 @@ so every later admission charges a row at the price it was admitted at:
   prepared at launch), `agent.session_sharing` on, no per-spawn
   `allowed_tools` / `bare` / `backend`, a parent session key, and, as its last term, the
   backend's opt-in `is_session_sharing_eligible`. `_run_inner` takes the shared arm from
-  the same plan, so the price cannot follow a copy of the rule. Only a real
-  `True` prices a start shared; an unknown answer is priced dedicated. Native
+  the same plan, so the price cannot follow a copy of the rule. The plan names
+  why a dedicated start does not share (`_SharingPlan.reason`, the predicate's own
+  reason left on `SubagentInfo._placement_reason`), and `_run_inner` logs one INFO
+  line per run, `Subagent <id> session shared: ...` or `... dedicated: <reason>`.
+  Only a real `True` prices a start shared; an unknown answer is priced dedicated. Native
   subtasks (kiro-cli `use_subagent` and similar) never reach this gate.
 - **Remote child.** A child of a remote session (`_parent_runs_remotely`, the
   in-memory `session_environment.remote_workspace_for` record set at each
@@ -3104,7 +3107,7 @@ those concerns goes to its owner.
 1. `spawn()` increments `_running_count`, creates asyncio task
 2. `_spawn_with_approval()` (no auto rung matched): requests approval through `on_spawn_approval`, whose callback sets the wait
 3. `_run()` captures the effective deadline on `SubagentInfo.timeout_secs` only while the record still carries the zero sentinel (unexpected-cancel recovery respawns the same record and keeps its nonzero captured deadline), and wraps `_run_inner()` with `asyncio.wait_for(timeout_secs)`
-4. `_run_inner()` resolves `parent_policy` (the chain under the tool approval ladder), creates session `subagent:{id}` via `SessionManager.get_or_create(approval_policy=parent_policy)` — policy is persisted on the new session. A new session (either arm) then holds its first prompt until each MCP server its agent spec declares has reported, at most `UNATTENDED_MCP_WAIT_SECS` (`agent_sdk.mcp_problems.wait_for_declared_mcp`, the wait cron, task and workflow runs take): a spawn prompts as soon as its session opens, so the start's 5 s brief wait (`MOUNTED_MCP_WAIT_SECS`) left a slow server, such as a routed one on KAS, out of its first turn. A server the parent's live session holds as failed, or as still starting more than `MCP_SERVER_WAIT_SECS` after that session began (`SessionMcpReport.given_up`), is not waited for (`seen_by=` the parent's provider): it would only run the wait to its bound. A spawn with no parent (a CLI spawn) waits for every declared server
+4. `_run_inner()` resolves `parent_policy` (the chain under the tool approval ladder), creates session `subagent:{id}` via `SessionManager.get_or_create(approval_policy=parent_policy)` — policy is persisted on the new session. A new session (either arm) then holds its first prompt until each MCP server its agent spec declares has reported, at most `UNATTENDED_MCP_WAIT_SECS` (`agent_sdk.mcp_problems.wait_for_declared_mcp`, the wait cron, task and workflow runs take): a spawn prompts as soon as its session opens, so the start's 5 s brief wait (`MOUNTED_MCP_WAIT_SECS`) left a slow server, such as a routed one on KAS, out of its first turn. A server the parent's live session holds as failed, or as still starting more than `MCP_SERVER_WAIT_SECS` after that session began (`SessionMcpReport.given_up`), is not waited for (`seen_by=` the parent's provider): it would only run the wait to its bound. One the host is re-attempting is waited for, unless its last failure was a start that ran out of time (`is_start_timeout_failure`), whose second start takes as long as the first. A spawn with no parent (a CLI spawn) waits for every declared server
 5. Streams through ACP with context injection, tool approval cascade, and turn counting
 6. On completion (in `_run` finally block): spawn a shielded report that fires `subagent_done` with terminal `elapsed` and cumulative `credits`, then calls `on_done`. Session release/reset and concurrency-slot release proceed independently of the report; successful delivery waits for teardown before marking the result delivered and stores both usage values in that delivery tombstone.
 7. On timeout: `error = "Timed out after {N} minutes"`, where N is the run's captured deadline, unless the run already claimed its completed ending (the ending claim below), which the deadline only cuts short

@@ -695,6 +695,9 @@ class SubagentInfo:
     # session; a second loss is terminal.
     _session_not_found_retry_used: bool = False
     _force_dedicated: bool = False
+    # Why the last sharing check said no ("" when it said yes), for the run's
+    # placement log line (``run_start._should_use_session_sharing_impl``).
+    _placement_reason: str = ""
     # The run's completed-ending CLAIM, a one-shot token like ``_finalized``:
     # taken synchronously by a whole answer (a successful complete event,
     # post-processed into ``result``) when no stop got there first (``done``,

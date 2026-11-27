@@ -71,29 +71,39 @@ def _should_use_session_sharing_impl(self: RunEventCoordinator, info: SubagentIn
     is ACP/kiro-backed (not CC); not a CC-specific spawn (allowed_tools/bare);
     no per-spawn backend; the host is not a codex process a subagent has left.
     A model or effort the run was started on is the sharing plan's question
-    (:meth:`_sharing_plan_impl`), not this one's.
+    (:meth:`_sharing_plan_impl`), not this one's. The reason for a no is left
+    on ``info._placement_reason`` for the run's placement log line.
     """
+    info._placement_reason = ""
     # Member capability and native prompt documents are prepared at launch.
     if info._force_dedicated:
+        info._placement_reason = "a retry asked for a dedicated process"
         return False
     if info.execution_context is not None and info.execution_context.member_id is not None:
+        info._placement_reason = "a member run"
         return False
     try:
         cfg = KiroCrewConfig.load()
         if not cfg.agent.session_sharing:
+            info._placement_reason = "agent.session_sharing is off"
             return False
     except Exception:
+        info._placement_reason = "config unreadable"
         return False
     if info.allowed_tools or info.bare:
+        info._placement_reason = "allowed_tools or bare spawn"
         return False
     # The shared runtime is the parent's own process, on the parent's backend:
     # a run asked onto a backend of its own needs a process of its own.
     if info.backend is not None:
+        info._placement_reason = "a per-spawn backend"
         return False
     if not info.parent_session_key:
+        info._placement_reason = "no parent session"
         return False
     eligible = self._manager._sessions.is_session_sharing_eligible(info.parent_session_key)
     if eligible is not True:
+        info._placement_reason = "the parent session cannot share its runtime"
         return eligible
     # Imported here: a rebound ``_impl`` resolves globals in ``kiro_crew.subagent``.
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX
@@ -109,6 +119,7 @@ def _should_use_session_sharing_impl(self: RunEventCoordinator, info: SubagentIn
         getattr(host, "acp_backend", None) == ACP_BACKEND_CODEX
         and getattr(host, "subagent_departed", False) is True
     ):
+        info._placement_reason = "a codex parent process a sub-agent has left"
         return False
     return eligible
 
@@ -196,10 +207,22 @@ def _sharing_plan_impl(
         and not eff_effort
         and self._manager._should_use_session_sharing(info)
     )
+    if kind != "template":
+        reason = f"a {kind} run"
+    elif info.keep:
+        reason = "a kept or continued run"
+    elif eff_effort:
+        reason = "a reasoning-effort pin"
+    elif not shared:
+        reason = getattr(info, "_placement_reason", "") or "not eligible"
+    else:
+        reason = ""
     if shared and eff_model:
         shared = _pinned_model_shares(self._manager._sessions, info, cfg)
+        reason = "" if shared else "a model pin the parent's runtime cannot take"
     if shared and self._aws_profile_rules_out_sharing(info, child_aws_profile):
         shared = False
+        reason = "another AWS profile than the parent's"
     if shared and not eff_model:
         from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
         from kiro_crew.config.loader import KiroCrewConfig
@@ -212,9 +235,11 @@ def _sharing_plan_impl(
                 cfg = cfg if cfg is not None else KiroCrewConfig.load()
                 template = info.agent or getattr(info.execution_context, "template_id", "")
                 shared = cfg.resolve_session_effort(template or None, "") == ""
+                reason = "" if shared else "a configured session effort on KAS"
         except Exception:
             shared = False
-    return _SharingPlan(eff_model, eff_effort, shared)
+            reason = "the parent's runtime unreadable"
+    return _SharingPlan(eff_model, eff_effort, shared, reason)
 
 
 def _aws_profile_rules_out_sharing(

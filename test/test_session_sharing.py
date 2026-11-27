@@ -1549,3 +1549,69 @@ class TestSharedSessionCliDefaultModel:
         handle.set_model.assert_awaited_once_with("cli-default-model", inherit=True)
         assert info._shared_provider is provider
         await provider.shutdown()
+
+
+class TestPlacementLogLine:
+    """Each run logs once, at INFO, whether it shares and, when it does not, why."""
+
+    @staticmethod
+    def _placements(caplog) -> list[str]:
+        said = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.subagent"]
+        return [m for m in said if " session shared" in m or " session dedicated" in m]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "sharing, expected",
+        [
+            pytest.param(True, "session shared: on the parent's runtime", id="shared"),
+            pytest.param(
+                False, "session dedicated: agent.session_sharing is off", id="setting-off"
+            ),
+        ],
+    )
+    async def test_a_run_names_its_placement(self, caplog, sharing, expected):
+        manager = SubagentManager(
+            sessions=_mock_sessions(sharing_eligible=True),
+            ctx_builder=_mock_ctx_builder_auto(),
+            is_yolo=lambda: True,
+        )
+        caplog.set_level("INFO", logger="kiro_crew.subagent")
+        with (
+            _cfg_patch(session_sharing=sharing),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
+            info = manager.spawn("test task", parent_session_key="dashboard:slot1")
+            await _wait_until_done(info)
+
+        assert self._placements(caplog) == [f"Subagent {info.id} {expected}"]
+
+    @pytest.mark.parametrize(
+        "info_kwargs, eligible, reason",
+        [
+            pytest.param({}, True, "", id="shared"),
+            pytest.param({"keep": True}, True, "a kept or continued run", id="keep"),
+            pytest.param({"reasoning_effort": "high"}, True, "a reasoning-effort pin", id="effort"),
+            pytest.param({}, False, "the parent session cannot share its runtime", id="parent"),
+            pytest.param(
+                {"allowed_tools": ["read"]}, True, "allowed_tools or bare spawn", id="cc-spawn"
+            ),
+        ],
+    )
+    def test_the_plan_says_why_it_does_not_share(self, info_kwargs, eligible, reason):
+        manager = SubagentManager(
+            sessions=_mock_sessions(sharing_eligible=eligible),
+            ctx_builder=_mock_ctx_builder_auto(),
+            is_yolo=lambda: True,
+        )
+        info = SubagentInfo(
+            id="why",
+            task="t",
+            parent_session_key="dashboard:slot1",
+            agent="kirocrew",
+            **info_kwargs,
+        )
+        with _pin_cfg_patch():
+            plan = manager._sharing_plan(info)
+
+        assert (plan.shared, plan.reason) == (not reason, reason)
