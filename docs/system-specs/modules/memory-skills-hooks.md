@@ -5709,7 +5709,15 @@ the ~60 shipped skills, and a large user tree cannot evict a shipped skill the
 user actually uses. `_is_user_authored` counts a packaged key, a copy carrying
 the builtin sync's provenance marker, an app skill resolving into a provider
 root, and an edition root as shipped; everything else — user-created,
-`skills.extra_paths`, trusted project, mapped — is the user's. A `skill://` mapping
+`skills.extra_paths`, trusted project, mapped — is the user's. Every build asks
+this for every row, so the loader keeps the two path tests (edition root, a
+`realpath` into a provider root) per `(path, fingerprint)` in
+`_shipped_root_memo`, bounded by `_SHIPPED_ROOT_MEMO_MAX` and emptied by every
+catalog invalidation: the fingerprint is a stat of the resolved file, so a
+replaced file or a link pointed at another file resolves again, while the
+provenance-marker check runs on every call. A directory moved across a link with
+its files untouched keeps its fingerprint and so its old index position until
+the file changes or the catalog is invalidated. A `skill://` mapping
 restricts availability, not eager body delivery. Directory, search, paginated
 list, exact reads and `$full/key` expansion resolve the same project-aware mapping.
 Unqualified `$leaf` fallback is permitted only when unique. External mapped files
