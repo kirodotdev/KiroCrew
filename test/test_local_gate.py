@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -25,6 +26,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from kiro_crew.testing.wait import default_timeout
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "local-gate.py"
@@ -940,23 +943,71 @@ def test_an_empty_platform_list_drops_nothing(
     assert "not collected" not in verdict
 
 
-def test_the_leaf_selector_imports_without_pytest_or_kiro_crew() -> None:
-    """CI's ``changes`` job runs ``leaf_test_scope.py`` with no dependencies
-    installed, and it imports this selector; the collector helper (which needs
-    pytest and kiro_crew) must load on first use, not at import."""
-    probe = (
-        "import sys; sys.path.insert(0, 'scripts'); import leaf_test_scope; "
-        "assert 'platform_collect_ignore_helpers' not in sys.modules"
-    )
+_BARE_INTERPRETER_GROUP = "local_gate_bare_interpreter"
+
+# Every case that needs an interpreter without site-packages is answered by this
+# one probe, so a single child is started for all of them. Each case records its
+# own verdict and a failure in one never hides another.
+_BARE_INTERPRETER_PROBE = """\
+import json, sys, traceback
+sys.path.insert(0, 'scripts')
+verdicts = {}
+try:
+    import leaf_test_scope
+    assert 'platform_collect_ignore_helpers' not in sys.modules
+    verdicts['leaf_import'] = {'error': ''}
+except BaseException:
+    verdicts['leaf_import'] = {'error': traceback.format_exc()}
+try:
+    import run_scoped_tests as selector
+    try:
+        selector.platform_uncollected_targets()
+    except selector.SelectionUntrustworthy as exc:
+        verdicts['fail_closed'] = {'message': str(exc), 'error': ''}
+    else:
+        verdicts['fail_closed'] = {
+            'message': '',
+            'error': 'the selector loaded the helper without pytest',
+        }
+except BaseException:
+    verdicts['fail_closed'] = {'message': '', 'error': traceback.format_exc()}
+print(json.dumps(verdicts))
+"""
+
+
+@pytest.fixture(scope="module")
+def bare_interpreter_verdicts() -> dict[str, dict[str, str]]:
     # -S: no site-packages, so neither pytest nor an installed kiro_crew is importable.
     result = subprocess.run(
-        [sys.executable, "-S", "-c", probe],
+        [sys.executable, "-S", "-c", _BARE_INTERPRETER_PROBE],
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
         encoding="utf-8",
+        timeout=default_timeout(),
     )
     assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@pytest.mark.xdist_group(name=_BARE_INTERPRETER_GROUP)
+def test_the_leaf_selector_imports_without_pytest_or_kiro_crew(bare_interpreter_verdicts) -> None:
+    """CI's ``changes`` job runs ``leaf_test_scope.py`` with no dependencies
+    installed, and it imports this selector; the collector helper (which needs
+    pytest and kiro_crew) must load on first use, not at import."""
+    assert bare_interpreter_verdicts["leaf_import"]["error"] == ""
+
+
+@pytest.mark.xdist_group(name=_BARE_INTERPRETER_GROUP)
+def test_an_interpreter_without_pytest_fails_closed_with_its_name(bare_interpreter_verdicts) -> None:
+    """A fresh worktree with no virtualenv runs the gate under a bare python3.
+    Backend selection needs the collector helper, which needs pytest, so the gate
+    must stop at exit 2 naming the interpreter, not crash with a traceback."""
+    verdict = bare_interpreter_verdicts["fail_closed"]
+    assert verdict["error"] == ""
+    assert sys.executable in verdict["message"]
+    assert "cannot import pytest" in verdict["message"]
+    assert ".venv" in verdict["message"]
 
 
 def test_the_selector_subtracts_exactly_what_the_hook_ignores(
