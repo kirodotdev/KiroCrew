@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from skills_helpers import _settled
 
 from kiro_crew import context as ctx
 from kiro_crew.config.loader import KiroCrewConfig
@@ -298,6 +299,7 @@ class TestAdmissionAndSkills:
         total = 400
         for i in range(total):
             seed_skill(skills._dir, f"procedure-{i}")
+        _settled(skills)
         text = builder.build_session_context()
         shown = [i for i in range(total) if f"- **procedure-{i}**:" in text]
         assert 80 < len(shown) < total
@@ -850,6 +852,7 @@ def test_agent_skill_search_entry_finds_omitted_catalog(rig, monkeypatch):
     # Past the index allowance, so the entry has something to omit.
     for i in range(400):
         seed_skill(skills._dir, f"filler-{i}")
+    _settled(skills)
     greeting, _ = builder.build_message("hi", True)
     # The entry is bounded, so it names the tool that reaches what it omits.
     assert "skill_search" in greeting
