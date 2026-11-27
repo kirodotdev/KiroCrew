@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import uuid
 from contextlib import asynccontextmanager
@@ -347,6 +348,9 @@ async def running_daemon(
             stop_event=stop,
             target_resolver=_resolver,
             prewarm_count=0,
+            # This process is the gateway that owns the daemon, as in production,
+            # where the resource-subscription holder registers from inside it.
+            owner_pid=os.getpid(),
         )
     )
     await async_wait_until(

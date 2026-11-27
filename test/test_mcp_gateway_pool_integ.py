@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -22,6 +23,7 @@ from fake_pool_mcp_server import recorded
 
 from kiro_crew import code_fingerprint as cf
 from kiro_crew import platform_compat as pc
+from kiro_crew.mcp_gateway import claim as claim_mod
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.testing.wait import async_wait_until, finished
@@ -95,12 +97,19 @@ async def _spawn_stub(
     """Launch a REAL stub process, exactly as the rewriter's overlay would.
 
     ``poolable``: the backend may be shared by connections with the same PoolKey.
-    ``session_key``: the Register-frame identity; empty makes gatewayd send ``caller=None``.
+    ``session_key``: the session this stub serves, named the way the gateway names
+    it: a session token in the stub's env and a ``claim`` binding that token to
+    this process (the stub's runtime) before the stub registers. Empty makes
+    gatewayd send ``caller=None``.
     ``env_json``: folded into ``effective_env_hash``, a real pool dimension to vary.
     """
     env = {**_clean_env(), "KIROCREW_HOME": str(home)}
+    env.pop(claim_mod.STUB_SESSION_TOKEN_ENV, None)
     if session_key:
         env["KIROCREW_SESSION_KEY"] = session_key
+        token = claim_mod.mint_stub_session_token()
+        await claim_mod.send_claim(str(socket_path), os.getpid(), session_key, None, token)
+        env[claim_mod.STUB_SESSION_TOKEN_ENV] = token
     else:
         env.pop("KIROCREW_SESSION_KEY", None)
     return await asyncio.create_subprocess_exec(
@@ -140,8 +149,6 @@ async def _spawn_stub(
 
 
 def _clean_env() -> dict[str, str]:
-    import os
-
     # Drop any inherited channel id: it feeds PoolKey.channel_id, and a value
     # leaking in from the developer's shell would silently change partitioning.
     return {k: v for k, v in os.environ.items() if k != "KIROCREW_CHANNEL_ID"}
