@@ -98,6 +98,14 @@ WITHHELD_KEY = "x-kirocrew-withheld"
 # at deserialization rather than rejected.
 SOURCE_KEY = "x-kirocrew-app-source"
 
+# A FIFTH reserved key: Kiro Crew copied this entry into the rendered agent spec
+# from a global MCP config (``~/.kiro/settings/mcp.json``). The spec is rebuilt on
+# top of itself, so without it a copy outlives the server it was copied from once
+# that file renames or removes it. The stamp only ever lets the rebuild REMOVE the
+# entry, never grant anything, so a stamp planted by hand costs that entry alone;
+# an entry the user wrote carries none and is never removed.
+COPIED_KEY = "x-kirocrew-copied"
+
 
 def is_withheld_mute(entry: Any) -> bool:
     """True when *entry*'s mute is the rebuild's :data:`WITHHELD_KEY` mute."""

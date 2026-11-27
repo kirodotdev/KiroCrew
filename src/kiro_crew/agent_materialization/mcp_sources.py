@@ -45,6 +45,7 @@ from kiro_crew.mcp_cleanup import (
 )
 from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference, secret_reference_keys
 from kiro_crew.mcp_provenance import (
+    COPIED_KEY,
     DERIVED_KEY,
     SOURCE_KEY,
     WITHHELD_KEY,
@@ -294,6 +295,23 @@ _DECLARATION_OWNED_MCP_KEYS = ("disabledTools",)
 _declares_server = mcp_entry_names_launch
 
 
+def _load_scope(path: Path) -> tuple[dict[str, Any], bool]:
+    """*path*'s servers as ``user_json.load_mcp_servers`` reads them, and whether it said so.
+
+    The second value is False for something at *path* that was ignored (unreadable,
+    malformed, a wide encoding, a dangling link) or an object that holds other keys
+    but no object ``mcpServers`` (a misspelt key): it contributes no server without
+    stating that it declares none, so nothing is removed on it. An absent file and
+    a readable ``{}`` (the store Kiro Crew seeds) declare none.
+    """
+    data, read = user_json.read_user_json_object(path)
+    servers = data.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        agent_mod.logger.warning("Ignoring %s: mcpServers is not an object", path)
+        return {}, False
+    return servers, read and ("mcpServers" in data or not data)
+
+
 # The keys that belong WITH a stdio ``command``: a server's arguments and its
 # environment are written for one program. The agent entry carries that program as
 # the RESOLVED absolute path the previous pass wrote (``npx`` ->
@@ -401,6 +419,7 @@ def _merge_source_owned(
     stale: set[str],
     replaced: dict[str, dict],
     edition_owned: bool = False,
+    copied: bool = False,
 ) -> None:
     """Reconcile a scope global's *spec* onto ``mcps[name]``.
 
@@ -415,10 +434,12 @@ def _merge_source_owned(
     the edition's (seeded with the entry, ``command``/``args`` refreshed by
     ``_refresh_dynamic_fields``), so a global entry can neither replace its tool
     surface nor switch its program, and the name never enters *replaced*.
+
+    A name the config lacks is copied in, stamped :data:`COPIED_KEY` when *copied*.
     """
     existing = mcps.get(name)
     if not isinstance(existing, dict):
-        mcps[name] = without_marker(spec)
+        mcps[name] = {**without_marker(spec), COPIED_KEY: True} if copied else without_marker(spec)
         return
     if name not in stale:
         return
@@ -696,9 +717,14 @@ def _adopt_stale_alias_rendering(
                 refs = config.get(list_key)
                 if isinstance(refs, list):
                     refs[:] = [_redirected(ref) for ref in refs]
+        # _core drops the copy stamp: folding an unstamped equal entry (the user's)
+        # leaves the survivor theirs, as key normalization does.
+        user_owned = not all(mcp_aliases._is_copy(mcps[key]) for key in leftovers)
         for key in leftovers:
             mcps.pop(key)
         adopted = mcps.pop(alias)
+        if user_owned:
+            adopted.pop(COPIED_KEY, None)
         if store_owns_modifiers:
             # Passed without the launch, so only ``timeout`` and ``disabled`` are
             # projected; ``disabledTools`` follows the raw-key list rule below.
@@ -715,6 +741,10 @@ def _adopt_stale_alias_rendering(
 
 def merge_mcp_sources(config: dict) -> McpSources:
     """Merge the app, Kiro-global, provider-global and store MCP servers into *config*.
+
+    A Kiro-global server the config lacks is copied in stamped
+    :data:`~kiro_crew.mcp_provenance.COPIED_KEY`, and a stamped entry no source
+    launches any more is removed (docs/architecture/mcp.md, "Merge order").
 
     Returns the scope maps as read, so the later passes resolve against the same
     reads.
@@ -780,7 +810,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # raw key (``demo:@playwright/mcp``) claims the alias it renders as.
     _unclaimed = set(_stale) - _app_aliases
 
-    shared_mcp = user_json.load_mcp_servers(agent_mod._KIRO_MCP_JSON)
+    shared_mcp, answered = _load_scope(agent_mod._KIRO_MCP_JSON)
     for name, spec in shared_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             if _declares_server(spec):
@@ -799,6 +829,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
                 stale=_stale,
                 replaced=_replaced,
                 edition_owned=name in edition_names,
+                copied=True,
             )
             if name in edition_names and mcp_entry_names_launch(spec):
                 _claims.setdefault(name, (agent_mod._KIRO_MCP_JSON, spec))
@@ -810,7 +841,8 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # the fallback-candidate lookup and the shared-server tools sync below.
     extra_shared_mcp: dict[str, dict] = {}
     for scope_global in _extra_mcp_scope_globals():
-        scope_shared_mcp = user_json.load_mcp_servers(scope_global)
+        scope_shared_mcp, scope_answered = _load_scope(scope_global)
+        answered = answered and scope_answered
         for name, spec in scope_shared_mcp.items():
             if not isinstance(spec, dict):
                 continue
@@ -837,7 +869,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # like autoApprove while letting kirocrew's command/args/env win.
     # Skip managed servers for the same reason as above.
     kirocrew_store = agent_mod._user_dir() / "mcp.json"
-    kirocrew_mcp = user_json.load_mcp_servers(kirocrew_store)
+    kirocrew_mcp, store_answered = _load_scope(kirocrew_store)
     _store_keys_by_alias: dict[str, list[str]] = {}
     for _key in kirocrew_mcp:
         _store_keys_by_alias.setdefault(mcp_server_alias(_key), []).append(_key)
@@ -901,6 +933,74 @@ def merge_mcp_sources(config: dict) -> McpSources:
     for name, entry in config.get("mcpServers", {}).items():
         if name not in _app_stamped and isinstance(entry, dict):
             entry.pop(SOURCE_KEY, None)
+
+    # A copy of a Kiro-global server (COPIED_KEY) leaves once no file launches a
+    # server for it, unless a file could not be read: that says nothing about what
+    # it declares. A registry pointer installs it too. Compared by
+    # alias, so a raw slashed key stays while declared, and by alias family only for
+    # a slashed name, the one kind whose collision mints a ``-<n>`` sibling.
+    if answered and store_answered:
+        launched = [
+            name
+            for scope in (shared_mcp, extra_shared_mcp, kirocrew_mcp)
+            for name, spec in scope.items()
+            if mcp_entry_installs_server(spec)
+        ]
+        aliases = {mcp_server_alias(name) for name in launched}
+        slashed = {mcp_server_alias(name) for name in launched if "/" in name}
+        servers = config.get("mcpServers", {})
+        removed: list[str] = []
+        for key in [
+            k for k, e in servers.items() if isinstance(e, dict) and e.get(COPIED_KEY) is True
+        ]:
+            alias = mcp_server_alias(key)
+            if key in managed_names or key in edition_names or alias in aliases:
+                continue
+            if not any(mcp_aliases._is_alias_family(alias, base) for base in slashed):
+                del servers[key]
+                removed.append(key)
+        if removed:
+            agent_mod.logger.info(
+                "kirocrew: removed MCP server(s) %s: no MCP config declares them any more",
+                ", ".join(removed),
+            )
+            # Its refs go now: key normalization can hand the freed name to another
+            # server, and a grant left on the name would auto-approve that one.
+            claimants = set(servers) | set(removed)
+
+            def _owned(ref: object, grant: bool) -> bool:
+                if not isinstance(ref, str) or not ref.startswith("@"):
+                    return False
+                # A grant is also read the runtime's way, up to the first ``/``, as
+                # normalization reads it: ``@foo/bar`` is a tool of a removed ``foo``.
+                if grant and ref[1:].split("/", 1)[0] in removed:
+                    return True
+                return mcp_aliases.mcp_ref_owner(ref, claimants) in removed
+
+            revoked: list[str] = []
+            for list_key in ("tools", "allowedTools"):
+                refs = config.get(list_key)
+                grant = list_key == "allowedTools"
+                if isinstance(refs, list):
+                    if grant:
+                        revoked = [ref for ref in refs if _owned(ref, grant)]
+                    refs[:] = [ref for ref in refs if not _owned(ref, grant)]
+            if revoked:
+                try:
+                    agent_mod.sel().log_api_access(
+                        caller="system",
+                        operation="mcp_auto_approve_revoked",
+                        outcome="ok",
+                        source="rebuild_agent_config",
+                        resources=(
+                            f"{', '.join(revoked)} auto-approval removed "
+                            "(no MCP config declares the server any more)"
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 — auditing never fails the rebuild
+                    agent_mod.logger.debug(
+                        "SEL audit for revoked MCP auto-approvals failed", exc_info=True
+                    )
     return McpSources(
         kirocrew_mcp,
         shared_mcp,

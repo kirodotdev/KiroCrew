@@ -17,7 +17,7 @@ from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registe
     _stub_remote_probe_ssrf_vet,
 )
 
-from kiro_crew.mcp_provenance import SOURCE_KEY
+from kiro_crew.mcp_provenance import COPIED_KEY, SOURCE_KEY
 
 RAW = "npm:@playwright/mcp"
 ALIAS = "playwright-mcp"
@@ -388,6 +388,36 @@ def test_a_folded_copy_hands_its_tool_refs_to_the_one_mount(
     assert list(home.mounted()) == [ALIAS], home.mounted()
     assert not home.mounted()[ALIAS].get("disabled"), home.mounted()
     assert f"@{ALIAS}/read" in spec["tools"], spec["tools"]
+
+
+def test_a_folded_hand_added_duplicate_leaves_the_adopted_mount_the_users(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Kiro global's raw key mounts as a stamped copy, the user hand-adds an equal
+    ``playwright-mcp-2``, then the server moves to the store. Adoption folds the user's
+    entry away, so the mount it keeps is the user's: unstamped, it outlives the store
+    entry. Red before: the mount kept the copy stamp and the stamp sweep removed it."""
+    from kiro_crew.agent import rebuild_agent_config
+
+    home = _home(tmp_path, monkeypatch, {RAW: dict(SPEC)})
+    rebuild_agent_config()
+    rendered = home.mounted()[ALIAS]
+    assert rendered.get(COPIED_KEY) is True, rendered
+    spec_doc = json.loads(home.spec.read_text(encoding="utf-8"))
+    spec_doc["mcpServers"][f"{ALIAS}-2"] = {k: v for k, v in rendered.items() if k != COPIED_KEY}
+    home.spec.write_text(json.dumps(spec_doc))
+
+    settings = tmp_path / ".kiro" / "settings" / "mcp.json"
+    settings.write_text(json.dumps({"mcpServers": {}}))
+    home.write_store({RAW: dict(SPEC)})
+    rebuild_agent_config()
+    assert list(home.mounted()) == [ALIAS], home.mounted()
+
+    home.write_store({})
+    rebuild_agent_config()
+    mounted = home.mounted()
+    assert list(mounted) == [ALIAS], mounted
+    assert COPIED_KEY not in mounted[ALIAS], mounted
 
 
 @pytest.mark.parametrize("raw_first", [False, True], ids=["other-key-first", "raw-key-first"])

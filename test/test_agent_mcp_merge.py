@@ -8,6 +8,7 @@ the session-start rebuild that picks up a source edited after the last rebuild.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -658,3 +659,119 @@ class TestASourceEditReachesTheNextSession:
             monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
             assert agent_mod.ensure_agent_materialized(managed) is True
         rebuild.assert_not_called()
+
+
+class TestAServerTheGlobalDropsLeavesTheSpec:
+    """A Kiro-global server renamed or removed leaves ``kirocrew.json`` on the next rebuild.
+
+    The rebuild starts from its own previous output, so only the stamp on what it
+    copied tells a stale copy apart from a server the user wrote into the spec.
+    """
+
+    def test_a_renamed_then_removed_server_leaves_and_a_hand_added_one_stays(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew.agent import AGENT_FILENAME
+
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _make_exec(tmp_path, "srv")
+
+        def rebuild(kiro_servers: dict) -> dict:
+            return _run_install_mcp_merge(
+                tmp_path, cfg_dir, cc_servers={}, kiro_servers=kiro_servers
+            )["mcpServers"]
+
+        assert "old-name" in rebuild({"old-name": {"command": cmd}})
+        spec_path = tmp_path / "kiro_agents" / AGENT_FILENAME
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        spec["mcpServers"]["mine"] = {"command": cmd}
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+        renamed = rebuild({"new-name": {"command": cmd}})
+        assert "new-name" in renamed
+        assert "old-name" not in renamed
+        assert "mine" in renamed
+
+        removed = rebuild({})
+        assert "new-name" not in removed
+        assert "mine" in removed
+
+    def test_a_removed_name_with_a_number_suffix_leaves_too(self, tmp_path: Path) -> None:
+        # Only a slashed name's collision mints ``<alias>-<n>``; ``db-2`` is a name of its own.
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _make_exec(tmp_path, "srv")
+        servers = {"db": {"command": cmd}, "db-2": {"command": cmd}}
+        _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers)
+        after = _run_install_mcp_merge(
+            tmp_path, cfg_dir, cc_servers={}, kiro_servers={"db": {"command": cmd}}
+        )
+        assert "db" in after["mcpServers"]
+        assert "db-2" not in after["mcpServers"]
+
+    def test_a_slashed_names_numbered_mount_stays_beside_its_plain_namesake(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        # ``ns/foo`` mounts as ``ns-foo-2`` because a different ``ns-foo`` is declared too.
+        cfg_dir = _bundled_defaults(tmp_path)
+        servers = {
+            "ns-foo": {"command": _make_exec(tmp_path, "a")},
+            "ns/foo": {"command": _make_exec(tmp_path, "b")},
+        }
+        _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.agent"):
+            after = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers)
+        assert "ns-foo-2" in after["mcpServers"]
+        assert "removed MCP server" not in caplog.text
+
+    def test_a_global_that_cannot_be_read_removes_nothing(self, tmp_path: Path) -> None:
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _make_exec(tmp_path, "srv")
+        _run_install_mcp_merge(
+            tmp_path, cfg_dir, cc_servers={}, kiro_servers={"kept": {"command": cmd}}
+        )
+        # ``{"mcpServers": "..."}`` is read as declaring no server; it did not say so.
+        after = _run_install_mcp_merge(
+            tmp_path, cfg_dir, cc_servers={}, kiro_servers="not an object"
+        )
+        assert "kept" in after["mcpServers"]
+
+    def test_an_empty_store_file_still_lets_a_dropped_copy_leave(self, tmp_path: Path) -> None:
+        # The gateway seeds ~/.kiro/crew/mcp.json as ``{}``: read, declaring nothing.
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _make_exec(tmp_path, "srv")
+        store = tmp_path / "kirocrew_home" / "mcp.json"
+        store.parent.mkdir(parents=True)
+        store.write_text("{}", encoding="utf-8")
+        _run_install_mcp_merge(
+            tmp_path, cfg_dir, cc_servers={}, kiro_servers={"gone": {"command": cmd}}
+        )
+        after = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers={})
+        assert "gone" not in after["mcpServers"]
+
+    def test_a_removed_copys_grant_does_not_pass_to_a_server_mounted_under_its_name(
+        self, tmp_path: Path
+    ) -> None:
+        # A hand-added ``foo/bar`` mounts as ``foo-bar`` once the copies free that name;
+        # ``@foo/bar`` is the removed ``foo``'s tool ``bar`` to kiro-cli.
+        from kiro_crew.agent import AGENT_FILENAME
+
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _make_exec(tmp_path, "srv")
+        other = _make_exec(tmp_path, "other")
+        _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={"foo-bar": {"command": cmd}, "foo": {"command": cmd}},
+        )
+        spec_path = tmp_path / "kiro_agents" / AGENT_FILENAME
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        spec["mcpServers"]["foo/bar"] = {"command": other}
+        spec["allowedTools"] += ["@foo-bar/destroy", "@foo/bar"]
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+        after = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers={})
+        assert after["mcpServers"]["foo-bar"]["command"] == other
+        assert "@foo-bar/destroy" not in after["allowedTools"]
+        assert "@foo-bar" not in after["allowedTools"]
+        assert "@foo/bar" not in after["allowedTools"]

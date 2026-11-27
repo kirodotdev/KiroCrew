@@ -484,9 +484,10 @@ def set_up_alike(mine: Any, theirs: Any, read: Callable[[Any], Any] = lambda ent
 
     The agent-spec rebuild rewrites the default agent's declaration and no other
     agent's: a bare ``command`` becomes the absolute path it resolved to, and the
-    entry gains the rebuild's record of both values (``mcp_provenance``). So the
-    two are compared like with like, and either match counts: *mine* against
-    *theirs* as stored, the record aside, and *mine* against *theirs* as its file
+    entry gains the rebuild's record of both values (``mcp_provenance``), or its
+    stamp when the rebuild copied it from the Kiro global. So the two are compared
+    like with like, and either match counts: *mine* against *theirs* as stored,
+    the record and the stamp aside, and *mine* against *theirs* as its file
     was written (``mcp_provenance.source_view``, which restores the command only
     while the stored one is still the value the record says the rebuild emitted).
     Never one side as written against the other as rewritten, and never by name.
@@ -495,7 +496,7 @@ def set_up_alike(mine: Any, theirs: Any, read: Callable[[Any], Any] = lambda ent
     entry matches only *theirs* whole. *read* narrows both sides to the keys that
     count before they are compared; every other key must be equal.
     """
-    from kiro_crew.mcp_provenance import DERIVED_KEY, SOURCE_KEY, source_view
+    from kiro_crew.mcp_provenance import COPIED_KEY, DERIVED_KEY, SOURCE_KEY, source_view
 
     if not isinstance(mine, dict) or not isinstance(theirs, dict):
         return False
@@ -504,8 +505,9 @@ def set_up_alike(mine: Any, theirs: Any, read: Callable[[Any], Any] = lambda ent
     theirs = {k: v for k, v in theirs.items() if k != SOURCE_KEY}
     if DERIVED_KEY in mine:
         return _same(read(mine), read(theirs))
-    stored = {k: v for k, v in theirs.items() if k != DERIVED_KEY}
-    return _same(read(mine), read(stored)) or _same(read(mine), read(source_view(theirs)))
+    stored = {k: v for k, v in theirs.items() if k not in (DERIVED_KEY, COPIED_KEY)}
+    written = {k: v for k, v in source_view(theirs).items() if k != COPIED_KEY}
+    return _same(read(mine), read(stored)) or _same(read(mine), read(written))
 
 
 def holding_parents_servers(child: dict[str, Any], parent: dict[str, Any]) -> dict[str, Any]:

@@ -257,6 +257,14 @@ def test_like_is_compared_with_like():
     assert not grants.set_up_alike(forged, _WRITTEN)
 
 
+def test_a_copy_of_a_kiro_global_server_is_set_up_alike():
+    # The rebuild stamps an entry it copied from ~/.kiro/settings/mcp.json; the stamp launches nothing.
+    from kiro_crew.mcp_provenance import COPIED_KEY
+
+    written = {"command": _RESOLVED, "args": _ARGS}
+    assert grants.set_up_alike(written, {**written, COPIED_KEY: True})
+
+
 def test_holding_the_parents_servers_changes_only_what_is_set_up_alike():
     parent = {"mcpServers": {"same": _REBUILT, "apart": _REBUILT, "kept": _REBUILT}}
     child = {

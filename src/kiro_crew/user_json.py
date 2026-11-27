@@ -22,6 +22,8 @@ from __future__ import annotations
 import codecs
 import json
 import logging
+import os
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -247,29 +249,47 @@ def load_user_json_object(path: Path) -> dict[str, Any]:
     The same contract as ``kiro_crew.agent._load_json``, with
     :func:`loads_user_jsonc` as the parser, for callers that read an MCP config.
     """
-    if not path.is_file():
-        return {}
+    return read_user_json_object(path)[0]
+
+
+def read_user_json_object(path: Path) -> tuple[dict[str, Any], bool]:
+    """:func:`load_user_json_object`'s object, and whether *path* was absent or read.
+
+    The flag is False only for something at *path* that was ignored (unreadable, a
+    wide encoding, malformed, a non-object root, a dangling link) or a path it could
+    not stat, so a caller can tell a file that declares nothing (``{}``) from one
+    that could not say.
+    """
+    try:
+        mode = path.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return {}, not os.path.lexists(path)
+    except (OSError, ValueError) as exc:
+        logger.warning("Ignoring invalid %s: %s", path, exc)
+        return {}, False
+    if not stat.S_ISREG(mode):
+        return {}, False
     try:
         raw = path.read_bytes()
     except OSError as exc:
         logger.warning("Ignoring invalid %s: %s", path, exc)
-        return {}
+        return {}, False
     # A UTF-16/UTF-32 file (a Windows redirect's default) cannot be decoded as
     # UTF-8, so it is skipped either way. Name the cause first, in the words the
     # kiro-cli path uses, instead of the opaque ``'utf-8' codec can't decode``.
     reason = wide_bom_reason(raw)
     if reason is not None:
         logger.warning("Ignoring %s: %s", path, reason)
-        return {}
+        return {}, False
     try:
         data = loads_user_jsonc(raw.decode("utf-8"))
     except (ValueError, OSError) as exc:
         logger.warning("Ignoring invalid %s: %s", path, exc)
-        return {}
+        return {}, False
     if not isinstance(data, dict):
         logger.warning("Ignoring %s: top-level JSON is not an object", path)
-        return {}
-    return data
+        return {}, False
+    return data, True
 
 
 #: Deepest container nesting an installed settings document may carry. The config

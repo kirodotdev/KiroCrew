@@ -140,7 +140,7 @@ from kiro_crew.mcp_hot_reload import (  # noqa: F401 - live_sessions_hot_reload 
     live_sessions_hot_reload,
     mark_sessions_for_mcp_change,
 )
-from kiro_crew.mcp_provenance import ABSENT, WITHHELD_KEY, resolve_write, stamp
+from kiro_crew.mcp_provenance import ABSENT, COPIED_KEY, WITHHELD_KEY, resolve_write, stamp
 from kiro_crew.mcp_utils import (
     INTERNAL_CLIENT_ID_KEY,
     INTERNAL_SCOPES_KEY,

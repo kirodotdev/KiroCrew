@@ -484,8 +484,9 @@ off (a marker the rebuild has not yet removed, or a line someone wrote) and in a
 settings file in any state keeps the declaration native like any other non-stdio
 type, and the predicate reads the mode itself rather than trusting the
 declaration's place -- the `x-kirocrew` provenance
-marker the global-file sync stamps and the `x-kirocrew-derived` record the
-rebuild writes -- kiro-cli reads none of them as a setting. The way back the
+marker the global-file sync stamps, and the `x-kirocrew-derived` record and the
+`x-kirocrew-copied` stamp the rebuild writes -- kiro-cli reads none of them as a
+setting. The way back the
 verdict names is the dashboard's MCP tab only for a mute or a `disabledTools` in
 the global settings, the one file that tab writes; a restriction in the spec or
 the project's file is offered the edit that removes it there. The message repeats at most eight
@@ -3544,7 +3545,7 @@ spec the same way kiro-cli v2 does where the wire allows it:
   own declaration of a stubbed name is dropped by name like the session agent's.
   The stub launches the session's own agent's declaration, so a target that
   declares a pooled server alike (the same entry, less `autoApprove`, `disabled`,
-  `disabledTools`, `poolable`, and `timeout` or its `timeoutMs` alias, an empty
+  `disabledTools`, `poolable`, `x-kirocrew-copied`, and `timeout` or its `timeoutMs` alias, an empty
   value or an explicit `type: "stdio"` read as unset) shares it, and one that
   declares it otherwise is refused below. A
   server the target's own spec switches off (`disabled`, read with

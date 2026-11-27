@@ -324,6 +324,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         mcp_entry_is_muted,
     )
     from kiro_crew.mcp_provenance import (  # noqa: F401
+        COPIED_KEY,
         DERIVED_KEY,
         SOURCE_KEY,
     )
