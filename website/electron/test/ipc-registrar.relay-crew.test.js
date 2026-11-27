@@ -197,7 +197,15 @@ test("relay-crew:open-pane checks the ID, the local-dashboard gate, the main win
   assert.equal(h.probes.length, 0);
   // The dashboard measures at half the window's DIP width: the rect doubles, then clamps.
   assert.deepEqual(await h.openPane(from(wc), ID, RECT, VIEWPORT), { ok: true });
-  assert.deepEqual(o.calls, [[ID, { parent: main, dashboard: main._mcView, bounds: { x: 0, y: 96, width: 1000, height: 704 } }]]);
+  // A dashboard from before the pane header asks for none (#42922), so its pane's page draws none.
+  assert.deepEqual(o.calls, [[ID, { parent: main, dashboard: main._mcView, bounds: { x: 0, y: 96, width: 1000, height: 704 }, ownHeader: false }]]);
+  // Only the literal true asks for it.
+  for (const [sent, asked] of [[true, true], ["true", false], [1, false], [{}, false], [null, false]]) {
+    const b = paneOpener(null);
+    const r = harness({ opener: b, main });
+    assert.deepEqual(await r.openPane(from(wc), ID, RECT, VIEWPORT, sent), { ok: true });
+    assert.strictEqual(b.calls[0][1].ownHeader, asked, JSON.stringify(sent));
+  }
   for (const bad of [null, "rect", { x: 0, y: 0, width: 0, height: 10 }, { x: NaN, y: 0, width: 10, height: 10 }, { x: 0, y: 900, width: 10, height: 10 }]) {
     const b = paneOpener(null);
     const r = harness({ opener: b, main });
@@ -231,7 +239,13 @@ test("relay-crew:prewarm-pane loads only from the main window's dashboard, never
   const h = harness({ opener, main });
   assert.deepEqual(await h.prewarmPane(from(wc), `${ID}.evil`, RECT, VIEWPORT), { ok: false, error: "INVALID_ENDPOINT" });
   assert.deepEqual(await h.prewarmPane(from(wc), ID, RECT, VIEWPORT), { ok: true });
-  assert.deepEqual(calls, [[ID, { parent: main, dashboard: main._mcView, bounds: { x: 0, y: 96, width: 1000, height: 704 } }]]);
+  assert.deepEqual(await h.prewarmPane(from(wc), ID, RECT, VIEWPORT, true), { ok: true });
+  assert.deepEqual(await h.prewarmPane(from(wc), ID, RECT, VIEWPORT, "true"), { ok: true });
+  const at = { parent: main, dashboard: main._mcView, bounds: { x: 0, y: 96, width: 1000, height: 704 } };
+  assert.deepEqual(calls, [[ID, { ...at, ownHeader: false }], [ID, { ...at, ownHeader: true }], [ID, { ...at, ownHeader: false }]]);
+  calls.length = 0;
+  assert.deepEqual(await h.prewarmPane(from(wc), ID, RECT, VIEWPORT), { ok: true });
+  assert.deepEqual(calls, [[ID, { ...at, ownHeader: false }]]);
   for (const [label, options, ev] of [
     ["a local dashboard window that is not the main window", {}, from(otherWindow())],
     ["the relay view", {}, from(relayView())],

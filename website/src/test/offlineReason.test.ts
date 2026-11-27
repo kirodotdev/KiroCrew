@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isRelayCrewPane, isRelayCrewWindow, isRelayRetrying, offlineCover, offlineReason } from '../utils/offlineReason'
+import { isRelayCrewPane, isRelayCrewPaneHeader, isRelayCrewWindow, isRelayRetrying, offlineCover, offlineReason } from '../utils/offlineReason'
 import en from '../i18n/locales/en.manual.json'
 
 describe('offlineReason', () => {
@@ -36,6 +36,23 @@ describe('offlineReason', () => {
     expect(isRelayCrewPane('Mozilla/5.0 NotkiroCrewRelayPaneAtAll')).toBe(false)
     expect(isRelayCrewPane('')).toBe(false)
     expect(isRelayCrewPane()).toBe(false)
+  })
+
+  it('draws the pane header only for a desktop app that sent both whole tokens (#42922)', () => {
+    const base = 'Mozilla/5.0 Electron/44 kiroCrewRelayWindow'
+    // A desktop app that keeps to its tab strip above the pane.
+    expect(isRelayCrewPaneHeader(`${base} kiroCrewRelayPane kiroCrewRelayPaneHeader`)).toBe(true)
+    // An older desktop app: the pane token alone, so the page leaves its header out as before.
+    expect(isRelayCrewPaneHeader(`${base} kiroCrewRelayPane`)).toBe(false)
+    // The header token is a whole token, and means nothing without the pane token.
+    expect(isRelayCrewPaneHeader(`${base} kiroCrewRelayPaneHeader`)).toBe(false)
+    expect(isRelayCrewPaneHeader(`${base} kiroCrewRelayPane kiroCrewRelayPaneHeaders`)).toBe(false)
+    expect(isRelayCrewPaneHeader(base)).toBe(false)
+    expect(isRelayCrewPaneHeader()).toBe(false)
+    // What an older page runs on the new user agent: the pane token is still a whole
+    // token there, so that page still leaves its header out.
+    expect(isRelayCrewPane(`${base} kiroCrewRelayPane kiroCrewRelayPaneHeader`)).toBe(true)
+    expect(isRelayCrewWindow(`${base} kiroCrewRelayPane kiroCrewRelayPaneHeader`)).toBe(true)
   })
 
   it('treats a plain drop and Remote Control off in a relay Crew window as retrying', () => {

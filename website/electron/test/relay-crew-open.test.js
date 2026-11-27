@@ -19,7 +19,7 @@ function fakeWindowModule() {
   const opened = [];
   const openWindow = (opts) => {
     const w = {
-      opts, focused: 0, closed: false, cbs: { status: [], closed: [], visibility: [], unreachable: [], action: [], chord: [], theme: [], loaded: [] },
+      opts, focused: 0, closed: false, cbs: { status: [], closed: [], visibility: [], unreachable: [], action: [], chord: [], theme: [], loaded: [], header: [] },
       endpointId: opts.endpointId,
       notices: [],
       reload() {},
@@ -29,6 +29,7 @@ function fakeWindowModule() {
       onChord: (cb) => w.cbs.chord.push(cb),
       onThemeDark: (cb) => w.cbs.theme.push(cb),
       onLoaded: (cb) => w.cbs.loaded.push(cb),
+      onHeaderDrawn: (cb) => w.cbs.header.push(cb),
       focus() { w.focused += 1; },
       close() { if (!w.closed) { w.closed = true; w.cbs.closed.forEach((cb) => cb()); } },
       isClosed: () => w.closed,
@@ -210,8 +211,8 @@ test("the preload bridge carries only the endpoint ID, a rect and its viewport, 
     block[1].trim(),
     'open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),\n'
       + '  closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),\n'
-      + '  openPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:open-pane", String(endpointId || ""), rect, viewport),\n'
-      + '  prewarmPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:prewarm-pane", String(endpointId || ""), rect, viewport),\n'
+      + '  openPane: (endpointId, rect, viewport, ownHeader) => ipcRenderer.invoke("relay-crew:open-pane", String(endpointId || ""), rect, viewport, ownHeader === true),\n'
+      + '  prewarmPane: (endpointId, rect, viewport, ownHeader) => ipcRenderer.invoke("relay-crew:prewarm-pane", String(endpointId || ""), rect, viewport, ownHeader === true),\n'
       + '  setPaneBounds: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:pane-bounds", String(endpointId || ""), rect, viewport),\n'
       + '  setPaneOverlay: (endpointId, active) => ipcRenderer.invoke("relay-crew:pane-overlay", String(endpointId || ""), !!active),\n'
       + '  setPaneInactive: (endpointId, inactive) => ipcRenderer.invoke("relay-crew:pane-inactive", String(endpointId || ""), !!inactive),\n'
@@ -224,6 +225,7 @@ test("the preload bridge carries only the endpoint ID, a rect and its viewport, 
       + '      endpointId: String(m?.endpointId || ""),\n'
       + '      index: Number.isInteger(m?.index) ? m.index : -1,\n'
       + '      dark: typeof m?.dark === "boolean" ? m.dark : null,\n'
+      + '      header: m?.type === "header" && m?.header === true,\n'
       + '    });\n'
       + '    ipcRenderer.on("relay-crew:pane-event", handler);\n'
       + '    return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);\n'
@@ -968,30 +970,41 @@ test("closeAll closes a pane and stops its renewal", async () => {
   assert.equal(s.opener.paneFor(ID), null);
 });
 
-test("a pane's chord, theme, load and close reach only the dashboard that opened it, and a window sends none", async () => {
+test("a pane's chord, theme, header, load and close reach only the dashboard that opened it, and a window sends none", async () => {
   const s = setup();
   const sent = { mine: [], other: [] };
   const dashboard = (into, destroyed = false) => ({
     webContents: { isDestroyed: () => destroyed, send: (channel, msg) => into.push([channel, msg]) },
   });
-  await s.opener.open(ID, { parent: {}, dashboard: dashboard(sent.mine), bounds: { x: 0, y: 0, width: 10, height: 10 } });
-  await s.opener.open(OTHER, { parent: {}, dashboard: dashboard(sent.other, true), bounds: { x: 0, y: 0, width: 10, height: 10 } });
+  await s.opener.open(ID, { parent: {}, dashboard: dashboard(sent.mine), bounds: { x: 0, y: 0, width: 10, height: 10 }, ownHeader: true });
+  await s.opener.open(OTHER, { parent: {}, dashboard: dashboard(sent.other, true), bounds: { x: 0, y: 0, width: 10, height: 10 }, ownHeader: "true" });
   const [pane, gone] = s.panes.opened;
+  // What the dashboard asked reaches the pane as a boolean: only the literal true asks.
+  assert.strictEqual(pane.opts.ownHeader, true);
+  assert.strictEqual(gone.opts.ownHeader, false);
   pane.cbs.chord.forEach((cb) => cb(2));
   pane.cbs.theme.forEach((cb) => cb(true));
   pane.cbs.loaded.forEach((cb) => cb());
+  // The header flag leaves main as a boolean whatever a listener is handed.
+  pane.cbs.header.forEach((cb) => cb(true));
+  pane.cbs.header.forEach((cb) => cb("true"));
+  pane.cbs.header.forEach((cb) => cb({ header: true, text: "<b>hi</b>" }));
   gone.cbs.chord.forEach((cb) => cb(1));
   s.opener.closeAll("SIGNED_OUT");
   assert.deepEqual(sent.mine, [
     ["relay-crew:pane-event", { endpointId: ID, type: "chord", index: 2 }],
     ["relay-crew:pane-event", { endpointId: ID, type: "theme", dark: true }],
     ["relay-crew:pane-event", { endpointId: ID, type: "loaded" }],
+    ["relay-crew:pane-event", { endpointId: ID, type: "header", header: true }],
+    ["relay-crew:pane-event", { endpointId: ID, type: "header", header: false }],
+    ["relay-crew:pane-event", { endpointId: ID, type: "header", header: false }],
     ["relay-crew:pane-event", { endpointId: ID, type: "closed" }],
   ]);
   assert.deepEqual(sent.other, [], "nothing to a destroyed dashboard");
   await s.opener.open(ID);
   assert.equal(s.win.opened[0].cbs.chord.length, 0, "a window registers no chord listener");
   assert.equal(s.win.opened[0].cbs.theme.length, 0, "nor a theme listener");
+  assert.equal(s.win.opened[0].cbs.header.length, 0, "nor a header listener: a window has no local bar above it");
   assertNoSecrets([...sent.mine]);
 });
 

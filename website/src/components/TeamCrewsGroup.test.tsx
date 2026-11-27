@@ -495,7 +495,7 @@ describe('TeamCrewsGroup', () => {
     const u = userEvent.setup()
     await openGroup(u)
     await u.click(row('Lab'))
-    await waitFor(() => expect(openPane).toHaveBeenCalledWith('ep-9', { x: 236, y: 42, width: 700, height: 500 }, { width: window.innerWidth, height: window.innerHeight }))
+    await waitFor(() => expect(openPane).toHaveBeenCalledWith('ep-9', { x: 236, y: 42, width: 700, height: 500 }, { width: window.innerWidth, height: window.innerHeight }, true))
     expect(open).not.toHaveBeenCalled()
     await waitFor(() => expect(store.getState().instances.relayActive).toBe('ep-9'))
     expect(store.getState().instances.relayTabs).toEqual([{ id: 'ep-9', name: 'Lab' }])

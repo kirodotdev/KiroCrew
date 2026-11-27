@@ -2125,6 +2125,90 @@ reaches another Crew, app or account.
 Only a click connects one: nothing connects when the list loads, when the menu
 opens or when the dashboard reloads.
 
+### A relay Crew tab's top bar (desktop app)
+
+With a relay Crew tab in front, the window shows that Crew's own bell, credit
+and resource readouts, search and navigation, drawn by the Crew's page inside
+its pane. The window's own bar above it keeps to the tab strip. Two rows, and
+three parts that ship apart (the desktop shell, the local dashboard the gateway
+serves into it, and the remote Crew's page), so each is safe beside an older
+copy of the others. Whenever one of the three is older, the window is the one
+from before this section: the local bar whole, and no header in the pane.
+
+| Desktop shell | Local dashboard | Remote Crew's page | What the window shows |
+| --- | --- | --- | --- |
+| new | new | new | the tab strip row, then the Crew's own header |
+| new | new | older | as before |
+| new | older (asks for no header) | new | as before: the shell sends no header token |
+| older (no header token) | new | new | as before |
+
+- **Who asks.** The local dashboard asks on each pane open:
+  `relayCrewAPI.openPane` and `prewarmPane` take a fourth argument, `ownHeader`,
+  and the dashboard always passes `true` (`PANE_OWN_HEADER`,
+  `lib/relayCrewPanes.ts`). The preload and the IPC handler each keep only
+  whether it was the literal `true` (`electron/preload.js`,
+  `electron/ipc-registrar.js`). A dashboard from before this passes nothing, so
+  its panes are never asked for a header and never read for one.
+- **The page's half.** For a dashboard that asked, the shell appends the whole
+  user-agent token `kiroCrewRelayPaneHeader` after `kiroCrewRelayPane` on the
+  pane's page (`electron/relay-crew-window.js`). A page that reads both
+  (`isRelayCrewPaneHeader`, `utils/offlineReason.ts`) draws `ShellHeader` in the
+  pane form: everything its header has in a window of its own except the Crew
+  switcher, since the window's tab strip sits one row above. It marks that header
+  `data-relay-pane-header`, and the header is never a window drag region
+  (`styles/shell-chrome.css`). With the pane token alone the page leaves its
+  header out and its header row takes no height. Both tokens are layout only:
+  any page can claim them, and they decide nothing the page trusts. Each is a
+  fixed string, the same for every user, and the remote host receives it in the
+  `User-Agent` header of every request the pane's page makes. Nothing else is
+  sent to that page or its host: no Crew list, address, notification or figure.
+- **The shell's read.** The pane's page has no preload and is another Crew's, so
+  it is not trusted. Main reads one expression from it with `executeJavaScript`
+  (`PANE_HEADER_READ`: is there a `header[data-relay-pane-header]`) and keeps
+  only whether the answer was the literal `true`; an error, a rejected read or
+  any other value is `false`. It reads after every load (every 100 ms for up to
+  3 s, until true), after an in-page navigation, when the page is first drawn,
+  and once a second while the pane is the tab in front; reads are at least
+  100 ms apart whatever the page does. A new document (`did-navigate`), a failed
+  main-frame load and a lost renderer set it back to `false` at once. One
+  document may take its header back three times; after that the answer stays
+  `false` until the next document, so a page cannot make the local bar's
+  controls come and go. A change goes to the dashboard that opened the pane as
+  `{ type: "header", endpointId, header }`, where `header` is a boolean, and
+  the current answer is sent again each time the pane comes to the front
+  (`relay-crew-open.js`; `preload.js` reads `header` from that event type only).
+  No text and no other value crosses from the pane to the shell or the dashboard.
+- **The local bar's half.** `RelayCrewPaneHost` records the event in
+  `instances.relayHeaders`; `relayHeaderInFront` is true only while the relay tab
+  in front is on that list. Until then, and for Local, an SSH Crew, a relay Crew
+  whose page is older, and a pane that reloaded and has not been read again, the
+  local bar is whole. While it is true `ShellHeader` keeps an allowlist: the Crew
+  tab strip, the window's own application menu (Windows and frameless Linux) and
+  window-controls clearance, the theme's backdrop, and the update pill. The
+  history arrows, search and command bar, focus-mode toggle, readout capsule
+  (connection, resource chip, metrics, Kiro usage and sign-in), offline and
+  metrics notices, Explore, extension widgets, the feedback pill and the phone
+  bar's menu button and chat title slot are left out. The local gateway's state
+  is still spoken, by a visually hidden status region. The flag decides that and
+  nothing else: not which tab is in front, not what a pane may load, no trust.
+  A page that claims a header and draws none costs that tab the local bell's
+  button, and nothing more.
+- **The local bell.** Its button is left out; the rest stays mounted, so the
+  notification sheet's hook, the banner the sheet portals and the dock badge
+  effect keep working for the local Crew. A local note still raises a banner
+  over the relay tab as before (a critical card hides the pane; any other card
+  does not), and a tap on it still brings the local Crew forward and opens its
+  sheet on that note. The update pill does the same before it opens Settings,
+  above any relay tab.
+- **Not covered.** The local side panel that stays open beside a relay tab, and
+  the local nav rail under the pane, are unchanged. While a local menu or dialog
+  hides the pane, the bar stays as it was.
+
+Changing the layout: what the pane form leaves out is `paneForm` and what the
+local bar keeps is `tabStripOnly`, both at the top of `ShellHeader`
+(`shell/topbar/shellHeader.tsx`); the pane header's row is the shell grid's
+ordinary 42 px header row (`App.tsx`).
+
 ## 8. Capabilities
 
 `Capabilities` reports what this Crew can back. Every field defaults to

@@ -1530,7 +1530,9 @@ function createIpcRegistrar({
       }
       relayHandoff.listen(event.sender, on, seq);
     });
-    ipcMain.handle("relay-crew:open-pane", async (event, endpointId, rect, viewport) => {
+    // `ownHeader`: only a dashboard that says it keeps to its tab strip above
+    // the pane has the Crew's page asked to draw its own header (#42922).
+    ipcMain.handle("relay-crew:open-pane", async (event, endpointId, rect, viewport, ownHeader) => {
       if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
       const main = windows.getMainWindow();
       try {
@@ -1550,12 +1552,12 @@ function createIpcRegistrar({
       const bounds = paneRect(parent, rect, viewport);
       // Before any mint, like a bad ID.
       if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
-      return relayCrewOpener().open(endpointId, { parent, dashboard: parent._mcView, bounds });
+      return relayCrewOpener().open(endpointId, { parent, dashboard: parent._mcView, bounds, ownHeader: ownHeader === true });
     });
 
     // The warm set's background load: the main window's dashboard only, and never
     // handed off, so no other window can bring the main one forward with it.
-    ipcMain.handle("relay-crew:prewarm-pane", async (event, endpointId, rect, viewport) => {
+    ipcMain.handle("relay-crew:prewarm-pane", async (event, endpointId, rect, viewport, ownHeader) => {
       if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
       try {
         await assertLocalDashboard(event, "relay-crew:prewarm-pane");
@@ -1566,7 +1568,7 @@ function createIpcRegistrar({
       const main = windows.getMainWindow();
       const bounds = paneRect(main, rect, viewport);
       if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
-      return relayCrewOpener().prewarm(endpointId, { parent: main, dashboard: main._mcView, bounds });
+      return relayCrewOpener().prewarm(endpointId, { parent: main, dashboard: main._mcView, bounds, ownHeader: ownHeader === true });
     });
 
     // The calls that steer an open pane take it only from the dashboard view
