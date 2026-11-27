@@ -129,31 +129,6 @@ def source_channels_of(item: Any) -> tuple[str, ...]:
     return tuple(ch for ch in raw if isinstance(ch, str) and ch)
 
 
-#: Who wrote a channel-origin entry's words: the Slack user id the route
-#: admitted. Process-local, like the provenance flags: it is authority (it lets
-#: the owner's ``/goal`` run), so it is not in :data:`_DURABLE_QUEUE_KEYS` and a
-#: restored entry carries none.
-CHANNEL_SENDERS_KEY = "_directive_channel_senders"
-
-
-def stamp_channel_senders(owner: Any, queue_id: str, senders: tuple[str, ...]) -> None:
-    """Record *senders* on the queued entry *queue_id*, as :func:`stamp_source_channels`."""
-    clean = tuple(s for s in senders if isinstance(s, str) and s)
-    for item in getattr(owner, "_queue", None) or ():
-        if isinstance(item, dict) and item.get("id") == queue_id:
-            if clean:
-                item[CHANNEL_SENDERS_KEY] = clean
-            return
-
-
-def channel_senders_of(item: Any) -> tuple[str, ...]:
-    """The senders stamped on a queue entry; empty when none are."""
-    raw = item.get(CHANNEL_SENDERS_KEY) if isinstance(item, dict) else None
-    if not isinstance(raw, tuple):
-        return ()
-    return tuple(s for s in raw if isinstance(s, str) and s)
-
-
 #: Marks a restored entry the user picked with a card's "run this next" while a
 #: turn was running. That click promotes the card and stops the turn, and the
 #: turn's end drains the queue with no card named, so the drain reads this mark

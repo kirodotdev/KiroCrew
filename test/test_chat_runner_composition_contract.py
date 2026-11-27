@@ -493,7 +493,6 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_skill_trigger_text",
         "_directive_channel_origin",
         "_directive_source_channels",
-        "_directive_channel_senders",
         "_directive_owner_origin",
         "_commands_off",
         "_expansions_off",
