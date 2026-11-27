@@ -391,18 +391,59 @@ def names_person(
     )
 
 
+def ask_stands(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
+    """Whether the conductor's ``ask`` record on *item* still waits for its answer:
+    the item carries one, and neither a ``report`` (the record then explains an
+    earlier question, :func:`~kiro_crew.work_vocab.ask_is_current`) nor a person's
+    ``steer`` (their answer, typed into the worker) follows the newest ``ask`` event
+    in *events*. The order decides, as there: stamps have whole-second resolution. A
+    ``decide`` or ``close`` clears the record itself.
+
+    A tail without the ``ask`` event (cut short of it, or not sent) leaves the
+    stamps to decide what the order cannot: a ``steer`` answers the record only
+    when stamped at or after its ``written_at``, and with no ``report`` in the tail
+    the record stands unless the item's last report is newer than it. A ``report``
+    in such a tail supersedes the record, as in
+    :func:`~kiro_crew.work_vocab.ask_is_current`."""
+    if not item.ask:
+        return False
+    in_tail = any(event.get("kind") == "ask" for event in events)
+    written = work_ledger.parse_stamp(str(item.ask.get("written_at") or ""))
+    for event in reversed(events):
+        kind = event.get("kind")
+        if kind == "ask":
+            return True
+        if kind == "report" or (kind == "steer" and in_tail):
+            return False
+        if kind == "steer":
+            raw = event.get("ts")
+            stamp = work_ledger.parse_stamp(raw) if isinstance(raw, str) and raw else None
+            if stamp is not None and (written is None or stamp >= written):
+                return False
+    reported = work_ledger.parse_stamp(item.last_report_at or "")
+    if reported is None:
+        return True
+    return written is not None and written >= reported
+
+
 def awaits_person(
     item: work_ledger.WorkItem, events: list[dict[str, Any]], *, running: bool = False
 ) -> bool:
-    """Whether *item* waits on the PERSON: its worker names one (:func:`names_person`)
-    AND the conductor relayed the question with a current ``ask`` record (the item
-    carries ``ask`` and no report follows the newest ``ask`` event in *events*,
-    :func:`~kiro_crew.work_vocab.ask_is_current`). Until the conductor records it,
-    the question is still the conductor's to vet. The one test behind every "needs
-    you" reader -- the Board's Needs your input, the sidebar's crew count, the
-    goal-board facts, the headless run and the warm welcome -- so they agree
-    (rfc-delayed-task-brief, section 3.11)."""
-    return bool(item.ask) and ask_is_current(events) and names_person(item, events, running=running)
+    """Whether *item* waits on the PERSON: the conductor relayed a question about it
+    and recorded that with an ``ask`` nobody has answered since (:func:`ask_stands`),
+    and its worker's turn is not *running* (a running turn means the worker moved on).
+
+    The conductor's record alone decides. A worker's report that names a person
+    (:func:`names_person`) is its claim, still the conductor's to vet until the
+    record is written; and the record stands whatever the worker last said, so a task
+    the conductor asked the person about reads "needs you" when its worker reported
+    ``progress``, or a ``blocked`` the conductor already answered. The one test
+    behind every "needs you" reader -- the Board's Needs your input, the sidebar's
+    crew count, the goal-board facts, the headless run and the warm welcome -- so
+    they agree (rfc-delayed-task-brief, section 3.11). The Slack work board reads
+    the same record beside its own rule (a worker's person-naming report
+    alone waits there too)."""
+    return not running and ask_stands(item, events)
 
 
 def item_person_state(slot_key: str, item: Mapping[str, Any], *, running: bool = False) -> str:
@@ -426,9 +467,9 @@ def item_person_state(slot_key: str, item: Mapping[str, Any], *, running: bool =
     remote = work_ledger.remote_liveness(slot_key, stored)
     running = remote[0] if remote is not None else running
     events = [event.to_dict() for event in tail]
-    if not names_person(stored, events, running=running):
-        return ""
-    return "waits" if readable and awaits_person(stored, events, running=running) else "checking"
+    if readable and awaits_person(stored, events, running=running):
+        return "waits"
+    return "checking" if names_person(stored, events, running=running) else ""
 
 
 def item_ask_is_current(slot_key: str, item: Mapping[str, Any]) -> bool:
@@ -572,14 +613,21 @@ def _own_worker_records_locked(
         # It is computed for EVERY asking item and is authoritative, False
         # included: a decide in the same second as a newer question has a stamp
         # equal to the report's, and only the event tail's order tells them apart.
-        answered = False
-        if item.status in {"blocked", "question"}:
+        # ``asks_person`` is the events half of :func:`awaits_person` (the conductor's
+        # ``ask`` record still stands), read from the same tail, so a reader of this
+        # snapshot calls "needs you" what the Board does.
+        answered = asked = False
+        if item.status in {"blocked", "question"} or item.ask:
             events = [
                 dataclasses.asdict(e)
                 for e in work_ledger.read_events(slot_key, item.item_id, limit=_BOARD_EVENT_TAIL)
             ]
-            answered = answered_since_report(item, events)
+            answered = item.status in {"blocked", "question"} and answered_since_report(
+                item, events
+            )
+            asked = not item.is_terminal and ask_stands(item, events)
         setattr(item, "answered_by_event", answered)  # noqa: B010 - a snapshot mark, not a field
+        setattr(item, "asks_person", asked)  # noqa: B010 - a snapshot mark, not a field
     return record, items
 
 

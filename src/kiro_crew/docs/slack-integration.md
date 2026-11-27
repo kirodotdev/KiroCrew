@@ -536,8 +536,9 @@ exactly as with the switch off, and the page says why under the switch.
   Connect conversation.
   When the channel's agent starts helper agents for pieces of the work (**Let code
   channels start helper agents**), the channel also gets a pinned **work board**, kept
-  up to date in place: one line of counts ("2 working · 1 waiting on you · 1 of 4 done"),
-  then one task per helper agent with Slack's own status mark, what it is doing right
+  up to date in place: one line of counts ("1 needs you · 2 working · 1 of 4 done"),
+  then one task per helper agent, the ones that need you first, each titled with its
+  state ("Needs you", "Working", "Idle") beside Slack's own status mark, what it is doing right
   now (the command it is running or the file it is editing, with secrets and your
   paths taken out), how long it has been at it, and its PR with its CI checks. The
   channel's Code tab shows the channel's own changes, then each helper agent's

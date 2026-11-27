@@ -2735,24 +2735,37 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   send or removal, a build that raised) leaves the pass unsent and re-armed, with or
   without a board read. The context bar carries no worker.
 - **State mapping.** `accepted` -> done; `rejected`/`abandoned` -> closed; a pending
-  tool approval -> waiting on you; a turn in flight or queued -> working; a
+  tool approval -> waiting on you; a turn in flight or queued -> working; an item
+  the conductor asked the person about, with its `ask` record still standing (the
+  store seam's `asks_person` mark, the Board's own `awaits_person` rule) -> waiting
+  on you, whatever its worker last reported; a
   `blocked`/`question` report the conductor already answered (a `decide` at or after
   it, the ledger's own rule) or a `done` its evaluator failed -> idle (lost when the
   session is gone); a `blocked`/`question` report with
   reason `needs_human`/`approval` -> waiting on you, any other -> blocked; a gone
   session -> done if it last reported done, else lost; a `done` report -> done;
   otherwise idle. The overall state is done / needs you / working / stuck / idle, and
-  the aggregate line names the non-zero counts, then the done count
-  ("2 working · 1 waiting on you · 1 of 4 done"). Totals count every item.
+  the aggregate line names the non-zero counts, most urgent first, then the done
+  count ("1 needs you · 2 working · 1 of 4 done"). Totals count every item.
+- **Order.** The rows on display (the plan, the plain rows, the Workers tab) are
+  listed most urgent first (`model.by_urgency`): needs you, blocked, lost, working,
+  idle, done, closed, in dispatch order within a state. The snapshot itself keeps
+  dispatch order.
 - **Look (`board/render.py`).** A context line ("Work board · updated HH:MM UTC" and
   the lead session's dashboard link), then ONE Slack `plan` block titled with the
   aggregate (the plain-rows look shows the aggregate in bold instead): one task per
   direct worker (`task_id` = the item id; the title without a `#123: ` prefix every
   row shares), status `in_progress` (Slack's spinner) only for working, `pending`
   (the empty circle) for idle, waiting on you and the "+N more" fold, `complete`
-  for done or closed, `error` for lost, blocked or rejected. A waiting row shares
-  the empty circle with idle rows and stands apart by its words: its title leads
-  with "Waiting on you: ". `details` the step (`Running` + the call in code style +
+  for done or closed, `error` for lost, blocked or rejected. Slack shows a task's
+  `details` only once the task is opened, so every title leads with the row's state
+  in fixed words (`render.state_word`): "Needs you: ", "Stuck: ", "Lost: ",
+  "Working: ", "Idle: ", "Done: ", "Rejected: ". An idle row whose own pull request
+  says what it waits on names it: "Idle, waiting on CI: " while its checks run,
+  "Idle, waiting on review: " once they pass on an open one (`model.idle_wait`,
+  forge facts only). A Conductor thread's row that needs the owner says what for in
+  fixed words ("approve its tool call", "answer its question"), never the question
+  itself. `details` the step (`Running` + the call in code style +
   `· 4m`), "approve `<call>` · Open in dashboard" for a waiting row (a link to the
   worker's session), or "Idle · 12m · <last progress note>". At most 50 tasks: 49 plus "+N more". No custom
   emoji: Slack's own spinner, empty circle, check and error are the only marks. Every edit gets
