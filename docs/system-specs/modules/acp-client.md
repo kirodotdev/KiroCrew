@@ -3050,6 +3050,17 @@ server first. On KAS, a block whose only change is an injection an edition-regis
 filter removes exactly is sent as the template instead
 (`service_agents.lite_view_without_registered_injection`), and the turn runs.
 
+Every one of these waits reads the session's own `_kiro/mcp/status`.
+`KAS_CLIENT_CAPABILITIES` declares `_meta.kiro.sessionScopedMcpStatus`, so on a
+KAS process hosting several sessions (a chat's sub-agents on its runtime) each
+status lists only the servers its session declares. Undeclared, KAS sends every
+session the merged status of all of them, the newest session winning a name
+clash: siblings declare the same Crew servers, so an older child was held until
+its newest sibling's servers connected, and could read a sibling's `connected`
+as its own. KAS takes the mode from the process's first `initialize`, which is
+Crew's on a process it spawns; the kiro-cli relay forwards the `_meta.kiro`
+block. Pinned by `test_kas_capabilities_open_only_settings_external_urls_and_user_input`.
+
 `person_waits` is the one predicate, and WHO IS WAITING decides it, not the
 queue the start waited in. A person is waiting when the start claimed
 `FOREGROUND` (`kiro_crew.start_priority`: the claim the session manager puts on

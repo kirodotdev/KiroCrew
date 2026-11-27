@@ -20,8 +20,8 @@ The manager fields this module uses. Writes: none. Reads: ``_admission``, ``_age
 ``_bind_shared_handle``, ``_claim_prices``, ``_dedicated_topup_lock``, ``_fire_event``,
 ``_gate_exit_reset``, ``_gate_wait_mark``, ``_get_parent_runtime``, ``_learned_settled_gb``,
 ``_memory_pressure_hold``, ``_note_startup_progress``, ``_provider_label_of``,
-``_running_count``, ``_sessions``, ``_should_use_session_sharing``, ``_shutting_down``,
-``_write_state_off_loop``.
+``_running_count``, ``_sessions``, ``_shared_claims``, ``_should_use_session_sharing``,
+``_shutting_down``, ``_write_state_off_loop``.
 """
 
 from __future__ import annotations
@@ -141,24 +141,60 @@ def _kas_shared_slot_taken(self: RunEventCoordinator, info: SubagentInfo) -> boo
     exists, until it is done or falls back to a dedicated process. Returns True
     when the cap is reached, False after reserving (or on a parent that is not KAS).
     """
+    left = self._kas_shared_places_left(info, admitted=False)
+    if left is None:
+        return False
+    if left <= 0:
+        return True
+    info._shared_slot_reserved = True
+    return False
+
+
+def _kas_shared_places_left(
+    self: RunEventCoordinator, info: SubagentInfo, *, admitted: bool
+) -> int | None:
+    """How many places on *info*'s KAS parent's process its live siblings leave free.
+
+    None when the parent's runtime is not KAS, which has no per-parent bound. A
+    sibling holds a place while it shares the runtime or has reserved a place on
+    it (``_kas_shared_slot_taken``); with *admitted*, also while admission has
+    let it in as a shared start that has not yet placed itself
+    (``_admitted_shared``, or a pending claim in ``_shared_claims``), so a burst
+    admitted in one pass is counted before any of its runs reserves.
+    """
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 
     host = self._manager._get_parent_runtime(info.parent_session_key) or getattr(
         self._manager._sessions, "_subagent_runtimes", {}
     ).get(info.parent_session_key)
     if getattr(host, "acp_backend", None) == ACP_BACKEND_KAS:
-        placed = sum(
-            1
-            for other in list(self._manager._agents.values())
-            if other is not info
-            and other.parent_session_key == info.parent_session_key
-            and (other._session_sharing or getattr(other, "_shared_slot_reserved", False))
-            and not other.done
+        # A claim admitted shared and not yet registered has no row to flag.
+        pending = (
+            sum(
+                1
+                for run_id, parent in self._manager._shared_claims.items()
+                if run_id != info.id and parent == info.parent_session_key
+            )
+            if admitted
+            else 0
         )
-        if placed >= KAS_SHARED_CHILDREN_PER_PARENT:
-            return True
-        info._shared_slot_reserved = True
-    return False
+        return (
+            KAS_SHARED_CHILDREN_PER_PARENT
+            - pending
+            - sum(
+                1
+                for other in list(self._manager._agents.values())
+                if other.id != info.id
+                and other.parent_session_key == info.parent_session_key
+                and (
+                    other._session_sharing
+                    or getattr(other, "_shared_slot_reserved", False)
+                    or (admitted and getattr(other, "_admitted_shared", False))
+                )
+                and not other.done
+            )
+        )
+    return None
 
 
 def _sharing_plan_impl(
@@ -239,6 +275,14 @@ def _sharing_plan_impl(
         except Exception:
             shared = False
             reason = "the parent's runtime unreadable"
+    if shared:
+        # Admission reads this plan before any run of a burst reserves its place,
+        # so the siblings it already let in count: past the bound the start is
+        # dedicated, priced and spaced as one.
+        left = self._kas_shared_places_left(info, admitted=True)
+        if left is not None and left <= 0:
+            shared = False
+            reason = "the KAS parent's process is full"
     return _SharingPlan(eff_model, eff_effort, shared, reason)
 
 

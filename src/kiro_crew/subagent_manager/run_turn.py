@@ -446,6 +446,11 @@ async def _run_inner_impl(
     use_session_sharing = (
         plan.shared and not inherits_remote and not self._kas_shared_slot_taken(info)
     )
+    # The run has placed itself: its reservation (or none) now counts toward the
+    # parent's places instead of admission's prediction, and ``_exec_started``
+    # now carries its in-startup count.
+    info._admitted_shared = False
+    info._startup_before_exec = False
     if use_session_sharing:
         placement = "shared: on the parent's runtime"
     elif not plan.shared:
