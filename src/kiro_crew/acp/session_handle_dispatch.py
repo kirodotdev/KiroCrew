@@ -981,7 +981,11 @@ async def _dispatch_events(
                 # refused whether or not this consumer opted into the child
                 # contract, and naming that reason in the audit is more use
                 # than naming the fidelity one for the same rejected call.
-                # A zero-tool spec refuses every request first, a child's too.
+                # A reused toolCallId whose arguments contradict the cached call
+                # is refused before all of them: neither side is the call to judge.
+                # A zero-tool spec then refuses every request, a child's too.
+                if await self._refuse_reused_call_id(_perm_event):
+                    continue
                 if await self._deny_zero_tools(_perm_event):
                     continue
                 if await self._deny_spec_disabled_tool(_perm_event):

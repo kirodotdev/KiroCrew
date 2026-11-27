@@ -13,11 +13,13 @@ Every path is under ``tmp_path`` and every secret is a fixture value.
 
 from __future__ import annotations
 
+import ast
 import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from source_corpus import repo_files_named, repo_root
 
 from kiro_crew import sandbox
 from kiro_crew.platform_compat import IS_WINDOWS
@@ -116,7 +118,8 @@ def test_the_workflow_library_reads_an_empty_root_as_no_definitions(fresh_home: 
 
     sandbox._materialize_maskable_dirs()
 
-    assert WorkflowDefinitionLibrary().list() == []
+    # No saved definitions; the package's read-only built-ins are not stored there.
+    assert [d for d in WorkflowDefinitionLibrary().list() if not d.get("builtin")] == []
 
 
 def test_the_mcp_apps_spool_accepts_an_empty_root(fresh_home: Path) -> None:
@@ -159,16 +162,22 @@ _NO_WRITER: dict[str, str] = {
 #: into it (``test_policy_cache_sandbox_view.py``).
 _HELD_OUT: dict[str, str] = {}
 
+#: File leaves nothing in the tree reads or writes, so an absent one needs no mask target:
+#: a sandbox that creates it feeds nothing. Kept true by
+#: :func:`test_no_code_names_a_no_writer_file_leaf`.
+_NO_WRITER_FILES: dict[str, str] = {
+    "browser-cookies.txt": "retired browser cookie jar",
+    "playwright-storage-state.json": "retired browser storage state",
+    "playwright-extension-token": "retired browser extension token",
+    "browser-mode-enabled": "retired Browser Mode switch",
+    "browser-engine": "retired Browser Mode engine choice",
+    ".kiro_cli_binary_trust.json": "retired installer-provenance record",
+}
+
 #: Leaves that are FILES: the ``isfile``-guarded loop and its own materialisers own them.
 _FILE_LEAVES: frozenset[str] = frozenset(
     {
         ".env",
-        ".kiro_cli_binary_trust.json",
-        "browser-cookies.txt",
-        "browser-engine",
-        "browser-mode-enabled",
-        "playwright-extension-token",
-        "playwright-storage-state.json",
         "ops_mission_control_policy.json",
         "ops_mission_control_secrets.json",
         "refresh_chains.json",
@@ -190,7 +199,14 @@ def _masked_crew_leaves() -> set[str]:
 
 def test_every_masked_directory_is_precreated_or_made_at_boot() -> None:
     precreated = set(sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES)
-    classified = precreated | set(_MADE_AT_BOOT) | set(_NO_WRITER) | set(_HELD_OUT) | _FILE_LEAVES
+    classified = (
+        precreated
+        | set(_MADE_AT_BOOT)
+        | set(_NO_WRITER)
+        | set(_HELD_OUT)
+        | set(_NO_WRITER_FILES)
+        | _FILE_LEAVES
+    )
     # A nested leaf has an agent-writable ancestor, so a plain mkdir under the data home
     # is unsound for it; those are out of this list's reach by construction.
     unclassified = sorted(
@@ -210,6 +226,7 @@ def test_the_classification_names_only_masked_leaves() -> None:
         "made_at_boot": set(_MADE_AT_BOOT),
         "no_writer": set(_NO_WRITER),
         "held_out": set(_HELD_OUT),
+        "no_writer_files": set(_NO_WRITER_FILES),
         "files": set(_FILE_LEAVES),
     }
     for name, leaves in sets.items():
@@ -218,3 +235,41 @@ def test_the_classification_names_only_masked_leaves() -> None:
     for i, a in enumerate(names):
         for b in names[i + 1 :]:
             assert not sets[a] & sets[b], f"{a} and {b} overlap: {sets[a] & sets[b]}"
+
+
+#: The tables that name masked leaves without reading or writing them.
+_LEAF_TABLE_MODULES = frozenset(
+    {
+        "src/kiro_crew/sandbox_leaves.py",
+        "src/kiro_crew/sandbox_aliases.py",
+        "src/kiro_crew/security/paths_lists.py",
+    }
+)
+
+
+def test_no_code_names_a_no_writer_file_leaf() -> None:
+    names = set(_NO_WRITER_FILES)
+    root = repo_root()
+    hits: list[str] = []
+    for path in repo_files_named(".py"):
+        parts = path.relative_to(root).parts
+        rel = "/".join(parts)
+        if parts[0] not in {"src", "scripts", "packages"} or rel in _LEAF_TABLE_MODULES:
+            continue
+        if "tests" in parts or "_vendor" in parts:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if not any(name in text for name in names):
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value in names
+            ):
+                hits.append(f"{rel}:{node.lineno}: {node.value}")
+    assert not hits, (
+        "these names are in _NO_WRITER_FILES, so the Linux mask leaves an absent one "
+        "unbound; code that reads or writes one must give it a mask target before every "
+        "namespace spawn and move it out of that table:\n  " + "\n  ".join(hits)
+    )

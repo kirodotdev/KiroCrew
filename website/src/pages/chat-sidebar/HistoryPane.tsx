@@ -79,7 +79,7 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
            44px below its own hairline, and 14+16+14 matches that exactly. The
            symmetric padding is what keeps the clock and label optically centred
            in the band. */
-        className="flex justify-between items-center px-3 pt-[14px] pb-[14px] cursor-pointer select-none"
+        className="flex justify-between items-center px-3 pt-[14px] pb-[14px] cursor-pointer select-none focus-visible:outline-offset-[-2px] focus-visible:rounded-b-[inherit]"
         aria-expanded={historyOpen}
         aria-controls="history-pane"
         aria-label={i18nT('pages.chatSidebar.older_sessions')}

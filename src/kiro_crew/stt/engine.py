@@ -629,8 +629,8 @@ class WhisperEngine:
                 status_for = getattr(models.store(), "status_for", None)
                 status = status_for(model.name) if status_for else {}
                 if status.get("refused") and status.get("model") == model.name:
-                    # Not "not downloaded": the bytes are present and pinned, and a
-                    # download would not help. The detail names the file and the remedy.
+                    # Not "not downloaded": the file is present and a download would
+                    # not help. The detail names the file and the remedy.
                     return Availability(False, CODE_IMPORT_FAILED, str(status.get("error", "")))
                 return Availability(
                     False,

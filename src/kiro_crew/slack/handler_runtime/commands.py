@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         bots_text,
         build_timing_footer,
         canonical_key,
+        channel_handler,
         compact_unsupported_backend,
         compact_unsupported_reply,
         compaction_in_flight,
@@ -81,7 +82,6 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         resolve_bot_name,
-        resolve_channel_crew,
         run_config_write,
         safety_override,
         sel,
@@ -166,7 +166,7 @@ async def _bang_trust(
     user_id: str,
     conversation_log: ConversationLog | None,
 ) -> str:
-    """Put this thread's session on Trust, or take it off (owner-only)."""
+    """Put this thread's session on Trust, or take it off (a shared user: own turns)."""
     from kiro_crew.slack import thread_trust
 
     # The session the thread's turns run on: a thread a dashboard chat was sent
@@ -183,6 +183,8 @@ async def _bang_trust(
         channel=channel,
         reply_ts=reply_ts,
         user=user_id,
+        shared=not is_owner(user_id),
+        sessions=sessions,
     )
     await slack.post_message(channel, reply, reply_ts)
     return ""
@@ -1064,17 +1066,94 @@ async def _bang_bot(
     outlives a restart and beats the channel's pin. Open to any allowed user
     (the sender gate's allowed-user list).
     """
-    from kiro_crew.slack import conductor_thread
+    from kiro_crew.slack import bot_chat, conductor_thread
 
+    parts = cmd_text.split(maxsplit=1)
+    typed = parts[1].strip() if len(parts) > 1 else ""
+    # A thread joined to a Bot's own dashboard chat (``slack/bot_chat.py``) leaves it only
+    # on ``off``, and that command ends at the leave: nothing that can refuse runs after
+    # the unlink. Another Bot is refused until then, so the thread stays where it was.
+    joined = bot_chat.joined_bot_chat(_dashboard_state, reply_ts)
+    # A thread that joined a Bot's chat before its channel got a Channel Bot or Channel
+    # Conductor keeps that chat (``channel_handler.claim``), so its ``off`` still leaves.
+    leaves = (
+        joined is not None
+        and typed.lower() == "off"
+        and joined is not channel_handler.handler_slot(_dashboard_state, channel)
+    )
     # A Conductor thread keeps its conductor for good (the one Bot-versus-Conductor rule).
-    locked = conductor_thread.switch_refusal("!bot", channel, reply_ts, session_key)
+    locked = (
+        "" if leaves else conductor_thread.switch_refusal("!bot", channel, reply_ts, session_key)
+    )
     if locked:
         await slack.post_message(channel, locked, reply_ts)
         return ""
-    parts = cmd_text.split(maxsplit=1)
-    typed = parts[1].strip() if len(parts) > 1 else ""
+    incoming_keys = bot_chat.privacy_sources(_dashboard_state, joined, session_key)
+    if joined is not None:
+        # The transport routes a joined thread under the Bot chat's dashboard key; the
+        # thread's own memory record, reset and per-thread session live on its Slack key.
+        session_key = canonical_key(reply_ts)
+    # A flat DM (``slack.dm_single_session``) is one conversation keyed by the channel, and
+    # a join links one message's ts: there the per-thread path runs the whole DM as the Bot.
+    # A ``!temporary`` or ``!incognito`` thread stays off the Bot's saved chat the same way.
+    restricted = any(_is_slack_restricted(key) for key in (*incoming_keys, session_key))
+    plain = session_key == canonical_key(reply_ts) and not restricted
+    # The Bot's chat is the owner's dashboard session, with its own approval mode: only
+    # the owner links a thread to it or takes one out. Anyone else keeps the thread path.
+    chat_state = _dashboard_state if plain and is_owner(user_id) else None
+    if joined is not None and typed and not is_owner(user_id):
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.owner_command",
+            outcome="denied",
+            source="slack",
+            resources="!bot",
+            error="unauthorized sender",
+        )
+        await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
+        return ""
+    if joined is not None and typed:
+        if typed.lower() != "off":
+            target = await asyncio.to_thread(resolve_bot_name, typed)
+            notice = (
+                f"🤖 This thread already talks to Bot *{joined.agent}*."
+                if target == joined.agent
+                else f"❌ This thread talks to Bot *{joined.agent}* in its own chat."
+                " Send `!bot off` first, then `!bot <name>`."
+            )
+            await slack.post_message(channel, notice, reply_ts)
+            return ""
+        if not await bot_chat.preserve_privacy(
+            incoming_keys, session_key, user_id, channel, slack, sessions, reply_ts
+        ):
+            return ""
+        try:
+            await bot_chat.leave_bot_chat(_dashboard_state, reply_ts)
+        except Exception:
+            logger.warning(
+                "slack !bot: leaving %s's chat was not saved", joined.agent, exc_info=True
+            )
+            await slack.post_message(
+                channel,
+                f"❌ Could not save leaving Bot *{joined.agent}*'s chat. Try `!bot off` again.",
+                reply_ts,
+            )
+            return ""
+        bot_chat.audit("bot_chat_leave", session_key, user_id, channel, agent=joined.agent)
+        own = _thread_agents.get(session_key, "")
+        still = (
+            f" It still runs as *{own}* on its own session; `!bot off` again stops that."
+            if own
+            else ""
+        )
+        await slack.post_message(
+            channel, f"👋 This thread left Bot *{joined.agent}*'s chat.{still}", reply_ts
+        )
+        return ""
     if not typed:
         current = _thread_agents.get(session_key, "")
+        if joined is not None:
+            current = joined.agent
         on_bot = bool(current) and current in await asyncio.to_thread(crew_bots)
         head = f"This thread runs as Bot *{current}*.\n" if on_bot else ""
         await slack.post_message(
@@ -1122,10 +1201,25 @@ async def _bang_bot(
             conversation_log,
         )
     key = await asyncio.to_thread(resolve_bot_name, typed)
-    if key is None or await asyncio.to_thread(resolve_channel_crew, key) is None:
+    refused = await bot_chat.switch_refusal(
+        chat_state, key, typed, session_key, channel, reply_ts, user_id
+    )
+    if refused or key is None:
+        await slack.post_message(channel, refused, reply_ts)
+        return ""
+    # The Bot's own chat open on the dashboard takes the thread, as Discord's ``!bot``
+    # does: its turns and the workers they start show in that chat, and its replies
+    # come back here. With none open the thread runs as the Bot on its own session.
+    slot, refusal = await bot_chat.join_bot_chat(chat_state, key, channel, reply_ts)
+    if refusal:
+        await slack.post_message(channel, f"❌ {refusal}", reply_ts)
+        return ""
+    if slot is not None:
+        bot_chat.audit("bot_chat_join", session_key, user_id, channel, agent=key, slot=slot.key)
         await slack.post_message(
             channel,
-            f"❌ Unknown Bot `{typed}`. Crew Bots: {await asyncio.to_thread(bots_text)}",
+            f"🤖 This thread now talks to Bot *{key}* in its own chat, so it shows on the"
+            " dashboard's Bots page too. `!bot off` to leave.",
             reply_ts,
         )
         return ""
@@ -1338,7 +1432,7 @@ async def _bang_allowlist(
     return ""
 
 
-# ── !channel always|mention|observe|off / !channel agent <name> (owner-only) ──
+# ── !channel always|mention|observe|off / agent / bot / conductor (owner-only) ──
 async def _bang_channel(
     cmd_text: str,
     slack: SlackClientOps,
@@ -1367,71 +1461,30 @@ async def _bang_channel(
     if len(parts) == 1:
         cfg = KiroCrewConfig.load()
         ch_cfg = cfg.channel_config(channel)
-        agent_info = f", agent=*{ch_cfg.agent}*" if ch_cfg.agent else ""
-        await slack.post_message(
-            channel,
-            f"Channel `{channel}` activation: *{ch_cfg.activation}*{agent_info}\n"
-            f"Usage: `!channel always|mention|observe|off` or `!channel agent <name|off>`",
-            reply_ts,
-        )
+        line = f"{channel_handler.status_line(channel)} Channel activation: *{ch_cfg.activation}*."
+        await slack.post_message(channel, f"{line}\n{channel_handler.CHANNEL_USAGE}", reply_ts)
         return ""
 
     subcmd = parts[1].lower()
 
-    # !channel agent <name|off>
-    if subcmd == "agent":
-        if len(parts) < 3:
-            await slack.post_message(
-                channel, "Usage: `!channel agent <name>` or `!channel agent off`", reply_ts
-            )
-            return ""
-        # The name is the whole remainder, so a multi-word Bot display name stays whole.
-        agent_name = cmd_text.split(maxsplit=2)[2].strip()
-        if agent_name.lower() == "off":
-            agent_name = ""
-        else:
-            project = _thread_projects.get(session_key)
-
-            def _channel_agent(typed: str) -> str | None:
-                # A Bot key runs the channel as that Bot (channel_crew), so an exact key
-                # wins; a Bot named only by case or display name is matched last.
-                if typed in crew_bots():
-                    return typed
-                return _resolve_agent_name(typed, project) or resolve_bot_name(typed)
-
-            resolved = await asyncio.to_thread(_channel_agent, agent_name)
-            if not resolved:
-                names = await asyncio.to_thread(_list_all_agent_names)
-                bots = await asyncio.to_thread(bots_text)
-                await slack.post_message(
-                    channel,
-                    f"Unknown agent `{agent_name}`. Available: {names}. Crew Bots: {bots}",
-                    reply_ts,
-                )
-                return ""
-            agent_name = resolved
-        try:
-            await run_config_write(_persist_channel_config, channel, agent=agent_name)
-        except ValueError as e:
-            await slack.post_message(channel, f"❌ {e}", reply_ts)
-            return ""
-        _reload_orch_cfg()
-        sel().log_api_access(
-            caller=user_id,
-            operation="slack.channel_agent",
-            outcome="allowed",
-            source="slack",
-            resources=f"{channel}:{agent_name or 'default'}",
+    if subcmd == "bot":
+        return await channel_handler.set_bot(cmd_text, slack, channel, reply_ts, user_id, sessions)
+    if subcmd == "conductor":
+        return await channel_handler.set_conductor(
+            parts, slack, channel, reply_ts, msg_ts, session_key, user_id, sessions
         )
-        label = f"*{agent_name}*" if agent_name else "default"
-        await slack.post_message(channel, f"Agent for this channel: {label}", reply_ts)
-        return ""
+
+    if subcmd == "agent":
+        return await channel_handler.set_agent(
+            cmd_text, slack, channel, reply_ts, session_key, user_id
+        )
 
     # !channel always|mention|observe|off
     if subcmd not in _VALID_ACTIVATIONS:
         await slack.post_message(
             channel,
-            f"Invalid mode `{subcmd}`. Use: `always`, `mention`, `observe`, or `off`.",
+            f"Invalid mode `{subcmd}`. Use: `always`, `mention`, `observe`, or `off`.\n"
+            f"{channel_handler.CHANNEL_USAGE}",
             reply_ts,
         )
         return ""
@@ -1837,9 +1890,9 @@ async def _route_bang_command(
         # !stop, !title, !bot and !conductor are available to any allowed user; a
         # shared user who starts a Conductor thread is its opener, the one person
         # besides the owner it admits. !dashboard mints a full-dashboard link, so it
-        # stays the owner's.
+        # stays the owner's. !trust's handler gives a shared user their own turns only.
         _cmd_word = cmd_text.split()[0].lower()
-        if _cmd_word in ("!dashboard", "!stop", "!title", "!bot", "!conductor"):
+        if _cmd_word in ("!dashboard", "!stop", "!title", "!bot", "!conductor", "!trust"):
             if (is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id)) and not (
                 _cmd_word == "!dashboard" and is_shared_listed(user_id)
             ):
@@ -1867,6 +1920,19 @@ async def _route_bang_command(
                 )
                 await slack.post_message(channel, "⛔ Not authorized.", reply_ts)
                 return True
+        # A confirmed shared user's `!channel agent <Bot>|off` has its own handler.
+        # Every other !channel word stays the owner's and is refused below. No
+        # deprecation notice: the slash command that names is the owner's.
+        elif (
+            _cmd_word == "!channel"
+            and [word.lower() for word in cmd_text.split()[1:2]] == ["agent"]
+            and is_shared_user(user_id)
+        ):
+            from kiro_crew.slack import shared_channel_agent
+
+            reply = await shared_channel_agent.handle(cmd_text, channel, user_id)
+            await slack.post_message(channel, reply, reply_ts)
+            return True
         # All other ! commands are owner-only
         elif not is_owner(user_id):
             sel().log_api_access(

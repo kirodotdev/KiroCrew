@@ -113,6 +113,7 @@ class CleanupOwner(Protocol):
     _watchdog: SessionWatchdog
     on_session_expire: Callable[[str], None] | None
     on_stuck_turn: Callable[[str, float], None] | None
+    on_idle_expired: Callable[[str], None] | None
     on_rss_hold: Callable[[str, RssHold], None] | None
 
     async def _cleanup_loop(self) -> None: ...
@@ -1971,5 +1972,12 @@ class SessionCleanup:
                 )
                 # Tell the chat, which otherwise resets with no explanation.
                 # After ``reset``, so nothing here reopens a pre-reset window.
+                if not is_orphan and self._owner.on_idle_expired:
+                    try:
+                        self._owner.on_idle_expired(key)
+                    except Exception:
+                        self._deps.logger.warning(
+                            "on_idle_expired callback failed for %s", key, exc_info=True
+                        )
                 if hold_reason is not None:
                     await self._owner._fire_recycle_callback(key, reason=hold_reason)

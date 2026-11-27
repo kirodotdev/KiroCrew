@@ -47,7 +47,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.file_uri import file_uri_path_text
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
-from kiro_crew.mcp_provenance import DERIVED_KEY
+from kiro_crew.mcp_provenance import COPIED_KEY, DERIVED_KEY
 from kiro_crew.mcp_utils import without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.sel import sel
@@ -337,6 +337,7 @@ def _apply_agent_mcp_policy(
         merged.pop("neutralized", None)
         merged.pop("disabled", None)  # a grant un-disables a denied server
         merged.pop(DERIVED_KEY, None)  # the rebuild's record, true only in its own file
+        merged.pop(COPIED_KEY, None)  # likewise: who copied the entry into the default spec
         # `mountOnly` (set by a policy for a built-in grant) means: mount the
         # server so the tool is visible, but keep it OFF allowedTools no matter
         # what the ceiling says, so every call routes through the approval gate

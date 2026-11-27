@@ -68,6 +68,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # emits nothing; the call-site scan matches the seam names its prose
         # lists (`redact(x)`, `redact_log_via_context`).
         "redaction_seams.py",
+        # Search matches the redacted text shown in results; it emits nothing.
+        "search_shown_text.py",
         # Gate-side: the .crewmate reader runs `needs_redaction` on bundle text
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
@@ -77,6 +79,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # and the install error, so a mirror credential in a URL is never logged.
         # It is not an agent-output egress path.
         "sdk_extras.py",
+        "browser_harness/install.py",  # pip's log text via _redact_pip_output; not agent egress
         # Pure helper: `_run_apply_child` redacts the tail of the boot-time
         # `kirocrew update` child's output before it is stored as the armed update's
         # `pending_apply_error`. It emits nothing itself; the dashboard status route
@@ -98,6 +101,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # finished body; it returns that body and emits nothing. The widget routes
         # that serve the snapshot are the egress.
         "dashboard/widget_snapshot.py",
+        "dashboard_verify.py",  # redacts before cutting; the sink is member_dashboard_fields.py
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
         # the copy to a transport.
@@ -302,6 +306,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # leaves through `dashboard/crewmate_feed.py` into the crewmate's crew log,
         # and is shown only through the Dashboard page's data island.
         "dashboard/member_waiting.py",
+        # Redacts a bot's own memory text the way the Memory page shows it. It returns
+        # data and serves nothing: the rows leave through the bot's `memory_list` route
+        # (`handlers/member_memory_self.py`) and its `crewmate.memory` card preview.
+        "dashboard/member_memory_records.py",
         # Redacts a crewmate's goal and milestone text the same way before appending
         # it as a snapshot to that crewmate's own crew log. It serves nothing; the
         # snapshot is shown only through the Dashboard page's data island.
@@ -330,6 +338,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # dashboard/handlers/workflows.py, the registered sink for this surface,
         # and that handler is the previewer's sole caller.
         "workflows/preview.py",
+        # Audit-side log hygiene, same shape: audit_decision scrubs a refusal's
+        # detail before the clip and the ssh_auth_sock_forward_consent SEL row.
+        "ssh_auth_sock_consent.py",
         # Audit-side log hygiene: log_decline scrubs the model-authored tool
         # title before writing the shared auto_approve_declined SEL row. The
         # audit log is a gate-side record, not an output bound for a human or
@@ -1100,6 +1111,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # is checked for stale entries too.
         # `app_tools.py` relays an app's answer to a declared agent tool and redacts it
         # before returning it, the same classification as its sibling domains.
+        "mcp_tools/app_store.py",
         "mcp_tools/app_tools.py",
         "mcp_tools/artifacts.py",
         "mcp_tools/control.py",

@@ -13,7 +13,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from overload_fakes import wait_taskq_open
+from overload_fakes import backoff, wait_taskq_open
 from subagent_turn_resilience_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _close_subagent_managers,
     _complete_event,
@@ -1160,17 +1160,22 @@ async def _spawn_with_queue(mgr: SubagentManager, **spawn_kw) -> SubagentInfo:
 
 
 @pytest.mark.asyncio
-async def test_throttle_on_a_run_with_no_task_row_retries_in_turn():
-    """A run whose memory mode keeps no durable row cannot wait on the dependency
-    coordinator (its wait has nowhere to be recorded), so the throttle takes the
-    in-turn ladder instead of failing the run. The throttle answered the prompt
-    before any text or tool call, so the same prompt is sent again."""
+async def test_throttle_on_a_run_with_no_task_row_waits_on_the_coordinator():
+    """A run whose memory mode keeps no durable row survives the throttle the way a
+    persistent run does: the coordinator holds it on the scope's schedule in memory
+    (no row records the wait) and wakes it through admission. The throttle answered
+    the prompt before any text or tool call, so the same prompt is sent again."""
     calls, factory = _throttle_first_prompt()
     mgr, parks = await _queued_manager(factory)
+    coordinator = await mgr.dependency_coordinator_async()
+    # A millisecond backoff: the wait is the coordinator's own, so nothing here
+    # waits on the default 2 s schedule.
+    coordinator._backoff = backoff(0.01, 0.02)
 
     info = await _spawn_with_queue(mgr, _memory_mode="temporary")
 
-    assert len(parks) == 1, "the coordinator was not consulted"
+    assert parks == [True], parks
+    assert mgr._admission.taskq_store().get(info.id) is None, "premise: no row"
     assert info.error == "", info.error
     assert "finished after the throttle" in info.result
     assert calls == ["built_message", "built_message"]

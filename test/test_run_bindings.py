@@ -324,7 +324,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     ),
     "_dependency_report_db": (
         "staticmethod",
-        "(coordinator: 'Any', store: 'Any', task_id: 'str', signal: 'Any', generation: 'int | None') -> 'Any'",
+        "(coordinator: 'Any', store: 'Any', task_id: 'str', signal: 'Any', generation: 'int | None', hold_rowless: 'bool' = False) -> 'Any'",
         "run_yields",
     ),
     "_dependency_verdict": (
@@ -370,6 +370,16 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_aws_profile_rules_out_sharing": (
         "function",
         "(self, info: 'SubagentInfo', child_aws_profile: 'ResolvedAwsProfile | None') -> 'bool'",
+        "run_start",
+    ),
+    "_kas_shared_slot_taken": (
+        "function",
+        "(self, info: 'SubagentInfo') -> 'bool'",
+        "run_start",
+    ),
+    "_kas_shared_places_left": (
+        "function",
+        "(self, info: 'SubagentInfo', *, admitted: 'bool') -> 'int | None'",
         "run_start",
     ),
     "_resolve_child_aws_profile": (

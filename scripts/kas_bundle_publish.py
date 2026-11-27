@@ -587,7 +587,7 @@ def main() -> None:
     print(f'  KAS_PIN_MANIFEST_SHA256 = "{sha256_of(release / "manifest.json")}"')
     if local_node and overlays:
         print(
-            "  (an AL2 build: set KAS_PIN_AL2_MANIFEST_SHA256 instead; KAS_PIN_AL2_VERSION follows KAS_PIN_VERSION)"
+            "  (an AL2 build: set KAS_PIN_AL2_MANIFEST_SHA256 instead, and KAS_PIN_AL2_VERSION's -al2 suffix to match --version)"
         )
     if args.s3:
         print("Upload:")

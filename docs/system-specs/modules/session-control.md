@@ -1112,24 +1112,46 @@ waits for the owner's Apply, and a hand-edited value above the range is clamped 
 load (`_SECURITY_BOUNDED_FIELDS`) with a SEL `config_bounds_clamped` event.
 
 **A Bot's own worker cap.** `agents.<name>.max_workers` (default 0 = no limit,
-else 1-32, `BOT_MAX_WORKERS_MAX` in `config/sections_session.py`) bounds how many of
-one Bot's own worker sessions, the ones on its worker template, are live at once.
+else 1-32, `BOT_MAX_WORKERS_MAX` in `config/sections_session.py`) bounds how many
+sessions that run as one Bot, and that a session-control verb opened, are live at
+once.
 While the Bot's `worker_conducts` switch is on, 0 reads as
 `BOT_MAX_WORKERS_CONDUCTING` (4), so a tree of conducting workers is bounded when
 the owner chose no number; a limit the owner set is used as is.
-`session_create` (from the Bot's chat or a worker), `session_revive` and
-`session_fork` ask `mate_worker_conducts.effective_worker_cap_refusal` with the
-execution record the new slot will run under. It is `worker_cap_refusal`
+`session_create` (from the Bot's chat, a worker, or any session those opened),
+`session_revive` and `session_fork` ask
+`mate_worker_conducts.effective_worker_cap_refusal` with the execution record the
+new slot will run under, for any record that carries a member id. It is `worker_cap_refusal`
 (`dashboard/state_parts/bot_worker_cap.py`) except for a Bot with no limit whose
 switch is on, or whose caller holds the conducting kit
 (`mate_worker_conducts.holds_conducting_kit`: a conducting worker keeps the bound
 it started under until its next start), which it asks `bot_worker_cap_refusal`
 under the bound. A create past it is
 refused `bot_worker_cap_reached` (409) with nothing minted; a handoff opens nothing
-and is not asked. A worker counts while its slot is live, from its mint (so two
-parallel creates cannot both pass) until it is closed, and workers a restart brought
-back are counted from their saved records. A session a worker opens on another
-template is not counted here; the per-creator ceiling bounds it. The owner sets it
+and is not asked. A slot counts while it is live in `state._slots` and its key is
+one of the Bot's own workers (`members.crewmate_worker_member_id`, unchanged: that
+registry also picks the worker's harness) or in `bot_worker_cap._BOT_SESSIONS`,
+which `note_new_worker` writes at the mint of every slot one of those verbs opened
+under a record carrying the Bot's member id, whatever its `selection_kind`: a
+`template` child on any template, and a `member` selection such as a worker's
+`session_create(agent="<its own Bot>")`. It counts from its mint (so two parallel
+creates cannot both pass) until it is closed; a fork child `_withdraw_fork_child`
+pops stops counting with it. The Bot's own thread and the chats a person opens are
+not minted by those verbs and are not counted, nor is a session with no member id.
+A person's agent selection that rewrites a counted slot's record refreshes its
+entry (`refresh_bot_session`), so a session moved onto a record with no member id
+frees its seat. After a restart `count_restored_workers` reads, off the loop and one
+record at a time, the saved record of each live slot on the worker template, or
+that a verb opened (a non-empty `_created_by`, `UNVERIFIED_CREATOR` included, but
+not the `cron:<job id>` stamp a script cron's chat carries, which no verb wrote) on a
+non-default memory store, that is in neither registry and not read yet; a record
+carrying a member id enters the count, a record read is never read again, and an
+unreadable or absent one leaves only that slot uncounted and is read again at the
+next pass. Each pass first prunes both tables to the live keys. `fork_slot` hands its post-bind `recheck` the minted child, and
+`session_tree`'s recheck leaves that key out of the count (`exclude`), so a fork one
+below the limit is not refused by its own child. Runs a session starts with
+`spawn_run` / `spawn_sub_agents` are not counted; `agent.max_subagents` (a spawn past
+it waits in the queue) and the spawn depth limit bound them. The owner sets it
 on the Bot's settings page (**Workers at once**); no Bot tool writes it, and an
 unreadable value never refuses.
 
@@ -3062,7 +3084,7 @@ Each call is checked in this order, and each refusal has its own code:
    **The patrol-wake exception (wave 4, maintainer decision).** Two wave 4 paths are NOT held to the owner-sent arm: the pull `work_ledger_read` runs for a remote item, and the decide forward a recorded `decide` on a remote item sends. Both may run on a turn the owner did not send, such as a patrol wake, because the conductor's own patrol is what drives them. Their reach is the one remote item bound on the caller's own ledger: the pull reads only that item's crew and slot, and the forward PATCHes only that slot's `work-item`. Both run only with `work_ledger.remote_dispatch` on, which defaults to off. This is a deliberate exception, not a precedent: any later crew-scoped read still applies the owner-sent arm above.
 3. **Crew.** An exact id wins over any name; a name resolves only when one crew carries it (`crew_unknown`, `crew_ambiguous`, `crew_invalid`).
 4. **Target fence.** send/read/stop/close reach only a peer slot this caller's slot created with `session_create(crew=)` on that same crew (`crew_target_not_dispatched`). The record lives in gateway memory, at most 64 slots per caller (`crew_dispatch_limit`), and a close forgets the slot. It does not survive a hub restart. An open item on the caller's own ledger bound to that slot on that crew (`worker_session_key` + `worker_instance_id`, wave 4) also admits the slot, and that pair does survive a restart.
-5. **Version.** The crew's `major.minor` must match this hub's (`crew_version_mismatch`); a disconnected crew answers `proxy_peer_not_connected`.
+5. **Version.** The hub reads the crew's version (`remote_dispatch_routes.check_version`) but never refuses on it: a `major.minor` that differs from this hub's logs one warning per crew and version, and the call goes ahead. A crew reply that shows it does not know the call (a plain non-JSON 404 on the route) is refused `crew_peer_incompatible` (502), naming both versions (`skewed_reply`, `incompatible_error`); a JSON 404, a 5xx and a network fault keep their own codes. A disconnected crew answers `proxy_peer_not_connected`, and a version read that fails `crew_version_unknown`. One deliberate exception, keyed to a parameter an old crew silently ignores: a `send` to a crew whose known version is below 0.12.0 (`TURN_ORIGIN_SINCE`, the first release that honours `turn_origin: agent`) is refused `crew_peer_incompatible` before any peer call, because that crew would run the agent's turn with a person's rights. An unknown or unparseable version is not refused.
 6. **Path fence and redaction.** Every peer path is built from the table above, its slot key held to one plain segment, and passes `_proxy_canonical_path` before `SshTunnelManager.proxy_request` sees it (`proxy_path_denied`). A reply cut off mid-body is refused `crew_peer_interrupted`. A peer reply must be JSON within `PROXY_REDACT_BUFFER_MAX_BYTES` and is run through `_redact_peer_payload` before any field is read. A create reply whose `key` is not one plain segment is refused `crew_reply_malformed` and nothing is recorded.
 
 A crew read returns each row's `index` and a `next_since`, like the local read, whenever the crew's page carries `next_before` and `total`, except a tail read (no `since`) of a running crew session, which carries no `next_since`: a deferred segment cut can keep an in-flight chunk run below the page, and its later deletion moves every row after it down one, so no position that page sees is safe to resume from. The positions are the crew's own collapsed wire rows: row `i` of its page is `next_before + i`. `since=S` is the crew's older-page read for rows `[S, S+N)`; the hub drops rows below `S`, so it is one peer GET like a tail read, and the crew's `from`/`since`/`digest` cursor is not used because only the crew can compute its digest. `next_since` stops before the first in-flight row (a role in `chat_persistence._TRANSIENT_ROLES`, `streaming` included) and the reply then carries `streaming: true`; a since read sends no row at or past it. A row the crew renders as nothing holds a position it does not send, so later positions read low and the next read re-sends a row rather than skipping one. Refusals: `since` not an integer `invalid_pagination`, below 0 `invalid_since` (both 400, before any peer call); past the crew's `total` `cursor_unavailable` (409); a page the crew cut by bytes so it starts after `S` `crew_page_cut` (409, read again with a smaller `limit`; `limit=1` always fits); a since read whose crew reply carries no positions `crew_reply_malformed` (502).
@@ -3087,7 +3109,7 @@ A remote row adds `worker_instance_id`, `crew_state`, `crew_down_since`, `pendin
 
 ### Wave 5: the hub picks the crew
 
-With the switch on, `session_create(work_item=)` without `crew` places the item (`dashboard/handlers/remote_placement.py`). The caller passes the same owner checks as `crew=`. A registered crew is eligible when its tunnel is `connected`, its `major.minor` matches, and a fresh `GET api/chat/headroom` shows `mem_free_gb` and `disk_free_gb` of at least one estimate each (`work_ledger.remote_dispatch_memory_gb`, default 5, and `remote_dispatch_disk_gb`, default 5; see Wave 6) and `load_per_cpu` under 1.0. A crew whose route answers 404, whose memory or disk reading is missing, or whose version and headroom reads take over 5 s is skipped; a missing `load_per_cpu` does not skip it, as the peer gate also passes an unknown load. On Windows that reading is always missing (`resource_status._read_load_per_cpu` reads `os.getloadavg`, which Windows lacks), so no Windows crew is skipped or refused for CPU load: the peer gate's one `cpu` refusal there is the execution cap (running agents at or above `adaptive_exec_cap()`). The item is checked open and unbound on the caller's ledger before any crew is probed (`unknown_item`, `item_closed`, `already_bound`).
+With the switch on, `session_create(work_item=)` without `crew` places the item (`dashboard/handlers/remote_placement.py`). The caller passes the same owner checks as `crew=`. A registered crew is eligible when its tunnel is `connected`, its version can be read (a `major.minor` skew only warns), and a fresh `GET api/chat/headroom` shows `mem_free_gb` and `disk_free_gb` of at least one estimate each (`work_ledger.remote_dispatch_memory_gb`, default 5, and `remote_dispatch_disk_gb`, default 5; see Wave 6) and `load_per_cpu` under 1.0. A crew whose route answers 404, whose memory or disk reading is missing, or whose version and headroom reads take over 5 s is skipped; a missing `load_per_cpu` does not skip it, as the peer gate also passes an unknown load. On Windows that reading is always missing (`resource_status._read_load_per_cpu` reads `os.getloadavg`, which Windows lacks), so no Windows crew is skipped or refused for CPU load: the peer gate's one `cpu` refusal there is the execution cap (running agents at or above `adaptive_exec_cap()`). The item is checked open and unbound on the caller's ledger before any crew is probed (`unknown_item`, `item_closed`, `already_bound`).
 
 Requires (audit D2): the create may carry `requires: {"tags": [...], "logins": [...]}`, parsed by `remote_placement.parse_requires` before any crew is probed. Each name is 1-32 of `a-z0-9_-`, not starting with `_` or `-`, with a letter, at most 16 per list, logins only a tool `git_gateway.readiness_tool` names (`az`, `gh`, `glab`); anything else, or another key, is `requires_invalid` (400). A crew whose headroom lacks a required word in `tags`, or does not report exactly `valid` for a required login in `logins`, is filtered out before ranking, whatever its room. When no crew that answered meets `requires` and none that meets it was only short on room, the reply is `crew_requirements_unmet` (503) naming what each crew lacked, and the item stays open and unbound. When a crew meets it but has no room, the reply stays `crew_none_available`, and its message adds what the other crews lacked. A named `crew=` create with `requires` reads that crew's headroom first (`remote_placement.check_crew_requires`) and is refused `crew_requirements_unmet` when it lacks any, or when its headroom cannot be read. `requires` is never forwarded to the peer. The peer's headroom carries `tags` (`work_ledger.remote_dispatch_tags`, same word shape, others dropped, and a tag the credential redactor would change dropped too) and, on `GET api/chat/headroom` only, `logins` (left out, with no login check run, when the read carries `logins=0`: the hub sends `logins=1` for an item whose `requires.logins` is set and for a `crew_list` call with `logins: true`, and `logins=0` for every other placement and `crew_list` read, so a hub that predates the query still gets `logins` and a peer that predates it ignores it; `remote_dispatch_headroom.peer_logins`: `git_gateway.login_status` per host, the probe `git_readiness` runs, keyed by `git_gateway.readiness_tool`; `signed_in` is `valid`, `not_signed_in` is `expired`, other answers absent, `unknown` while a first check runs; none while `git_gateway.lending_refusal` answers, a gate read on every request; each host cached 120 s, refreshed on its own, at most 3 s wait). A required login reported `unknown` is named `still checking; retry shortly` in the refusal. The redaction sink row "Crew tags a peer advertises to a dispatching hub" covers the tags. `crew_list` (`remote_crew_list._tags`, `_logins`) shows both per row: `tags` re-held to the same word shape (`work_vocab.coerce_dispatch_tags`, which stops at 16 so a long peer list costs one pass), and, only when called with `logins: true`, `logins` as a known tool mapped to `valid`, `expired` or `unknown`, any other key or word dropped; `logins` is `null` otherwise, and a peer whose reply carries no `logins` object is named `logins` in `unread`.
 

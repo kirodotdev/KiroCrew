@@ -19,7 +19,7 @@ import pytest
 from kiro_crew.acp.runtime import AcpRuntimeDead
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import AcpEvent
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -303,7 +303,11 @@ class TestPinnedModelSharing:
 
     @pytest.mark.parametrize(
         "backend",
-        [pytest.param(ACP_BACKEND_KIRO, id="kiro"), pytest.param(ACP_BACKEND_CODEX, id="codex")],
+        [
+            pytest.param(ACP_BACKEND_KIRO, id="kiro"),
+            pytest.param(ACP_BACKEND_CODEX, id="codex"),
+            pytest.param(ACP_BACKEND_KAS, id="kas"),
+        ],
     )
     @pytest.mark.parametrize(
         "pin",
@@ -1410,16 +1414,23 @@ class TestSharedSessionCliDefaultModel:
         )
 
     @pytest.mark.asyncio
-    async def test_an_unpinned_kas_sub_agent_inherits_its_folders_cli_default(self, monkeypatch):
+    @pytest.mark.parametrize("agent_model", ["", "auto"])
+    async def test_an_unpinned_kas_sub_agent_inherits_its_folders_cli_default(
+        self, monkeypatch, agent_model
+    ):
         from kiro_crew.acp.types import ACP_BACKEND_KAS
 
-        manager, sessions, runtime, read_dirs = self._manager(monkeypatch, backend=ACP_BACKEND_KAS)
+        manager, sessions, runtime, read_dirs = self._manager(
+            monkeypatch, backend=ACP_BACKEND_KAS, agent_model=agent_model
+        )
         info = self._info("kas-cli-default")
         provider = await manager._create_shared_session(info, "subagent:kas-cli-default", "kc")
         handle = runtime.create_session.return_value
         assert handle.set_model.await_args_list == [((("cli-default-model",)), {"inherit": True})]
         assert read_dirs == ["/work/child"]
-        sessions._cfg.acp_effective_model.assert_called_once_with("kc", None)
+        sessions._cfg.acp_effective_model.assert_called_once_with(
+            "kc", None, namespace=capabilities_for(ACP_BACKEND_KAS).model_id_namespace
+        )
         assert info._shared_provider is provider
         await provider.shutdown()
 
@@ -1446,29 +1457,80 @@ class TestSharedSessionCliDefaultModel:
         await info._late_start_provider.shutdown()
 
     @pytest.mark.asyncio
-    async def test_a_kiro_parent_sends_nothing(self, monkeypatch):
-        from kiro_crew.acp.types import ACP_BACKEND_KIRO
-
-        manager, _sessions, runtime, read_dirs = self._manager(
-            monkeypatch, backend=ACP_BACKEND_KIRO
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_CODEX])
+    @pytest.mark.parametrize("agent_model", ["", "spec-model"])
+    async def test_other_backends_send_nothing(self, monkeypatch, backend, agent_model):
+        manager, sessions, runtime, read_dirs = self._manager(
+            monkeypatch, backend=backend, agent_model=agent_model
         )
         provider = await manager._create_shared_session(
-            self._info("kiro-parent"), "subagent:kiro-parent", "kc"
+            self._info("other-parent"), "subagent:other-parent", "kc"
         )
         runtime.create_session.return_value.set_model.assert_not_awaited()
+        sessions._cfg.acp_effective_model.assert_not_called()
         assert read_dirs == []
         await provider.shutdown()
 
     @pytest.mark.asyncio
-    async def test_a_model_crew_pins_is_left_alone(self, monkeypatch):
-        from kiro_crew.acp.types import ACP_BACKEND_KAS
-
-        manager, _sessions, runtime, read_dirs = self._manager(
+    async def test_a_model_crew_pins_is_applied(self, monkeypatch):
+        manager, sessions, runtime, read_dirs = self._manager(
             monkeypatch, backend=ACP_BACKEND_KAS, agent_model="spec-model"
         )
+
+        def _resolve(*args, **kwargs):
+            # Reading agent files must not block the event loop.
+            with pytest.raises(RuntimeError, match="no running event loop"):
+                asyncio.get_running_loop()
+            return "spec-model"
+
+        sessions._cfg.acp_effective_model.side_effect = _resolve
+        apply_model = AsyncMock()
+        monkeypatch.setattr("kiro_crew.agent_sdk.drivers.acp.apply_configured_model", apply_model)
         provider = await manager._create_shared_session(
             self._info("kas-spec-model"), "subagent:kas-spec-model", "kc"
         )
+        apply_model.assert_awaited_once_with(
+            runtime.create_session.return_value, "spec-model", backend=ACP_BACKEND_KAS
+        )
+        sessions._cfg.acp_effective_model.assert_called_once_with(
+            "kc", None, namespace=capabilities_for(ACP_BACKEND_KAS).model_id_namespace
+        )
+        assert read_dirs == []
+        await provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_a_runs_own_pin_is_not_replaced_by_the_cli_default(self, monkeypatch):
+        """The pin was applied in the bind; the inherited default must not follow it."""
+        from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+        manager, sessions, runtime, read_dirs = self._manager(
+            monkeypatch, backend=ACP_BACKEND_KAS, agent_model="spec-model"
+        )
+        info = self._info("kas-run-pin")
+        info.requested_model = "run-pin"
+        with patch("kiro_crew.subagent._apply_shared_start_model", AsyncMock()):
+            provider = await manager._create_shared_session(info, "subagent:kas-run-pin", "kc")
+        runtime.create_session.return_value.set_model.assert_not_awaited()
+        sessions._cfg.acp_effective_model.assert_not_called()
+        assert read_dirs == []
+        await provider.shutdown()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("resolution_fails", [False, True])
+    async def test_a_failed_crew_pin_still_starts_without_a_cli_default(
+        self, monkeypatch, resolution_fails
+    ):
+        manager, sessions, runtime, read_dirs = self._manager(
+            monkeypatch, backend=ACP_BACKEND_KAS, agent_model="spec-model"
+        )
+        if resolution_fails:
+            sessions._cfg.acp_effective_model.side_effect = OSError("agent unreadable")
+        apply_model = AsyncMock(side_effect=RuntimeError("model not served"))
+        monkeypatch.setattr("kiro_crew.agent_sdk.drivers.acp.apply_configured_model", apply_model)
+        info = self._info("kas-pin-refused")
+        provider = await manager._create_shared_session(info, "subagent:kas-pin-refused", "kc")
+        assert info._shared_provider is provider
+        assert apply_model.await_count == (0 if resolution_fails else 1)
         runtime.create_session.return_value.set_model.assert_not_awaited()
         assert read_dirs == []
         await provider.shutdown()
@@ -1487,3 +1549,69 @@ class TestSharedSessionCliDefaultModel:
         handle.set_model.assert_awaited_once_with("cli-default-model", inherit=True)
         assert info._shared_provider is provider
         await provider.shutdown()
+
+
+class TestPlacementLogLine:
+    """Each run logs once, at INFO, whether it shares and, when it does not, why."""
+
+    @staticmethod
+    def _placements(caplog) -> list[str]:
+        said = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.subagent"]
+        return [m for m in said if " session shared" in m or " session dedicated" in m]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "sharing, expected",
+        [
+            pytest.param(True, "session shared: on the parent's runtime", id="shared"),
+            pytest.param(
+                False, "session dedicated: agent.session_sharing is off", id="setting-off"
+            ),
+        ],
+    )
+    async def test_a_run_names_its_placement(self, caplog, sharing, expected):
+        manager = SubagentManager(
+            sessions=_mock_sessions(sharing_eligible=True),
+            ctx_builder=_mock_ctx_builder_auto(),
+            is_yolo=lambda: True,
+        )
+        caplog.set_level("INFO", logger="kiro_crew.subagent")
+        with (
+            _cfg_patch(session_sharing=sharing),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
+            info = manager.spawn("test task", parent_session_key="dashboard:slot1")
+            await _wait_until_done(info)
+
+        assert self._placements(caplog) == [f"Subagent {info.id} {expected}"]
+
+    @pytest.mark.parametrize(
+        "info_kwargs, eligible, reason",
+        [
+            pytest.param({}, True, "", id="shared"),
+            pytest.param({"keep": True}, True, "a kept or continued run", id="keep"),
+            pytest.param({"reasoning_effort": "high"}, True, "a reasoning-effort pin", id="effort"),
+            pytest.param({}, False, "the parent session cannot share its runtime", id="parent"),
+            pytest.param(
+                {"allowed_tools": ["read"]}, True, "allowed_tools or bare spawn", id="cc-spawn"
+            ),
+        ],
+    )
+    def test_the_plan_says_why_it_does_not_share(self, info_kwargs, eligible, reason):
+        manager = SubagentManager(
+            sessions=_mock_sessions(sharing_eligible=eligible),
+            ctx_builder=_mock_ctx_builder_auto(),
+            is_yolo=lambda: True,
+        )
+        info = SubagentInfo(
+            id="why",
+            task="t",
+            parent_session_key="dashboard:slot1",
+            agent="kirocrew",
+            **info_kwargs,
+        )
+        with _pin_cfg_patch():
+            plan = manager._sharing_plan(info)
+
+        assert (plan.shared, plan.reason) == (not reason, reason)

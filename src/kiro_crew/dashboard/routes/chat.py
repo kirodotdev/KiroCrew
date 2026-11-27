@@ -153,6 +153,9 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/chat/slots/{slot}/history/around", chat_history_search.api_chat_slot_history_around
     )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/history/counts", chat_history_search.api_chat_slot_history_counts
+    )
     # Remote dispatch (Feature Preview): a hub reads and steers the work item this
     # crew's slot was born bound to. 404 with the preview off.
     app.router.add_get("/api/chat/slots/{slot}/work-item", api_chat_slot_work_item_get)

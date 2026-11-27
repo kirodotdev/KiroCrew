@@ -666,6 +666,27 @@ async def test_an_observed_hazard_retreats_a_poolable_connection_to_private(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("other_hazard", [False, True])
+async def test_roots_observation_retreats_only_with_another_hazard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, other_hazard: bool
+) -> None:
+    from kiro_crew.mcp_gateway import hazards
+
+    ledger = hazards.HazardLedger(tmp_path / hazards.HAZARDS_FILENAME)
+    identity = hazards.launch_identity("0" * 64, "1" * 64, "deadbeef")
+    ledger.record("echo-mcp", hazards.HAZARD_ROOTS_REQUESTED, identity)
+    if other_hazard:
+        ledger.record("echo-mcp", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST, identity)
+    monkeypatch.setattr(hazards, "_sink", ledger)
+
+    pool = await _drive_handler(monkeypatch, poolable=True)
+
+    assert pool.acquire_kwargs[0]["exclusive_stub_uuid"] == ("ex-stub-0001" if other_hazard else "")
+    assert len(pool.unreserved) == (0 if other_hazard else 1)
+    assert hazards.HAZARD_ROOTS_REQUESTED in ledger.codes_for("echo-mcp", identity)
+
+
+@pytest.mark.asyncio
 async def test_a_retreated_connection_releases_no_reservation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

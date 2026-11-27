@@ -778,6 +778,10 @@ def _sync_read_state(
         from kiro_crew.dashboard.handlers.request_server_page import server_state
 
         return server_state(p["server"], p)
+    if kind == catalog.KIND_PROJECT_MCP_SERVER:
+        from kiro_crew.change_card_project_mcp import server_snapshot
+
+        return server_snapshot(p)
     if kind == catalog.KIND_MCP_ADD_CUSTOM:
         return {
             "exists": {name: _mcp_exists(name) for name in p["servers"]},
@@ -1087,6 +1091,10 @@ async def read_state(
         }
     if kind == catalog.KIND_CREWMATE_CAPABILITIES:
         return await asyncio.to_thread(_capability_state, app, params)
+    if kind == catalog.KIND_CREWMATE_MEMORY:
+        from kiro_crew.dashboard.member_memory_records import memory_state
+
+        return await memory_state(params, state)
     if kind == catalog.KIND_FOLDER_STEERING:
         folder = await _folder(state, params["folder"])
         if folder is None:
@@ -1275,6 +1283,7 @@ async def read_context(
         catalog.KIND_CREWMATE_GOAL,
         catalog.KIND_CREWMATE_KEY_RESULTS,
         catalog.KIND_CREWMATE_CHECK_INS,
+        catalog.KIND_CREWMATE_MEMORY,
     ):
         return {"label": await asyncio.to_thread(_crewmate_label, p["member"])}
     if kind == catalog.KIND_SETTING_CHANGE:
@@ -1470,6 +1479,7 @@ async def _workflow_state(kind: str, params: dict[str, Any], state: Any) -> dict
         "format": str(definition.get("format") or "python"),
         "revision": definition.get("revision"),
         "content_hash": str(definition.get("content_hash") or ""),
+        "builtin": bool(definition.get("builtin")),
     }
 
 

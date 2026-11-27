@@ -284,6 +284,7 @@ if TYPE_CHECKING:
     from kiro_crew.runtime_ownership import release_session_lease  # noqa: F401
     from kiro_crew.sandbox import configured_sandbox_mode  # noqa: F401
     from kiro_crew.sandbox import wrap_argv  # noqa: F401
+    from kiro_crew.search_shown_text import shown_text  # noqa: F401
     from kiro_crew.security import redact  # noqa: F401
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401

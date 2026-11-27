@@ -353,6 +353,17 @@ describe('WorkerKitPane', () => {
     const done = await screen.findByTestId('worker-kit-done')
     expect(done).toHaveTextContent('Added 2 to Pixel.')
     expect(within(done).queryByTestId('worker-kit-open-approvals')).toBeNull()
+    expect(done).not.toHaveTextContent('restart the gateway')
+  })
+
+  it('says a gateway restart is needed when the add answers that its new server waits for one', async () => {
+    mockKit.apply.mockResolvedValue({ member: 'pixel', revision: 'r2', gateway_restart_required: true })
+    renderPane()
+    await previewAdd()
+    fireEvent.click(screen.getByTestId('worker-kit-apply'))
+    expect(await screen.findByTestId('worker-kit-done')).toHaveTextContent(
+      "Added 2 to Pixel. An MCP server this add copied reaches this bot's worker through the gateway only after you restart the gateway (Settings → About → Restart gateway).",
+    )
   })
 
   it('shows an already-present item as skipped, not added', async () => {
@@ -431,6 +442,18 @@ describe('WorkerKitPane', () => {
     expect(names.map(n => n.textContent)).toEqual(['release-notes', 'save_note on notes'])
     expect(names[0]).toHaveAttribute('title', uri)
     expect(changes).not.toHaveTextContent('skill://')
+  })
+
+  it('shows a tool set under two spellings as its one row, with the fold under its name', async () => {
+    mockKit.preview.mockResolvedValue({
+      ...PREVIEW,
+      changes: [{ section: 'toolsSettings', id: 'shell', change: 'added', merged_from: ['shell', 'execute_bash'] }],
+    })
+    renderPane()
+    const changes = await previewAdd()
+    expect(within(changes).getAllByTestId('worker-kit-change-name')).toHaveLength(1)
+    expect(within(changes).getAllByTestId('worker-kit-merged-from')).toHaveLength(1)
+    expect(within(changes).getByTestId('worker-kit-merged-from')).toHaveTextContent('execute_bash')
   })
 
   it('cancelling the preview writes nothing', async () => {

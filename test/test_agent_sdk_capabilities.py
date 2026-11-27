@@ -100,7 +100,9 @@ CAPABILITY_FIELDS = (
     "model_auto_switches_in_place",
     "harness_loads_agent_context",
     "reports_mcp_sign_in_suspects",
+    "crew_merges_user_hook_files",
     "keeps_session_across_compaction",
+    "inherits_kiro_default_resources",
 )
 
 

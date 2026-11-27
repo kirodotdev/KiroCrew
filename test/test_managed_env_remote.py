@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -126,6 +127,118 @@ def test_machine_mode_turns_on_last_and_quotes_every_value():
 def test_the_install_script_uses_the_public_installer_on_projects():
     script = install.install_script()
     assert install.PUBLIC_URL in script and f"KIROCREW_HOME={install.CREW_HOME}" in script
+
+
+def test_the_install_script_follows_this_crews_channel(monkeypatch, tmp_path):
+    monkeypatch.setattr(install, "data_home", lambda: tmp_path)
+    monkeypatch.setattr(install, "policy_release_channel", lambda: "")
+    monkeypatch.setattr(install, "release_channel", lambda: "insider")
+    (tmp_path / "channel").write_text("insider\n", encoding="utf-8")
+    assert '"$cli" $sp --channel insider\n' in install.install_script()
+    with pytest.raises(install.InstallError):
+        install.install_script("nightly; id")
+
+
+def test_a_source_checkout_with_no_channel_file_sends_the_box_to_nightly(monkeypatch, tmp_path):
+    monkeypatch.setattr(install, "data_home", lambda: tmp_path)
+    monkeypatch.setattr(install, "policy_release_channel", lambda: "")
+    monkeypatch.setattr(install, "_runs_from_source_checkout", lambda _dir: True)
+    assert install.box_channel() == "nightly"
+    assert '"$cli" $sp --channel nightly\n' in install.install_script()
+
+
+def test_a_wheel_install_with_no_channel_file_sends_the_box_to_its_own_channel(
+    monkeypatch, tmp_path
+):
+    # A direct-wheel or ``uv tool install`` Crew writes no channel file; it follows stable.
+    monkeypatch.setattr(install, "data_home", lambda: tmp_path)
+    monkeypatch.setattr(install, "policy_release_channel", lambda: "")
+    monkeypatch.setattr(install, "_runs_from_source_checkout", lambda _dir: False)
+    monkeypatch.setattr(install, "release_channel", lambda: "stable")
+    assert install.box_channel() == "stable"
+
+
+def _run_install_head(tmp_path, curl_body: str, good: bool = True) -> subprocess.CompletedProcess:
+    """Run the install step up to the installer, on a PATH of fakes only."""
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("mktemp", "rm", "mkdir", "sh", "timeout", "sed", "chmod"):
+        (tools / name).symlink_to(shutil.which(name) or name)
+    fakes = {
+        tools / "curl": curl_body,
+        tools / "python3.12": "exit 127",  # a version-manager shim that finds nothing
+        tools / "python3": "exit 1",  # too old
+    }
+    # A quote and a command substitution in the path must neither break nor run.
+    pyenv = tmp_path / "py'env $(touch pwned)"
+    if good:  # the probe's output goes to /dev/null, so printing keeps it passing
+        fakes[pyenv / "versions" / "3.12.9" / "bin" / "python3"] = 'echo "good-python $0 $*"'
+    for path, body in fakes.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        path.chmod(0o755)
+    head = install.install_script("insider").split("printf %s ", 1)[0]
+    return subprocess.run(
+        ["/bin/sh", "-c", head.replace(remote.ROOT, str(tmp_path))],
+        env={
+            "PATH": str(tools),
+            "HOME": str(tmp_path),
+            "TMPDIR": str(tmp_path),
+            "PYENV_ROOT": str(pyenv),
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the install step under sh")
+def test_the_install_step_skips_a_shim_and_runs_the_installer_on_a_real_python(tmp_path):
+    fake_cli = (
+        'echo "args=$*"; echo "first=${PATH%%:*}"; '
+        'for n in python3.12 python3.13 python3; do $n -m venv "a b"; done'
+    )
+    res = _run_install_head(tmp_path, f"printf '%s\\n' '{fake_cli}' > \"$3\"")
+    good = tmp_path / "py'env $(touch pwned)" / "versions" / "3.12.9" / "bin" / "python3"
+    assert res.returncode == 0, res.stderr
+    lines = res.stdout.splitlines()
+    first = lines[2].removeprefix("first=")
+    assert lines == [
+        f"python={good}",
+        "args=--system-python --channel insider",
+        f"first={first}",
+        f"good-python {good} -m venv a b",
+        f"good-python {good} -m venv a b",
+        f"good-python {good} -m venv a b",
+    ]
+    # Each by-name wrapper shadows the shim in tools and execs the real path. The folder is
+    # on /projects and outlives the step, so the path venv and pipx record stays live.
+    pybin = tmp_path / ".crew" / "python-bin"
+    assert first == str(pybin) and pybin.is_dir()
+    quoted = "'" + str(good).replace("'", "'\"'\"'") + "'"
+    for n in ("python3.12", "python3.13", "python3"):
+        wrapper = pybin / n
+        assert wrapper.read_text(encoding="utf-8") == f'#!/bin/sh\nexec {quoted} "$@"\n'
+        assert os.access(wrapper, os.X_OK)
+    assert not (tmp_path / "pwned").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the install step under sh")
+def test_with_no_usable_python_the_installer_runs_its_own_default(tmp_path):
+    fake_cli = 'echo "args=$*"'
+    res = _run_install_head(tmp_path, f"printf '%s\\n' '{fake_cli}' > \"$3\"", good=False)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.splitlines() == ["args=--channel insider"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the install step under sh")
+def test_a_failed_download_stops_the_step_with_curls_own_exit(tmp_path):
+    res = _run_install_head(tmp_path, "echo 'curl: (22) error: 403' >&2; exit 22")
+    assert res.returncode == 22
+    assert "args=" not in res.stdout and "curl: (22)" in res.stderr
 
 
 # ---- ssh config ---------------------------------------------------------------------------
@@ -426,28 +539,42 @@ def test_the_installer_may_take_either_of_its_branches():
     assert order[1] == f"{install.CREW_VENV}/bin/kirocrew"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="runs the launcher under sh")
-def test_the_launcher_exports_the_installers_pipx_paths(tmp_path):
-    binary = tmp_path / ".crew" / "pipx" / "venvs" / "kirocrew" / "bin" / "kirocrew"
+def _run_launcher(tmp_path, venv: str, body: str) -> subprocess.CompletedProcess:
+    """Run the launcher with one fake pipx install in *venv*."""
+    binary = tmp_path / ".crew" / "pipx" / "venvs" / venv / "bin" / "kirocrew"
     binary.parent.mkdir(parents=True)
-    binary.write_text('#!/bin/sh\nprintf "%s\\n" "$PIPX_HOME" "$PIPX_BIN_DIR"\n', encoding="utf-8")
+    binary.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
     binary.chmod(0o755)
     launcher = install.launcher_text().replace(remote.ROOT, ".")
-    res = subprocess.run(
+    return subprocess.run(
         ["/bin/sh", "-c", launcher],
         cwd=tmp_path,
-        env={"PIPX_HOME": "wrong-home", "PIPX_BIN_DIR": "wrong-bin"},
+        env={"PIPX_HOME": "wrong-home", "PIPX_BIN_DIR": "wrong-bin", "PATH": "/usr/bin:/bin"},
         capture_output=True,
         text=True,
         encoding="utf-8",
         timeout=FALLBACK_TIMEOUT_SECS,
         check=False,
     )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the launcher under sh")
+@pytest.mark.parametrize("venv", ["kirocrew", "kirocrew-lts"])  # an LTS Crew's pipx venv
+def test_the_launcher_exports_the_installers_pipx_paths(tmp_path, venv):
+    res = _run_launcher(tmp_path, venv, 'printf "%s\\n" "$PIPX_HOME" "$PIPX_BIN_DIR"')
     assert res.returncode == 0, res.stderr
     assert res.stdout.splitlines() == [
         install.PIPX_HOME.replace(remote.ROOT, "."),
         install.PIPX_BIN.replace(remote.ROOT, "."),
     ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the launcher under sh")
+def test_a_later_update_finds_the_python_the_install_step_chose(tmp_path):
+    # ``kirocrew update`` reruns the installer, which looks Python up by name only.
+    res = _run_launcher(tmp_path, "kirocrew", 'printf "%s\\n" "${PATH%%:*}"')
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.splitlines() == [install.PYTHON_BIN.replace(remote.ROOT, ".")]
 
 
 def test_global_lines_that_began_the_file_keep_applying_to_every_host(tmp_path):

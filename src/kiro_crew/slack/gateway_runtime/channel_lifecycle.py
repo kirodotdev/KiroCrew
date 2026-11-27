@@ -730,10 +730,19 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
             resources=",".join(authz_paths),
         )
     slack_handler.adopt_slack_config(new)
+    # A person this config does not share access with loses the Trust they set for
+    # their own turns, so being listed again later does not bring it back.
+    from kiro_crew.slack import thread_trust
+
+    thread_trust.drop_unlisted_senders(new)
     if self._cfg is not slack_handler.get_orch_cfg():
         # Two config objects in play (the handler global was never installed,
         # or was installed with another object): keep both current.
         slack_handler.copy_slack_fields(new, self._cfg)
+    if change.touched("slack.channels"):
+        from kiro_crew.slack.shared_channel_agent import retire_stale_marks_on_reload
+
+        await retire_stale_marks_on_reload()
     if change.touched("slack.reactions"):
         unknown = slack_handler.refresh_phase_emojis(new.slack.reactions)
         if unknown:

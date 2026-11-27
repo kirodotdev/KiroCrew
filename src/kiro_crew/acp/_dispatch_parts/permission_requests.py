@@ -526,6 +526,21 @@ def identified_mcp_call(event: AcpEvent) -> tuple[str, str] | None:
 #: The audit reasons of the two identity-channel refusals, the same on both drivers.
 REFUSAL_UNCLASSIFIED_CALL = "spec_disabled_tool_unclassified_call"
 REFUSAL_FOREIGN_SERVER = "spec_disabled_tool_foreign_server"
+#: The audit reason of the refusal of a request whose own arguments contradict the
+#: cached ones for its ``toolCallId`` (``AcpEvent.tool_call_id_reused``).
+REFUSAL_REUSED_CALL_ID = "tool_call_id_reused"
+
+
+def log_reused_call_id(log: logging.Logger, event: AcpEvent, session_id: object) -> None:
+    """Write the log line of that refusal under *log*, the same on both drivers."""
+    log.warning(
+        "refusing a permission request whose arguments contradict the ones cached for its "
+        "toolCallId (req=%s tool_call_id=%s): the id is reused, so which call would run "
+        "cannot be told [session=%s]",
+        _loggable_request_id(event.request_id),
+        _loggable_request_id(event.tool_call_id),
+        _loggable_request_id(session_id),
+    )
 
 
 def unclassified_call_refused(event: AcpEvent, *, frame_unclassified: bool) -> bool:
@@ -779,6 +794,27 @@ def bridged_title_identity(
     return (fits[0], tool) if tool else ("", "")
 
 
+def _args_name_another_call(own: object, cached: object) -> bool:
+    """Whether a request's own arguments contradict the ones the cache holds.
+
+    Equal arguments are one call, and so are two dicts that agree on every key they
+    share: a harness streams its arguments in pieces, and some (copilot, mimocode)
+    seed the cache with a rewritten form of them (``path`` for ``fileName``), so a
+    key the other side lacks is no evidence of another call.
+    shortcut: a reused id whose arguments share no key with the cached ones is not
+    caught here, nor is a non-string value (a seeded path list); closing those needs
+    a gateway-minted call id.
+    """
+    if own == cached:
+        return False
+    if not (isinstance(own, dict) and isinstance(cached, dict)):
+        return True
+    return any(
+        isinstance(v, str) and isinstance(cached.get(k), str) and cached[k] != v
+        for k, v in own.items()
+    )
+
+
 def build_permission_event(
     msg: JsonRpcMessage,
     *,
@@ -978,6 +1014,31 @@ def build_permission_event(
     # same-origin repeat frames (re-ask after reject_once, mode-change
     # re-prompt) still find their entry.
     _ck = scoped_tool_cache_key(cache_scope, tool_call_id)
+    # The id is the model's, so a cached entry is evidence about the call that wrote
+    # it, not about this request. A request that states its OWN arguments and they
+    # are not the cached ones names a different call under a reused id, and neither
+    # side can be shown to be the call the harness will run. The event is marked
+    # ``tool_call_id_reused`` and every answering site refuses it before a card or a
+    # rule sees it; it is built from its own arguments with every cache a miss, so no
+    # trust from the earlier call reaches even the refusal's record. Not for a gate
+    # envelope, whose arguments are the harness's own.
+    _tool_call_id_reused = False
+    if envelope is None and tool_call_id and raw_params_cache is not None:
+        _own_args = next(
+            (v for v in (tool_call.get(k) for k in ("rawInput", "input", "params")) if v),
+            None,
+        )
+        _cached_args = raw_params_cache.get(_ck)
+        if (
+            _own_args is not None
+            and _cached_args is not None
+            and _args_name_another_call(_own_args, _cached_args)
+        ):
+            _tool_call_id_reused = True
+            tool_call = {**tool_call, "input": _own_args}
+            raw_params_cache = shell_cache = tool_input_cache = tool_input_redacted_cache = None
+            mcp_server_name_cache = tool_name_cache = diff_path_cache = tool_kind_cache = None
+            identity_unreadable_cache = harness_tool_name_cache = None
     # A permission frame that names no ``kind`` takes the one its preceding
     # ``tool_call`` frame carried, under the same origin-scoped id. KAS sends
     # ``toolCall: {toolCallId, status, title}`` here and puts ``kind`` on the
@@ -1537,6 +1598,7 @@ def build_permission_event(
         title=title,
         tool_kind=tool_kind,
         raw_params_trusted=_raw_params_trusted,
+        tool_call_id_reused=_tool_call_id_reused,
         connection_mcp_identity=_pi_connection_identity(
             harness_backend, envelope, harness_mcp_servers
         )

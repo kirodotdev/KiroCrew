@@ -273,3 +273,24 @@ def test_the_texts_that_name_the_limit_name_the_constant():
     assert f"at most {BOT_MAX_WORKERS_CONDUCTING} of the Bot's workers" in (
         help_of["worker_conducts"]
     )
+
+
+def test_a_workers_child_on_another_template_is_held_to_four(
+    crewmate, tmp_path, monkeypatch  # noqa: F811
+):
+    """The bound counts what the owner's limit counts: every session run as the Bot."""
+    from kiro_crew.config import loader
+
+    monkeypatch.setattr(
+        loader,
+        "_MATERIALIZED_AGENTS",
+        frozenset({*loader._MATERIALIZED_AGENTS, "kirocrew-worker"}),
+    )
+    state, caller, _execution = crewmate
+    _bot(tmp_path, worker_conducts=True)
+    worker = state.get_slot(_open_workers(state, caller, FOUR - 1)[0])
+    _create(state, worker, agent="kirocrew-worker", agent_kind="template")
+    refusal = _refused(
+        lambda: _create(state, worker, agent="kirocrew-worker", agent_kind="template")
+    )
+    assert f"allows {FOUR}" in str(refusal)

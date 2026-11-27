@@ -51,7 +51,7 @@ the loader therefore reaches `config set`, an undo restores it, and a patch of
 | `config/fields.py` | `_meta` field metadata, the `_safe_*` value coercers every section shares, and `field_default`, the one reader of a DTO field's declared default (`SectionReader` reads through it). An integer coercer keeps a legacy numeric string or integral float already in a config file (`"5"` -> 5, `5.0` -> 5) and rejects booleans and non-integral, malformed or non-finite values in favour of the default. A leaf: it imports nothing from `kiro_crew`. |
 | `config/sections.py` | The facade other specs and tests name for the section DTOs below and for the three domain owners after them: it re-exports every name they define as the same object, and defines nothing of its own. |
 | `config/sections_defaults.py` | `SectionReader`, which resolves a builder's omitted key and coercer fallback to the DTO field's declared default, and the named defaults a DTO field and a load fallback share (`DEFAULT_MODEL`, `DEFAULT_POOL_SIZE`, ...). |
-| `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`. |
+| `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`, and the keyed dashboard writes of `agent.strands_env` and `agent.deepseek_env` (`DASHBOARD_KEYED_ENV_MAPS`: one validator per map over a shared body, one merge). |
 | `config/sections_agent_fields.py` | Field coercion for `agent` and the crew records: model pins, role maps, effort, the context-token map, approval modes, the avatar record and bot-name filter, the jail, ACP-backend, YOLO-duration and completion-keep readers, and the KAS bundle url. |
 | `config/sections_agent.py` | `AgentConfig`, and the readers that resolve against its declared defaults. |
 | `config/sections_session.py` | `session`, the crew record `KiroCrewAgentConfig`, `workspaces`, `session_environments` (its DTOs; validation lives in `config/session_environments.py`) and a session's `ResolvedBindings`. |
@@ -631,11 +631,17 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   gateway reads these files unsandboxed on the folder's behalf, and an app that
   could point its own folder at an arbitrary readable Markdown tree would have
   that read laundered into its own model session with no tool grant and no
-  signal. Clearing to `[]` stays allowed for every principal (it only removes
-  reads). The person may still declare steering on a folder an app or member
+  signal. Clearing to `[]` stays allowed for an app or member principal (it
+  only removes reads). The person may still declare steering on a folder an app or member
   owns; delivery then routes it to that principal's chats as described below.
   A call on the internal credential every MCP tool call carries
   (`request["internal_auth"]`) is refused the same way, at both write sites.
+- **Owner gate** (`require_owner_for_dashboard_caller`) runs next: "the
+  person" is the owner or an admitted teammate. A dashboard session that is
+  neither (a channel allowlist link) carries the person's empty principal, so
+  the principal gate admits it; the owner gate refuses it `403` `owner_only`
+  on a create with a non-empty list and on any update that sends
+  `steering_dirs`, clearing included, since the folder is the owner's.
 - **Agent surface** is a `folder.steering` change card
   (`change_card_catalog.py`): `propose_change(kind="folder.steering",
   params={folder, steering_dirs})` resolves each directory the way the route
@@ -1678,6 +1684,11 @@ Contract:
   and enable full auto-approval — and the reason is that this file sits in the
   agent-writable data home, so a restorable ack is an ack an agent can forge for
   the user's next fresh origin. Convenience does not outrank a human gate.
+  The machine owner's ack is also kept on the gateway in the owner-only
+  `yolo_ack.json` keystone (written only by `PUT /api/chat/yolo-ack`), which the
+  picker reads beside the browser copy; `PUT /api/chat/yolo-ack
+  {"acknowledged": false}` re-arms the confirmation in any browser that does not
+  hold its own `mc-yolo-ack` copy.
 
 ## Settings import (dashboard Merge)
 
@@ -2007,11 +2018,15 @@ prevent. `test_default_emitted_section_keys_are_all_recognized` guards
 Loads config from disk. Merges `config.local.json` overlay if present.
 Returns defaults if file is missing or invalid.
 
-The installed package declares `jsonschema` as a core runtime dependency so
-schema validation runs outside development environments too. The import guard
-still lets an incomplete or manually damaged install load, but that fallback
-must not be treated as the normal packaged behavior. Generated package metadata
-is tested to ensure the validator is required without the `dev` extra.
+Schema validation runs on `config.schema_check`, an in-house Draft-07 checker
+for the keywords `JSON_SCHEMA` uses (`type`, `properties`,
+`additionalProperties`, `items`, `enum`, `maxLength`, `pattern`), so no process
+imports `jsonschema` to load its config. It yields `jsonschema.Draft7Validator`'s
+errors (keyword, path, message and order), which matters because
+`validate_config_data` deletes a field per error while it walks them; it refuses
+any keyword it does not implement when the validator is built.
+`test_config_schema_check_parity.py` compares the two on random documents, so the
+package still declares `jsonschema` as a dependency, as that reference.
 
 **Hot-path cache.** `load()` is called per message / per request on several hot
 paths. The expensive work — reading `config.json` (+ `config.local.json`),
@@ -2171,7 +2186,9 @@ a present value the reader cannot use takes the reader's value:
   `dashboard.tailscale.bind_refresh_chains`, `false` for a non-boolean
   `slack.show_in_session_list` (a malformed value reads as the default, which
   keeps Slack conversations out of the list), `node` for an unrecognised
-  `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
+  `dashboard.tailscale.pin_scope`, `443` for a `dashboard.tailscale.https_port`
+  that is not an integer from 1 to 65535 (with one logged warning, never clamped),
+  `auto` for an unknown `agent.jail`, `false` for
   a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
   `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
   two people's DMs).
@@ -2239,7 +2256,7 @@ reader:
     rather than automatic, and `instances.connect_timeout_secs` /
     `mint_timeout_secs` as the transport constants. Validation removes a value of
     the wrong type at these keys and at `mcp.honour_auto_approve`, so through
-    `load()` they read their field default (when jsonschema is installed).
+    `load()` they read their field default.
   - The read stage reads a present non-boolean `auto_update` as off
     (`fields._coerce_bool`) and a present non-boolean `agent.session_control`,
     `agent.member_dispatch`, `agent.crew_panel`, `agent.kas_persist_mcp_sign_in`,
@@ -3893,13 +3910,13 @@ class MemoryConfig:
     lesson_extraction_enabled: bool = True  # off = consolidation (default and member stores) and the task runner save no extracted lessons; other writes and learn_add continue
     kind_routing: str = "enforce"    # off | enforce (default enforce since 2026-11-20): whether consolidation tags each project.* write with a kind (fact/event/state) in one separate label call and what it does with it; the consolidation prompt is the same under every mode; off makes no label call and writes every item, enforce labels them before the writes and skips state items; unknown values, including the removed shadow, read as enforce (memory_kind_routing.py)
     extraction_instructions: str = ""  # free text the consolidation prompt carries as one fenced block after the fixed rules (what to keep, what never to store); empty keeps today's prompt byte for byte; non-text reads as empty, control characters are dropped, text past 2000 characters is cut (memory_sections.extraction_instructions_from, history_consolidation_span._extraction_guidance_block)
-    lesson_origin_gate: str = "off"  # off | shadow | enforce: whether a lesson from a consolidation span with no person-sent turn, or a learn_add an agent or automatic turn triggered, may be a standing rule; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log, enforce stores it on_topic; unknown values read as off (memory_origin_gate.py)
+    lesson_origin_gate: str = "off"  # off | shadow | enforce: whether a lesson from a consolidation span with no person-sent turn, or a learn_add an agent or automatic turn triggered, may be a standing rule; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log, enforce stores it on_topic; a span with a person-sent turn keeps its tiers (the per-lesson check is lesson_tier_policy); unknown values read as off (memory_origin_gate.py)
     fact_origin_gate: str = "off"  # off | shadow | enforce: whether a pref.* / user.* semantic item (write or delete) or a preferences_update from a consolidation span with no person-sent turn is applied; enforce drops them, project.* and episodic items are never gated; off keeps today's prompt and writes, shadow writes as before and keeps capped counts and keys (memory_fact_origin_log:); unknown values read as off
-    lesson_tier_policy: str = "off"  # off | shadow | enforce: which tier a new consolidation lesson gets; enforce stores an untagged lesson, and an always lesson whose user_quote is not found in a person's unrelayed turn, as on_topic, and only enforce asks the prompt for user_quote; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log plus a learn_add re-teach count; unknown values read as off (memory_tier_policy.py)
+    lesson_tier_policy: str = "off"  # off | shadow | enforce: which tier a new consolidation lesson gets; enforce stores an untagged lesson, and an always lesson whose user_quote is not found in a person's unrelayed turn or does not state the rule (embedding cosine below 0.6), as on_topic, and only its enforce asks the prompt for user_quote; off keeps today's prompt and writes, shadow writes as before, measures quotes with one bounded call after the writes and keeps a bounded log plus a learn_add re-teach count; unknown values read as off (memory_tier_policy.py)
     lesson_fold: str = "enforce"  # off | enforce (default enforce since 2026-11-20): whether the session-start rule block leaves out near-duplicate rules (memory_item_identity.same_item, visited user-taught first then newest first, each row compared only with kept leaders); off keeps every copy, enforce leaves folded rows out, prints a fold line and records the (leader, folded) id pairs in the injection receipt; a folded row is not a budget omission; user_explicit rows are never folded; a row with a NOT-clause its leader lacks stays; unknown values, including the removed shadow, read as enforce (memory_lesson_fold.py)
     rule_authority_order: str = "enforce"  # off | enforce (default enforce since 2026-11-20): how the session-start rule block orders its rules; off keeps the relevance order, enforce lists user_explicit rules first then the rest, the authored-before-untagged order and request relevance holding inside each group; an agent-triggered learn_add is user_explicit unless lesson_origin_gate is enforce; cap and omission line unchanged; unknown values, including the removed shadow, read as enforce (memory_rule_authority.py)
     member_lesson_dedup: str = "off"  # off | shadow | enforce: whether a private store folds a consolidation lesson into a live copy of the same rule (memory_item_identity.same_item); off keeps today's writes, shadow writes as before and keeps a bounded log, enforce skips a textual copy and retires a new near-copy with a revision before a dashboard turn receipt names it, and off restores those rows on the next backfill sweep; user_explicit rows are never folded; unknown values read as off (memory_lesson_dedup.py)
-    relevance_rule: str = "off"  # off | shadow | enforce: which word matches admit session-start findings, task facts and activity sections; off keeps today's blocks, shadow keeps them and records in the injection receipt the ids the shared rule would add or drop, enforce counts only 3+ character words and CJK pairs and gives task facts on both stores the private store's relevance_evidence gate; rule block unchanged; unknown values read as off (memory_relevance_rule.py)
+    relevance_rule: str = "enforce"  # off | enforce: which word matches admit session-start findings, task facts and activity sections; enforce counts only 3+ character words and CJK pairs and gives task facts on both stores the private store's relevance_evidence gate, off keeps the old per-block tests; rule block unchanged; unknown values, a stored shadow included, read as enforce (memory_relevance_rule.py)
     dream: str = "off"               # off | propose: Dreaming, an offline pass over stored lesson and project.* rows while no chat turn runs; off schedules and reads nothing, propose writes an approval list and run receipts to memory_meta and applies nothing; L1 (user_explicit) and L2 (user_quote) rows are never proposed for change; unknown values read as off (memory_dream.py)
     inject_memory: bool = True       # inject the stored memory block (preferences, activity index, recent-session snippets) into new-session context
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
@@ -5410,8 +5427,9 @@ writer, and the `SkillsLoader` watcher applies it live (no restart): the loader'
 screening (expansion, resolution, sensitive-path exclusion, existence) stays the only judge of
 a path. Settings → Skills trims each line and drops blank ones before it sends the list; the
 same list is what `kirocrew config set skills.extra_paths --value-base64=…` stores.
-`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, so a card is held
-to the same bounds and item pattern and fails up front rather than falling through (no card can carry the list; see crew-mode).
+`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, for a card that
+could carry the list; none can today: `resolve_setting` refuses a `str_list` key `no_write_path`
+before any value is read (see crew-mode).
 
 ### Default context discovery
 

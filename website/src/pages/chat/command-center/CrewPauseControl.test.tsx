@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
 import { api } from '../../../api/client'
 import { CrewMemberContinue, CrewPauseRow } from './CrewPauseControl'
-import { CrewRowAttention } from '../../chat-sidebar/CrewRowCounts'
+import { CrewRowAttention } from '../../../components/crew/CrewRowCounts'
 
 const answer = vi.hoisted(() => ({ value: true }))
 vi.mock('../../../components/ConfirmDialog', () => ({

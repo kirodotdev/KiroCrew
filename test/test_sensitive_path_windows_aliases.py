@@ -5,8 +5,10 @@ same file as ``C:\\x``, and so do ``C:\\x::$DATA`` and, for a directory,
 ``C:\\d::$INDEX_ALLOCATION``. The sensitive-path gates fold those spellings in
 ``_candidate_forms`` before resolving, so the inside gates (read, refusal, write) and
 the reverse ``path_contains_sensitive`` gate reach the same answer as for the plain
-spelling. Off Windows the same characters are ordinary file-name bytes and nothing
-is folded.
+spelling. One more candidate drops each name's trailing dots and spaces: Windows
+creates ``settings.local.json`` for ``settings.local.json.``, so a protected file the
+tool would create is refused under either spelling. Off Windows the same characters
+are ordinary file-name bytes and nothing is folded.
 
 The Windows half runs everywhere through ``ntpath``, the way
 ``test_security_path_resolve_bounded`` drives Windows spellings: ``os.path`` and
@@ -24,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import security
+from kiro_crew.agent_sdk.native_allow_stores import PROJECT_ALLOW_STORES, home_leaves
 
 HOME = r"C:\Users\alice"
 CRED = HOME + r"\.aws\credentials"  # inside a protected directory
@@ -32,6 +35,11 @@ LEAF_W = HOME + r"\.kiro\crew\config.json"  # write-protected only
 ARTIFACT = HOME + r"\.kiro\crew\tmpabc123.tmp"  # a keystone publish artifact
 
 PREFIXES = ("\\\\?\\", "\\\\.\\", "\\??\\")
+PROJ = r"C:\work\proj"
+#: Every harness store, in a project and under the home, as the file tool names it.
+STORES = [PROJ + "\\" + rel.rstrip("/").replace("/", "\\") for rel in PROJECT_ALLOW_STORES] + [
+    HOME + "\\" + leaf.replace("/", "\\") for leaf in home_leaves()
+]
 
 
 def _forward(path: str) -> str:
@@ -191,6 +199,33 @@ def test_the_raw_spelling_stays_a_candidate() -> None:
     forms = security.paths._candidate_forms(raw)
     assert raw in forms
     assert LEAF in forms
+
+
+@pytest.mark.usefixtures("windows")
+@pytest.mark.parametrize("suffix", [".", " ", "::$DATA."])
+@pytest.mark.parametrize("store", STORES)
+def test_a_store_spelled_with_a_trailing_dot_or_space_is_refused(store: str, suffix: str) -> None:
+    assert security.sensitive_write_path_refusal(store + suffix, base_dir=PROJ) is not None
+
+
+@pytest.mark.usefixtures("windows")
+def test_a_folder_name_with_a_trailing_dot_is_refused() -> None:
+    path = PROJ + r"\.claude.\settings.local.json"
+    assert security.sensitive_write_path_refusal(path, base_dir=PROJ) is not None
+
+
+@pytest.mark.usefixtures("windows")
+@pytest.mark.parametrize(
+    "path", [PROJ + r"\notes.txt.", PROJ + r"\.claude\other.json ", PROJ + r"\settings.local.json."]
+)
+def test_a_trailing_dot_or_space_leaves_other_files_writable(path: str) -> None:
+    assert security.sensitive_write_path_refusal(path, base_dir=PROJ) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows drops a trailing dot from a file name")
+def test_off_windows_a_trailing_dot_is_part_of_the_name(tmp_path) -> None:
+    path = str(tmp_path / ".claude" / "settings.local.json.")
+    assert security.sensitive_write_path_refusal(path) is None
 
 
 @pytest.mark.usefixtures("windows")

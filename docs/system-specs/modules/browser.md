@@ -169,8 +169,20 @@ until the first stage past `installing_harness`; while it is set, a start sets t
 status to `disconnected` with "Browser Harness is being reinstalled; try again
 when it finishes" (`HARNESS_REINSTALLING_DETAIL`) and raises
 `HarnessNotInstalled`. A spawn whose venv interpreter vanished between the
-install read and the spawn (`FileNotFoundError`) answers the same. An install
-that keeps the venv, and the Chromium download, hold nothing.
+install read and the spawn (`FileNotFoundError`) answers the same. Before either
+arm that clears the venv (a rebuild, a copy from the runtime) removes the marker,
+the job waits for `HarnessSupervisor.stop_for_harness_rebuild`: it sets
+`installing_harness` and runs the ordinary stop, which ends the browser session
+(the agent's tabs, the relay, Kiro's Chromium) with the daemon and helper worker
+started from the venv's interpreter, or reclaims a daemon a previous gateway left,
+waiting up to `_STOP_GRACE_SECS` for that process (by the pid its ping reply
+carries) to exit, since it still runs its shutdown cleanup after its socket stops
+answering. Left running, they lose their packages to the clear on POSIX, and on
+Windows the clear fails part-way on the interpreter they hold. The rebuild stop
+returns only after a helper call still holding the call lock lets go of it. An
+install stopped while it waits keeps the marker. A repair (`venv --upgrade`) holds starts but stops
+nothing; an install that keeps the venv, and the Chromium download, hold and stop
+nothing.
 
 The daemon starts with a scrubbed environment built by one function and pinned
 by one test:
@@ -208,11 +220,36 @@ prefix as their working directory, because a pod gateway's cwd is the agent's
 workspace and a `pip/` package written there would otherwise run as the owner the
 moment they press Install. Their environment also sets `PIP_CONFIG_FILE` to the
 null device, so pip loads no config file (the user's `~/.config/pip/pip.conf` or
-`~/.pip/pip.conf`, `/etc/pip.conf`, the venv's own) and installs from its default
-index, PyPI: an `index-url` in the user's file, such as a CodeArtifact repository
-whose login has expired, would otherwise answer 401 for every locked wheel and
-fail the install with pip's raw output. A mirror set in pip's config or in
-`PIP_INDEX_URL` is therefore not used; the lock's hashes pin every file either
+`~/.pip/pip.conf`, `/etc/pip.conf`, the venv's own). The one exception to the
+`PIP_*` scrub is the first pip install attempt when the user has pip index
+settings: its `PIP_CONFIG_FILE` stays the null device, and it carries whichever
+of the five index keys (`PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`,
+`PIP_TRUSTED_HOST`, `PIP_CERT`, `PIP_CLIENT_CERT`) are set, as
+`sdk_extras._configured_index_env` reads them: the gateway's own variables of
+those names merged over pip's config, so a network that reaches only a mirror
+can install. That read is a third spawn: `pip config list` by the interpreter
+whose pip installs (the gateway's when it has pip, else the venv's after it has
+its own), with a fixed argv, `-I`, `PYTHON*` scrubbed, stdin from the null
+device, a 15 s timeout, read-only, in the gateway's cwd and with `PIP_*`
+inherited; it runs right before the pip step, after the stage's stop check. The
+first attempt adds `--only-binary :all:`, so pip builds nothing from that index:
+every file it installs is a locked wheel whose sha256 the lock pins (index pages
+and metadata also come from there but never run). Any failed exit of it (no
+route, a 401 or 403, a hash mismatch, no wheel for this host), a timeout of it
+and a spawn of it that cannot start (an index value past the OS's per-string
+exec limit, or one with a NUL, which Python's `Popen` refuses) are logged, and the
+step runs once more exactly as it does with no settings: pip's default index,
+PyPI, sdist builds allowed, a fresh timeout. A stop is not retried. The gateway
+log names each attempt's index by scheme and host only and keeps the first
+attempt's pip output, or why it could not start, redacted
+(`sdk_extras._redact_pip_output`), which is where a mirror's network, TLS or
+proxy reason is; when the second attempt fails too, the error Settings shows is
+its output plus one last line naming the index tried first. This differs from
+the Feishu SDK installer, which retries only on a download failure. A host that
+must build the locked pillow (glibc older than 2.27) and reaches only a mirror
+still cannot install: its first attempt is certain to fail, and the error shown
+is the second's. With no pip index settings the step is one run, as above; the
+lock's hashes pin every file either
 way. `NO_PROXY`/`no_proxy` always carry `127.0.0.1,localhost`: neither `urllib`
 nor `websockets` bypasses a proxy for loopback on its own, and a shell with
 `HTTPS_PROXY` set would send the relay URL (secret and all) to the proxy host. A
@@ -224,7 +261,10 @@ whole script unscrubbed.
 carries none unless its runtime bundles the harness), so each helper call runs in
 a worker the venv's interpreter executes
 (`<prefix>/bin/python -I browser_harness/helper_worker.py`, JSON lines on its
-pipes, one call at a time behind a lock, `CALL_TIMEOUT_SECS = 90`). The pipe is
+pipes, one call at a time behind a lock, `CALL_TIMEOUT_SECS = 90`). A call whose
+handle a stop or restart retired before it got that lock, or while it was starting
+a worker under it, raises `BrowserRestarted`; a worker it was starting is stopped
+first. The pipe is
 read with an 8 MiB line limit (`WORKER_LINE_LIMIT`; asyncio's 64 KiB default is
 smaller than an ordinary snapshot) and the worker refuses to write a reply over
 4 MiB (`REPLY_CAP_BYTES`, an error reply instead); a line that still overruns is
@@ -262,6 +302,11 @@ equal by a test):
 | `set_files` | `expression, files` | the worker's own `DOM.setFileInputFiles`: `expression` (the walker's `fileInput(ref, true)`) is evaluated in the walker's isolated world and must give a node, and `files` is 1 to 100 paths, the gateway's staged copies (the `upload` op). For a `webkitdirectory` node (read on the node in that world) it first sends `Page.bringToFront`, since the full Chrome build lists a staged folder into a folder field only for the active tab and Harness opens its tabs in the background, and, before the set, through `Runtime.callFunctionOn` on the node in that world, sets a flag on the node's wrapper there to false and adds a capture-phase `input` listener to the node's root (its document or shadow root, ahead of the page's own listeners on the field) that sets it true on the browser's own event whose target is the node (`isTrusted`; one the page dispatches is ignored) and then removes itself (the page cannot read or write the flag itself, and the reset keeps a flag an earlier upload left in the reused world from counting); it then reads that flag for up to 3 s, not the node's `files`, which the page's own `change` handler may already have cleared: a flag still false is `folder_field_unsupported`, nothing reported set; a flag read that fails because a new document replaced the page after the set (the top frame's `loaderId`, read just before the set, changed: the page navigated, as one that submits on its own `change` does) counts as filled |
 | `chooser_files` | `x, y, files, folder=False` | the worker's own `upload via: chooser`: `Page.setInterceptFileChooserDialog` on for this call only, a click at `x, y`, then the first `Page.fileChooserOpened` within 3 s gets `DOM.setFileInputFiles` by its `backendNodeId`; `no_chooser`, `not_multiple` (2+ paths on `selectSingle`) and `not_folder_input` (`folder` on an input without `webkitdirectory`, read by `DOM.describeNode`) set nothing (the `upload` op itself never sends a folder this way: `_fits` refuses it first); a chooser opened in a frame that is not the tab's top frame or of its origin (`Page.getFrameTree`) is `frame_refused`; interception off in `finally` |
 | `drop_files` | `x, y, files` | the worker's own `upload via: drop`: no press; `Input.dispatchDragEvent` `dragEnter`, `dragOver`, `drop` at `x, y` carrying the staged paths; the browser's own hit test (`DOM.getNodeForLocation`, through every shadow root, closed ones too, honouring `pointer-events: none` as the drop does) must find a node in the tab's top frame that is not itself a frame element (`IFRAME`, `FRAME`, `OBJECT`, `EMBED`, `PORTAL`, `FENCEDFRAME`), checked again before each of the three events (the page's own drag handlers run in between; a failed check after `dragEnter` sends `dragCancel`), else `frame_refused` |
+
+`ops._page` interprets frame refs by default. Its keyword-only `frame_refs=False`
+keeps arguments literal in the top document while retaining URL refusal and
+isolated-world dispatch. App browser recipes use that mode for every walker call
+([app-kit-platform](app-kit-platform.md), browser recipes).
 
 `run.py`, Harness's MCP server, `upload_file` and the agent-helper loader are not
 reachable through it (`fill_input` is, and only the `fill` op calls it, always on
@@ -2022,7 +2067,8 @@ modifies it, and the row is silent when the directory is absent.
 | The daemon's socket leaves the hidden leaf | a data home too deep for the AF_UNIX path limit is refused, never relocated to system temp |
 | Another chat drives the tab a person has taken over | every op binds to the calling session's own tab under one gateway-wide lock; a takeover fences that session's tab, and a tab another session owns is never streamed to this session's card |
 | A takeover lands inside an agent op | the claim and the op route share a per-session fence: the claim cancels the op in flight and is confirmed only once the route has left it |
-| An agent-written `pip/` or `venv/` package in the gateway's cwd runs on Install or the startup auto-install | both installer spawns run `python -I` with `PYTHON*`/`PIP_*` scrubbed and the prefix as cwd |
+| An agent-written `pip/` or `venv/` package in the gateway's cwd runs on Install or the startup auto-install | the venv and pip spawns run `python -I` with `PYTHON*`/`PIP_*` scrubbed (`PIP_CONFIG_FILE` the null device; the first pip attempt adds only whichever of the five index keys the user's pip settings set) and the prefix as cwd; the `pip config list` read that finds those keys runs `-I` with `PYTHON*` scrubbed, so a package in the cwd cannot shadow pip there either |
+| An agent writes a pip config file the owner's pip reads | **Accepted residual, both in-app installers (the browser harness and the Feishu SDK).** A sandboxed agent can write a pip config file (pip's user files `~/.config/pip/pip.conf`, `~/.pip/pip.conf`, macOS `~/Library/Application Support/pip/pip.conf`, Windows `%APPDATA%\pip\pip.ini`, and an unsealed site file `<interpreter prefix>/pip.conf`; pip also reads global files such as `/etc/pip.conf`) and so choose, for the first attempt of an install that runs as the owner outside the sandbox (the startup auto-install too), the index host, extra indexes, `trusted-host`, the CA bundle and the client-certificate path. It cannot change what is installed or run: every file is checked against the shipped hash lock, that attempt installs wheels only, and the fallback is the run with no settings. For the harness installer it can make the first attempt fail (one wasted attempt) or stall it until the 15-minute timeout (then the fallback: a delay, never a failure the run with no settings would not also have; on a network that reaches only the user's mirror, a config pointed elsewhere leaves only that run, which cannot reach pypi.org); point `cert`/`client-cert` at owner files, which the owner's pip loads without printing; with a `client-cert`, make the owner's pip authenticate as the owner (mutual TLS) to a host and URL path the agent picks, for the GET requests pip makes for index pages and files, which the hash lock does not limit (this matters where the agent cannot read that certificate itself, such as a folder the sandbox hides); and with a `file://` index whose link is named like a locked wheel, make the owner's pip hash a file the agent cannot read and print that sha256 in pip's hash-mismatch line ("Got <sha256>"), which reaches the gateway log for both installers (never the harness's install error). The OS sandbox does not fence network egress, so the index host is not a new egress path. The Feishu SDK installer differs in one way: `sdk_extras._lay_down` falls back only on a download failure and not after its 10-minute timeout, so the same settings can make its install fail outright (a hash mismatch, a stall); the harness installer reading the same settings does not change that. [Agents ask before changing gateway-trusted files](../../decisions/2026-11-20-agents-ask-before-changing-gateway-trusted-files.md) covers other files the gateway launches from or trusts; this residual does not supersede it, for the reasons [the decision](../../decisions/2026-11-24-the-browser-harness-installer-tries-the-users-pip-index-first.md) gives |
 | The relay URL (and its secret) goes to a corporate proxy | `NO_PROXY` always carries the loopback names |
 | Agent spells a password one key at a time | `press_key` with a printable key runs the same focused-password-field refusal as `type`; named keys and Ctrl/Meta chords stay allowed so the agent can leave the field |
 | Agent reads Kiro's profile cookies or the daemon's IPC credential | `HIDDEN` leaves in every sandbox mode |

@@ -39,12 +39,8 @@ from urllib.parse import quote
 from kiro_crew import dashboard_agentic, mcp_panel_snapshot
 from kiro_crew.dashboard_templates.instance import AUTHORED_PAGE_REFUSAL
 from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
-from kiro_crew.mcp_core import (
-    _get,
-    _post,
-    _resolve_session_key,
-    require_strict_session_key,
-)
+from kiro_crew.mcp_core_parts.gateway import _get, _post
+from kiro_crew.mcp_core_parts.identity import _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import MCP_PANEL_SCHEMAS, validate_tool_args

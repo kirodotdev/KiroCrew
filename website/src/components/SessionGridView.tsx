@@ -60,6 +60,7 @@ export default function SessionGridView({
   onFolderOpen,
   onOpenCrewTab,
   paneDropRef,
+  noSignIn,
 }: {
   /** Leave split mode entirely (everything closed, or a lone empty placeholder). */
   onClose: () => void
@@ -93,6 +94,8 @@ export default function SessionGridView({
   /** Set while mounted to "show `slot` in pane `leafId` and focus it", for the
    *  sessions sidebar's drop on a pane. */
   paneDropRef?: MutableRefObject<((leafId: string, slot: string) => void) | null>
+  /** Every pane's `noSignIn` (the host's embedded or popout chat). */
+  noSignIn?: boolean
 }) {
   const grid = useSessionGrid(seedSlot)
   const { fillLeaf, setFocused } = grid
@@ -222,6 +225,7 @@ export default function SessionGridView({
           onFileOpen={openFileForPane}
           onFolderOpen={openFolderForPane}
           onOpenCrewTab={onOpenCrewTab}
+          noSignIn={noSignIn}
         />
       )
     }

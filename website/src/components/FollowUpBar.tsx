@@ -220,7 +220,7 @@ const CHIP_RADIUS = 8
 /** Standalone chip: the flex item itself, so it owns the width cap (and, in the
  *  scroll layout, `shrink-0` so it does not collapse). Fully rounded. */
 function chipClassName(isPicked: boolean, { shrink0 = false }: { shrink0?: boolean } = {}) {
-  return `${shrink0 ? 'shrink-0 ' : ''}${CHIP_MAX_WIDTH} ${CHIP_BASE} rounded-lg ${chipColors(isPicked)}`
+  return `${shrink0 ? 'shrink-0 ' : ''}${CHIP_MAX_WIDTH} ${CHIP_BASE} rounded-lg focus-visible:outline-offset-[-2px] [--lg-focus-offset:-2px] ${chipColors(isPicked)}`
 }
 
 /** Main button INSIDE a split-button wrapper. The WRAPPER is the flex item that
@@ -232,7 +232,7 @@ function chipClassName(isPicked: boolean, { shrink0 = false }: { shrink0?: boole
  *  future utility whose name merely contains `shrink-0`/`followup-chip`/`rounded-lg`
  *  cannot silently rewrite the wrong token and reintroduce the overlap. */
 function splitMainChipClassName(isPicked: boolean) {
-  return `flex-1 min-w-0 ${CHIP_BASE} rounded-l-lg border-transparent bg-transparent ${isPicked ? 'text-accent' : 'text-muted hover:text-text'}`
+  return `flex-1 min-w-0 ${CHIP_BASE} rounded-l-lg focus-visible:outline-offset-[-2px] border-transparent bg-transparent ${isPicked ? 'text-accent' : 'text-muted hover:text-text'}`
 }
 
 /** The split-button wrapper is the glass pill; its two buttons sit on it. */
@@ -353,7 +353,7 @@ function sendSegmentClassName(isPicked: boolean, pending: boolean) {
   // opens with `if (pending) return`, so a pointer hand here promises a click
   // that is already dropped. The hover accent below is still live while
   // pending — see the disposition on this span.
-  return `inline-flex items-center shrink-0 px-1.5 py-1.5 rounded-r-lg ${pending ? 'cursor-default' : 'cursor-pointer'} transition-all border border-transparent border-l-[color:var(--glass-edge)] bg-transparent ${
+  return `inline-flex items-center shrink-0 px-1.5 py-1.5 rounded-r-lg focus-visible:outline-offset-[-2px] ${pending ? 'cursor-default' : 'cursor-pointer'} transition-all border border-transparent border-l-[color:var(--glass-edge)] bg-transparent ${
     isPicked
       ? 'text-accent hover:bg-accent/20'
       : 'text-muted hover:text-accent'
@@ -732,11 +732,12 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
           icon, a badge, a second line). Bottom, not centre: the strip sits
           directly above the composer, so that is the edge the row is read
           against.
-          `py-px -my-px`: overflow-x:auto forces overflow-y to auto as well, and
-          the glass hairline is drawn 0.5px OUTSIDE each chip's box, so a row
-          exactly one chip tall clips it. One pixel of padding, cancelled by the
-          negative margin, lets the line through without changing row height. */}
-      <div ref={setScroller} data-tip-boundary className={`flex ${CHIP_ROW_GAP} overflow-x-auto items-end py-px -my-px`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+          `py-1 -my-1`: overflow-x:auto forces overflow-y to auto as well, so a
+          row exactly one chip tall clips the glass hairline and the focus ring
+          top and bottom. Block-axis padding, cancelled by the negative margin,
+          leaves room without changing row height; the inline axis stays flush so
+          the edge fades and arrows still cover the scroller's clip box. */}
+      <div ref={setScroller} data-tip-boundary className={`flex ${CHIP_ROW_GAP} overflow-x-auto items-end py-1 -my-1`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         {options.map((o, i) => {
           const isPicked = picked.has(o)
           const chipPending = !!pendingOptions?.has(o)

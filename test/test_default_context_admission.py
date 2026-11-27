@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from skills_helpers import _settled
 
 from kiro_crew import context as ctx
 from kiro_crew.config.loader import KiroCrewConfig
@@ -83,7 +84,9 @@ def seed_skill(root: Path, name: str, *, always=False, body="Synthetic procedure
 
 class TestDefaultMemory:
     def test_fresh_ordinary_context_keeps_preferences_and_bounded_activity(self, rig):
-        builder, memory, _, _, _ = rig
+        builder, memory, _, _, cfg = rig
+        # The relevance rule would drop the unrelated projects section; this pins its cap.
+        cfg.memory.relevance_rule = "off"
         memory.write_preferences("# Preferences\nAlways preserve approved safety controls.\n")
         memory.write_projects("# Payment migration\n" + "Details stay on demand.\n" * 100)
         text, _ = builder.build_message("Fix today's task", True, session_key="dashboard:synthetic")
@@ -291,24 +294,47 @@ class TestAdmissionAndSkills:
 
     def test_default_discovery_is_bounded_and_full_skills_remain_loadable(self, rig):
         builder, _, skills, _, _ = rig
-        for i in range(80):
+        # Enough rows to outgrow the index allowance: the old 4,950-character
+        # share dropped most of 80 names, the fixed allowance names them all.
+        total = 400
+        for i in range(total):
             seed_skill(skills._dir, f"procedure-{i}")
+        _settled(skills)
         text = builder.build_session_context()
-        shown = [i for i in range(80) if f"- **procedure-{i}**:" in text]
-        assert 0 < len(shown) < 80
+        shown = [i for i in range(total) if f"- **procedure-{i}**:" in text]
+        assert 80 < len(shown) < total
         # The entry names what it drops, by count and by family, and points at the
         # tool that reaches them.
-        assert f"{80 - len(shown)} more skill(s) not shown here" in text
+        assert f"{total - len(shown)} more skill(s) not shown here" in text
         assert "skill_search" in text
         assert "Families not shown: procedure-* (" in text
         assert "[Skills:]" in text and "Synthetic procedure" not in text
-        hidden = next(i for i in range(80) if i not in shown)
+        hidden = next(i for i in range(total) if i not in shown)
         matches = skills.search_skills(f"procedure-{hidden}")
         assert any(s["name"] == f"procedure-{hidden}" for s in matches)
         assert "Synthetic procedure" in skills.load_skill(f"procedure-{hidden}")
-        matches = skills.search_skills("procedure-79")
-        assert any(s["name"] == "procedure-79" for s in matches)
-        assert "Synthetic procedure" in skills.load_skill("procedure-79")
+        matches = skills.search_skills(f"procedure-{total - 1}")
+        assert any(s["name"] == f"procedure-{total - 1}" for s in matches)
+        assert "Synthetic procedure" in skills.load_skill(f"procedure-{total - 1}")
+
+    def test_index_allowance_names_a_large_library_outside_the_pool(self, rig):
+        """80 skills all reach the model by name, and the memory pool is untouched.
+
+        The index is an authored block: its allowance is ``caps.skills``, not a
+        share of the 33,000-character pool, so a large library neither loses names
+        nor crowds the memory blocks out (the context may exceed the pool by at
+        most the index itself).
+        """
+        builder, _, skills, _, _ = rig
+        for i in range(80):
+            seed_skill(skills._dir, f"procedure-{i}")
+        text = builder.build_session_context()
+        assert all(f"- **procedure-{i}**:" in text for i in range(80))
+        assert "more skill(s) not shown here" not in text
+        assert "Context budget: omitted" not in text
+        index_chars = text.index("[End of skills]") - text.index("[Skills:]")
+        assert index_chars <= ctx._SKILLS_CAP
+        assert len(text) - index_chars <= ctx._CONTEXT_BUDGET_BASE
 
     def test_short_entry_names_at_most_eight_when_selected(self, rig):
         """`skills.lazy_load = false` selects the shorter eight-name entry."""
@@ -349,7 +375,10 @@ class TestAdmissionAndSkills:
         for lazy in (False, True):
             cfg.skills.lazy_load = lazy
             text = builder.build_session_context()
-            assert len(text) <= ctx._CONTEXT_BUDGET_BASE
+            # The index rides its own allowance; everything else stays in the pool.
+            index_chars = text.index("[End of skills]") - text.index("[Skills:]")
+            assert index_chars <= ctx._SKILLS_CAP
+            assert len(text) - index_chars <= ctx._CONTEXT_BUDGET_BASE
             assert "skill_search" in text
 
 
@@ -820,8 +849,10 @@ def test_agent_skill_search_entry_finds_omitted_catalog(rig, monkeypatch):
 
     builder, _, skills, _, _ = rig
     seed_skill(skills._dir, "notebookquartz")
-    for i in range(80):
+    # Past the index allowance, so the entry has something to omit.
+    for i in range(400):
         seed_skill(skills._dir, f"filler-{i}")
+    _settled(skills)
     greeting, _ = builder.build_message("hi", True)
     # The entry is bounded, so it names the tool that reaches what it omits.
     assert "skill_search" in greeting

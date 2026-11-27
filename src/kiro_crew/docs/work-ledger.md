@@ -62,7 +62,10 @@ and its pick with `work_ask_record`, a deferred tool it loads first; the
 person's welcome shows that record, and `decide` or `close` clears it. A patrol
 cycle reads it with `compact=true`
 (status columns and derived flags only); `item_id`, `state`, `since` and
-`events` narrow a full read. A reply over the tool-result limit comes back as
+`events` narrow a full read. A compact or `item_id` read carries only the goal's
+first line, at most 200 characters and ending in `…` when cut; a read without
+either carries the whole goal, and `goal_id` / `goal_version` say whether it
+changed. A reply over the tool-result limit comes back as
 valid JSON marked `truncated`: event tails go first, then oversized acceptances
 are elided, then rows are dropped (closed first, then open oldest-created), and
 the newest open item is always kept. A worker writes its half with

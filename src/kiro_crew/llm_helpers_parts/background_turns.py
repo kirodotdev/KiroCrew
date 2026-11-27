@@ -16,6 +16,8 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.agent_sdk.drivers.acp_turn_vocab import (
@@ -25,6 +27,7 @@ from kiro_crew.agent_sdk.drivers.acp_turn_vocab import (
     EVENT_TOOL_CALL,
     AcpError,
 )
+from kiro_crew.agent_sdk.drivers.acp_vocab import RefusalHopText
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.llm_helpers_parts.backend_errors import is_context_overflow_error
@@ -53,6 +56,85 @@ _lite_rewrite_tasks: set[asyncio.Task[None]] = set()
 #: Session key -> the lite provider no reset has taken out since it went unvouched; the
 #: clean file does not vouch for it, and only a reset that returns forgets it.
 _lite_resets_failed: dict[str, Any] = {}
+
+
+@dataclass
+class _MemberPassRuntime:
+    """The member consolidation runtime one memory pass keeps between its model calls.
+
+    ``key`` is claimed by the pass's first member call and ``ready`` once its run
+    binding is written; ``client`` is the provider its last call ended on.
+    """
+
+    key: str = ""
+    store: str = ""
+    ready: bool = False
+    log: Any = None
+    client: Any = None
+
+
+#: The pass running on this task, inside :func:`member_consolidation_pass`.
+_member_pass: ContextVar[_MemberPassRuntime | None] = ContextVar(
+    "kirocrew_member_consolidation_pass", default=None
+)
+
+
+def begin_member_consolidation_pass() -> Token[_MemberPassRuntime | None]:
+    """Let one memory pass's member calls share one runtime until the pass ends.
+
+    A pass can make up to three model calls on a member's store (the extraction,
+    then the kind labels or the lesson quotes). Outside a pass each call starts
+    its own engine process and retires it. Inside one, the first call keeps its
+    ``memory-consolidation:<store>:<id>`` key, each later call on the same store
+    starts on a fresh conversation of that runtime (``new_conversation``), and
+    :func:`end_member_consolidation_pass` retires it the way one call's end did.
+    A call that cannot reuse it (another store, a failure, a provider without
+    ``new_conversation``) takes the one-call path.
+    """
+    return _member_pass.set(_MemberPassRuntime())
+
+
+async def end_member_consolidation_pass(
+    sessions: Any, token: Token[_MemberPassRuntime | None]
+) -> None:
+    """Retire the runtime the pass *token* opened kept, if it kept one."""
+    runtime = _member_pass.get()
+    _member_pass.reset(token)
+    if runtime is not None and runtime.key:
+        await _cleanup_memory_consolidation_session(
+            sessions, runtime.key, runtime.store, runtime.log, client=runtime.client
+        )
+
+
+async def _retire_member_call(
+    sessions: Any, key: str, memory_store: str, log: Any, *, client: Any = None
+) -> None:
+    """Retire a member consolidation call's runtime now, and drop it from its pass."""
+    runtime = _member_pass.get()
+    if runtime is not None and runtime.key == key:
+        runtime.key, runtime.ready, runtime.client = "", False, None
+    await _cleanup_memory_consolidation_session(sessions, key, memory_store, log, client=client)
+
+
+async def _fresh_member_conversation(client: Any, key: str) -> bool:
+    """Empty *client*'s conversation for the pass's next call; False when it cannot.
+
+    The conversation it leaves is deleted from the backend's own store, as the
+    retirement of a one-call runtime deletes it: a persistent provider's
+    ``new_conversation`` keeps the old record.
+    """
+    new_conversation = getattr(client, "new_conversation", None)
+    if not callable(new_conversation):
+        return False
+    retired_session_id = str(getattr(client, "session_id", "") or "")
+    try:
+        await new_conversation()
+    except Exception:
+        logger.debug("new_conversation failed for %s", key, exc_info=True)
+        return False
+    if str(getattr(client, "session_id", "") or "") != retired_session_id:
+        await _delete_retired_conversation_record(client, retired_session_id, key)
+    return True
 
 
 def _raise_if_unfinished(event: object, text: str) -> None:
@@ -204,6 +286,7 @@ async def run_bg_oneliner(
 
     async def _drive(model_to_use: str | None) -> str:
         text = ""
+        refusal = RefusalHopText()
         output_bytes = 0
         set_model = getattr(session, "set_model", None)
         # set_model resolves the preference (often "auto") against the advertised
@@ -244,6 +327,7 @@ async def run_bg_oneliner(
         # that a text-only background model rejects, so the turn goes out
         # text-only; the scrub only swaps a readable reference for the marker.
         async for event in session.prompt(strip_image_refs(prompt), allow_image=False):
+            text = refusal.fold(event, text)
             if event.kind == EVENT_TEXT_CHUNK:
                 if max_output_bytes is not None:
                     output_bytes += len(event.text.encode("utf-8"))
@@ -710,7 +794,8 @@ async def background_turn(
     ``fresh_conversation`` ends the turn's conversation before the permit is
     released, so the next caller on the key starts from an empty context (see
     :func:`_start_fresh_conversation`). It replaces the recycle for that key and
-    is ignored with ``memory_store``, whose key already lives for one turn. On the
+    is ignored with ``memory_store``, whose key lives for one turn, or for one pass
+    (:func:`begin_member_consolidation_pass`). On the
     shared ``BACKGROUND_KEY`` it applies only when the provider swaps conversations
     in place (``swaps_conversation_in_place``); otherwise the turn recycles.
 
@@ -738,14 +823,28 @@ async def background_turn(
         await asyncio.to_thread(require_memory_store, memory_store)
         if memory_store_version(memory_store) != 2:
             raise ValueError("Dedicated member consolidation requires private V2 memory")
-        key = f"memory-consolidation:{memory_store}:{uuid4().hex}"
-        log = ConversationLog()
-        try:
-            execution = execution_for_store(memory_store, template_id=agent or "kirocrew")
-            await asyncio.to_thread(bind_session_execution, key, execution)
-        except BaseException:
-            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
-            raise
+        member_pass = _member_pass.get()
+        if (
+            member_pass is not None
+            and member_pass.ready
+            and member_pass.store == memory_store
+            and member_pass.key
+        ):
+            key, log = member_pass.key, member_pass.log
+        else:
+            key = f"memory-consolidation:{memory_store}:{uuid4().hex}"
+            log = ConversationLog()
+            if member_pass is not None and not member_pass.key:
+                # Claimed before the first await, so a concurrent call cannot claim it too.
+                member_pass.key, member_pass.store, member_pass.log = key, memory_store, log
+            try:
+                execution = execution_for_store(memory_store, template_id=agent or "kirocrew")
+                await asyncio.to_thread(bind_session_execution, key, execution)
+            except BaseException:
+                await _retire_member_call(sessions, key, memory_store, log)
+                raise
+            if member_pass is not None and member_pass.key == key:
+                member_pass.ready = True
     # The pre-spawn read of the background agent's spec, before ``get_or_create``
     # can start the harness on it (see :func:`_lite_spec_unconfirmed`).
     resolved_agent = agent if agent is not None else BACKGROUND_AGENT
@@ -781,7 +880,7 @@ async def background_turn(
                 task,
             )
             if memory_store:
-                await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+                await _retire_member_call(sessions, key, memory_store, log)
             raise _lite_spec_refusal(key)
     try:
         if agent is None:
@@ -790,7 +889,7 @@ async def background_turn(
             client, _new, _resumed = await sessions.get_or_create(key, agent=agent)
     except BaseException:
         if memory_store:
-            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+            await _retire_member_call(sessions, key, memory_store, log)
         raise
     # Checked on every turn, not only when ``_new`` says the session is new: a
     # background runtime started by ``_ensure_background`` reports ``_new=False``,
@@ -822,9 +921,7 @@ async def background_turn(
         except Exception:
             logger.debug("background session release failed task=%s", task, exc_info=True)
         if memory_store:
-            await _cleanup_memory_consolidation_session(
-                sessions, key, memory_store, log, client=client
-            )
+            await _retire_member_call(sessions, key, memory_store, log, client=client)
         raise
     if unconfirmed:
         logger.warning(
@@ -849,9 +946,7 @@ async def background_turn(
             except Exception:
                 logger.debug("background session release failed task=%s", task, exc_info=True)
         if memory_store:
-            await _cleanup_memory_consolidation_session(
-                sessions, key, memory_store, log, client=client
-            )
+            await _retire_member_call(sessions, key, memory_store, log, client=client)
         raise _lite_spec_refusal(key)
     # The stats object as it stands BEFORE this turn. The shared session serves
     # many turns, and the runner replaces this object only once a turn actually
@@ -943,10 +1038,17 @@ async def background_turn(
                 logger.debug("background turn accounting failed task=%s", task, exc_info=True)
         finally:
             try:
-                if memory_store:
-                    await _cleanup_memory_consolidation_session(
-                        sessions, key, memory_store, log, client=client
-                    )
+                # A member pass keeps its runtime for the pass's next call, on an
+                # empty conversation started only after this turn is accounted
+                # for. The key is the pass's own, so no other caller waits on it.
+                member_pass = _member_pass.get() if memory_store else None
+                if member_pass is not None and member_pass.ready and member_pass.key == key:
+                    # Set first: a cancelled refresh still leaves it to the pass to retire.
+                    member_pass.client = client
+                    if not await _fresh_member_conversation(client, key):
+                        await _retire_member_call(sessions, key, memory_store, log, client=client)
+                elif memory_store:
+                    await _retire_member_call(sessions, key, memory_store, log, client=client)
                 elif fresh:
                     # The fresh conversation above already emptied the context.
                     pass

@@ -145,6 +145,7 @@ export default function ChatPane({
   onHistorySearchOpenChange,
   onHistorySearchOpener,
   hideEmptyHint,
+  noSignIn = false,
   openSideChat,
   leading,
   onFileOpen,
@@ -836,7 +837,7 @@ export default function ChatPane({
   // The slot whose playback the browser blocked, as the crewmate's
   // VoicePlaybackNotice reports it; its replies reveal their action rows.
   const [voiceRecoverySlot, setVoiceRecoverySlot] = useState<string | null>(null)
-  const { listMessages, renderers, unfold } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume, revealActions: voiceRecoverySlot === slotKey, linkPreviews: dashCfg?.link_previews === true })
+  const { listMessages, renderers, unfold } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume, noSignIn, revealActions: voiceRecoverySlot === slotKey, linkPreviews: dashCfg?.link_previews === true })
   // ⌘F / Ctrl+F opens the chat's history search while this pane offers it.
   const search = useMessageSearch(slotKey, findInChat)
   const { open: openSearch, close: closeSearch } = search
@@ -1399,14 +1400,14 @@ export default function ChatPane({
             <MateWorkerQuestions key={slotKey} root={slotKey} />
           </div>
         )}
-        {paneCrewRoot ? (
+        <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-input-width, 900px)' }}>{paneCrewRoot ? (
           <CrewWorkerComposerGate root={paneCrewRoot} worker={slotKey} workerTitle={title}
             waitingForApproval={!!paneSlot?.pending_approval} />
         ) : (
           // Without the gate (a build without conductor mode, LTS) a send the server still
           // took as a steer can come back unrecorded: say so here.
           <CrewSteerUnrecordedNotice worker={slotKey} workerTitle={title} />
-        )}
+        )}</div>
         <Composer
           ref={composerRef}
           slotKey={slotKey}

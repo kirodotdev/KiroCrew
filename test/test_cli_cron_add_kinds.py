@@ -440,7 +440,10 @@ class TestRefusals:
                 {"every": 300, "shell_command": "ls", "timeout": 3000},
                 "--timeout 3000 plus cleanup exceeds the 1800s wake budget",
             ),
-            ({"every": 300, "channel": "not a channel"}, "invalid channel ID format"),
+            (
+                {"every": 300, "channel": "not a channel"},
+                "invalid channel ID format: a Slack channel ID starts with C, D, G or W",
+            ),
             ({"every": 300, "model": "bad model!"}, f"invalid model format ({MODEL_NAME_HINT})"),
             (
                 {"every": 300, "model": "x" * 501},

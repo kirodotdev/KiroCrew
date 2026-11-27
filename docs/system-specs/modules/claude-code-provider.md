@@ -253,8 +253,9 @@ call rather than every call Claude asks about.
 
 A session that cannot run without the session options is refused below the floor:
 one that leaves the project tier out, a Side Chat, a zero-tool session such as the
-background session, or a worker with narrowed built-ins
-(`_claude_session_needs_options`). When the installed package's version is a known
+background session, a worker with narrowed built-ins, or a session that holds a
+project MCP server or runs with `strictMcpConfig` because its project MCP file could
+not be read (`_claude_session_needs_options`). When the installed package's version is a known
 version below the floor, `ClaudeLaunch.resolve_spawn` refuses it before any process
 starts (`_refuse_claude_session_below_floor_before_spawn`). A version that cannot be
 read, such as a wrapper or an override, leaves the decision to the handshake check in
@@ -265,6 +266,21 @@ person with the upgrade command (`user_worded`), so a chat surface shows them, a
 `ensure_ready` does not retry them with a fresh process: a respawn reads the same
 version. A chat that needs none of the options still starts on such an adapter,
 without Crew's MCP tools. Pinned by `test/test_claude_below_floor_before_spawn.py`.
+
+When the held project servers are the only need (`_claude_needs_options_besides_held`
+is false), the refusal is `ClaudeHeldProjectServersUnroutable` and names both ways
+forward: allow the servers, or upgrade. Its own text, which Slack and the other
+channels show, sends the person to a dashboard Claude Code chat on the same folder,
+the one place that raises these cards. The dashboard turn whose start it refuses raises the servers'
+`mcp.project_server` cards in the chat
+(`dashboard.project_mcp_cards.offer_cards_for_refused_start`) and, when at least one
+card is there, shows the refusal worded for that chat (`with_cards_shown`): it names
+the cards alone only when every held server has one, and otherwise also the servers
+left with only a notice (a secret in the launch, too large, an unusable name, past the
+card limit), which must be fixed in the file; once they are all allowed,
+nothing held remains and the next message starts the chat. The servers never run
+before that: the old adapter is never handed a session that relies on
+`disabledMcpjsonServers`.
 
 ### The agent spec's own hooks
 
@@ -494,7 +510,12 @@ own servers. Pinned by `test/test_claude_mcp_identity.py`.
 the primary spawn (not only on the model-substitution retry) with
 `permissions.defaultMode` when requested, `permissions.deny` rules derived from
 the spec's `disabledTools`, and the `permissions.ask` rules a `toolsSettings` shell
-or write allowlist needs (above). Once the provider-advertised model cache is warm it
+or write allowlist needs (above). Project-server holds belong only to the inline
+settings on `session/new`, `session/load` and `session/fork`, not this shared seed:
+`disabledMcpjsonServers` names each server of the folder's `.mcp.json` the person
+has not approved there (see the project MCP check in [security](security.md)).
+Claude Code reads those names as rejected regardless of the session's setting
+sources. Once the provider-advertised model cache is warm it
 writes `availableModels`, and only when another settings
 source (user `settings.json`, project `.claude/settings.json`, or the managed
 `managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines
@@ -983,7 +1004,16 @@ stamped with an Agent call that has no link, still yields an activity event that
 it as a child's, with no title and nothing stored. A session directive is refused
 from any call an activity event names, with or without a card (`_native_child_tc` on
 the dashboard, as the messaging driver's own set), so no child can act on the
-parent's chat. The ids outlive
+parent's chat. A call can be named a child's first on a `tool_call_update`: the
+adapter emits a call eagerly, naming no parent, when Claude Code asks permission for
+it before the spawning Agent call has streamed, and the streamed `tool_use` then
+stamps the parent on an update or routes the update to the child's session. Both
+transports mark the call on that update, ahead of the frame's own events, so a
+result on the same frame finds the mark (`client_native_children._late_child_mark`,
+`session_handle_claude_children._child_session_call_marks`). A call may be marked
+again on each later update, which is harmless: every reader of the mark is
+idempotent. A permission request the adapter sends before the parent is known
+still reads as the parent's: nothing on that request names the child. The ids outlive
 the turn, because a background child keeps running after the turn that started it;
 a later turn that reads one of its frames lists it again. The parent is the boundary,
 as for a kiro-cli child: a `spawn_continue` or `POST /api/spawn` resume naming a child

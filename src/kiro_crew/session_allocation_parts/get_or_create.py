@@ -71,6 +71,12 @@ from kiro_crew.runtime_ownership import (
     release_session_lease,
 )
 from kiro_crew.session_allocation_parts import memory_policy as _memory_policy
+from kiro_crew.session_allocation_parts.cold_start_reads import (
+    _crew_oauth_bridges_chat,
+    _held_to_parent_denies,
+    _is_crewmate_worker_key,
+    _worker_tool_limited_servers,
+)
 from kiro_crew.session_allocation_parts.errors import (
     SessionBusyError,
     SessionClosingError,
@@ -182,7 +188,9 @@ def _resume_would_move_the_session(provider: Any, stored_cwd: str) -> bool:
     return os.path.normpath(stored_cwd) != os.path.normpath(cwd)
 
 
-def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bool:
+def _stored_cwd_is_hidden_scratch(
+    stored_cwd: str, shared_scratch: object, session_key: str, backend_override: str | None
+) -> bool:
     """Whether a resumed session's recorded cwd is a scratch tree its new process cannot read.
 
     Each process gets its own directory under the scratch root, and the sandbox hides
@@ -190,8 +198,11 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     that directory as its cwd, but its next process gets a fresh tree, so the old one
     is hidden from it and the child cannot read its own working directory (kiro-cli
     exits at start-up with ``EPERM ... uv_cwd`` on macOS). The tree the spawn shares
-    (``shared_scratch``) is re-exposed to it, so a cwd inside that one is kept. With the
-    sandbox off (after the governance floor) nothing is hidden, so the cwd is kept too.
+    (``shared_scratch``) is re-exposed to it, so a cwd inside that one is kept. A session
+    that starts unsandboxed hides nothing, so its cwd is kept too: its tier is
+    ``agent.sandbox`` after the governance floor, raised to the ``agent.harness_sandbox``
+    floor of the backend the provider factory selects for *session_key* and
+    *backend_override*.
     Native Windows applies no scratch-root mask at all: a Kiro spawn is delegated to
     Kiro's own sandbox and Crew has no Windows sandbox backend, so the cwd is kept there.
     On every platform a cwd that is not a directory (the scratch sweep removed or
@@ -199,6 +210,10 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     """
     from kiro_crew import platform_compat
     from kiro_crew.agent_scratch import scratch_root
+    from kiro_crew.agent_sdk.tool_gate import harness_sandbox_mode
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.crewmate_harness import crewmate_backend_pin
+    from kiro_crew.members import select_provider_backend
     from kiro_crew.sandbox_tiers import _clamp_sandbox_mode, configured_sandbox_mode
 
     path = Path(os.path.realpath(stored_cwd))
@@ -209,11 +224,24 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     if platform_compat.IS_WINDOWS:
         return False
     try:
-        if _clamp_sandbox_mode(configured_sandbox_mode()) == "off":
-            return False
+        mode = _clamp_sandbox_mode(configured_sandbox_mode())
+        # A floor only raises a tier, so only an "off" tier needs the session's backend.
+        if mode == "off":
+            cfg = KiroCrewConfig.load()
+            backend = select_provider_backend(
+                session_key,
+                cfg.agent.member_acp_backend,
+                cfg.agent.acp_backend,
+                backend_override=backend_override,
+                crew_backend=(
+                    crewmate_backend_pin(cfg, session_key) if backend_override is None else None
+                ),
+            )
+            if harness_sandbox_mode(backend, mode, cfg.agent.harness_sandbox) == "off":
+                return False
     except Exception:
-        # An unreadable floor counts as masked: the session then starts in its
-        # default directory, which it can always read.
+        # An unreadable config or backend counts as masked: the session then starts
+        # in its default directory, which it can always read.
         pass
     if shared_scratch is not None and path.is_relative_to(os.path.realpath(str(shared_scratch))):
         return False
@@ -938,6 +966,8 @@ async def _get_or_create_impl(
             _stored_cwd_is_hidden_scratch,
             str(effective_cwd),
             readable_scratch,
+            key,
+            extra_factory_kwargs.get("backend_override"),
         )
     if cwd_is_hidden:
         cwd_kept_by_recorded_tree = False
@@ -954,7 +984,13 @@ async def _get_or_create_impl(
             return False
         if extra_factory_kwargs.get("shared_scratch") is not None:
             return False
-        if not await asyncio.to_thread(_stored_cwd_is_hidden_scratch, str(effective_cwd), None):
+        if not await asyncio.to_thread(
+            _stored_cwd_is_hidden_scratch,
+            str(effective_cwd),
+            None,
+            key,
+            extra_factory_kwargs.get("backend_override"),
+        ):
             return False
         _skip_hidden_cwd()
         # The project profile came from the dropped cwd; the default directory
@@ -1083,6 +1119,9 @@ async def _get_or_create_impl(
         # ``""`` is a Kiro request, and under a non-Kiro default the pooled
         # child is on the wrong backend for it too.
         pool_decision = "bypass_backend_override"
+    elif extra_factory_kwargs.get("clear_effort_overlay"):
+        # A pooled kiro-cli child already read the level a recorded Default must drop.
+        pool_decision = "bypass_effort"
     elif _memory_policy.warm_pool_requires_cold_start(owner):
         pool_decision = "bypass_restricted_context"
     elif await _session_runs_remotely(key):
@@ -1941,44 +1980,3 @@ async def _get_or_create_impl(
         )
 
     return result
-
-
-def _worker_tool_limited_servers(
-    key: str, mcp_carried: bool = False, native_carried: bool = False
-) -> tuple[str, ...]:
-    """The servers whose single tools worker *key*'s crewmate file turns off.
-
-    With *mcp_carried*, only the limits no MCP deny carries, less the native tools
-    the session's built-in list withholds with *native_carried*. Blocking.
-    """
-    from kiro_crew.execution_context import read_session_execution
-    from kiro_crew.mate_worker import crewmate_tool_limited_servers
-
-    execution = read_session_execution(key)
-    member_id = str(getattr(execution, "member_id", "") or "") if execution is not None else ""
-    return crewmate_tool_limited_servers(
-        member_id, mcp_tool_limits_carried=mcp_carried, native_tool_limits_carried=native_carried
-    )
-
-
-def _crew_oauth_bridges_chat() -> bool:
-    """Whether a chat session must project a Crew-owned Connection bridge. Blocking."""
-    from kiro_crew.connections import crew_oauth
-
-    return crew_oauth.bridges_chat_sessions()
-
-
-def _held_to_parent_denies(owner: Any, key: str, agent: str | None) -> bool:
-    """Whether a KAS sub-agent run on *key* carries a parent agent's denies. Blocking."""
-    from kiro_crew.acp_backends import ACP_BACKEND_KAS
-    from kiro_crew.agent_sdk.kas_subagent_runs import run_is_held
-
-    on_kas = owner._cfg.agent.acp_backend == ACP_BACKEND_KAS
-    return on_kas and run_is_held(key, agent or owner._pool_agent or "", owner._pool_cwd or "")
-
-
-def _is_crewmate_worker_key(key: str) -> bool:
-    """Whether *key* is a crewmate's own worker session (``members.is_crewmate_worker_session``)."""
-    from kiro_crew.members import is_crewmate_worker_session
-
-    return is_crewmate_worker_session(key)

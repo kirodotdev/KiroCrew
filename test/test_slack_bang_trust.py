@@ -154,6 +154,30 @@ async def test_a_thread_owned_by_a_closed_dashboard_chat_is_pointed_at_the_picke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("handler_kind", ["bot", "conductor"])
+async def test_a_thread_in_a_channel_with_a_bot_or_conductor_is_pointed_at_the_picker(
+    monkeypatch: pytest.MonkeyPatch, handler_kind
+):
+    # The channel's one chat answers this thread's next message, so a grant on the
+    # thread's own session would say Trust is on while every tool still asks.
+    from kiro_crew.slack import channel_handler
+
+    if handler_kind == "bot":
+        monkeypatch.setattr(channel_handler, "channel_bot", lambda _c: "helper")
+    else:
+        monkeypatch.setattr(channel_handler, "channel_conductor", lambda _c: object())
+    state = MagicMock()
+    state.get_linked_slot.return_value = None
+    assert await _run("", state=state) == thread_trust.LINKED_TEXT
+    assert KEY not in session_trust._trusted_sessions
+    # A grant made before the channel had a Bot or Conductor can still be seen and removed.
+    session_trust.add_trusted_session(KEY, strict=True)
+    assert await _run("status", state=state) == thread_trust.STATUS_ON_TEXT
+    assert await _run("off", state=state) == thread_trust.OFF_TEXT
+    assert KEY not in session_trust._trusted_sessions
+
+
+@pytest.mark.asyncio
 async def test_an_unlinked_thread_is_granted_with_the_dashboard_running():
     state = MagicMock()
     state.get_linked_slot.return_value = None
@@ -286,7 +310,10 @@ def _slack() -> MagicMock:
 async def test_bang_trust_posts_the_reply_in_the_thread():
     slack = _slack()
     sessions = _sessions()
-    with patch.object(handler, "_dashboard_state", None):
+    with (
+        patch.object(handler, "_dashboard_state", None),
+        patch.object(handler, "is_owner", return_value=True),
+    ):
         result = await handler._handle_slash_command(
             "!trust", slack, sessions, "C1", "t1", "m1", KEY, "UOWNER"
         )
@@ -300,7 +327,10 @@ async def test_bang_trust_posts_the_reply_in_the_thread():
 @pytest.mark.asyncio
 async def test_bang_trust_sees_the_dashboard_session_that_owns_the_thread():
     slack = _slack()
-    with patch.object(handler, "_dashboard_state", None):
+    with (
+        patch.object(handler, "_dashboard_state", None),
+        patch.object(handler, "is_owner", return_value=True),
+    ):
         await handler._handle_slash_command(
             "!trust", slack, _sessions(owner="dashboard:abc"), "C1", "t1", "m1", "slack:t1", "U"
         )
@@ -309,26 +339,29 @@ async def test_bang_trust_sees_the_dashboard_session_that_owns_the_thread():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "allowed, shared",
-    [(True, False), (False, True), (False, False)],
-    ids=["allowlisted", "shared", "stranger"],
-)
+@pytest.mark.parametrize("allowed", [True, False], ids=["allowlisted", "stranger"])
 @pytest.mark.parametrize("arg", ["", " on", " off", " status"])
-async def test_bang_trust_is_owner_only(allowed, shared, arg):
+async def test_bang_trust_refuses_a_sender_who_is_neither_owner_nor_shared(allowed, arg):
+    # A confirmed shared user's own grant: test_slack_shared_bang_trust.py.
     slack = _slack()
     with (
         patch.object(handler, "is_owner", return_value=False),
         patch.object(handler, "is_allowed_user", return_value=allowed),
-        patch.object(handler, "is_shared_user", return_value=shared),
+        patch.object(handler, "is_shared_user", return_value=False),
         patch.object(handler, "sel"),
     ):
         handled = await handler._route_bang_command(
             f"!trust{arg}", slack, _sessions(), "C1", "t1", "m1", KEY, "UOTHER", None
         )
     assert handled is True
-    slack.post_message.assert_awaited_once_with("C1", "⛔ Owner-only command.", "t1")
+    slack.post_message.assert_awaited_once_with("C1", "⛔ Not authorized.", "t1")
     assert not session_trust.is_session_trusted(KEY)
+    assert not session_trust._trusted_senders
+    if allowed:
+        # Past the router's gate, the command refuses and audits the sender itself.
+        thread_trust._audit.assert_called_once_with(
+            "UOTHER", "denied", f"session={KEY}", "unauthorized sender"
+        )
 
 
 @pytest.mark.asyncio

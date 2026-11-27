@@ -8,6 +8,7 @@ For project skills and what kiro-cli shares, see [Where Skills, Steering and Age
 
 - **Always-on skills**: `always: true` injects full content into every eligible session. A project's own always-on skills share a smaller project budget; one that does not fit is left out and listed in the session with a pointer to read it instead.
 - **On-demand skills**: the session starts with a summary; the agent can load the full file when it applies.
+- **The startup index has a limit.** The summary names each on-demand skill with its description inside a fixed character allowance (`_SKILLS_CAP` in `context_assembly/budget.py`, its own allowance rather than a share of the memory budget, so a large library costs memory nothing). Past it, the highest-ranked skills keep their rows and the index says how many skills it lists of how many; the rest stay reachable through `skill_search` and `$skillname`, but are not triggered by description. **Customize → Skills → Context budget** shows the same "N of M skills listed at session start". To keep a skill injected whatever the count, pin it with `always: true`.
 - **Triggered skills**: when `skills.max_triggered` is positive, matching positive triggers inject the skill; the default is `0`, which disables per-turn trigger matching.
 
 ## Auto-generated skills

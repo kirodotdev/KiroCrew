@@ -396,8 +396,10 @@ class OrphanStallMonitor(ManagerComponent):
             callbacks: list[Any] = []
             # A run still parking counts: its report can reach the writer thread
             # ahead of this tick before ``yield_slot`` has set ``_slot_released``.
+            # ``or None`` is the generation the park's report recorded
+            # (``_dependency_verdict``), so a run with no row matches its waiter.
             live_waiters = frozenset(
-                (task_id, info._taskq_generation)
+                (task_id, info._taskq_generation or None)
                 for task_id, info in self._manager._agents.items()
                 if not info.done
                 and not info.reaped

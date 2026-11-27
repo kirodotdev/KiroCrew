@@ -543,40 +543,27 @@ def build_session_context(
         if blocks_reads
         else _memory_provider.session_route(memory_store, session_key)
     )
-    provider_rules_index: int | None = None
-    if memory_route.replaces:
-        memory, member_vectors, activity_ranked = None, None, False
-        if not blocks_reads:
-            provider_rules_index = _memory_provider.replace_session_parts(
-                blocks,
-                memory_route,
-                memory_store=memory_store,
-                session_key=session_key,
-                execution_context=execution_context,
-                project=project,
-                query_text=query_text,
-                caps=caps,
-                include_memory=_inclusion._group_included(
-                    effective_groups, _inclusion.CONTEXT_GROUP_MEMORY
-                ),
-                include_lessons=_inclusion._group_included(
-                    effective_groups, _inclusion.CONTEXT_GROUP_LESSONS
-                ),
-            )
-    else:
-        memory, member_vectors, activity_ranked = _store_admission.session_memory_parts(
+    # Test recall's preview (``session_start_store_preview``) runs these same
+    # route helpers, so the two cannot take different branches.
+    memory, member_vectors, activity_ranked, provider_lesson_span = (
+        _store_admission.routed_memory_parts(
             self,
             blocks,
+            memory_route,
             private=private,
             blocks_reads=blocks_reads,
             effective_groups=effective_groups,
             workspace=workspace,
             memory_store=memory_store,
+            session_key=session_key,
+            execution_context=execution_context,
+            project=project,
             caps=caps,
             essentials=essentials,
             cfg=_cfg,
             query_text=query_text,
         )
+    )
     _mark("memory")
 
     # Skills. Three cases, in precedence order:
@@ -600,7 +587,11 @@ def build_session_context(
         for required_skill in required_skills:
             append_required(required_skill)
         if skills_ctx:
-            append_required(skills_ctx)
+            # The index is bounded by its own allowance (``caps.skills``, applied
+            # by the loader), not by the pool: a large skill library must not
+            # crowd the memory blocks out, and the memory blocks must not hide
+            # skill names. Pinned bodies above stay pooled, as before.
+            blocks.append_authored(skills_ctx)
     _mark("skills")
 
     # Lessons: injected for ALL agents (skipped for temporary sessions), gated
@@ -622,23 +613,20 @@ def build_session_context(
     )
     # V2 essential rules are query-free; V1 retains its query-ranked lessons.
     if memory_route.replaces:
-        lessons_part_index = provider_rules_index
-    elif (
-        memory_route.augments
-        and not blocks_reads
-        and _inclusion._group_included(effective_groups, _inclusion.CONTEXT_GROUP_MEMORY)
-    ):
-        # A read-only provider adds one background block after Crew's own blocks.
-        _memory_provider.augment_session_part(
-            blocks,
-            memory_route,
-            memory_store=memory_store,
-            session_key=session_key,
-            execution_context=execution_context,
-            project=project,
-            query_text=query_text,
-            caps=caps,
-        )
+        lessons_part_index = provider_lesson_span.rules_index
+    # A read-only provider adds one background block after Crew's own blocks.
+    _store_admission.augment_memory_part(
+        blocks,
+        memory_route,
+        blocks_reads=blocks_reads,
+        effective_groups=effective_groups,
+        memory_store=memory_store,
+        session_key=session_key,
+        execution_context=execution_context,
+        project=project,
+        caps=caps,
+        query_text=query_text,
+    )
     _mark("lessons")
 
     # Source snippets may exist only in this conversation's log, not in the

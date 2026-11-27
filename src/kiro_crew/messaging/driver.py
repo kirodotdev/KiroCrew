@@ -28,6 +28,7 @@ from typing import Any, Awaitable, Callable
 
 from kiro_crew import name_grant, redaction_seams
 from kiro_crew.acp.types import (
+    EVENT_AGENT_SWITCHED,
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -58,6 +59,7 @@ from kiro_crew.constants import (
 )
 from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.executors import run_in_tool_gate_pool
+from kiro_crew.messaging import session_trust
 from kiro_crew.messaging.alternation_echo import could_be_echo, drop_echo, echo_prefix_len, is_echo
 from kiro_crew.messaging.directive_tracker import DirectiveTracker
 from kiro_crew.messaging.driver_quoted_markers import QuotedDirectiveFilter
@@ -271,8 +273,11 @@ def empty_turn_notice(
 # kiro-cli embeds this protocol frame in ordinary agent_message_chunk text when
 # it folds a mid-turn steer. It is transport metadata, not assistant speech.
 _STEER_PREFIX = "[STEERING"
+# No ``\s*`` after the colon: the lazy group already admits that whitespace, and
+# two quantifiers that can both take it make a failed match quadratic. The one
+# reader of the group strips it.
 _STEER_MARKER_RE = re.compile(
-    r"^\[STEERING\s+steer-[0-9a-f-]+(?:\s*:\s*(.*?))?\]$",
+    r"^\[STEERING\s+steer-[0-9a-f-]+(?:\s*:(.*?))?\]$",
     re.IGNORECASE | re.DOTALL,
 )
 _MAX_STEER_MARKER_CHARS = 16_384
@@ -567,6 +572,11 @@ class TurnDriver:
         permission request in this turn is auto-approved immediately (no
         buttons, no wait). Injected by the caller to honor per-session Trust /
         global YOLO without the driver depending on any channel module.
+    auto_approve_sender:
+        Optional sync predicate ``(permission_event) -> bool``, asked after
+        ``auto_approve_session``. For a grant that covers the turn sender's own
+        calls only: it receives the EVENT so the caller can refuse a helper
+        agent's call, which arrives on the same stream.
     directive_consumer:
         Optional async callback ``(kind, args) -> None``. When set, the driver
         decodes session-directive markers from genuine directive-tool results
@@ -616,6 +626,7 @@ class TurnDriver:
         decider: ApprovalDecider | None = None,
         auto_approve_tool: AutoApprovePredicate | None = None,
         auto_approve_session: Callable[[], bool] | None = None,
+        auto_approve_sender: AutoApprovePredicate | None = None,
         deny_all_tools: bool = False,
         tool_gate: Callable[[Any], str] | None = None,
         directive_consumer: DirectiveConsumer | None = None,
@@ -650,6 +661,7 @@ class TurnDriver:
         self.decider = decider
         self.auto_approve_tool = auto_approve_tool
         self.auto_approve_session = auto_approve_session
+        self.auto_approve_sender = auto_approve_sender
         self.deny_all_tools = deny_all_tools
         # Audit identity ONLY — injected by the caller (which owns the session
         # key and agent name) so the driver's security-decision audit rows are
@@ -1205,6 +1217,10 @@ class TurnDriver:
                         )
                     )
                 await hooks.on_tool_result(event)
+            elif kind == EVENT_AGENT_SWITCHED:
+                # The harness switched this session's agent in place: a grant a
+                # sender made for their own turns named the agent before it.
+                self._end_sender_grants("agent_switched")
             elif kind == EVENT_PERMISSION_REQUEST:
                 # Untrusted sender: no tool runs, full stop. This precedes even
                 # the PreToolUse gate's auto_approve branch and the
@@ -1402,6 +1418,8 @@ class TurnDriver:
                     _auto_reason = "hook_auto_approve"
                 elif self.auto_approve_session is not None and self.auto_approve_session():
                     _auto_reason = "session_trust"
+                elif self.auto_approve_sender is not None and self.auto_approve_sender(event):
+                    _auto_reason = "sender_trust"
                 if _auto_reason:
                     approval_sent = await self.provider.approve_tool(event.request_id)
                     sel().log_api_access(
@@ -1591,6 +1609,21 @@ class TurnDriver:
             # it abandoned, or one that ended on a refusal or an error.
             await hooks.stop(accumulated)
         return accumulated
+
+    def _end_sender_grants(self, reason: str) -> None:
+        """Drop the grants senders made for their own turns on this session, audited."""
+        _lost = session_trust.trusted_senders(self.audit_session_key)
+        if session_trust.drop_trusted_senders(self.audit_session_key):
+            sel().log_api_access(
+                caller="turn_driver",
+                operation="sender_trust",
+                outcome="allowed",
+                source="messaging",
+                resources=(
+                    f"session={self.audit_session_key} senders={','.join(_lost)} "
+                    f"mode=normal reason={reason}"
+                ),
+            )
 
     async def _steer_deny_cause(self, event: Any) -> None:
         """Explain a host-caused denial to the model before the reject goes out.

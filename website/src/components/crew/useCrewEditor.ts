@@ -58,6 +58,7 @@ import { modelSupportsEffort } from '../../lib/effort'
 import { type TemplateProvenance } from '../../lib/templateSource'
 import type { OpenMateSessionsState } from '../../lib/crewMode'
 import { INHERIT_MODEL } from './crewFields'
+import { memoryRoute } from '../../pages/settings/memoryRoute'
 
 export { INHERIT_MODEL }
 
@@ -1014,7 +1015,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   const isDefaultCrew = editing === defaultAgent
   const memberNames = useMemo(() => agents.map(a => a.name), [agents])
   const navigateManageMemory = useCallback(() => {
-    const to = `/settings/overview?view=memory&store=${encodeURIComponent(editing === 'default' ? 'default' : memoryStore)}`
+    const to = memoryRoute({ store: editing === 'default' ? 'default' : memoryStore })
     leave(() => navigate(to), to)
   }, [navigate, editing, memoryStore, leave])
   // A guarded navigate for the embedded sub-sections (CrewWakeSection's

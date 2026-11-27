@@ -84,6 +84,7 @@ from kiro_crew.slack.handler import (
     add_trusted_session,
     channel_agent_mismatch,
     channel_pinned_agent,
+    grant_own_trust,
     handle_interaction,
     handle_message,
     is_allowed_user,
@@ -119,6 +120,7 @@ from kiro_crew.slack.shared_access import (
     shared_action_permitted,
     shared_command_refused,
 )
+from kiro_crew.slack.transport_dispatch import flat_dm_session_key
 from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:
@@ -741,6 +743,12 @@ async def dispatch(payload: dict) -> None:
             _thread = payload.get("message", {}).get("thread_ts") or ""
             await _tell_user(channel, user_id, _thread, _why)
             return
+        if pressed_trust and is_shared_listed(user_id):
+            # A shared user's grant below reads the code-channel store with nothing
+            # awaited before the answer: load it off the loop here.
+            from kiro_crew.slack.code_channels.store import store as _code_channel_store
+
+            await asyncio.to_thread(_code_channel_store().load)
         # Inbound channels-governance gate: a button press resolves a tool approval
         # (executes the governed tool) or a Trust escalation, so a channels policy
         # that denies ``slack`` must stop it — same gate as an inbound message.
@@ -770,7 +778,8 @@ async def dispatch(payload: dict) -> None:
         # The policy is read here, after the channels await, and the label and audit
         # say "trusted" only when the grant really took: under a ``permission_mode``
         # deny of ``trust`` the press approves this one tool.
-        is_trust = False
+        is_trust = own_trust = _flat_dm = False
+        _shared_press = is_shared_listed(user_id)
         # Asked again after the channels await: a shared user removed during it
         # widens nothing.
         if (
@@ -781,7 +790,24 @@ async def dispatch(payload: dict) -> None:
             sess_key = SlackApprovalDecider.session_for(approval_key, nonce=press_nonce)
             # No live prompt answers to this press, so there is no session to widen.
             # Granting on the empty key would escalate whatever later reads it.
-            if sess_key:
+            if sess_key and _shared_press:
+                # A shared user's press covers their own turns in this thread, never
+                # the session: the owner's turns and another shared user's still
+                # ask. Where the thread cannot hold that grant, the press approves
+                # this one tool. Granted before the answer, as the owner's is: the
+                # turn driver sends the tool after this press returns, so a gate
+                # that then blocks the tool leaves the grant, and the card's words
+                # ("Blocked tools stay blocked") still hold.
+                own_trust = grant_own_trust(
+                    _orch.sessions if _orch else None,
+                    sess_key,
+                    user_id,
+                    channel,
+                    payload.get("message", {}).get("thread_ts") or "",
+                )
+                # A single-session DM is one session: the grant covers all of it.
+                _flat_dm = sess_key == flat_dm_session_key(channel, None, enabled=True)
+            elif sess_key:
                 add_trusted_session(sess_key, _orch.sessions if _orch else None)
                 is_trust = is_session_trusted(sess_key)
         resolved = SlackApprovalDecider.resolve_global(approval_key, approved, nonce=press_nonce)
@@ -791,8 +817,14 @@ async def dispatch(payload: dict) -> None:
         elif is_trust:
             label = "🔓 Trusted this session — tools auto-approved"
             outcome = "trusted"
+        elif own_trust:
+            label = SHARED_TRUST_ON_TEXT.format(
+                where=SHARED_TRUST_IN_FLAT_DM if _flat_dm else SHARED_TRUST_IN_THREAD
+            )
+            outcome = "trusted_own_turns"
         elif approved:
-            label = "✅ Approved"
+            # A shared user's Trust press that granted nothing says so.
+            label = SHARED_TRUST_ONE_TOOL_TEXT if pressed_trust and _shared_press else "✅ Approved"
             outcome = "approved"
         else:
             label = "🚫 Denied"
@@ -1166,6 +1198,10 @@ from kiro_crew.slack.interactions_approvals import _handle_bridge_action  # noqa
 from kiro_crew.slack.interactions_approvals import _handle_tool_approval  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _owner_only_text  # noqa: E402
 from kiro_crew.slack.interactions_approvals import APPROVAL_NOT_WAITING_TEXT  # noqa: E402
+from kiro_crew.slack.interactions_approvals import SHARED_TRUST_ON_TEXT  # noqa: E402
+from kiro_crew.slack.interactions_approvals import SHARED_TRUST_IN_FLAT_DM  # noqa: E402
+from kiro_crew.slack.interactions_approvals import SHARED_TRUST_IN_THREAD  # noqa: E402
+from kiro_crew.slack.interactions_approvals import SHARED_TRUST_ONE_TOOL_TEXT  # noqa: E402
 from kiro_crew.notifications.bridge_actions import (  # noqa: E402
     SLACK_ACTION_PREFIX as BRIDGE_SLACK_ACTION_PREFIX,
 )

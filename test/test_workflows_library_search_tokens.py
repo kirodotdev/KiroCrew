@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+import pytest
+
+from kiro_crew.workflows import library as workflow_library
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary
+
+
+@pytest.fixture(autouse=True)
+def _no_builtin_workflows(tmp_path, _floor_monkeypatch):
+    """These tests rank what the library folder holds, so the shipped
+    built-in tier is left out; ``test_workflows_builtin.py`` covers it."""
+    _floor_monkeypatch.setattr(
+        workflow_library, "BUILTIN_WORKFLOWS_DIR", tmp_path / "no-builtin-workflows"
+    )
+
 
 # A script whose only short tokens are one- and two-letter identifiers. None of
 # its words share a meaningful prefix with the query used below.

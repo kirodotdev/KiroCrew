@@ -40,6 +40,7 @@ from kiro_crew.sandbox_probe import (
     _PROBE_TRANSIENT_RETRY_DELAY_SECS,
     _WARM_JOIN_TIMEOUT_SECS,
     REMEDY_MOUNT_DENIED,
+    REMEDY_USERNS_CAP_ZERO,
     _inside_kirocrew_sandbox,
     _inside_macos_sandbox,
     _linux_remedy_guidance,
@@ -61,15 +62,19 @@ from kiro_crew.sandbox_tiers import (
     warn_readonly_layer_unenforced,
 )
 from kiro_crew.sandbox_unavailable import (
+    CONFIG_MISSING,
+    CONFIG_UNREADABLE,
     UNSANDBOXED_BY_OPERATOR,
     UNSANDBOXED_BY_PLATFORM,
     SandboxUnavailableError,
     _allow_no_isolation,
     _allow_unsandboxed_exec,
     _classify_unavailable,
+    _config_not_read,
     _first_party_no_backend_passthrough,
     _forward_for_effective_tier,
     _no_backend_guidance,
+    _platform_allows_unsandboxed,
     _unsandboxed_exec_key_declared,
     _unsandboxed_grant_source,
     _warn_mode_off_unconfined,
@@ -183,6 +188,28 @@ def remedy_guidance(remedy: str) -> str:
     for a mechanism instead of maintaining a drifting copy.
     """
     return _linux_remedy_guidance(remedy)
+
+
+def remedy_recovery(remedy: str, transient: bool) -> str:
+    """Public: what happens once the operator fixes the host, for a ``REMEDY_*`` token.
+
+    ``""`` for every token but :data:`REMEDY_USERNS_CAP_ZERO`, whose recovery turns
+    on the cache policy alone: an ENOSPC verdict (``transient``) is never cached, so
+    the next spawn sees a raised cap without a restart, while an EUSERS verdict is
+    cached until the gateway restarts. Shared by the refusal text and doctor so the
+    two state the same rule for the same verdict.
+    """
+    if remedy != REMEDY_USERNS_CAP_ZERO:
+        return ""
+    if transient:
+        return (
+            "This result is not cached: the next spawn checks the host again, so no "
+            "restart is needed once the value is raised. "
+        )
+    return (
+        "This result is cached for the life of the gateway, so restart the gateway "
+        "after raising the value. "
+    )
 
 
 # ── Background warm thread (never-block-on-loop policy) ──
@@ -319,6 +346,9 @@ def _probe_unshare() -> bool:
     a sandbox backend.
     """
     global _last_unshare_failure
+    if sys.platform == "win32":
+        _record_probe_failure(False, "Kiro Crew has no OS sandbox backend on Windows")
+        return False
     if sys.platform != "linux":
         _record_probe_failure(False, "not Linux")
         return False
@@ -496,13 +526,21 @@ def detect_backend(config_mode: str = "auto") -> str:
     elif _probe_sandbox_exec():
         _backend = "sandbox-exec"
     else:
-        transient, reason, _remedy = _last_unshare_failure or (False, "none", "")
+        transient, reason, remedy = _last_unshare_failure or (False, "none", "")
         if transient:
-            logger.warning(
-                "Sandbox backend probe failed transiently (%s); result NOT cached — "
-                "the next spawn re-probes",
-                reason,
-            )
+            if remedy == REMEDY_USERNS_CAP_ZERO:
+                logger.warning(
+                    "Sandbox backend unavailable: user namespaces are disabled on this "
+                    "host (user.max_user_namespaces=0; %s); result NOT cached — the next "
+                    "spawn checks again",
+                    reason,
+                )
+            else:
+                logger.warning(
+                    "Sandbox backend probe failed transiently (%s); result NOT cached — "
+                    "the next spawn re-probes",
+                    reason,
+                )
             return "none"
         _backend = "none"
     logger.info("Sandbox backend: %s (config_mode=%s)", _backend, config_mode)
@@ -1090,18 +1128,26 @@ def wrap_argv(
                 and not governance_floor
             ):
                 return _first_party_no_backend_passthrough(argv, sandbox_level, strip_python_env)
-            if transient:
-                # The mechanism follows the retry advice rather than leading it: the
-                # cap case is permanently reported transient, so withholding it here
-                # would leave doctor and the logs unable to name the one sysctl that
-                # fixes the host, while leading with it would read as "reconfigure"
-                # to someone whose host is merely busy.
+            if transient and probe_remedy != REMEDY_USERNS_CAP_ZERO:
+                # The ambiguous cap token follows the retry advice rather than
+                # leading it: an ENOSPC whose cap did not read as 0 may be momentary
+                # pressure, so leading with the sysctl would read as "reconfigure" to
+                # someone whose host is merely busy, while withholding it would leave
+                # a host at its cap unable to learn which sysctl fixes it.
                 guidance = (
                     "This probe failure looks TRANSIENT (momentary resource "
                     "pressure) — it is not cached and the next spawn re-probes "
                     "automatically. Do NOT disable the sandbox for this; retry "
                     "instead. "
                 ) + _linux_remedy_guidance(probe_remedy)
+            elif probe_remedy == REMEDY_USERNS_CAP_ZERO:
+                # The cap read as 0, so the cause is certain for either cache policy:
+                # name the disabled cap and how this verdict recovers, ahead of the
+                # container and no-backend branches, whose opt-out text does not fit
+                # a host whose fix is one sysctl.
+                guidance = _linux_remedy_guidance(probe_remedy) + remedy_recovery(
+                    probe_remedy, transient
+                )
             elif _inside_macos_sandbox():
                 # Nesting under a FOREIGN sandbox — say so, and point at the
                 # config-level fix that hands isolation back to Kiro Crew's own
@@ -1261,8 +1307,46 @@ def wrap_argv(
                     "platform's default) if you want these spawns to run unconfined. "
                 )
             else:
-                sel_reason = "No sandbox backend available and allow_unsandboxed_exec is not set"
-                refusal = "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
+                # When no config file was read the gate keeps its fail-closed
+                # default even where the platform default allows, on purpose: a
+                # missing or broken config must never loosen the sandbox. Saying
+                # "is not set" there would send the reader to set a key that may
+                # already be set, or that the platform would already supply.
+                config_state = _config_not_read()
+                if config_state == CONFIG_UNREADABLE:
+                    sel_reason = (
+                        "No sandbox backend available and the config file holding "
+                        "allow_unsandboxed_exec could not be read"
+                    )
+                    refusal = (
+                        "Sandbox backend unavailable and Kiro Crew could not read "
+                        "~/.kiro/crew/config.json (or config.local.json), so it refuses "
+                        "unsandboxed execution (agent.sandbox_allow_unsandboxed_exec). Make "
+                        "the file readable, valid JSON (the gateway log says why after "
+                        "'Failed to load config' or 'Config is not a JSON object'). "
+                    )
+                    if sys.platform == "win32":
+                        # Windows guidance says to edit the key, which a file that
+                        # cannot be read cannot take; the sentence above is the remedy.
+                        guidance = ""
+                elif config_state == CONFIG_MISSING and _platform_allows_unsandboxed():
+                    sel_reason = (
+                        "No sandbox backend available and no config file exists to "
+                        "read allow_unsandboxed_exec from"
+                    )
+                    refusal = (
+                        "Sandbox backend unavailable and there is no "
+                        "~/.kiro/crew/config.json, so Kiro Crew cannot tell whether "
+                        "unsandboxed execution (agent.sandbox_allow_unsandboxed_exec) is "
+                        "allowed and refuses it. Restart the "
+                        "gateway (`kirocrew restart`), which writes a default "
+                        "config.json when none exists. "
+                    )
+                else:
+                    sel_reason = (
+                        "No sandbox backend available and allow_unsandboxed_exec is not set"
+                    )
+                    refusal = "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
             # Emit SEL audit event for this security-relevant denial so it
             # appears in the tamper-evident audit log (security-review requirement).
             try:
@@ -1287,12 +1371,12 @@ def wrap_argv(
                 detail=probe_reason,
                 # A transient verdict is never cached, so the host is free to
                 # recover on the next call — but it can still name a mechanism.
-                # `user.max_user_namespaces` exhaustion surfaces as ENOSPC, which
-                # is indistinguishable from momentary fd/disk pressure, so a
-                # configured cap of 0 is permanently reported as transient. Withholding
-                # the remedy there leaves the one host this token exists for with
-                # no way out; the steps are framed as "if this keeps happening" so
-                # they never read as advice to reconfigure a merely busy host.
+                # A NEWUSER ENOSPC is the user-namespace cap or momentary fd/disk
+                # pressure; the probe reads user.max_user_namespaces to tell a cap
+                # of 0 apart (REMEDY_USERNS_CAP_ZERO, named as a disabled cap) and
+                # otherwise keeps the ambiguous token, whose steps are framed as
+                # "if this keeps happening" so they never read as advice to
+                # reconfigure a merely busy host.
                 remedy=probe_remedy,
             )
         # Permitted: audit, warn (or info), and return unmodified argv.

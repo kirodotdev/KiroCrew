@@ -12,6 +12,7 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import _is_turn_inject
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.session import process_shutdown_requested
 
 if TYPE_CHECKING:
@@ -139,6 +140,25 @@ def _local_turn_opening_row(
             # back as the user's own transcript row. Over the bound, the
             # generation alone marks the turn.
             return copy if local_turn_prompt_within_bounds(copy) else None
+    return None
+
+
+def unanswered_turn_opener(slot: _ChatSlot) -> "dict[str, Any] | None":
+    """The newest row of *slot* when it opens a turn that nothing came back for.
+
+    A queued follow-up's placeholder and assistant system notices are looked
+    through; any other row (a reply, a streamed chunk, a tool row, an error, a
+    ``notice`` such as the empty-response one, a Stop card, a cycle's ``done``)
+    means the turn ran.
+    """
+    for row in reversed(slot.messages):
+        role = row.get("role")
+        meta = row.get("meta")
+        if role == "queued" or is_system_notice(role, meta):
+            continue
+        if role in _LOCAL_TURN_OPENER_ROLES or (role == "inject" and _is_turn_inject(meta)):
+            return row
+        return None
     return None
 
 

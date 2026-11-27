@@ -10,7 +10,7 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_agent``, ``_agent_env_snapshot``, ``_mcp_json_names``,
-``_mcp_ref_spec``.
+``_mcp_ref_spec``, ``_mcp_spec_dropped``.
 
 Instance fields read: ``_native_skill_projection``, ``_session_key``,
 ``_stub_session_token``, ``_work_dir``.
@@ -34,6 +34,7 @@ from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
 from kiro_crew.acp.launch import LaunchTools
+from kiro_crew.acp.mcp_prune import spec_dropped_servers
 from kiro_crew.acp.node_compile_cache import apply_node_compile_cache
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
@@ -358,11 +359,19 @@ def resolve_codex_cli() -> CodexCliResolution:
     if len(adapter_argv) > 2:
         return unresolved
     entry = os.path.realpath(adapter_argv[-1])
+    shim_target = launch_mod._npm_windows_shim_target(
+        adapter_argv[-1], CODEX_ACP_BIN, _CODEX_ACP_PKG_ENTRY
+    )
     if len(adapter_argv) == 2:
         node: str | None = adapter_argv[0]
     elif Path(entry).suffix.lower() in _NODE_SCRIPT_SUFFIXES:
         # An executable npm bin link (``npm i -g``): the ladder runs it as-is and its
         # shebang picks node. The same node rungs the ladder uses for a script.
+        node = _node_for_script(entry, search_path)
+    elif shim_target is not None:
+        # An npm Windows shim (``npm i -g`` there writes text shims, not links): the
+        # Codex dependency is found from the adapter script the shim launches.
+        entry = os.path.realpath(shim_target)
         node = _node_for_script(entry, search_path)
     else:
         # A native adapter or a launcher shim (Volta, asdf): no node_modules tree
@@ -919,6 +928,9 @@ def _prepare_spawn_workspace(self: AcpClient) -> None:
         raise AcpError(str(exc)) from exc
     self._mcp_ref_spec = self._read_mcp_ref_spec()
     self._mcp_json_names = mcp_json_server_names(self._mcp_ref_spec, self.backend, self._work_dir)
+    # The servers the spec writer dropped for a command not found: the array never
+    # carries them, so the report names them (``_begin_session_report``).
+    self._mcp_spec_dropped = spec_dropped_servers(self._agent, self._mcp_ref_spec)
 
 
 def _agent_env_for_spawn(self: AcpClient) -> dict[str, str]:

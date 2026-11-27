@@ -339,7 +339,7 @@ class TestFindServerSpecAnywhere:
         self, agents_dir_resolver
     ):
         from kiro_crew import template_mcp_additions
-        from kiro_crew.mcp_provenance import DERIVED_KEY, WITHHELD_KEY
+        from kiro_crew.mcp_provenance import DERIVED_KEY, SOURCE_KEY, WITHHELD_KEY
 
         _plant(
             agents_dir_resolver,
@@ -347,11 +347,13 @@ class TestFindServerSpecAnywhere:
             {
                 "name": "kirocrew",
                 "mcpServers": {
+                    # Short values: the planted file must stay under the read cap.
                     "derived-hr": {
-                        "command": "/opt/bin/derived-hr",
+                        "command": "/o/d",
                         "args": [],
-                        DERIVED_KEY: {"from": "derived-hr", "emitted": "/opt/bin/derived-hr"},
+                        DERIVED_KEY: {"from": "d", "emitted": "/o/d"},
                         WITHHELD_KEY: True,
+                        SOURCE_KEY: "a:b",
                         "disabled": True,
                     }
                 },
@@ -360,7 +362,7 @@ class TestFindServerSpecAnywhere:
 
         found = _find_server_spec_anywhere("derived-hr")
 
-        assert found == {"command": "/opt/bin/derived-hr", "args": []}
+        assert found == {"command": "/o/d", "args": []}
         # request_server records this copy, and the record refuses any key it does
         # not know (unknown_key), so a derived server is addable only without them.
         assert template_mcp_additions.validate_entry(found) == found
@@ -1185,6 +1187,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # One read: the configured-server mint resolves the server's URL from the
     # owner's main spec, so the caller never supplies it.
     "kiro_crew/dashboard/handlers/connections.py": [("connections_mint", "dashboard")],
+    "kiro_crew/dashboard/handlers/mcp_agent_sync.py": [("mcp_app_owned_servers", "dashboard")],
     "kiro_crew/dashboard/handlers/mcp_config_entries.py": [("mcp_find_server_spec", "dashboard")],
     "kiro_crew/dashboard/handlers/mcp_gateway_routes.py": [
         ("mcp_server_rows", "dashboard"),
@@ -1468,6 +1471,8 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("mcp_overlay_rewrite", "unknown"),
     ],
     "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],
+    # The value-free folder-use scan reads the same agent and crewmate files.
+    "kiro_crew/mcp_gateway/folder_use.py": [("mcp_folder_facts", "unknown")],
     "kiro_crew/slack/handler_runtime/agent_names.py": [("slack_resolve_agent", "slack")],
     # A spawn refused because the parent's allowlist is unknown names each spec
     # the reader refused; this re-read keeps the error class for that text.
@@ -1520,6 +1525,8 @@ _EXPECTED_DECLARED_ENTRY_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 
 
 _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    # The KAS session start's held-file refusal, under the projection's label.
+    "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
     # The kiro-cli view's source for a contested name, and the launch refusal for
     # handing kiro-cli the authored name of one.
     "kiro_crew/acp/skill_projection_parts/preparation.py": [("native_skill_projection", "acp")],

@@ -560,6 +560,20 @@ Error split at the store API: an unknown identity kind raises `ValueError` (HTTP
 400 at the API layer); a vault read/write failure raises `TokenStoreError` (coded
 HTTP 500) — a logout that could not remove the credential never reports success.
 
+A vault no key can open again is replaced by the next save (a sign-in, or a
+refresh), never deleted (`TokenStore._set_aside_unopenable_vault`). Unopenable means `secrets.enc` exists
+and `.vault_key` is missing or not 32 bytes, or the store is not a vault envelope.
+`SecretVault` refuses to mint a key over an existing store, so before this every
+later sign-in failed with `token_store_failed` and the sign-in card said only
+"Could not check the sign-in stored in Kiro Crew". When `save` hits that refusal it
+renames `secrets.enc` (and a wrong-length key) to `<name>.corrupt-<UTC time>`
+beside the vault, under the vault's flock, and writes a new vault. A wrong-length
+key moves before its store, so a rename that fails part way leaves a store with no
+key, which the next save recovers. A key file that
+exists but cannot be read (a lock, a privacy prompt) is not lost: the files stay and
+the save fails as before. The card's notice for an unreadable store says to sign in
+again, which is the way forward with no terminal.
+
 Priority when multiple credentials exist (`store._PRIORITY`, mirroring kiro-cli
 `auth/mod.rs`): **External IdP > Builder ID > Identity Center > Social**, then
 `KIRO_API_KEY` env as final fallback.
@@ -602,7 +616,9 @@ access token.
   `GET /api/kas-login/sources` (`dashboard/handlers/kas_login._require_owner`, i.e.
   `is_owner_dashboard_request`: the owner and Shared Crew teammates with owner rights).
   Anyone else, an app token included, gets an audited 403 `owner_only` before the
-  store or the config is read.
+  store or the config is read. A dashboard session signed before the owner was
+  configured gets the audited 401 `stale_session_reauth` instead
+  (`_owner_denial_response`), as on the other owner gates.
 - The loopback sign-in listener (`auth/login/portal.py:bind_allowed_port`) claims its
   port per platform: `SO_REUSEADDR` on POSIX (a rebind through `TIME_WAIT`; a live
   listener still refuses it) and `SO_EXCLUSIVEADDRUSE` on Windows, where two listeners
@@ -853,7 +869,8 @@ engine instead ([aws-control.md](aws-control.md)).
   `GET /api/kas-login/sources` (`dashboard/handlers/kas_login_sources.py`), which sits
   on the dashboard listener behind the same token check as `GET /api/kas-login` and
   the same owner gate as the sign-in routes (`is_owner_dashboard_request`: the owner
-  and Shared Crew teammates with owner rights; anyone else gets an audited 403 `owner_only`
+  and Shared Crew teammates with owner rights; anyone else gets an audited 403 `owner_only`,
+  or 401 `stale_session_reauth` for a session signed before the owner was configured,
   before any store read or `whoami`), and changes nothing: it reports both stores by presence
   (`lts_sign_in.stored_sign_ins`), which of the two a new session uses, and whether
   they are one account (`lts_sign_in.same_account`, the one function that decides it:
@@ -874,7 +891,36 @@ engine instead ([aws-control.md](aws-control.md)).
   on (`kas_route.relay_runs_on_kiro_cli_sign_in`), the card says Kiro Agent is using
   the Kiro CLI sign-in; when signing in here would also move new chats to the built-in
   engine (`sign_in_moves_to_engine` on `GET /api/kas-bundle`, the read behind the chat's
-  sign-in card), it says that too. Usable (`kiro_cli.usable`) follows the edition: on oss it
+  sign-in card), it says that too. When the main harness is Kiro CLI (`agent.acp_backend` loads
+  as `kiro`: a Kiro CLI pick the gateway has not moved onto KAS, so sessions start
+  kiro-cli's v2 launch, which never asks Crew for a credential), the answer carries
+  `kiro_cli_harness: true` and `active` follows kiro-cli's own login alone, whatever
+  the vault holds. The checks run in order: a `KIRO_API_KEY` that reaches kiro-cli
+  (`kas_route.kiro_cli_api_key_set`) means `kiro_cli`; a relocated kiro-cli data home
+  (`agent_sdk.kas_bundle.kiro_cli_identity_store_is_relocated`, the same check as
+  `kas_route.kiro_cli_signed_out`) means `unknown`, even if the fixed default store
+  holds a leftover login. No redirected credential path is read. Otherwise a login
+  in the default store means `kiro_cli`, an unreadable store means `unknown`, and
+  `none` is returned only when `kas_route.kiro_cli_signed_out` proves it signed out;
+  anything else is `unknown`. `can_use_kiro_cli` is false there. On this harness,
+  the default stored login is named only when no `KIRO_API_KEY` reaches kiro-cli,
+  its data home is not relocated, and the default store holds a login. An API key,
+  relocated home or unknown login environment publishes no `account_type`,
+  `portal_host` or `email` in `kiro_cli`, starts no `whoami` read, and leaves both
+  `name_pending` and `name_unreadable` false. The notice uses the existing unnamed
+  body, and the header does not take an account name from the `kiro-usage` cache
+  when sources names none. The KAS path keeps its existing name and usage reads.
+  The relay check still runs on every harness and the answer reports it as
+  `relay_runs_on_kiro_cli`: the Kiro Agent row on Agent Harness says "Using your Kiro
+  CLI sign-in" on the Kiro CLI harness only when that is true (a configured bundle,
+  say, makes it false and the row says "Not signed in"). The
+  card then says the agents run as the Kiro CLI account, that only Kiro Agent uses a
+  sign-in made on the card, and links to Agent Harness to switch; with kiro-cli
+  signed out it says the agents cannot start, leads with choosing Kiro Agent (the
+  dashboard way forward, which runs on the card's sign-in) and names `kiro-cli login`
+  second, since the dashboard has no control that signs kiro-cli in. It never
+  compares the two accounts on that harness.
+  Usable (`kiro_cli.usable`) follows the edition: on oss it
   means stored, the presence rule the relay itself decides by
   (`kas_route.kiro_cli_signed_out`), because kiro-cli renews its own access token when
   it runs, so a token past its lifetime (about an hour) still runs sessions; on an
@@ -1058,20 +1104,29 @@ engine instead ([aws-control.md](aws-control.md)).
   same read says the built-in engine is on (`engine_choice: "engine"` on
   `GET /api/kas-bundle`: the saved `agent.kas_bundle`, else the build's
   preference) and the caller may do setup (`setup_allowed`), the hold shows
-  `FirstRunHarnessSetup` instead of `KasLoginGate`:
-  pick a harness (Built-in harness first and picked; Kiro CLI always listed, with
-  its install command while it is missing and Continue off while it is picked;
-  the rest behind "Other harnesses", from the same `harnessList` and
-  `HarnessPickerList` Settings > Agent Harness uses, so a harness the
-  deployment's policy denies gets no row; with KAS denied, Kiro CLI is saved as
-  itself), sign in through the shared
-  `KiroSignInFlow`, then "You're all set". The pick is saved with the keys
+  `FirstRunHarnessSetup` instead of `KasLoginGate`. Its first screen carries the
+  shared `KiroSignInFlow` choices inline; a sign-in that lands there saves the
+  built-in harness, then "You're all set" (with a sign-in already stored, one
+  "Continue with Kiro" does the same). With Kiro CLI installed and signed in, a
+  "Continue with Kiro CLI" saves it in one click. "Bring your harness" shows one line
+  naming what only a Kiro sign-in gives (the built-in harness and Kiro models,
+  the rows of `KiroAccountUnlocks`), then one list: Kiro CLI first and always
+  listed, with its install command while it is missing and Continue off while it
+  is picked, then the rest, from the same `harnessList` and `HarnessPickerList`
+  Settings > Agent Harness uses, so a harness the deployment's policy denies
+  gets no row. Back returns to the first screen. Where the built-in harness cannot
+  run here (`host_unsupported`, whose text replaces that line) or KAS is denied
+  (then Kiro CLI is saved as itself), the step opens on the list with no Back.
+  The pick is saved with the keys
   Settings writes (`agent.acp_backend`, `agent.kas_bundle`); no chat exists yet,
   so there is no restart prompt, and each spawn reads `agent.kas_bundle` afresh.
-  A failed save stays on the choice with its error, and the pick cannot change
-  while it saves; a picked harness that is not usable yet gets Check again.
-  Kiro CLI picked here gets no Kiro Crew sign-in offer on "You're all set": the
-  person chose it. "Set up later" admits as Skip does. With the engine off, the hold is exactly
+  A failed save stays on its screen with its error, naming the button that
+  retries it, and neither the pick nor the screen can change while it saves; a picked harness that is not usable yet gets Check again.
+  "You're all set" centers the ghost under one burst of confetti
+  (`FirstRunConfetti`): it plays once and ends still, throws the same pieces
+  every time, uses theme colours only, and renders nothing under
+  `prefers-reduced-motion`. Kiro CLI picked here gets no Kiro Crew sign-in offer
+  on "You're all set": the person chose it. "Set up later" admits as Skip does. With the engine off, the hold is exactly
   the sign-in above. Until the hold has decided (status or agent unknown on a
   browser that never finished setup, or the read in flight) the app stays hidden
   once an early read, under its own query key, says the engine is on, for at

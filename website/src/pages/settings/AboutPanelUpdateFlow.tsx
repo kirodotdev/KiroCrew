@@ -66,6 +66,22 @@ export const APPLY_START_GRACE_MS = 30_000
 export const AGENT_REQUEST_POLL_MS = { value: 5000 }
 
 /**
+ * Whether an approved in-app update of `offered` waits only for a restart:
+ * 'installed' beside the running version, or 'armed' to install at the next
+ * start (a gateway that runs from the stable link). Read from the status frame,
+ * never a card's own phase, so a reload keeps it, and only a cancelled arm
+ * brings Update back. Only the offered version counts: a Check that found a
+ * newer build keeps its Update, even while the frame names the staged one.
+ */
+export function useInstalledAndWaiting(offered: string): 'installed' | 'armed' | null {
+  const staged = useAppSelector(s =>
+    s.dashboard.status?.update_restart_ready === true ? s.dashboard.status?.update_restart_ready_version || '' : '')
+  const armed = useAppSelector(s => s.dashboard.status?.update_armed_version) || ''
+  if (!offered) return null
+  return staged === offered ? 'installed' : armed === offered ? 'armed' : null
+}
+
+/**
  * Copy a command and report the OUTCOME. `copyToClipboard` resolves `false`
  * when the legacy fallback fails without throwing (plain-HTTP remote gateway —
  * exactly the deployment these commands target) and rejects when both paths
@@ -255,6 +271,7 @@ function isOfferGoneCode(code: string | null): boolean {
 
 export function InAppUpdateFlow({
   version,
+  rawVersion,
   manualCommand,
   isChannelMove,
   onHandoff,
@@ -269,6 +286,8 @@ export function InAppUpdateFlow({
    * the stable channel names a prerelease that the user did not choose.
    */
   version: string
+  /** Raw offered build for exact status matching; labels may fold stable versions. */
+  rawVersion?: string
   manualCommand: string
   /**
    * True when the target is the followed lane's release rather than a newer
@@ -283,7 +302,7 @@ export function InAppUpdateFlow({
   /** Disable hand-off where an enforcement overlay must remain visible. */
   askAgent?: boolean
 }) {
-  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'staged' | 'failed' | 'expired' | 'ended'>('idle')
+  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'done' | 'failed' | 'expired' | 'ended'>('idle')
   const [armed, setArmed] = useState<{
     approveCommand: string
     /**
@@ -357,6 +376,9 @@ export function InAppUpdateFlow({
   const noticeRetiredByNextOffer = useRef(false)
   useEffect(() => {
     setOfferVoid(false)
+    // A finished apply belongs to the version it installed: a newer offer gets
+    // its own Update.
+    setPhase(p => (p === 'done' ? 'idle' : p))
     if (noticeRetiredByNextOffer.current) setArmError({ message: '' })
     noticeRetiredByNextOffer.current = false
   }, [version])
@@ -527,9 +549,26 @@ export function InAppUpdateFlow({
   useEffect(() => {
     if (phase !== 'applying' && phase !== 'armed') return
     if (progressStep === 'failed' || progressStep === 'error') setPhase('failed')
-    // The apply installed beside the running version; it starts at the next restart.
-    else if (progressStep === 'done') setPhase('staged')
+    // The apply finished. "Installed, restart to use it" is the status frame's
+    // fact (`update_restart_ready`): the next status push carries it, and the
+    // card above then renders Restart in place of this flow.
+    else if (progressStep === 'done') setPhase('done')
   }, [progressStep, phase])
+  // `done` holds only while the status agrees. The mark is not in the store at
+  // the `done` push, so the frame on screen then is skipped; any later frame that
+  // says the offered version neither is installed nor is armed for the next start
+  // (a cancelled arm, an install of a version no longer offered) brings back Update.
+  const status = useAppSelector(st => st.dashboard.status)
+  const offeredInstalled = useInstalledAndWaiting(rawVersion || version)
+  const statusAtDone = useRef<typeof status | undefined>(undefined)
+  useEffect(() => {
+    if (phase !== 'done') {
+      statusAtDone.current = undefined
+      return
+    }
+    if (statusAtDone.current === undefined) statusAtDone.current = status
+    else if (status !== statusAtDone.current && !offeredInstalled) setPhase('idle')
+  }, [phase, status, offeredInstalled])
   // `armed: false` before the deadline is read as the approval, but a dismissed
   // request or a gateway that restarted and forgot the arm answers the same. Only
   // an approval starts an apply, and arming cleared the progress, so `applying`
@@ -561,8 +600,8 @@ export function InAppUpdateFlow({
     ? 'in-app-update-armed'
     : phase === 'applying'
       ? 'in-app-update-applying'
-      : phase === 'staged'
-        ? 'in-app-update-staged'
+      : phase === 'done'
+        ? 'in-app-update-done'
         : phase === 'failed'
           ? 'in-app-update-failed'
           : 'in-app-update'
@@ -582,17 +621,13 @@ export function InAppUpdateFlow({
         </>
       )}
 
-      {phase === 'staged' && (
-        <>
-          {progress?.detail && (
-            <p className="text-[12px] text-muted font-mono break-all" data-testid="apply-progress">
-              {progress.detail}
-            </p>
-          )}
-          <p className="text-[12px] text-muted" data-testid="update-staged-note">
-            {i18nT('pages.settings.aboutPanel.applying_restart_note')}
-          </p>
-        </>
+      {/* Only the gateway's own last line until the status read lands: an
+          installed update then replaces this flow with the card's Restart, and
+          an arm for the next start shows its note above. */}
+      {phase === 'done' && progress?.detail && (
+        <p className="text-[12px] text-muted font-mono break-all" data-testid="apply-progress">
+          {progress.detail}
+        </p>
       )}
 
       {phase === 'failed' && (
@@ -736,7 +771,7 @@ export function InAppUpdateFlow({
           half: pressing it can only fail the same way again. So a void offer takes
           the action away with the intro; the manual command above stays as the
           way out of that state. */}
-      {!(canStart && offerVoid) && (
+      {!(canStart && offerVoid) && phase !== 'done' && (
       <div>
         <Btn
           key="update-action"

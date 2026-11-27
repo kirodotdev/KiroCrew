@@ -109,6 +109,21 @@ def test_a_span_adds_its_seconds_in_its_bucket():
     ]
 
 
+def test_a_shortcut_press_is_counted_as_an_open():
+    resp, counts = _call(_opened(surface="shortcut"))
+    assert resp.status == 204
+    assert counts[0]["attrs"] == {
+        "app": "weather-app",
+        "entity_version": "1.2.3",
+        "surface": "shortcut",
+    }
+
+
+def test_a_shortcut_surface_is_other_on_a_foreground_span():
+    _, counts = _call(_foreground(5, surface="shortcut"))
+    assert counts[0]["attrs"]["surface"] == "other"
+
+
 def test_a_desktop_surface_is_other_on_a_foreground_span():
     _, counts = _call(_foreground(5, surface="desktop"))
     assert counts[0]["attrs"]["surface"] == "other"

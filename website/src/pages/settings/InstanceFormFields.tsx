@@ -17,7 +17,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { Trans } from 'react-i18next'
-import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
+import { useGatewayPlatform, type GatewayPlatform } from '../../hooks/useGatewayPlatform'
 
 // Re-exported so the form's existing consumers keep one import site, while the
 // shapes themselves live in a neutral module the store can read without
@@ -75,12 +75,17 @@ export const EMPTY_INSTANCE_FORM: InstanceFormValues = {
   remoteBin: '',
 }
 
-/** Whether the form holds nothing worth keeping. Compared against the defaults,
- *  not against emptiness: `method` and `remotePort` ship with values, so a
- *  never-touched form is not all-blank. */
-export function isBlankInstanceForm(values: InstanceFormValues): boolean {
-  return (Object.keys(EMPTY_INSTANCE_FORM) as (keyof InstanceFormValues)[]).every(
-    key => values[key] === EMPTY_INSTANCE_FORM[key],
+// SSH tunnel is not supported on a Windows gateway, so a new form starts on SSM there.
+export function newInstanceForm(platform: GatewayPlatform): InstanceFormValues {
+  return platform === 'windows' ? { ...EMPTY_INSTANCE_FORM, method: 'ssm' } : EMPTY_INSTANCE_FORM
+}
+
+/** Whether the form holds nothing worth keeping. Compared against `blank`, the caller's
+ *  baseline (what a reset restores), not against emptiness: `method` and `remotePort`
+ *  ship with values, so a never-touched form is not all-blank. */
+export function isBlankInstanceForm(values: InstanceFormValues, blank: InstanceFormValues): boolean {
+  return (Object.keys(blank) as (keyof InstanceFormValues)[]).every(
+    key => values[key] === blank[key],
   )
 }
 

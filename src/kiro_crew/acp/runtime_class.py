@@ -140,6 +140,7 @@ class AcpRuntime:
     _session_work_dir = _rt_setup._session_work_dir
     _refuse_if_loader_unreachable = _rt_setup._refuse_if_loader_unreachable
     _refuse_over_ceiling_start = _rt_setup._refuse_over_ceiling_start
+    _hold_project_servers = _rt_setup._hold_project_servers
     _start_launch_name = _rt_setup._start_launch_name
     _kas_custom_agents = _rt_setup._kas_custom_agents
     _mount_member_panel = _rt_setup._mount_member_panel
@@ -440,7 +441,7 @@ class AcpRuntime:
         # so the chat withdraws the dead link -- see set_mcp_sign_in_ended_hook.
         self._mcp_sign_in_ended_hooks: dict[str, Callable[[str], None]] = {}
         if model is not None:
-            if not MODEL_ID_RE.match(model):
+            if not MODEL_ID_RE.fullmatch(model):
                 raise ValueError(
                     f"Invalid model identifier: {model!r} — must match "
                     f"^[a-zA-Z0-9][a-zA-Z0-9._-]{{0,127}}$"

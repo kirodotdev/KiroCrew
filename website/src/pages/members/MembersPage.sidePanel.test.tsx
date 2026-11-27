@@ -88,6 +88,7 @@ vi.mock('../../api/client', () => ({
     workflowRuns: vi.fn(() => Promise.resolve({ runs: [] })),
     sessionWorkProjection: vi.fn(() => Promise.resolve({ value: { items: [] } })),
     artifacts: vi.fn(() => Promise.resolve({ artifacts: [] })),
+    fileDiff: vi.fn(() => Promise.resolve({ diff: '', original: '', status: 'clean' })),
     // `dashboard.crewmate_threads` (reply threads) is read from the shared config
     // query; an empty config is the default -- the flag is OFF.
     kirocrewConfig: vi.fn(() => Promise.resolve({})),
@@ -182,7 +183,7 @@ vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 // (CrewDynamicDashboard.test.tsx); here the stub reports the identity the tab
 // passes it, which is all a page case can claim.
 vi.mock('./CrewDynamicDashboard', () => ({
-  default: ({ target, displayName, preview, onPreviewGone, onAct, onSend, onOpenProfileTab }: {
+  default: ({ target, displayName, preview, onPreviewGone, onAct, onSend, onOpenProfileTab, onOpenLink }: {
     target: { slug?: string; member?: string }
     displayName: string
     preview?: boolean
@@ -190,6 +191,7 @@ vi.mock('./CrewDynamicDashboard', () => ({
     onAct?: (text: string) => void
     onSend?: (text: string) => Promise<unknown>
     onOpenProfileTab?: () => void
+    onOpenLink?: (url: string) => boolean
   }) => (
     <div
       data-testid="crew-dashboard-stub"
@@ -208,6 +210,14 @@ vi.mock('./CrewDynamicDashboard', () => ({
         data-testid="crew-dashboard-stub-send"
         onClick={() => { if (onSend) void onSend('Approve the plan'); else onAct?.('Approve the plan') }}
       >send</button>
+      {/* A page link the frame's link bridge accepted, handed to the host. */}
+      {onOpenLink && (
+        <button
+          type="button"
+          data-testid="crew-dashboard-stub-link"
+          onClick={() => { onOpenLink(window.location.origin + '/home/me/repos/oncall-desk/shot.png') }}
+        >link</button>
+      )}
       {/* The one-click-send badge's "change on Profile" press. */}
       {onOpenProfileTab && (
         <button type="button" data-testid="crew-dashboard-stub-profile" onClick={onOpenProfileTab}>profile</button>
@@ -228,8 +238,10 @@ vi.mock('../../components/WebPreviewPanel', () => ({
   ),
 }))
 vi.mock('../../components/McpAppFrame', () => ({ default: () => null }))
-vi.mock('../../components/CliPanel', () => ({
+vi.mock('../../components/LazyCliPanel', () => ({
   default: () => null,
+}))
+vi.mock('../../components/terminalSessions', () => ({
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))
@@ -770,6 +782,33 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
     expect(stub).toHaveAttribute('data-slug', 'oncall')
     expect(screen.queryByTestId('member-identity-row')).toBeNull()
+  })
+
+  it('a Dashboard link to a workspace file opens it in the panel', async () => {
+    // The page wiring, not only the opener: the link reaches the panel's own
+    // file open, which reads the file the way a chat file link does.
+    const urls: string[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+      urls.push(String(input))
+      return Promise.resolve(new Response('body', { status: 200 }))
+    }) as unknown as typeof fetch
+    try {
+      const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+      fireEvent.click(await rosterRow('oncall'))
+      await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+      act(() => {
+        store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0, project: '/home/me/repos/oncall-desk' }] as never))
+      })
+      const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
+      fireEvent.click(within(stub).getByTestId('crew-dashboard-stub-link'))
+      await waitFor(() => expect(urls).toContain(
+        '/api/file-read?path=%2Fhome%2Fme%2Frepos%2Foncall-desk%2Fshot.png&slot=member-oncall',
+      ))
+      await waitFor(() => expect(api.fileDiff).toHaveBeenCalledWith('/home/me/repos/oncall-desk/shot.png', 'member-oncall'))
+    } finally {
+      globalThis.fetch = realFetch
+    }
   })
 
   describe('a card reply on the Dashboard tab', () => {

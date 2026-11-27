@@ -784,7 +784,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
     at_ts, at_err = _resolve_one_shot_at(body, timezone_val)
     if at_err is not None:
         return at_err
-    if channel and not CHANNEL_ID_RE.match(channel):
+    if channel and not CHANNEL_ID_RE.fullmatch(channel):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     channel_target, channel_target_err = await _channel_target_kwargs(request, state, body)
     if channel_target_err is not None:
@@ -1399,7 +1399,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
     if "channel" in kwargs:
         ch = (kwargs["channel"] or "").strip() or None
         kwargs["channel"] = ch
-        if ch and (len(ch) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(ch)):
+        if ch and (len(ch) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(ch)):
             return web.json_response({"error": "invalid channel ID format"}, status=400)
     channel_target, channel_target_err = await _channel_target_kwargs(request, state, body)
     if channel_target_err is not None:

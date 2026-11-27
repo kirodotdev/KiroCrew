@@ -476,6 +476,59 @@ describe('the Review dialog', () => {
     await waitFor(() => expect(within(block(dialog, 'search-mcp')).getByRole('status').textContent).toBe(M('review_approved')), { timeout: 5000 })
   })
 
+  it('sends "Always trust changes" only for the server it was checked on, unchecked by default', async () => {
+    const ctl = mockTwo()
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockImplementation((async (name: string) => {
+      ctl.drop(name)
+      return { ok: true, name, stub: true }
+    }) as never)
+    mount()
+    const { dialog } = await openDialog()
+    const search = block(dialog, 'search-mcp')
+    const box = within(search).getByRole('checkbox', { name: M('trust_changes_label') }) as HTMLInputElement
+    expect(box.checked).toBe(false)
+    expect(within(search).getByTitle(M('trust_changes_tip')).tagName).toBe('BUTTON')
+    fireEvent.click(box)
+    fireEvent.click(within(search).getByRole('button', { name: M('approve_button') }))
+    await waitFor(
+      () => expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown', false, undefined, true),
+      { timeout: 5000 },
+    )
+    fireEvent.click(within(block(dialog, 'tickets-mcp')).getByRole('button', { name: M('approve_button') }))
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('tickets-mcp', true, 'tickets-shown'), { timeout: 5000 })
+  })
+
+  it('opens the "Always trust changes" tip above the checkbox, off the buttons below it', async () => {
+    mockTwo()
+    mount()
+    const { dialog } = await openDialog()
+    const search = block(dialog, 'search-mcp')
+    const glyph = within(search).getByTitle(M('trust_changes_tip'))
+    const innerHeight = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { writable: true, configurable: true, value: 900 })
+    try {
+      glyph.getBoundingClientRect = () =>
+        ({ left: 100, top: 400, right: 116, bottom: 416, width: 16, height: 16, x: 100, y: 400, toJSON: () => ({}) }) as DOMRect
+      fireEvent.click(glyph)
+      const tip = await screen.findByRole('tooltip', undefined, { timeout: 5000 })
+      // Bottom-anchored just above the glyph; a tip beside it would set `top`
+      // and grow down over Don't share / Share across chats.
+      expect(tip.style.top).toBe('')
+      expect(parseFloat(tip.style.bottom)).toBe(900 - 400 + 10)
+    } finally {
+      Object.defineProperty(window, 'innerHeight', { writable: true, configurable: true, value: innerHeight })
+    }
+  })
+
+  it('says on the card what waiting means', async () => {
+    mockTwo()
+    mount()
+    const heading = await screen.findByText(M('approval_title', { count: 2 }), undefined, { timeout: 5000 })
+    const card = heading.closest('section') as HTMLElement
+    expect(within(card).getByText(M('approval_body'))).toBeTruthy()
+    expect(card.textContent).not.toMatch(/for your OK|own copy/i)
+  })
+
   it('shows the refusal in the block when the launch changed underneath, and approves nothing else', async () => {
     mockTwo()
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockRejectedValue(

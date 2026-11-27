@@ -73,11 +73,14 @@ def _child_job_target(
 def _serve_embed(vector_store: "VectorMemoryStore") -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Answer the child's embedding requests with the gateway store's own embedder."""
     from kiro_crew.embeddings_settings import PRIORITY_NORMAL
+    from kiro_crew.vector_memory_runtime.embedding import query_is_instructed
 
     def serve(frame: dict[str, Any]) -> dict[str, Any]:
         priority = frame.get("priority")
         vector = vector_store._try_embed(
-            str(frame.get("text", "")), priority if isinstance(priority, int) else PRIORITY_NORMAL
+            str(frame.get("text", "")),
+            priority if isinstance(priority, int) else PRIORITY_NORMAL,
+            query=frame.get("query") is True,
         )
         reply: dict[str, Any] = {"vector": None, "generation": vector_store.space_generation}
         if vector is not None:
@@ -86,6 +89,7 @@ def _serve_embed(vector_store: "VectorMemoryStore") -> Callable[[dict[str, Any]]
                 vector=list(vector),
                 token=list(token) if token else None,
                 managed=bool(getattr(vector, "managed", False)),
+                instructed=query_is_instructed(vector),
             )
         return reply
 

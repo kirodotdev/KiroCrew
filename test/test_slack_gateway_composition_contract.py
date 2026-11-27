@@ -321,6 +321,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_wait_for_memory_preparation", "async method", "(self) -> 'bool'"),
         ("_repair_member_memory_once", "method", "(self) -> 'None'"),
+        (
+            "_repair_store_once",
+            "method",
+            "(self, name: 'str', store: 'Any', *, fresh: 'bool') -> 'bool'",
+        ),
         ("_repair_member_memory", "async method", "(self) -> 'None'"),
         ("_start_embeddings", "async method", "(self) -> 'None'"),
         ("_auto_migrate_memory", "async method", "(self) -> 'None'"),

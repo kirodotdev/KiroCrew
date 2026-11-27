@@ -16,8 +16,8 @@ authorization issues to an app, and judges it by the matched route's row in
 :data:`APP_SERVED_ROUTES` names and refuses it on every other.
 
 :data:`OWNER_ONLY_PUBLIC_ROUTES` names the Public routes (``/v1/models``,
-``/v1/responses`` and the two that read a response back, ``/v1/crew/capabilities``,
-``/v1/crew/info``) served through
+``/v1/responses`` and the two that read a response back, the two conversation routes,
+``/v1/crew/capabilities``, ``/v1/crew/info``) served through
 :func:`kiro_crew.dashboard.crew_api_owner.owner_route`.
 
 The frozen ``/v1/chat/completions`` is outside this module: it keeps the credentials
@@ -77,9 +77,14 @@ OWNER_ONLY_PUBLIC_ROUTES = {
     # moves a damaged file aside.
     "/v1/responses/{response_id}": "crew_api.responses.resolve",
     "/v1/responses/{response_id}/input_items": "crew_api.responses.input_items.resolve",
+    "/v1/conversations": "crew_api.conversations.create",
+    # Not a ``.read``, for the same reason as a response's.
+    "/v1/conversations/{conversation_id}": "crew_api.conversations.resolve",
+    "/v1/conversations/{conversation_id}/items": "crew_api.conversations.items.resolve",
     "/v1/crew/capabilities": "crew_api.capabilities.read",
     # Not a ``.read``: the first call on a data home makes and keeps the instance id.
     "/v1/crew/info": "crew_api.info.resolve",
+    "/v1/crew/bots": "crew_api.bots.list",
 }
 
 #: The routes that serve an app credential, by their ``crew_api_scopes.ROUTES`` key.
@@ -90,6 +95,7 @@ APP_SERVED_ROUTES: Final = frozenset(
     {
         ("GET", "/v1/models"),
         ("GET", "/v1/crew/grant"),
+        ("GET", "/v1/crew/bots"),
         ("GET", "/v1/crew/capabilities"),
         ("GET", "/v1/crew/info"),
     }

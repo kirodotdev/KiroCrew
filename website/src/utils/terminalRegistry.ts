@@ -294,8 +294,134 @@ interface Conn {
   displaced: boolean
   /** Set by `dropTerminalDataForThisKey` until the key event being dispatched is handled. */
   dropData?: boolean
+  /** Set when early input past EARLY_INPUT_CAP was dropped, until the pane's notice is dismissed. */
+  inputCapped?: boolean
+  /** Set once its first dial has settled (opened, or closed before opening);
+   *  until then typed input is held in `earlyInput`. */
+  opened?: boolean
 }
 const conns = new Map<string, Conn>()
+
+/**
+ * Input typed before a session's first dial settled, in typed order: keys as
+ * the bytes xterm would send (an Enter runs the line, as it would have), and
+ * pastes, which go through `term.paste` so the shell's bracketed paste applies.
+ * From the stand-in fields shown while the terminal loads or is held, and from
+ * xterm itself. Kept per session id, because the loading stand-in takes keys
+ * before the connection exists. Capped; dropped if the first dial fails.
+ */
+interface EarlyInput {
+  segs: { data: string; paste: boolean }[]
+  size: number
+  /** Set when input past EARLY_INPUT_CAP was dropped; the terminal says so on flush. */
+  capped?: boolean
+  /** While a held paste waits for bracketed paste: since when, and the poll. */
+  since?: number
+  wait?: ReturnType<typeof setInterval>
+}
+const earlyInput = new Map<string, EarlyInput>()
+/** More than anyone types or pastes into a terminal that is still loading, in UTF-8 bytes. */
+export const EARLY_INPUT_CAP = 64 * 1024
+/** Longest a held paste waits for the shell to turn bracketed paste on. */
+const EARLY_PASTE_WAIT_MS = 3000
+
+/** UTF-8 length of one code point. */
+const utf8Len = (cp: number): number => (cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4)
+
+/** The longest prefix of `data` that fits in `room` UTF-8 bytes, cut only between code points. */
+function fitUtf8(data: string, room: number): { text: string; bytes: number } {
+  let bytes = 0
+  let end = 0
+  for (const ch of data) {
+    const n = utf8Len(ch.codePointAt(0) ?? 0)
+    if (bytes + n > room) break
+    bytes += n
+    end += ch.length
+  }
+  return { text: data.slice(0, end), bytes }
+}
+
+function holdEarly(sessionId: string, data: string, paste: boolean): void {
+  let e = earlyInput.get(sessionId)
+  if (!e) { e = { segs: [], size: 0 }; earlyInput.set(sessionId, e) }
+  const { text: kept, bytes } = fitUtf8(data, EARLY_INPUT_CAP - e.size)
+  if (kept.length < data.length) e.capped = true
+  if (!kept) return
+  e.size += bytes
+  const last = e.segs[e.segs.length - 1]
+  if (last && !last.paste && !paste) last.data += kept
+  else e.segs.push({ data: kept, paste })
+}
+
+function dropEarly(sessionId: string): void {
+  clearInterval(earlyInput.get(sessionId)?.wait)
+  earlyInput.delete(sessionId)
+}
+
+/**
+ * Send held input in order on an open socket. A paste waits until the shell has
+ * turned bracketed paste on (its prompt does), so a pasted newline does not run
+ * a line; past EARLY_PASTE_WAIT_MS it goes with its newlines removed. Input
+ * typed meanwhile queues behind it, keeping the order.
+ */
+function flushEarly(sessionId: string, c: Conn): void {
+  const e = earlyInput.get(sessionId)
+  if (!e) return
+  if (c.ws?.readyState !== WebSocket.OPEN) { dropEarly(sessionId); return }
+  clearInterval(e.wait)
+  earlyInput.delete(sessionId) // so the sends below go straight to the socket
+  if (e.capped) {
+    // The pane says so (useTerminalInputCapped): a line written into xterm
+    // would scroll away under the echo of the input that was kept.
+    e.capped = false
+    c.inputCapped = true
+    notifyStatus(sessionId)
+  }
+  const waitedOut = e.since !== undefined && Date.now() - e.since >= EARLY_PASTE_WAIT_MS
+  while (e.segs.length) {
+    const seg = e.segs[0]
+    if (seg.paste && !c.term.modes?.bracketedPasteMode && !waitedOut) {
+      earlyInput.set(sessionId, e)
+      e.since ??= Date.now()
+      e.wait = setInterval(() => flushEarly(sessionId, c), 50)
+      return
+    }
+    e.segs.shift()
+    if (!seg.paste) c.ws?.send(new TextEncoder().encode(seg.data))
+    else c.term.paste(c.term.modes?.bracketedPasteMode ? seg.data : seg.data.replace(/[\r\n]/g, ''))
+  }
+}
+
+function sendOrHold(sessionId: string, data: string, paste: boolean): void {
+  const c = conns.get(sessionId)
+  const held = earlyInput.has(sessionId)
+  if (!held && c?.ws?.readyState === WebSocket.OPEN) {
+    if (!paste) { c.ws.send(new TextEncoder().encode(data)); return }
+    if (c.term.modes?.bracketedPasteMode) { c.term.paste(data); return }
+    // Open, but the shell has not turned bracketed paste on yet: wait for it.
+    holdEarly(sessionId, data, paste)
+    flushEarly(sessionId, c)
+    return
+  }
+  if (c?.opened && !held) return // a dropped or parked socket: input goes nowhere, as before
+  holdEarly(sessionId, data, paste)
+}
+
+/** Whether input for this session still goes through the early-input buffer
+ *  (its first dial has not settled, or held input is still waiting). */
+export function takesEarlyInput(sessionId: string): boolean {
+  return !conns.get(sessionId)?.opened || earlyInput.has(sessionId)
+}
+
+/** Send hand-typed key bytes to the shell now, or hold them until the first dial settles. */
+export function typeIntoTerminal(sessionId: string, data: string): void {
+  sendOrHold(sessionId, data, false)
+}
+
+/** Paste `text` into the shell (bracketed when the shell asks), now or once the first dial settles. */
+export function pasteIntoTerminal(sessionId: string, text: string): void {
+  sendOrHold(sessionId, text, true)
+}
 
 /**
  * Drop what xterm sends to the shell while it handles the key event being dispatched now; the
@@ -458,6 +584,28 @@ export function isTerminalAtLimit(sessionId: string): boolean {
   return conns.get(sessionId)?.atLimit ?? false
 }
 
+/** Whether input typed before the socket opened went past EARLY_INPUT_CAP and was cut. */
+export function useTerminalInputCapped(sessionId: string): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      let s = statusListeners.get(sessionId)
+      if (!s) { s = new Set(); statusListeners.set(sessionId, s) }
+      s.add(cb)
+      return () => { s?.delete(cb) }
+    },
+    () => conns.get(sessionId)?.inputCapped ?? false,
+    () => false,
+  )
+}
+
+/** Close the pane's "input was cut" notice. */
+export function dismissTerminalInputCapped(sessionId: string): void {
+  const c = conns.get(sessionId)
+  if (!c?.inputCapped) return
+  c.inputCapped = false
+  notifyStatus(sessionId)
+}
+
 /** Whether the gateway refused this shell at its terminal ceiling, published with the status. */
 export function useTerminalAtLimit(sessionId: string): boolean {
   return useSyncExternalStore(
@@ -596,6 +744,9 @@ function connect(sessionId: string, c: Conn) {
       c.fit.fit()
       ws.send(JSON.stringify({ type: 'resize', cols: c.term.cols, rows: c.term.rows }))
     }
+    // Before any key typed from now on: xterm sends those straight to this socket.
+    c.opened = true
+    flushEarly(sessionId, c)
   }
 
   ws.onmessage = (ev) => {
@@ -660,6 +811,9 @@ function connect(sessionId: string, c: Conn) {
   ws.onclose = (ev) => {
     unregisterTerminalWs(sessionId)
     if (c.disposed) return
+    // A first dial that never opened drops what was typed for it: a replay
+    // seconds or minutes later, on a redial, would surprise the user.
+    if (!c.opened) { c.opened = true; dropEarly(sessionId) }
     if (ev.code === TERMINAL_WS_CLOSE_SHELL_EXITED) {
       // The exit frame can be lost to backpressure; the coded close cannot.
       handleShellExit(sessionId, c, { status: null })
@@ -727,8 +881,8 @@ export function ensureTerminalConnection(
   // its listeners are cleaned up by term.dispose() in destroyTerm).
   term.onData((data) => {
     if (c.dropData) return
-    if (c.ws?.readyState === WebSocket.OPEN) {
-      c.ws.send(new TextEncoder().encode(data))
+    if (c.ws?.readyState === WebSocket.OPEN || !c.opened) {
+      typeIntoTerminal(sessionId, data)
       return
     }
     // A parked terminal has no socket, so its keystrokes go nowhere. A bare
@@ -752,6 +906,7 @@ export function disposeTerminalConnection(sessionId: string): void {
   // report failure after cleanup so a callback can safely start a fresh wait.
   const listeners = readyListeners.get(sessionId)
   readyListeners.delete(sessionId)
+  dropEarly(sessionId)
   const c = conns.get(sessionId)
   if (c) {
     c.disposed = true

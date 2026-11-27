@@ -1277,6 +1277,15 @@ describe('PullRequestPanel actions', () => {
     expect(screen.queryByRole('button', { name: /Ready for review/i })).not.toBeInTheDocument()
   })
 
+  it('gives the merge-blocker hand-off a resting fill and a strong edge on its tint', async () => {
+    renderSource({ ...github, mergeable: 'conflicting', mergeStateStatus: 'dirty' })
+    const blocker = (await screen.findByText(/Merge conflicts/i)).closest('[role="alert"]') as HTMLElement
+    const handoff = within(blocker).getByRole('button', { name: 'Add to chat' })
+    expect(handoff).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(handoff).not.toHaveClass('bg-transparent')
+    expect(handoff).not.toHaveClass('border-border')
+  })
+
   it('requires a confirming click before arming auto-merge', async () => {
     renderSource(github)
     const enable = await screen.findByRole('button', { name: /Enable auto-merge/i })

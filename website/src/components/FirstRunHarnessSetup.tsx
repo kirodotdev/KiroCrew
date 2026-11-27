@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import { Trans } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Boxes, CheckCircle2, ChevronDown, CircleDashed, RefreshCw } from 'lucide-react'
+import { ArrowLeft, CircleDashed, RefreshCw } from 'lucide-react'
 
 import { api, type AcpBackendProbe, type KasBundleStatus } from '../api/client'
 import type { KiroPrerequisiteStatus } from '../api/client/onboarding'
@@ -11,7 +12,9 @@ import { clearCachedModels } from '../providers/adapters/acp'
 import { KIRO_PREREQUISITE_KEY } from '../hooks/useKiroPrerequisite'
 import { i18nT } from '../i18n/t'
 import { HarnessLogo } from './HarnessLogo'
+import { providerLabelFromWire } from './kasProviderLabel'
 import { KiroSignInFlow } from './KiroSignInDialog'
+import { FirstRunConfetti } from './FirstRunConfetti'
 import ErrorNotice from './ErrorNotice'
 import { SignInBackContext, type SignInBackSlot } from './KasLoginGate'
 import SignInCommands, { KiroCliCheckAgain } from './KiroCliSignInCommands'
@@ -30,10 +33,10 @@ import { LookingGhost } from '../assets/onboarding/LookingGhost'
 /** The built-in harness (Kiro Agent on Crew's own engine) and Kiro CLI, as this step names them. */
 const BUILT_IN = 'built-in'
 const KIRO_CLI = 'kiro'
-type Screen = 'choose' | 'sign-in' | 'kiro-cli-sign-in' | 'ready'
+type Screen = 'start' | 'harness' | 'kiro-cli-sign-in' | 'ready'
 
 /**
- * First-run setup: pick the harness, sign in once, then "ready".
+ * First-run setup: sign in, or bring a harness, then "ready".
  *
  * Shown by `FirstRunSignInHold` only while the built-in engine is on. Built from
  * the pieces Settings > Agent Harness uses (`agentHarness/*`, the same
@@ -41,12 +44,15 @@ type Screen = 'choose' | 'sign-in' | 'kiro-cli-sign-in' | 'ready'
  * sign-in (`KiroSignInFlow`) and the kiro-cli sign-in commands. Nothing here is
  * a second copy of those.
  *
- * - Built-in harness is first and picked by default, unless this machine cannot
- *   run it (`host_unsupported`).
- * - Kiro CLI is always listed; when it is missing its row shows how to install
- *   it, and Continue stays off while it is picked.
- * - Every other harness sits behind one "Other harnesses" row, with the state
- *   the Settings list shows.
+ * - The first screen carries the shared Kiro sign-in choices inline; a sign-in
+ *   that lands saves the built-in harness. Already signed in, one "Continue with
+ *   Kiro" does the same. Kiro CLI installed and signed in adds one "Continue with
+ *   Kiro CLI".
+ * - "Bring your harness" says in one line what a Kiro sign-in alone gives (the
+ *   rows of `KiroAccountUnlocks`), then lists every other harness, Kiro CLI first.
+ *   Kiro CLI is always listed; missing, its row shows how to install it.
+ * - A machine that cannot run the built-in harness, or a policy that denies it,
+ *   opens straight on the harness list.
  * - The choice is saved with the two keys Settings writes. No chat exists yet,
  *   so there is no restart prompt: the first chat starts on what was saved.
  */
@@ -69,7 +75,7 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
   const cliSignedIn = cliInstalled && status?.authenticated === true
   const crewSignedIn = crewSignIn.data?.authenticated === true
   // The same list Settings > Agent Harness shows (order, filtering, names, verdicts),
-  // minus the two Kiro rows this step draws itself above the expander.
+  // minus the two Kiro rows this step draws itself.
   const { schema, error: schemaError } = useConfigSchemaQuery()
   const cfgQ = useQuery<AcpBackendConfig>({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
   const list = harnessList({
@@ -88,34 +94,35 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
     .map(list.probe)
     .filter((b): b is AcpBackendProbe => !!b && b.independent_setup === true)
 
-  const defaultPick = builtInUsable ? BUILT_IN : cliInstalled && kiroCliAllowed ? KIRO_CLI : ''
+  // "Bring your harness" starts on Kiro CLI when it can run; otherwise nothing is picked.
+  const harnessDefault = cliInstalled && kiroCliAllowed ? KIRO_CLI : ''
   const [picked, setPicked] = useState<string | null>(null)
-  const pick = picked ?? defaultPick
-  // Opened on its own only when neither Kiro harness can be used here.
-  const [othersOpen, setOthersOpen] = useState<boolean | null>(null)
-  const showOthers = othersOpen ?? (!builtInUsable && !(cliInstalled && kiroCliAllowed))
-  const [screen, setScreen] = useState<Screen>('choose')
+  const pick = picked ?? harnessDefault
+  // Without a usable built-in harness, "Sign in to Kiro" has nothing to save: open on the list.
+  const [screenSet, setScreenSet] = useState<Screen | null>(null)
+  const screen: Screen = screenSet ?? (builtInUsable ? 'start' : 'harness')
+  // The harness last saved, so the screens after the save name what was saved.
+  const [savedId, setSavedId] = useState('')
 
   const otherProbe: AcpBackendProbe | undefined = others.find(b => b.id === pick)
-  const usable = pick === BUILT_IN
-    ? builtInUsable
-    : pick === KIRO_CLI
-      ? cliInstalled && kiroCliAllowed
-      : !!otherProbe && configuredBackendCanStart(status, otherProbe)
-  const pickName = pick === BUILT_IN
+  const usable = pick === KIRO_CLI
+    ? cliInstalled && kiroCliAllowed
+    : !!otherProbe && configuredBackendCanStart(status, otherProbe)
+  const nameOf = (id: string) => (id === BUILT_IN
     ? i18nT('pages.developer.kasBundleCard.engine_builtin')
-    : pick === KIRO_CLI
+    : id === KIRO_CLI
       ? i18nT('pages.developer.kasBundleCard.engine_kiro_cli')
-      : otherProbe ? list.nameOf(otherProbe.id) : ''
+      : others.some(b => b.id === id) ? list.nameOf(id) : '')
+  const savedProbe = others.find(b => b.id === savedId)
 
   // The same two config keys Settings > Agent Harness writes.
   const saveMut = useMutation({
-    mutationFn: async () => {
-      if (pick === BUILT_IN || (pick === KIRO_CLI && kasAllowed)) {
+    mutationFn: async (id: string) => {
+      if (id === BUILT_IN || (id === KIRO_CLI && kasAllowed)) {
         await api.patchConfig('agent.acp_backend', ACP_BACKEND_KAS)
-        await api.patchConfig('agent.kas_bundle', pick === BUILT_IN)
+        await api.patchConfig('agent.kas_bundle', id === BUILT_IN)
       } else {
-        await api.patchConfig('agent.acp_backend', pick)
+        await api.patchConfig('agent.acp_backend', id)
       }
     },
     onSettled: () => {
@@ -158,16 +165,30 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
     else if (otherProbe) recheckOther.mutate(otherProbe.id)
   }
 
-  // Advances only once both keys are saved; a failed save stays on this screen with its error.
-  const next = async () => {
+  // No screen change while a save is in flight: its answer still lands, and a
+  // second save from another screen could then be overwritten by it.
+  const goTo = (next: Screen) => {
+    if (saveMut.isPending) return
+    saveMut.reset()
+    recheckCli.reset()
+    recheckOther.reset()
+    setScreenSet(next)
+  }
+  // Advances only once both keys are saved; a failed save stays on its screen with its error.
+  const save = async (id: string) => {
+    // One save at a time, whoever asks (a button or a sign-in landing): a second
+    // one could land after it and replace the harness the person just picked.
+    if (saveMut.isPending) return
     try {
-      await saveMut.mutateAsync()
+      await saveMut.mutateAsync(id)
     } catch {
       return
     }
-    if (pick === BUILT_IN) setScreen(crewSignedIn ? 'ready' : 'sign-in')
-    else if (pick === KIRO_CLI) setScreen(cliSignedIn ? 'ready' : 'kiro-cli-sign-in')
-    else setScreen('ready')
+    setSavedId(id)
+    // The built-in harness is saved only once a Kiro sign-in is stored.
+    if (id === BUILT_IN) setScreenSet('ready')
+    else if (id === KIRO_CLI) setScreenSet(cliSignedIn ? 'ready' : 'kiro-cli-sign-in')
+    else setScreenSet('ready')
   }
   // The pick is fixed while it is being saved, so the screens after it name what was saved.
   const choose = (id: string) => {
@@ -176,6 +197,41 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
     recheckCli.reset()
     recheckOther.reset()
     setPicked(id)
+  }
+  // Names the button that retries: the first screen's Continue with Kiro (CLI), the list's Continue.
+  const failedId = saveMut.variables ?? ''
+  const saveError = saveMut.error
+    ? <ErrorNotice
+        testId="harness-setup-save-error"
+        className="mt-4"
+        noHandoffReason="This step holds the app behind it and no harness is saved yet, so an agent opened from this notice has no chat to open in and no harness it could start."
+        message={screen === 'start'
+          ? i18nT('components.firstRunHarnessSetup.sign_in_save_failed', {
+            button: failedId === KIRO_CLI
+              ? i18nT('components.firstRunHarnessSetup.continue_with_kiro_cli')
+              : i18nT('components.firstRunHarnessSetup.continue_with_kiro'),
+          })
+          : i18nT('components.firstRunHarnessSetup.save_failed', { name: nameOf(failedId) })}
+      />
+    : null
+
+  // Whether a Kiro sign-in was already stored when this step first read it. Only
+  // then does the first screen offer "Continue with Kiro" instead of the choices,
+  // so a sign-in made here never unmounts the flow before it reports.
+  const crewStatusKnown = crewSignIn.data !== undefined || crewSignIn.isError
+  const [signedInAtStart, setSignedInAtStart] = useState<boolean | null>(null)
+  if (signedInAtStart === null && crewStatusKnown) setSignedInAtStart(crewSignedIn)
+  // A sign-in that lands here saves the built-in harness once. From then on the
+  // first screen offers "Continue with Kiro", so a failed save, or a Back after
+  // one, still has a way to retry (the flow itself shows nothing once signed in).
+  const [landed, setLanded] = useState(false)
+  const landedOnce = useRef(false)
+  const kiroContinue = landed || (crewSignedIn && signedInAtStart === true)
+  const onKiroSignedIn = () => {
+    if (landedOnce.current) return
+    landedOnce.current = true
+    setLanded(true)
+    void save(BUILT_IN)
   }
 
   const aside = {
@@ -190,35 +246,26 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
   // One centered column, as the Kiro account page lays out its sign-in: the
   // ghost and title sit centered over the buttons. #36888: Back stays an arrow
   // at the top left of the sign-in box, outside the centered title; on the
-  // code screen it returns to the sign-in choices.
-  const header = (title: string) => (
+  // code screen it returns to the sign-in choices. The first screen has no Back.
+  const backTo: Screen = screen === 'kiro-cli-sign-in' ? 'harness' : 'start'
+  const codeStep = screen === 'start' && !!innerBack
+  const header = (title: string, back = true) => (
     <div className="relative flex flex-col items-center text-center" data-testid="harness-setup-hero">
-      <IconButton
-        aria-label={i18nT('components.firstRunHarnessSetup.back')}
-        disabled={screen === 'sign-in' && innerBack?.disabled}
-        onClick={() => (screen === 'sign-in' && innerBack ? innerBack.onBack() : setScreen('choose'))}
-        className="absolute -left-2 top-0"
-        data-testid="harness-setup-back"
-      >
-        <ArrowLeft size={18} aria-hidden="true" />
-      </IconButton>
+      {back || codeStep ? (
+        <IconButton
+          aria-label={i18nT('components.firstRunHarnessSetup.back')}
+          disabled={codeStep ? innerBack?.disabled : saveMut.isPending}
+          onClick={() => (codeStep && innerBack ? innerBack.onBack() : goTo(backTo))}
+          className="absolute -left-2 top-0"
+          data-testid="harness-setup-back"
+        >
+          <ArrowLeft size={18} aria-hidden="true" />
+        </IconButton>
+      ) : null}
       <LookingGhost size={72} />
       <h1 className="m-0 mt-4 max-w-full text-2xl font-semibold tracking-tight text-text-strong">{title}</h1>
     </div>
   )
-
-  if (screen === 'sign-in') {
-    return (
-      <SetupShell {...aside}>
-        {header(i18nT('components.kasLogin.sign_in_to_kiro'))}
-        <div className="mt-5" data-testid="harness-setup-sign-in">
-          <SignInBackContext.Provider value={backSlot}>
-            <KiroSignInFlow onSignedIn={() => setScreen('ready')} />
-          </SignInBackContext.Provider>
-        </div>
-      </SetupShell>
-    )
-  }
 
   if (screen === 'kiro-cli-sign-in' && status && !status.authenticated) {
     return (
@@ -249,7 +296,7 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
   if (screen === 'ready' || screen === 'kiro-cli-sign-in') {
     // A harness that signs in on its own is not ready until that sign-in is done,
     // which Kiro Crew cannot check: say what is left instead of "all set".
-    const ownSignIn = !!(otherProbe?.auth?.signs_in_separately && otherProbe.auth.sign_in_remedy)
+    const ownSignIn = !!(savedProbe?.auth?.signs_in_separately && savedProbe.auth.sign_in_remedy)
     return (
       <SetupShell
         {...aside}
@@ -261,29 +308,21 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
           </div>
         }
       >
-        <div data-testid="harness-setup-ready">
-          {ownSignIn ? (
+        {ownSignIn ? (
+          <div data-testid="harness-setup-ready">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-bg-hover text-muted">
               <CircleDashed className="lucide-inline" aria-hidden="true" />
             </div>
-          ) : (
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-ok-subtle text-ok-text">
-              <CheckCircle2 className="lucide-inline" aria-hidden="true" />
-            </div>
-          )}
-          <h1 className="mt-5 text-2xl font-semibold tracking-tight text-text-strong">
-            {ownSignIn
-              ? i18nT('components.firstRunHarnessSetup.one_more_step')
-              : i18nT('components.firstRunHarnessSetup.ready_title')}
-          </h1>
-          <p className="mt-2 text-sm text-muted">
-            {i18nT('components.firstRunHarnessSetup.ready_body', { name: pickName })}
-          </p>
-          {ownSignIn ? (
-            // One line here; the server's full sign-in sentence stays in Settings.
+            <h1 className="mt-5 text-2xl font-semibold tracking-tight text-text-strong">
+              {i18nT('components.firstRunHarnessSetup.one_more_step')}
+            </h1>
+            <p className="mt-2 text-sm text-muted">
+              {i18nT('components.firstRunHarnessSetup.ready_body', { name: nameOf(savedId) })}
+            </p>
+            {/* One line here; the server's full sign-in sentence stays in Settings. */}
             <div className="mt-3 flex flex-wrap items-center gap-3" data-testid="harness-setup-own-sign-in">
               <p className="m-0 text-sm text-text">
-                {i18nT('components.firstRunHarnessSetup.own_sign_in', { name: pickName })}
+                {i18nT('components.firstRunHarnessSetup.own_sign_in', { name: nameOf(savedId) })}
               </p>
               <Btn
                 type="button"
@@ -293,19 +332,118 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
                 {i18nT('components.firstRunHarnessSetup.open_settings')}
               </Btn>
             </div>
+          </div>
+        ) : (
+          // All set: the ghost from the first screen, one burst of confetti, centered.
+          <div className="flex flex-col items-center text-center" data-testid="harness-setup-ready">
+            <FirstRunConfetti />
+            <h1 className="m-0 mt-4 max-w-full text-2xl font-semibold tracking-tight text-text-strong">
+              {i18nT('components.firstRunHarnessSetup.ready_title')}
+            </h1>
+            <p className="m-0 mt-2 text-sm text-muted">
+              {i18nT('components.firstRunHarnessSetup.ready_body', { name: nameOf(savedId) })}
+            </p>
+          </div>
+        )}
+      </SetupShell>
+    )
+  }
+
+  // ── start: two choices ──
+  const later = (
+    <Btn type="button" onClick={onDone} data-testid="harness-setup-later">
+      {i18nT('components.firstRunHarnessSetup.set_up_later')}
+    </Btn>
+  )
+  if (screen === 'start') {
+    // Kiro CLI already usable here: one click keeps it, as the list's Continue would.
+    const cliReady = cliSignedIn && kiroCliAllowed
+    // The same look as the sign-in choices above them (ProviderButton, bare).
+    const choiceClass = 'min-h-9 w-full justify-center rounded-lg px-3 text-[13px] font-medium'
+    return (
+      <SetupShell {...aside} footer={<div className="flex items-center justify-start gap-3">{later}</div>}>
+        {/* On the code step the screen is only the sign-in, so its title says so. */}
+        {header(codeStep
+          ? i18nT('components.kasLogin.sign_in_to_kiro')
+          : i18nT('components.firstRunHarnessSetup.start_title'), false)}
+        <div className="mt-5 flex w-full flex-col gap-2" data-testid="harness-setup-start-choices">
+          {kiroContinue ? (
+            <>
+            {/* Says why there are no sign-in choices: the account this saves the built-in harness for. */}
+            {crewSignIn.data?.provider ? (
+              <p className="m-0 mb-1 text-center text-sm text-muted" data-testid="harness-setup-signed-in-as">
+                {i18nT('app.signed_in_with', { provider: providerLabelFromWire(crewSignIn.data.provider) })}
+              </p>
+            ) : null}
+            <SendBtn
+              type="button"
+              className="w-full"
+              busy={saveMut.isPending}
+              onClick={() => void save(BUILT_IN)}
+              data-testid="harness-setup-continue-with-kiro"
+            >
+              {i18nT('components.firstRunHarnessSetup.continue_with_kiro')}
+            </SendBtn>
+            </>
+          ) : crewStatusKnown ? (
+            <div data-testid="harness-setup-sign-in">
+              <SignInBackContext.Provider value={backSlot}>
+                <KiroSignInFlow onSignedIn={onKiroSignedIn} />
+              </SignInBackContext.Provider>
+            </div>
           ) : null}
+          {codeStep ? null : (
+            <>
+              <div className="my-1 flex items-center gap-3 text-[12px] text-muted">
+                <Trans
+                  i18nKey="components.kasLogin.or_divider"
+                  components={{ line: <span className="h-px flex-1 bg-border" aria-hidden="true" />, or: <span /> }}
+                />
+              </div>
+              {cliReady ? (
+                <Btn
+                  type="button"
+                  className={choiceClass}
+                  disabled={saveMut.isPending}
+                  onClick={() => void save(KIRO_CLI)}
+                  data-testid="harness-setup-continue-with-kiro-cli"
+                >
+                  <HarnessLogo id={KIRO_CLI} size={16} />
+                  {i18nT('components.firstRunHarnessSetup.continue_with_kiro_cli')}
+                </Btn>
+              ) : null}
+              <Btn
+                type="button"
+                className={choiceClass}
+                disabled={saveMut.isPending}
+                onClick={() => goTo('harness')}
+                data-testid="harness-setup-bring-your-harness"
+              >
+                {i18nT('components.firstRunHarnessSetup.bring_your_harness')}
+              </Btn>
+            </>
+          )}
+          <ErrorNotice
+            testId="harness-setup-read-error"
+            className="mt-1"
+            noHandoffReason="This step holds the app behind it and no harness is saved yet, so an agent opened from this notice has no chat to open in and no harness it could start."
+            message={setupReadFailed ? i18nT('components.firstRunHarnessSetup.setup_read_failed') : null}
+            footer={setupReadFailed ? (
+              <Btn type="button" onClick={retryReads}>{i18nT('components.kiroPrerequisiteGate.try_again')}</Btn>
+            ) : undefined}
+          />
+          {saveError}
         </div>
       </SetupShell>
     )
   }
 
-  // ── choose ──
-  // Kiro CLI is always listed under the built-in harness; missing, it shows how to install it.
-  const kiroIds = [kasAllowed ? BUILT_IN : '', kiroCliAllowed ? KIRO_CLI : ''].filter(Boolean)
+  // ── harness: Bring your harness ──
+  // Kiro CLI is always listed first; missing, it shows how to install it.
+  const ids = [kiroCliAllowed ? KIRO_CLI : '', ...others.map(b => b.id)].filter(Boolean)
   const kiroProbe: AcpBackendProbe = list.probe(KIRO_CLI)
     ?? { id: KIRO_CLI, policy_id: KIRO_CLI, selectable: true, independent_setup: false, installed: 'missing',
       missing_components: [], install_command: '', restart_required: false }
-  const nothingKiro = !builtInUsable && !(cliInstalled && kiroCliAllowed)
   // A picked harness that is not usable yet re-reads in its own detail, after its
   // install steps, so the footer keeps its two actions.
   const checkAgain = (
@@ -322,28 +460,39 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
       </Btn>
     </div>
   )
+  const title = i18nT('components.firstRunHarnessSetup.bring_your_harness')
   return (
     <SetupShell
       {...aside}
       footer={
         <div className="flex items-center justify-between gap-3">
-          <Btn type="button" onClick={onDone} data-testid="harness-setup-later">
-            {i18nT('components.firstRunHarnessSetup.set_up_later')}
-          </Btn>
-          <SendBtn type="button" disabled={!usable || saveMut.isPending} onClick={() => void next()} data-testid="harness-setup-continue">
+          {later}
+          <SendBtn type="button" disabled={!usable || saveMut.isPending} onClick={() => void save(pick)} data-testid="harness-setup-continue">
             {i18nT('components.firstRunHarnessSetup.continue')}
           </SendBtn>
         </div>
       }
     >
-      <h1 className="text-2xl font-semibold tracking-tight text-text-strong">
-        {i18nT('components.firstRunHarnessSetup.choose_title')}
-      </h1>
-      {nothingKiro ? (
-        <p className="mt-2 text-sm text-muted" data-testid="harness-setup-none">
-          {i18nT('components.firstRunHarnessSetup.no_kiro_harness')}
-        </p>
-      ) : null}
+      <div className="flex items-center gap-2">
+        {builtInUsable ? (
+          <IconButton
+            aria-label={i18nT('components.firstRunHarnessSetup.back')}
+            disabled={saveMut.isPending}
+            onClick={() => goTo('start')}
+            className="-ml-2"
+            data-testid="harness-setup-back"
+          >
+            <ArrowLeft size={18} aria-hidden="true" />
+          </IconButton>
+        ) : null}
+        <h1 className="m-0 text-2xl font-semibold tracking-tight text-text-strong">{title}</h1>
+      </div>
+      {/* What a Kiro sign-in alone gives, or why the built-in harness is not offered here. */}
+      <p className="mt-2 text-sm text-muted" data-testid="harness-setup-without-sign-in">
+        {builtInUsable
+          ? i18nT('components.firstRunHarnessSetup.without_sign_in')
+          : bundle?.host_unsupported || i18nT('components.firstRunHarnessSetup.without_sign_in')}
+      </p>
       {/* No hand-off: the harness pick on this screen is unsaved. These reads fail
           open (the choices still show), so this only says some may be missing. */}
       <ErrorNotice
@@ -354,120 +503,75 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
           <Btn type="button" onClick={retryReads}>{i18nT('components.kiroPrerequisiteGate.try_again')}</Btn>
         ) : undefined}
       />
+      {/* Shown beside any rows still cached from an earlier read, so a failed refresh is never silent. */}
+      {backendsQ.isError ? (
+        // No hand-off: the harness pick on this screen is unsaved.
+        <ErrorNotice
+          className="mt-4"
+          message={i18nT('components.kiroPrerequisiteGate.other_agents_unavailable')}
+          testId="harness-setup-backends-error"
+          footer={<Btn type="button" onClick={() => void backendsQ.refetch()}>{i18nT('components.kiroPrerequisiteGate.try_again')}</Btn>}
+        />
+      ) : null}
       <HarnessPickerList
         className="mx-0 mt-5 min-w-0 space-y-2 border-none p-0"
-        ids={kiroIds}
+        ids={ids}
         group="first-run-harness"
-        legend={i18nT('components.firstRunHarnessSetup.choose_title')}
+        legend={title}
         selectedId={pick}
         onSelect={choose}
-        label={id => (id === BUILT_IN
-          ? i18nT('pages.developer.kasBundleCard.engine_builtin')
-          : i18nT('pages.developer.kasBundleCard.engine_kiro_cli'))}
+        label={nameOf}
         detailId={id => `first-run-harness-${id}`}
-        detailTestId={id => `first-run-harness-detail-${id}`}
-        row={id => ({
-          icon: <HarnessLogo id={id === BUILT_IN ? ACP_BACKEND_KAS : KIRO_CLI} size={16} />,
-          status: id === BUILT_IN
-            ? (builtInOk
-              ? <Badge variant="aim">{i18nT('components.firstRunHarnessSetup.recommended')}</Badge>
-              : <Badge variant="muted">{i18nT('components.firstRunHarnessSetup.cannot_run_here')}</Badge>)
-            : !cliInstalled
-              ? <Badge variant="muted">{i18nT('components.kiroPrerequisiteGate.agent_not_installed')}</Badge>
-              : cliSignedIn
-                ? <Badge variant="ok">{i18nT('components.firstRunHarnessSetup.signed_in')}</Badge>
-                : <Badge variant="muted">{i18nT('components.firstRunHarnessSetup.not_signed_in')}</Badge>,
-          detail: id === BUILT_IN && !builtInOk
-            ? <p className="text-[13px] leading-relaxed text-text">{bundle?.host_unsupported}</p>
-            : id === KIRO_CLI && !cliInstalled
-              ? (
-                <>
-                  <HarnessInstallDetail
-                    value={KIRO_CLI}
-                    name={i18nT('pages.developer.kasBundleCard.engine_kiro_cli')}
-                    probe={kiroProbe}
-                    prerequisite={status}
-                  />
-                  {checkAgain}
-                </>
-              )
-              : undefined,
-        })}
+        detailTestId={id => (id === KIRO_CLI ? `first-run-harness-detail-${id}` : 'first-run-harness-detail-other')}
+        row={id => {
+          if (id === KIRO_CLI) {
+            return {
+              icon: <HarnessLogo id={KIRO_CLI} size={16} />,
+              status: !cliInstalled
+                ? <Badge variant="muted">{i18nT('components.kiroPrerequisiteGate.agent_not_installed')}</Badge>
+                : cliSignedIn
+                  ? <Badge variant="ok">{i18nT('components.firstRunHarnessSetup.signed_in')}</Badge>
+                  : <Badge variant="muted">{i18nT('components.firstRunHarnessSetup.not_signed_in')}</Badge>,
+              detail: !cliInstalled
+                ? (
+                  <>
+                    <HarnessInstallDetail
+                      value={KIRO_CLI}
+                      name={i18nT('pages.developer.kasBundleCard.engine_kiro_cli')}
+                      probe={kiroProbe}
+                      prerequisite={status}
+                    />
+                    {checkAgain}
+                  </>
+                )
+                : undefined,
+            }
+          }
+          const b = list.probe(id) as AcpBackendProbe
+          const reason = status
+            ? notReadyReason(status, b) ?? (configuredBackendCanStart(status, b) ? null : 'sandbox_blocked')
+            : null
+          return {
+            icon: <HarnessLogo id={id} size={16} />,
+            status: (
+              <AgentStatusBadge
+                probe={b}
+                blocked={!configuredBackendCanStart(status, b)}
+                sandboxOff={sandboxOffFor(status, b)}
+              />
+            ),
+            // Only a blocking state gets a detail; the harness's own sign-in
+            // sentence waits for the ready screen, where it is the next step.
+            detail: reason ? <><AgentNotReadyDetail reason={reason} name={list.nameOf(id)} probe={b} />{checkAgain}</> : undefined,
+          }
+        }}
       />
-
-      <div className="mt-4 min-w-0 rounded-xl border border-border" data-testid="harness-setup-others">
-        <button
-          type="button"
-          aria-expanded={showOthers}
-          aria-controls="first-run-other-harnesses"
-          onClick={() => setOthersOpen(!showOthers)}
-          className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-xl border-none bg-transparent px-3 py-2.5 text-left hover:bg-bg-hover focus-ring"
-        >
-          <span className="flex items-center gap-2 text-sm font-medium text-text-strong">
-            <Boxes className="lucide-inline text-muted" aria-hidden="true" />
-            {i18nT('components.firstRunHarnessSetup.other_harnesses')}
-          </span>
-          <ChevronDown
-            aria-hidden="true"
-            className={`h-5 w-5 shrink-0 text-muted transition-transform ${showOthers ? 'rotate-180' : ''}`}
-          />
-        </button>
-        {/* Shown beside any rows still cached from an earlier read, so a failed refresh is never silent. */}
-        {showOthers && backendsQ.isError ? (
-          <div className="border-0 border-t border-solid border-border p-3">
-            {/* No hand-off: the harness pick on this screen is unsaved. */}
-            <ErrorNotice
-              message={i18nT('components.kiroPrerequisiteGate.other_agents_unavailable')}
-              testId="harness-setup-backends-error"
-              footer={<Btn type="button" onClick={() => void backendsQ.refetch()}>{i18nT('components.kiroPrerequisiteGate.try_again')}</Btn>}
-            />
-          </div>
-        ) : null}
-        {showOthers && (
-          <HarnessPickerList
-            id="first-run-other-harnesses"
-            className="mx-0 min-w-0 space-y-2 border-0 border-t border-solid border-border p-3"
-            ids={others.map(b => b.id)}
-            group="first-run-harness"
-            legend={i18nT('components.firstRunHarnessSetup.other_harnesses')}
-            selectedId={pick}
-            onSelect={choose}
-            label={list.nameOf}
-            detailId={id => `first-run-harness-${id}`}
-            detailTestId="first-run-harness-detail-other"
-            row={id => {
-              const b = list.probe(id) as AcpBackendProbe
-              const reason = status
-                ? notReadyReason(status, b) ?? (configuredBackendCanStart(status, b) ? null : 'sandbox_blocked')
-                : null
-              return {
-                icon: <HarnessLogo id={id} size={16} />,
-                status: (
-                  <AgentStatusBadge
-                    probe={b}
-                    blocked={!configuredBackendCanStart(status, b)}
-                    sandboxOff={sandboxOffFor(status, b)}
-                  />
-                ),
-                // Only a blocking state gets a detail; the harness's own sign-in
-                // sentence waits for the ready screen, where it is the next step.
-                detail: reason ? <><AgentNotReadyDetail reason={reason} name={list.nameOf(id)} probe={b} />{checkAgain}</> : undefined,
-              }
-            }}
-          />
-        )}
-      </div>
-      {/* No hand-off: the harness pick on this screen is unsaved; Continue retries the save. */}
-      <ErrorNotice
-        testId="harness-setup-save-error"
-        className="mt-4"
-        message={saveMut.error ? i18nT('components.firstRunHarnessSetup.save_failed', { name: pickName }) : null}
-      />
+      {saveError}
       {/* No hand-off: the harness pick on this screen is unsaved; Check again retries the re-read. */}
       <ErrorNotice
         testId="harness-setup-recheck-error"
         className="mt-4"
-        message={recheckError ? i18nT('components.firstRunHarnessSetup.recheck_failed', { name: pickName }) : null}
+        message={recheckError ? i18nT('components.firstRunHarnessSetup.recheck_failed', { name: nameOf(pick) }) : null}
       />
     </SetupShell>
   )

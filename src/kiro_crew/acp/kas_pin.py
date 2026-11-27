@@ -83,10 +83,13 @@ KAS_PIN_MANIFEST_SHA256 = "58600c49bdd758709982051b11043f0f91194b9fe0dfa1cfd34d0
 #: the Amazon Linux 2 builds of Node and onnxruntime from ``packaging/kas-al2/``
 #: for those architectures. It is derived from :data:`KAS_PIN_VERSION`, so both pins always name
 #: one engine release and one Node release; moving the pin means publishing both.
-KAS_PIN_AL2_VERSION = f"{KAS_PIN_VERSION}-al2"
+#: The ``.<n>`` after ``-al2`` is the AL2 republish revision: a published version is
+#: never overwritten, so adding an architecture's AL2 builds to the same engine and
+#: Node release takes the next revision.
+KAS_PIN_AL2_VERSION = f"{KAS_PIN_VERSION}-al2.2"
 
 #: sha256 of ``<base>/kas/<KAS_PIN_AL2_VERSION>/manifest.json`` as published.
-KAS_PIN_AL2_MANIFEST_SHA256 = "70db3b46ed43067e7b8c5c82423a5750d080825433cbaafed581b6daa0934993"
+KAS_PIN_AL2_MANIFEST_SHA256 = "9f0ec18595994e7ec7a9620f0f1d4c46ffe5a5f55dc09f2039dfffc3307a8dd8"
 
 #: The engine and Node build keys the pinned manifest publishes, the matrix
 #: ``scripts/kas_bundle_publish.py`` builds. Read without the network, so a host
@@ -97,12 +100,12 @@ KAS_PIN_NODE_BUILDS = frozenset(
 )
 
 #: Lowest glibc each Linux Node key of each pin runs on, checked before any
-#: download. The nodejs.org builds need 2.28; the AL2 pin's linux-x64 builds need
-#: 2.26. A version or key not listed is held to 2.28. A floor describes a pin's
+#: download. The nodejs.org builds need 2.28; the AL2 pin's linux-x64 and
+#: linux-arm64 builds need 2.26. A version or key not listed is held to 2.28. A floor describes a pin's
 #: bytes, so it only changes in the commit that moves that pin.
 KAS_PIN_GLIBC_FLOORS: dict[str, dict[str, tuple[int, int]]] = {
     KAS_PIN_VERSION: {"linux-x64": (2, 28), "linux-arm64": (2, 28)},
-    KAS_PIN_AL2_VERSION: {"linux-x64": (2, 26)},
+    KAS_PIN_AL2_VERSION: {"linux-x64": (2, 26), "linux-arm64": (2, 26)},
 }
 
 #: Each pin's manifest digest, keyed by its version.

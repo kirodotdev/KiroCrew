@@ -12,7 +12,8 @@ Instance fields written: ``_load_replay_frames``, ``_parked_copies``, ``_session
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_agent_version``, ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``,
-``_fold_mcp_frame``, ``_host_sends_mcp_init``, ``_initialized``, ``_kas_host_auth``,
+``_fold_mcp_frame``, ``_hold_project_servers``, ``_host_sends_mcp_init``, ``_initialized``,
+``_kas_host_auth``,
 ``_kas_served_token_digest``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
 ``_mcp_switched_off``, ``_model``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
 ``_pool_lookup``, ``_record_keeping_sessions``, ``_record_tree_in_background``,
@@ -90,6 +91,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
+    ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_RESUME,
     METHOD_SET_MODE,
@@ -422,6 +424,9 @@ async def load_session(
     # a conversation that already had them.
     # Bound once, for the same consumers as session/new: see the note there.
     await self._write_remote_token()
+    # The project servers the person has not approved, as session/new holds them.
+    if self.acp_backend == ACP_BACKEND_KIRO:
+        mcp_servers = await self._hold_project_servers(mcp_servers, active_agent, session_work_dir)
     # The same prune session/new gets (``mcp_prune``), for the same hosts.
     pruned = None
     if self.acp_backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
@@ -456,7 +461,8 @@ async def load_session(
     # the kiro resume path reaches a comparison and STOPS: no awaited step,
     # nothing to unwind, no shared coroutine that could grow a failure mode
     # later. create_session() enters the same seam unconditionally, which is
-    # the shape this one deliberately does not copy. Reading the backend and
+    # the shape this one deliberately does not copy (the synchronous
+    # ``session_request`` below is asked on every host, as on create). Reading the backend and
     # stopping is the smallest non-zero delta the kiro path can take for KAS
     # behaviour to exist here at all, and the harness exposes no property
     # meaning "this host needs its agent re-sent on resume" that could answer
@@ -511,6 +517,9 @@ async def load_session(
         launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
         # Same as create_session: a worker stub the payload's spec read muted.
         mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
+        mcp_servers = await self._hold_project_servers(
+            mcp_servers, active_agent, session_work_dir, kas_agents
+        )
         mcp_servers = without_excluded_stubs(mcp_servers, kas_agents)
         kas_agents, mcp_servers = hoist_servers_for_session(
             kas_agents,
@@ -551,8 +560,8 @@ async def load_session(
                 load_params, kas_memory.memory_settings(kas_memory_mode)
             )
         attach_kas_custom_agents(load_params, kas_agents, memory_mode=kas_memory_mode)
-        # The same last word session/new gets, asked inside this branch so the
-        # kiro resume path still stops at the comparison above.
+        # The same last word session/new gets, asked before the steps below that
+        # read what it returned.
         load_params, agent = self._harness.session_request(
             restore_method,
             load_params,
@@ -573,6 +582,15 @@ async def load_session(
         # parked copy must be gone before the load below.
         if person_waits(start_priority, focus_resume=focus_resume) and self.can_release():
             parking = parking_load(load_params)
+    else:
+        # The same last word every other host's session/new gets: codex asks its
+        # adapter to hold the ``session/resume`` reply for the array's MCP startup.
+        load_params, agent = self._harness.session_request(
+            restore_method,
+            load_params,
+            agent,
+            agent_capabilities=self._agent_capabilities,
+        )
     if harness_state is not None:
         # What this session enforces, from the spec its array was projected from.
         await self._harness.adopt_session_spec(
@@ -590,6 +608,10 @@ async def load_session(
         )
         if meta is not None:
             load_params["_meta"] = {**(load_params.get("_meta") or {}), **meta}
+    if self.acp_backend in ACP_BACKENDS_SEED_LOCAL_SETTINGS:
+        from kiro_crew.agent_sdk.project_mcp_holds import hold_session_params
+
+        load_params = await hold_session_params(self.acp_backend, active_agent, load_params)
     budget = await self._session_start_budget()
     if parking is not None:
         await self._park_in_start_agent(resume_sid, parking, budget)
@@ -953,9 +975,9 @@ async def _park_in_start_agent(
     """Make the stored session *session_id* come back in the host's start agent.
 
     Up to three requests. For a session stored in its own agent none of them
-    starts an MCP server: ``session/load`` with
+    starts a project MCP server: ``session/load`` with
     *params* (``kas_start_agent.parking_load``: the session's own agent without
-    its servers, no session-level server), ``session/set_mode`` to the start
+    its servers, only project-server refusal stubs at session level), ``session/set_mode`` to the start
     agent, which is what the engine stores, and the release that frees the
     resident copy and keeps the record. The caller's own ``session/load`` then
     resumes in the start agent.
@@ -975,6 +997,9 @@ async def _park_in_start_agent(
     No session queue is registered for the id while this runs, so the turns the
     engine replays are dropped by the reader, as they are during any load.
     """
+    from kiro_crew.agent_sdk.project_mcp_holds import hold_session_params
+
+    params = await hold_session_params(self.acp_backend, self._agent, params)
     started = time.monotonic()
     parked = False
     # Held by the engine from the request below until its release is confirmed;

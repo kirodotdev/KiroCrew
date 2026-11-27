@@ -339,11 +339,15 @@ def is_session_slot(slot: str) -> bool:
     return bool(slot) and telemetry_channel_of(slot) not in _NON_SESSION_CHANNELS
 
 
-def session_category(slot: str) -> str:
+def session_category(slot: str, app: str = "") -> str:
     """Classify *slot* into the session taxonomy the panel groups by.
 
-    Returns ``bg`` for a session that runs unattended, otherwise the transport it
-    came from (``dashboard``, ``telegram``, ``slack``, …). Built on
+    Returns ``app:<name>`` when the row was stamped with the app that owns the
+    session (*app*, the token row's ``app`` field), because an app's slot key
+    (``<app>-<id>``) matches no transport and would otherwise land in ``other``.
+    Without a stamp it returns ``bg`` for a session that runs unattended,
+    otherwise the transport it came from (``dashboard``, ``telegram``, ``slack``,
+    …). Built on
     :func:`telemetry_channel_of` rather than matching key shapes here: that is
     the one place that knows every session-key form, so a surface it learns
     about is classified consistently for metrics and for this panel.
@@ -353,6 +357,8 @@ def session_category(slot: str) -> str:
     its own new category — visible, reportable, fixable — whereas an allowlist of
     "real" transports would silently file it as background and bury it.
     """
+    if app:
+        return f"app:{app}"
     channel = telemetry_channel_of(slot) if slot else "unknown"
     return "bg" if channel in _BACKGROUND_CHANNELS else channel
 

@@ -253,7 +253,8 @@ METHOD_SESSION_LOAD = "session/load"
 #: implement full loading: it restores the session WITHOUT replaying the previous
 #: messages. Its request and response carry the same fields as ``session/load``'s,
 #: which is why one membership set (``ACP_BACKENDS_RESUME_WITHOUT_LOAD``) decides
-#: which of the two a harness is sent rather than each having a restore path.
+#: which of the two a harness is sent rather than each having a restore path. codex
+#: serves both and is sent this one, the only restore its adapter holds for MCP startup.
 METHOD_SESSION_RESUME = "session/resume"
 #: Copies a stored session into a new one and answers the new ``sessionId``; the
 #: source is left untouched. Advertised as ``sessionCapabilities.fork``.
@@ -518,6 +519,16 @@ KIRO_CLI_CLIENT_APPLICATION = "kirocrew"
 # ``agent.kas_persist_mcp_sign_in`` is on (the default; ``acp/kas_secret_storage.py``),
 # and every other callback stays undeclared (= false).
 # ``approveForMeOption`` and the opt-in ``checksAutoApprovals``: ``acp/kas_approve_for_me.py``.
+#
+# ``sessionScopedMcpStatus`` is declared so each session's ``_kiro/mcp/status``
+# lists only the servers that session declares. Undeclared, KAS sends every local
+# session the merged status of all of them, and on a name clash the newest
+# session's entry wins: sub-agents sharing one KAS process declare the same Crew
+# servers, so an older child's readiness wait (``KasMcpReadiness``) read its
+# newest sibling's "connecting" as its own and held its first prompt until that
+# sibling connected, and could read a sibling's "connected" as its own. The mode
+# is process-wide and taken from the first ``initialize``, which on a process
+# Crew spawns is Crew's. The kiro-cli relay forwards this ``_meta.kiro`` block.
 KAS_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
     "_meta": {
@@ -526,6 +537,7 @@ KAS_CLIENT_CAPABILITIES: dict = {
             "openExternalUrl": True,
             "userInput": True,
             "approveForMeOption": True,
+            "sessionScopedMcpStatus": True,
         }
     },
 }
@@ -1033,6 +1045,7 @@ class AcpEvent:
     #: classification (cache hit), not the miss-default False.
     raw_params_trusted: bool = False
     shell_classified: bool = False
+    tool_call_id_reused: bool = False  # args contradict the id's cached ones: refused
     #: spawn_target: the agent a KAS sub-agent spawn will start, read from the
     #: engine-written ``_meta.kiro.consent.resource`` of a consent-classified
     #: request (``_dispatch.kas_consent_tool``). Empty on every other event. The

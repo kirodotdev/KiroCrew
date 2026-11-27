@@ -9,6 +9,7 @@ import { DndContext, closestCenter, DragOverlay } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { toggleBottomTerminal } from '../../hooks/useBottomTerminal'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
+import { preloadTerminalOnIntent } from '../../components/terminalSessions'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { isAppNavId } from '../../appNotificationBadges'
@@ -19,6 +20,7 @@ import { appPathname } from '../../lib/basePath'
 import { MOBILE_NAV_WIDTH, type AppShell } from '../appShell'
 import { NavItem, NavBadge, NavRowLayoutKey } from './navRow'
 import { AppRowPopoutAction } from './appRowPopoutAction'
+import { appRegistryPrefetchHandlers } from '../../components/appRegistryPrefetch'
 import { DockMatesSection, useDockMates, useDockMatesSectionOpen } from './matesDock'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { coversPaneProps } from '../../hooks/paneVisibility'
@@ -35,7 +37,7 @@ import { AccountAvatar, ACCOUNT_AVATAR_RAIL_PX, ACCOUNT_AVATAR_TOUCH_PX } from '
 export function ShellNavRail({ shell }: { shell: AppShell }) {
   const {
     settingsDotLabel, terminalEnabled, terminalPoppedOut, bottomTerminalOpen, mobileConnectOpen,
-    setMobileConnectOpen, hasRenderableMobileConnect, activeSlotProject, navigate, branding, botName, avatar,
+    setMobileConnectOpen, hasRenderableMobileConnect, getActiveSlotProject, navigate, branding, botName, avatar,
     isMobile, focusActive, focusChromeInert, railPeek, railPeekSurface, mobileNavMounted, mobileNavOpen, mobileNavX, mobileNavPanelRef,
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
@@ -294,14 +296,14 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 <SortableContext items={sortableRows.map(n => n.id)} strategy={verticalListSortingStrategy}>
                   {sortableRows.map(n => (
                     <AppRailMenu key={n.id} row={n} dragActive={dragActive}>
-                      <div role="presentation"><SortableAppNavRow id={n.id}>{renderAppRow(n)}</SortableAppNavRow></div>
+                      <div role="presentation" {...appRegistryPrefetchHandlers}><SortableAppNavRow id={n.id}>{renderAppRow(n)}</SortableAppNavRow></div>
                     </AppRailMenu>
                   ))}
                 </SortableContext>
                 {/* Pulled-in active overflow row(s): static, non-draggable. */}
                 {pulledInRows.map(n => (
                   <AppRailMenu key={n.id} row={n} dragActive={dragActive}>
-                    <div role="presentation">{renderAppRow(n)}</div>
+                    <div role="presentation" {...appRegistryPrefetchHandlers}>{renderAppRow(n)}</div>
                   </AppRailMenu>
                 ))}
                 {/* The ghost has no menu because it is a second rendering of the dragged row. */}
@@ -351,8 +353,8 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                   /* While popped out: focus only (a refused programmatic
                      focus is a harmless no-op). Explicit re-dock lives in the
                      TerminalDetachedBar below -- never a timing heuristic. */
-                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
-                  {...uiLocation('shell.terminal')}
+                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(getActiveSlotProject()) }}
+                  {...uiLocation('shell.terminal', preloadTerminalOnIntent)}
                 />
               )}
               {hasRenderableMobileConnect && (

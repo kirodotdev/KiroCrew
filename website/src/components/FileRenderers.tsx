@@ -555,8 +555,7 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
 }) {
   // Split on BOTH separators — Kiro Crew ships native on Windows where paths
   // arrive as `C:\Users\…\report.docx`, and a `/`-only split would surface the
-  // whole path as the "filename". Matches the pattern in MarkdownRenderer.tsx
-  // and VectorMemoryCard.tsx.
+  // whole path as the "filename". Matches the pattern in MarkdownRenderer.tsx.
   const filename = filePath.split(/[\\/]/).pop() || filePath
   // `BIN` fallback: the binary card is reached by a byte sniff, not by an
   // extension list, so `coredump` and `a.out` land here with nothing to show.

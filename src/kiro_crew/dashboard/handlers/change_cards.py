@@ -1561,10 +1561,24 @@ async def _run_card_step(
         return _deny(409, "plan_mismatch", f"this request does not match the card ({mismatch})")
     try:
         if index == 0:
-            if op == catalog.OP_APPLY:
+            try:
                 current = await cards.read_state(
-                    rec["kind"], rec["params"], [], state=state, app=request.app
+                    rec["kind"],
+                    rec["params"],
+                    [] if op == catalog.OP_APPLY else rec["evidence"],
+                    state=state,
+                    app=request.app,
                 )
+            except catalog.CardCatalogError as exc:
+                # A reader that refuses the card now (an edit the editor refuses,
+                # another store, a record that is gone) answers its coded refusal
+                # before any write.
+                store.abort_step(rec)
+                unsaved = await _published_or_refusal(request, rec, revert)
+                if unsaved is not None:
+                    return unsaved
+                return _refusal(exc)
+            if op == catalog.OP_APPLY:
                 if cards.canonical(cards.comparable_state(rec["kind"], current)) != cards.canonical(
                     cards.comparable_state(rec["kind"], rec["before"])
                 ):
@@ -1578,9 +1592,6 @@ async def _run_card_step(
                         "this changed since the card was shown; preview it again",
                     )
             else:
-                current = await cards.read_state(
-                    rec["kind"], rec["params"], rec["evidence"], state=state, app=request.app
-                )
                 if cards.undo_snapshot_changed(rec["kind"], current, rec.get("after")):
                     store.abort_step(rec)
                     rec["error"] = {

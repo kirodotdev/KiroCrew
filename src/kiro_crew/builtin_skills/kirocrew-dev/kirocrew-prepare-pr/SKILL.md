@@ -164,7 +164,7 @@ cannot read Checks; it still fails closed at 20. Use a token with Checks read.
   request to run this loop authorizes its own pushes, dispositions, overrides,
   auto-merge, and the red-main fix PR it opens. Fix permission or a green gate
   alone grants no publication authority.
-- **Never push to a protected base branch.** Always a feature branch, pushed explicitly (`git push -u origin <branch>`).
+- **Never push to a protected base branch.** Always a feature branch, pushed explicitly (`git push origin <branch>`, no `-u`).
 - `--force-with-lease` only on your **own** feature branch, and **always SHA-pinned** (`--force-with-lease=<branch>:<lease_sha>`). The implicit form silently accepts a just-fetched ref and can overwrite a maintainer commit.
 - Confirm before destructive history ops (`reset --hard`, discarding commits) on non-throwaway branches.
 - Keep pre-commit hooks (no `--no-verify`) unless asked. Never commit secrets.
@@ -298,9 +298,9 @@ the commands in `references/cancel-runs.md`.
 flake ledger, and rerun at most once, only what failed; never re-push an
 identical tree. Read `references/rerun-red.md` first.
 
-1. **Push only the reviewed commit.** Require a clean index/worktree and fail closed unless `[ "$(git rev-parse HEAD)" = "$REVIEWED_SHA" ]`; any intervening mutation returns to Phase 2. Run the post-squash guard (`single_commit` only): `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --require-single-on-base` — **0** safe, **40** do NOT push (read each diff; name yours after `--`; it also checks `prepare-pr-sweep.md`, read stderr), **41** follow the remedy, **2** env.
+1. **Push only the reviewed commit.** Require a clean index/worktree and fail closed unless `[ "$(git rev-parse HEAD)" = "$REVIEWED_SHA" ]`; any intervening mutation returns to Phase 2. Run the post-squash guard (`single_commit` only): `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --require-single-on-base` — **0** safe, **40** do NOT push (read each diff; name yours after `--`; it also checks `prepare-pr-sweep.md`, read stderr), **41** follow the remedy, **2** env. A base that moved on while the commit was reviewed is not a refusal: the guard checks the commit still merges into the fresh base, so push it as reviewed, with no rebase and no new review round; only a conflict refuses.
 
-   **SHA-pinned force-with-lease.** Record `LEASE_SHA=$(git rev-parse origin/<branch>)` at iteration start, BEFORE Phase 1's fetch. **First push (no `origin/<branch>`): skip the clobber check and `git push -u origin <branch>`.** Otherwise check the pre-squash HEAD: `git merge-base --is-ancestor origin/<branch> HEAD` — if it fails, a maintainer commit is on the remote that local history never had; STOP, re-sync, re-include it. Do not re-run that check after the squash. Then `git push --force-with-lease=<branch>:$LEASE_SHA origin <branch>`.
+   **SHA-pinned force-with-lease.** Record `LEASE_SHA=$(git rev-parse origin/<branch>)` at iteration start, BEFORE Phase 1's fetch. **First push (no `origin/<branch>`): skip the clobber check and `git push origin <branch>`.** Otherwise check the pre-squash HEAD: `git merge-base --is-ancestor origin/<branch> HEAD` — if it fails, a maintainer commit is on the remote that local history never had; STOP, re-sync, re-include it. Do not re-run that check after the squash. Then `git push --force-with-lease=<branch>:$LEASE_SHA origin <branch>`.
 
 2. **Create/update the PR** from Phase 1 step 5's checked body file, as
    `references/body.md` (*create or update the PR*) says; verify the body landed.

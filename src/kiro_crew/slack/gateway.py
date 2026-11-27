@@ -161,6 +161,7 @@ from kiro_crew.cron_service.fields import (  # noqa: F401
 )
 from kiro_crew.cron_service.grant_resurface import resurface_stale_grant
 from kiro_crew.dashboard import cautious_boot, start_dashboard, token_secret
+from kiro_crew.dashboard.bind_refresh import bind_refused_exit_code
 from kiro_crew.dashboard.chat_persistence import (
     rehydrate_slot_from_history_async,
     wait_for_unwinding_turns,
@@ -823,6 +824,8 @@ class GatewayOrchestrator:
     _memory_repair_task: asyncio.Task | None
     _memory_repair_stop: threading.Event
     _memory_repair_cursor: str
+    _memory_repair_fresh_cursor: str
+    _memory_repair_fresh_turn: bool
     _console_script_repair_task: "asyncio.Task[None] | None"
     _marker_write_task: "asyncio.Task[None] | None"
     _sign_in_refresher_task: "asyncio.Task[None] | None"
@@ -1120,6 +1123,7 @@ class GatewayOrchestrator:
     _schedule_memory_preparation = _memory_lifecycle._schedule_memory_preparation
     _wait_for_memory_preparation = _memory_lifecycle._wait_for_memory_preparation
     _repair_member_memory_once = _memory_lifecycle._repair_member_memory_once
+    _repair_store_once = _memory_lifecycle._repair_store_once
     _repair_member_memory = _memory_lifecycle._repair_member_memory
     _start_embeddings = _memory_lifecycle._start_embeddings
     _auto_migrate_memory = _memory_lifecycle._auto_migrate_memory

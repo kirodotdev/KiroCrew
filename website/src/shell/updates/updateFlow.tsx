@@ -5,7 +5,7 @@ import { useAppSelector } from '../../store'
 import { api } from '../../api/client'
 import { updateAffordance } from '../../utils/updateAffordance'
 import { baseRelease, compareVersions, isNewSection, notesPredateRunningRelease } from '../../utils/releaseVersion'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -31,6 +31,8 @@ export function useUpdateFlow() {
       || s.dashboard.status?.update_latest_version
       || '',
   )
+  // The raw build, for matching the status frame's installed or armed version.
+  const updateTargetRawVersion = useAppSelector(s => s.dashboard.status?.update_latest_version) || ''
   // Availability and capability are separate facts; `updateAffordance` is the one
   // place that combines them, so the modal and the nav badge cannot disagree.
   const affordance = updateAffordance({
@@ -62,7 +64,7 @@ export function useUpdateFlow() {
   // Show changelog on first load after version change (auto-update)
   useEffect(() => {
     if (!version || version === '—') return
-    const lastSeen = localStorage.getItem('mc-last-version')
+    const lastSeen = safeGetItem('mc-last-version')
     if (lastSeen === version) return
     // First visit — no baseline to diff, just record current version
     if (!lastSeen) { safeSetItem('mc-last-version', version); return }
@@ -141,7 +143,7 @@ export function useUpdateFlow() {
     updating, setUpdating, showUpdateModal, setShowUpdateModal, changes, staleNotesFrom, showChangelog, setShowChangelog,
     fullChangelog,
     setFullChangelog, showFull, setShowFull, updateError, setUpdateError, handleUpdate, version, affordance,
-    updateCommand, updateTargetVersion,
+    updateCommand, updateTargetVersion, updateTargetRawVersion,
   }
 }
 
@@ -168,6 +170,7 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
     changes, staleNotesFrom, setShowChangelog,
     fullChangelog, setFullChangelog, showFull, setShowFull, handleUpdate, version, affordance, updateCommand,
     updateTargetVersion,
+    updateTargetRawVersion,
   } = flow
   const close = useCallback(() => { setShowChangelog(false); setShowFull(false) }, [setShowChangelog, setShowFull])
   // Escape closes like the X button; Tab stays inside; focus returns on close.
@@ -257,6 +260,7 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
           ) : affordance === 'arm' ? (
             <InAppUpdateFlow
               version={updateTargetVersion}
+              rawVersion={updateTargetRawVersion}
               manualCommand=""
               onHandoff={() => setShowChangelog(false)}
             />

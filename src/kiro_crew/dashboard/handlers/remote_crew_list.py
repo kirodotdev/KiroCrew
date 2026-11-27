@@ -6,9 +6,10 @@ or leaves the pick to placement. The route takes the ``crew=`` verbs' gates in t
 order (switch, ``agent.session_control``, :func:`authorize_remote_dispatch`) and
 makes only the peer reads two existing callers already make, per connected crew:
 
-* placement's own probe, under its own bound: the version gate
-  (:func:`remote_dispatch_routes.check_version`), then, only when the version
-  matches, the headroom read placement ranks on (``GET api/chat/headroom``);
+* placement's own probe, under its own bound: the version read
+  (:func:`remote_dispatch_routes.check_version`, whose ``major.minor`` match is
+  shown as ``version_match`` and never excludes the crew), then the headroom
+  read placement ranks on (``GET api/chat/headroom``);
 * the capability read the crew window's header uses
   (:func:`handlers_instances_peer.read_peer_capabilities`), for the version text and
   the agent and model names, run alongside so a slow model catalog costs only
@@ -33,6 +34,8 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+import kiro_crew
+from kiro_crew.apps.version import versions_compatible
 from kiro_crew.dashboard.handlers import remote_dispatch_routes as routes
 from kiro_crew.dashboard.handlers.session_control import _counted, _require_internal
 
@@ -151,21 +154,16 @@ async def _row(mgr: Any, row: Any, bound: dict[str, int], logins: bool = False) 
 async def _placement_probe(
     mgr: Any, instance_id: str, out: dict[str, Any], logins: bool = False
 ) -> None:
-    """Placement's own probe (version gate, then headroom), under its own bound."""
+    """Placement's own probe (version read, then headroom), under its own bound."""
     from kiro_crew.dashboard.handlers.remote_placement import PROBE_TIMEOUT_S
     from kiro_crew.dashboard.remote_dispatch_headroom import NO_LOGINS_QUERY, WITH_LOGINS_QUERY
 
     query = WITH_LOGINS_QUERY if logins else NO_LOGINS_QUERY
 
     async def _probe() -> None:
-        try:
-            await routes.check_version(mgr, instance_id)
-        except routes.CrewCallError as exc:
-            if exc.code == "crew_version_mismatch":
-                out["version_match"] = False
-                return
-            raise
-        out["version_match"] = True
+        peer = await routes.check_version(mgr, instance_id)
+        # Information only: a skewed crew is still listed, read and dispatchable.
+        out["version_match"] = versions_compatible(kiro_crew.__version__, peer)
         status, payload = await routes.peer_call(
             mgr, instance_id, "GET", "api/chat/headroom", params=dict(query)
         )
@@ -197,7 +195,7 @@ async def _roster(mgr: Any, instance_id: str, out: dict[str, Any]) -> None:
     """The crew window header's capability read, for the version and the names.
 
     Not under placement's bound: a cold model catalog may take the carrier's own
-    models timeout, and must not cost the version gate or the headroom above.
+    models timeout, and must not cost the version read or the headroom above.
     """
     from kiro_crew.dashboard.handlers_instances_peer import read_peer_capabilities
 

@@ -24,6 +24,7 @@ from kiro_crew.cron_script import (
     _MAX_BAD_OUTPUT_HEAD,
     _MAX_SCRIPT_STDERR_TAIL,
     _REDACT_STRADDLE_MARGIN,
+    _SCRIPT_EXIT_NEXT_STEP,
     _resolve_internal_secret,
     run_command_sandboxed,
     run_script_sandboxed,
@@ -53,6 +54,39 @@ class TestRunScriptSandboxedErrorPaths:
             result = run_script_sandboxed("/f.py:run", "j1", "")
         assert result["status"] == "error"
         assert "segfault" in result.get("error", "")
+
+    @staticmethod
+    def _exit_2(stderr_text):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 2
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with (
+            patch("kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")),
+            patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)),
+            patch("subprocess.Popen", return_value=mock_proc),
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert result["exit_code"] == 2
+        assert "RuntimeError" not in result["error"]
+        assert len(result["error"]) <= _MAX_SCRIPT_STDERR_TAIL
+        assert result["error"].endswith(_SCRIPT_EXIT_NEXT_STEP)
+        return result["error"]
+
+    def test_nonzero_exit_names_its_code_and_starts_its_output_at_a_line(self):
+        warnings = "".join(f"warning line {i}: something looks off\n" for i in range(1, 61))
+        error = self._exit_2(warnings)
+        assert error.startswith("Script exited with code 2. The end of its error output:\n")
+        output = error.split("output:\n", 1)[1].split("\n\nNext: ", 1)[0]
+        lines = output.split("\n")
+        assert lines[-1] == "warning line 60: something looks off"
+        assert all(line.startswith("warning line ") for line in lines)
+
+    @pytest.mark.parametrize("before", ["", "short line\n" * 5])
+    def test_a_last_line_longer_than_the_budget_is_shown_from_its_start(self, before):
+        error = self._exit_2(before + "START" + "L" * 1000)
+        assert error.startswith("Script exited with code 2. The end of its error output:\nSTARTLLL")
+        assert "LLL...\n\nNext: " in error
 
     def test_bad_json_output(self, tmp_path):
         """Lines 337-338: stdout is not valid JSON."""
@@ -123,13 +157,13 @@ class TestRunScriptSandboxedErrorPaths:
 
         monkeypatch.setattr(cron_script, "redact", _spy)
         fake_key = github_classic(seed=62)  # 40 chars, redacted by the plan
-        # The -500 cut lands ONE character into the key: slice-then-redact
-        # would leak the 39-char fragment, and a window that failed to reach
-        # back past the cut would leak it the same way.
+        # The key sits on a whole line inside the tail the reason shows, so its
+        # mask must be shown and no part of it. A key the reason's own cut
+        # severs is on a line the reason drops whole.
         # Newline-separated filler: the window then starts inside an ordinary
-        # short line, so only that line's severed remainder is masked and the
-        # straddling credential is still exercised against the pattern pass.
-        stderr_text = ("n" * 100 + "\n") * 200 + "W" * 300 + fake_key + "X" * 461
+        # short line, so only that line's severed remainder is masked. The
+        # last three lines keep the 801 chars the window's alignment needs.
+        stderr_text = ("n" * 100 + "\n") * 200 + "W" * 659 + "\n" + fake_key + "\n" + "X" * 100
         mock_proc = MagicMock()
         mock_proc.returncode = 1
         mock_proc.communicate.return_value = ("", stderr_text)
@@ -141,10 +175,8 @@ class TestRunScriptSandboxedErrorPaths:
             result = run_script_sandboxed("/f.py:run", "j1", "")
         assert result["status"] == "error"
         assert fake_key not in result["error"]
-        # The discriminator for the straddle: the fragment slice-then-redact
-        # (or an undershooting window) leaves behind.
         assert fake_key[1:] not in result["error"]
-        assert "credential]" in result["error"]
+        assert "credential]\nXXXX" in result["error"]
         assert seen, "redact was never called on the captured stderr"
         assert max(seen) <= _MAX_SCRIPT_STDERR_TAIL + _REDACT_STRADDLE_MARGIN
 
@@ -198,13 +230,14 @@ class TestRunScriptSandboxedErrorPaths:
         """
         # Longer than the margin, and shaped like nothing redact recognises,
         # so only the scrub stands between it and the diagnostic.
-        secret_value = "grantval-" * 700  # 6300 chars > _REDACT_STRADDLE_MARGIN
+        # Multi-line, so its last lines are whole lines in the tail the reason shows.
+        secret_value = ("grantval-" * 7 + "\n") * 100  # 6400 chars
         assert len(secret_value) > _REDACT_STRADDLE_MARGIN
         # Ends 100 chars before the capture's end: it STARTS well before the
         # stderr window's far edge (window = last 4596 chars), so a scrub that
         # only saw the window would see a headless fragment and skip it, and
-        # the fragment's tail would sit inside the kept 500 chars.
-        stderr_text = "n" * 2000 + secret_value + "X" * 100
+        # the fragment's last lines would be shown.
+        stderr_text = "n" * 2000 + "\n" + secret_value + "X" * 100
         mock_proc = MagicMock()
         mock_proc.returncode = 1
         mock_proc.communicate.return_value = ("", stderr_text)
@@ -231,8 +264,8 @@ class TestRunScriptSandboxedErrorPaths:
         assert result["status"] == "error"
         # No recognisable run of the value survives -- neither the whole value
         # nor the fragment a window-scoped scrub would have left in the tail.
-        assert "grantval-" * 20 not in result["error"]
-        assert "[redacted-grant-value]" in result["error"]
+        assert "grantval-" not in result["error"]
+        assert "[redacted-grant-value]XXXX" in result["error"]
 
     def test_pem_opened_before_the_tail_window_is_still_masked(self, tmp_path):
         """A PEM block spanning the whole tail window must not leak body lines.

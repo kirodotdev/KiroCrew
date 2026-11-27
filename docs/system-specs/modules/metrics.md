@@ -596,9 +596,9 @@ receive only part of it -- a product destination reporting how Kiro Crew is used
 whose exported set is a reviewed list rather than everything the process happens
 to record.
 
-So `OtlpDestination` carries three optional NARROWING fields. Each can only
+So `OtlpDestination` carries four optional NARROWING fields. Each can only
 reduce or label what THAT destination receives; none of them can widen anything,
-reach the local sink, or touch another destination. All three default to no
+reach the local sink, or touch another destination. All four default to no
 narrowing, so a destination that sets none of them gets the full payload.
 
 | Field | Default | What it does |
@@ -606,8 +606,9 @@ narrowing, so a destination that sets none of them gets the full payload.
 | `allow: frozenset[str] \| None` | `None` | A metric whose name is not in the set is dropped before encoding. `None` sends every metric collected. Full instrument names, `kirocrew.` prefix included. |
 | `point_attributes: Mapping[str, str]` | empty | Fixed pairs added to every exported data point of this destination. |
 | `resource_allow: frozenset[str] \| None` | `None` | This destination's batches carry a `Resource` reduced to these keys. A key the shared resource does not set is simply absent. |
+| `named_entity_namespaces: frozenset[str]` | empty | The namespaces whose `<namespace>.<app>` `Entity` values (apps from a registry the edition named) this destination may see. Any other namespaced `Entity` is sent as `private`, with that point's `entity_version`; empty names nothing. The local sink and `telemetry.otlp_endpoint*` entries keep names. Counter points left with the same attributes are summed into one, so the destination sees one `private` series. |
 
-`metrics/destination_filter.py` enforces all three as an exporter WRAPPER that
+`metrics/destination_filter.py` enforces all four as an exporter WRAPPER that
 `_build_otlp_reader` puts around that destination's own exporter. The descriptor
 declares the narrowing; the core performs it. Four properties follow from where
 the wrapper sits:
@@ -1475,15 +1476,11 @@ rows have no key: a kept one is not named, and a cut one still counts in `*_omit
 text is never written. Purpose: scoring which lessons change behaviour.
 
 A memory stage running under `shadow` or `enforce` adds one more field, named by
-its kind in `injection_receipts.STAGE_KINDS` (today `rule_authority_order`,
-`lesson_fold` and `relevance_rule`): `{mode, policy, would_add, would_drop}`, ids
-only; `lesson_fold` adds `pairs`, a list of `[leader, folded]` ids. A stage that
-gates several blocks (`relevance_rule`: findings, task facts, activity) records each
-block as a part, a block rendered again replaces only its own part, and the line
-carries the union; activity ids are `projects:<hash>` and `history:<hash>` of a
-section, never its text. A composition that rendered no lesson tier but recorded a
-stage (activity gated with lessons switched off) still writes a line, its lesson
-lists empty. A line with no stage record keeps
+its kind in `injection_receipts.STAGE_KINDS` (today `rule_authority_order` and
+`lesson_fold`): `{mode, policy, would_add, would_drop}`, ids
+only; `lesson_fold` adds `pairs`, a list of `[leader, folded]` ids. A composition
+that rendered no lesson tier but recorded a stage still writes a line, its lesson
+lists empty. `relevance_rule` writes no field. A line with no stage record keeps
 the bytes above exactly. Stage fields are capped with the kind-routing constants in
 `<data home>/usage/injections/stage-log.json`: a per-UTC-day counter by kind and mode
 (`lines`, `would_add`, `would_drop`), pruned past `COUNTER_DAYS_KEPT` days, counts
@@ -1496,13 +1493,11 @@ warning naming the fields dropped. A shard append that fails logs one warning na
 the line's `phase` (`receipt` when it has none).
 
 A stage field may also carry `control`: up to 20 ids of the block the stage keeps
-(`lessons` for `rule_authority_order` and `lesson_fold`; `findings` plus the
-task facts both policies keep, passed as `record_stage(kept=...)`, for
-`relevance_rule`; `kept` itself is never written), picked when the first 4 bytes of SHA-256 over the session tag and
+(`lessons` for `rule_authority_order` and `lesson_fold`), picked when the first 4 bytes of SHA-256 over the session tag and
 key, read as an integer and taken modulo 100, are below `CONTROL_PERCENT` (10) (`memory_shadow_trace.control_keys`), so every render
 of one session picks the same rows. While any stage flag the shadow report lists
-(`memory_shadow_report.STAGES`; not `kind_routing`, `lesson_fold` or
-`rule_authority_order`, which have no shadow mode) is on, two outcome
+(`memory_shadow_report.STAGES`; not `kind_routing`, `lesson_fold`,
+`rule_authority_order` or `relevance_rule`, which have no shadow mode) is on, two outcome
 lines join the shards (`injection_receipts.OUTCOME_KINDS`): `phase: "recall"` with
 the memory keys a tool `memory_recall` delivered (the lessons its lesson block
 rendered, named through a private collection, then its facts), and `phase:
@@ -1610,7 +1605,7 @@ all through `usage_spend._finite_number`.
 **Subagent turns are excluded from both readers.** `usage.is_session_slot(slot)`
 drops any row whose `telemetry_channel_of` is `subagent`, at the point the row is
 READ rather than where it is grouped — so the window totals, the prior-period
-deltas, `by_model`, `by_channel`, `by_category`, the context bands, the priciest
+deltas, `by_model`, `by_channel`, `by_category`, `by_purpose`, the context bands, the priciest
 turn and the occupancy percentiles are all computed over one population and cannot
 contradict each other. A subagent is a fragment of another session's turn rather
 than a session with its own lifecycle, and its usage row carries no field pointing
@@ -1939,6 +1934,7 @@ from fields the row store already carries — no new instrumentation:
 | `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
 | `conversations` | EVERY session in the window (not a top-N), each with its `category`, the unollapsed `channel` beneath it, peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction. Named `conversations` for payload compatibility; the entity is a session |
 | `by_category` | same shape as `by_model`, keyed by `usage.session_category(slot)` — the taxonomy the panel groups by: `bg` for an unattended session (cron, heartbeat, task runner), otherwise the transport (`dashboard`, `telegram`, `slack`, …) |
+| `by_purpose` | same shape as `by_model`, keyed by what the turn was for, a closed set read at view time with no change to any written row: `helper` when the row's `surface` starts with `bg:` (titles, tags, consolidation), else `automation` when `usage.session_category(slot)` is `bg`, else `turn` for any other non-empty slot, else `unknown` for an empty slot. Only the `bg:` prefix is read from `surface`, because a historical row's surface can be wrong but non-empty. Subagent rows are excluded as for every other split, so the entries sum to `credits` |
 | `advice` | measured recommendations from `telemetry_spend_advice.spend_advice`, largest share first, `[]` when none applies. Each is `{id, share_pct, ...}` with ids and numbers only; the dashboard words it. `high_context`: the share of the window's credits on turns whose `context_used` is at least 600k. `costly_model`: the share on the model with the highest credits per turn, listed only when a second model has 5 or more turns and costs at most half as much per turn. A share under 10% is left out, and a sub-agent row reaches none of it, as with every figure in this block |
 
 **Channel comes from the slot key, not from `surface`.** Writes derive
@@ -3245,14 +3241,14 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.lesson.injected` | counter | `hit` | each admitted turn composed with a lesson tier |
 | `kirocrew.skill.lazy_load.count` | counter | adds `skill`: a shipped skill id (nested ones by their path), `custom` or `other` | each on-demand skill body load; the duration histogram keeps `hit` alone |
 | `kirocrew.app.task.completed` | counter, **deprecated** | `app`, `outcome` (kept in the manifest only) | nowhere: retired, no longer recorded. It counted Papyrus compiles; its manifest row stays `deprecated` so the name is never reused |
-| `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), else `private`; `entity_version`: `app_public_version`, the app's version when it is `N.N.N` (at most four digits each), `other` for any other version, `private` when `app` is; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
+| `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), `<namespace>.<name>` for an app from a registry whose edition row sets `appNamespace`, else `private`; `entity_version`: `app_public_version`, the app's version when it is `N.N.N` (at most four digits each), `other` for any other version, `private` when `app` is; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
 | `kirocrew.app.updated` | counter | `app`, `entity_version` (the new version) and `via`, as on `kirocrew.app.installed` | a successful `install_from_registry` over an installed app, after its provenance is written (`store_origin.count_install`) |
 | `kirocrew.app.uninstalled` | counter | `app` and `entity_version` (the removed version), read before the install record is removed; `keep_data`: `true` / `false` | `uninstall_app` once it commits; a `retired_builtin` cleanup is Crew's own removal and is not counted |
 | `kirocrew.app.session_started` | counter | `app` and `entity_version` of the provider's `owning_app`, as on `kirocrew.app.installed`; `kind`: the session's `session_kind` (9 values) | `record_session_started`, right after it counts `kirocrew.session.started`, when the provider's trusted `owning_app` (the caller's slot app) is set; a failure here leaves `session.started` counted |
 | `kirocrew.app.run_time` | counter, unit `s` | `app` and `entity_version` of the session's `owning_app`, as on `kirocrew.app.installed`; `duration`: `le_10s` / `le_1m` / `le_5m` / `le_15m` / `le_1h` / `le_4h` / `gt_4h` / `other`, the bucket of the rounded seconds (each edge in the lower bucket) | `emit_turn_duration`, from both turn callers (`_emit_turn_metric` and `_emit_turn_histogram`), when the live provider's `owning_app` is set; adds the turn's wall seconds rounded up; a turn with no duration adds nothing |
 | `kirocrew.app.credits` | counter, unit `credit` | `app` and `entity_version` of the session's `owning_app`, as on `kirocrew.app.installed`; nothing else | `emit_turn_usage`, from both turn callers (`_emit_turn_metric` and `_emit_turn_histogram`), when the live provider's `owning_app` is set; adds the turn's credits, the value `kirocrew.turn.credits` records; zero, negative or non-finite credits add nothing |
 | `kirocrew.app.present` | counter | `app` and `entity_version`, as on `kirocrew.app.installed`; `status`: `enabled` / `disabled` / `other`; `backend`: `none` (the manifest runs no `backend.entryPoint`), `running` / `stopped` (this gateway's tracked process), `other` | once per installed app per UTC day, from the gateway's background task `metrics/app_present.py`: first pass 10 minutes after start, then a check hourly and just after each UTC midnight; the day last recorded is the stamp `app_present_last_sent` beside the beacon's, so restarts the same day record once. No pass and no stamp while the recorder is off. Never on a request path |
-| `kirocrew.app.opened` | counter | `app` and `entity_version`, resolved on the server from the app's name as on `kirocrew.app.installed` (never a version the page sent); `surface`: `page` / `popout` / `desktop` / `other` | **owner views only**: `POST /api/telemetry/app-view` (`event=opened`), owner-gated like `ui-control`, once per mount of an app's page (`useAppViewMetrics`) and once per Library `openCommand` launch (`desktop`). A non-owner's tabs are not counted, and neither are a Shared Crew teammate's: the gate admits them, but the route answers `204` without recording unless `is_host_owner_dashboard_request`. Unlike `session.started` |
+| `kirocrew.app.opened` | counter | `app` and `entity_version`, resolved on the server from the app's name as on `kirocrew.app.installed` (never a version the page sent); `surface`: `page` / `popout` / `desktop` / `shortcut` / `other` | **owner views only**: `POST /api/telemetry/app-view` (`event=opened`), owner-gated like `ui-control`, once per mount of an app's page (`useAppViewMetrics`), once per Library `openCommand` launch (`desktop`), and once per press of one of the app's `desktop.shortcuts` that the desktop shell delivers (`shortcut`, `website/electron/app-window-host.js`; an app whose windows load from another crew is not reported). A non-owner's tabs are not counted, and neither are a Shared Crew teammate's: the gate admits them, but the route answers `204` without recording unless `is_host_owner_dashboard_request`. Unlike `session.started` |
 | `kirocrew.app.foreground_time` | counter, unit `s` | `app` and `entity_version` as on `opened`; `surface`: `page` / `popout` / `other`; `duration`: the span's bucket, `le_10s` / `le_1m` / `le_5m` / `le_15m` / `le_1h` / `le_4h` / `gt_4h` / `other` | **owner views only**: the same route (`event=foreground`), once per span the page was visible (Page Visibility, and not behind another Crew's pane: `useLocalCrewHidden`), sent when it ends (hidden, another Crew in front, a zero-size viewport such as a `display:none` remote Crew pane frame, unmount, `pagehide`) with `keepalive`; adds the span's whole seconds, cut to 24 h; a span under 1 s adds nothing. A tab that is killed or crashes before `pagehide` sends nothing for its last span, so this undercounts and never overcounts |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |

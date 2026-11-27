@@ -582,6 +582,26 @@ async def _run_pass(
 
 
 @pytest.mark.asyncio
+async def test_the_label_call_runs_inside_the_pass_that_shares_one_member_runtime(
+    tmp_path, monkeypatch
+) -> None:
+    from kiro_crew.llm_helpers_parts import background_turns
+
+    seen = []
+    tagged = _labels_as_tagged(_answer())
+
+    async def label(prompt: str) -> object:
+        seen.append(background_turns._member_pass.get())
+        return await tagged(prompt)
+
+    _prompts, store = await _run_pass(tmp_path, monkeypatch, "enforce", label=label)
+    store.close()
+    # The follow-up call sees the pass's runtime holder, and the pass closes it.
+    assert len(seen) == 1 and seen[0] is not None
+    assert background_turns._member_pass.get() is None
+
+
+@pytest.mark.asyncio
 async def test_enforce_asks_offs_prompt_and_labels_the_routed_items_only(
     tmp_path, monkeypatch
 ) -> None:

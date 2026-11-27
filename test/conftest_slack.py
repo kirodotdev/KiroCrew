@@ -16,6 +16,30 @@ from kiro_crew.slack.client import SlackClientOps
 
 
 @per_test_guard
+def _clean_sender_trust_grants():
+    """Start and end each test with no per-sender Trust grant.
+
+    ``messaging.session_trust._trusted_senders`` holds, process-wide, the shared
+    users whose own turns on a session skip the tool prompt (``!trust`` from a shared
+    user). Tests reuse session keys and user ids, so a grant one test made would run
+    a later test's tool call without asking. Cleared in place: the turn drivers read
+    the module's own dict.
+    """
+
+    def clear():
+        session_trust = sys.modules.get("kiro_crew.messaging.session_trust")
+        senders = getattr(session_trust, "_trusted_senders", None)
+        if senders is not None:
+            senders.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_options_control_state():
     """Clear the per-message OPTIONS registries between tests.
 
@@ -135,6 +159,45 @@ def _reset_conductor_thread_notices():
         yield
     finally:
         clear()
+
+
+@per_test_guard
+def _reset_thread_messages():
+    """Forget which threads a message landed in.
+
+    ``kiro_crew.slack.stream_window`` keeps that process-global, keyed by
+    ``(channel, thread)``, and a turn's step list moves below a message recorded
+    after its stream opened. Tests reuse those ids, so each starts with no thread
+    recorded. Looked up in ``sys.modules`` so a run that never imported it pays
+    nothing.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("kiro_crew.slack.stream_window")
+        if module is not None:
+            module._thread_message_no.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_channel_handler_locks(_floor_monkeypatch):
+    """A channel's claim lock binds to the loop that first contends it; each test has its own."""
+    from kiro_crew.slack import channel_handler
+
+    _floor_monkeypatch.setattr(channel_handler, "_locks", {})
+
+
+@per_test_guard
+def _reset_channel_handler_threads(_floor_monkeypatch):
+    """The threads each channel's handler chat answered are process state; each test starts empty."""
+    from kiro_crew.slack import channel_handler
+
+    _floor_monkeypatch.setattr(channel_handler, "_answered", {})
 
 
 @per_test_guard

@@ -2,7 +2,7 @@
 
 An **app** is a feature that ships as its own unit: it brings its own pages in the
 dashboard, and it may also bring agents, skills, MCP tools, scheduled jobs and a
-backend process. Twenty-one apps ship inside the Kiro Crew package (Meetings,
+backend process. Nineteen apps ship inside the Kiro Crew package (Meetings,
 Papyrus, Mochi, Dev Fleet, Notes and the rest), and almost all of them are **off
 until you turn them on**. The App Store is where you turn them on, and where you
 install apps that did not ship with your build.
@@ -73,7 +73,6 @@ Each line below is drawn from the app's own manifest description.
 | **Spec Builder** (`spec-builder`) | Spec-driven development in-app: a feature idea becomes Requirements → Design → Tasks, then an execution session. |
 | **Design Tweak** (`design-tweak`) | Select elements in your live app preview and turn them into scoped, source-mapped edit requests for the agent. |
 | **Design Critique** (`design-critique`) | A design critique you can run before you ask a colleague, from a screenshot, a flow, a Figma file, a repo or a live URL. |
-| **Create Folders From Project** (`project-scaffolder`) | Reads a project directory, works out which sub-projects live inside, and makes a matching sidebar folder for each. |
 
 ### Write, present and record
 
@@ -106,7 +105,6 @@ Each line below is drawn from the app's own manifest description.
 | **Mochi** (`mochi`) | A desktop companion that lives on your screen, watches pages and feeds for you, and taps you on the shoulder only when something changed. |
 | **Crew Companion** (`crew-companion`) | Paces your day: break nudges, plain-language reminders, a short breathing exercise, and session-finished alerts. Reminders are understood in English, Chinese and Korean (picked from the text's script, not the UI language); an unclear time gets a "when?" prompt instead of a guess. |
 | **Agent Worlds** (`agent-worlds`) | Turns your running agents into characters in an animated pixel-art scene, so a glance tells you how busy Kiro Crew is. |
-| **Personal Shopper** (`personal-shopper`) | A personal advisor that researches real stores. It never buys anything — you do. |
 
 Mochi and Crew Companion need the Kiro Crew **desktop app** for their own windows;
 enabling them from a browser works, but the window does not appear. Workflows is
@@ -125,12 +123,12 @@ Enabling an app can add to your **agent picker** and your skill list, because an
 may ship its own. Registration happens on enable and is undone on disable.
 
 - **Agents.** Meetings ships three (a note taker, a sketch artist, a task
-  extractor), PPTX Maker four, Mochi two, Auto-Improvement four, Personal Shopper
-  one. They are registered under the app's own namespace, so two apps can ship an
-  agent with the same name without colliding.
+  extractor), PPTX Maker four, Mochi two and Auto-Improvement four. They are
+  registered under the app's own namespace, so two apps can ship an agent with the
+  same name without colliding.
 - **Skills.** Code Review Sage, Design Critique, Design Tweak, Spec Builder,
-  Personal Shopper, Auto-Improvement, Dev Fleet and Mochi each add one or more. They
-  behave exactly like the skills in [skills.md](skills.md).
+  Auto-Improvement, Dev Fleet and Mochi each add one or more. They behave exactly
+  like the skills in [skills.md](skills.md).
 - **MCP tools.** Mochi and Auto-Improvement each run their own MCP server, and its
   tools are merged into the agents that are allowed them.
 - **Scheduled jobs.** Ops Mission Control declares crons, which are registered on
@@ -188,6 +186,15 @@ built-in keeps running. Once the cause is fixed, the next start prepares the swi
 and the start after that makes it.
 After the switch the app updates and uninstalls like any App Store app, and once
 uninstalled it stays uninstalled.
+
+A later release stops shipping the built-in copy; Personal Shopper and Create
+Folders From Project no longer ship one.
+On that release a machine that already switched keeps running the app from its
+own copy, as before. A machine that has not switched yet keeps the app's data, but
+there is no built-in left to run, so the app is missing until the switch: Kiro
+Crew fetches the repository version on the first start and the app is back after
+the next restart. A machine that cannot reach GitHub keeps the data and stays
+without the app until it can fetch.
 
 ## From the command line
 

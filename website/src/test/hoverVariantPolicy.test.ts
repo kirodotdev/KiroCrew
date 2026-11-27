@@ -227,8 +227,6 @@ describe('hidden-until-hover controls stay reachable on touch', () => {
     ['components/RegistryManager.tsx', 'sm:group-hover:opacity-100 [@media(hover:none)]:opacity-100'],
     // A pending registry action keeps its dimmed state on touch: the touch override lives in the idle branch only.
     ['components/RegistryManager.tsx', "refreshMutation.isPending ? 'pointer-events-none opacity-30 [@media(hover:none)]:opacity-30' : '[@media(hover:none)]:opacity-100'"],
-    // A busy (aria-disabled) remove button stays dimmed on touch.
-    ['apps/personal-shopper/SitesTab.tsx', 'aria-disabled:opacity-30 aria-disabled:hover:text-[var(--muted)] aria-disabled:cursor-not-allowed [@media(hover:none)]:aria-disabled:opacity-30'],
     // The daily-usage tooltip is the only place a day's figures appear and the bar has no click to lose,
     // so it keeps an ungated :hover that a tap still triggers.
     ['pages/overview/TokenDailyChart.tsx', 'hidden [.group:hover_&]:block'],

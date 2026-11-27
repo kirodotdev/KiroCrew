@@ -239,6 +239,7 @@ from kiro_crew.session_lifecycle import (  # noqa: F401 - read by the owners
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.slack import channel_handler  # noqa: F401 - read by the owners
 from kiro_crew.slack import script_hooks as slack_script_hooks  # noqa: F401 - read by the owners
 from kiro_crew.slack.agent_sessions.fence import (  # noqa: F401 - read by the owners
     _Reset as _TurnScopeReset,
@@ -332,6 +333,7 @@ from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
     _LinkedApprovalEvent,
     _PendingApproval,
     _resolve_linked_click,
+    grant_own_trust,
     mcp_identity_text,
     post_linked_approval,
     resolve_linked_approval,
@@ -396,6 +398,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     _persist_channel_config,
     _read_thread_overrides,
     _recorded_selection,
+    _route_linked_thread,
     _set_default_agent,
     adopt_dashboard_thread_agent,
     adopt_default_agent,
@@ -474,6 +477,8 @@ from kiro_crew.slack.shared_access import (  # noqa: F401 - read by the owners
 )
 from kiro_crew.slack.stream_window import (  # noqa: F401 - read by the owners
     CONTINUES_BELOW,
+    message_landed_since,
+    messages_noted,
     stream_clock,
     stream_due_for_renewal,
 )
@@ -955,6 +960,9 @@ _OUTCOME_REJECTED = "rejected"
 _ACTION_APPROVE = "approve_tool"
 _ACTION_TRUST = "trust_tool"
 _ACTION_REJECT = "reject_tool"
+#: What ``handle_interaction`` answers when a shared user's Trust press granted
+#: Trust for that person's own turns only. Never a button's action id.
+_ACTION_TRUST_OWN = "trust_own_turns"
 
 
 #: The Slack-owned attributes of :class:`KiroCrewConfig` that a reload copies

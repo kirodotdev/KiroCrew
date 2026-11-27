@@ -42,6 +42,7 @@ from fake_pool_mcp_server import recorded
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import transport
+from kiro_crew.session_pid_sig import publish_session_pid
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 _FAKE_SERVER = Path(__file__).with_name("fake_pool_mcp_server.py")
@@ -299,6 +300,10 @@ async def test_session_survives_a_broker_restart(tmp_path: Path, short_sock_dir)
     caller_log = tmp_path / "callers.txt"
     resolver = _resolver_for(launch_log, caller_log, work_dir)
 
+    # The gateway publishes which session its runtime (this process, the stub's
+    # parent) serves; each daemon generation's own peer walk reads it when the
+    # stub registers and again when it reconnects.
+    publish_session_pid(os.getpid(), "dashboard:reconnect")
     stop, daemon = await _start_daemon(sock, resolver)
     procs: list[asyncio.subprocess.Process] = []
     second_stop: asyncio.Event | None = None

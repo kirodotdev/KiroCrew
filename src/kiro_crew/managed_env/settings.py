@@ -199,6 +199,25 @@ def lane_enabled(cfg: Any = None) -> bool:
     return preview_on(PREVIEW, cfg)
 
 
+def available(cfg: Any = None) -> bool:
+    """Whether this install holds the lane's sign-in values, whatever the preview says.
+
+    Both ``managed_env_start_url`` and ``managed_env_profile_arn`` non-empty in the
+    config as stored. It only decides whether Settings offers the preview's switch: an
+    edition that presets the values offers it, a plain install does not. Never raises.
+    """
+    try:
+        inst = getattr(_config(cfg), SECTION, None)
+    except Exception:  # noqa: BLE001 - an unreadable config holds nothing
+        return False
+
+    def filled(key: str) -> bool:
+        value = getattr(inst, key, "")
+        return isinstance(value, str) and bool(value.strip())
+
+    return filled(KEY_START_URL) and filled(KEY_PROFILE_ARN)
+
+
 def read_settings(cfg: Any = None) -> LaneSettings:
     """The lane's settings from *cfg* (else the live config); all empty while the preview is off."""
     cfg = _config(cfg)

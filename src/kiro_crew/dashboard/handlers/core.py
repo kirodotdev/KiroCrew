@@ -801,6 +801,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CODE_STT_FAILED,
         _CODE_STT_MISSING_AUDIO,
         _CODE_STT_UNAVAILABLE,
+        OWNER_ONLY_SPEECH_FIELDS,
         _audit_custom_model_disclosure,
         _audit_stt_custom_model_write_allowed,
         _audit_stt_refusal,
@@ -811,6 +812,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stt_background_tasks,
         _stt_custom_model_refusal,
         _stt_positive_int,
+        deny_non_owner_speech_fields,
     )
     from kiro_crew.dashboard.handlers.core_stt_settings import (
         _LANGUAGE_IDENTIFYING_PROVIDERS,
@@ -1038,17 +1040,12 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     return resp
 
 
-async def api_logout(request: web.Request) -> web.Response:
-    """POST /api/logout — revoke all active dashboard sessions.
+def _local_cli_caller_refusal(request: web.Request) -> web.Response | None:
+    """The 403 for a ``kirocrew logout`` call that is not this owner's CLI, else ``None``.
 
-    Called by ``kirocrew logout`` CLI. Admits a loopback origin OR a
-    kernel-attested same-user AF_UNIX peer (``_unix_peer_is_self``, which the
-    owner-only socket transport arrives as, with an empty ``request.remote``),
-    plus the local secret — same auth as /api/token/local — to prevent
-    unauthorized revocation.
+    Shared by ``/api/logout`` and ``/api/logout/link``, so the two cannot drift apart.
     """
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
-    from kiro_crew.dashboard.token_auth import revoke_all_sessions_async  # noqa: F811
 
     # Reachable over loopback TCP or the dashboard's AF_UNIX socket. A unix peer
     # has an EMPTY request.remote, so the loopback test alone would 403 the
@@ -1076,6 +1073,46 @@ async def api_logout(request: web.Request) -> web.Response:
             resources="invalid-secret",
         )
         return web.json_response({"error": "invalid secret"}, status=403)
+    return None
+
+
+async def api_logout_link(request: web.Request) -> web.Response:
+    """POST /api/logout/link — revoke one link's credential family (``kirocrew logout --link``).
+
+    Its own route rather than a body on ``/api/logout``: a gateway that predates it
+    answers 404 here and changes no session, where ``/api/logout`` would ignore the
+    body and revoke them all. Same caller check as ``/api/logout``.
+    """
+    refusal = _local_cli_caller_refusal(request)
+    if refusal is not None:
+        return refusal
+    try:
+        body = await request.json() if request.can_read_body else None
+    except (ValueError, TypeError):
+        body = None
+    link = body.get("link") if isinstance(body, dict) else None
+    if not isinstance(link, str) or not link.strip():
+        return web.json_response(
+            {"error": "link must be a dashboard link or its token", "code": "invalid_link"},
+            status=400,
+        )
+    return await _logout_link(request, link)
+
+
+async def api_logout(request: web.Request) -> web.Response:
+    """POST /api/logout — revoke all active dashboard sessions.
+
+    Called by ``kirocrew logout`` CLI. Admits a loopback origin OR a
+    kernel-attested same-user AF_UNIX peer (``_unix_peer_is_self``, which the
+    owner-only socket transport arrives as, with an empty ``request.remote``),
+    plus the local secret — same auth as /api/token/local — to prevent
+    unauthorized revocation.
+    """
+    from kiro_crew.dashboard.token_auth import revoke_all_sessions_async  # noqa: F811
+
+    refusal = _local_cli_caller_refusal(request)
+    if refusal is not None:
+        return refusal
 
     # Fail-closed: the counter bump raises when neither the live nor the
     # persisted counter can be read (bumping from an assumed base could persist a LOWER
@@ -1109,6 +1146,56 @@ async def api_logout(request: web.Request) -> web.Response:
         resources="all-sessions-revoked",
     )
     return web.json_response({"ok": True})
+
+
+async def _logout_link(request: web.Request, link: str) -> web.Response:
+    """Revoke one link's credential family for an already-authorized ``/api/logout/link``."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from kiro_crew.dashboard.token_auth_tokens import LegacyFamilyLink, revoke_token_family
+
+    token = link.strip()
+    try:
+        if "token=" in token:
+            token = (parse_qs(urlsplit(token).query).get("token") or [""])[0]
+    except ValueError:
+        return web.json_response(
+            {"error": "not a dashboard link signed by this gateway", "code": "invalid_link"},
+            status=400,
+        )
+    try:
+        revoked = await asyncio.to_thread(revoke_token_family, token)
+    except LegacyFamilyLink:
+        return web.json_response(
+            {
+                "error": "this link was minted before per-link revocation, so its sessions "
+                "cannot be found; run `kirocrew logout` to revoke every session",
+                "code": "legacy_link",
+            },
+            status=400,
+        )
+    except OSError:
+        logger.warning("logout --link failed: could not persist the revocation", exc_info=True)
+        return web.json_response(
+            {
+                "error": "could not persist the link revocation; logout not completed",
+                "code": "revocation_persist_failed",
+            },
+            status=500,
+        )
+    if not revoked:
+        return web.json_response(
+            {"error": "not a dashboard link signed by this gateway", "code": "invalid_link"},
+            status=400,
+        )
+    _sel().log_api_access(
+        caller=request.remote or "unknown",
+        operation="logout",
+        outcome="success",
+        source="cli",
+        resources="link-family-revoked",
+    )
+    return web.json_response({"ok": True, "scope": "link"})
 
 
 async def api_shutdown(request: web.Request) -> web.Response:

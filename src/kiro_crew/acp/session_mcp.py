@@ -131,7 +131,7 @@ from kiro_crew.platform.governance import (
     registry_local_control_plane_permitted as _registry_local_control_plane_permitted,
 )
 from kiro_crew.template_mcp_additions import MERGED_MARK, merge_at_spawn
-from kiro_crew.user_json import loads_user_jsonc, wide_bom_reason
+from kiro_crew.user_json import load_mcp_servers, loads_user_jsonc, wide_bom_reason
 
 logger = logging.getLogger(__name__)
 
@@ -791,17 +791,30 @@ def session_mcp_disabled_tools(
     :func:`_global_settings`). kiro-cli reads both for enforcement; so does this.
     A union is the only safe combination: a restriction can only ever restrict.
 
+    Keys are read as each source spells them, and a raw slash key
+    (``npm:@playwright/mcp``) also names its kiro-safe alias (``playwright-mcp``),
+    the name the spec mounts it under, unless another key in the same source has
+    that alias too (the alias itself, or a second raw key), or, for the global
+    file, the Kiro Crew store or a provider global holds the alias
+    (:func:`_alias_held_elsewhere`): then the alias may be a different server's
+    mount. Otherwise the alias pair reaches whatever the spec mounts under the
+    alias, as an alias-keyed entry does. The dashboard's tool-off action writes to
+    the raw key the file holds by the same rule, and refuses an alias of several
+    raw keys.
+
     ``spec`` and ``settings`` let a caller hand in what it has ALREADY parsed; an
     explicit ``None`` spec means "there is no spec" and is honoured as such, never
     re-read (see :class:`_Unread`). Never raises: an unreadable source switches
     nothing off from that source.
     """
+    from kiro_crew.mcp_utils import mcp_server_alias
+
     if isinstance(spec, _Unread):
         spec = _session_spec_and_snapshot_for(agent, work_dir)[0] if agent else None
     if isinstance(settings, _Unread):
         settings = _global_settings()
     pairs: set[tuple[str, str]] = set()
-    for source in (spec, settings):
+    for source, is_global in ((spec, False), (settings, True)):
         if not isinstance(source, dict):
             continue
         raw = source.get("mcpServers")
@@ -813,10 +826,28 @@ def session_mcp_disabled_tools(
             disabled = entry.get("disabledTools")
             if not isinstance(disabled, list):
                 continue
+            names = {str(name)}
+            alias = mcp_server_alias(str(name))
+            if (
+                alias != name
+                and [key for key in raw if mcp_server_alias(str(key)) == alias] == [name]
+                and not (is_global and _alias_held_elsewhere(alias))
+            ):
+                names.add(alias)
             for tool in disabled:
                 if isinstance(tool, str) and tool:
-                    pairs.add((str(name), tool))
+                    pairs.update((n, tool) for n in names)
     return frozenset(pairs)
+
+
+def _alias_held_elsewhere(alias: str) -> bool:
+    """Whether the Kiro Crew store or a provider global holds *alias* as a key.
+
+    The rebuild then mounts that entry under *alias*, and a Kiro global raw key's
+    list never projects onto it (``mcp_aliases.raw_tools_project_onto_alias``).
+    """
+    paths = (_agent_mod._user_dir() / "mcp.json", *_agent_mod._extra_mcp_scope_globals())
+    return any(alias in load_mcp_servers(path) for path in paths)
 
 
 def session_mcp_disabled_servers(spec: Any, settings: Any) -> frozenset[str]:
@@ -1328,11 +1359,15 @@ _NATIVE_ELEMENT_KEYS: frozenset[str] = _agent_mod._MANAGED_MCP_ENTRY_KEYS - {"ti
 # with a message telling the user to remove it. The session-label opt-in
 # (acp.session_label) is the same kind of key: Crew reads it, kiro-cli never does,
 # and so is the mount-only record's stamp (template_mcp_additions.MERGED_MARK),
-# which the managed refresh keeps on an opt-in entry the record mounted.
+# which the managed refresh keeps on an opt-in entry the record mounted, and the
+# app-source stamp the rebuild writes on an app's entry (mcp_provenance.SOURCE_KEY),
+# and the stamp on an entry copied from the Kiro global (mcp_provenance.COPIED_KEY).
 _NATIVE_INERT_KEYS = frozenset(
     {
         mcp_provenance.MARKER_KEY,
         mcp_provenance.DERIVED_KEY,
+        mcp_provenance.SOURCE_KEY,
+        mcp_provenance.COPIED_KEY,
         SESSION_LABEL_MARKER,
         MERGED_MARK,
     }

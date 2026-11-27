@@ -533,8 +533,8 @@ class _ChildState:
 
         rpc = self.rpc
 
-        def try_embed(text: str, priority: int = PRIORITY_NORMAL) -> Any:
-            rpc.send({"op": "embed", "text": text, "priority": priority})
+        def try_embed(text: str, priority: int = PRIORITY_NORMAL, *, query: bool = False) -> Any:
+            rpc.send({"op": "embed", "text": text, "priority": priority, "query": query})
             reply = rpc.next()
             if reply is None:
                 raise SystemExit(0)  # the gateway is gone
@@ -546,7 +546,10 @@ class _ChildState:
                 return None
             token = reply.get("token") or [None, ""]
             return _EmbeddingVector(
-                vector, (token[0], token[1]), managed=bool(reply.get("managed"))
+                vector,
+                (token[0], token[1]),
+                managed=bool(reply.get("managed")),
+                instructed=bool(reply.get("instructed")),
             )
 
         store._try_embed = try_embed

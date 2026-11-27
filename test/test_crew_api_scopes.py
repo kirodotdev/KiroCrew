@@ -205,6 +205,7 @@ def test_the_routes_that_serve_an_app_credential() -> None:
     assert crew_api_auth.APP_SERVED_ROUTES == {
         MODELS,
         ("GET", "/v1/crew/grant"),
+        ("GET", "/v1/crew/bots"),
         ("GET", "/v1/crew/capabilities"),
         ("GET", "/v1/crew/info"),
     }
@@ -214,6 +215,9 @@ def test_the_routes_that_serve_an_app_credential() -> None:
         "/v1/responses",
         "/v1/responses/{response_id}",
         "/v1/responses/{response_id}/input_items",
+        "/v1/conversations",
+        "/v1/conversations/{conversation_id}",
+        "/v1/conversations/{conversation_id}/items",
     }
 
 
@@ -268,20 +272,30 @@ async def test_an_app_credential_reaches_only_the_listed_routes_the_gateway_regi
     [
         # The row admits it, and no route serves an app: refused, and the row says why.
         (
-            "POST",
-            "/v1/conversations",
-            "responses:write",
+            "GET",
+            "/v1/crew/approvals/{approval_id}",
+            "conversations:read",
             "owner_only",
             "owner_only:no-app-route",
             crew_api_auth.APP_CREDENTIAL_REFUSED,
         ),
         (
             "GET",
-            "/v1/conversations",
+            "/v1/crew/approvals/{approval_id}",
             "responses:write",
             "insufficient_scope",
             "insufficient_scope",
             "needs conversations:read",
+        ),
+        # A route that serves the owner alone today is refused by tier, whatever
+        # the row would admit.
+        (
+            "POST",
+            "/v1/conversations",
+            "responses:write",
+            "owner_only",
+            "owner_only",
+            crew_api_auth.APP_CREDENTIAL_REFUSED,
         ),
         (
             "POST",

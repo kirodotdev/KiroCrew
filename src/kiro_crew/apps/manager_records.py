@@ -69,7 +69,17 @@ def apps_dir() -> Path:
 
 
 def app_dir(name: str) -> Path:
-    """Return the directory for a specific installed app."""
+    """Return the directory for a specific installed app.
+
+    Raises ``ValueError`` for a name that is not one plain segment
+    (``manifest_names.is_app_dir_name``): joined onto the apps folder it would name
+    another app's tree or a path outside it.
+    """
+    # Function-local: a module-level name here is served by the manager facade.
+    from kiro_crew.apps.manifest_names import is_app_dir_name
+
+    if not is_app_dir_name(name):
+        raise ValueError(f"not an app name: {name!r}")
     return apps_dir() / name
 
 
@@ -1146,7 +1156,16 @@ def _declared_grant_entries(permissions: Any) -> dict[str, list[str]]:
 #: update's new entries. ``bots``: the owner decides which Bots an app reaches.
 #: ``browserSites``: the pages the app's own agent drives the browser on unasked.
 #: ``browser``: the verbs ``ctx.browser`` and ``BrowserView`` use on its own slots' tabs.
-_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY, "browserSites", "browser", "kiroOperations")
+#: ``browserRecipes``: the fixed clicks Crew runs on the app's own agent's tab.
+#: ``browserRecipeWatch``: the separate yes for a watch recipe to run by itself.
+_OWNER_APPROVED_FAMILIES = (
+    BOT_GRANT_FAMILY,
+    "browserSites",
+    "browser",
+    "kiroOperations",
+    "browserRecipes",
+    "browserRecipeWatch",
+)
 
 
 def _consented_grant_entries(permissions: Any) -> dict[str, list[str]]:
@@ -1443,6 +1462,8 @@ def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:
     For the hook-context builders, which start from a ``get_app``/``list_apps``
     row; the live manifest and record are re-read through ``staged_app_grants``.
     """
+    from kiro_crew.apps import browser_recipes  # noqa: PLC0415
+
     name = str(app_info.get("name", ""))
     manifest = app_info.get("manifest") or {}
     permissions = dict(manifest.get("permissions") or {})
@@ -1451,6 +1472,22 @@ def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:
             # ``permissions.workerAutoApprove`` is a flag, not an entry list: it stays
             # as declared, because every grant re-reads the owner's approval itself
             # (``worker_auto_approve.app_holds_worker_auto_approve``).
+            continue
+
+        if family == browser_recipes.GRANT_FAMILY:
+            live = get_app_manifest(name)
+            raw = getattr(live.permissions, family) if live is not None else []
+            declared = browser_recipes.parse_recipes(raw)
+            approved = browser_recipes._approved(name, declared)
+            permissions[family] = (
+                [
+                    definition
+                    for definition, recipe in zip(raw, declared, strict=True)
+                    if recipe in approved
+                ]
+                if declared
+                else []
+            )
             continue
 
         def _read(family: str = family) -> list[str] | None:

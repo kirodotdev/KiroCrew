@@ -9,7 +9,7 @@
  *  (`ChatHistoryPreview`). The chat itself never loads or scrolls to a hit,
  *  which can sit tens of thousands of rows back. */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { AppWindow, CalendarDays, File, FileCode, FileText, Image as ImageIcon, Link2, Pin, Search, Video, X } from 'lucide-react'
 
 import { api } from '../../api/client'
@@ -34,6 +34,10 @@ const DEBOUNCE_MS = 250
 /** Steps searched on their own while the list is still short; past it, a button. */
 const AUTO_STEPS = 8
 const AUTO_HITS = 20
+/** Re-reads of the counts while the chat's search cache is still being built:
+ *  1 s, 2 s, then 4 s after each reply that says `indexing`. */
+const INDEXING_RETRIES = 3
+const INDEXING_FIRST_RETRY_MS = 1000
 const DAY_S = 86_400
 const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/
 
@@ -136,17 +140,25 @@ export default function ChatHistorySearch({ slotKey, bot, onClose, focusNonce, e
     staleTime: 15_000,
   })
   const hits = useMemo(() => (enabled ? (search.data?.pages ?? []).flatMap(p => p.hits) : []), [enabled, search.data])
-  // Each tab's count: what the steps read so far found of that type, from the
-  // `counts` every reply carries, so no tab sends a request of its own.
-  // shortcut: a count covers the rows searched so far, not the whole chat, and
-  // grows with "Search older messages"; a whole-chat total needs an index.
-  const counts = useMemo(() => {
-    const sum: Partial<Record<ChatHistoryKind, number>> = {}
-    for (const page of enabled ? search.data?.pages ?? [] : []) {
-      for (const [value] of TABS) sum[value] = (sum[value] ?? 0) + (page.counts?.[value] ?? 0)
-    }
-    return sum
-  }, [enabled, search.data])
+  // Every tab's count comes from one whole-chat read keyed by the query and
+  // day alone, never the tab: a tab switch reuses it, so no count moves. A
+  // reply for an older query lands under its own key and is never shown.
+  const countParams = { q: params.q, since: params.since, until: params.until }
+  const countsRead = useQuery({
+    queryKey: ['chat-history-counts', slotKey, countParams],
+    queryFn: ({ signal }) => api.chatHistoryCounts(slotKey, countParams, signal),
+    enabled,
+    staleTime: 60_000,
+    // While the server builds the chat's search cache it answers from a row
+    // walk; read again a few times so the whole-chat counts show without a
+    // new search. `dataUpdateCount` is the replies this key has had.
+    refetchInterval: ({ state }) => (state.data?.indexing && state.dataUpdateCount <= INDEXING_RETRIES
+      ? INDEXING_FIRST_RETRY_MS * 2 ** (state.dataUpdateCount - 1)
+      : false),
+  })
+  // A walk the server cut at its row budget is not the whole chat, so its
+  // numbers (a 0 above all) are not shown as totals.
+  const counts: Partial<Record<ChatHistoryKind, number>> | undefined = enabled && countsRead.data?.complete ? countsRead.data.counts : undefined
   const pageCount = search.data?.pages.length ?? 0
   // A step can scan a stretch with no hit at all, so a short list keeps
   // searching older rows on its own, a few steps at most.
@@ -213,11 +225,13 @@ export default function ChatHistorySearch({ slotKey, bot, onClose, focusNonce, e
 
   const speaker = (hit: ChatHistoryHit) => (hit.role === 'user'
     ? i18nT('components.chatHistorySearch.role_you')
-    : bot?.name || i18nT('components.chatHistorySearch.role_bot'))
+    // The bot's own name in its chat, Agent in a session chat.
+    : bot?.name || i18nT('components.chatHistorySearch.role_agent'))
 
   const tabs = bot ? BOT_TABS : TABS
   const tabButton = ([value, key]: (typeof TABS)[number]) => {
-    const count = counts[value] ?? 0
+    // Once the counts arrive every tab shows its number, 0 included.
+    const count = counts ? counts[value] ?? 0 : undefined
     return (
       <button
         key={value || 'all'}
@@ -228,7 +242,7 @@ export default function ChatHistorySearch({ slotKey, bot, onClose, focusNonce, e
         className={`shrink-0 whitespace-nowrap px-3 py-2 text-[13px] cursor-pointer border-b-2 -mb-px focus-ring ${kind === value ? 'border-accent text-text font-medium' : 'border-transparent text-muted hover:text-text'}`}
       >
         {i18nT(key)}
-        {count > 0 && <span className="text-[12px] text-muted tabular-nums" data-testid={`chat-history-tab-count-${value || 'all'}`}>{' '}{fmtNumber(count)}</span>}
+        {count !== undefined && <span className="text-[12px] text-muted tabular-nums" data-testid={`chat-history-tab-count-${value || 'all'}`}>{' '}{fmtNumber(count)}</span>}
       </button>
     )
   }
@@ -301,14 +315,17 @@ export default function ChatHistorySearch({ slotKey, bot, onClose, focusNonce, e
                   result never scrolls away. The other tabs share one row that
                   scrolls sideways when the panel is narrow (a phone), its
                   scrollbar hidden, its clipped edges faded (`edge-fade-x`), and
-                  the chosen tab kept in view. */}
+                  the chosen tab kept in view. The row scrolls sideways only:
+                  `overflow-x-auto` alone turns overflow-y to auto too, and the
+                  tabs' 1px underline overlap (-mb-px) then lets a phone drag
+                  their labels up and down over the list below. */}
               <div role="tablist" aria-label={i18nT('components.chatHistorySearch.tabs_label')} className="flex items-end min-w-0 flex-1" data-testid="chat-history-tablist">
                 {tabButton(tabs[0])}
                 <div
                   ref={setTabsScroller}
                   data-fade-left={tabEdges.left ? '' : undefined}
                   data-fade-right={tabEdges.right ? '' : undefined}
-                  className="edge-fade-x flex flex-nowrap min-w-0 flex-1 overflow-x-auto scrollbar-none"
+                  className="edge-fade-x flex flex-nowrap min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain touch-pan-x scrollbar-none"
                   data-testid="chat-history-tabs"
                 >
                   {tabs.slice(1).map(tabButton)}
@@ -331,6 +348,12 @@ export default function ChatHistorySearch({ slotKey, bot, onClose, focusNonce, e
               aria-label={i18nT('components.chatHistorySearch.results_label')}
               className="flex-1 min-h-0 overflow-y-auto"
             >
+              {enabled && countsRead.isError && (
+                <div className="px-3 pt-2">
+                  {/* Only the tab numbers are missing: the list below still works. */}
+                  <ErrorNotice variant="inline" impact="minor" message={i18nT('components.chatHistorySearch.counts_error')} askAgent onHandoff={onClose} testId="chat-history-counts-error" />
+                </div>
+              )}
               {status && <p role="status" className="px-4 py-6 text-center text-[13px] text-muted">{status}</p>}
               {enabled && search.isError && (
                 <div className="px-3 py-2">

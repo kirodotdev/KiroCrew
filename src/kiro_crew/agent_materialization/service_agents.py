@@ -876,7 +876,9 @@ def _install_team_lead_agent() -> None:
 def _install_dashboard_manager_agent() -> None:
     """Generate and install the ``kirocrew-dashboard-manager`` subagent config.
 
-    The agent a crewmate hands page work to. It is a SERVICE agent and not a
+    A page-work subagent. No Bot prompt routes to it: the gateway refuses a
+    subagent's dashboard calls (``no_dashboard_slot``), so a crewmate changes its
+    page in its own thread. It is a SERVICE agent and not a
     conductor: it is installed here, beside guest and knowledge, because like them
     it mounts a fixed minimal surface rather than deriving the kirocrew agent's
     whole governance ceiling. Carrying nothing it does not need is the point -- it

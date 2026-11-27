@@ -282,6 +282,17 @@ export const PREVIEW_VISUAL_REFRESH = `${PREVIEW_FLAG_PREFIX}visual-refresh`
 export const PREVIEW_CREW_CLIENT = `${PREVIEW_FLAG_PREFIX}crew-client`
 
 /**
+ * Worker status under the reply: one line under a conductor's latest finished
+ * reply saying how many of its workers need the person, have stalled, run or
+ * wait; a click opens the side panel on Workers (`CrewReplyStatus`). For a
+ * reader who cannot see the sidebar's conductor row: sidebar closed, a phone,
+ * split view. Dashboard-only: it reads the worker list the sidebar row already
+ * reads, so it adds no route and no poll. Default OFF, and OFF is the
+ * transcript as it is on `main`.
+ */
+export const PREVIEW_CREW_REPLY_STATUS = `${PREVIEW_FLAG_PREFIX}crew-reply-status`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -310,6 +321,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_VISUAL_REFRESH,
   PREVIEW_WIDGETS,
   PREVIEW_CREW_CLIENT,
+  PREVIEW_CREW_REPLY_STATUS,
 ]
 
 /**

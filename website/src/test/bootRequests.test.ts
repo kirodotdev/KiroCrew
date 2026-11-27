@@ -43,7 +43,6 @@ describe('focus-refetch opt-ins via finite staleTime', () => {
 
   const optIns: Array<[string, string]> = [
     ['../components/RegistryManager.tsx', 'replace-all PUT of registries'],
-    ['../apps/personal-shopper/SitesTab.tsx', 'replace-all PUT of shopper sites'],
     ['../apps/papyrus/PapyrusPage.tsx', 'project deleted-in-another-tab detection'],
   ]
 

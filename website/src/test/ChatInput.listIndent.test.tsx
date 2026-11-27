@@ -102,18 +102,24 @@ describe('ChatInput: Tab indents list lines', () => {
     typeWithCaret('- item|')
     const ids = ta.getAttribute('aria-describedby') ?? ''
     expect(ids).not.toBe('')
-    expect(document.getElementById(ids)?.textContent).toMatch(/Escape, then Tab/)
+    expect(document.getElementById(ids)?.textContent).toMatch(/Shift\+Tab outdents\. Press Escape, then Tab/)
   })
 
-  it('shows the Esc then Tab hint on screen while the textarea has focus', () => {
+  it('keeps the hint row laid out across blur and focus, and shows only the Esc then Tab line', () => {
     renderWithProviders(<Host />)
     const ta = typeWithCaret('- item|')
     fireEvent.blur(ta)
-    expect(screen.getByTestId('list-indent-hint').className).toContain('sr-only')
-    fireEvent.focus(ta)
     const hint = screen.getByTestId('list-indent-hint')
-    expect(hint.className).not.toContain('sr-only')
-    expect(hint.textContent).toMatch(/Escape, then Tab/)
+    // Blurred, the row keeps its place, hidden, so focus does not resize the box.
+    expect(hint.parentElement?.className).toContain('text-[12px]')
+    expect(hint.parentElement?.className).toContain('invisible')
+    expect(screen.getByTestId('list-indent-hint-dismiss')).toBeInTheDocument()
+    fireEvent.focus(ta)
+    expect(screen.getByTestId('list-indent-hint')).toBe(hint)
+    expect(hint.parentElement?.className).not.toContain('invisible')
+    const onScreen = hint.cloneNode(true) as HTMLElement
+    onScreen.querySelectorAll('.sr-only').forEach(node => node.remove())
+    expect(onScreen.textContent).toBe('Press Escape, then Tab, to leave the message input.')
   })
 
   // A small manual height must not squeeze the text column under the textarea's
@@ -197,17 +203,21 @@ describe('ChatInput: Tab indents list lines', () => {
     expect(screen.queryByTestId('list-indent-hint-dismiss')).toBeNull()
     fireEvent.blur(ta, { relatedTarget: null })
     fireEvent.change(ta, { target: { value: '- item\n- next' } })
-    expect(screen.getByTestId('list-indent-hint').className).toContain('sr-only')
+    expect(screen.getByTestId('list-indent-hint').parentElement?.className).toContain('invisible')
   })
 
-  it('Tab from the textarea to Dismiss keeps the hint mounted', () => {
+  it('Tab from the textarea to Dismiss keeps the hint on screen', () => {
     renderWithProviders(<Host />)
     const ta = typeWithCaret('- item|')
     const dismiss = screen.getByTestId('list-indent-hint-dismiss')
     fireEvent.blur(ta, { relatedTarget: dismiss })
     expect(screen.getByTestId('list-indent-hint-dismiss')).toBe(dismiss)
+    expect(dismiss.parentElement?.className).not.toContain('invisible')
     fireEvent.blur(dismiss, { relatedTarget: document.body })
-    expect(screen.queryByTestId('list-indent-hint-dismiss')).toBeNull()
+    expect(dismiss.parentElement?.className).toContain('invisible')
+    // Focus coming back to Dismiss (the window regaining focus) shows the row again.
+    fireEvent.focus(dismiss)
+    expect(dismiss.parentElement?.className).not.toContain('invisible')
   })
 
   it('Tab on a plain line is left alone so focus moves', () => {

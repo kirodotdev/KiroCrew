@@ -457,7 +457,7 @@ is what this guide is about.
 A destination is also allowed to receive only PART of that. `OtlpDestination`
 carries three optional fields. An `otlp_endpoints` entry sets them with the keys
 of the same names, and a build that assembles its own destination can set them
-too:
+too (a build can also set a fourth, `named_entity_namespaces`, below):
 
 - `allow` -- only metrics whose name is in this set are sent. Unset means
   everything, which is what your endpoint gets.
@@ -466,6 +466,12 @@ too:
 - `resource_allow` -- that destination's batches carry a resource reduced to these
   keys, so a destination that may see only `service.name` and `service.version`
   does not receive `service.instance.id`.
+
+A build can name the apps of a registry it ships, as `<namespace>.<name>` in `Entity`.
+A destination receives those values only when it lists the namespace in
+`named_entity_namespaces`; a destination that says nothing is sent `private`. Your
+`otlp_endpoints` entries and the local JSONL sink see every name. Nothing is named
+unless the build declares the registry.
 
 Three things to take from this if you operate a collector:
 
@@ -517,7 +523,7 @@ These nine are the behavioral metrics (`BEHAVIORAL_METRICS` in
 group, `kirocrew.app.installed`, `kirocrew.app.updated`,
 `kirocrew.app.uninstalled`, `kirocrew.app.session_started`, `kirocrew.app.run_time`,
 `kirocrew.app.credits`, `kirocrew.app.present`, `kirocrew.app.opened` and `kirocrew.app.foreground_time`: `Feature` = `app`, `Activity` = the last name segment,
-`Entity` (a shipped built-in's or a store app's name, else `private`),
+`Entity` (a shipped built-in's or a store app's name, `<namespace>.<name>` for an app from a registry the build names, else `private`),
 `entity_version` (that app's version when it is `N.N.N`, `other` for a pre-release
 or build suffix, `private` for a private app), and `via` (`store` / `default` /
 `other`) on `installed` and `updated`, `keep_data` (`true` / `false`) on
@@ -531,12 +537,13 @@ each finished turn's credits in a session an app owns, with no other
 attribute; a turn that billed no credits (zero, or a backend that bills in
 dollars) adds nothing. `present` counts each installed
 app once per UTC day, with `status` (`enabled` / `disabled` / `other`) and
-`backend` (`none` / `running` / `stopped` / `other`). `opened` carries `surface` (`page` / `popout` / `desktop` / `other`), and
+`backend` (`none` / `running` / `stopped` / `other`). `opened` carries `surface` (`page` / `popout` / `desktop` / `shortcut` / `other`), and
 `surface` (`page` / `popout` / `other`) and `duration` (`le_10s`, `le_1m`, `le_5m`,
 `le_15m`, `le_1h`, `le_4h`, `gt_4h`, `other`) on `foreground_time`, whose value is
 the seconds an app page was visible (unit `s`, spans under 1 s not counted, one
 span cut to 24 h). `opened` and `foreground_time` count **owner views only**: the
-dashboard sends them through the owner-only `POST /api/telemetry/app-view`, so a
+dashboard sends them (and the desktop app sends `opened` for a press of an app's
+desktop shortcut) through the owner-only `POST /api/telemetry/app-view`, so a
 non-owner's or a Shared Crew teammate's tabs add nothing, while `session.started` and the turn metrics count
 every session. Do not divide one population by the other. Each records one thing a person
 or an app did. They are exported under the instrumentation scope `kiro.crew`, so a

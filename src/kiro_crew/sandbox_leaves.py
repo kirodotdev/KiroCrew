@@ -264,10 +264,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``data/state/`` and empties the PAT here; the registry and settings copies it keeps
     # for a rollback, and the marker that closes the copy, stay behind this mask.
     _MD_NOTEBOOK_STAGING_LEAF,
-    # Browser session material an earlier version's browser CLI wrote: a storage
-    # state (cookies), its extension token and three retired markers. No reader is
-    # left in the tree, and nothing creates them any more; they stay masked because
-    # a file left on disk from that version still holds the owner's sessions. The
+    # Browser session material from an earlier version's browser integration: a
+    # cookie jar, the storage state built from it, the extension token and two
+    # retired markers. No reader is left in the tree, and nothing creates them any
+    # more; they stay masked because a file left on disk from that version still
+    # holds the owner's sessions. The
     # live browser paths are the Harness leaves below; ``browser-snapshots`` (the
     # agent's own screenshots) is deliberately visible.
     "browser-cookies.txt",
@@ -595,6 +596,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # as the consent records here: this kernel write-denial is the load-bearing
     # half, since the shell gate matches no paths.
     "chat_steering_off.json",
+    # The owner's acknowledgement of the YOLO confirmation (``yolo_ack``). A writable
+    # record lets an agent pre-satisfy the confirmation the owner's next YOLO pick
+    # would show; the gateway's owner-only route is the only writer.
+    "yolo_ack.json",
     # The owner's Shared Crew preview switch. A writable record lets an
     # auto-approved agent choose whether the Crew opens to other people on its
     # next start. The read-only mount is the load-bearing half; the shell gate
@@ -1178,6 +1183,10 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # nothing about the agent's own ceiling, and the gateway reads it outside the
     # sandbox. The risk is a write, answered by the read-only seal.
     "chat_steering_off.json",
+    # The owner's YOLO confirmation acknowledgement: one boolean, no credential, and
+    # the gateway reads it outside the sandbox. The risk is a write, answered by the
+    # read-only seal.
+    "yolo_ack.json",
     # The owner's MCP message-body fields: server, tool and field names, no
     # credential. The risk is a write, answered by the read-only seal.
     "mcp_body_fields.json",

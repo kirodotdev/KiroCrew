@@ -53,6 +53,15 @@ ACTION_TOKEN_KEY = "bridge_action_token"
 #: given on what it runs. No other sink renders it.
 APPROVAL_DETAIL_KEY = "approval_detail"
 
+#: The meta keys naming the MCP server and tool the call goes to: the trusted
+#: ``_meta.kiro`` pair (``messaging.renderer.trusted_mcp_identity``), never the
+#: title. Set beside the detail only when a server is named. The Slack sink and a
+#: reply transport's sink draw them as the native card's ``MCP tool:`` line above
+#: the detail: two servers can expose one tool name, and the title does not say
+#: which one an Approve reaches.
+APPROVAL_MCP_SERVER_KEY = "approval_mcp_server"
+APPROVAL_MCP_TOOL_KEY = "approval_mcp_tool"
+
 #: What each bridged answer sets the prompt's decision future to: the values the
 #: dashboard's own Approve and Deny buttons set.
 DECISION_VALUES = {"approve": "approved", "deny": "rejected"}
@@ -71,6 +80,18 @@ def is_pending_approval_note(note: Mapping[str, Any]) -> bool:
     return note.get("channel") == "system.approval" and note.get(PRODUCER_KEY) == PRODUCER
 
 
+def approval_mcp_identity(note: Mapping[str, Any]) -> tuple[str, str]:
+    """The ``(server, tool)`` a pending-approval *note* names, or ``("", "")``.
+
+    Each field is type-checked, so a note that lacks them, or carries a value that
+    is not a string, names no server.
+    """
+    server, tool = note.get(APPROVAL_MCP_SERVER_KEY), note.get(APPROVAL_MCP_TOOL_KEY)
+    if not isinstance(server, str) or not server.strip():
+        return "", ""
+    return server, tool if isinstance(tool, str) else ""
+
+
 def publish_pending_approval(
     state: Any,
     cfg: Any,
@@ -83,12 +104,15 @@ def publish_pending_approval(
     slack_card: bool = False,
     action_token: str = "",
     approval_detail: str = "",
+    mcp_identity: tuple[str, str] = ("", ""),
 ) -> dict[str, Any] | None:
     """Hand one pending-approval note to the notification bridge. Never raises.
 
     *action_token* is the binding a chat app's Approve and Deny buttons answer
     (:func:`bind_pending_approval`); with none the note carries no buttons.
     *approval_detail* is what the call will run, carried only beside a token.
+    *mcp_identity* is the call's trusted ``(server, tool)`` pair, carried beside the
+    detail only when it names a server (:data:`APPROVAL_MCP_SERVER_KEY`).
 
     Returns the note handed over, or None when the preview is off, the gateway has
     no bridge, or the note could not be built.
@@ -110,6 +134,10 @@ def publish_pending_approval(
         if action_token and approval_detail:
             meta[ACTION_TOKEN_KEY] = action_token
             meta[APPROVAL_DETAIL_KEY] = approval_detail
+            server, tool = mcp_identity
+            if server:
+                meta[APPROVAL_MCP_SERVER_KEY] = server
+                meta[APPROVAL_MCP_TOOL_KEY] = tool
         payload = payload_from_legacy(
             "approval",
             "Approval needed",

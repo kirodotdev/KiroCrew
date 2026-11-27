@@ -972,20 +972,50 @@ class TestSemanticEndpoints:
         store.delete_semantic.assert_called_once_with("k", source="user_explicit")
 
     @pytest.mark.asyncio
-    async def test_events_caps_limit_at_200(self) -> None:
+    async def test_events_caps_limit_at_200(self, monkeypatch) -> None:
+        from kiro_crew import memory_audit
+
         store = _store()
         state = _make_state(vector_store=store)
+        calls = []
+        monkeypatch.setattr(
+            memory_audit,
+            "list_events",
+            lambda tier, raw, *, limit, offset: calls.append((tier, limit, offset))
+            or {"events": [], "total": 0, "has_more": False, "facets": {}},
+        )
         req = _make_request(state, query={"limit": "10000", "offset": "3"})
         assert (await mem_mod.api_memory_events(req)).status == 200
-        store.get_events.assert_called_once_with(limit=200, offset=3)
+        assert calls == [(store, 200, 3)]
 
     @pytest.mark.asyncio
-    async def test_events_rejects_non_integer_paging(self) -> None:
+    async def test_events_rejects_non_integer_paging(self, monkeypatch) -> None:
+        from kiro_crew import memory_audit
+
         store = _store()
         state = _make_state(vector_store=store)
+        calls = []
+        monkeypatch.setattr(memory_audit, "list_events", lambda *a, **k: calls.append(a))
         req = _make_request(state, query={"offset": "x"})
         assert (await mem_mod.api_memory_events(req)).status == 400
-        store.get_events.assert_not_called()
+        assert calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name,value",
+        [("since", "0001-01-01T00:00:00+05:00"), ("until", "9999-12-31T23:59:59-05:00")],
+    )
+    async def test_events_refuses_an_offset_bound_past_the_calendar(self, name, value) -> None:
+        state = _make_state(vector_store=_store())
+        try:
+            resp = await mem_mod.api_memory_events(_make_request(state, query={name: value}))
+        except OverflowError as exc:
+            pytest.fail(f"OverflowError escaped the handler: {exc}")
+        assert resp.status == 400
+        assert _body(resp) == {
+            "error": f"{name} must be an ISO date or time.",
+            "code": "memory_audit_bad_query",
+        }
 
 
 # episodic endpoints
@@ -1010,7 +1040,7 @@ class TestEpisodicEndpoints:
         state = _make_state(vector_store=store)
         req = _make_request(state, query={"q": "hello"})
         assert (await mem_mod.api_memory_episodic_search(req)).status == 200
-        store._try_embed.assert_called_once_with("hello")
+        store._try_embed.assert_called_once_with("hello", query=True)
         assert store.search_episodic.call_args.kwargs["query_embedding"] == [0.1]
 
     @pytest.mark.asyncio

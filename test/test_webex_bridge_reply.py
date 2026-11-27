@@ -29,7 +29,7 @@ from real_dashboard_state import (  # noqa: F401
     _settle_real_dashboard_states,
     real_dashboard_state,
 )
-from webex_dispatch_helpers import FakeCtx, FakeProvider, FakeSessions, _dispatcher, _spin
+from webex_dispatch_helpers import FakeCtx, FakeProvider, FakeSessions, _cfg, _dispatcher, _spin
 
 from kiro_crew.notifications import bridge_actions as actions_mod
 from kiro_crew.notifications import bridge_approval_note as note_mod
@@ -379,7 +379,10 @@ async def test_a_reply_carrying_a_file_stays_a_turn(gateway, webex):
 async def test_a_bridged_reply_never_answers_a_native_prompt_in_the_same_dm(gateway, webex):
     decision = await _open(gateway)
     sess = FakeSessions(FakeProvider([]))
-    d = _dispatcher(sess, FakeCtx(), webex[1])
+    cfg = _cfg()
+    # The sender is the one allow-listed email, so its plain reply may approve.
+    cfg.webex.allowed_emails = [_OWNER]
+    d = _dispatcher(sess, FakeCtx(), webex[1], cfg=cfg)
     d.dashboard_state = gateway
     msg = _reply("approve")
     key = d._approval_key(webex_dispatch._route_of(msg))

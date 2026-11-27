@@ -51,7 +51,14 @@ The verdict (`--out`)
      "would_skip": [test file, ...], "would_run_share": float,
      "covered": {status letter: rows, "added_test": test files},
      "unknown": {"new": files, "never_runs": files, "held": files},
-     "windows": {"verdict", "reason", "run": [test file, ...], "would_run_share"}}
+     "windows": {"verdict", "reason", "run": [test file, ...], "would_run_share"},
+     "timings": {"load": s, "readers": s, "score": s, "modified_py": count}}
+
+`timings` says where a scored diff's time went, in seconds: `load` reading and
+checking the bundle, `readers` the scans for the tests that read a changed doc
+or frontend path, `score` all of the scoring, those two included; and
+`modified_py`, the modified `.py` files of the diff. A diff that was not scored
+has none. Nothing reads them to decide anything.
 
 `covered` counts, by git status letter (`A` added, `D` deleted, `M` modified,
 `R` renamed), the changed docs and frontend paths whose readers took the place
@@ -86,6 +93,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -490,12 +498,15 @@ def bounded(work: Callable[[], T], timeout: float) -> T:
 
 def _score_args(args: argparse.Namespace, grep: Grep) -> tuple[dict[str, Any], dict[str, Any]]:
     """`(base, head and bundle_commit, the verdict body)` for one diff."""
+    started = time.monotonic()
     root = Path(args.root).resolve()
     meta: dict[str, Any] = {"base": None, "head": None}
     for key in meta:
         if getattr(args, key):
             meta[key] = rev_parse(getattr(args, key), root)
+    loading = time.monotonic()
     bundle = load_bundle(Path(args.bundle))
+    loaded = time.monotonic() - loading
     skippable, narrow_reach_max = load_rates(Path(args.rates))
     if meta["head"]:
         check_checkout(meta["head"], root)
@@ -536,6 +547,14 @@ def _score_args(args: argparse.Namespace, grep: Grep) -> tuple[dict[str, Any], d
         )
     except Exception as exc:  # noqa: BLE001  (its failure is a `full` Windows verdict)
         body["windows"] = windows.full(f"error: {type(exc).__name__}: {exc}")
+    body["timings"] = {
+        "load": round(loaded, 2),
+        "readers": round(rule.seconds, 2),
+        "score": round(time.monotonic() - started, 2),
+        "modified_py": sum(
+            1 for status, paths in changes if status == "M" and paths[-1].endswith(".py")
+        ),
+    }
     return {**meta, "bundle_commit": bundle.get("commit") or None}, body
 
 

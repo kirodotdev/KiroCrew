@@ -13,10 +13,12 @@ import hashlib
 import http.client
 import json
 import secrets
+import threading
 import time
 import urllib.parse
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from e2e.crew_api_contract_spec import (
@@ -32,16 +34,41 @@ from e2e.crew_api_contract_spec import (
     Reply,
 )
 
-from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 _HOST = "127.0.0.1"
 _APP_CLIENT = "crew-api-contract-tests"
-_REDIRECT = "http://127.0.0.1:1/callback"  # never opened: the code is read off the redirect
+REDIRECT = "http://127.0.0.1:1/callback"  # never opened: the code is read off the redirect
+_FORM = "application/x-www-form-urlencoded"
+#: The fake backend asks for approval of its tool call and waits for the answer.
+_GATED_INPUT = "[[GATED]] a tool call that waits for the owner"
+
+
+@dataclass(frozen=True)
+class Asking:
+    """One app's local authorization: what it asked, and the gateway's first answer."""
+
+    client_id: str
+    verifier: str
+    query: dict[str, str]
+    first: Reply
+
+    @property
+    def request_id(self) -> str:
+        return str(json.loads(self.first.body)["request_id"])
+
+
+def redirect_query(reply: Reply) -> dict[str, str]:
+    """The query of the address *reply* redirects to, one value per name."""
+    location = urllib.parse.urlsplit(reply.headers.get("location", ""))
+    return {name: values[0] for name, values in urllib.parse.parse_qs(location.query).items()}
 
 
 class Gateway:
     def __init__(self, handle: Any) -> None:
         self._handle = handle
+        # The approval a case raised and the turn that waits on it, until settled.
+        self._waiting: tuple[str, threading.Thread] | None = None
 
     def diagnostics(self) -> str:
         return str(self._handle.diagnostics())
@@ -99,56 +126,92 @@ class Gateway:
         Returns the pending request's id and a function that redeems it for the app's
         access token once the owner has approved it.
         """
+        asking = self.ask(client_id)
+        self._must(asking.first, 202, "GET /oauth/authorize")
+
+        def redeem() -> str:
+            approved = self._must(self.ask_again(asking), 302, "GET /oauth/authorize again")
+            code = redirect_query(approved).get("code", "")
+            redeemed = self._must(self.exchange(asking, code), 200, "POST /oauth/token")
+            return str(json.loads(redeemed.body)["access_token"])
+
+        return asking.request_id, redeem
+
+    def ask(self, client_id: str | None = None) -> Asking:
+        """An app's first ``GET /oauth/authorize``; an app of its own unless one is named."""
         verifier = secrets.token_urlsafe(48)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-        asked = {
+        query = {
             "response_type": "code",
-            "client_id": client_id,
+            "client_id": client_id or f"{_APP_CLIENT}-{uuid.uuid4().hex[:8]}",
             "client_name": "Crew API contract tests",
-            "redirect_uri": _REDIRECT,
+            "redirect_uri": REDIRECT,
             "scope": "responses:write conversations:read",
             "state": secrets.token_urlsafe(8),
             "code_challenge": challenge.rstrip(b"=").decode(),
             "code_challenge_method": "S256",
         }
+        return Asking(query["client_id"], verifier, query, self._authorize(query))
 
-        def authorize(**more: str) -> Reply:
-            query = urllib.parse.urlencode({**asked, **more})
-            return self._http("GET", f"/oauth/authorize?{query}", headers={"Accept": JSON})
+    def _authorize(self, query: dict[str, str]) -> Reply:
+        target = f"/oauth/authorize?{urllib.parse.urlencode(query)}"
+        return self._http("GET", target, headers={"Accept": JSON})
 
-        pending = self._must(authorize(), 202, "GET /oauth/authorize")
-        request_id = str(json.loads(pending.body)["request_id"])
+    def ask_again(self, asking: Asking) -> Reply:
+        """The app's next ``GET /oauth/authorize``, with the request id it was given."""
+        query = {**asking.query, "request_id": asking.request_id}
+        answer = self._authorize(query)
+        # The route makes an app wait between two asks and says how long (Retry-After).
+        for _ in range(3):
+            if answer.status != 429:
+                break
+            time.sleep(float(answer.headers.get("retry-after", "1")))
+            answer = self._authorize(query)
+        return answer
 
-        def redeem() -> str:
-            # The route makes an app wait between two asks and says how long (Retry-After).
-            approved = authorize(request_id=request_id)
-            for _ in range(3):
-                if approved.status != 429:
-                    break
-                time.sleep(float(approved.headers.get("retry-after", "1")))
-                approved = authorize(request_id=request_id)
-            self._must(approved, 302, "GET /oauth/authorize again")
-            location = urllib.parse.urlsplit(approved.headers.get("location", ""))
-            form = {
+    def decide(self, asking: Asking, decision: str) -> None:
+        """The owner answers *asking* through the Owner route."""
+        self._must(
+            self._owner_call(
+                "POST",
+                f"/v1/crew/owner/grant-requests/{asking.request_id}/decision",
+                {"decision": decision},
+            ),
+            200,
+            f"the owner's {decision} of the app",
+        )
+
+    def _form(self, target: str, fields: dict[str, str]) -> Reply:
+        body = urllib.parse.urlencode(fields).encode()
+        return self._http("POST", target, headers={"Content-Type": _FORM}, body=body)
+
+    def exchange(self, asking: Asking, code: str, verifier: str | None = None) -> Reply:
+        """``POST /oauth/token`` with *code*, and the app's own verifier unless one is given."""
+        return self._form(
+            "/oauth/token",
+            {
                 "grant_type": "authorization_code",
-                "code": urllib.parse.parse_qs(location.query).get("code", [""])[0],
-                "redirect_uri": _REDIRECT,
-                "client_id": client_id,
-                "code_verifier": verifier,
-            }
-            redeemed = self._must(
-                self._http(
-                    "POST",
-                    "/oauth/token",
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    body=urllib.parse.urlencode(form).encode(),
-                ),
-                200,
-                "POST /oauth/token",
-            )
-            return str(json.loads(redeemed.body)["access_token"])
+                "code": code,
+                "redirect_uri": REDIRECT,
+                "client_id": asking.client_id,
+                "code_verifier": asking.verifier if verifier is None else verifier,
+            },
+        )
 
-        return request_id, redeem
+    def revoke(self, token: str) -> Reply:
+        """``POST /oauth/revoke``: the app gives *token* back."""
+        return self._form("/oauth/revoke", {"token": token})
+
+    def metadata(self) -> Reply:
+        return self._http("GET", "/.well-known/oauth-authorization-server")
+
+    def read_own_grant(self, token: str) -> Reply:
+        """``GET /v1/crew/grant`` with *token* as the app's credential."""
+        return self._http("GET", "/v1/crew/grant", headers={"Authorization": f"Bearer {token}"})
+
+    @property
+    def origin(self) -> str:
+        return f"http://{_HOST}:{self._handle.port}"
 
     def _grant(self, client_id: str) -> str:
         """An access token for *client_id*: the app asks, the owner approves, the app redeems."""
@@ -212,6 +275,95 @@ class Gateway:
             "POST /v1/responses",
         )
         return str(json.loads(ran.body)["id"])
+
+    def conversation(self) -> str:
+        """The id of a conversation the owner made, with no turn in it."""
+        made = self._must(
+            self._owner_call("POST", "/v1/conversations", {}), 200, "POST /v1/conversations"
+        )
+        return str(json.loads(made.body)["id"])
+
+    def conversation_with_a_turn(self) -> str:
+        """The id of a conversation the owner ran one turn in."""
+        ran = self._must(
+            self._owner_call("POST", "/v1/responses", {"model": self.model, "input": "hello"}),
+            200,
+            "POST /v1/responses",
+        )
+        return str(json.loads(ran.body)["conversation"]["id"])
+
+    def approval_state(self, approval_id: str) -> str:
+        read = self._must(
+            self._owner_call("GET", f"/v1/crew/owner/approvals/{approval_id}"),
+            200,
+            "GET /v1/crew/owner/approvals/{approval_id}",
+        )
+        return str(json.loads(read.body)["state"])
+
+    def _waiting_ids(self) -> set[str]:
+        listed = self._must(
+            self._owner_call("GET", "/v1/crew/owner/approvals"), 200, "GET /v1/crew/owner/approvals"
+        )
+        return {str(row["id"]) for row in json.loads(listed.body)["data"]}
+
+    def pending_approval(self) -> str:
+        """The id of a tool approval that waits for the owner.
+
+        The owner runs a turn whose tool call the gateway holds. The turn's request stays
+        open until someone answers, so it is sent from a thread; :meth:`settle` ends it.
+        One approval waits at a time: raising the next one settles the last.
+        """
+        self.settle()
+        known = self._waiting_ids()
+        payload = {"model": self.model, "input": _GATED_INPUT}
+        assert self._owner  # minted here, not in the thread
+
+        def run() -> None:
+            # An unanswered turn outlives the connection's timeout; settle() ends it.
+            try:
+                self._owner_call("POST", "/v1/responses", payload)
+            except OSError:
+                pass
+
+        turn = threading.Thread(target=run, name="crew-api-contract-gated-turn", daemon=True)
+        turn.start()
+        raised = wait_until(lambda: self._waiting_ids() - known, describe=self.diagnostics)
+        assert len(raised) == 1, f"one turn raised {sorted(raised)}\n{self.diagnostics()}"
+        approval_id = raised.pop()
+        self._waiting = (approval_id, turn)
+        return approval_id
+
+    def decided_approval(self) -> str:
+        """The id of a tool approval the owner has allowed, its turn ended."""
+        approval_id = self.pending_approval()
+        self._must(
+            self._owner_call(
+                "POST", f"/v1/crew/owner/approvals/{approval_id}/decision", {"decision": "allow"}
+            ),
+            200,
+            "the owner's answer to the approval",
+        )
+        self.settle()
+        return approval_id
+
+    def settle(self) -> None:
+        """End the turn of the approval a case raised: deny it if it still waits."""
+        if self._waiting is None:
+            return
+        approval_id, turn = self._waiting
+        self._waiting = None
+        if self.approval_state(approval_id) == "pending":
+            self._must(
+                self._owner_call(
+                    "POST",
+                    f"/v1/crew/owner/approvals/{approval_id}/decision",
+                    {"decision": "deny"},
+                ),
+                200,
+                "denying the approval a case left waiting",
+            )
+        turn.join(FALLBACK_TIMEOUT_SECS)
+        assert not turn.is_alive(), f"the gated turn did not end\n{self.diagnostics()}"
 
     def _credential(self, caller: str) -> str | None:
         if caller == ANONYMOUS:

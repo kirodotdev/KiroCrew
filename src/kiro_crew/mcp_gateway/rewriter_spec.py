@@ -34,6 +34,7 @@ from kiro_crew.mcp_cleanup import (
     mcp_entry_is_registry_governed,
     mcp_entry_is_remote,
 )
+from kiro_crew.mcp_gateway.folder_use import roots_observed
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args
 from kiro_crew.mcp_gateway.launch_approval import (
     _MAX_SERVER_LAUNCHES,
@@ -43,6 +44,7 @@ from kiro_crew.mcp_gateway.launch_approval import (
     launch_fingerprint,
     target_stem,
 )
+from kiro_crew.mcp_gateway.launch_approval_heal import prefold_digests
 from kiro_crew.mcp_gateway.rewriter_env import (
     _expand_env_map,
     _must_stay_wrapped,
@@ -496,6 +498,20 @@ def _named_in_tools(servers: Mapping[str, Any], tools: Any) -> dict[str, Any]:
     }
 
 
+def _note_declared(approvals: LaunchApprovals | None, servers: Any) -> None:
+    """Census a raw server map before filtering; unknown shapes retire no trust."""
+    if approvals is None:
+        return
+    if not isinstance(servers, dict):
+        approvals.declared_incomplete = True
+        return
+    for name, entry in servers.items():
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            approvals.declared_incomplete = True
+            continue
+        approvals.note_declared(name)
+
+
 def _rewrite_single_spec(
     spec: dict[str, Any],
     *,
@@ -505,6 +521,7 @@ def _rewrite_single_spec(
     sandbox_mode: str,
     approval_mode: str,
     stub_servers: frozenset[str],
+    roots_excluded: frozenset[str] = frozenset(),
     pooling_enabled: bool = True,
     forward_env: bool = False,
     identity_keys: Collection[str] = (),
@@ -565,6 +582,8 @@ def _rewrite_single_spec(
     pass routes is the exception; the stub-decoupling design note says why.
     """
     agent_name = spec.get("name") or ""
+    _note_declared(approvals, spec.get("mcpServers", {}))
+    _note_declared(approvals, inject_servers if inject_servers is not None else {})
     servers = spec.get("mcpServers") or {}
     if not isinstance(servers, dict):
         servers = {}
@@ -689,6 +708,10 @@ def _rewrite_single_spec(
         # call sites, uncached). Honouring it only in this function produced a
         # stub nothing pointed at, and a dashboard row that read "stub" for a
         # server that had none. One source of truth instead.
+        # The name-wide decision already includes every declaration's vault facts.
+        if roots_observed(name, roots_excluded):
+            new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+            continue
         if name not in stub_servers and not (
             secret_reference_keys(entry.get("env"))
             and routed_for_secret_reference(name, stub_servers)
@@ -989,6 +1012,7 @@ def _injectable_settings_servers(
     settings_spec: dict[str, Any],
     stub_servers: frozenset[str],
     *,
+    roots_excluded: frozenset[str] = frozenset(),
     pooling_enabled: bool = True,
     forward_env: bool = False,
     identity_keys: Collection[str] = (),
@@ -1050,6 +1074,8 @@ def _injectable_settings_servers(
         if "command" not in entry or mcp_entry_is_remote(entry):
             # HTTP/SSE — no stub needed; kiro-cli merges it from the real
             # settings file. A placeholder ``command`` does not make it stdio.
+            continue
+        if roots_observed(name, roots_excluded):
             continue
         if not (name in stub_servers or mcp_server_alias(name) in stub_servers):
             # Not stubbed: leave it to kiro-cli's own merge of the real
@@ -1126,7 +1152,8 @@ def _admit_launch(
         return True
     target_args = _spec_args(entry)
     fingerprint = launch_fingerprint(resolved_cmd, target_args, entry_env)
-    derived_env_hash = env_fingerprint(_expand_env_map(entry_env))
+    expanded_env = _expand_env_map(entry_env, server=name)
+    derived_env_hash = env_fingerprint(expanded_env)
     if not approvals.admit(
         name,
         fingerprint,
@@ -1136,6 +1163,7 @@ def _admit_launch(
         # host secret behind ``${VAR}`` is never rendered on the dashboard.
         env=entry_env,
         derived_env_hash=derived_env_hash,
+        prefold=prefold_digests(entry_env, expanded_env),
     ):
         # Names only: the args and env may carry tokens.
         if approvals.refused.get(target_stem(name)) == REFUSED_TOO_MANY:

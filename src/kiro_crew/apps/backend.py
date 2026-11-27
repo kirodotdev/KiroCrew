@@ -221,7 +221,8 @@ def _find_node_tool(name: str) -> str | None:
     2. System PATH
     3. The Node.js install directories the MCP and build lookups already search
        (:func:`kiro_crew.env.augmented_path`: Homebrew, ``/usr/local/bin``, mise,
-       asdf, fnm, Volta, n, nvm-windows), which a gateway opened from the macOS
+       asdf, fnm, Volta, n, nvm-windows, the nodejs.org installer's
+       ``%ProgramFiles%\\nodejs``), which a gateway opened from the macOS
        Dock lacks: it inherits launchd's ``/usr/bin:/bin:/usr/sbin:/sbin``. Last,
        so a node that steps 1 and 2 find keeps winning. Each directory is probed
        with ``which_within``, so on Windows a file in the working directory

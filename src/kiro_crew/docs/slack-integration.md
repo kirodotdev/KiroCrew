@@ -26,16 +26,18 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | Command | Description |
 |---------|-------------|
 | `!yolo` / `!yolo on/off/renew` | Show, toggle, or renew auto-approve for all tool calls |
-| `!trust` / `!trust off` / `!trust status` | Put this thread's session on Trust (its tools run without asking), take it off, or show it. See "Trust one thread" below |
+| `!trust` / `!trust off` / `!trust status` | Put this thread's session on Trust (it stops asking), take it off, or show it. A shared user's covers their own messages only. See "Trust one thread" below |
 | `!agent <name>` | Switch to a different agent globally |
 | `!agent off` | Switch back to default kirocrew agent |
 | `!ta <name>` | Set agent for this thread only |
 | `!ta off` | Remove thread agent override |
 | `!ta` | Show the current thread agent |
 | `/agent <name>` | Same as `!ta <name>` (type a space first if Slack offers it as a slash command) |
-| `!channel` | Show current channel activation mode |
+| `!channel` | One line: who answers this channel now, and its activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
-| `!channel agent <name/off>` | Set per-channel agent override; a Crew Bot's name runs the whole channel as that Bot |
+| `!channel agent <name/off>` | Set per-channel agent override; a Crew Bot's name runs the whole channel as that Bot, one session per thread. For a Bot the owner's reply adds how to have the Bot's own chat answer instead (`!channel agent off`, then `!channel bot <name>`). A shared user may use it with a Crew Bot's name or `off` (see "Sharing Slack access") |
+| `!channel bot <name/off>` | Owner only. One Bot answers every thread in this channel in its own chat, so all of it shows on the Bots page; each reply goes to the thread it answers. The Bot's chat must be open. While it or a helper it started is working for one thread, a message in another thread is asked to wait. Anything the Bot says with no channel message behind it (typed on the dashboard, a check-in, a late helper report) posts to the last thread it answered. A thread that joined another Bot's chat with `!bot <name>` before keeps that chat, and `!bot off` there still leaves it. A `!temporary` or `!incognito` thread keeps its own private session and stays out of the Bot's chat (the same holds with a Channel Conductor). In the thread the Bot is answering right now those two are refused: start a new thread for them |
+| `!channel conductor on/off` | Owner only. One Conductor chat answers every thread in this channel and sends work to workers, like a Conductor thread; each reply goes to the thread it answers, and only the owner's messages reach it. Needs Conductor threads on (and, in a public channel, the public-channel opt-in). `off` ends it; its chat stays on the dashboard |
 | `!project <path>` / `!project off` | Set or clear the project whose `.kiro` agents `!ta` can find in this thread (does not change the working directory); bare `!project` shows it |
 | `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!voice global on/off` | On: voice replies in every thread. Off: only in threads that ran `!voice on` (or set a voice, engine, speed or pitch), plus replies to voice memos if you set `voice_reply.auto_reply_to_voice` to `true`. Saved, so a restart keeps it; bare `!voice global` toggles it |
@@ -59,6 +61,8 @@ on/off` works when the `/kirocrew` command is turned off.
 | `!dashboard 2h` | Dashboard link with custom duration (max 20h) |
 | `!title <text>` | Set this thread's title (up to 80 characters) |
 | `!stop` | Force-halt the current agent turn in this thread. Bypasses the per-session semaphore and cancels the active task. See "Emergency Stop" below |
+| `!steer <msg>` | While a reply is running, fold `<msg>` into it now. See "Messages sent while a reply runs" below |
+| `!queue <msg>` | While a reply is running, answer `<msg>` after it finishes |
 
 ## Keyword Commands
 
@@ -88,7 +92,7 @@ Available to all allowed users (no `!` prefix needed):
 |---------|-------------|
 | `/kirocrew dashboard` | Same as `!dashboard` |
 | `/kirocrew agent` | Switch the active agent |
-| `/kirocrew bot` | List Crew Bots. Slack runs no slash command in a thread, so send `!bot <name>` as a thread's first message to run that thread as a Bot |
+| `/kirocrew bot` | List Crew Bots, each by the key you type and the name the dashboard's Bots page shows (the first Bot reads `` `mate` (Bot) `` until you rename it); either one names it. The reserved `default` agent is not in the list. Slack runs no slash command in a thread, so send `!bot <name>` as a thread's first message to run that thread as a Bot |
 | `/kirocrew conductor <goal>` | The owner, or a shared user (`slack.shared_access`). Post the goal as a new message here and make its thread a Conductor thread: one way, only the owner's and the starter's messages reach it, workers show as status. In an existing thread, send `!conductor [goal]` instead. Off until Conductor threads are turned on |
 | `/kirocrew voice` | Configure TTS voice settings |
 | `/kirocrew yolo` | Toggle auto-approve for all tool calls |
@@ -119,8 +123,8 @@ When Kiro Crew needs to run a tool (file write, bash command, etc.):
 
 `!trust` puts the thread you type it in on Trust before any tool asks. Its tools
 then run without a prompt; the deny list, sensitive paths and your organization's
-policy still refuse what they refuse. It is owner-only and works in DMs and channel threads.
-`!trust off` turns it off. `!trust status` shows it.
+policy still refuse what they refuse. The owner and shared users may use it, in DMs
+and channel threads. `!trust off` turns it off, and `status` in place of `off` shows it.
 
 The grant covers that one thread's session and lasts until `!trust off` or a gateway
 restart. In a channel thread it covers the turns of everyone on the allowlist, not
@@ -128,13 +132,26 @@ only yours. A shared user's turn in a trusted thread still asks. Sent while the 
 is working, `!trust` and `!trust off` wait for that turn to end; `!stop` ends it now.
 Helper agents the thread starts still ask.
 
+A shared user may type it too, with a narrower result. It covers only the messages
+that person sends there: the owner's messages and other shared users' messages still
+ask, and helper agents still ask. `off` and `status` act on their own grant only. It
+needs something running, so send a message first. It lasts as long as that running
+session does: it ends when the thread moves to another agent or Bot, when the session
+is reset, restarted or closed after a long idle, when the owner turns it off in the
+thread, when the person leaves shared access, and on a gateway restart. A compaction
+or a cleared conversation that keeps the session leaves it on, as it leaves the
+owner's on. It never outlasts the owner's own grant in the same thread. In a DM
+that runs as one conversation it covers the whole DM.
+
 If the thread's dashboard tab is on Trust (from the card's "Trust session" button),
 `!trust off` leaves that tab's Trust alone and says so. Its tools and helper agents
 may still run without asking. Set that tab to Normal in its approval picker.
 
 A Slack Code channel or Conductor thread has its own setting: use
 `/kirocrew approval trust` there. A thread linked to a dashboard chat follows that
-chat: set Trust in the chat's approval picker.
+chat: set Trust in the chat's approval picker. The same holds in every thread of a
+channel that a Channel Bot or Channel Conductor answers: the command turns nothing
+on there, and its `off` and `status` forms still work.
 
 Approval buttons appear in both Slack and the dashboard. Approving in either
 place resolves both.
@@ -161,10 +178,49 @@ escalated to a hard stop, and "Nothing running." when no turn was active.
 Authorization: owner and allowed users. Unauthorized callers get
 "⛔ Not authorized." and an audit log entry under `slack.stop_command`.
 
+## Messages sent while a reply runs
+
+A message you send while the agent is still replying is folded into that reply
+(a steer) by default, and gets a ↪ (`:arrow_right_hook:`) reaction. This holds
+in thread replies, DMs and threads linked to a dashboard chat. Put `!queue` in
+front of the message to have it answered after the reply finishes instead; it
+gets an ⏳ reaction. `!steer <msg>` forces a steer. Set `messaging.queue_mode`
+to `queue` to make queueing the default, as on Discord and Telegram. When the
+session is idle, both prefixes are dropped and the message just starts a turn.
+A steered message is saved in the conversation's history, after the message the
+reply answers and before the reply.
+
+A message that cannot be steered is queued: it carries files
+or a voice memo, it comes from a shared user or a trusted bot, the running reply
+answers a shared user's message (they approve its tool prompts, so it takes
+nobody else's words), the reply runs on the native handler
+(`messaging.use_transport: false`), the backend has no
+steer, a `!stop` is still settling, the channel is in `review` mode, an earlier
+message is already queued, or the reply ended just as the message arrived. In a
+single-session DM, a message in another thread, or at the root while a thread's
+reply runs, is queued so it is answered where you sent it. A
+`!` command, a message with `!temporary` or `!incognito`, a keyword
+command (`status`, `sessions`, `spawn`, `cron`) and a message a hook answers are
+queued too, so they run as commands after the reply instead of reaching the
+agent as text. If a failed steer into the thread's own session may already have
+reached the backend, it is not sent again, and no ↪ reaction claims confirmed
+delivery. A lone `!queue` or `!steer` with no message is answered with a hint and
+runs nothing. In a linked dashboard thread, the hand-off queues a steer that
+does not land, and a message sent while a shared user's reply runs there is
+queued. If the chat's reply ended during the hand-off, the message starts its
+own turn. If the slot can no longer take it during the hand-off or its
+queue is full, a refusal is posted in the thread and the message is not queued.
+
 ## Streaming
 
 Responses stream in real-time via progressive Slack message edits. A cursor
 (▍) shows during streaming. Tool calls appear inline by name.
+
+When you send a message the bot picks up in the thread while a turn is still
+running its steps, the next step continues in a new message below yours, so the
+latest thing in the thread is what the agent is doing now. A step that was
+running is closed above with "continues below". Once the reply itself is being
+written it stays in one message, above yours.
 
 With `slack.reactions_enabled` on, where Slack shows the bot's native thread status
 ("is working on your request") your message gets no reaction; elsewhere it gets 👀
@@ -332,19 +388,34 @@ confirmed by Slack: remove them, or fix what their row says, first.
   `kirocrew config` gets the same check from the gateway before its first message
   counts.
 - **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
-  `!title`, `!compact`, `!bot`, `!conductor` and `/kirocrew conductor` (a Conductor
+  `!title`, `!compact`, `!bot`, `!trust` (their own messages only),
+  `!conductor` and `/kirocrew conductor` (a Conductor
   thread they start admits them and the owner only; its goal cannot be a `/`
   command; `!stop`, Trust and worker cards there stay the owner's), answer
   question cards, answer the tool-approval
   prompts their own turns post (Approve, Reject, and **Trust session** where
-  the card offers it, which turns on the same per-session Trust the owner's
-  click does; the audit log names who clicked), and send or edit the review-mode draft of their own
-  turn. On an agent other than Kiro CLI, KAS or Claude Code, and for a
+  the card offers it; the audit log names who clicked), and send or edit the review-mode draft of their own
+  turn. That button covers only their own messages in that thread, exactly as
+  the `!trust` command above does for them: your messages, other people's and
+  helper agents still ask, and the same things end it. In a thread that runs a
+  dashboard chat or a schedule's session the press lets that one call through, and
+  the card says so. On a card a linked dashboard chat posts, the press still does
+  for that chat what your click does. They can also put a channel on a Crew Bot with `!channel agent <Bot>` and take
+  it off with `!channel agent off`, when the channel has no agent or a shared user set
+  the one it has. After that, every new thread in that channel runs as that Bot for
+  everyone, you included: its template, workspace and memory, and the tools that
+  template runs without a prompt. Approvals do not change. They cannot change an
+  agent you set, pick a kiro agent that is not a Bot, or do this in a DM with the
+  bot, in a code channel, or in a channel you gave a Channel Bot or Channel
+  Conductor. Your `!channel bot <name>` or `!channel conductor on` replaces an
+  agent a shared user set. They cannot set a Bot while a dashboard chat is
+  linked to a thread in the channel, its tab open or closed; `off` still works there. On an agent other than Kiro CLI, KAS or Claude Code, and for a
   call a background sub-agent makes, the approval prompt goes to the owner.
 - **What stays the owner's.** The access list and the switch; YOLO and
   approval-mode changes; answering (Trust included) a prompt someone else's turn
   posted, or one that is no longer waiting; `!dashboard` and other dashboard links; every
-  other `!` command, including `!channel` and agent overrides, and the
+  other `!` command, including the rest of `!channel` (activation, and any agent
+  you set for a channel) and the other agent overrides, and the
   `!temporary` / `!incognito` modifiers; a message that starts with `/` (the
   agent's own commands such as `/agent`, `/model` or `/tools`); the other `/kirocrew`
   slash commands; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`
@@ -487,8 +558,9 @@ exactly as with the switch off, and the page says why under the switch.
   Connect conversation.
   When the channel's agent starts helper agents for pieces of the work (**Let code
   channels start helper agents**), the channel also gets a pinned **work board**, kept
-  up to date in place: one line of counts ("2 working · 1 waiting on you · 1 of 4 done"),
-  then one task per helper agent with Slack's own status mark, what it is doing right
+  up to date in place: one line of counts ("1 needs you · 2 working · 1 of 4 done"),
+  then one task per helper agent, the ones that need you first, each titled with its
+  state ("Needs you", "Working", "Idle") beside Slack's own status mark, what it is doing right
   now (the command it is running or the file it is editing, with secrets and your
   paths taken out), how long it has been at it, and its PR with its CI checks. The
   channel's Code tab shows the channel's own changes, then each helper agent's

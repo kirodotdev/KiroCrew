@@ -1201,7 +1201,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       chatContainerRef={chatContainerRef} closedSessionActions={closedSessionActions} sidebarFolderActions={sidebarFolderActions}
     >
       <SessionsSidebarChrome
-        embedMode={embedMode} mode={mode} activeSlot={activeSlot} connected={connected} creatingSlot={creatingSlot} dispatch={dispatch} filteredSlots={filteredSlots} personSlots={personSlots} isMobile={isMobile}
+        embedMode={embedMode} mode={mode} activeSlot={activeSlot} transcriptShown={renderedTranscript.loaded} connected={connected} creatingSlot={creatingSlot} dispatch={dispatch} filteredSlots={filteredSlots} personSlots={personSlots} isMobile={isMobile}
         keyboardInset={keyboardInset} mobileNavRail={mobileNavRail} surfaceUnreadSlots={surfaceUnreadSlots} titleInTopbar={titleInTopbar} topbarSlot={topbarSlot} topbarTrailSlot={topbarTrailSlot}
         vv={vv} activityOpen={activityOpen} selectFromSidebar={selectFromSidebar} history={history} historyHasMore={historyHasMore} navigateToEmbeddedSlot={navigateToEmbeddedSlot}
         openEmbeddedCrewWindow={openEmbeddedCrewWindow} splitMode={splitMode} defaultAgent={defaultAgent} installedAgents={installedAgents} sidebarAgents={sidebarAgents} sidebarChoices={sidebarChoices}
@@ -1256,6 +1256,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             // would be rejected and blank that pane until reconnect.
             onFolderOpen={connected ? handleFolderOpen : undefined}
             onOpenCrewTab={handleOpenCrewTab}
+            // The single-chat surface's own sign-in rule (transcriptRendering).
+            noSignIn={embedded || popout}
             onClose={() => setSplitMode(false)}
             onCollapse={(slot, anchorTs, anchorMid, gesture) => {
               // A session reference the user may be told about (split-pane

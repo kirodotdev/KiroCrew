@@ -163,7 +163,7 @@ def _drop_unsafe_agent_rows(data: dict) -> None:
     The row is dropped, not repaired: blanking a ``member_id`` would read as "no identity
     yet" and let the upgrade mint a new one. One log line per row names the key, cut short.
     """
-    from kiro_crew.members import is_single_path_component
+    from kiro_crew.path_component import is_single_path_component
 
     agents = data.get("agents")
     if not isinstance(agents, dict):

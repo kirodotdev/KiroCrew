@@ -187,7 +187,7 @@ def _ask_lines(
 ) -> list[str]:
     """The record's why, each option with what it leads to, and the pick, indented
     under its item; with nothing past its ``what``, one line pointing at the
-    question from *since* (the item's report time, HH:MM)."""
+    question from *since* (when the record was written, HH:MM)."""
     pointer = words["see_question"].format(at=since) if since else words["see_chat"]
     if not isinstance(record, Mapping):
         return [f"  - {pointer}"]
@@ -258,7 +258,9 @@ def render(
             title = clean((record or {}).get("what"), _MAX_TITLE) or title
             state = _join([words["waiting"], pr, checked], language)
             needs.append(f"- {title}{left}{state}{right}")
-            since = clock(inputs.parse_epoch(item.get("last_report_at")))
+            # The question's own time: the record's stamp, not the worker's last
+            # report, which can be an earlier progress note.
+            since = clock(inputs.parse_epoch((record or {}).get("written_at")))
             needs.extend(_ask_lines(record, words, clean, colon, since))
             if record:
                 # Cleaned like the reply's labels below, so the two compare alike.

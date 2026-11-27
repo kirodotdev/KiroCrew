@@ -12,6 +12,22 @@
       "legacyNav": {
         "route": "/personal-shopper",
         "icon": "ShoppingBag"
+      },
+      "deletedCopy": {
+        "permissions": {
+          "api": [
+            "/api/apps/personal-shopper",
+            "/api/apps/personal-shopper/*"
+          ],
+          "storage": true,
+          "network": true
+        },
+        "grants": {
+          "api": [
+            "/api/apps/personal-shopper",
+            "/api/apps/personal-shopper/*"
+          ]
+        }
       }
     },
     {
@@ -56,11 +72,11 @@
     {
       "name": "pptx-maker",
       "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-pptx-maker",
-      "commit": "f189ef631db6fea2c8331d6080f24d340963f2e6",
-      "version": "0.3.4",
-      "treeSha256": "409e75595ee8e75f3a3cb8dba664f5a568771f177a0865de067975e4eca78bc3",
-      "archiveSha256": "0605507264ba24052bdcec135f4f141e3d9681dab3d645b78c8181548e97fbd1",
-      "minAppSdkLevel": 1,
+      "commit": "b5b54b0a0574af13f208df8a6424a3dc4d114485",
+      "version": "0.3.5",
+      "treeSha256": "d279ec97d4350d6c5ec92afa82859a99b53a12c232ad226dee4c731a65af1aca",
+      "archiveSha256": "d30a4ed14f1ab2e65c08bd1b62a288093b1aae24ed98103e4e1a1851a653a378",
+      "minAppSdkLevel": 14,
       "legacyNav": {
         "route": "/pptx-maker",
         "icon": "Presentation"
@@ -181,6 +197,24 @@
       "legacyNav": {
         "route": "/project-scaffolder",
         "icon": "FolderPlus"
+      },
+      "deletedCopy": {
+        "permissions": {
+          "api": [
+            "/api/project-scaffold",
+            "/api/browse-dirs",
+            "/api/recent-projects",
+            "/api/favorite-projects"
+          ]
+        },
+        "grants": {
+          "api": [
+            "/api/project-scaffold",
+            "/api/browse-dirs",
+            "/api/recent-projects",
+            "/api/favorite-projects"
+          ]
+        }
       }
     },
     {

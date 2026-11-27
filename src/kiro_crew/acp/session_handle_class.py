@@ -193,6 +193,7 @@ class AcpSessionHandle:
     _native_child_of = _sh_claude_children._native_child_of
     _reset_claude_child_turn = _sh_claude_children._reset_claude_child_turn
     _claude_child_events = _sh_claude_children._claude_child_events
+    _child_session_call_marks = _sh_claude_children._child_session_call_marks
     _note_native_child_request = _sh_claude_children._note_native_child_request
     native_child_requests = _sh_claude_children.native_child_requests
     cancel_native_child = _sh_claude_children.cancel_native_child
@@ -279,6 +280,7 @@ class AcpSessionHandle:
     _refuse_unidentifiable_mcp_approval = _sh_permissions._refuse_unidentifiable_mcp_approval
     _refuse_unreadable_mcp_identity = _sh_permissions._refuse_unreadable_mcp_identity
     _refuse_unretained_provenance = _sh_permissions._refuse_unretained_provenance
+    _refuse_reused_call_id = _sh_permissions._refuse_reused_call_id
     _tool_call_unclassified = _sh_permissions._tool_call_unclassified
     _refuse_by_harness = _sh_permissions._refuse_by_harness
     _note_permission_state = _sh_permissions._note_permission_state

@@ -28,7 +28,7 @@ import logging
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, NamedTuple
 
 from kiro_crew.memory_provider.contract import (
     MemoryItem,
@@ -210,6 +210,15 @@ def rules_block(items: Iterable[MemoryItem], cap: int) -> str:
     )
 
 
+class SessionParts(NamedTuple):
+    """Where :func:`session_parts` put its lessons family in the parts list."""
+
+    rules_index: int | None
+    """The rules block, for the per-message lessons record; ``None`` when there is none."""
+    lessons: range
+    """The rules and findings blocks; empty when neither was admitted."""
+
+
 def session_parts(
     blocks: Any,
     route: MemoryRoute,
@@ -220,20 +229,20 @@ def session_parts(
     include_memory: bool,
     include_lessons: bool,
     session_key: str | None,
-) -> int | None:
+) -> SessionParts:
     """Admit the session-start memory family from a provider that replaces Crew's memory.
 
-    Returns the part index of the rules block (for the per-message lessons record),
-    or ``None`` when there is none.
+    Returns where the rules block and the whole lessons family (rules and findings)
+    went; every other part it appends is the memory family.
     """
     if not include_memory and not include_lessons:
-        return None
+        return SessionParts(None, range(0))
     items, error = fetch_context(route, scope, query_text, caps.max_context)
     if error:
         blocks.parts.append(unavailable_notice(route, error))
         if include_memory:
             blocks.append_required(tools_pointer(route))
-        return None
+        return SessionParts(None, range(0))
     rules_index: int | None = None
     if include_memory:
         name = provider_name(route)
@@ -285,6 +294,7 @@ def session_parts(
             blocks.parts.append(block)
         blocks.append_required(tools_pointer(route))
     if include_lessons:
+        lessons_start = len(blocks.parts)
         lessons = [i for i in items if i.status == "active" and lesson_applies(i, scope.project)]
         rules = [i for i in lessons if i.kind == "rule"]
         block = rules_block(rules, caps.lessons_startup)
@@ -305,7 +315,9 @@ def session_parts(
         )
         if block:
             blocks.append_authored(block)
-    return rules_index
+    if not include_lessons:
+        return SessionParts(None, range(0))
+    return SessionParts(rules_index, range(lessons_start, len(blocks.parts)))
 
 
 def augment_part(

@@ -645,6 +645,7 @@ class TestChannelCommand:
         await _slash("!channel agent research-bot", slack, sessions)
         assert "Unknown agent" in _texts(slack)
         assert "`research` (Research Bot)" in _texts(slack)
+        assert "`default`" not in _texts(slack).split("Crew Bots:")[1]
 
         slack.actions.clear()
         await _slash("!channel agent Research", slack, sessions)
@@ -672,6 +673,48 @@ class TestChannelCommand:
         assert "Agent for this channel: *research*" in _texts(slack)
         saved = json.loads(config_path().read_text(encoding="utf-8"))
         assert saved["slack"]["channels"]["C1"]["agent"] == "research"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("typed", "saved_agent", "hinted"),
+        [("research", "research", True), ("demo", "demo", False), ("off", "", False)],
+    )
+    async def test_agent_subcommand_names_channel_bot_only_for_a_bot(
+        self, slack, sessions, owner, agents_dir, monkeypatch, typed, saved_agent, hinted
+    ):
+        """A Bot key's reply names `!channel bot`; a plain agent and `off` reply as before."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig, config_path
+        from kiro_crew.config.sections import KiroCrewAgentConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["research"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+        audit = MagicMock()
+        monkeypatch.setattr(h, "sel", lambda: audit)
+        # The hint names `!channel bot`, which needs the dashboard (its Bot chat lives there).
+        monkeypatch.setattr(h, "_dashboard_state", MagicMock())
+
+        await _slash(f"!channel agent {typed}", slack, sessions)
+
+        label = f"*{saved_agent}*" if saved_agent else "default"
+        text = _texts(slack)
+        assert f"Agent for this channel: {label}" in text
+        assert ("`!channel agent off` and then `!channel bot research`" in text) is hinted
+        assert ("own session" in text) is hinted
+        if not hinted:
+            assert text.rstrip().endswith(f"Agent for this channel: {label}")
+        saved = json.loads(config_path().read_text(encoding="utf-8"))
+        assert saved["slack"]["channels"]["C1"]["agent"] == saved_agent
+        audit.log_api_access.assert_called_once_with(
+            caller="U1",
+            operation="slack.channel_agent",
+            outcome="allowed",
+            source="slack",
+            resources=f"C1:{saved_agent or 'default'}",
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────

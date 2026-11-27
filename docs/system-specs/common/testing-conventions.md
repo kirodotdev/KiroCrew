@@ -163,6 +163,10 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   left changed, and names the test), and a new process-global ships its floor entry
   (`test/test_process_cache_floor_ratchet.py` fails a new module-level cache in
   `src/kiro_crew` that no floor resets).
+  Never fake a spawn or kill by patching an attribute of a module other code shares
+  (a module's `subprocess` alias's `Popen` is `subprocess.Popen` for the whole worker, the
+  subprocess pool's helper child included): rebind the name in the module under test
+  alone, as `test_acp_deepseek_backend.py`'s `_module_with` does for `subprocess_mod`.
   [Class 4](#4-order-dependence-and-shared-state).
 - **D12. Prove it.** Each new or changed test passes 20 times at `-n0`, 10 times at
   `-n 4` beside its neighbours, and in a shuffled order. A FIX to a flaky test also
@@ -219,7 +223,16 @@ import as a duration-named argument.
   everywhere else: ``platform_log_append._APPEND_TIMEOUT_SECONDS`` under the
   ``model.route`` strip, ``skills._COLD_CATALOG_WAIT_SECS`` under a cold
   ``get_context``. Set it to ``FALLBACK_TIMEOUT_SECS`` in the test or a shared fixture
-  (``test_decisions_strip_rides_message.generous_decision_log_append``). K19 sees only
+  (``test_decisions_strip_rides_message.generous_decision_log_append``). For a
+  real ``SkillsLoader`` on a fresh root, the alternative to lifting the budget is
+  to settle the scope a catalog-dependent assertion reads: pass the loader through
+  ``skills_helpers._settled`` first, so an enumeration, a budget screen or an
+  index count never reads the empty answer of a walk still running
+  (``test_skill_budget.TestStartupIndexCounts``, 400 skills, ``assert 0 == 400``).
+  ``_settled`` covers the global scope only; a read with ``project_dir`` walks
+  its own scope, so wait on it too (``wait_until`` on ``loader._iter(project)``).
+  A test of a cold read that never enumerates stays unsettled.
+  K19 sees only
   a wrong override, never a missing one, so trace the asserted value back through
   every budget on its path.
 
@@ -373,7 +386,13 @@ milliseconds (`[WinError 5]` on `sessions/<key>.jsonl`). `member_memory_helpers`
 flake-pattern ratchet counts an `update_metadata` or `update_metadata_if` call made in
 a coroutine's own frame (K20; a sync helper that calls it is not counted), so a new one
 fails a change; hand the method to
-`await asyncio.to_thread(log.update_metadata, ...)` instead.
+`await asyncio.to_thread(log.update_metadata, ...)` instead. The miss the ratchet
+names is real: a "never raises" helper that writes a session record and reports a
+failure as a skipped item (`cron_service.identity.migrate_legacy_member_schedules`
+logs the schedule "left uncaptured" and returns it absent) turns that one-attempt
+rename into a wrong return value, `[] == ['lj1']`, with the `PermissionError` only
+in the captured log. The gateway runs such helpers on its memory worker thread, so
+a coroutine that drives one does the same, `await asyncio.to_thread(helper, ...)`.
 
 A test that drives code to `RecursionError` on purpose must hold the cyclic
 collector off for the walk. Its innermost frames have no headroom, and a gen0
@@ -997,7 +1016,7 @@ def test_a_deep_nest_is_refused_without_an_exception():
 
 def test_the_ssh_floor_refuses_at_its_reading_bound():
     depth = ssh._MAX_SSH_READING_DEPTH
-    assert depth <= deny_gate._MAX_SUBSTITUTION_DEPTH, "the gate cap would answer first"
+    assert depth <= deny_gate_nesting._MAX_SUBSTITUTION_DEPTH, "the gate cap would answer first"
     assert _denied_by(_nested_double_quoted(depth, "true; echo ssh")) == "sandbox-escape-ssh-self"
     assert _denied_by(_nested_double_quoted(depth - 1, "true; echo ssh")) is None
 ```
@@ -3095,6 +3114,18 @@ about the code. Each is a hermeticity gap, and each has one fix:
   spawns and waits for overrides `server_bind` to call `socketserver.TCPServer.server_bind`
   and set `server_name` from the address it already has, as the stand-in in
   `test_decisions_local_runtime_real_spawn.py` and `plumb_cpu.py` do.
+- **A live ssh-agent is the operator's, not the test's.** A registry git network step
+  that keeps the ssh agent repairs a stale `SSH_AUTH_SOCK` from the agent sockets on the
+  host (`subprocess_env._git_network_step_env`), so on a developer host with a live
+  agent the environment a fake spawn received named that socket: four env-equality
+  tests in `test_apps_registry_coverage_manifests.py` and
+  `test_apps_routes_coverage_blob_proxy.py` failed there and passed on CI, which has no
+  agent. `_no_host_ssh_agent_in_registry_git_env` (`test/conftest_resets_app_registry.py`)
+  pins the resolver to a no-op for every test, and `agent_socket_refusal`, which stats a
+  socket the resolver finds, to accept; a test of the repair sets
+  `resolve_ssh_auth_sock` on `subprocess_env` itself, and its stand-in wrap reports the
+  forward it applied through `forward_ssh_auth_sock_out`: a wrap that reports nothing
+  reads as a refused forward, and the step then starts with no agent socket.
 
 ## Running the suite: the defaults, and how to narrow safely
 
@@ -3116,6 +3147,23 @@ runs. A proof lasts an hour, a failure is never kept, and a pass is kept only wh
 tree did not move while the command ran. After changing something that no package list or
 lockfile names (a built `dist/`, a hand edit under `node_modules`), run
 `python3 scripts/local-gate.py --no-reuse`.
+
+The backend related set reaches pytest as explicit file paths, collected with
+`-p scripts.explicit_file_targets` loaded. pytest resolves a file argument by
+collecting its directory again for every argument and offering each sibling entry to
+`pytest_ignore_collect` and `pytest_collect_file`; `test/` has about 8,900 entries,
+so a related set of hundreds of files is millions of offers per xdist worker, which on
+Windows also fall back to `samefile` on each path mismatch, and the gate spent 18 to 40
+minutes collecting before its first test. The plugin answers the ignore hook first,
+with "ignore", for every path pytest asks about. pytest asks about no initial path and
+no directory above one (`Dir.collect` and `Package.collect` check `Session.isinitpath`
+first), so everything it is asked about is a sibling no argument names, and the
+collected node IDs, their order and the conftests loaded along each argument's path are
+the ones the plain walk produces. Explicit arguments still bypass every ignore rule,
+which is why `run_scoped_tests.py` keeps subtracting the platform collect-ignore list
+itself. The plugin refuses a directory argument as a usage error, since it would collect
+nothing under it. `test/test_explicit_file_targets.py` pins the runner's own argv
+against a file-offer counter and the node-ID parity with and without the plugin.
 
 The whole suite with the configured defaults is a human's run, not a gate:
 
@@ -4248,8 +4296,8 @@ monkeypatch.setattr(os, "scandir", counting)
 
 **A reload or a `sys.modules` eviction leaves the parent package pointing somewhere
 else.** A string target (`monkeypatch.setattr("kiro_crew.agent_state.config_dir", ...)`)
-is resolved through the PARENT PACKAGE's attribute, not through `sys.modules`. Two shapes
-break it, both reproduced:
+is resolved through the PARENT PACKAGE's attribute, not through `sys.modules`. Three shapes
+break it, all reproduced:
 
 - If the attribute is gone while `sys.modules` still holds the module, every later string
   patch on it raises `AttributeError` at setup. One Windows xdist worker reported 2,167
@@ -4259,6 +4307,20 @@ break it, both reproduced:
   leaving the block drops the `sys.modules` entry but keeps the parent attribute. The next
   string patch then lands on that stale object while the next real import builds a fresh
   one, so the patch silently misses.
+
+- Leaving `mock.patch.dict(sys.modules, ...)` empties the table before it refills it
+  (`clear()`, then `update(original)`). A thread that runs `import kiro_crew.mod` in that
+  instant finds no `kiro_crew` entry and starts loading the package again; when it
+  registers the new package after the refill, `sys.modules["kiro_crew"]` is an object with
+  none of the submodule attributes, while `sys.modules["kiro_crew.mod"]` is still the old
+  module. Every later string patch on that worker then raises `AttributeError` at setup,
+  which is the first shape above. Reproduced in a loop on Linux (a thread importing while
+  the main thread enters and leaves the block). So never use `patch.dict` on
+  `sys.modules`: fake entries with `patched_sys_modules({...})` from
+  `kiro_crew.testing.module_table`, which restores key by key, or with
+  `monkeypatch.setitem(sys.modules, name, mod)`. The semgrep rule
+  `kirocrew.test-sys-modules-patch-dict` refuses the `patch.dict` spelling and
+  `sys.modules.clear()` on a new line.
 
 `importlib.reload` is the same trap one step over. It rebinds the module's globals to new
 objects, but every `from kiro_crew.learn import Lesson` taken earlier keeps the old class,

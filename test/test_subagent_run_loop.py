@@ -292,11 +292,10 @@ class TestSubagentPostToolUseHook:
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("close_subagent_managers")
-    @pytest.mark.parametrize(("exit_code", "warned"), [(3, True), (0, False)])
-    async def test_a_failed_post_tool_use_hook_logs_one_warning(
-        self, caplog, exit_code: int, warned: bool
+    async def test_a_failed_post_tool_use_hook_is_not_warned_again_by_the_loop(
+        self, caplog
     ) -> None:
-        """A hook that exits non-zero with an empty stderr still names itself in a WARNING."""
+        """``fire`` logs a failed hook's one WARNING; the subagent loop adds none."""
         from kiro_crew.hooks import ScriptHookResult
         from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_RESULT, LLMEvent
         from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -317,7 +316,7 @@ class TestSubagentPostToolUseHook:
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
         manager.hook_store = MagicMock()
         result = ScriptHookResult(
-            hook_id="h1", hook_name="h", event="PostToolUse", exit_code=exit_code, stderr=""
+            hook_id="h1", hook_name="h", event="PostToolUse", exit_code=3, stderr=""
         )
 
         async def _fire(event, *_a, **_kw):  # type: ignore[no-untyped-def]
@@ -336,11 +335,9 @@ class TestSubagentPostToolUseHook:
         ):
             await manager._run_inner(info, "subagent:t05")
 
-        hook_warnings = [
-            r.getMessage() for r in caplog.records if r.getMessage().startswith("Hook ")
-        ]
-        expected = ["Hook h (PostToolUse) failed: exited with code 3"] if warned else []
-        assert hook_warnings == expected
+        fired = [c.args[0] for c in manager.hook_store.fire.call_args_list]
+        assert "PostToolUse" in fired
+        assert [r.getMessage() for r in caplog.records if r.getMessage().startswith("Hook ")] == []
 
 
 class TestSubagentParallelToolAttribution:

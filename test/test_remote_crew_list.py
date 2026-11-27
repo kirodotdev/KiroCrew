@@ -229,12 +229,12 @@ def test_a_disconnected_crew_is_listed_but_never_probed():
     assert crews.paths == []
 
 
-def test_a_version_mismatch_skips_the_headroom_read():
+def test_a_version_mismatch_is_flagged_but_the_crew_is_still_read():
     crews = Crews()
     crews.add("c", version="0.0.1")
     row = _list(crews)["c"]
-    assert row["version_match"] is False and row["headroom"] is None
-    assert ("c", "api/chat/headroom") not in crews.paths
+    assert row["version_match"] is False and row["headroom"] is not None
+    assert ("c", "api/chat/headroom") in crews.paths
 
 
 def test_a_hostile_headroom_is_retyped():

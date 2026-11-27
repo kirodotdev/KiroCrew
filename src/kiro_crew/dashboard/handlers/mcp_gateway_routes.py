@@ -32,7 +32,12 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import managed_server_is_session_bound, probe_metadata
 from kiro_crew.mcp_gateway import hazards, is_gateway_supported, launch_resolve
 from kiro_crew.mcp_gateway.hashing import hash_command
-from kiro_crew.mcp_gateway.launch_approval import refused_servers, refused_shares
+from kiro_crew.mcp_gateway.launch_approval import (
+    load_approvals,
+    refused_servers,
+    refused_shares,
+    target_stem,
+)
 from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, Strength, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
@@ -512,6 +517,14 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     return rows
 
 
+def _folder_declarations():
+    """The same source fleet the rewriter reads, without retaining env values."""
+    from kiro_crew.config.paths import mate_agents_dir
+    from kiro_crew.mcp_gateway.folder_use import read_declarations
+
+    return read_declarations(kiro_agents_dir_path(), mate_agents_dir())
+
+
 def _env_pooling_outcome(
     row: dict[str, Any], forward_declared_env: bool, identity_keys: Collection[str]
 ) -> tuple[bool, bool]:
@@ -641,9 +654,8 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     Whether a stubbed server SHARES its backend is not per-row: that is the one
     global switch (``mcp_gateway.enabled``), reported by the status endpoint.
     """
-    from kiro_crew.config.integration_sections import effective_cwd_answer
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
-    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+    from kiro_crew.mcp_gateway import folder_use
     from kiro_crew.mcp_gateway.rewriter import (
         UNPOOLABLE_SERVERS,
         pool_identity_env_keys,
@@ -665,6 +677,15 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     # payload disagree about the same file.
     observed, preflights = await asyncio.to_thread(_load_shareability_state)
     probe_current, probeable = await asyncio.to_thread(_probe_view)
+    trusted_stems = (await asyncio.to_thread(load_approvals)).trusted
+    folder_free = await asyncio.to_thread(folder_use.edition_folder_free)
+    declarations = await asyncio.to_thread(_folder_declarations)
+    answers = getattr(gw_cfg, "cwd_use", None) or {}
+    bindings = getattr(gw_cfg, "cwd_use_launch", None) or {}
+    observed_roots = frozenset(n for n in observed if folder_use.asks_for_roots(observed, n))
+    roots_excluded = declarations.per_chat(
+        rows.keys(), observed_roots, folder_free, answers, bindings
+    )
 
     result: list[dict[str, Any]] = []
     for name in sorted(rows):
@@ -676,7 +697,9 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
         # operator's choice. The UI needs both — one disables the control, the
         # other sets it — and collapsing them would make an unstubbable server
         # look like one the operator declined.
-        can_stub = is_stdio and not denylisted
+        asked_roots = name in roots_excluded
+        answer = folder_use.effective_answer(name, answers, bindings, declarations.launch(name))
+        can_stub = is_stdio and not denylisted and not asked_roots
         # ``stub_servers`` is the only thing that produces a stub, so it is the
         # only thing this row may report. ``entry_poolable`` is still returned
         # below as information — a spec-level ``poolable: true`` does not opt a
@@ -736,20 +759,23 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 # on page-wide never re-enables it (it only enables servers
                 # nobody chose for).
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
-                # The operator's answer to "share this server across chats?"
-                # (null when unanswered), and whether it is never asked.
-                # A ``not_used`` answer given for a different launch than the one
-                # this name declares now reads as unanswered, so the page asks.
-                "cwd_use": effective_cwd_answer(
-                    (getattr(gw_cfg, "cwd_use", None) or {}).get(name),
-                    (getattr(gw_cfg, "cwd_use_launch", None) or {}).get(name),
-                    declared_launch(row),
-                ),
-                "cwd_proven": name in KIROCREW_BIN_MCP_SERVERS,
+                # A mixed roots observation keeps the question and approval path.
+                "cwd_use": answer,
+                "cwd_proven": folder_use.folder_free_source(
+                    name,
+                    folder_free,
+                    answer,
+                    asked_roots=folder_use.roots_observed(name, observed_roots),
+                )
+                is not None,
+                "cwd_roots": asked_roots,
                 "entry_poolable": row["entry_poolable"],
                 "pooling_blocked_by_env": pooling_blocked,
                 "pooling_blocked_by_env_when_shared": nothing_shared,
                 "private_backend": env_private,
+                # "Always trust changes to this server", set only by the
+                # dashboard's approve press and cleared when sharing stops.
+                "trust_changes": target_stem(name) in trusted_stems,
                 "agents": sorted(row["agents"]),
                 "transport": row["transport"],
                 "denylisted": denylisted,

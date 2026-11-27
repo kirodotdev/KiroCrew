@@ -277,8 +277,13 @@ export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
     : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
 }
 
-export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onActKeep, onSend, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
+export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onActKeep, onSend, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, onOpenLink, dashboardSlug = '', relayWheel = false }: {
   target: DashboardTarget
+  /** Claim a link the page asked for, after the link bridge's frame, URL and click
+   *  checks and before its in-app and new-tab opens: answer true for a link the
+   *  host handled. The Bots page claims artifact and workspace-file links for its
+   *  side panel. Absent: nothing is claimed. */
+  onOpenLink?: (url: string) => boolean
   /** Report the frame's horizontal wheel runs to the host (see `relayWheel` in
    *  lib/widgetSrcdoc). Only a host that listens may ask: the relay cancels the
    *  browser's back swipe over the frame. The Mates side panel does. */
@@ -333,8 +338,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const onActKeepRef = useRef(onActKeep)
   onActKeepRef.current = onActKeep
   // A link the page asks for: the agent-page link bridge, from this frame only. A
-  // click it cannot tie to the frame gets the host's "Open <host>" button.
-  const linkChip = useFrameLinkBridge([frameRef])
+  // click it cannot tie to the frame gets the host's "Open <host>" button. The
+  // host's `onOpenLink` may claim an accepted link before the bridge opens it.
+  const linkChip = useFrameLinkBridge([frameRef], undefined, undefined, undefined, undefined, undefined, onOpenLink)
   const onSendRef = useRef(onSend)
   onSendRef.current = onSend
   const [sendFailed, setSendFailed] = useState(false)

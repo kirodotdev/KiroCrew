@@ -364,7 +364,7 @@ def _emit_kiro_startup_metric(
     cold from warm on ``spawned``, so it is emitted unconditionally true.
 
     ``channel`` records WHICH conversation source paid the cost and
-    ``resumed`` which construction path ran (``session/load`` vs
+    ``resumed`` which construction path ran (a restore vs
     ``session/new``) — without them a duration cannot be attributed to a
     surface or a path, which is the whole diagnostic question for TTFT.
     """

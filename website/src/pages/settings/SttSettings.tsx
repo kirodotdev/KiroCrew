@@ -1326,7 +1326,7 @@ export default function SttSettings({ cardIndex }: {
           <button
             type="button"
             onClick={grantMicAccess}
-            className="-mt-1 mb-1 text-[12px] text-accent hover:underline cursor-pointer bg-transparent border-none p-0 self-start"
+            className="-mt-1 mb-1 text-[12px] text-accent hover:underline cursor-pointer bg-transparent border-none p-0 self-start focus-visible:rounded-md"
           >
             {i18nT('pages.settings.sttSettings.allow_microphone_access_to_show_device_names')}
           </button>
@@ -1803,7 +1803,8 @@ export default function SttSettings({ cardIndex }: {
                     <p className="text-[12px] text-muted">
                       {i18nT('pages.settings.sttSettings.decoder_fetch_prompt')}
                     </p>
-                    <Btn onClick={() => decoderMut.mutate()} disabled={decoderMut.isPending}>
+                    {/* Filled, with the strong edge: the plain edge vanishes on the tint. */}
+                    <Btn className="border-border-strong bg-bg-elevated" onClick={() => decoderMut.mutate()} disabled={decoderMut.isPending}>
                       <Download className="lucide-inline" /> {i18nT('pages.settings.sttSettings.download_decoder')}
                     </Btn>
                   </div>
@@ -1870,7 +1871,7 @@ export default function SttSettings({ cardIndex }: {
                       variant="inline"
                       askAgent={false}
                     />
-                    <Btn onClick={askAgentToFixDecoder}>
+                    <Btn className="border-border-strong bg-bg-elevated" onClick={askAgentToFixDecoder}>
                       <Sparkles className="lucide-inline" /> {i18nT('pages.settings.sttSettings.let_the_agent_fix_it')}
                     </Btn>
                   </div>

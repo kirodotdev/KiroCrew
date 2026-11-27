@@ -37,7 +37,7 @@ import { crewModeEnabled } from '../../lib/crewMode'
 import { isStandaloneDisplay } from '../../lib/standaloneLastRoute'
 import { isTouchFirst } from '../../lib/touchLayoutForm'
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
-import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW_CLIENT, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 import { isMac } from '../../utils/platform'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
@@ -134,7 +134,9 @@ export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.wake-bots-to-update-out-of-date-fields',
   'developer.agent-harness-for-worker-chats',
   'developer.visual-refresh',
+  'developer.worker-status-under-the-reply',
   'developer.session-environments',
+  'developer.kiro-managed-environments',
 ])
 
 /** With `dashboard.tips_enabled` off the rail can drop Discovery, and `sub=discovery`
@@ -157,6 +159,8 @@ export const SLACK_TOOLS_SWITCH_KEY = 'slack.slack_mcp'
 export const ENABLE_REMOTE_CREWS_SETTING_ID = 'instances.enable-remote-crew-management'
 /** Settings > Remote Crew's Remote Control card (manual entry in settingsManual.ts). */
 const REMOTE_CONTROL_SETTING_ID = 'instances.remote-control'
+/** Feature Previews > Kiro Managed Environments, drawn only where its sign-in values are set. */
+const MANAGED_ENV_PREVIEW_SETTING_ID = 'developer.kiro-managed-environments'
 export const AUTO_CONNECT_CREWS_SETTING_ID = 'instances.auto-connect-crews'
 
 /** Registry id of "Reopen where I left off", which DisplayPanel draws only in the installed app. */
@@ -208,6 +212,13 @@ export interface SettingsSearchGovernance {
    * entry is offered only once the read SUCCEEDED and said `true`.
    */
   channelsOn?: boolean
+  /**
+   * Whether Feature Previews draws the Kiro Managed Environments switch: the gateway's
+   * `managed_env_available` on the `['kirocrewConfig']` read (the cached answer counts).
+   * The row is also drawn while the stored `crew_client` switch is on, which
+   * `settingEntryOffered` reads itself, so the entry is offered in either case.
+   */
+  managedEnvAvailable?: boolean
   /**
    * Whether Settings > Slack draws the Slack tools switch, from the `['slack-config']`
    * read that page itself renders from: the server says Connections offers the Slack
@@ -277,6 +288,11 @@ export function settingEntryOffered(
   if (entry.id === AUTO_CONNECT_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== false
   if (entry.configKey === CHANNELS_SWITCH_KEY) return governance.channelsOn === true
   if (entry.id === REMOTE_CONTROL_SETTING_ID) return governance.remoteControlShown === true
+  // Feature Previews draws Kiro Managed Environments where its sign-in values are set
+  // or the stored switch is on (so it can be turned off); the LTS check above still wins.
+  if (entry.id === MANAGED_ENV_PREVIEW_SETTING_ID) {
+    return governance.managedEnvAvailable === true || readPreviewFlag(PREVIEW_CREW_CLIENT)
+  }
   if (entry.id === TERMINAL_CTRL_COPY_PASTE_SETTING_ID) return !isMac
   if (entry.id === SHOW_CURSOR_MOTION_SETTING_ID) return governance.cursorMotionShown !== false
   if (entry.configKey === SLACK_TOOLS_SWITCH_KEY) return governance.slackToolsShown !== false

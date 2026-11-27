@@ -285,6 +285,8 @@ class RunEventCoordinator(ManagerComponent):
     _sharing_plan_impl = _run_start._sharing_plan_impl
     _aws_profile_split_possible = _run_start._aws_profile_split_possible
     _aws_profile_rules_out_sharing = _run_start._aws_profile_rules_out_sharing
+    _kas_shared_slot_taken = _run_start._kas_shared_slot_taken
+    _kas_shared_places_left = _run_start._kas_shared_places_left
     _resolve_child_aws_profile = _run_start._resolve_child_aws_profile
     _ensure_dedicated_start_priced_impl = _run_start._ensure_dedicated_start_priced_impl
     _gate_exit_reset_impl = _run_start._gate_exit_reset_impl
@@ -583,7 +585,8 @@ class RunEventCoordinator(ManagerComponent):
         *wait* is the gate's label for WHY the rows wait (a ``QUEUED_REASON_*``
         ``reason``, plus ``available_gb`` / ``required_gb`` for the memory
         kinds, or ``cause`` in place of ``available_gb`` when the cgroup usage
-        is unreadable; ``memory_pressure`` carries no figures). It is recorded per parent with the request and rides on every
+        is unreadable or the host read did not answer; ``memory_pressure``
+        carries no figures). It is recorded per parent with the request and rides on every
         later non-zero frame for that parent until a depth-0 read that no
         request overlapped forgets it; an overlapped 0 read is published bare
         and keeps the label, since the overlapping request may have written it.

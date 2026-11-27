@@ -23,7 +23,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
-from kiro_crew.context import RECALL_ROLES
+from kiro_crew.context_assembly.replay import RECALL_ROLES
 from kiro_crew.history import ConversationLog, TranscriptBusy, TranscriptWithheld
 from kiro_crew.history_search import search_coverage_note, split_title_scope
 from kiro_crew.mcp_tools.catalog.sessions import (  # noqa: F401

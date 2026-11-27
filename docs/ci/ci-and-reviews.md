@@ -376,6 +376,22 @@ Three structural facts explain most of the rest:
   reach lines a passing one does not; a failure, a timeout or an id that no
   longer exists adds nothing, and a file only they reach then reads as low as
   before. A run off the fleet has no budget for the pass and skips it.
+- **A shard can retry its few failed tests once, and records each flaky pass.**
+  `scripts/ci_shard_retry.py` is a pytest plugin (`-p scripts.ci_shard_retry`)
+  that no workflow loads yet. It does nothing unless `CI_SHARD_RETRY=1` and
+  `CI_SHARD_RETRY_EVENT=pull_request`, so main keeps every flaky red. When 1 to 5
+  tests failed in setup, call or teardown, one fresh serial pytest pass with the
+  session's own arguments runs only those tests; the job turns green only if all
+  of them pass. More than 5 failures, a crashed worker, a collection error, a
+  session stopped by `-x` / `--maxfail`, or a failure a plugin counted beside the
+  tests (a `--cov-fail-under` miss) retries nothing. Report-writing options
+  (`--junitxml`, `--report-log`, `--cov*`, `--json-report*`) are dropped from the
+  retry so the first session's reports stay whole. Each test that passed only on
+  retry is one JSON line (`nodeid`, `first_failure`, `shard`, `head_sha`) in
+  `CI_SHARD_RETRY_RECORD`, default `ci-shard-retry.jsonl` under `$RUNNER_TEMP`;
+  `CI_SHARD_RETRY_SHARD` and `CI_SHARD_RETRY_HEAD_SHA` fill the last two.
+  `python scripts/ci_shard_retry.py summary` writes one job summary line per
+  flaky test. `test/test_ci_shard_retry.py` pins each case.
 - **Do not merge a feature PR past a non-green `PR Readiness`.** The ruleset's
   bypass actors can, and a `pending` readiness is not a judgement about a red
   lane: it skips lanes that have not reported yet. #11947 merged 14 s after its
@@ -667,8 +683,16 @@ both with `read` permissions only; it opens no issue and posts no comment.
   `scripts/ci_red_cause_census.py --last-days 1`, which gives every red job of
   yesterday (UTC) one cause, writes the day's summary and the script's call
   counts to the job summary, and uploads `red-jobs.csv`, `ci-pushes.csv`,
-  `summary.md`, `summary.json` and the printed output as the artifact
-  `ci-red-census-day`, kept 90 days.
+  `workflows.csv`, `summary.md`, `summary.json` and the printed output as the
+  artifact `ci-red-census-day`, kept 90 days. It lists `CI`'s runs, then the
+  runs of every other workflow, and then reads the check suites of `CI`'s
+  runs to their end before the workers start on any other workflow's suites,
+  in the same calls, so a night the
+  budget cuts short after that still has every `CI` row: the first and third
+  numbers are counted from those alone. A stop while the other workflows' runs
+  are still being listed leaves every check suite unread, `CI`'s included. A
+  partial summary says whether `CI` was read in full and how many workflows
+  were; `workflows.csv` names each one with `yes` or `no`.
 - **`week`, on Sunday after that night's read**: runs
   `scripts/ci_red_census_week.py`, which takes the day its own run has just
   read with `actions/download-artifact` and the six days before it from the
@@ -783,8 +807,28 @@ Turning selection off on them is safe.
   `scripts/ci_test_selection_ledger_night.py`: restore the ledger, read at most
   700 REST requests' worth of the last two days' pull-request runs with
   `scripts/ci_test_selection_ledger.py`, report on the whole ledger, and upload
-  `ledger.jsonl`, `rates.json` and `summary.md` as the artifact
+  `ledger.jsonl`, `notes.jsonl`, `rates.json` and `summary.md` as the artifact
   `test-selection-ledger`, kept 90 days. The summary goes to the job summary.
+- **A failure is not counted against the diff for one of five reasons.** Its
+  shard went green on a rerun (`rerun_green`); the watcher's main-red issue was
+  open and named its file when the row was recorded (`main_red`); the file
+  failed on another branch within three days (`shared`); another branch failed
+  the file and passed it on a rerun within 14 days (`flake`); or a main-red
+  issue the watcher wrote named the file while the run was created, open or
+  closed since (`from_main`). The last two are decided at report time by
+  `scripts/ci_test_selection_ledger_causes.py`, from the ledger and from
+  `notes.jsonl`, where each pass writes the spans of the main-red issues it
+  listed in its one issues request. A rerun on the failure's own branch is no
+  flake, and notes that do not read as notes label nothing. A Windows miss
+  that stays counted, was never rerun and is its file's only failure in 14
+  days carries the note `one_off` in the Windows miss table: it changes no
+  count, and a person reads those rows.
+- **The Windows auto-off line says whether the pass settled.** A pass reads the
+  newest runs first and stops at its budget, so what clears a failure may sit
+  in a run it has not reached. A pass that left a listed run unread is not
+  `settled`: its line holds the answer of the newest settled pass of the last
+  36 hours (`held_from`), and with none that recent it is judged on the rows
+  as they stand. `test/test_ci_test_selection_ledger_causes.py` pins both.
 - **A pass keeps out of a low pool.** It reads nothing unless the hour's pool
   holds 7,500 requests beyond what it may spend. Under that it uploads nothing
   and ends green with a notice; it never waits for a reset, and a later pass
@@ -2648,6 +2692,9 @@ Details worth knowing:
     run carries the triggering run's head, so the kick's step runs with
     `continue-on-error` and never reds an unrelated pull request's checks; its
     verdict is in the step log and summary, and the scheduled ticks stay loud.
+    A kicked tick that exits 1 therefore shows a green job, so it says so itself:
+    one `::error::` line and a "Kicked tick failed" section of the step summary
+    name the failed outcomes and state that the green is by design.
     It lists the queued and in-progress runs
     REPO-WIDE — one paginated `GET /repos/{repo}/actions/runs?status=…` per
     status returns runs of every workflow at once — and keeps only those whose
@@ -3763,7 +3810,7 @@ ref; see app-kit-platform.md § Former built-in adoption). The same step holds a
 that adds or changes a pin row to a `Wheel-copy base: <name>@<sha>` line per changed
 row, naming the core commit the pinned app-repo commit was ported from, and fails it
 while that app's non-test wheel copy at the base tip differs from the one at the
-base. The base tip is the one at the PR's last event: nothing re-runs the check when
+base; a row whose app ships no wheel copy at the base tip needs no line. The base tip is the one at the PR's last event: nothing re-runs the check when
 main moves, so whoever approves a pin PR edits its body (or pushes) right before
 approving, which re-runs it against the current tip. Last, a
   `fix`/`revert` PR is checked for a `## Sibling sweep` section listing the other
@@ -5393,6 +5440,33 @@ Two subtleties:
   as many recomputes as fit above a reserve of `RATE_RESERVE_PERCENT` of the pool's limit
   at `DISPATCH_COST` each; the rest wait for the next tick, oldest first. A stale-green
   rescue is never deferred by the reserve. `test_pr_readiness_sweep_debounce.py` pins both.
+
+  The sweep's own first pass stays off that budget too. Two of its decisions need a
+  fact per pull request that is not a check-run: which kind of pending a status is (its
+  description), and whether a disposition record changed after a terminal verdict (the
+  issue comments). The scan carries both on the query it already makes:
+  `StatusContext.description`, and the pull request's most recently updated issue
+  comment (`comments(first: 1, orderBy: {field: UPDATED_AT, direction: DESC})`). The
+  sweep classifies a pending from the row's description, and makes the REST comment read
+  only when the newest issue comment is newer than the verdict. A disposition record is
+  an issue comment and an edit moves its `updatedAt` as creation does, so a record
+  created or edited after the verdict always opens that gate; a label, a review or a
+  push, which also move the pull request's `updatedAt`, do not. The scan is read
+  minutes before the loop that uses it, so a record posted after the scan read that
+  pull request is seen on the next tick, in either direction: a green that such a
+  record contradicts can stand one tick longer. The REST read has the same race for a
+  record posted just after it, and what bounds both is the disposition rule's harm
+  model: a violating record acts only on a later review round, which takes a push, and a
+  push recomputes readiness.
+  Only an answer skips a
+  read: a row whose description key is absent, whose `comments_read` is not true, or
+  whose comment time does not parse gets the REST read. A page the query cannot get with
+  the two fields is asked once without them (`PR_PAGE_QUERY_PLAIN`), and the rest of
+  that sweep then scans without them and reads over REST. The job counts its `gh` calls
+  and ends with a `rest-calls:` line, like `pr-readiness.yml`.
+  `test_pr_readiness_sweep_scan_reads.py` runs the sweep with and without the scan's
+  answers over the same states and pins that the dispatches are identical and that a
+  record newer than the verdict is always read.
 
   One pending is re-fired without check evidence: a re-check hold (`readiness check(s)
   changed since evaluation; re-checking <lane>`) on a head whose check-runs the scan

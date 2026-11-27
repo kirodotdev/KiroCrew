@@ -100,6 +100,7 @@ POST /api/guide/observe api_guide_observe
 POST /api/member/self/update api_member_self_update
 POST /api/member/self/propose api_member_self_propose
 POST /api/members/{slug}/self-changes/{change_id}/undo api_member_self_undo
+POST /api/member/self/memory/list api_member_self_memory_list
 POST /api/member/self/capabilities api_member_self_capabilities
 GET /api/members/{slug}/goals api_member_goals_get
 DELETE /api/members/{slug}/goals/key-results/{kr_id} api_member_goals_key_result_delete

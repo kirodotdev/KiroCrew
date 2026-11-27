@@ -62,8 +62,11 @@ import { injectOpensTurn } from '../RecoveryCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { clearDictated, isDictated, markDictated, noteComposerEdit, takeDictated, wantsDictationNote, withDictationNote } from '../../../chat-core/composer/dictationProvenance'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement, type AnnouncementTail } from '../../../hooks/useTranscriptAnnouncement'
+import { useUserRowSpeaker } from '../shared-crew/MessageByline'
+import { TranscriptLiveRegion } from '../TranscriptLiveRegion'
 
-interface PeerApproval { origin?: string; request_id?: string; request_mid?: string }
+interface PeerApproval { origin?: string; request_id?: string; request_mid?: string; request_instance?: string; tool?: string; tool_purpose?: string }
 interface PeerSlot extends PeerModelFields, PeerAgentModeFields {
   key?: string; title?: string; running?: boolean; interrupted?: boolean; agent?: string; pending_approval_info?: PeerApproval | null
   // The peer's own turn state, drawn by the composer as it draws a local one.
@@ -79,6 +82,9 @@ const CAPS_RETRY_MS = 5000
 /** How far above the bottom a reader can be and still count as at the bottom. */
 const FOLLOW_BOTTOM_SLACK_PX = 48
 const NO_MESSAGES: ChatMessage[] = []
+/** The tail a loaded empty transcript gives the announcement hook, so an
+ *  approval that lands with a session's first row is still spoken. */
+const LOADED_EMPTY_TAIL: AnnouncementTail = { ts: 'crew-window:loaded-empty' }
 const NO_INSTANCES: never[] = []
 
 /** The proxy's codes for a request that never reached the crew's chat:
@@ -307,6 +313,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     else setDraft('')
     setRewindTs(null)
     action.mutate({ ...req, message, rewindTs, typed, quote, bare, dictated })
+    speakSent(message)
   }
   // Dictation runs on THIS machine (mic + STT); only the text goes to the
   // peer, through the same send as a typed message. An auto-submit (endpoint
@@ -348,6 +355,46 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     const mid = typeof m.meta?.mid === 'string' ? m.meta.mid : ''
     return { ...m, meta: { ...m.meta, approval_id: JSON.stringify([aid, mid]) } }
   }), [detailQ.data?.messages])
+  // Text for the window's one live region, the same decision the local chat
+  // makes: a reply is spoken once when it settles, an approval once when it
+  // is raised, and the user's own message when it is sent. The turn state is
+  // the detail's own, read with these rows: the slot frame that ends a turn
+  // lands before the re-read that carries its reply, and the previous row
+  // would be spoken as the reply in between.
+  const tail = messages[messages.length - 1]
+  // A coordinator approval (a sub-agent's) writes no transcript row, so it
+  // joins the rows' approvals from the slot record, keyed on that record
+  // because its id can recur. The transcript is loaded once the rows and that
+  // record have both answered, so what the window opens on, an approval
+  // already pending included, is recorded without speaking.
+  const transcriptLoaded = !slotQ.isPending && detailQ.data !== undefined
+  const coordinatorId = approval?.origin === 'coordinator' && approval.request_id ? `coordinator:${approval.request_id}:${approval.request_instance ?? ''}` : ''
+  const coordinatorLabel = approval?.tool_purpose || approval?.tool || ''
+  const windowApprovals = useMemo(() => {
+    const rows = pendingApprovalsOf(messages)
+    return coordinatorId ? [...rows, { id: coordinatorId, label: coordinatorLabel }] : rows
+  }, [messages, coordinatorId, coordinatorLabel])
+  const tailUserSpeaker = useUserRowSpeaker(tail?.meta ?? undefined, undefined, tail?.content)
+  const { announcement, announceSent } = useTranscriptAnnouncement(
+    transcriptLoaded ? (announcementTail(messages) ?? LOADED_EMPTY_TAIL) : undefined, tail?.role === 'streaming' || (detailQ.data?.running ?? running), undefined, draftVoiceKey, windowApprovals, messages.length, tailUserSpeaker, transcriptLoaded,
+  )
+  // Before both first reads answer the hook holds no rows, so a send then
+  // would take the reply on screen for a new one: it is spoken once they have.
+  const readsOut = slotQ.isPending || detailQ.isPending
+  const readsOutRef = useRef(readsOut)
+  readsOutRef.current = readsOut
+  const heldSentRef = useRef<string | null>(null)
+  const speakSent = useCallback((message: string) => {
+    if (readsOutRef.current) heldSentRef.current = message
+    else announceSent(message)
+  }, [announceSent])
+  useEffect(() => {
+    const held = heldSentRef.current
+    if (readsOut || held === null) return
+    heldSentRef.current = null
+    announceSent(held)
+  }, [readsOut, announceSent])
+  useEffect(() => () => { heldSentRef.current = null }, [draftVoiceKey])
   // A sign-in error keeps Resume; the composer's hint names the sign-in first.
   // Memoised: the window re-renders per keystroke.
   const resumeAfterSignIn = useMemo(() => authRequiredIsNewest(messages), [messages])
@@ -477,11 +524,12 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       setRewindTs(null)
       setRewindText('')
       mutate({ path: slotPath + '/rewind', body: { ts, content: message }, message, rewindTs: ts })
+      speakSent(message)
       return true
     },
     regenerateRow,
     onRegenerate: () => mutate({ path: slotPath + '/regenerate' }),
-  }), [instanceId, key, name, running, actionPending, connected, slotPath, mutate, regenerateRow, recoverIntoDraft])
+  }), [instanceId, key, name, running, actionPending, connected, slotPath, mutate, regenerateRow, recoverIntoDraft, speakSent])
   const picker = useCrewWindowModelPicker({
     instanceId, slotKey: crewWindowSlot(instanceId, key), slotPath, slot: slotQ.data, caps: capsQ.data, enabled: versionOk, onWritten: settle,
   })
@@ -542,7 +590,11 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         </div>
       )}
       <div className="relative flex-1 min-h-0">
-      <div ref={scrollerRef} onScroll={noteScroll} className="absolute inset-0 overflow-y-auto pt-3" aria-live="polite" style={{ paddingBottom: dockInset, scrollPaddingBottom: dockInset }}>
+      {/* The transcript's only live region, outside the scroller: a live
+          scroller re-reads a reply on every flush that re-renders it, and the
+          offscreen speaker headings with it. */}
+      <TranscriptLiveRegion announcement={announcement} />
+      <div ref={scrollerRef} onScroll={noteScroll} className="absolute inset-0 overflow-y-auto pt-3" style={{ paddingBottom: dockInset, scrollPaddingBottom: dockInset }}>
       <div ref={contentRef} className="flex flex-col gap-1">
         <div className="px-4 flex flex-col gap-3">
           {/* No hand-off: the composer below may hold an unsent draft. */}

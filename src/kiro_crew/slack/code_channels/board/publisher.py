@@ -31,7 +31,9 @@ reports costs one ``chat.update``.
   once per waiting spell of the item (it ends when the item stops waiting), so
   a worker that repeats its report does not page again, and once per pending
   approval; never sooner than :data:`PAGE_GAP_SECS` after that item's last page
-  (a page held back is sent by the next pass once the gap is over).
+  (a page held back is sent by the next pass once the gap is over). A row that
+  waits only because the conductor asked the person about it (``waiting_on``
+  ``ask``) is not paged: the conductor's own reply carried the question.
 
 Every write first checks the ``channels`` policy and the archive / Stop fences the
 rest of the surface honours; nothing here raises into a turn.
@@ -796,7 +798,7 @@ async def _alert(
     anchor) the reply goes into that thread, in its brief wording.
     """
     key = room or channel
-    waiting = [row for row in snapshot.rows if row.needs_owner]
+    waiting = [row for row in snapshot.rows if row.pages_owner]
     record = await get_async(key)
     unsaved = _unsaved_alerts.get(key)
     if unsaved is not None:

@@ -26,6 +26,7 @@ from slack_events_coverage_helpers import _capture_respond, _drain, _event, _mak
 from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.config.loader import ACTIVATION_OBSERVE, KiroCrewConfig
 from kiro_crew.slack import events as ev
+from kiro_crew.slack import stream_window
 
 
 @pytest.fixture(name="_real_sel")
@@ -139,6 +140,47 @@ class TestRouteMessageStopCommand:
                 await ev._route_message(orch, _event(text="!restart"), ev.SeenCache())
         assert captured == ["U_OWNER"]
         orch.slack.post_message.assert_awaited_with("D1", "♻️ Restarting gateway…", "100.0")
+
+
+class TestRouteMessageNotesTheThread:
+    """A message the route takes in is recorded for the thread it landed in, so a
+    turn running there draws its next step below it (``slack/stream_window.py``)."""
+
+    async def _route(self, seen=None, allowed=True, **event):
+        orch = _make_orch()
+        orch._session_tasks = {"90.0": MagicMock()}
+        orch.sessions.enqueue = MagicMock(return_value=True)
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=allowed):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock):
+                await ev._route_message(orch, _event(**event), seen or ev.SeenCache())
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_a_message_queued_behind_a_running_turn_is_noted(self):
+        opened = stream_window.messages_noted()
+        orch = await self._route(thread_ts="90.0")
+        orch.slack.add_reaction.assert_awaited_once_with("D1", "100.0", "hourglass_flowing_sand")
+        assert stream_window.message_landed_since("D1", "90.0", opened)
+
+    @pytest.mark.asyncio
+    async def test_a_redelivered_message_is_noted_once(self):
+        seen = ev.SeenCache()
+        await self._route(seen, thread_ts="90.0")
+        opened = stream_window.messages_noted()
+        await self._route(seen, thread_ts="90.0")
+        assert not stream_window.message_landed_since("D1", "90.0", opened)
+
+    @pytest.mark.asyncio
+    async def test_a_message_outside_a_thread_is_not_noted(self):
+        opened = stream_window.messages_noted()
+        await self._route()
+        assert stream_window.messages_noted() == opened
+
+    @pytest.mark.asyncio
+    async def test_an_unauthorized_senders_message_is_not_noted(self):
+        opened = stream_window.messages_noted()
+        await self._route(allowed=False, thread_ts="90.0", user="U_STRANGER")
+        assert stream_window.messages_noted() == opened
 
 
 class TestRouteMessageQueueing:

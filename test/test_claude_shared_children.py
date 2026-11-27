@@ -197,7 +197,9 @@ def test_a_childs_frames_on_the_parents_session_go_on_its_card(tmp_path):
     activity = [
         e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY and e.sub_session_id == CHILD
     ]
-    assert [e.tool_call_id for e in activity if e.tool_call_id] == ["toolu_kept"]
+    # The call's update repeats its mark, which every reader takes as a no-op.
+    marked = [e.tool_call_id for e in activity if e.tool_call_id]
+    assert marked[:1] == ["toolu_kept"] and set(marked) == {"toolu_kept"}
     assert "child on parent" in "".join(e.text or "" for e in activity)
     assert not [e for e in events if e.kind == EVENT_TEXT_CHUNK and "child" in (e.text or "")]
 

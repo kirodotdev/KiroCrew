@@ -416,9 +416,10 @@ export function useTranscriptAnnouncement(
   // Approvals. The scroller's old live region read a permission row as it
   // appeared; without it, and with the banner suppressed for the chat on
   // screen, the agent would sit blocked with nothing said. Each request is
-  // spoken once. Requests in a session's first non-empty transcript (first
-  // load, a switch) are recorded silently, as an old reply is: the approvals
-  // ride the same rows as the tail, so that render is the load.
+  // spoken once. Requests in a session's loaded transcript (first load, a
+  // switch) are recorded silently, as an old reply is: the approvals ride the
+  // same rows as the tail, so that render is the load. An empty loaded
+  // transcript arms them too, so a request that comes with its first row is new.
   const seenApprovalsRef = useRef<Set<string>>(new Set())
   const approvalsSessionRef = useRef<string | null | undefined>(undefined)
   const approvalsArmedRef = useRef(false)
@@ -441,7 +442,7 @@ export function useTranscriptAnnouncement(
     const fresh = list.filter(a => !seen.has(a.id))
     for (const a of fresh) seen.add(a.id)
     if (!approvalsArmedRef.current) {
-      if (hasRows) approvalsArmedRef.current = true
+      if (hasRows || loaded) approvalsArmedRef.current = true
       return
     }
     if (!fresh.length) return
@@ -453,6 +454,6 @@ export function useTranscriptAnnouncement(
       operation: fmtList(fresh.map(a => a.label)),
     }), false, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- approvalKey stands in for the list identity
-  }, [approvalKey, sessionKey, hasRows, hold, assistantName])
+  }, [approvalKey, sessionKey, hasRows, loaded, hold, assistantName])
   return { announcement, announceSent }
 }

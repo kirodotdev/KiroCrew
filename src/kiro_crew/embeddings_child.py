@@ -41,6 +41,7 @@ import time
 import weakref
 from typing import IO, Any
 
+from kiro_crew.embeddings_rest import drop_weight_pages, map_weight_pages_soon
 from kiro_crew.embeddings_settings import (
     _CHILD_CALL_BASE_SECS,
     _CHILD_CALL_SECS_PER_TEXT,
@@ -392,6 +393,15 @@ class _ChildState:
         if conn is not None:
             conn.send({"op": "threads", "n": n_threads, "nb": n_threads_batch})
 
+    def send_op(self, op: str) -> bool:
+        """Send a request that has no answer; False when no child is running."""
+        with self.lock:
+            conn = self.conn
+        if conn is None:
+            return False
+        conn.send({"op": op})
+        return True
+
     def _wait_until_idle(self, conn: _Conn, work: "EmbeddingWork | None") -> None:
         """Wait until *conn* has no unanswered request, within the caller's deadline.
 
@@ -521,6 +531,14 @@ class ChildLlama:
     ) -> dict[str, Any]:
         """``create_embedding`` that stops waiting when *work* expires."""
         return self._state.embed(texts, work)
+
+    def rest(self) -> bool:
+        """Have the child give back its weight pages (``embeddings_rest``)."""
+        return self._state.send_op("rest")
+
+    def wake(self) -> None:
+        """Have the child map its weight pages back in."""
+        self._state.send_op("wake")
 
     @property
     def pid(self) -> int | None:
@@ -671,6 +689,14 @@ def _serve(stdin: IO[bytes], out: IO[bytes]) -> int:
             break
         if op == "threads":
             _set_threads(llm, int(msg.get("n", 1)), int(msg.get("nb", 1)))
+            continue
+        if op in ("rest", "wake"):
+            path = (request.get("kwargs") or {}).get("model_path")
+            if path:
+                if op == "rest":
+                    drop_weight_pages(str(path))
+                else:
+                    map_weight_pages_soon(str(path))
             continue
         if op != "embed":
             continue

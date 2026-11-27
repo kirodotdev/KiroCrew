@@ -30,6 +30,7 @@ import { threadsApi, threadsQueryKey } from '../../api/threads'
 import ThreadPanel from './ThreadPanel'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewDashboardTab from './CrewDashboardTab'
+import { useDashboardPanelLinkOpener } from './dashboardPanelLinks'
 import BotSessionsPanelTab from './BotSessionsPanelTab'
 import BotSessionListSwitches from './BotSessionListSwitches'
 import { isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
@@ -583,12 +584,25 @@ export function MembersPageSidePanel({
   const {
     panelDefaultW, activeMemberKey, tabsCtl, projectDir, hiddenViews, threadsOn, openThreadMid,
     closeReplyThread, setShownTabId, dashboardVisitedFor, closeOverlay, sidePanelOnScreen, sidePanelHiddenNow,
-    openFile, openWorkingTreeDiff, saveFile, submitComments, dashboardPreviewLink, leaveDashboardPreview,
+    openFile, openWorkingTreeDiff, saveFile, submitComments, dashboardPreviewLink, leaveDashboardPreview, showActionError,
     requestCloseOverlay, drivingSessions, openPanelSession, setOpenPanelSession, openSessionGuarded, slotsLoaded,
     setPanelSessionFocused, historySearchOpen, historySearchOnScreen, setHistorySearchHost, openHistorySearch, closeHistorySearch,
   } = sidePanel
   const { reduceMotion } = profileFlight
   const { openArtifactInPanel } = navigation
+  // A link on the Dashboard tab to a saved artifact or a file in this Bot's
+  // workspace opens here in the panel, the way the same link in its chat does;
+  // any other link opens outside the app as before (dashboardPanelLinks).
+  const openDashboardFile = useCallback((path: string) => { void openFile(path) }, [openFile])
+  const openDashboardLink = useDashboardPanelLinkOpener({
+    workspaceDir: projectDir,
+    slot: confirmedSlot,
+    botId: activeSlug,
+    botName: crewDisplayName(activeView ?? active),
+    openArtifact: openArtifactInPanel,
+    openFile: openDashboardFile,
+    showRefusal: showActionError,
+  })
   // One Dashboard: the existing crew publication is one task view.
   // Preserve its renderer and exact member identity, while the host
   // owns live task summaries, questions and approval controls.
@@ -648,6 +662,7 @@ export function MembersPageSidePanel({
             if (!schedAtStakeRef.current()) { open(); return }
             void schedGuardRef.current().then((ok) => { if (ok) open() })
           }}
+          onOpenLink={openDashboardLink}
           preview={dashboardPreviewLink}
           onLeavePreview={leaveDashboardPreview}
         />

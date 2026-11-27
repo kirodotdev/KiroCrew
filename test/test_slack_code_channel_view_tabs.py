@@ -497,7 +497,7 @@ def test_each_worker_shows_title_status_pr_and_its_buttons() -> None:
     )
     assert {"type": "text", "text": "pytest -q", "style": {"code": True}} in first
     assert _texts(by_id["worker-it_00000003-text"]) == (
-        "Ship\nWaiting on you: approve git push origin x"
+        "Ship\nNeeds you: approve git push origin x"
     )
     assert _texts(by_id["worker-it_00000004-text"]) == "Icons\nStuck · needs a token"
     assert _texts(by_id["worker-it_00000005-text"]) == "Gone\nLost"

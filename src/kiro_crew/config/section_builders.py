@@ -144,7 +144,7 @@ from kiro_crew.instances.crew_ref import clean_crew_ref
 
 # Runtime-budget policy and coercion live in the monitoring limits leaf module,
 # keeping the section builders free of duplicated bounds.
-from kiro_crew.monitoring.limits import coerce_runtime_ceiling
+from kiro_crew.monitoring.limits import coerce_budget_notice_pct, coerce_runtime_ceiling
 
 # The speech-to-text bounds come from the package that owns them, so a tuning
 # knob cannot be clamped past what the session accepts; its defaults are the
@@ -234,6 +234,7 @@ def _build_monitoring_config(data: dict, prefer_structured_arming: bool) -> Moni
     return MonitoringConfig(
         prefer_structured_arming=prefer_structured_arming,
         max_runtime_secs=coerce_runtime_ceiling(section.get("max_runtime_secs")),
+        budget_notice_pct=coerce_budget_notice_pct(section.get("budget_notice_pct")),
     )
 
 
@@ -956,6 +957,19 @@ def _threshold_pair(section: SectionReader) -> tuple[int, int]:
     return soft, hard
 
 
+def _owner_user_id(raw: object) -> int:
+    """A channel owner's numeric user id, or 0 (no owner) for anything but a positive int.
+
+    Fail closed: a string, a boolean or a group id (negative) names nobody.
+    """
+    return raw if type(raw) is int and raw > 0 else 0
+
+
+def _owner_text(raw: object) -> str:
+    """A channel owner's identity string, or empty (no owner) for a non-string."""
+    return raw.strip() if isinstance(raw, str) else ""
+
+
 def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
     section = SectionReader(TelegramConfig, telegram_data)
     return TelegramConfig(
@@ -963,6 +977,7 @@ def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
         enabled=bool(section.get("enabled")),
         bot_token=str(section.get("bot_token")),
         allowed_user_ids=_coerce_int_ids(section.get("allowed_user_ids")),
+        owner_user_id=_owner_user_id(section.get("owner_user_id")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct, unclamped=_safe_int),
         show_thinking=bool(section.get("show_thinking")),
         allow_forum=bool(section.get("allow_forum")),
@@ -1047,6 +1062,7 @@ def _build_webex_config(webex_data: dict) -> WebexConfig:
             if isinstance(section.get("allowed_emails"), list)
             else section.default("allowed_emails")
         ),
+        owner_email=_owner_text(section.get("owner_email")),
         # Group spaces are a SECURITY decision, so the read is as explicit
         # as the write: a field the loader forgets is not merely lost, it
         # silently reverts to the safe default on the next restart while
@@ -1097,6 +1113,7 @@ def _build_teams_config(teams_data: dict) -> TeamsConfig:
             if isinstance(section.get("allowed_emails"), list)
             else section.default("allowed_emails")
         ),
+        owner_id=_owner_text(section.get("owner_id")),
         soft_threshold_pct=soft,
         hard_threshold_pct=hard,
     )

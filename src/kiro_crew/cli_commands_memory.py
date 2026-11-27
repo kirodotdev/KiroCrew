@@ -254,7 +254,7 @@ def _memory_search_embedding(store: VectorMemoryStore, query: str) -> list[float
         print(_SEARCH_KEYWORD_ONLY_NOT_READY, file=sys.stderr)
         return None
     store.embed_fn = make_sync_embed_fn()
-    return store._try_embed(query)
+    return store._try_embed(query, query=True)
 
 
 def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
@@ -327,6 +327,23 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
         if not target_store:
             raise ValueError("--store names no store; nothing was restored.")
         chosen = getattr(args, "from_backup", None)
+        merge_from = getattr(args, "merge_from", None)
+        # `--merge-from ''` (an unset shell variable) must not fall through to a
+        # whole-store restore from the newest backup.
+        if merge_from == "":
+            raise ValueError("--merge-from names no source; nothing was restored.")
+        if getattr(args, "apply", False) and merge_from is None:
+            raise ValueError("--apply only goes with --merge-from; nothing was restored.")
+        if merge_from is not None:
+            from kiro_crew import member_memory_merge
+
+            source_path = Path(merge_from)
+            report = member_memory_merge.run_cli(
+                target_store, source_path, apply=getattr(args, "apply", False)
+            )
+            for line in member_memory_merge.report_lines(report, source_path):
+                print(_TERMINAL_CTRL_RE.sub("", line))
+            return
         if getattr(args, "cancel_pending", False):
             from kiro_crew.memory_stores import declared_store_names, owned_store_path
 

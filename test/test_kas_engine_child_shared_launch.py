@@ -33,7 +33,7 @@ from kiro_crew.acp import kas_engine_child_grants as grants
 from kiro_crew.acp import kas_subagent_targets as targets
 from kiro_crew.acp._dispatch import build_session_new_params
 from kiro_crew.acp.types import JsonRpcMessage
-from kiro_crew.mcp_provenance import DERIVED_KEY
+from kiro_crew.mcp_provenance import DERIVED_KEY, SOURCE_KEY
 
 agents_dir = pytest.fixture(_agents_dir)
 setting = pytest.fixture(_setting)
@@ -257,6 +257,14 @@ def test_like_is_compared_with_like():
     assert not grants.set_up_alike(forged, _WRITTEN)
 
 
+def test_a_copy_of_a_kiro_global_server_is_set_up_alike():
+    # The rebuild stamps an entry it copied from ~/.kiro/settings/mcp.json; the stamp launches nothing.
+    from kiro_crew.mcp_provenance import COPIED_KEY
+
+    written = {"command": _RESOLVED, "args": _ARGS}
+    assert grants.set_up_alike(written, {**written, COPIED_KEY: True})
+
+
 def test_holding_the_parents_servers_changes_only_what_is_set_up_alike():
     parent = {"mcpServers": {"same": _REBUILT, "apart": _REBUILT, "kept": _REBUILT}}
     child = {
@@ -287,6 +295,7 @@ def test_holding_the_parents_servers_changes_only_what_is_set_up_alike():
         (_WRITTEN, []),
         ({"command": _RESOLVED, "args": _ARGS}, []),
         ({**_WRITTEN, "disabledTools": ["x"], "type": "stdio"}, []),
+        ({**_WRITTEN, SOURCE_KEY: "chorus:own-srv"}, []),
         ({"command": "other-srv", "args": _ARGS}, ["own-srv"]),
         ({**_WRITTEN, "env": {"MODE": "x"}}, ["own-srv"]),
         (
@@ -302,6 +311,7 @@ def test_holding_the_parents_servers_changes_only_what_is_set_up_alike():
         "as written",
         "the resolved command",
         "keys that launch nothing",
+        "the app-source stamp",
         "another command",
         "an environment of its own",
         "a record of its own",

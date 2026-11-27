@@ -713,7 +713,19 @@ class AcpSessionProvider(LLMProvider):
             finally:
                 destroyed = False
                 try:
-                    await self._handle.destroy()
+                    if (
+                        getattr(self._handle, "keep_transcript", False) is True
+                        and self._runtime.can_release() is True
+                    ):
+                        # A host whose teardown verb deletes the record (KAS) but
+                        # that can free a session and keep it: the record is
+                        # ``spawn_continue``'s resume material, so the session is
+                        # closed instead, and the tombstone pruner deletes the
+                        # record with the run folder.
+                        with self._runtime.keep_record_on_teardown(self._handle.session_id):
+                            await self._handle.destroy()
+                    else:
+                        await self._handle.destroy()
                     destroyed = True
                 except Exception:
                     logger.debug("AcpSessionProvider.shutdown: destroy failed", exc_info=True)
@@ -1800,9 +1812,11 @@ class AcpSessionProvider(LLMProvider):
         """This session's MCP registration report."""
         return self._handle.mcp_session_report()
 
-    async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
+    async def wait_for_declared_mcp(
+        self, timeout: float, skip: tuple[str, ...] = ()
+    ) -> tuple[str, ...]:
         """Hold the first prompt until the spec's servers report (see the handle)."""
-        return await self._handle.wait_for_declared_mcp(timeout)
+        return await self._handle.wait_for_declared_mcp(timeout, skip)
 
     def get_valid_effort_levels(self) -> list[str]:
         """Valid effort levels from config options."""

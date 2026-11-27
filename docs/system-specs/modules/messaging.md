@@ -88,10 +88,10 @@ legacy metadata do not override a canonical execution.
 | `messaging/split.py` | `split_markdown_safe` — the shared fence-safe markdown splitter (its first-party dependencies are `messaging.display_safety` and the grapheme rule `messaging.graphemes.joins_previous`). Prefix-stable without a redactor or with `stable=True`, so streaming callers can send sealed chunks and keep only the last as a live buffer. Also exports `repaired_for_delivery` and `bounded_for_delivery`. `split_markdown_bytes` wraps it for a byte-capped platform, measuring the produced chunks and shrinking the character budget until they fit, with the `chunk_utf8_bytes` primitive as the floor. Also exports `iter_fence_spans`, the same fence machine viewed as character spans over a whole message, `rebalance_fenced_cuts`, which seals a caller's own source-slice cuts through a fence the way the splitter seals its own, and `split_markdown_safe_with_tier`, which additionally declares whether the split entered the context-degrading tier (a cut that leaves a dirty remainder, so the deferred text can read as a delimiter the source line never contained). |
 | `messaging/graphemes.py` | `joins_previous` — where a text may be cut without splitting a grapheme cluster (a flag, a ZWJ emoji, a mark on its base, a keycap). Channel-neutral, so the shared splitter, `imessage/plaintext.py` (iMessage text, notifications, chat titles, computer-use output) and any later cutter share one rule set. |
 | `messaging/outbound_files.py` | `extract_local_refs` (+ `extract_local_refs_off_loop`) — pulls local markdown image references out of an outbound reply into `OutboundFile` payloads carrying the validated bytes, with `Rejection` reasons for everything refused. Also `iter_local_refs` / `hide_local_refs`, the text-only scan a streaming channel uses to keep the markup off live frames. Channel-neutral; the upload stays per-transport |
-| `messaging/raster.py` | `sniff_raster_mime` — what counts as a raster, decided by leading bytes. Dependency-free (no `kiro_crew` imports) so both the inbound sniff and the outbound extractor can share it |
+| `messaging/raster.py` | `sniff_raster_mime`: what counts as a raster, decided by leading bytes. Dependency-free (no `kiro_crew` imports) so both the inbound sniff and the outbound extractor can share it, and so app backends can too: `apps.backend_sdk.media` delegates to it ([app-kit-platform §40](app-kit-platform.md#40-the-backend-sdk-public-host-controls-for-an-apps-own-python-seam-level-7)), and a spawned backend reaches that name without loading the gateway's security stack only while this module imports nothing from `kiro_crew` |
 | `messaging/tables.py` | `render_tables` + the `off`/`cards`/`grid`/`native`/`auto` policy contract and `display_width` — outbound Markdown-table rendering for a target that shows a pipe table as literal pipes (stdlib-only, pure) |
 | `messaging/status_reactions.py` | `PhaseReactionLadder` plus the turn-status line (`format_turn_status`): debounced phase-to-emoji swapping over an injected `ReactionSink`, a stall watchdog, tool-to-phase classification, and `merge_phase_emojis` for a user's overrides. Owns no channel API and no emoji vocabulary |
-| `messaging/commands.py` | The channel-neutral half of the shared chat commands — `/stop`'s cancel + lock ordering (`stop_running_turn`), `/yolo`'s grant ladder (`run_yolo_command`), and the dashboard-link TTL vocabulary (`parse_dashboard_ttl` / `format_ttl`). Returns reply TEXT and takes no address of any kind; `stop_running_turn` is the one exception and sends through an injected `deliver`, because its compaction decline may only arm an escalation once the warning has landed. Also the path-independent keyword commands as one copy of their reply text — `spawn`/`bg`, `cron list|remove|pause|resume` (`cron list` marks a job whose run is executing, past any jitter wait, from its `cron-running/` marker, read off the loop), `task run|status|cancel`, each `(text, service) -> reply | None` where `None` means "not this command, keep routing" (the `spawn` and `cron`/`task` families are `async`, because their service touch is a task-store or cron-store write and every caller is a channel handler on the gateway loop — `_spawn_off_loop` prefers `SubagentManager.spawn_async`). NOT the runtime stats line: both channels call `Stats().summary()` directly, because a one-liner with no parsing and no service to duck-type gains nothing from a shared copy. `spawn_task_reply` / `cron_remove_all_reply` are the already-parsed forms a channel whose own grammar carries the prefix calls. The services are duck-typed under `TYPE_CHECKING` because `subagent` and `taskrunner` both reach `slack` transitively |
+| `messaging/commands.py` | The channel-neutral half of the shared chat commands — `/stop`'s cancel + lock ordering (`stop_running_turn`), `/yolo`'s grant ladder (`run_yolo_command`, which changes the grant only for the channel's owner: the caller passes `caller_is_owner` from `is_channel_owner`, the identity the channel's owner setting names, else its one allow-listed identity, else nobody; anyone may read the status), and the dashboard-link TTL vocabulary (`parse_dashboard_ttl` / `format_ttl`). Returns reply TEXT and takes no address of any kind; `stop_running_turn` is the one exception and sends through an injected `deliver`, because its compaction decline may only arm an escalation once the warning has landed. Also the path-independent keyword commands as one copy of their reply text — `spawn`/`bg`, `cron list|remove|pause|resume` (`cron list` marks a job whose run is executing, past any jitter wait, from its `cron-running/` marker, read off the loop), `task run|status|cancel`, each `(text, service) -> reply | None` where `None` means "not this command, keep routing" (the `spawn` and `cron`/`task` families are `async`, because their service touch is a task-store or cron-store write and every caller is a channel handler on the gateway loop — `_spawn_off_loop` prefers `SubagentManager.spawn_async`). NOT the runtime stats line: both channels call `Stats().summary()` directly, because a one-liner with no parsing and no service to duck-type gains nothing from a shared copy. `spawn_task_reply` / `cron_remove_all_reply` are the already-parsed forms a channel whose own grammar carries the prefix calls. The services are duck-typed under `TYPE_CHECKING` because `subagent` and `taskrunner` both reach `slack` transitively |
 | `messaging/command_table.py` | A slash-command channel's vocabulary as data: `CommandSpec` (name, help text, extra aliases), `match_command` (exact whole-message match, `/name` case-insensitive) and `build_help_text`, so a channel's matcher and its `/help` card read one table and cannot drift. Weixin and Feishu use it; each keeps its own rows, header, footer and reply wording in its own `commands.py` |
 | `messaging/sessions_view.py` | The channel-neutral recent-sessions collector (`_collect_recent_sessions` + its off-loop form). Takes an explicit `sessions_dir` so a surface owning its own data-home override threads it in rather than shadowing this module's; `slack/sessions_view.py` does exactly that and keeps the Block Kit rendering |
 | `messaging/privacy_mode.py` | The `!temporary` / `!incognito` session privacy modes, keyed by **session key** — two bounded LRUs, the durable `SessionMap` flag, one `is_restricted` predicate, the token strippers, and the SEL audit with the channel as a parameter. See [Session privacy modes](#session-privacy-modes-privacy_modepy) |
@@ -490,6 +490,12 @@ the grant expires, and a control has to say what it does. The label alone is not
 enough, so the card body also carries `messaging.commands.YOLO_SCOPE_NOTE` — the one
 sentence naming what the grant covers, shared with the reply `/yolo on` returns so a
 pre-press affordance and the confirmation cannot describe different scopes.
+
+**Only the owner answers an approval.** On Telegram, Teams and Webex an Approve,
+Trust or typed approve from an allow-listed sender who is not the channel's owner
+(`messaging.commands.is_channel_owner`) is read as a Deny, so a sender never
+approves their own tool call. Telegram also posts no approval prompt into a turn
+that sender started; with no decider the request is denied.
 "Auto-approve" on a button inside one chat otherwise reads as scoped to that chat.
 Expiry, renewal, the duration and the SEL row all belong to the shared helper, which
 is the point — a channel-local store would have had to reimplement every one of them.
@@ -2180,6 +2186,8 @@ read the
 same `messaging.queue_mode` (`config/loader.py`, `"steer"` | `"queue"`, anything
 else normalized to `steer`) and all implement the same three primitives
 (`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`).
+Slack reads the same `messaging.queue_mode` in `slack/midturn.py` and keeps its
+own queue and `!stop` (see [session](session.md)).
 
 The **channel-neutral half of the queue receipt is shared**, not duplicated:
 `messaging/queue_receipt.py` owns the receipt registry, the lock, the three
@@ -3033,7 +3041,7 @@ user-facing string has exactly one owner.
 | Command | Shared half | Per-channel half |
 |---|---|---|
 | `/stop` | `commands.stop_running_turn(sessions, session_key, *, queue, surface, owner, deliver) -> str` | the `deliver` that performs the send and reports what landed; which session key a resumed conversation stops; the caller's `owner_token` |
-| `/yolo` | `commands.run_yolo_command(arg, *, source, caller, phrasing) -> str` | the send; `source` (also the grant's audit source), the trusted `caller`, and a `YoloPhrasing` |
+| `/yolo` | `commands.run_yolo_command(arg, *, source, caller, caller_is_owner, phrasing) -> str` | the send; `source` (also the grant's audit source), the trusted `caller`, whether that caller is the channel's owner (`commands.is_channel_owner`; a change from anyone else is refused), and a `YoloPhrasing` |
 | `/link` | `link.rebind_conversation_location(sessions, *, key, location, unlink_command) -> str` | the send; `location` (the channel's one spelling of "this conversation"); any refusal only a resume-capable channel can hit |
 | `/unlink` | `link.release_conversation_location(sessions, *, key, location, channel) -> (str, swept)` | the send; the opt-out write ordered before it; any dashboard nudge for a swept binding |
 | dashboard link | `commands.parse_dashboard_ttl(arg, *, parse_duration) -> int`, `commands.format_ttl` | the command GRAMMAR — which word the TTL is (Telegram's `parse_dashboard_argument` reads the third; Teams' `/dashboard <ttl>` the second) |
@@ -3893,6 +3901,10 @@ answer is not permission: a raised evaluation and a `Decision` without
 
 The extraction is gated by a **golden-transcript** harness (`test/test_slack_golden_transcript.py`): a `RecordingSlackClient` captures the ordered sequence of Slack-render operations the native `handle_message` emits for a scripted `ScriptedProvider` event stream, establishing the baseline the `TurnDriver` + `SlackRenderer` rewire must reproduce identically. Layer contracts and the Slack impl have dedicated suites: `test_messaging_transport.py`, `test_messaging_driver.py`, `test_messaging_privacy_mode.py`, `test_messaging_privacy_mode_reservations.py`, `test_messaging_auto_title.py`, `test_slack_renderer.py`, `test_slack_transport.py`, `test_slack_transport_dispatch.py`, `test_slack_transport_integration.py`. Providers are always mocked (scripted event streams) — never spawn a real kiro-cli process. `test_messaging_import_purity.py` is the gate on the one-way dependency, over every edge including function-local imports, so a new neutral module is covered by it automatically.
 
+## Channel settings reads
+
+Every channel settings read answers only the Crew's owner and admitted Shared Crew teammates: `GET /api/<channel>/config` for Slack, Discord, Telegram, Webex, iMessage, WeCom, Feishu, Teams, WhatsApp and Weixin, `GET /api/slack/manifest`, `/api/slack/manifest/status` and `/api/slack/code-channel-agents`, and WhatsApp's `GET /api/whatsapp/groups` and `/api/channels/whatsapp/qr/status`. Each handler asks `require_owner_for_dashboard_caller` first, so any other dashboard session (a messaging allow-list link whose subject is neither) gets 403 `owner_only`, while an app token or internal caller stays under the controls that already govern it. These reads name who may talk to the Crew and how the owner's accounts are set up. The writes stay direct-local only, as each section below says. `test/test_channel_settings_read_gate.py` walks the registered route table, so a read added to these families later is checked too.
+
 ## Slack settings API
 
 The dashboard-only endpoints below back the `/settings/channels/slack` panel (legacy `?tab=channels&channel=slack` and `?tab=slack` links redirect there). They are
@@ -4636,8 +4648,15 @@ re-link carrying a refreshed admission is left in place.
   `connected` (true only after the Gateway handshake reached READY this
   session), `connect_error`, `configured` (token AND enabled AND non-empty
   allowlist — the transport fails closed on an empty list), `read_only`
-  (true unless the request is direct-local), and the two render toggles
-  `reactions_enabled` / `show_thinking`. Never returns a raw secret.
+  (true unless the request is direct-local), the three render toggles
+  `reactions_enabled` / `show_thinking` / `show_timing_footer`, and the bot's
+  invite links `install_url` (thread permissions) / `install_url_dm_only`, built
+  by `discord.install_url.build_install_url` from the `application_id` READY
+  gave the client of the Discord transport registered in
+  `DashboardState.channel_transports`. The channel lifecycle drops a closed or
+  superseded start's registration by identity, so the links name the running
+  bot. Both are empty with no registered transport, before READY, or when the
+  id is not a snowflake. Never returns a raw secret.
 - `PUT /api/discord/config` — requires a direct-local request (loopback peer
   AND no forwarding headers); remote gets 403. Validate-first/commit-last.
   New tokens must match the three-segment bot-token shape (an accidental
@@ -4647,8 +4666,8 @@ re-link carrying a refreshed admission is left in place.
   returns 400 and writes nothing, network failure saves with
   `verify_warning`. `bot_token_clear` must be a strict boolean.
   `allowed_user_ids`, `allowed_thread_ids`, and `allowed_channel_ids` accept
-  numeric snowflake strings only; `auto_thread`, `reactions_enabled` and
-  `show_thinking` are strict booleans. Secrets
+  numeric snowflake strings only; `auto_thread`, `reactions_enabled`,
+  `show_thinking` and `show_timing_footer` are strict booleans. Secrets
   land in `config_dir/.env` (atomic 0600) with `os.environ`
   synced; non-secrets go to
   `config.json` under `discord`. Every field applies live, so
@@ -5134,18 +5153,29 @@ reason).
 Self-messages are dropped twice (WS actor email + hydrated `personId` against
 the bot identity). `WEBEX_BOT_TOKEN` is on the sandbox agent env denylist.
 
-**The allow-list IS the operator tier, and that is the cross-channel design.** No
-shipped channel carries a second, narrower "owner" check: Telegram's `/yolo` and
-`/kirocrew dashboard`, Teams' `/yolo` and Slack's `!yolo` are all reachable by any
-authorized sender, and Webex matches them rather than inventing a tier one channel
-has. So an operator adding a second address grants that address the process-global
-`safety_override` grant (`/yolo` — the same one the dashboard toggle and the CLI
-drive) and dashboard-link minting. What bounds it is attribution plus audience:
-both commands SEL-audit the sender's email, and `/kirocrew dashboard` refuses
+**The allow-list admits senders to their own turns; the process-wide switches
+belong to the channel owner.** An allow-listed sender is trusted to run their own
+turns, under the channel's approval mode (the `auto` default included). Two
+things reach past that sender's own conversation and so are the owner's only, the
+same split Slack's owner-only `!yolo` already draws
+([slack-gateway](slack-gateway.md), control messages): the process-global
+`safety_override` grant (`/yolo`, the same one the dashboard toggle and the CLI
+drive; Teams' Approve + auto-approve button arms it too), and the answer to an
+approval prompt. On Telegram, Teams and Webex the owner is the identity the
+channel's owner field names (`telegram.owner_user_id`, `teams.owner_id`,
+`webex.owner_email`), else the single allow-listed identity, else nobody
+(`messaging.commands.is_channel_owner`). Anyone else's `/yolo on|off|renew` is
+refused and audited, the status stays readable, and their Approve, Trust or typed
+approve is read as a Deny. One person with two addresses sets the owner field to
+the address they use, to keep `/yolo` and approvals from chat; with two addresses
+and no owner field, the dashboard toggle still drives the grant. Webex still runs
+its own `/yolo` ladder with this owner check rather than the shared
+`run_yolo_command`. `/kirocrew dashboard` stays open to every authorized sender: the
+link carries the owner's own session only for the owner, and the command refuses
 outside a direct room so a presigned link is never posted where a space can read
-it. A narrower tier here would also silently break the ordinary case of one person
-with two addresses; if per-sender capability limits are wanted, they belong in the
-governance profiles that already gate every channel, not in one dispatcher.
+it. Both commands SEL-audit the sender's email. Finer per-sender capability limits
+belong in the governance profiles that already gate every channel, not in one
+dispatcher.
 
 The ROOM gate is separate from the sender gate, and a group message must clear
 BOTH. A direct room is always permitted. A group space is permitted only when
@@ -7631,8 +7661,8 @@ SEL-audited (`source="feishu"`). The Feishu app needs
 `im:message:readonly` to download a
 message's files; enabling groups additionally needs
 `im:message.group_at_msg.include_bot:readonly`, and sending an answer's images
-needs `im:resource` (without it the upload is refused and the follow-up names
-the path). The broad `im:message` grant
+or a `file_send` file needs `im:resource` (without it the upload is refused: the
+answer's follow-up names the path, and `file_send` reports the refusal). The broad `im:message` grant
 alone does not activate p2p event delivery in the current Feishu console.
 Group-chat access is an explicit opt-in gated on BOTH `allow_group=True` AND
 the group's `chat_id` appearing in
@@ -7711,6 +7741,35 @@ answers those budgets for an allow-listed `open_id` and None for anything else,
 so a group mirror is never extracted and names its pictures instead; the verb
 re-checks the address at the send and answers False there too. See the session
 spec's cross-surface Delivery paragraph for the leg's own gates.
+
+**`file_send` delivers into an allow-listed DM** through
+`FeishuTransport.send_document`, and `"feishu"` is in
+`upload_destination.DOCUMENT_CHANNELS` (the oracle checks the restricted-session
+ceiling before it probes the verb). The verb re-decides the address against the
+live roster first, as `send_outbound_image` does: anything but an `open_id` on
+`allowed_open_ids` (a group, even an allowed one, or an id dropped since the link
+was written) raises before anything is uploaded. It re-decides again after the
+upload, raising before the message is created, and before the caption, which it
+skips with a warning (the file landed, so it still counts as delivered), as
+`WeComTransport.send_document` does: a live reload can revoke the DM during
+either await. A file whose name maps to an
+`image/` type and whose bytes `messaging.raster` sniffs as a raster image within
+`FEISHU_UPLOAD_LIMITS` goes through
+`LarkClient._sync_upload_image` and a NEW `msg_type=image` message; anything else
+(SVG, audio and video included, text whose first bytes happen to match a
+raster magic, and an image over the 10 MB image cap) through
+`im.v1.file.create` (`file_type=pdf` for a PDF, `stream` otherwise, the admitted
+basename as `file_name`, at most 30 MB) and a NEW `msg_type=file` message. The
+upload is `LarkClient.upload_new_file` and the message `LarkClient.send_uploaded_file`,
+so the verb can re-decide between them; the uploads run on the download workers
+through the client with the resource timeout, so a stalled upload never holds a
+reply worker. A refusal raises with Feishu's code and message, and
+`api_channel_upload_file` hands that (redacted) to the `file_send` result as
+`channel upload failed: …`; for code 99991672 on an upload whose message does not
+already name `im:resource`, the error names it. A non-empty caption follows the
+file as a text message to the same DM, best-effort. The verb
+returns the created message's id, or `"sent"` when the answer carried none,
+because the caller reads a falsy return as failure.
 
 **Session identity.** A p2p turn keys on `open_id` under the `DIRECT` chat
 type; a group turn keys on the group's `chat_id` under the non-direct

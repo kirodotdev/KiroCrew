@@ -61,8 +61,10 @@ _WEBSITE = "website"
 # sequences across the phone breakpoint (chat-form-switch-anchor.spec.ts), and
 # one that keeps an SVG artifact's own stylesheet inside it, one that sizes
 # an SVG drawn from its view box alone (both artifacts.spec.ts), and one that
-# walks the transcript's speaker headings (chat-heading-walk.spec.ts).
-MIN_EXECUTED_SPECS = 254
+# walks the transcript's speaker headings (chat-heading-walk.spec.ts), and eight
+# that list what still needs an inline-permitting script policy
+# (strict-script-policy.spec.ts).
+MIN_EXECUTED_SPECS = 262
 
 # Skips are silent passes. A spec should seed its preconditions rather than skip
 # when they are absent, so the intended steady state is zero. Specs excluded by

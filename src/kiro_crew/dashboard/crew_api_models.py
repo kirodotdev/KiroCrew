@@ -65,7 +65,8 @@ def models_for_grant(credential: LocalCredential) -> list[dict[str, Any]]:
     Add the grant's Bots or an agent an app may run here when a route runs them.
     """
     # shortcut: no route lets an app run a Bot in its grant or an agent; add the
-    # allowed rows here when one does.
+    # allowed rows here when one does. Take the Bots from
+    # ``LocalAuthorization.bots_in_range``, never from the grant's stored names.
     return []
 
 

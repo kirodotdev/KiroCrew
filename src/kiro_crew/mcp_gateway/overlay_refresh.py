@@ -5,18 +5,19 @@ starts. An app registered later (install, reinstall, enable, update) writes its
 agent specs into ``~/.kiro/agents`` after that pass, so its agents had no
 overlay -- and no gateway-routed MCP servers -- until the next gateway start.
 A Bot's own file edited later (a change card that adds or changes a
-gateway-routed server on it) likewise left its ``mates/<id>.json`` overlay on
-the start pass's content.
+gateway-routed server on it, or **Add abilities** copying one into it) likewise
+left its ``mates/<id>.json`` overlay on the start pass's content.
 
 The broker owner (the gateway process) registers one refresher here while it
-serves a broker. Two callers run their spec write as the refresh's
+serves a broker. Three callers run their spec write as the refresh's
 ``register`` step: the app lifecycle, when it registers agents, and the
-capabilities save (``dashboard/handlers/agent_capabilities.py``), when it gives a
-Bot that owns its file a gateway-routed server; that save's change card says a
-restart is needed unless the refresh applied and its ``serving_stub_servers``
-holds every such server. With no broker running nothing is registered and the
-call does nothing: there is no overlay to keep current, and the next broker
-start builds it from scratch.
+capabilities save and the worker-kit add (``save_and_refresh_overlays`` in
+``dashboard/handlers/agent_capabilities.py``), which ask for a rewrite only when
+the write gave a Bot that owns its file a gateway-routed server; that change
+card, or the Add abilities pane, says a restart is needed unless the refresh
+applied and its ``serving_stub_servers`` holds every such server. With no
+broker running nothing is registered and the call does nothing: there is no
+overlay to keep current, and the next broker start builds it from scratch.
 """
 
 from __future__ import annotations
@@ -39,14 +40,24 @@ _refresher: _Refresher | None = None
 #: writes to a scratch one), and the servers a config scope mutes
 #: (``scope_muted``), which a toggle in MCP Management changes at any time. A
 #: mute only removes stubs; an unmute that adds one needs a target the running
-#: daemon does not hold, and the probe's target check refuses it. Every other input --
+#: daemon does not hold, and the probe's target check refuses it.
+#: A roots exclusion (``roots_excluded``) only removes stubs, like a mute.
+#: Every other input --
 #: socket, work dir, sandbox and approval modes, stub set, sharing, forwarded
 #: env, identity keys, read limit, interpreter -- is fixed when the broker
 #: starts, and a pass that sees a different value would apply a restart-only
 #: setting early. A crewmate file whose stub needs a target the running daemon
 #: does not hold is still refused, by the probe's target check.
 _REFRESH_VOLATILE_INPUTS = frozenset(
-    {"sources", "mate_sources", "settings", "overlay_dir", "launch_approvals", "scope_muted"}
+    {
+        "sources",
+        "mate_sources",
+        "settings",
+        "overlay_dir",
+        "launch_approvals",
+        "scope_muted",
+        "roots_excluded",
+    }
 )
 
 

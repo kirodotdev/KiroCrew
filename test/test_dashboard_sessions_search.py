@@ -81,8 +81,10 @@ class TestSessionsSearchHandler:
         calls = []
 
         def _fake_compose(text):
+            # Wraps rather than replaces: search matches the redacted text, so the
+            # query must still be found in it.
             calls.append(text)
-            return ("[REDACTED]", [], [])
+            return ("[REDACTED] " + text, [], [])
 
         # Patched on the one composed pass that `security.redact` runs: it finds
         # credential and outbound-URL spans together, so this one fake standing in
@@ -91,5 +93,5 @@ class TestSessionsSearchHandler:
         async with TestClient(TestServer(_make_app(log))) as client:
             resp = await client.get("/api/sessions/search?q=matches")
             sessions = (await resp.json())["sessions"]
-            assert sessions and sessions[0]["title"] == "[REDACTED]"
+            assert sessions and sessions[0]["title"].startswith("[REDACTED] ")
             assert calls

@@ -17,7 +17,7 @@ from kiro_crew.acp import kas_pin
 
 #: An engine release, optionally followed by the Node runtime a republish of that
 #: same engine build bundles (``0.66.117-node22.23.4``).
-_PIN_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-node\d+\.\d+\.\d+(?:-al2)?)?$")
+_PIN_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-node\d+\.\d+\.\d+(?:-al2(?:\.[2-9]\d*)?)?)?$")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -29,14 +29,24 @@ def test_the_pinned_version_is_a_release_with_an_optional_node_suffix() -> None:
 
 
 @pytest.mark.parametrize(
-    "version", ["0.66.117", "0.66.117-node22.23.4", "0.66.117-node22.23.4-al2"]
+    "version",
+    ["0.66.117", "0.66.117-node22.23.4", "0.66.117-node22.23.4-al2", "0.66.117-node22.23.4-al2.2"],
 )
 def test_the_pin_version_shape_accepts_a_release_and_a_node_republish(version: str) -> None:
     assert _PIN_VERSION.match(version)
 
 
 @pytest.mark.parametrize(
-    "version", ["0.66.117-rc.1", "0.66.117-node22", "v0.66.117", "0.66", "0.66.117-al2"]
+    "version",
+    [
+        "0.66.117-rc.1",
+        "0.66.117-node22",
+        "v0.66.117",
+        "0.66",
+        "0.66.117-al2",
+        "0.66.117-node22.23.4-al2.1",
+        "0.66.117-node22.23.4-al2.x",
+    ],
 )
 def test_the_pin_version_shape_refuses_anything_else(version: str) -> None:
     assert not _PIN_VERSION.match(version)
@@ -67,7 +77,7 @@ def test_the_engine_release_is_the_pin_without_its_node_suffix() -> None:
 
 def test_the_glibc_floors_cover_only_the_two_pins_and_linux_keys() -> None:
     # 2.26 is the lowest glibc any published build (the AL2 one) is linked for;
-    # the normal pin keeps nodejs.org's 2.28, and arm64 has no AL2 build.
+    # the normal pin keeps nodejs.org's 2.28.
     floors = kas_pin.KAS_PIN_GLIBC_FLOORS
     assert set(floors) == {kas_pin.KAS_PIN_VERSION, kas_pin.KAS_PIN_AL2_VERSION}
     linux = {k for k in kas_pin.KAS_PIN_NODE_BUILDS if k.startswith("linux-")}
@@ -75,12 +85,12 @@ def test_the_glibc_floors_cover_only_the_two_pins_and_linux_keys() -> None:
         assert set(by_key) <= linux
         assert all((2, 26) <= f <= (2, 28) for f in by_key.values()), by_key
     assert floors[kas_pin.KAS_PIN_VERSION] == {"linux-x64": (2, 28), "linux-arm64": (2, 28)}
-    assert floors[kas_pin.KAS_PIN_AL2_VERSION] == {"linux-x64": (2, 26)}
+    assert floors[kas_pin.KAS_PIN_AL2_VERSION] == {"linux-x64": (2, 26), "linux-arm64": (2, 26)}
 
 
 def test_both_pins_name_one_engine_release_and_their_own_digest() -> None:
     # One engine release (and so one engine minimum-version check) serves both.
-    assert kas_pin.KAS_PIN_AL2_VERSION == f"{kas_pin.KAS_PIN_VERSION}-al2"
+    assert kas_pin.KAS_PIN_AL2_VERSION.startswith(f"{kas_pin.KAS_PIN_VERSION}-al2")
     assert kas_pin.KAS_PIN_AL2_VERSION.split("-node", 1)[0] == kas_pin.KAS_PIN_ENGINE_RELEASE
     assert kas_pin.KAS_PIN_MANIFESTS == {
         kas_pin.KAS_PIN_VERSION: kas_pin.KAS_PIN_MANIFEST_SHA256,
@@ -101,14 +111,16 @@ def test_both_pins_name_one_engine_release_and_their_own_digest() -> None:
         ("Linux", "x86_64", (2, 34), "normal"),
         ("Linux", "x86_64", None, "normal"),
         ("Linux", "amd64", (2, 26), "al2"),
-        ("Linux", "aarch64", (2, 26), "normal"),
+        ("Linux", "aarch64", (2, 26), "al2"),
+        ("Linux", "arm64", (2, 27), "al2"),
+        ("Linux", "aarch64", (2, 28), "normal"),
         ("Linux", "aarch64", (2, 34), "normal"),
         ("Darwin", "arm64", (2, 26), "normal"),
         ("Darwin", "x86_64", (2, 26), "normal"),
         ("Windows", "AMD64", (2, 26), "normal"),
     ],
 )
-def test_only_a_linux_x64_host_below_glibc_2_28_picks_the_al2_pin(
+def test_only_a_linux_host_below_glibc_2_28_picks_the_al2_pin(
     monkeypatch: pytest.MonkeyPatch, system: str, machine: str, glibc, want: str
 ) -> None:
     from kiro_crew import constants

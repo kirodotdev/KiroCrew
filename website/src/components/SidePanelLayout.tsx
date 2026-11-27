@@ -22,7 +22,9 @@ export interface SidePanelTab {
   icon: React.ReactNode
   /** Background of a coloured rounded tile drawn behind `icon` (a `--tile-*`
    *  token), the way System Settings marks each section. Omitted: the bare icon
-   *  in `--muted`, as every other host of this layout renders it. */
+   *  in `--muted`, as every other host of this layout renders it. The tile
+   *  sizes a Lucide `svg` and a masked brand glyph (`BrandGlyph`'s `span`, whose
+   *  inline size it overrides) alike. */
   tile?: string
   description?: string
   /** The pane draws its own visible header (Settings > Kiro account's centered
@@ -63,7 +65,7 @@ export interface SidePanelTab {
    *  chrome, and nothing on that page would flag it. */
   hostsSubNav?: boolean
   /** Query params holding THIS tab's own drill-in (Settings > Overview's
-   *  `?view=memory`). Every rail selection drops them, like a SubNav
+   *  `?view=usage`). Every rail selection drops them, like a SubNav
    *  selection, so a picked tab opens at its root. */
   drillInParams?: readonly string[]
 }
@@ -547,7 +549,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                     onClick={() => setTab(t.key)}
                   >
                     {t.tile
-                      ? <span className="w-[30px] h-[30px] shrink-0 flex items-center justify-center rounded-[8px] text-[color:var(--tile-fg)] [&_svg]:w-4 [&_svg]:h-4" style={{ background: t.tile }}>{t.icon}</span>
+                      ? <span className="w-[30px] h-[30px] shrink-0 flex items-center justify-center rounded-[8px] text-[color:var(--tile-fg)] [&_svg]:w-4 [&_svg]:h-4 [&>span]:!w-4 [&>span]:!h-4" style={{ background: t.tile }}>{t.icon}</span>
                       : <span className="w-5 h-5 shrink-0 flex items-center justify-center text-muted">{t.icon}</span>}
                     <span className="flex-1 min-w-0 truncate">{t.label}</span>
                     {t.dot && <span className="w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={t.dotLabel ?? i18nT('components.sidePanelLayout.update_available')} />}
@@ -643,7 +645,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                 onClick={() => setTab(t.key)}
               >
                 {t.tile
-                  ? <span className="w-5 h-5 shrink-0 flex items-center justify-center rounded-[5px] text-[color:var(--tile-fg)] [&_svg]:w-3 [&_svg]:h-3" style={{ background: t.tile }}>{t.icon}</span>
+                  ? <span className="w-5 h-5 shrink-0 flex items-center justify-center rounded-[5px] text-[color:var(--tile-fg)] [&_svg]:w-3 [&_svg]:h-3 [&>span]:!w-3 [&>span]:!h-3" style={{ background: t.tile }}>{t.icon}</span>
                   : <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${tab === t.key ? 'text-accent' : 'text-muted'}`}>
                       {t.icon}
                     </span>}

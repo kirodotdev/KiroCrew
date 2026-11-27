@@ -186,6 +186,23 @@ def _pattern_contains(granted: str, wanted: str) -> bool:
     return bool(sep) and tool == "*" and wanted.startswith(server + "/")
 
 
+def write_fallback_reading(value: Any) -> str:
+    """How KAS's projection and Crew's gate read write ``fallbackAction`` *value*.
+
+    ``"deny"`` for any value ``kas_permissions._write_falls_back_to_deny`` reads as
+    deny (any case, or a value that is not a string); ``"interactive"`` for the
+    values the translation treats as the default (``None``, ``""``,
+    ``"interactive"``); otherwise *value* itself.
+    """
+    from kiro_crew.acp import kas_permissions
+
+    if kas_permissions._write_falls_back_to_deny({"fallbackAction": value}):
+        return "deny"
+    if value in (None, "", "interactive"):
+        return "interactive"
+    return str(value)
+
+
 def permission_allow_derivable(rule: dict[str, Any]) -> bool:
     """Whether KAS's projection treats ``permissions`` *rule* as an ``allowedTools``
     grant, which it drops from the block when the spec has that list."""

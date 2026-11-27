@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, type MutableRefObject } from 'react'
 import { type QueryClient, useQuery } from '@tanstack/react-query'
 
 import { api } from '../api/client'
-import { disposeTerminalSession, useDeleteTerminalSession } from '../components/CliPanel'
+import { disposeTerminalSession, useDeleteTerminalSession } from '../components/terminalSessions'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { runInTerminalText, RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'

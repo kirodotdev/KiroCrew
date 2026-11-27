@@ -83,6 +83,10 @@ export interface ChatPaneProps {
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
    *  so the pane does not say "go" one line under a host that says "broken". */
   hideEmptyHint?: boolean
+  /** Withhold the Sign in button on a signed-out (`auth_required`) row, so it
+   *  reads as text. Set where the single-chat page withholds it too (an
+   *  embedded or popout chat); every other pane offers it in place. */
+  noSignIn?: boolean
   /** ISO time of a fresh start on this thread. Rows written before it fold
    *  under one closed "Earlier conversation" divider the reader can open.
    *  Display only: the rows stay in the transcript. */

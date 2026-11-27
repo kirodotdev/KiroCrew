@@ -1153,6 +1153,104 @@ async def test_private_consolidation_uses_separate_bound_process_and_cleans_it_u
 
 
 @pytest.mark.asyncio
+async def test_private_consolidation_pass_reuses_one_runtime_and_retires_it(
+    member_stores, monkeypatch
+):
+    from kiro_crew.dashboard.handlers import usage as usage_handlers
+    from kiro_crew.llm_helpers import (
+        background_turn,
+        begin_member_consolidation_pass,
+        end_member_consolidation_pass,
+    )
+    from kiro_crew.member_memory_auth import private_memory_store_for_session
+
+    writer, other = member_stores
+    order: list[str] = []
+    client = SimpleNamespace(
+        last_prompt_stats=None,
+        session_id="sid-1",
+        cleanup_session=AsyncMock(side_effect=lambda sid: order.append(f"cleanup {sid}")),
+    )
+
+    async def _new_conversation():
+        order.append("fresh")
+        client.session_id = f"sid-{order.count('fresh') + 1}"
+
+    client.new_conversation = _new_conversation
+
+    async def _account(*_args, **_kwargs):
+        order.append(f"account {client.session_id}")
+
+    from kiro_crew import llm_helpers
+
+    monkeypatch.setattr(llm_helpers, "usage_has_billing", lambda _usage: True)
+    monkeypatch.setattr(llm_helpers, "_record_background_crew_log", lambda *a, **k: None)
+    monkeypatch.setattr(usage_handlers, "persist_token_record_async", _account)
+    sessions = MagicMock(
+        get_or_create=AsyncMock(return_value=(client, True, False)),
+        remove=AsyncMock(side_effect=lambda _key: order.append("remove")),
+        destroy=AsyncMock(),
+        recycle_background=AsyncMock(),
+    )
+    token = begin_member_consolidation_pass()
+    for _ in range(3):
+        async with background_turn(
+            sessions, task="consolidation", agent="kirocrew-lite", memory_store=writer
+        ):
+            pass
+    pass_key = sessions.get_or_create.call_args.args[0]
+    # Each call is accounted on its own conversation, then the next one starts empty on
+    # the same runtime and the conversation it left is deleted; nothing is retired yet.
+    assert {c.args[0] for c in sessions.get_or_create.call_args_list} == {pass_key}
+    assert order == [
+        step for n in (1, 2, 3) for step in (f"account sid-{n}", "fresh", f"cleanup sid-{n}")
+    ]
+    assert private_memory_store_for_session(pass_key) == writer
+    # Another store's call in the same pass keeps the one-call path.
+    async with background_turn(
+        sessions, task="consolidation", agent="kirocrew-lite", memory_store=other
+    ):
+        other_key = sessions.get_or_create.call_args.args[0]
+    assert other_key != pass_key
+    sessions.remove.assert_awaited_once_with(other_key)
+    await end_member_consolidation_pass(sessions, token)
+    sessions.remove.assert_awaited_with(pass_key)
+    sessions.destroy.assert_awaited_with(pass_key)
+    assert not ConversationLog()._path(pass_key).exists()
+    # The pass's runtime is retired once, then its last conversation record is deleted.
+    assert order[-2:] == ["remove", "cleanup sid-4"]
+    sessions.recycle_background.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_private_consolidation_pass_falls_back_when_no_fresh_conversation(member_stores):
+    from kiro_crew.llm_helpers import (
+        background_turn,
+        begin_member_consolidation_pass,
+        end_member_consolidation_pass,
+    )
+
+    writer, _ = member_stores
+    client = SimpleNamespace(last_prompt_stats=None, session_id="s1", cleanup_session=AsyncMock())
+    sessions = MagicMock(
+        get_or_create=AsyncMock(return_value=(client, True, False)),
+        remove=AsyncMock(),
+        destroy=AsyncMock(),
+    )
+    token = begin_member_consolidation_pass()
+    for _ in range(2):
+        async with background_turn(
+            sessions, task="consolidation", agent="kirocrew-lite", memory_store=writer
+        ):
+            pass
+    await end_member_consolidation_pass(sessions, token)
+    keys = [c.args[0] for c in sessions.get_or_create.call_args_list]
+    # A provider without new_conversation retires each call's runtime, as outside a pass.
+    assert len(set(keys)) == 2
+    assert [c.args[0] for c in sessions.remove.await_args_list] == keys
+
+
+@pytest.mark.asyncio
 async def test_private_consolidation_acquire_failure_removes_generated_artifacts(member_stores):
     from kiro_crew.llm_helpers import background_turn
 

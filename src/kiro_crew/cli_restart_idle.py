@@ -16,6 +16,13 @@ with :data:`BUSY_MARKER` and the counts, or :data:`EXIT_GATE_UNSUPPORTED` with
 :data:`UNSUPPORTED_MARKER` when the running gateway predates the idle check, or
 :data:`EXIT_GATE_REFUSED` with :data:`REFUSED_MARKER` when idleness could not
 be established. None of them restarts anything. A plain ``kirocrew restart`` is unchanged.
+
+A captured busy exit (stdout not a terminal) outside any process Kiro Crew
+started for an agent also prints, on stdout only and just before the busy
+marker, :data:`HOLDERS_MARKER` and the work the gateway named
+(:func:`holders_line`), so the hub can show what its update waits on. That line
+is printed only as far as this build's copy of the hub's stdout handling leaves it
+unchanged.
 """
 
 from __future__ import annotations
@@ -38,6 +45,7 @@ from kiro_crew.loopback_http import deadline_expired
 from kiro_crew.port_resolution import resolve_client_port
 from kiro_crew.terminal_safe import safe_terminal_line
 from kiro_crew.work_holders import describe as _describe_holders
+from kiro_crew.work_holders import read_payload as _read_holders
 
 #: Default ``--max-wait``.
 DEFAULT_MAX_WAIT_SECS = 600.0
@@ -56,6 +64,10 @@ EXIT_GATE_UNSUPPORTED = 69
 #: The prefix of the line a busy exit prints, on stderr and last on stdout, for
 #: a caller on another machine (see :func:`busy_marker`).
 BUSY_MARKER = "kirocrew-restart-busy"
+
+#: The prefix of the line a captured busy exit prints on stdout just before
+#: the busy marker, naming the work (see :func:`holders_line`).
+HOLDERS_MARKER = "kirocrew-restart-holders"
 
 #: Exit status when the command could not establish that the gateway is idle
 #: (``EX_CONFIG``): the check failed, or what a restart would reach is wider
@@ -92,6 +104,9 @@ class _Verdict:
     service_identity: str | None = None
     #: The work the counts are, as the gateway named it (``""`` from an older one).
     waiting_on: str = ""
+    #: The gateway's holder entries behind :attr:`waiting_on`, and how many it left out.
+    holders: tuple[dict[str, object], ...] = ()
+    holders_more: int = 0
 
 
 class _GateFailed(Exception):
@@ -175,6 +190,8 @@ def _ask_gate(
     if not isinstance(turns, int) or not isinstance(background, int):
         raise _GateFailed("the gateway's idle check answered without its counts")
     identity = body.get("service_identity")
+    named = _read_holders(body.get("holders"), body.get("holders_more", 0))
+    holders, holders_more = named if named is not None else ([], 0)
     return _Verdict(
         "idle" if body.get("idle") is True else "busy",
         turns,
@@ -182,6 +199,8 @@ def _ask_gate(
         service_managed=body.get("service_managed") is True,
         service_identity=identity if isinstance(identity, str) else None,
         waiting_on=_describe_holders(body.get("holders"), body.get("holders_more")),
+        holders=tuple(holders),
+        holders_more=holders_more,
     )
 
 
@@ -227,6 +246,45 @@ def busy_marker(turns: int, background: int) -> str:
     """
     counts = json.dumps({"turns": turns, "background": background}, separators=(",", ":"))
     return f"{BUSY_MARKER} {counts}"
+
+
+def holders_line(holders: list[dict[str, object]], more: int) -> str:
+    """The names line: :data:`HOLDERS_MARKER`, a space, and the entries as one JSON object.
+
+    ``kirocrew-restart-holders {"holders":[{"kind":"script",...}],"holders_more":0}``.
+    """
+    body = json.dumps({"holders": holders, "holders_more": more}, separators=(",", ":"))
+    return f"{HOLDERS_MARKER} {body}"
+
+
+def _names_line(verdict: _Verdict, marker: str) -> str:
+    """The names line to print before *marker* on a busy exit, or ``""``.
+
+    Only for a captured run (a terminal already reads the names in the
+    sentence) that is not acting for an agent's session, which keeps the counts
+    alone as the gateway intends for such a caller. Entries are dropped from
+    the end, each counted in ``holders_more``, until this build's copy of the
+    hub's stdout handling (its tail length and redaction) returns the two lines
+    unchanged, so on a hub of the same build a name cannot clip or redact the
+    marker away.
+    """
+    if not verdict.holders or _stdout_is_terminal():
+        return ""
+    from kiro_crew.cloud.aws import _in_agent_session
+
+    if _in_agent_session():
+        return ""
+    from kiro_crew.instances.token_mint import output_tail_keeps
+
+    entries = list(verdict.holders)
+    more = verdict.holders_more
+    while entries:
+        line = holders_line(entries, more)
+        if output_tail_keeps(f"{line}\n{marker}"):
+            return line
+        entries.pop()
+        more += 1
+    return ""
 
 
 def _print_marker(line: str) -> None:
@@ -384,7 +442,12 @@ def _restart_when_idle(cli_port: int | None, *, max_wait_secs: float | None = No
                 f"❌ Not restarted: the gateway is still running {_describe(verdict)}. "
                 "Try again later, or run `kirocrew restart` to restart it now and stop that work."
             )
-            _print_marker(busy_marker(verdict.turns, verdict.background))
+            marker = busy_marker(verdict.turns, verdict.background)
+            names = _names_line(verdict, marker)
+            if names:
+                # Stdout only, just before the marker the hub reads last.
+                print(names)
+            _print_marker(marker)
             sys.exit(EXIT_BUSY)
         pause = min(POLL_SECS, remaining)
         print(f"⏳ The gateway is running {_describe(verdict)}; checking again in {pause:.0f}s.")

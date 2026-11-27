@@ -768,10 +768,14 @@ ACP_BACKENDS_MODEL_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
 #: ``session/set_model`` and codex on ``session/set_config_option``: both requests
 #: carry the ``sessionId`` (``AcpSessionHandle.set_model``), and both harnesses
 #: host a parent and its sub-agents on one process (``ACP_BACKENDS_SESSION_SHARING``).
-#: KAS is not a member: its sub-agents never share their parent's process (it is
-#: not in ``ACP_BACKENDS_SESSION_SHARING``), so no sub-agent path has run a second
-#: session's model on one KAS process.
-ACP_BACKENDS_MODEL_PER_SESSION: FrozenSet[str] = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
+#: KAS is a member: the engine writes a model to the addressed session's own state,
+#: so two sessions of one process run on two models (measured on ``@kiro/agent``
+#: 0.66.127, one session switched to another model while its sibling kept its
+#: own). It is read only for a parent whose process may host sub-agents
+#: (``ACP_BACKENDS_SESSION_SHARING`` plus ``acp.kas_subagent_sharing``).
+ACP_BACKENDS_MODEL_PER_SESSION: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_KIRO, ACP_BACKEND_CODEX, ACP_BACKEND_KAS}
+)
 
 #: Backends that take their reasoning effort as a LAUNCH argument, by the same
 #: mechanism: the Strands CLI reads ``--effort`` when it starts, so a level is

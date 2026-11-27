@@ -46,7 +46,7 @@ import { api, isAuthBannerShown } from '../api/client'
 import { noteSignInCommand } from '../api/signInCommand'
 import { isPermissionRefusal } from '../api/apiError'
 import { useKiroUsageReadout } from './topbar/kiroUsageReadout'
-import { safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { gcOrphanedStorage } from '../utils/storageGc'
 import { useMetricsReadout } from './topbar/metricsReadout'
 import { Package } from 'lucide-react'
@@ -137,6 +137,53 @@ const APP_NAV_MAX_RETRIES = 4
 const APP_NAV_RETRY_BASE_MS = 500
 /** One return to the tab fires focus and visibilitychange; read the app list once. */
 const APP_LIST_RETURN_FLOOR_MS = 2000
+
+/**
+ * Browser tab title, detail first like the popout windows
+ * (`{{label}} — {{productName}}`): `[(N) ]<session> — Chat — <bot>` on chat,
+ * `[(N) ]<panel> — <bot>` on any other rail destination, bare `<bot>` when the
+ * route matches no row, and `[(N) ]<crew> — <bot>` while a remote crew's pane
+ * hides the local route (`instanceName`, from the switcher's registry cache).
+ * A set `dashboard.instance_label` names this gateway between the detail and
+ * the product (`<detail> — <label> — <bot>`, or `<label> — <bot>`). The count
+ * stays in front so it survives tab truncation. Labels are resolved at render,
+ * so a language switch re-titles the tab.
+ *
+ * Its own component because it reads the active session's title: a session
+ * switch then re-renders this one leaf instead of the whole shell.
+ */
+function ShellTabTitle({ isChat, isPopout, panelLabel, instanceName, tabProduct, totalAttention, locationKey }: {
+  isChat: boolean; isPopout: boolean; panelLabel: string; instanceName: string; tabProduct: string; totalAttention: number; locationKey: string
+}) {
+  // A slot whose title is its key or the backend placeholder has no real title
+  // yet (same rule as the chat popout).
+  const activeSessionTitle = useAppSelector(s => {
+    const key = s.chat.activeSlot
+    const title = key ? slotRowByKey(s.dashboard.slots, key)?.title : undefined
+    return key && title && !isUntitledSession({ key, title }) ? title : ''
+  })
+  const chatPanelLabel = i18nT('app.tab_title_chat')
+  const titleLabel = isChat
+    ? (activeSessionTitle ? i18nT('app.tab_title_session', { session: activeSessionTitle, panel: chatPanelLabel }) : chatPanelLabel)
+    : panelLabel
+  const tabLabel = instanceName || titleLabel
+  // A pop-out window titles itself (its frame under `pages/*PopoutFrame`), so
+  // the shell leaves its title alone there.
+  useEffect(() => {
+    if (isPopout) return
+    const base = tabLabel ? i18nT('app.tab_title', { label: tabLabel, productName: tabProduct }) : tabProduct
+    document.title = totalAttention > 0 ? `(${totalAttention}) ${base}` : base
+  }, [isPopout, totalAttention, tabProduct, tabLabel])
+  // Name the history entry on screen for the Back/Forward arrows' history
+  // menu (#17453): the session on chat, the page anywhere else, and nothing on
+  // a route with no rail row, so that entry is left out of the list. Re-run on
+  // every entry, because the name belongs to the entry, not to the route.
+  const historyLabel = isChat ? (activeSessionTitle || chatPanelLabel) : titleLabel
+  useEffect(() => {
+    labelCurrentRouteEntry(historyLabel)
+  }, [historyLabel, locationKey])
+  return null
+}
 
 /**
  * The dashboard shell's state and effects: the routing context, the boot reads,
@@ -328,13 +375,16 @@ export function useAppShell() {
   const bottomTerminalOpen = useBottomTerminalOpen()
   const mobileConnect = useMobileConnect(location.key)
   const { mobileConnectOpen, setMobileConnectOpen, hasRenderableMobileConnect } = mobileConnect
-  // Selected session's project directory: a terminal opened from the nav row
-  // starts there (server default when no session is selected or it has none).
-  const activeSlotProject = useAppSelector(selectActiveSlotProject)
   const terminalPosition = useTerminalPosition()
   const navigate = useNavigate()
   const mayLeaveForNavigation = useMayLeaveForNavigation()
   const appStore = useAppStore()
+  // Selected session's project directory: a terminal opened from the nav row
+  // starts there (server default when no session is selected or it has none).
+  // Read when a terminal opens, not subscribed: every reader acts on a click,
+  // a chord or a run request, and a subscription here would re-render the whole
+  // shell on each switch to a session in another project.
+  const getActiveSlotProject = useCallback(() => selectActiveSlotProject(appStore.getState()), [appStore])
   const pathnameRef = useRef(location.pathname)
   pathnameRef.current = location.pathname
   const locationKeyRef = useRef(location.key)
@@ -487,7 +537,7 @@ export function useAppShell() {
   useNotificationSound()
   // The rail starts collapsed until the user expands it: only a stored '0'
   // (the user's own expand) opens it on load.
-  const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') !== '0')
+  const [navCollapsed, setNavCollapsed] = useState(() => safeGetItem('mc-nav') !== '0')
   const navCollapsedRef = useRef(navCollapsed)
   navCollapsedRef.current = navCollapsed
   // Preview expand mode from the Web Preview tab collapses the left nav
@@ -679,7 +729,7 @@ export function useAppShell() {
   // unbounded. Above APPS_NAV_LIMIT visible entries the overflow is hidden until
   // the user expands (persisted).
   const APPS_NAV_LIMIT = 6
-  const [appsExpanded, setAppsExpanded] = useState(() => localStorage.getItem('mc-apps-expanded') === '1')
+  const [appsExpanded, setAppsExpanded] = useState(() => safeGetItem('mc-apps-expanded') === '1')
   const toggleAppsExpanded = useCallback(() => setAppsExpanded(v => { const next = !v; safeSetItem('mc-apps-expanded', next ? '1' : '0'); return next }), [])
   const appNavRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Monotonic stamp for app-nav fetches. Cancelling a pending RETRY is not enough:
@@ -904,7 +954,7 @@ export function useAppShell() {
   const discoverInRail = !useAppNavHidden().has(BUILTIN_SURFACE_NAV.apps.navId)
 
   const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice } = useShellKeyboard({
-    toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
+    toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut,
   })
 
   const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn } = useKiroUsageReadout()
@@ -989,14 +1039,6 @@ export function useAppShell() {
   // `mc:app:badge`-driven dynamic app counts. Secretary's badge flows through
   // the surface registry.
   const totalAttention = builtinAttention + Object.values(appBadges).reduce((a, b) => a + b, 0)
-  // The active session's title, for the tab title below. A slot whose title
-  // is its key or the backend placeholder has no real title yet (same rule
-  // as the chat popout).
-  const activeSessionTitle = useAppSelector(s => {
-    const key = s.chat.activeSlot
-    const title = key ? slotRowByKey(s.dashboard.slots, key)?.title : undefined
-    return key && title && !isUntitledSession({ key, title }) ? title : ''
-  })
 
   // Browser push notification on new notification — see src/hooks/useNativeNotification.ts
   useNativeNotification(botName, avatar)
@@ -1052,42 +1094,22 @@ export function useAppShell() {
   const closeMobileNav = isMobile ? closeMobileNavDrawer : undefined
   const { activePath, libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive } =
     useRouteActiveModel(location.pathname, location.search, advertisedNavItems)
-  // Browser tab title, detail first like the popout windows
-  // (`{{label}} — {{productName}}`): `[(N) ]<session> — Chat — <bot>` on chat,
-  // `[(N) ]<panel> — <bot>` on any other rail destination, bare `<bot>` when
-  // the route matches no row, and `[(N) ]<crew> — <bot>` while a remote crew's
-  // pane hides the local route (its name from the switcher's registry cache).
-  // A set `dashboard.instance_label` names this gateway between the detail and
-  // the product (`<detail> — <label> — <bot>`, or `<label> — <bot>`).
-  // The count stays in front so it survives tab truncation. Labels are
-  // resolved here, at render, so a language switch re-titles the tab.
-  const chatPanelLabel = i18nT('app.tab_title_chat')
+  // Browser tab title and history label: see `ShellTabTitle`. The active
+  // session's title is read there, not here: this hook renders the whole
+  // shell, and a session switch would re-render all of it only to retitle the tab.
   const titlePanelRow = isChat ? null : [...advertisedNavItems, ...sortedAppGroup].find(n => navRowActive(n.path))
-  const titleLabel = isChat
-    ? (activeSessionTitle ? i18nT('app.tab_title_session', { session: activeSessionTitle, panel: chatPanelLabel }) : chatPanelLabel)
-    : (titlePanelRow ? surfaceLabel(titlePanelRow) : '')
+  const panelLabel = titlePanelRow ? surfaceLabel(titlePanelRow) : ''
   const { data: instancesData } = useQuery({
     queryKey: ['instances'],
     queryFn: () => api.listInstances(),
     enabled: activeInstanceId !== null,
   })
-  const tabLabel = instancesData?.instances.find(i => i.id === activeInstanceId)?.name || titleLabel
+  const instanceName = instancesData?.instances.find(i => i.id === activeInstanceId)?.name || ''
   const tabProduct = instanceLabel ? i18nT('app.tab_title', { label: instanceLabel, productName: botName }) : botName
-  // A pop-out window titles itself (its frame under `pages/*PopoutFrame`), so
-  // the shell leaves its title alone there.
-  useEffect(() => {
-    if (isPopout) return
-    const base = tabLabel ? i18nT('app.tab_title', { label: tabLabel, productName: tabProduct }) : tabProduct
-    document.title = totalAttention > 0 ? `(${totalAttention}) ${base}` : base
-  }, [isPopout, totalAttention, tabProduct, tabLabel])
-  // Name the history entry on screen for the Back/Forward arrows' history
-  // menu (#17453): the session on chat, the page anywhere else, and nothing on
-  // a route with no rail row, so that entry is left out of the list. Re-run on
-  // every entry, because the name belongs to the entry, not to the route.
-  const historyLabel = isChat ? (activeSessionTitle || chatPanelLabel) : titleLabel
-  useEffect(() => {
-    labelCurrentRouteEntry(historyLabel)
-  }, [historyLabel, location.key])
+  const tabTitle = (
+    <ShellTabTitle isChat={isChat} isPopout={isPopout} panelLabel={panelLabel} instanceName={instanceName}
+      tabProduct={tabProduct} totalAttention={totalAttention} locationKey={location.key} />
+  )
   // Phone chat page: the header is ONE bar for both the shell and the
   // conversation. The chat page fills `#mobile-topbar-slot` (sessions toggle,
   // session title + menu) and `#mobile-topbar-trail-slot` (its overflow menu)
@@ -1110,11 +1132,12 @@ export function useAppShell() {
   const mobileNavOpen = mobileNavPhase === 'open'
 
   return {
+    tabTitle,
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, gatewayConnecting, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
     gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying, offlineCoverKind,
     focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
-    hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
+    hasRenderableMobileConnect, getActiveSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, resolvedMode, onboarded, markOnboarded, markImportOnboarded,
     firstRun, lookPreviewFrame, branding, botName, avatar, isMobile, bottomDock, activeInstanceId,
     macFullscreen, macInset, topReservePx, focusMode, toggleFocusMode, focusActive, topPeek, railPeek,

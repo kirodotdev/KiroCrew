@@ -560,11 +560,30 @@ class ChannelConfig:
         default="",
         metadata=_meta("Agent", "Agent override for this channel (empty = default)."),
     )
+    bot: str = field(
+        default="",
+        metadata=_meta(
+            "Channel Bot",
+            "Crew Bot (a config.agents key) whose own chat answers every thread in this "
+            "channel (empty = none). Set with !channel bot <name>.",
+        ),
+    )
     thread_follow: bool = field(
         default=True,
         metadata=_meta(
             "Thread Follow",
             "Respond to all messages in threads where bot was previously @mentioned.",
+        ),
+    )
+    shared_agent: str = field(
+        default="",
+        metadata=_meta(
+            "Agent Set By A Shared User",
+            "Written by Crew, not by hand: the Crew Bot a shared user put this channel "
+            "on with !channel agent. While it equals agent, a shared user may replace "
+            "or clear that agent; otherwise only the owner may. Empty when the owner "
+            "chose the agent. To make a shared user's agent yours, send !channel agent "
+            "<name> or empty this key.",
         ),
     )
 
@@ -576,11 +595,41 @@ class ChannelConfig:
             # Narrows to mention whatever the default is: a typo must not widen who
             # the channel answers.
             activation = ACTIVATION_MENTION
+        agent = section.get("agent")
+        shared_agent = section.get("shared_agent")
         return cls(
             activation=activation,
-            agent=section.get("agent"),
+            agent=agent,
+            bot=section.get("bot"),
             thread_follow=section.get("thread_follow"),
+            # A mark that names another agent is stale (the agent was changed by
+            # another writer since): the agent is the owner's, so the mark is dropped.
+            shared_agent=shared_agent if shared_agent and shared_agent == agent else "",
         )
+
+
+def drop_stale_shared_agents(data: dict) -> bool:
+    """Remove each ``slack.channels.<id>.shared_agent`` that names another agent.
+
+    The mark counts only beside the agent a shared user set. A raw edit that changes
+    ``agent`` leaves the mark behind, and the owner naming that Bot again later would
+    make it count again. Dropping it in the write that changes ``agent`` keeps the
+    owner's agent the owner's. Changes *data* in place; returns whether a mark was removed.
+    """
+    slack = data.get("slack")
+    channels = slack.get("channels") if isinstance(slack, dict) else None
+    if not isinstance(channels, dict):
+        return False
+    changed = False
+    for entry in channels.values():
+        if (
+            isinstance(entry, dict)
+            and "shared_agent" in entry
+            and entry["shared_agent"] != entry.get("agent")
+        ):
+            del entry["shared_agent"]
+            changed = True
+    return changed
 
 
 _VALID_CHANNEL_PREFIXES = ("C", "D", "G")

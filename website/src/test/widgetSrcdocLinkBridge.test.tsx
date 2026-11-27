@@ -296,6 +296,20 @@ describe('link-bridge shim', () => {
     expect(posted).toEqual([{ type: OPEN, url: '/schedule', tab: true }])
   })
 
+  // The two forms a Bot's Dashboard tab opens in its side panel: an artifact route
+  // and an absolute workspace path. The shim forwards both as written; the host
+  // decides where they open (pages/members/dashboardPanelLinks).
+  it.each([
+    ['artifact', '/artifacts/task-receipt'],
+    ['workspace file', '/home/me/ws/drafts/receipt%20one.md'],
+  ])('hands a _blank %s link to the host as written', async (_label, href) => {
+    const { posted } = install()
+    const host = mount(`<a id="t" href="${href}" target="_blank" rel="noopener noreferrer">open</a>`)
+    expect(click(host, '#t')).toBe(false)
+    await settle()
+    expect(posted).toEqual([{ type: OPEN, url: href }])
+  })
+
   it.each([
     ['fragment', '<a id="t" href="#part-2">jump</a>'],
     ['relative path', '<a id="t" href="/artifacts/slug">open</a>'],

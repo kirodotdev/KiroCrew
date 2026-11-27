@@ -132,7 +132,7 @@ async def _card_owns_sign_in(client: Any, server_name: str, managed: frozenset[s
     """Whether *server_name*'s card owns its consent: membership, and on KAS a Connect on KAS."""
     if not server_name or server_name not in managed:
         return False
-    if capabilities_of(client).backend == ACP_BACKEND_KAS:
+    if capabilities_of(client).backend == ACP_BACKEND_KAS:  # harness-ok: KAS Connect sign-in
         return await asyncio.to_thread(_card_signs_in_on_kas, server_name)
     return True
 
@@ -303,6 +303,71 @@ async def _notice_unresolved_control_plane(
     append_and_surface(
         state, slot, "notice", _unresolved_control_plane_notice(missing), "msg msg-warn"
     )
+
+
+#: Most servers the left-out notice names; the rest are counted.
+_LEFT_OUT_NOTICE_NAMES = 8
+#: ``meta.kind`` of that notice. The transcript keeps a row of this kind visible
+#: when it folds the turn's steps (``TurnBlock.isAlwaysVisible``).
+MCP_SERVERS_LEFT_OUT_KIND = "mcp_servers_left_out"
+
+
+def _crew_left_out_notice(provider: Any) -> str:
+    """The session-start notice naming the servers Crew left out as unstartable, or ``""``.
+
+    Read off the session's MCP report (``crew_left_out``, filled by
+    ``record_pruned`` from the array prune and the spec writer's command-not-found
+    drops, and pi's registration refusals), kept to the names still in its failed
+    bucket, each with its own reason. The reason says what is wrong (a command not
+    found, a same-named entry in pi's ``mcp.json``), so the row gives no cause of
+    its own.
+    """
+    report = _session_mcp_report(provider)
+    if report is None:
+        return ""
+    try:
+        left_out = getattr(report, "crew_left_out", ())
+        payload = report.payload() or {}
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("Failed to read the session MCP report", exc_info=True)
+        return ""
+    failed = set(payload.get("failed") or ())
+    failures = payload.get("failures") or {}
+    names = [n for n in left_out if isinstance(n, str) and n in failed]
+    if not names:
+        return ""
+    shown = [
+        (
+            f"{name}: {failures[name]}"
+            if isinstance(failures.get(name), str) and failures[name]
+            else name
+        )
+        for name in names[:_LEFT_OUT_NOTICE_NAMES]
+    ]
+    more = len(names) - len(shown)
+    one = len(names) == 1
+    # A reason holds commas of its own, so the entries are split by semicolons.
+    return (
+        f"⚠ This session started without MCP {'server' if one else 'servers'} "
+        + "; ".join(shown)
+        + (f" (+{more} more)" if more else "")
+        + f". {'Its' if one else 'Their'} tools are missing here. Fix what "
+        f"{'the reason names' if one else 'each reason names'}, then start a new chat."
+    )
+
+
+def _notice_crew_left_out_mcp(state: "DashboardState", slot: "_ChatSlot", provider: Any) -> None:
+    """One notice row on a new session that Crew started without some of its MCP servers.
+
+    A server whose command was not found never reaches the harness: the spec
+    writer drops it, or the array prune leaves it out. Apart from this row only
+    the session report and the Connections page say so. Best-effort.
+    """
+    notice = _crew_left_out_notice(provider)
+    if notice:
+        append_and_surface(
+            state, slot, "notice", notice, "msg msg-warn", meta={"kind": MCP_SERVERS_LEFT_OUT_KIND}
+        )
 
 
 #: ``meta.kind`` of the row that tells a chat its servers wait for a sign-in.

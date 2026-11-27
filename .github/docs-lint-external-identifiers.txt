@@ -107,7 +107,6 @@ remove_session_if_loaded
 # llama.cpp and whisper.cpp
 has_logits
 init_batch
-kv_unified
 llama_context
 llama_kv_cache
 output_all
@@ -177,7 +176,6 @@ get_spreadsheet
 label_message
 label_thread
 list_drafts
-list_events
 read_file_content
 read_slide_page
 read_slide_page_thumbnail

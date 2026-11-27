@@ -637,6 +637,21 @@ class AgentConfig:
             enum=["auto", "strict", "off"],
         ),
     )
+    harness_sandbox: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Per-harness sandbox floor",
+            'Optional sandbox floor per harness, as {"<harness id>": "auto" or '
+            '"strict"}, for example {"antigravity": "auto"}. A session on a listed '
+            "harness starts at the stricter of agent.sandbox and its floor, with its "
+            "credential mask applied, so that harness runs in Kiro Crew's OS sandbox "
+            "while agent.sandbox stays 'off' for every other harness, cron and MCP "
+            "server. The floor only raises a tier. It is read only for the harnesses "
+            "that are refused while the sandbox is off; an entry for Kiro CLI, KAS or "
+            "Claude Code, 'off', or any other value sets no floor. Applies to sessions "
+            "started after the change. Empty by default.",
+        ),
+    )
     sandbox_allow_no_isolation: bool = field(
         default=False,
         metadata=_meta(
@@ -927,9 +942,13 @@ class AgentConfig:
             "Subagents reuse a shared ACP runtime instead of spawning a fresh "
             "backend process per subagent. Reduces startup from ~3-5s to ~200ms "
             "and memory from about 0.55 GB to near-zero per subagent. Default ON for the "
-            "eligible backends (kiro-cli and codex); every other ACP backend "
-            "ignores it and runs a dedicated process per subagent. Set false to "
-            "opt an eligible backend back onto per-subagent processes.",
+            "eligible backends (kiro-cli, codex and KAS; on KAS only when the "
+            "chat's own process can close a session and keep its record, runs "
+            "engine 0.66.104 or newer, and serves no other chat; the agent steps of a "
+            "workflow run started from a KAS chat share that chat's process the same "
+            "way); every other ACP "
+            "backend ignores it and runs a dedicated process per subagent. Set "
+            "false to opt an eligible backend back onto per-subagent processes.",
         ),
     )
     chat_runtime_sharing_max_sessions: int = field(
@@ -1672,7 +1691,8 @@ class AgentConfig:
             "Delay between successive subagent spawns (initial fill and queued "
             "drain) to bound cold-start CPU/memory spikes. Starts stay "
             "serialized; the interval only decides how fast a wide fan-out "
-            "fills. Raise it if this "
+            "fills. Only a start that launches its own process waits on it or "
+            "resets it: one that shares its parent's runtime starts at once. Raise it if this "
             "host or the model provider is the bottleneck -- a spawn still has "
             "to leave spawn_min_memory_gb free after its start and clear the host "
             "budget, and the adaptive "

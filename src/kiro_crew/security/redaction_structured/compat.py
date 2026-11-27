@@ -42,7 +42,10 @@ the start of any unit still undecided at the buffer's end, of any hit that would
 be cut, and the last :data:`~.stream.TAIL` characters, so a partial anchor is
 never committed. A unit decided while still running (a private-key block with no
 END past its bound) is replaced and the stream drops input to that unit's end
-(:func:`discard_run`). Each committed window is read after the raw text that
+(:func:`discard_run`). A header, cookie or command-line value still running past its
+hold bound is replaced too, and the stream drops the rest of its line, or the rest
+of the text once that line names a private-key block (:func:`line_drop_tail`). Each
+committed window is read after the raw text that
 preceded it (:func:`look_behind`), as the whole text reads it. A read that fails
 while the detectors can still load holds the whole buffer, never a cut chosen
 without them.
@@ -60,7 +63,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import kiro_crew.security.redaction as redaction
-from kiro_crew.default_ignorable import DEFAULT_IGNORABLE
+from kiro_crew.default_ignorable import DEFAULT_IGNORABLE, DEFAULT_IGNORABLE_RUN_RE
 from kiro_crew.security.redaction_structured import charsets
 
 if TYPE_CHECKING:
@@ -391,6 +394,14 @@ class StreamRead:
     #: ``(BEGIN, END line end)`` of each private-key block that ended, in buffer
     #: offsets: once a BEGIN is committed, its end is the stream's next ``armour_from``.
     armour_blocks: tuple[tuple[int, int], ...] = ()
+    #: ``(start, end)`` of each Secret hit the read decided, in buffer offsets.
+    secrets: tuple[tuple[int, int], ...] = ()
+    #: The drop is the line drop of a header, cookie or command-line value replaced
+    #: at its hold bound (``headers._held``), and nothing that runs further: never
+    #: set with a drop to the end of the text. ``seen`` is what that line drop has
+    #: read so far for :func:`line_drop_tail`.
+    held: bool = False
+    seen: str = ""
 
 
 #: How every credential placeholder starts (``[REDACTED: credential]`` and the rest).
@@ -473,7 +484,12 @@ def _tail_cut(buf: str, base: int, cut: int) -> int:
 
 
 def stream_read(
-    context: str, buf: str, *, boundary: bool = False, armour_from: int = 0
+    context: str,
+    buf: str,
+    *,
+    boundary: bool = False,
+    armour_from: int = 0,
+    as_written: bool = False,
 ) -> StreamRead | None:
     """The detectors' hold on ``buf`` read after ``context``.
 
@@ -487,6 +503,10 @@ def stream_read(
     committed until a read succeeds or the stream flushes (whose batch plan fails
     closed on a failure); bound the hold if a read can fail for a whole long turn.
 
+    When ``context`` or ``buf`` holds a default-ignorable character, the text with
+    them removed is read too (:func:`_joined_stream_read`) and the smaller cut wins;
+    ``as_written`` reads only the text as written.
+
     With ``boundary`` (a display boundary: a tool call, a prompt, the turn's end)
     the fixed :data:`~.stream.TAIL` hold is skipped; every unit still undecided and
     every hit the cut would split is held as before.
@@ -496,10 +516,13 @@ def stream_read(
     nothing and overrides no Secret hit, so the committed text is the same wherever
     the cut falls in it, and it is not held.
     """
+    if not as_written and not (context.isascii() and buf.isascii()):
+        if DEFAULT_IGNORABLE_RUN_RE.search(context) or DEFAULT_IGNORABLE_RUN_RE.search(buf):
+            return _joined_stream_read(context, buf, boundary, armour_from)
     try:
         _load()
-        from kiro_crew.security.redaction_structured.model import IDENTIFIER, SECRET
-        from kiro_crew.security.redaction_structured.stream import TAIL
+        from kiro_crew.security.redaction_structured.model import IDENTIFIER, SECRET, TAIL_LINE
+        from kiro_crew.security.redaction_structured.stream import TAIL, span_tail
 
         with look_behind(context, buf, armour_from):
             read = _read(buf, final=False)
@@ -515,14 +538,19 @@ def stream_read(
         for h in read.resolved
         if not (h.tier == IDENTIFIER and h.detector == "structure" and not h.structural)
     ]
+    secrets = tuple((h.start - base, h.end - base) for h in resolved if h.tier == SECRET)
     n = base + len(buf)
     tail_hit = next((h for h in resolved if h.tier == SECRET and h.tail and h.end == n), None)
     if tail_hit is not None and (open_from is None or open_from >= tail_hit.start):
+        tail, seen = span_tail(read.hits, tail_hit, read.window)
         return StreamRead(
             tail_hit.start - base,
-            tail_hit.tail,
+            tail,
             tag=_tag(tail_hit.rule_id),
             armour_blocks=blocks,
+            secrets=secrets,
+            held=tail == TAIL_LINE,
+            seen=seen,
         )
     cut = n if boundary else _tail_cut(buf, base, n - TAIL)
     undecided = open_from is not None
@@ -541,17 +569,136 @@ def stream_read(
             if first < cut < h.end or first < cut == h.end < n:
                 cut = max(base, first)
                 moved = undecided = True
-    return StreamRead(cut - base, undecided=undecided, armour_blocks=blocks)
+    return StreamRead(cut - base, undecided=undecided, armour_blocks=blocks, secrets=secrets)
+
+
+def _joined_stream_read(
+    context: str, buf: str, boundary: bool, armour_from: int
+) -> StreamRead | None:
+    """:func:`stream_read` of ``buf`` as written and without its ignorable runs, joined.
+
+    The view's offsets are mapped back onto ``buf``. A tail of either read that starts
+    at or before the other read's cut is dropped from there (the view's on a tie), so a
+    unit the view reads from an earlier start never streams its head, and one only the
+    view decides is dropped rather than held growing. Otherwise the smaller cut wins,
+    undecided while either read reports a tail, so the floor never commits into it. When
+    the cuts differ, a Secret hit either read decided that starts before the cut but
+    that the window committed alone does not redact (its key ID comes later) moves the
+    cut back to its start, undecided. Every private-key block either read ended is kept,
+    so the floor repair and the stream's resume point see a block whose header only the
+    view reads. A cut inside a block moves back to its BEGIN, undecided, so the resume
+    point never skips a body not yet committed; when that BEGIN falls inside another
+    block, to that one's too. A held cut that leaves more of ``buf`` than the longest
+    private-key block drops from there, as a key with no END does, when it was walked
+    back (blocks the readings split differently can chain) or when more ignorable
+    characters than that are held (the view counts its own bounds without them). Any
+    other hold is bounded by its own unit.
+    """
+    raw = stream_read(context, buf, boundary=boundary, armour_from=armour_from, as_written=True)
+    if raw is None:
+        return None
+    view_context, view_buf, view_armour_from = redaction._ignorable_view(context, buf, armour_from)
+    view = stream_read(
+        view_context, view_buf, boundary=boundary, armour_from=view_armour_from, as_written=True
+    )
+    if view is None:
+        return None
+    to_text = redaction._view_to_text(context + buf)
+
+    def on_buf(offset: int) -> int:
+        # A view offset, negative inside the context, as an offset in ``buf``.
+        return to_text(len(view_context) + offset) - len(context)
+
+    view_blocks = {(on_buf(begin), on_buf(end - 1) + 1) for begin, end in view.armour_blocks}
+    blocks = tuple(sorted(view_blocks.union(raw.armour_blocks)))
+    view_cut = on_buf(view.cut)
+    for cut, read, other in ((view_cut, view, raw.cut), (raw.cut, raw, view_cut)):
+        if read.tail and cut <= other:
+            return StreamRead(
+                cut,
+                read.tail,
+                tag=read.tag,
+                armour_blocks=blocks,
+                held=read.held,
+                seen=read.seen,
+            )
+    cut = min(raw.cut, view_cut)
+    undecided = raw.undecided or view.undecided or bool(raw.tail or view.tail)
+    if raw.cut != view_cut:
+        # A Secret hit the higher read decided can rest on text past the lower cut (a
+        # key ID after its secret), which the window committed alone never reads.
+        hits = raw.secrets + tuple((on_buf(s), on_buf(e - 1) + 1) for s, e in view.secrets)
+        if any(start < cut for start, _ in hits):
+            window = buf[:cut]
+            with look_behind(context, window, armour_from):
+                spans = redaction._credential_redaction_plan(window, token_param_prefixes=())[0]
+            # The plan's spans are sorted and disjoint: only the last one starting at or
+            # before a hit can cover it.
+            starts = [a for a, _, _ in spans]
+
+            def covered(start: int, end: int) -> bool:
+                i = bisect.bisect_right(starts, start) - 1
+                return i >= 0 and spans[i][1] >= end
+
+            missed = [start for start, end in hits if start < cut and not covered(start, end)]
+            if missed:
+                cut, undecided = min(missed), True
+    # One walk from the last BEGIN back: a move only lowers the cut, to a BEGIN.
+    moved = False
+    for begin, end in reversed(blocks):
+        if begin < cut < end:
+            cut, moved = max(begin, 0), True
+    from kiro_crew.security.redaction_structured.table import TABLE
+
+    # BEGIN line, body bound and END line of the longest block the reader reports.
+    longest = max(
+        len(row.begin) + len(row.end) + 2 * (row.type_max + len(row.suffix)) + row.max_block
+        for row in TABLE.armour
+    )
+    if len(buf) - cut > longest:
+        from kiro_crew.security.redaction_structured.model import TAIL_ALL
+
+        held = buf[cut:]
+        if moved or len(held) - len(DEFAULT_IGNORABLE_RUN_RE.sub("", held)) > longest:
+            return StreamRead(cut, TAIL_ALL, armour_blocks=blocks)
+    return StreamRead(cut, undecided=undecided or moved, armour_blocks=blocks)
 
 
 def discard_run(tail: str, pad: int, buf: str) -> tuple[int, int, bool]:
     """``(dropped, pad, done)`` for a dropped unit's continuation in ``buf``.
 
-    The structured stream drops with the same reader, :func:`.stream.discard`.
+    The structured stream drops with the same reader, :func:`.stream.discard`. A run
+    reads on through default-ignorable characters, as the credential plan reads it,
+    so one inside a later chunk does not end the drop and stream the rest of the run.
     """
     from kiro_crew.security.redaction_structured.stream import discard
 
-    return discard(tail, pad, buf)
+    dropped, pad, done = discard(tail, pad, buf)
+    n = len(buf)
+    while done and pad == 0 and dropped < n and ord(buf[dropped]) in DEFAULT_IGNORABLE:
+        skip = dropped
+        while skip < n and ord(buf[skip]) in DEFAULT_IGNORABLE:
+            skip += 1
+        if skip == n:
+            return n, 0, False
+        more, pad, done = discard(tail, 0, buf[skip:])
+        if not more:
+            # The run ended before these characters, which stay as written.
+            return dropped, pad, done
+        dropped = skip + more
+    return dropped, pad, done
+
+
+def line_drop_tail(tail: str, seen: str, buf: str) -> tuple[str, str]:
+    """``(tail, seen)`` for the next :func:`discard_run` over ``buf``: a line drop
+    takes the rest of the text once the line it drops names a private-key block
+    (:func:`.stream.line_tail`, which *seen* belongs to); any other tail stays."""
+    from kiro_crew.security.redaction_structured.model import TAIL_LINE
+    from kiro_crew.security.redaction_structured.stream import discard, line_tail
+
+    if tail != TAIL_LINE:
+        return tail, seen
+    return line_tail(seen, buf[: discard(tail, 0, buf)[0]])
 
 
 def stream_context_max() -> int:

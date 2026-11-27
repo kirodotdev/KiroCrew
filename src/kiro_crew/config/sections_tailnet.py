@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from kiro_crew.config.fields import _meta, _safe_bool, _safe_dict
+from kiro_crew.config.fields import _meta, _safe_bool, _safe_dict, _safe_int
 from kiro_crew.config.resolution import _OBSERVED_DEGRADED_SECTIONS, DEGRADED_TAILSCALE
 from kiro_crew.config.sections_defaults import SectionReader
 
@@ -98,6 +98,18 @@ class TailscaleConfig:
             "refresh cookie renews from any allowed node. Existing chains keep "
             "the binding they were opened with; the change applies to sessions "
             "started after the next gateway start.",
+            restart=True,
+        ),
+    )
+    https_port: int = field(
+        default=443,
+        metadata=_meta(
+            "Tailscale HTTPS Port",
+            "The HTTPS port `tailscale serve` fronts the dashboard on. The trusted "
+            "tailnet origin carries it when it is not 443 (https://<name>:<port>). "
+            "Run `kirocrew tailnet down` before changing it: Kiro Crew manages only "
+            "the port it is set to. A value outside 1-65535 reads as 443. Takes "
+            "effect at the next gateway start.",
             restart=True,
         ),
     )
@@ -276,6 +288,14 @@ def _tailscale_config_from(
             "'node' (the narrower scope)",
             raw_pin_scope,
         )
+    raw_https_port = section.get("https_port")
+    https_port = _safe_int(raw_https_port, 0)
+    if not 0 < https_port <= 65535:
+        logger.warning(
+            "dashboard.tailscale.https_port %r is not a port from 1 to 65535; using 443",
+            raw_https_port,
+        )
+        https_port = section.default("https_port")
     if trust_identity and not allowed_logins:
         logger.error(
             "dashboard.tailscale.trust_identity is on but allowed_logins is "
@@ -293,5 +313,6 @@ def _tailscale_config_from(
         # only ever leave the binding ON, never silently reopen the replay path
         # the binding closes.
         bind_refresh_chains=_safe_bool(section.get("bind_refresh_chains"), True),
+        https_port=https_port,
         keep_awake=section.read("keep_awake", _safe_bool),
     )

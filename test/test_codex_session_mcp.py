@@ -1516,7 +1516,7 @@ try:
         out["steer_reached_model"] = any("STEER-MID-TURN" in e.get("body", "") for e in log[(held or [0])[0] + 1:])
         out["close"] = a.call("session/close", {"sessionId": sid})
         mark = len(a.frames)
-        out["load_same"] = a.call("session/load", {"sessionId": sid, "cwd": work, "mcpServers": []})
+        out["load_same"] = a.call("session/resume", {"sessionId": sid, "cwd": work, "mcpServers": []})
         a.until(lambda m: False, 3)
         out["load_same_replay"] = "TURN-ONE-PELICAN" in json.dumps(since(a, mark, sid))
         out["recall_same"] = a.call("session/prompt", {"sessionId": sid, "prompt": text("RECALL-SAME: which word?")})
@@ -1530,7 +1530,7 @@ if out.get("sid"):
     try:
         b.call("initialize", {"protocolVersion": 1, "clientCapabilities": {"fs": {}}})
         mark = len(b.frames)
-        out["load_fresh"] = b.call("session/load", {"sessionId": sid, "cwd": work, "mcpServers": []})
+        out["load_fresh"] = b.call("session/resume", {"sessionId": sid, "cwd": work, "mcpServers": []})
         b.until(lambda m: False, 3)
         out["load_fresh_replay"] = "TURN-ONE-PELICAN" in json.dumps(since(b, mark, sid))
         out["recall_fresh"] = b.call("session/prompt", {"sessionId": sid, "prompt": text("RECALL-FRESH: which word?")})
@@ -1648,7 +1648,7 @@ def test_real_codex_acp_compact_pair_reads_as_started_then_completed(codex_turns
 
 @pytest.mark.real_adapter
 def test_real_codex_acp_closed_session_loads_again(codex_turns):
-    """Codex's membership in ``ACP_BACKENDS_SESSION_SHARING``: close, then load restores."""
+    """Codex's membership in ``ACP_BACKENDS_SESSION_SHARING``: close, then resume restores."""
     m, ctx = codex_turns, codex_turns["_context"]
     close = m.get("close") or {}
     assert "result" in close and not close.get("error"), ctx

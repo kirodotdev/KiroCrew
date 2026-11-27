@@ -947,14 +947,17 @@ def _scripted_turns(state, monkeypatch, *turns) -> None:
 
 
 async def _run_app_turn_and_successors(state, slot) -> list[tuple[str, str]]:
-    await chat_runner._run_chat(state, slot, "from the app", _turn_actor="app")
-    for _ in range(5):
-        successor = slot.task
-        if successor is None or successor.done():
-            break
-        await await_until(successor, what="the successor turn finishing")
-    assert slot.task is None or slot.task.done()
-    return [(m["role"], m["content"]) for m in slot.drain()]
+    # The app's stream reads the queue, so it holds it for the whole cycle, as
+    # the Crew API does; with no reader a turn's end empties the queue.
+    with slot.pending_consumer():
+        await chat_runner._run_chat(state, slot, "from the app", _turn_actor="app")
+        for _ in range(5):
+            successor = slot.task
+            if successor is None or successor.done():
+                break
+            await await_until(successor, what="the successor turn finishing")
+        assert slot.task is None or slot.task.done()
+        return [(m["role"], m["content"]) for m in slot.drain()]
 
 
 @pytest.mark.asyncio

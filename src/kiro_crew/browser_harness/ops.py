@@ -227,6 +227,9 @@ class OpContext:
     #: predicate the shim applies before the op (``browser_harness.url_gate``), plus
     #: the origins only the gateway knows it serves under.
     url_allowed: Callable[[str], bool] = lambda _url: True
+    #: The app's approved ``browserSites`` when the session is an app's own, so an
+    #: app browser recipe judges them again inside its click call; empty otherwise.
+    sites: tuple[str, ...] = ()
     screenshot_dir: Path = field(default_factory=lambda: Path(os.getcwd()))
     sleep: _SleepFn = _no_sleep
     now: Callable[[], float] = time.monotonic
@@ -495,7 +498,7 @@ def _walker_expression(method: str, *args: Any) -> str:
     return f"{WALKER_SOURCE}.{method}({rendered})"
 
 
-async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
+async def _page(ctx: OpContext, method: str, *args: Any, frame_refs: bool = True) -> Any:
     """Call one method of the walker in the page: the ONLY use of the ``js`` and
     ``js_isolated`` helpers (:data:`PAGE_WORLD_METHODS` run in the first, the rest,
     guard counts included, in the walker's isolated world).
@@ -504,13 +507,14 @@ async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
     the gateway's session (``resolve`` then answers page pixels). The guards'
     reads -- what holds focus, how many asked or password fields there are --
     take the cross-origin frames into account, failing closed when one cannot
-    be read.
+    be read. With ``frame_refs=False``, arguments stay literal top-document
+    values, even when a CSS selector has the shape of a frame ref.
     """
     if method not in ("stamp", "state"):
         refused = await _refuse_current_url(ctx)
         if refused is not None:
             raise _PageRefused(refused)
-    framed = split_frame_ref(args[0]) if args else None
+    framed = split_frame_ref(args[0]) if frame_refs and args else None
     if framed is not None:
         frames = ctx.frames()
         if frames is not None:

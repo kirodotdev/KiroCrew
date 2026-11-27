@@ -6,7 +6,10 @@ sends it, through the real non-clean rebuild, then reads the store, the rendered
 ``kirocrew.json`` and ``GET /api/mcp``. The edited raw entry must reach the one
 ``playwright-mcp`` mount rather than mount again as ``playwright-mcp-2``, and with a
 Kiro global that declares ``playwright-mcp`` itself the toggle must reach that
-declared mount rather than the raw key's ``playwright-mcp-2``.
+declared mount rather than the raw key's ``playwright-mcp-2``. The last three cases
+drive ``POST /api/mcp/toggle-tool``, which a change card or a direct call sends: the
+alias edits the raw Kiro global entry, an alias of two raw keys is refused, and a
+name the store holds itself keeps its list under that name.
 """
 
 from __future__ import annotations
@@ -94,13 +97,13 @@ def _write(path: Path, servers: dict) -> None:
     path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
 
 
-def _apply_request(change: dict) -> MagicMock:
+def _owner_request(body: dict) -> MagicMock:
     state = MagicMock()
     state._background_tasks = set()
     state.owner_id = ""
     request = MagicMock(spec=web.Request)
     request.app = {"state": state}
-    attach_body(request, {"changes": [change]})
+    attach_body(request, body)
     return owner_claims(request)
 
 
@@ -130,7 +133,7 @@ async def _toggle(*, enabled: bool, kiro_global: bool) -> dict:
         "kiroGlobal": kiro_global,
         "toolOverrides": {TOOL: enabled},
     }
-    response = await mcp_mod.api_mcp_apply(_apply_request(change))
+    response = await mcp_mod.api_mcp_apply(_owner_request({"changes": [change]}))
     assert response.status == 200
     body = json.loads(response.body)
     assert body["rebuild"]["ok"] is True
@@ -299,3 +302,53 @@ def test_a_spec_already_holding_both_mounts_folds_back_to_one(
     assert "disabledTools" not in spec["mcpServers"][ALIAS]
     refs = [*spec.get("tools", []), *spec.get("allowedTools", [])]
     assert not [ref for ref in refs if isinstance(ref, str) and f"{ALIAS}-2" in ref]
+
+
+async def _toggle_tool(server: str) -> web.Response:
+    body = {"server": server, "tool": TOOL, "enabled": False}
+    return await mcp_mod.api_mcp_toggle_tool(_owner_request(body))
+
+
+@pytest.mark.asyncio
+async def test_toggle_tool_by_alias_edits_the_raw_key_entry_without_a_stub(
+    home: SimpleNamespace,
+) -> None:
+    raw = {"command": home.commands["raw"]}
+    _write(home.kiro_global, {RAW: raw})
+
+    response = await _toggle_tool(ALIAS)
+
+    assert response.status == 200
+    servers = json.loads(home.kiro_global.read_text(encoding="utf-8"))["mcpServers"]
+    assert servers == {RAW: dict(raw, disabledTools=[TOOL])}
+
+
+@pytest.mark.asyncio
+async def test_toggle_tool_by_an_alias_of_two_raw_keys_is_409_and_writes_nothing(
+    home: SimpleNamespace,
+) -> None:
+    _write(home.kiro_global, {"team/foo": {"command": "a"}, "other:team/foo": {"command": "b"}})
+    before = home.kiro_global.read_bytes()
+
+    response = await _toggle_tool("team-foo")
+
+    assert response.status == 409
+    assert json.loads(response.body)["code"] == "mcp_server_name_ambiguous"
+    assert home.kiro_global.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_toggle_tool_keeps_the_list_under_a_name_the_store_holds(
+    home: SimpleNamespace,
+) -> None:
+    """The store holds ``playwright-mcp`` itself, so the raw Kiro global key mounts
+    beside it as ``playwright-mcp-2``: the row's list stays under its own name."""
+    raw = {"command": home.commands["raw"]}
+    _write(home.store, {ALIAS: {"command": home.commands["global"]}})
+    _write(home.kiro_global, {RAW: raw})
+
+    response = await _toggle_tool(ALIAS)
+
+    assert response.status == 200
+    servers = json.loads(home.kiro_global.read_text(encoding="utf-8"))["mcpServers"]
+    assert servers == {RAW: raw, ALIAS: {"disabledTools": [TOOL]}}

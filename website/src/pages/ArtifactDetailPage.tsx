@@ -17,7 +17,7 @@
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowUp, Camera, GitFork, Globe, RefreshCw } from 'lucide-react'
+import { ArrowUp, Camera, GitFork, Globe, RefreshCw, Upload } from 'lucide-react'
 import { fetchSlots } from '../store/dashboardSlice'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { api } from '../api/client'
@@ -29,6 +29,7 @@ import { writePrefill } from '../utils/navIntent'
 import type { Artifact, ArtifactComment, CommentAnchor } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { fmtDate, toDate } from '../i18n/format'
 import { errMessage } from '../utils/thunkError'
 import ErrorNotice from '../components/ErrorNotice'
 import { useArtifactDetailPageState, useArtifactDetailPageDocument } from './useArtifactDetailPageDocument'
@@ -418,6 +419,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
 }
 
 
+// A dated publication warns in its last week (display only, the browser's clock).
+const EXPIRY_WARNING_MS = 7 * 24 * 60 * 60 * 1000
+
 // Static theme-token class sets (Tailwind JIT needs literal strings, not
 // interpolated tone names).
 const _SYNC_TONES: Record<string, { wrap: string; btn: string }> = {
@@ -427,8 +431,9 @@ const _SYNC_TONES: Record<string, { wrap: string; btn: string }> = {
 }
 
 // `busy` while the page's own save is on the wire: a flush started then would
-// re-send that save's base token and be refused as stale.
-function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }: { artifact: Artifact; busy?: boolean; onPulled: () => void; onBeforeMutate?: () => Promise<void> }) {
+// re-send that save's base token and be refused as stale. `onPublish` opens the
+// page's Publish panel; without it an expired publication offers no button.
+function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate, onPublish }: { artifact: Artifact; busy?: boolean; onPulled: () => void; onBeforeMutate?: () => Promise<void>; onPublish?: () => void }) {
   const fm = artifact.fork_metadata
   const pub = artifact.publication
   const [pulling, setPulling] = useState(false)
@@ -439,6 +444,8 @@ function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }
   // actually ahead) — rendered in a neutral tone, not danger-red, so a no-op
   // pull on an up-to-date fork doesn't look like a failure.
   const [notice, setNotice] = useState('')
+  // Read once per mount: the warning is a date, never a countdown.
+  const [now] = useState(() => Date.now())
   // The whole banner is gated on a registered publish provider: the public
   // edition ships an empty registry, so providers resolves to [] and this
   // component renders nothing (an artifact can only carry fork_metadata /
@@ -550,6 +557,50 @@ function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }
   // No registered provider → no sync surface (public edition renders nothing).
   if (providers.length === 0) return null
 
+  // Provider label from the registry's self-described display_name — never a
+  // hardcoded vendor string.
+  const provLabel = providers.find((p) => p.name === pub?.provider)?.display_name
+    || pub?.provider || 'the remote'
+  // The publication's own link, scheme-checked before it becomes clickable so a
+  // provider cannot smuggle a javascript:/file: URL into it. Worded like the
+  // Publish panel's link to a public-web copy, since both open the published page.
+  const publishedUrl = safeHttpUrl(pub?.view_url || '')
+  const expiresAt = toDate(pub?.expires_at || null)
+  const expiresOn = expiresAt ? fmtDate(expiresAt) : ''
+  const expiringSoon = !!expiresAt && expiresAt.getTime() - now <= EXPIRY_WARNING_MS
+  const expiryLine = expiresOn && i18nT(expiringSoon
+    ? 'pages.artifactDetailPage.publication_expires_soon_on'
+    : 'pages.artifactDetailPage.publication_expires_on', { date: expiresOn })
+  const publishedLink = publishedUrl && (
+    <a href={publishedUrl} target="_blank" rel="noopener noreferrer" className="underline hover:no-underline">
+      {i18nT('pages.artifactDetailPage.open_published_page')}
+    </a>
+  )
+
+  // The gateway decides `expired`. The copy is gone, so this line stands in for
+  // every banner below, a fork's included: none of them may link to it, publish
+  // edits to it, or pull from or overwrite it.
+  if (pub?.expired) {
+    return (
+      <div data-testid="publication-banner" className={`mb-3 flex items-center gap-2 px-3 py-2 rounded-md border text-[13px] ${_SYNC_TONES.warn.wrap}`}>
+        <Globe size={14} className="lucide-inline shrink-0" />
+        <span className="flex-1">
+          {i18nT('pages.artifactDetailPage.published_to_provider_expired', { provider: provLabel, date: expiresOn })}
+        </span>
+        {onPublish && (
+          <Btn
+            type="button"
+            onClick={onPublish}
+            className="gap-1 px-2 py-0.5 text-[12px] font-medium border-warn/50 hover:bg-warn/10"
+          >
+            <Upload size={12} />
+            {i18nT('pages.artifactDetailPage.publish')}
+          </Btn>
+        )}
+      </div>
+    )
+  }
+
   // The provider could not read the remote copy and said why
   // (PublishProvider.source_problem). The local copy stays open; drift is
   // unknown, so this replaces the pull / publish prompts.
@@ -563,20 +614,6 @@ function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }
     )
   }
 
-  // Provider label from the registry's self-described display_name — never a
-  // hardcoded vendor string.
-  const provLabel = providers.find((p) => p.name === pub?.provider)?.display_name
-    || pub?.provider || 'the remote'
-  // The publication's own link, scheme-checked before it becomes clickable so a
-  // provider cannot smuggle a javascript:/file: URL into it. Worded like the
-  // Publish panel's link to a public-web copy, since both open the published page.
-  const publishedUrl = safeHttpUrl(pub?.view_url || '')
-  const publishedLink = publishedUrl && (
-    <a href={publishedUrl} target="_blank" rel="noopener noreferrer" className="underline hover:no-underline">
-      {i18nT('pages.artifactDetailPage.open_published_page')}
-    </a>
-  )
-
   // Local edits not yet published, with no remote drift: a visible prompt to
   // publish them. (When the remote is ALSO ahead, the pull/overwrite banner
   // below handles it and already reassures that local edits are checkpointed.)
@@ -587,6 +624,7 @@ function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }
         <span className="flex-1">
           {i18nT('pages.artifactDetailPage.local_changes_not_yet_published_to')} {provLabel}.
           {publishedLink && <>{' · '}{publishedLink}</>}
+          {expiryLine && <>{' · '}{expiryLine}</>}
         </span>
         {/* No hand-off: editor buffer editedContent may be dirty */}
         <ErrorNotice variant="inline" message={error} />
@@ -611,19 +649,20 @@ function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }
   // Not a fork and the remote copy isn't ahead: nothing to sync, so a published
   // artifact shows only where its published copy lives.
   if (!fm && !upstreamAhead) {
-    if (!pub || !publishedLink) return null
-    const info = _SYNC_TONES.info
+    if (!pub || !publishedUrl) return null
+    const tone = _SYNC_TONES[expiringSoon ? 'warn' : 'info']
     return (
-      <div className={`mb-3 flex items-center gap-2 px-3 py-2 rounded-md border text-[13px] ${info.wrap}`}>
+      <div data-testid="publication-banner" className={`mb-3 flex items-center gap-2 px-3 py-2 rounded-md border text-[13px] ${tone.wrap}`}>
         <Globe size={14} className="lucide-inline shrink-0" />
         <span className="flex-1">
           {i18nT('pages.artifactDetailPage.published_to_provider', { provider: provLabel })}{' · '}{publishedLink}
+          {expiryLine && <>{' · '}{expiryLine}</>}
         </span>
       </div>
     )
   }
 
-  const tone = _SYNC_TONES[upstreamAhead ? 'warn' : 'info']
+  const tone = _SYNC_TONES[upstreamAhead || expiringSoon ? 'warn' : 'info']
   // Provider-supplied (fork/publication metadata) — validate the scheme before
   // rendering a clickable link so a malicious provider can't smuggle a
   // javascript:/file: URL into "View remote".
@@ -650,6 +689,14 @@ function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }
             <a href={upstreamUrl} target="_blank" rel="noopener noreferrer" className="underline hover:no-underline">
               {i18nT('pages.artifactDetailPage.view_remote')}
             </a>
+          </>
+        )}
+        {/* A fork's "View remote" is its origin, so it names where its publication lives. */}
+        {expiryLine && (
+          <>
+            {' · '}
+            {fm && <>{i18nT('pages.artifactDetailPage.published_to_provider', { provider: provLabel })}{' · '}</>}
+            {expiryLine}
           </>
         )}
         {upstreamAhead && (

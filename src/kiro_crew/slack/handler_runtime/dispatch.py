@@ -46,6 +46,7 @@ if TYPE_CHECKING:
         _SlackTurn,
         _thread_agents,
         await_replay_gap,
+        channel_handler,
         closed_dashboard_owner_refused,
         current_context,
         expire_slack_options,
@@ -199,9 +200,14 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         target_slot=_target_slot,
         route_pinned=route_pinned,
         user_meta=turn.user_meta,
-        # A pinned answer is delivered to its slot rather than run natively, so
-        # an action button's payload must ride along (unpinned keeps today's path).
-        turn_context=turn.action_context if route_pinned else None,
+        # Pinned answers and channel-handler clicks carry their payload to the slot.
+        turn_context=(
+            turn.action_context
+            if route_pinned
+            or channel_handler.channel_bot(channel)
+            or channel_handler.channel_conductor(channel) is not None
+            else None
+        ),
         interpret_commands=interpret_commands,
         had_voice_input=turn.had_voice_input,
     ):

@@ -50,6 +50,9 @@ differently.
 | Needed on the remote | `sshd` | the SSM agent and an instance role for SSM |
 | Revoking access | rotate or remove the key | edit the IAM policy |
 
+On a Windows gateway the add form starts on **AWS SSM**, because the SSH tunnel is
+not supported there. A form filled in from an add link stays on SSH.
+
 Choose **SSH** for a machine you already `ssh` into — a dev host, a home server,
 anything with an `~/.ssh/config` entry. It is the shorter path: if
 `ssh <host>` works without a password prompt, so does this.

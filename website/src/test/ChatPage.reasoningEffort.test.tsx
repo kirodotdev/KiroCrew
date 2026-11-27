@@ -164,6 +164,13 @@ describe('ChatInput reasoning effort on the model chip', () => {
     expect(modelSupportsEffort('claude-haiku-5')).toBe(false)
     expect(modelSupportsEffort('claude-haiku')).toBe(false)
   })
+
+  it('modelSupportsEffort answers the bare haiku alias from the registry row that owns it', () => {
+    // Claude Code passes `haiku` through to its current Haiku; the row listing
+    // the alias says which release that is, as it does for `opus` and `sonnet`.
+    expect(modelSupportsEffort('haiku')).toBe(true)
+    expect(modelSupportsEffort('some-haiku-thing')).toBe(false)
+  })
 })
 
 const mockApi = vi.hoisted(() => ({ chatSlotReasoningEffort: vi.fn().mockResolvedValue({ ok: true }), effortLevels: vi.fn().mockResolvedValue(['low', 'medium', 'high', 'xhigh', 'max']) }))

@@ -75,6 +75,17 @@ export interface ChatHistorySearchResponse {
   counts?: Partial<Record<ChatHistoryKind, number>>
 }
 
+/** `history/counts`: every tab's count over the chat's whole history. */
+export interface ChatHistoryCountsResponse {
+  counts: Partial<Record<ChatHistoryKind, number>>
+  total: number
+  /** False when the server stopped at its row budget before the first row. */
+  complete: boolean
+  /** True while the chat's search cache is being built: these counts came
+   *  from a row walk, and a read once the build is done can differ. */
+  indexing?: boolean
+}
+
 export interface ChatHistoryAroundResponse {
   messages: ChatMessage[]
   start: number
@@ -114,7 +125,9 @@ function themeConsentSha(colorTheme?: string): string | null {
   return stored
 }
 
-type CrewWorkersAnswer = { root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause }
+/** `closed_omitted`: the root's closed workers the answer left out, older than every
+ *  closed one it lists (it lists the newest `closed_limit`, 200 unless asked). */
+type CrewWorkersAnswer = { root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause; closed_omitted?: number }
 /** The last answer and ETag of each root's worker list, for If-None-Match. */
 const crewWorkersEtags = new Map<string, { etag: string; data: CrewWorkersAnswer }>()
 
@@ -212,6 +225,16 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
       return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/history/search?' + qs, signal ? { signal } : undefined)
         .then(j) as Promise<ChatHistorySearchResponse>
     },
+    /** Every tab's count for a query and day, over the whole chat: one read
+     *  shared by every tab, so a tab switch never changes a count. */
+    chatHistoryCounts: (slot: string, params: Pick<ChatHistorySearchParams, 'q' | 'since' | 'until'>, signal?: AbortSignal) => {
+      const qs = new URLSearchParams()
+      if (params.q) qs.set('q', params.q)
+      if (params.since !== undefined) qs.set('since', String(params.since))
+      if (params.until !== undefined) qs.set('until', String(params.until))
+      return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/history/counts?' + qs, signal ? { signal } : undefined)
+        .then(j) as Promise<ChatHistoryCountsResponse>
+    },
     /** Rows `[start, end)`, or a range centred on `mid` at its current position. */
     chatHistoryAround: (slot: string, start: number, end: number, signal?: AbortSignal, mid?: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/history/around?start=' + start + '&end=' + end + (mid ? '&mid=' + encodeURIComponent(mid) : ''), signal ? { signal } : undefined)
@@ -229,11 +252,13 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  through another worker (`GET /api/chat/slots/{root}/crew-workers`). */
     /** A closed root (its tab gone) still answers, from saved data:
      *  `root_closed: true` and its saved `root_title`. */
-    crewWorkers: async (root: string): Promise<CrewWorkersAnswer> => {
+    crewWorkers: async (root: string, closedLimit?: number): Promise<CrewWorkersAnswer> => {
       // Revalidate with the last ETag (sent as received, weak `W/` prefix included:
       // If-None-Match compares weakly). A 304 means unchanged: keep the cached list.
+      // The tag is a digest of the body, so another `closed_limit` matches only an identical list.
       const hit = crewWorkersEtags.get(root)
-      const r = await fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers', hit ? { headers: { 'If-None-Match': hit.etag } } : undefined)
+      const query = closedLimit === undefined ? '' : '?closed_limit=' + closedLimit
+      const r = await fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers' + query, hit ? { headers: { 'If-None-Match': hit.etag } } : undefined)
       if (r.status === 304 && hit) return hit.data
       const data: CrewWorkersAnswer = await j(r)
       const etag = r.headers?.get('etag')
@@ -353,7 +378,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     },
     /** Create a chat slot on this machine. A session on a connected crew is
      *  created on that crew and opened through its window, never here. */
-    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, project_from_slot?: string, start_mode_default?: boolean) => {
+    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, project_from_slot?: string, start_mode_default?: boolean, project?: string) => {
       const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
         () => fetch('/api/dashboard/config').then(j),
       )
@@ -385,6 +410,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         // approval mode (`dashboard.default_approval_mode`). Never sent for an
         // app page's or a hand-off's create, which keep how they start.
         ...(start_mode_default ? { start_mode_default: true } : {}),
+        // The new chat's project, judged and applied by the server before the chat
+        // is first published; a refused directory makes no chat at all.
+        ...(project ? { project } : {}),
       }).then(j).then(takeSessionFolderNotice) as Promise<ChatSlot>
     },
     /** Create, or reopen, the person's chat a built-in app's page launches inside
@@ -450,6 +478,10 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     sideClose: closeSide,
     sideStop: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/stop', {}).then(j) as Promise<{ ok: boolean }>,
     chatMode: (mode: string, slot?: string) => post('/api/chat/mode', { mode, slot: slot || '' }).then(j),
+    /** The machine owner's acknowledgement of the YOLO confirmation, kept on the gateway. Owner only (403 for anyone else). */
+    yoloAck: () => fetch('/api/chat/yolo-ack').then(j) as Promise<{ acknowledged: boolean }>,
+    /** Record (or, with `false`, clear) the owner's YOLO confirmation acknowledgement; a browser's own `mc-yolo-ack` is untouched. */
+    setYoloAck: (acknowledged: boolean) => put('/api/chat/yolo-ack', { acknowledged }).then(j) as Promise<{ acknowledged: boolean }>,
     generateTitle: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/generate-title').then(j),
     resolveNavLinks: (links: { url: string; context: string }[]) => post('/api/chat/nav/resolve-links', { links }).then(j) as Promise<{ summaries: string[] }>,
     renameSlot: (slot: string, title: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/title', { title }).then(j),

@@ -70,9 +70,10 @@ HEARTBEAT_AGENT_FILENAME = "kirocrew-heartbeat.json"
 DASHBOARD_MANAGER_AGENT_FILENAME = "kirocrew-dashboard-manager.json"
 
 # The dashboard manager's agent NAME, derived from its filename: kiro-cli resolves
-# ``<agents dir>/<name>.json``, and the member base prompt routes page work to this
-# name, so a drifted name would fail the turn. It lives here because
-# ``context_assembly.member`` needs it and importing ``agent.py`` would be a cycle.
+# ``<agents dir>/<name>.json``, so a spec whose ``name`` drifted from it cannot be
+# reached. No Bot prompt routes page work to this name: the gateway refuses a
+# subagent's dashboard calls (``no_dashboard_slot``). It lives here, beside the
+# filename, so a reader that cannot import ``agent.py`` can still import it.
 DASHBOARD_MANAGER_AGENT_NAME = DASHBOARD_MANAGER_AGENT_FILENAME[: -len(".json")]
 # The config key of the first crewmate every install creates once (shown as
 # Mate). An ordinary crewmate on the ordinary crewmate template: renameable,

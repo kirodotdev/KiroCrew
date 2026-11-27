@@ -20,7 +20,7 @@ from typing import Any
 from kiro_crew import agent as agent_mod
 from kiro_crew import user_json
 from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
-from kiro_crew.mcp_provenance import DERIVED_KEY
+from kiro_crew.mcp_provenance import COPIED_KEY, DERIVED_KEY, SOURCE_KEY
 from kiro_crew.mcp_utils import mcp_server_alias
 
 
@@ -37,12 +37,22 @@ def _norm_mcp_spec(spec: Any) -> Any:
     :data:`~kiro_crew.mcp_provenance.DERIVED_KEY` is excluded for the same reason: it
     records which field this rebuild computed, not how the server launches, and only
     some entries carry it, so comparing it would mint the same growing suffix.
+    :data:`~kiro_crew.mcp_provenance.SOURCE_KEY` is excluded too: it records which
+    app declared the entry, not how the server launches. So is
+    :data:`~kiro_crew.mcp_provenance.COPIED_KEY`, which records who copied the entry.
     """
     if not isinstance(spec, dict):
         return spec
     return {
-        k: v for k, v in spec.items() if k != DERIVED_KEY and not (k in ("env", "args") and not v)
+        k: v
+        for k, v in spec.items()
+        if k not in (DERIVED_KEY, SOURCE_KEY, COPIED_KEY) and not (k in ("env", "args") and not v)
     }
+
+
+def _is_copy(spec: Any) -> bool:
+    """True when *spec* carries :data:`~kiro_crew.mcp_provenance.COPIED_KEY`."""
+    return isinstance(spec, dict) and spec.get(COPIED_KEY) is True
 
 
 def raw_tools_project_onto_alias(
@@ -453,16 +463,26 @@ def _normalize_mcp_server_keys(
     for old_key in sorted(
         [k for k in servers if "/" in k and k not in managed], key=len, reverse=True
     ):
-        spec = _norm_mcp_spec(servers.pop(old_key))
+        raw = servers.pop(old_key)
+        spec = _norm_mcp_spec(raw)
         base = mcp_server_alias(old_key)
+        # The comparison form drops the app-source stamp, but the placed entry
+        # keeps it: it is how the owning app is read back from the alias. An
+        # equivalent entry converging onto a stamped one keeps that stamp too, so
+        # a user's same-spec declaration cannot unstamp the app's mount.
+        stamp = raw.get(SOURCE_KEY) if isinstance(raw, dict) else None
 
         # Reuse an existing home for an equivalent spec — the canonical alias or
         # any already-suffixed sibling — instead of minting a new suffix, so
         # repeated re-merges converge rather than accumulate.
-        alias = next(
-            (k for k in servers if _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec),
-            None,
-        )
+        equal = [k for k in servers if _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec]
+        alias = equal[0] if equal else None
+        if alias is not None and stamp is None and isinstance(servers[alias], dict):
+            stamp = servers[alias].get(SOURCE_KEY)
+        # The comparison form drops the copy stamp. A copy keeps it on the entry
+        # written only if every equal entry it reuses or merges away has it: one
+        # without (the user's, or an older build's) leaves the survivor theirs.
+        copied = _is_copy(raw) and all(_is_copy(servers[k]) for k in equal)
         if alias is None:
             # Genuinely distinct spec (or nothing here yet): take the canonical
             # alias if free, else the lowest free numeric suffix (never drop a
@@ -473,17 +493,14 @@ def _normalize_mcp_server_keys(
                 while f"{alias}-{n}" in servers:
                     n += 1
                 alias = f"{alias}-{n}"
-        servers[alias] = spec
         renames[old_key] = alias
         mounted_aliases[old_key] = alias
 
         # Converge any OTHER sibling that duplicates the spec we just placed:
         # drop it and redirect its @ref onto the surviving alias.
-        for dup in [
-            k
-            for k in list(servers)
-            if k != alias and _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec
-        ]:
+        for dup in [k for k in equal if k != alias]:
+            if stamp is None and isinstance(servers[dup], dict):
+                stamp = servers[dup].get(SOURCE_KEY)
             del servers[dup]
             for source, target in renames.items():
                 if target == dup:
@@ -492,6 +509,8 @@ def _normalize_mcp_server_keys(
             for source, target in mounted_aliases.items():
                 if target == dup:
                     mounted_aliases[source] = alias
+        placed = {**spec, COPIED_KEY: True} if copied else spec
+        servers[alias] = placed if stamp is None else {**placed, SOURCE_KEY: stamp}
 
         agent_mod.logger.info("Normalized MCP server key %r -> %r (kiro-safe)", old_key, alias)
 

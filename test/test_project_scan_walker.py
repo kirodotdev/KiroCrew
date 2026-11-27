@@ -1060,3 +1060,35 @@ class TestRootIdentityPin:
     def test_no_expected_identity_keeps_the_unpinned_behaviour(self, tmp_path: Path) -> None:
         _make(tmp_path, "api/.git/")
         assert len(scan(tmp_path).candidates) == 1
+
+    def test_a_readable_root_has_an_identity_and_a_missing_one_does_not(
+        self, tmp_path: Path
+    ) -> None:
+        # Without this, a ``root_identity`` that answered None for every path
+        # would still pass the zero-inode case below.
+        identity = root_identity(str(tmp_path))
+        assert identity is not None and identity[1] != 0
+        assert root_identity(str(tmp_path / "does-not-exist")) is None
+
+    def test_a_zero_inode_root_reads_as_no_identity(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A Windows volume with no file index (some SMB shares, FAT, exFAT)
+        # reports ``st_ino == 0``. ``(dev, 0)`` would give every directory on it
+        # one identity, so a root swapped for another directory on the same
+        # volume would pass the pin; None makes the endpoints refuse instead.
+        from kiro_crew import project_scan
+
+        class _ZeroInodeStat:
+            st_dev = 1
+            st_ino = 0
+
+        class _OsWithZeroInodeLstat:
+            # Patched onto ``project_scan.os`` only: patching ``os.lstat`` itself
+            # would also reach pytest's own temporary-directory cleanup.
+            def __getattr__(self, name: str) -> Any:
+                return getattr(os, name)
+
+            def lstat(self, path: Any, *args: Any, **kwargs: Any) -> _ZeroInodeStat:
+                return _ZeroInodeStat()
+
+        monkeypatch.setattr(project_scan, "os", _OsWithZeroInodeLstat())
+        assert root_identity("a-volume-without-a-file-index") is None

@@ -235,6 +235,11 @@ def register(app: web.Application) -> None:
     # the handler: it names each plugin's stdio server commands. There is
     # no write route; turning a plugin on is held (agent-plugins spec §6).
     app.router.add_get("/api/agent-plugins", agent_plugins_list.api_agent_plugins_get)
+    # SSH_AUTH_SOCK forward consent: the same one-act grant / revoke shape as the
+    # AWS consent above, owner-gated in the handler.
+    app.router.add_get("/api/ssh-agent/consent", handlers.api_ssh_agent_consent_get)
+    app.router.add_post("/api/ssh-agent/consent", handlers.api_ssh_agent_consent_post)
+    app.router.add_delete("/api/ssh-agent/consent", handlers.api_ssh_agent_consent_delete)
     # Project AWS profile binding (the composer's project chip). Owner-gated in
     # the handler and browser-called like the consent pair: which account an
     # agent's AWS commands reach by default is the operator's choice.
@@ -295,6 +300,9 @@ def register(app: web.Application) -> None:
 
     # Session revocation (called by `kirocrew logout` CLI)
     app.router.add_post("/api/logout", handlers.api_logout)
+    # One link's revocation (`kirocrew logout --link`): its own route, so a gateway
+    # that predates it answers 404 instead of revoking every session.
+    app.router.add_post("/api/logout/link", handlers.api_logout_link)
     app.router.add_post("/api/shutdown", handlers.api_shutdown)
 
     # Webhook hooks (external triggers)

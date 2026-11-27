@@ -413,7 +413,7 @@ def active_names(cfg: PodConfig) -> set[str]:
             f"launchctl print {domain()} failed (rc={cp.returncode}); cannot "
             f"enumerate pods: {(cp.stderr or cp.stdout or '').strip()}"
         )
-    prefix = pod_label(cfg, "")  # e.g. "dev.kirocrew.pod." (trailing dot kept)
+    prefix = pod_label(cfg, "")  # e.g. "dev.kirocrew.pod.kirocrew-pod." (trailing dot kept)
     names: set[str] = set()
     for tok in re.findall(rf"{re.escape(prefix)}[A-Za-z0-9._-]+", cp.stdout or ""):
         candidate = tok[len(prefix):]

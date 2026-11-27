@@ -222,7 +222,7 @@ async def fire_tool_hooks(
             tool_match_names=tool_match_names,
         )
     except Exception:
-        logger.debug("PreToolUse hook error", exc_info=True)
+        logger.warning("PreToolUse hook error", exc_info=True)
 
 
 def pre_tool_match_names(
@@ -369,7 +369,7 @@ async def permission_pre_tool_block(
             continue
         if not r.pre_tool_blocks:
             # A spec hook that crashed or timed out: kiro-cli warns and runs the tool.
-            logger.warning(
+            logger.info(
                 "Spec hook %s did not run cleanly (%s); tool allowed",
                 r.hook_name,
                 r.failure_detail,
@@ -597,7 +597,10 @@ async def _run_one_lane_hook(hook: ScriptHook, context: str, payload: dict) -> N
         if not matched:
             return
     try:
-        await run_script_hook(hook, context=context, hook_event=dict(payload))
+        result = await run_script_hook(hook, context=context, hook_event=dict(payload))
+        if result.exit_code not in (0, 2):
+            # This path skips ScriptHookStore.fire, so it logs fire's failure WARNING itself.
+            logger.warning("Hook %s (%s) failed: %s", hook.name, hook.event, result.failure_detail)
     finally:
         store = get_global_hook_store()
         if store is not None:

@@ -337,8 +337,11 @@ def _start_install_job(
 
     A job that installs the harness holds *supervisor*'s (default: this home's)
     browser starts while it rebuilds the venv in place: from the ``creating_venv``
-    stage until the first stage past the harness step. An install that leaves the
-    venv as it is, and the Chromium download after it, hold nothing.
+    stage until the first stage past the harness step. Before that install clears the
+    venv, the job holds starts and ends the browser session, whose daemon and worker
+    run from it (``HarnessSupervisor.stop_for_harness_rebuild``). A repair stops
+    nothing; an install that leaves the venv as it is, and the Chromium download
+    after it, hold and stop nothing.
     """
     loop = asyncio.get_running_loop()
     job = InstallJob.start(components)
@@ -362,7 +365,11 @@ def _start_install_job(
             if replacing is not None:
                 await replacing.stop_for_chromium_replace()
             await harness_install.install(
-                config_dir(), _on_stage, components=components, refresh=refresh
+                config_dir(),
+                _on_stage,
+                components=components,
+                refresh=refresh,
+                before_clear=holding.stop_for_harness_rebuild if holding is not None else None,
             )
         except asyncio.CancelledError:
             job.finish(job.id, STATUS_INTERRUPTED, "interrupted: the gateway stopped this install")

@@ -298,10 +298,13 @@ async def _yield_for_dependency_impl(
     attempts cap -- the row is already ``failed``), when the wait did not
     persist (``unpersisted``: the row is another owner's or has ended, or the
     store could not say, so the run stops rather than retry work it may not
-    own), or when the wait timed out. None when
-    NO row exists for the run (``no_row``: a memory mode that keeps none).
-    Nothing was decided then and nothing else owns the work, so the caller
-    handles the error as it would with no coordinator at all.
+    own), or when the wait timed out. A run with NO row (a memory mode that
+    keeps none) waits the same way on a provider throttle: its report asks the
+    schedule to hold it in memory (``hold_rowless``, see :meth:`_dependency_verdict`), and
+    its wake comes through admission like any live run's. None for any other
+    ``no_row`` (another dependency kind, our own infrastructure scope, or no
+    ``wake_through`` seam), so the caller handles the error as it would with no
+    coordinator at all.
     """
     from kiro_crew.taskq.dependency import (
         KIND_CONCURRENCY_EXCEEDED,
@@ -517,6 +520,7 @@ def _dependency_report_db(
     task_id: str,
     signal: Any,
     generation: int | None,
+    hold_rowless: bool = False,
 ) -> Any:
     """Database phase of a dependency park: the ``running`` mark and then the
     coordinator's verdict, on ONE thread.
@@ -553,7 +557,13 @@ def _dependency_report_db(
                 task_id,
                 exc_info=True,
             )
-    return coordinator.report(task_id, signal, generation=generation, from_state=_taskq.RUNNING)
+    return coordinator.report(
+        task_id,
+        signal,
+        generation=generation,
+        from_state=_taskq.RUNNING,
+        hold_rowless=hold_rowless,
+    )
 
 
 async def _dependency_verdict(
@@ -568,11 +578,25 @@ async def _dependency_verdict(
     never this process's ``_taskq_running_marked``, whose whole purpose is to
     keep a LATER stream mark from advancing the parked row back out of the
     wait the coordinator just recorded on it.
+
+    A run with no row is held on the scope for a provider throttle only: our own
+    infrastructure scopes keep their answer (the L1 rung surfaces the completion),
+    and so do the other dependency kinds, which keep the in-turn ladder.
     """
+    from kiro_crew.taskq.dependency import (
+        KIND_CONCURRENCY_EXCEEDED,
+        KIND_RATE_LIMITED,
+        is_infra_scope,
+    )
+
     admission = self._manager._admission
     store = admission.taskq_store()
     info._taskq_running_marked = True
-    args = (coordinator, store, info.id, signal, info._taskq_generation or None)
+    hold_rowless = signal.kind in (
+        KIND_RATE_LIMITED,
+        KIND_CONCURRENCY_EXCEEDED,
+    ) and not is_infra_scope(signal.dependency_scope)
+    args = (coordinator, store, info.id, signal, info._taskq_generation or None, hold_rowless)
     if store is None or not type(admission).pump_off_loop:
         return self._dependency_report_db(*args)
     return await store.run(self._dependency_report_db, *args)

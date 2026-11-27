@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:eec5f91025114e069e0c65f44ae6a99a2a57a81fabc8796b4fb03743c3ddad1d"
+export const GUIDE_BUILD_DIGEST = "sha256:f465169d9cdcb86dc0718efc2fe6511c5817c1a6d37ed94f6f78045244542716"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -16,6 +16,9 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "agents.section-danger",
   "agents.section-model",
   "apps.detail.disable",
+  "apps.detail.enable",
+  "apps.detail.enable-builtin",
+  "apps.detail.enable-self-managed",
   "apps.detail.install",
   "apps.detail.sync",
   "apps.detail.uninstall",
@@ -66,6 +69,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "composer.automation.stop-monitor",
   "composer.context-usage",
   "composer.expand",
+  "composer.project-aws-profile",
   "composer.send",
   "composer.stop",
   "composer.voice",
@@ -102,13 +106,15 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.switcher.show-roster",
   "members.switcher.unread",
   "members.switcher.unread-more",
+  "memory.audit-tab",
+  "memory.more-actions",
+  "memory.test-recall",
   "notifications.clear-all",
   "notifications.detail.mark-unread",
   "notifications.mark-all-read",
   "notifications.mute-channel",
   "notifications.page-clear-all",
   "notifications.page-mark-all-read",
-  "overview.memory-details",
   "schedule.add-job",
   "schedule.batch-actions",
   "schedule.cancel-run",
@@ -244,6 +250,10 @@ export const GUIDE_REVEAL_SCOPES = {
   "menu:members.switcher": {
     "kind": "menu",
     "revealer": "members.switcher"
+  },
+  "menu:memory.more-actions": {
+    "kind": "menu",
+    "revealer": "memory.more-actions"
   },
   "menu:schedule.batch-actions": {
     "kind": "menu",
@@ -2519,18 +2529,60 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
-  "overview.memory-details": {
+  "memory.audit-tab": {
     "version": 2,
-    "label_key": "pages.overviewPage.view_details",
+    "label_key": "memoryPage.tab_audit",
     "placements": [
       {
         "id": "any",
-        "route": "/settings/overview",
+        "route": "/settings/memory",
         "steps": [
           {
-            "id": "any:overview.memory-details",
-            "location": "overview.memory-details",
-            "label_key": "pages.overviewPage.view_details"
+            "id": "any:memory.audit-tab",
+            "location": "memory.audit-tab",
+            "label_key": "memoryPage.tab_audit"
+          }
+        ]
+      }
+    ]
+  },
+  "memory.more-actions": {
+    "version": 2,
+    "label_key": "memoryPage.more_actions",
+    "placements": [
+      {
+        "id": "desktop",
+        "route": "/settings/memory",
+        "viewport": "desktop",
+        "steps": [
+          {
+            "id": "desktop:memory.more-actions",
+            "location": "memory.more-actions",
+            "label_key": "memoryPage.more_actions"
+          }
+        ]
+      }
+    ]
+  },
+  "memory.test-recall": {
+    "version": 2,
+    "label_key": "memoryPage.test_recall",
+    "placements": [
+      {
+        "id": "desktop",
+        "route": "/settings/memory",
+        "viewport": "desktop",
+        "steps": [
+          {
+            "id": "desktop:memory.more-actions",
+            "location": "memory.more-actions",
+            "label_key": "memoryPage.more_actions",
+            "scope": "menu:memory.more-actions"
+          },
+          {
+            "id": "desktop:memory.test-recall",
+            "location": "memory.test-recall",
+            "label_key": "memoryPage.test_recall"
           }
         ]
       }

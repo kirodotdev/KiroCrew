@@ -49,6 +49,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_POLICY,
     DENY_CAUSE_SURFACE_POLICY,
 )
+from kiro_crew.dashboard import running_bot_turns
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers.hooks_scripts import _sel
 from kiro_crew.dashboard.handlers.hooks_webhook_intake import (
@@ -870,6 +871,7 @@ async def _run_hook_inner(
     *,
     execution_context: ExecutionContext | None = None,
     on_client: Callable[[Any], None] | None = None,
+    bot_turn: object | None = None,
 ) -> str:
     """Inner agent turn — called within timeout wrapper.
 
@@ -880,6 +882,7 @@ async def _run_hook_inner(
     from dataclasses import replace
 
     from kiro_crew import name_grant
+    from kiro_crew.agent_sdk.drivers.acp_vocab import RefusalHopText
     from kiro_crew.context import _neutralize_structural_markers, session_store_for_turn
     from kiro_crew.execution_context import bind_session_execution, read_session_execution
     from kiro_crew.hooks import (  # noqa: F811  # circular import
@@ -927,6 +930,11 @@ async def _run_hook_inner(
         execution = replace(execution, template_id=agent)
     else:
         agent = execution.template_id or None
+        if bot_turn is not None:
+            # The turn runs as the registered execution, on its own agent: the
+            # Bot list reads it as that Bot's. A request that names an agent
+            # runs another one, and is not noted.
+            running_bot_turns.begin(bot_turn, execution)
     memory_store = await session_store_for_turn(state.context_builder, session_key)
     client, is_new, resumed = await state.sessions.get_or_create(session_key, agent=agent)
     if on_client is not None:
@@ -977,6 +985,7 @@ async def _run_hook_inner(
         # ``_run_hook_agent`` prepends is not bounded by _HOOK_MESSAGE_MAX_LEN.
         full_message = await asyncio.to_thread(_neutralize_structural_markers, full_message)
     result_text = ""
+    refusal = RefusalHopText()
     _complete_event: object | None = None
     # Wall clock for the webhook agent turn: acp leaves TurnUsage.duration_ms
     # at 0, so without this the row records a literal 0. Started after the
@@ -985,6 +994,7 @@ async def _run_hook_inner(
     # A turn on a live session it adopted, which already holds an earlier turn,
     # can open with the alternation placeholder (``drop_echo``).
     async for event in drop_echo(client.stream(full_message)):
+        result_text = refusal.fold(event, result_text)
         if event.kind == EVENT_TEXT_CHUNK:
             result_text += event.text
         elif event.kind == _EVENT_PERMISSION_REQUEST_KIND:
@@ -1236,6 +1246,8 @@ async def _run_hook_agent(
     mcp_problems = ""
     mcp_missing: tuple[str, ...] = ()
     mcp_never_reported = ""
+    # This turn's entry in the table of running Bot turns (``GET /v1/crew/bots``).
+    bot_turn = object()
     try:
         # Loading the persisted context (written by the register_hook MCP tool)
         # is INSIDE the try because the caller's permit and the in-flight claim
@@ -1277,6 +1289,7 @@ async def _run_hook_agent(
                     agent,
                     execution_context=execution_context,
                     on_client=clients.append,
+                    bot_turn=bot_turn,
                 ),
                 session_key=session_key,
                 text=message,
@@ -1321,6 +1334,7 @@ async def _run_hook_agent(
         logger.exception("Hook agent failed for %s", session_key)
         await state.sessions.record_failure(session_key)
     finally:
+        running_bot_turns.end(bot_turn)  # first, so nothing below can skip it; never raises
         # Read before release/reset: the report lives on the session being torn
         # down. Here rather than in the inner turn so a timeout or crash still
         # says which servers never started.

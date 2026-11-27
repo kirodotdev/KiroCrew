@@ -8,7 +8,8 @@ APPLY, per pin in name order, under the app's lifecycle lock:
    (``legacy_state_moves``), else the swap waits for the next boot;
 2. the staged artifact copied into a private temp dir and ``treeSha256`` verified
    on that copy; the tree checks (E7, E8, E10), host (E3, E5), admission (E4) and
-   permission parity (E9);
+   permission parity (E9), against the pin row's frozen copy once the wheel copy is
+   gone (``builtin_adoption_baseline``);
 3. the trust plan (E6) and ONE trust-writer transaction: grant plus ``granting``
    marker;
 4. the swap (``manager.adopt_builtin_record``); on failure exactly what step 3 wrote
@@ -33,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.builtin_adoption_baseline import no_copy_baseline, no_copy_limit_input
 from kiro_crew.apps.builtin_adoption_checks import (
     NEVER_RETRIED_CODES,
     RECHECKED_CODES,
@@ -160,6 +162,7 @@ def _tree_checks(pin: AdoptionPin, tree: Path) -> str | None:
         tree,
         shipped_manifest=_shipped_manifest(pin.name),
         record_version=record.version if record is not None else "",
+        frozen_servers=no_copy_limit_input(pin, "mcpServers"),
     )
 
 
@@ -452,11 +455,15 @@ def _prepare_tree(pin: AdoptionPin, staged: StagedArtifact) -> tuple[Path, Path,
 
 
 def _config_refusals(pin: AdoptionPin, manifest: Any) -> str | None:
-    """E3, E5, E4 and E9, in that order, re-run every boot. Blocking."""
+    """E3, E5, E4 and E9, in that order, re-run every boot. Blocking.
+
+    E9 compares with the pin row's frozen copy once the wheel copy is gone, as the
+    swap does (:func:`_apply_verified`).
+    """
     return (
         host_refusal(pin, manifest)
         or admission_refusal(pin.name, manifest)
-        or permission_refusal(pin.name, manifest)
+        or permission_refusal(pin.name, manifest, no_copy_baseline(pin))
     )
 
 
@@ -584,8 +591,14 @@ async def _apply_verified(
             if code is None:
                 raise
             return await _block(ledger, pin, code, kind)
+    baseline = await asyncio.to_thread(no_copy_baseline, pin)
     result = await asyncio.to_thread(
-        adopt_builtin_record, name, tree, repository=pin.repository, commit=pin.commit
+        adopt_builtin_record,
+        name,
+        tree,
+        repository=pin.repository,
+        commit=pin.commit,
+        baseline=baseline,
     )
     if not result.ok:
         await _rollback(name, pin, written)

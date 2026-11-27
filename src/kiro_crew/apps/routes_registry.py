@@ -1,8 +1,9 @@
-"""The app registry: browsing and refreshing it, installing from it, and its configured sources.
+"""The app registry: browsing, searching and refreshing it, installing from it, and its sources.
 
-``handle_registry``, ``handle_registry_refresh``, ``handle_registry_install`` and
-``handle_registry_install_stream``, and the registry list in ``config.json``
-(``handle_registries``, ``handle_registries_refresh``, ``_write_registries_config``).
+``handle_registry``, ``handle_app_store_search``, ``handle_registry_refresh``,
+``handle_registry_install`` and ``handle_registry_install_stream``, and the registry list
+in ``config.json`` (``handle_registries``, ``handle_registries_refresh``,
+``_write_registries_config``).
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
 as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
@@ -22,7 +23,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps import official_catalog
-from kiro_crew.apps.manager import app_lifecycle_lock, get_app
+from kiro_crew.apps.manager import app_lifecycle_lock, get_app, list_apps
 from kiro_crew.apps.official_category_order import forget_cache as forget_category_order_cache
 from kiro_crew.apps.official_category_order import load_category_order
 from kiro_crew.apps.official_editorial import forget_cache as forget_editorial_cache
@@ -67,6 +68,7 @@ from kiro_crew.config.loader import (
     config_path,
     update_config_locked,
 )
+from kiro_crew.platform import redact_via_context
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.routes")
@@ -178,6 +180,132 @@ async def handle_registry(request: web.Request) -> web.Response:
             "categoryOrder": category_order,
             "editorialSections": sections,
         }
+    )
+
+
+#: How many apps one store search answers with when the caller names no limit, and
+#: at most.
+_STORE_SEARCH_DEFAULT = 10
+_STORE_SEARCH_MAX = 50
+#: The row fields a store search answers with: enough to judge a match and see
+#: whether the app is already installed.
+_STORE_SEARCH_FIELDS = ("name", "displayName", "description", "useCases", "installed")
+#: The longest text one answered field carries, and the most use cases per app.
+#: Publishers' copy has no length limit, and one padded row must not crowd out the
+#: rest of the answer (``skill_discover`` cuts its descriptions the same way).
+_STORE_SEARCH_TEXT_MAX = 240
+_STORE_SEARCH_USE_CASES_MAX = 5
+
+
+def _store_search_words(text: str) -> list[str]:
+    """*text* casefolded and split at every character that is not a letter or digit."""
+    return "".join(ch if ch.isalnum() else " " for ch in text.casefold()).split()
+
+
+def _store_row_words(row: dict[str, Any]) -> list[str]:
+    """The words a query word is matched against: name, display copy, tags, use cases."""
+    parts: list[Any] = [row.get("name"), row.get("displayName"), row.get("description")]
+    for key in ("tags", "useCases"):
+        if isinstance(row.get(key), list):
+            parts.extend(row[key])
+    return _store_search_words(" ".join(p for p in parts if isinstance(p, str)))
+
+
+def _clip_store_value(value: Any) -> Any:
+    """*value* as an answer carries it: a flag as is, text redacted, then cut at
+    :data:`_STORE_SEARCH_TEXT_MAX`, a list as at most :data:`_STORE_SEARCH_USE_CASES_MAX`
+    such texts, and anything else as ``None`` (left out)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        value = redact_via_context(value)
+        if len(value) > _STORE_SEARCH_TEXT_MAX:
+            return value[:_STORE_SEARCH_TEXT_MAX].rstrip() + "..."
+        return value
+    if isinstance(value, list):
+        texts = [v for v in value if isinstance(v, str)][:_STORE_SEARCH_USE_CASES_MAX]
+        return [_clip_store_value(v) for v in texts]
+    return None
+
+
+def search_store_rows(
+    rows: list[dict[str, Any]], query: str, limit: int
+) -> tuple[list[dict[str, Any]], int]:
+    """The first *limit* rows matching a word of *query*, and how many rows matched.
+
+    A query word matches the start of a row word, so "slide" finds "slides" and "ask"
+    does not find "tasks". A row matching more distinct words ranks first, ties by
+    name. Each match keeps only :data:`_STORE_SEARCH_FIELDS`, cut by
+    :func:`_clip_store_value`.
+    """
+    words = set(_store_search_words(query))
+    ranked: list[tuple[int, str, dict[str, Any]]] = []
+    for row in rows:
+        row_words = _store_row_words(row)
+        hits = sum(any(w.startswith(word) for w in row_words) for word in words)
+        if hits:
+            ranked.append((-hits, str(row.get("name", "")), row))
+    ranked.sort(key=lambda entry: entry[:2])
+    matches = []
+    for _, _, row in ranked[:limit]:
+        clipped = {key: _clip_store_value(row.get(key)) for key in _STORE_SEARCH_FIELDS}
+        matches.append({key: value for key, value in clipped.items() if value is not None})
+    return matches, len(ranked)
+
+
+def _hidden_builtin_names() -> set[str]:
+    """The installed built-ins whose manifest says ``hidden``: this build conceals them."""
+    return {
+        app["name"]
+        for app in list_apps()
+        if app.get("origin") == "builtin" and (app.get("manifest") or {}).get("hidden")
+    }
+
+
+def _discover_shows(row: dict[str, Any], hidden_builtins: set[str]) -> bool:
+    """Whether the Discover shelf shows *row* (``browseApps`` in
+    ``website/src/pages/apps/useAppsData.ts``): never an app named after a hidden
+    built-in, nor a built-in row with nothing installed under its name."""
+    if row.get("name") in hidden_builtins:
+        return False
+    source = row.get("source")
+    return bool(row.get("installed")) or not (
+        isinstance(source, dict) and source.get("type") == "builtin"
+    )
+
+
+async def handle_app_store_search(request: web.Request) -> web.Response:
+    """GET /api/app-store/search?q=<words>[&limit=<n>] — the store's apps that match.
+
+    The read leg of the ``app_store_search`` agent tool, a strict internal path its
+    ``kirocrew-core`` server calls with the internal secret. It searches the listing
+    ``handle_registry`` serves the store (the published catalog, or the seed when
+    the catalog is unavailable), minus the rows the Discover shelf leaves out
+    (:func:`_discover_shows`), and announces no app update, since no person is
+    looking at the store. Under ``/api/app-store/`` for the reason
+    ``handle_registry_refresh`` is: no app name can claim the path. The answer puts
+    ``total`` and ``catalogUnavailable`` before ``apps``.
+    """
+    query = request.query.get("q", "").strip()
+    if not query:
+        return web.json_response({"error": "q is required", "code": "query_required"}, status=400)
+    try:
+        limit = int(request.query.get("limit", _STORE_SEARCH_DEFAULT))
+    except ValueError:
+        return web.json_response(
+            {"error": "limit must be an integer", "code": "invalid_limit"}, status=400
+        )
+    apps = await list_catalog_apps()
+    catalog_unavailable = not apps
+    if catalog_unavailable:
+        apps = await list_registry()
+    hidden = await asyncio.to_thread(_hidden_builtin_names)
+    shown = [row for row in apps if _discover_shows(row, hidden)]
+    matches, total = await asyncio.to_thread(
+        search_store_rows, shown, query, max(1, min(_STORE_SEARCH_MAX, limit))
+    )
+    return web.json_response(
+        {"total": total, "catalogUnavailable": catalog_unavailable, "apps": matches}
     )
 
 

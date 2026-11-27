@@ -25,12 +25,22 @@ import { useCallback, useRef, type SyntheticEvent } from 'react'
  *      `onCloseAutoFocus` consumes it and calls `preventDefault()`.
  *
  * Because the trigger restore was suppressed, a dialog hands focus back itself
- * on close: call `returnFocus()` from its close path. An inline editor that
- * owns focus while mounted (a rename field) has no close hand-back and only
- * needs `armSkipRestore()`.
+ * on close, and only once it has unmounted: a dialog's own focus restore runs
+ * at unmount, aimed at what had focus when it mounted, which is `body` (the
+ * menu was already gone), and a Radix `Dialog` also pulls a focus moved
+ * outside it back inside while it is still up. A `returnFocus()` from the
+ * close handler therefore lands too early and is undone. A Radix `Dialog`
+ * takes `onDialogCloseAutoFocus` on its `DialogContent`; a `Modal` takes
+ * `returnFocusTo={openerRef}`. `returnFocus()` is for a layer with no restore
+ * of its own, called once that layer is gone. An inline editor that owns
+ * focus while mounted (a rename field) has no close hand-back and only needs
+ * `armSkipRestore()`.
  *
  * Usage:
- *   - `rememberOpener` on the trigger's `onPointerDown` / `onKeyDown`. It reads
+ *   - `rememberOpener` on the trigger's `onPointerDown` / `onKeyDown` /
+ *     `onClick`. The `onClick` binding covers a screen reader's activation,
+ *     Switch Control and `element.click()`, which open the menu with a click
+ *     alone and send no pointer or key event. It reads
  *     `currentTarget` from the trigger's own event rather than
  *     `document.activeElement`: Safari does not focus a button on pointer
  *     click, so the active element would still be whatever had focus before.
@@ -78,5 +88,15 @@ export function useMenuOpensDialog() {
     openerRef.current?.focus({ preventScroll: true })
   }, [])
 
-  return { rememberOpener, armSkipRestore, openLayer, onCloseAutoFocus, disarm, returnFocus }
+  // Radix fires this after the dialog content has unmounted, in place of its
+  // own restore. An opener no longer on the page (its row was deleted) leaves
+  // that restore alone.
+  const onDialogCloseAutoFocus = useCallback((e: Event) => {
+    const opener = openerRef.current
+    if (!opener?.isConnected) return
+    e.preventDefault()
+    opener.focus({ preventScroll: true })
+  }, [])
+
+  return { rememberOpener, armSkipRestore, openLayer, onCloseAutoFocus, disarm, returnFocus, onDialogCloseAutoFocus, openerRef }
 }

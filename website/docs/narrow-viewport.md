@@ -334,7 +334,7 @@ gesture:
 | cell | who renders it | what is in it |
 |---|---|---|
 | leading (`auto`) | `shell/topbar/shellHeader.tsx` | the crew switcher (when a remote crew exists) and downstream widgets (while they exist); usually empty. Not the update pill: beside a remote crew's chip + dropdown it was a third action, so on this page a pending update is the first item of the overflow menu (`UpdatePill variant="menu-item"`, same lifecycle label) |
-| centre (`minmax(0,1fr)`) | `pages/chat/page/SessionsSidebarChrome.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the menu chevron with the session title after it, the same order as the desktop header (`ChatHeaderMenu` `triggerLabel`); Rename and Regenerate title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's `InboundLinkChip` would be a third control, so a two-way link's actions are read from the session menu's Linked surfaces section |
+| centre (`minmax(0,1fr)`) | `pages/chat/page/SessionsSidebarChrome.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the menu chevron with the session title after it, the same order as the desktop header (`ChatHeaderMenu` `triggerLabel`); Rename and Regenerate title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. Its Reveal in sidebar is offered only for a session that is a row of the Sessions list (`personSlots`): a Bot's session that list leaves out, or a crew member under its listed conductor, has no row to land on, and the wide header gives those a breadcrumb and no session menu. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's `InboundLinkChip` would be a third control, so a two-way link's actions are read from the session menu's Linked surfaces section |
 | trailing (`auto`, `.tb-trail`) | `shell/topbar/shellHeader.tsx`, plus the same `MobileTopBar`'s portal into `#mobile-topbar-trail-slot` | exactly two: the bell, then the page's overflow menu (update when pending, pop out or focus the popped-out window, activity panel, split view). The update row reads `<status> — Open update settings`: a menu row is read as an action, and the row only navigates to Settings › About, so it names that outcome instead of implying a download or restart. The update row is a lazy chunk inside its own `ErrorBoundary`, so a chunk that fails to load costs the row, not the page (a rejection would otherwise reach the route boundary); the fallback is an inline `ErrorNotice` plus its `ErrorNoticeMenuItem` hand-off (`errors-use-error-notice`), never `null`, because this menu is the update's only phone home and a silent gap would hide the failure |
 
 That is the `topbar-single` header variant (`src/styles/shell-chrome.css`), applied only while
@@ -794,6 +794,23 @@ adopts and cancels whatever is running before either writes. A scrim has the sam
 requirement in its other half: derive its opacity from the offset (over the drawer's
 OWN travel, so the dim reaches 0 exactly as the panel clears the edge) rather than
 holding a literal, or it cannot dim with the finger.
+
+While the finger drives a registered panel (`registerDrawerTargets`), `useDrawerSwipe`
+sets `will-change: transform` on the panel and `will-change: opacity` on its scrim, and
+the settle's arrival clears both. The drag writes those two properties from the main
+thread on every touchmove; without a layer of its own the panel is painted into the
+page's layer, so each write repaints the panel and the chat under it (about three paints
+and 1.5M CSS px per frame in Chromium), and a phone rasterizes that on the main thread.
+The settle needs no help: a WAAPI transform animation gets its layer from the browser.
+The layer is dropped at rest because the shell's nav drawer stays mounted.
+
+Nothing the drag does may re-render the page under it. `useDrawerSwipe` reports the
+drag through a ref (`dragging.current`), read where it matters (the scrim's click
+guard), not through state: as state, the lock and the release each re-rendered the
+whole chat page. The opening lock still renders once, because it mounts the panel. On
+the phone the chat page also builds the drawer's kept session list at the first idle
+moment after it mounts (`SessionsSidebarChrome`), so the first pull adopts a list that
+already exists rather than building it inside the gesture.
 
 ## Horizontal insets below the breakpoint
 

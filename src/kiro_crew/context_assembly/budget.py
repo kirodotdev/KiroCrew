@@ -71,7 +71,19 @@ _LESSON_EXPERIENCE_CAP = _budget(0.05)  # learned experience (on-demand tier)  =
 
 _SEMANTIC_MEMORY_CAP = _budget(0.077)  # semantic memory (vector)             = 7.7%
 _EPISODIC_MEMORY_CAP = _budget(0.077)  # episodic memory (vector)             = 7.7%
-_SKILLS_CAP = _budget(0.15)  # skills top-K block (lazy-loaded)     = 15%
+# Bound on the startup skill index (the ``[Skills:]`` discovery block, both the
+# ranked directory and the short ``lazy_load: false`` entry). Window-INDEPENDENT
+# and NOT a share of ``_CONTEXT_BUDGET_BASE``, for the same reason as the rule
+# allowance above: the index is the only path a skill's name and description have
+# to the model at session start, and a skill it drops is never triggered by
+# description. A 15% share of the pinned base (4,950) held about 25 rows, so a
+# library of 100+ skills lost most of its names with no notice to the user.
+# Derived like the three startup allowances above: the skills share (15%) of the
+# 165_000 reference base a 1M-window session had before the base was pinned.
+# The block is appended as authored (``ContextParts.append_authored``), so it is
+# charged to this allowance and not to the pool the memory blocks compete for;
+# a wider window does not enlarge it.
+_SKILLS_CAP = 24_750
 # Bound on the ``[FOLDER STEERING ...]`` section (its only reader). Window-
 # INDEPENDENT and NOT a share of ``_CONTEXT_BUDGET_BASE``, for the same reason as
 # the rule allowance above: every document it carries is an every-session
@@ -121,7 +133,7 @@ def _prompt_build_embedding_deadline(enabled: bool, *, query: str = "") -> Itera
 
     inherited_work = embedding_work.get()
     wait = ctx._PROMPT_BUILD_EMBED_TIMEOUT_SECS
-    if query and embedding_in_flight(query):
+    if query and embedding_in_flight(query, query=True):
         wait = _startup_recall_timeout_secs() or wait
     deadline = time.monotonic() + wait
     if inherited_work is not None:
@@ -325,10 +337,11 @@ class ContextParts:
     competes for the discretionary allowance in :func:`admit_background`.
 
     ``authored`` names the protected blocks that are bounded outside the pool: the
-    learned-rule tier (``_LESSONS_STARTUP_CAP``) and the preferences block (its
+    learned-rule tier (``_LESSONS_STARTUP_CAP``), the preferences block (its
     ``pref.*`` rows by ``_PREFS_STARTUP_CAP``, the whole block by the model-safe
-    ceiling). Those bounds are deliberately not shares of ``_CONTEXT_BUDGET_BASE``,
-    so the blocks do not use up its pool either.
+    ceiling) and the startup skill index (``_SKILLS_CAP``, applied by the skills
+    loader before the block is appended). Those bounds are deliberately not shares
+    of ``_CONTEXT_BUDGET_BASE``, so the blocks do not use up its pool either.
     """
 
     __slots__ = ("authored", "held_chars", "parts", "protected")
@@ -376,10 +389,11 @@ def admit_background(
     truncating a safety contract.
 
     *protected_chars* is every protected character. The authored blocks
-    (``blocks.authored``: learned rules and preferences) are subtracted from it
-    before it is charged to the pool, because each has its own startup allowance;
-    the rest of the protected content (identity, safety rules, steering, the
-    activity index, skill entries) still shares the pool with the optional blocks.
+    (``blocks.authored``: learned rules, preferences and the skill index) are
+    subtracted from it before it is charged to the pool, because each has its own
+    startup allowance; the rest of the protected content (identity, safety rules,
+    steering, the activity index, pinned skill bodies) still shares the pool with
+    the optional blocks.
     """
     admitted: list[str] = []
     pooled_protected = max(0, protected_chars - blocks.authored_chars())

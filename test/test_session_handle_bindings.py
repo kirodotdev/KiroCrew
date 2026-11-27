@@ -89,6 +89,12 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "aeeca3d9cefe",
         "session_handle_claude_children",
     ),
+    "_child_session_call_marks": (
+        "function",
+        False,
+        "31c8e10e96ef",
+        "session_handle_claude_children",
+    ),
     "_note_native_child_request": (
         "function",
         False,
@@ -289,6 +295,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "2dfacffa6279",
         "session_handle_permissions",
     ),
+    "_refuse_reused_call_id": ("function", True, "2dfacffa6279", "session_handle_permissions"),
     "_refuse_unretained_provenance": (
         "function",
         True,
@@ -476,7 +483,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "supports_steer_retract": ("property", False, "a6632a57e602", "session_handle_class"),
     "take_batch_refusal": ("function", False, "85a6851f62f8", "session_handle_class"),
     "wait_for_compaction": ("function", True, "0258399cca12", "session_handle_compaction"),
-    "wait_for_declared_mcp": ("function", True, "921c3727b83c", "session_handle_mcp"),
+    "wait_for_declared_mcp": ("function", True, "e0719edb9cf3", "session_handle_mcp"),
     "wait_mcp_ready": ("function", True, "893413045ac2", "session_handle_mcp"),
     "wait_mounted_mcp": ("function", True, "8a1f54daaf86", "session_handle_mcp"),
     "wait_turn_done": ("function", True, "0ae71757d428", "session_handle_turn"),

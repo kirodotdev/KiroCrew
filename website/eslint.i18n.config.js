@@ -1167,10 +1167,11 @@ export default [
               // A CALLEE exemption, not a whole-file one, for the reason the ones
               // above give -- and the name is deliberately long and specific rather
               // than a generic `warnSkip`, so a future helper elsewhere cannot
-              // inherit this by accident. TWO definitions exist today:
+              // inherit this by accident. THREE definitions exist today:
               // `src/components/commandBar/contributedCommands.ts`, which renders nothing,
-              // and `src/apps/fileMenuContributions.tsx`, the same shim for a refused
-              // `contributes.fileMenuItems` row. The second REUSES this name rather
+              // `src/apps/fileMenuContributions.tsx`, the same shim for a refused
+              // `contributes.fileMenuItems` row, and `src/apps/sessionCreateContributions.tsx`
+              // for a refused `contributes.sessionCreateItems` row. The later ones REUSE this name rather
               // than adding a second global exemption for a differently-named shim:
               // one entry covering both keeps the released surface the same size,
               // where two would widen it for no gain. Note the file-scope caveat
@@ -1325,6 +1326,8 @@ export default [
               // `title` is deliberately NOT here: it renders as a tooltip, so it is
               // user-visible copy, not a machine value.
               'className', 'class', 'id', 'key', 'href', 'src', 'to', 'type',
+              // A class list for a component's popup (SimpleSelect), same as `className`.
+              'contentClassName',
               'name', 'role', 'rel', 'target', 'method', 'action', 'style',
               // A dotted config path (`path="session.pool_agent"`) addressing a key in
               // `config.json`, not copy. Already exempt as an object property below; a

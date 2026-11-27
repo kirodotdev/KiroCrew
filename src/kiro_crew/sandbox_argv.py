@@ -498,10 +498,21 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
     # shortcut: on macOS a prepared folder moved in where none existed sidesteps the
     # path rule on a file not created yet; the file-edit refusal still holds. Upgrade:
     # seal the absent name inside the sandbox view (security.md, project MCP files).
+    # Call-time import, so the facade's census of this module's names is unchanged.
+    from kiro_crew.sandbox_git_control import resolved_git_control_layout
+
+    # The gateway checkouts' git control files are guarded the same way: sealed files
+    # in the person's own folder, whose parents no exception is checked against.
+    git_control = resolved_git_control_layout()
     project_parents = tuple(
         entry
         for target in project_targets
         for entry in (os.path.dirname(target), *_resolution_entries(target))
+        if os.path.lexists(entry)
+    ) + tuple(
+        entry
+        for name in git_control.names
+        for entry in (os.path.dirname(name), *_resolution_entries(name))
         if os.path.lexists(entry)
     )
     install_root_targets = tuple(_resolved_install_root_targets())
@@ -644,6 +655,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         if guard in caller_after_masks:
             app_dir_pins.setdefault(os.path.realpath(guard), guard)
     caller_ancestor_guards = tuple(g for g in caller_ancestor_guards if g not in caller_after_masks)
+
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     operator_paths, operator_exceptions = configured_readonly_layer()
     operator_readonly_probes = _operator_layer_probes(operator_paths, keep_unprobeable=True)
@@ -729,6 +741,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         project_ancestor_guards=project_ancestor_guards,
         caller_ancestor_guards=caller_ancestor_guards,
         mask_parent_pins=mask_parent_pins,
+        git_control_readonly=git_control.readonly,
         carveout_probes=carveout_probes,
         operator_readonly_probes=operator_readonly_probes,
         operator_exception_probes=operator_exception_probes,

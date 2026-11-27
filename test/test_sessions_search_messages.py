@@ -142,17 +142,22 @@ async def test_excerpts_and_titles_are_redacted(tmp_path, monkeypatch):
     seen: list[str] = []
 
     def _fake(text):
+        # Wraps rather than replaces, so the query still matches the redacted
+        # text it is gated on and each output shows which input it came from.
         seen.append(text)
-        return "[REDACTED]"
+        return f"[R] {text}"
 
     monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions.redact", _fake)
+    # Messages are redacted through the search memo, which the conftest floor
+    # empties before each test.
+    monkeypatch.setattr("kiro_crew.search_shown_text.redact", _fake)
 
     _, body = await _get(log, "q=guava")
 
-    assert body["results"][0]["hits"][0]["snippet"] == "[REDACTED]"
+    assert body["results"][0]["hits"][0]["snippet"].startswith("[R] guava")
     # The whole message is redacted before the excerpt is cut from it.
     assert content in seen
-    assert body["results"][0]["title"] == "[REDACTED]"
+    assert body["results"][0]["title"] == "[R] Guava title"
     assert "Guava title" in seen
 
 

@@ -15,9 +15,12 @@ export interface ManagedEnvItem {
    *  or GONE for a deleted own id the service no longer lists. */
   status: string
   display_name?: string
-  /** True for an environment this Crew created; only those take an action. */
+  /** True for an environment this Crew created; only those take Delete. */
   own: boolean
-  /** `crew-sbx-<id>`, on own environments only: the Remote Crew row's ssh host. */
+  /** True for an environment another client made that the person added under this
+   *  sign-in: it takes Stop, Resume and Connect, never Delete. */
+  adopted?: boolean
+  /** `crew-sbx-<id>`, on own and added environments only: the Remote Crew row's ssh host. */
   ssh_host?: string
 }
 
@@ -46,6 +49,13 @@ export const managedEnvApi = {
     apiTransport.j(await apiTransport.post(`${BASE}/ssh-config`, {})) as Promise<ManagedEnvSshConfig>,
   list: async (): Promise<ManagedEnvList> =>
     apiTransport.j(await apiTransport.get(`${BASE}/list`)) as Promise<ManagedEnvList>,
+  /** Add an environment another client made, as the crew `name`. The server checks the id
+   *  against a fresh List for this sign-in, then writes the Remote Crew row. */
+  adopt: async (sandboxId: string, name: string): Promise<{ status?: string; ssh_host?: string }> =>
+    apiTransport.j(await apiTransport.post(`${id(sandboxId)}/adopt`, { name })) as Promise<{
+      status?: string
+      ssh_host?: string
+    }>,
   /** Delete answers `deleting`; it removes no Remote Crew row. */
   act: async (sandboxId: string, action: ManagedEnvAction): Promise<{ status?: string }> =>
     apiTransport.j(await apiTransport.post(`${id(sandboxId)}/${action}`, {})) as Promise<{ status?: string }>,

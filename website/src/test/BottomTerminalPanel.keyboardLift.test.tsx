@@ -13,8 +13,11 @@ import { renderWithProviders } from './helpers'
 import BottomTerminalPanel from '../components/BottomTerminalPanel'
 import { __resetBottomTerminal, openBottomTerminal } from '../hooks/useBottomTerminal'
 
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: ({ sessionId }: { sessionId: string }) => <textarea aria-label="terminal input" data-testid={`cli-${sessionId}`} />,
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))

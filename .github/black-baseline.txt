@@ -103,10 +103,6 @@ src/kiro_crew/apps/builtins/ops_mission_control/tests/test_webhook.py
 src/kiro_crew/apps/builtins/papyrus/backend/latex.py
 src/kiro_crew/apps/builtins/papyrus/backend/routes.py
 src/kiro_crew/apps/builtins/papyrus/backend/store.py
-src/kiro_crew/apps/builtins/personal_shopper/backend/routes.py
-src/kiro_crew/apps/builtins/personal_shopper/backend/store.py
-src/kiro_crew/apps/builtins/personal_shopper/tests/test_routes.py
-src/kiro_crew/apps/builtins/personal_shopper/tests/test_store.py
 src/kiro_crew/apps/builtins/pptx_maker/backend/library.py
 src/kiro_crew/apps/builtins/workflows/server.py
 src/kiro_crew/apps/cron_sdk.py
@@ -184,7 +180,6 @@ src/kiro_crew/mcp_gateway/hazards.py
 src/kiro_crew/mcp_gateway/image_budget.py
 src/kiro_crew/mcp_gateway/manager.py
 src/kiro_crew/mcp_gateway/prewarm.py
-src/kiro_crew/mcp_gateway/rewriter.py
 src/kiro_crew/mcp_gateway/seed.py
 src/kiro_crew/mcp_gateway/socketsec.py
 src/kiro_crew/mcp_gateway/spill.py
@@ -194,7 +189,6 @@ src/kiro_crew/mcp_tools/artifacts.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/perf_sampler.py
 src/kiro_crew/pod/launchd.py
-src/kiro_crew/publish_sync.py
 src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py
 src/kiro_crew/service/common.py
@@ -546,7 +540,6 @@ test/test_pending_skill_notification_content.py
 test/test_perf_memory_quickwins.py
 test/test_perf_sampler.py
 test/test_persist_off_loop.py
-test/test_personal_shopper_no_purchase_capability.py
 test/test_playwright_e2e.py
 test/test_pod_e2e_video_guard.py
 test/test_port_reclaim.py

@@ -205,12 +205,10 @@ paths:
       x-crew-not-served-yet:
         request-body:
         - background
-        - conversation
         - input[].content[].type=input_file
         - input[].content[].type=input_image
         - input[].type=function_call_output
         - input[].type=mcp_approval_response
-        - previous_response_id
         - reasoning.summary
         - text.format.type=json_schema
         - tool_choice=none
@@ -233,7 +231,25 @@ paths:
         `text.format: json_schema` and `reasoning.summary` are phase 2 and open per agent as capabilities reports;
         when the agent does not support one, 422 capability_unavailable. When json_schema validation fails the whole
         turn is failed with error.code structured_output_invalid. In the preview, a turn that fair admission refuses
-        answers 200 with status failed and the capacity message.'
+        answers 200 with status failed and the capacity message. Proposed amendments, 2026-11-26, waiting for a
+        maintainer''s sign-off: (1) A turn that continues a conversation is given the conversation''s earlier
+        turns as context ahead of its input: the turns that completed and are stored, with their texts as stored
+        (redacted), and without the `instructions` of an earlier turn. A turn that failed, was cancelled, was cut
+        short or was not stored is not given. (2) The earlier turns and the new input together must fit one
+        prompt, 100 KiB (UTF-8), the limit one request''s input already has; past it the turn is 413 payload_too_large
+        and the conversation cannot be continued. (3) The stored response of a turn that ran in a conversation is
+        kept as long as that conversation is: 30 days after the conversation''s latest turn ended, not 30 days after
+        the turn itself. So a conversation in use keeps every turn it gives. What it gives a later turn is bounded by the
+        100 KiB of (2). What it keeps is not: each stored turn stays within the limits a stored response already
+        has (1 MiB of request, 1 MiB of reply), and a turn that did not complete is stored with the conversation
+        although it is not given.
+        (4) `previous_response_id` continues the conversation that response ran in, at its end; it does not branch
+        from that response. A response stored before conversations were served ran in none, and naming it is
+        400 invalid_request. (5) The turns of one conversation may name different models; each turn''s `model`
+        is judged on its own. (6) In a conversation, a request whose input texts and ignored field names together
+        are larger than 1 MiB is 413 payload_too_large and is not run: it could not be stored, so no later turn
+        could be given it. A request that large which names no conversation is run as before and starts none:
+        its Response carries no `conversation`.'
       requestBody:
         required: true
         content:
@@ -403,7 +419,10 @@ paths:
         parameters do not allow is 400 invalid_request. (5) A turn whose reply text is larger than
         1 MiB (UTF-8), or whose input texts and ignored field names together, as sent, are larger than 1 MiB, is answered
         as ever and is not stored: reading it returns 404 not_found. The limits are the same for a turn answered
-        as JSON and one answered as a stream.'
+        as JSON and one answered as a stream. Proposed amendment, 2026-11-26, waiting for a maintainer''s sign-off:
+        (6) A turn that ran in a conversation is kept as long as that conversation, 30 days after the conversation''s
+        latest turn ended, and reads 404 not_found once the conversation''s retention is over; its input items follow
+        the same rule.'
   /v1/responses/{response_id}/cancel:
     post:
       operationId: post_v1_responses_response_id_cancel
@@ -663,11 +682,30 @@ paths:
       x-crew-tier: public
       x-crew-scope: responses:write
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        request-headers:
+        - Idempotency-Key
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/dashboard/chat_api/slot_create.py:212 (api_chat_slot_create)
       x-crew-coverage: done
-      description: The conversation is tagged with the grant id. The external id is conv_, never the internal session
-        key.
+      x-crew-stability: preview
+      description: 'The conversation is tagged with the grant id. The external id is conv_, never the internal session
+        key. Proposed amendments, 2026-11-26, waiting for a maintainer''s sign-off: (1) A conversation is kept
+        30 days after its latest turn ended, or 30 days after it was made while it holds no turn; 30 days is the
+        retention a stored response already has. Admitting a continuation checks that it has not expired,
+        then renews retention for the conversation and its listed turns before reading history; completion
+        renews retention again. This keeps them through a turn shorter than the 30-day retention period.
+        After retention expires, reading it or naming it in a turn is 404 not_found,
+        and so is reading a turn that ran in it: the stored responses of a conversation''s turns are kept exactly
+        as long as the conversation.
+        (2) A conversation is a record of its turns, not a dashboard chat: it is not shown in the dashboard, and
+        a dashboard chat has no conv_ id.'
       requestBody:
         required: true
         content:
@@ -707,6 +745,8 @@ paths:
             application/json:
               schema:
                 $ref: ./components.yaml#/components/schemas/ConversationList
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
         '401':
           $ref: ./components.yaml#/components/responses/Unauthorized
         '403':
@@ -720,11 +760,25 @@ paths:
       x-crew-tier: public
       x-crew-scope: conversations:read
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/dashboard/chat_api/slot_detail.py:52 (api_chat_slots)
       x-crew-coverage: done
-      description: OpenAI has no such endpoint; Crew adds it. A delegated credential lists only conversations opened
-        under its grant.
+      x-crew-stability: preview
+      description: 'OpenAI has no such endpoint; Crew adds it. A delegated credential lists only conversations opened
+        under its grant. Proposed amendments, 2026-11-26, waiting for a maintainer''s sign-off: (1) The list
+        holds every conversation of the caller that is still kept, the ones a turn started for itself included
+        (a POST /v1/responses that named no conversation). (2) The order is by `created_at`, then by id; `desc`,
+        the default, is newest first. A conversation keeps its place while turns run in it. (3) `after` is a
+        conversation id of the caller''s own list; any other value is 400 invalid_request, whether or not a
+        conversation of that id exists. A `limit` or `order` outside what the parameters allow is 400
+        invalid_request too; the 400 response is part of this amendment.'
   /v1/conversations/{conversation_id}:
     get:
       operationId: get_v1_conversations_conversation_id
@@ -777,9 +831,23 @@ paths:
       x-crew-tier: public
       x-crew-scope: conversations:read
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/dashboard/chat_api/slot_detail.py:803 (api_chat_slot_detail)
       x-crew-coverage: done
+      x-crew-stability: preview
+      description: 'Proposed amendments, 2026-11-26, waiting for a maintainer''s sign-off: (1) `crew.title` is
+        null: a conversation is given no title. `crew.model` is the model its latest turn named, and is absent
+        before the first turn ends. `crew.status` is running while a turn runs in the conversation and idle otherwise;
+        needs_approval is not reported yet, and a turn that waits for an approval reads running. `crew.latest_seq`
+        is absent: the event stream is not served yet. (2) A conversation whose retention is over, and an id that
+        names none, are the same 404 not_found.'
     post:
       operationId: post_v1_conversations_conversation_id
       summary: Update conversation metadata
@@ -834,9 +902,23 @@ paths:
       x-crew-tier: public
       x-crew-scope: responses:write
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        request-headers:
+        - Idempotency-Key
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
+      x-crew-stability: preview
+      description: 'Proposed amendments, 2026-11-26, waiting for a maintainer''s sign-off: (1) `metadata` replaces
+        the conversation''s metadata whole: a pair the request does not send is removed, and `{}` removes them
+        all. (2) An update is not a turn: it does not renew the conversation''s retention, which still counts
+        from its latest turn. (3) A conversation can be updated while a turn runs in it.'
       requestBody:
         required: true
         content:
@@ -900,11 +982,23 @@ paths:
       x-crew-tier: public
       x-crew-scope: responses:write
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/dashboard/chat_api/slot_lifecycle.py:1303 (api_chat_slot_delete)
       x-crew-coverage: done
-      description: A delegated credential can delete only conversations opened under its grant; others get 404.
-        409 response_in_progress while a turn is running.
+      x-crew-stability: preview
+      description: 'A delegated credential can delete only conversations opened under its grant; others get 404.
+        409 response_in_progress while a turn is running. Proposed amendments, 2026-11-26, waiting for a
+        maintainer''s sign-off: (1) Deleting a conversation deletes the stored responses of the turns that ran
+        in it. Afterwards the conversation, each of those responses and their input items read 404 not_found,
+        and a turn that names the conversation or one of those responses is 404 not_found. (2) A turn asked
+        for in the conversation while the delete is in progress is 409 response_in_progress.'
   /v1/conversations/{conversation_id}/items:
     get:
       operationId: get_v1_conversations_conversation_id_items
@@ -945,6 +1039,8 @@ paths:
             application/json:
               schema:
                 $ref: ./components.yaml#/components/schemas/ConversationItemList
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
         '401':
           $ref: ./components.yaml#/components/responses/Unauthorized
         '403':
@@ -960,9 +1056,25 @@ paths:
       x-crew-tier: public
       x-crew-scope: conversations:read
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/dashboard/chat_api/slot_detail.py:803 (the slot window)
       x-crew-coverage: done
+      x-crew-stability: preview
+      description: 'Proposed amendments, 2026-11-26, waiting for a maintainer''s sign-off: (1) The history is
+        the conversation''s stored turns in the order they ran: for each turn its input items, then its reply.
+        `asc` is that order and `desc`, the default, is its reverse. The texts are the stored ones, which are
+        redacted. (2) A turn that failed, was cancelled or was cut short is listed too, and each of its items
+        has `status: incomplete`. (3) A turn still running is not listed until it ends. (4) Every item is a
+        `message`: tool call and approval items are not served yet. (5) `after` is an item id of this history;
+        any other value is 400 invalid_request, as is a `limit` or `order` outside what the parameters allow;
+        the 400 response is part of this amendment.'
   /v1/models:
     get:
       operationId: get_v1_models
@@ -1514,6 +1626,10 @@ paths:
       - bots:chat
       - bots:read
       x-crew-phase: 1b
+      x-crew-status: available
+      x-crew-available-to:
+      - owner
+      - app
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/members_roster.py:331 (api_members; it produces the full Owner roster,
         and Public projects only the fields of the Bot schema)

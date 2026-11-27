@@ -22,7 +22,7 @@
  * is the generic page's own state, passed in, so the two pages cannot disagree about
  * an artifact.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { ArrowLeft, Camera, Check, ChevronDown, Copy, Download, History, MessageSquare, MoreHorizontal, RotateCcw, Sparkles, Star, Tag, Upload, X } from 'lucide-react'
 import { Input } from '../components/ui'
@@ -92,9 +92,11 @@ type OwnColumn = Exclude<Column, 'chat'>
 
 const COLUMN_HEAD = 'flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5'
 
-/** Mounted beside the board's load-failure notice, so the page knows that notice is showing. */
+/** Mounted beside the board's load-failure notice, so the page knows that notice is showing.
+ *  A layout effect, so the controls move above the notice in the commit that shows it,
+ *  before the browser paints: never one frame floating over the notice. */
 function ReportBoardFailure({ onFailed }: { onFailed: (failed: boolean) => void }): ReactNode {
-  useEffect(() => {
+  useLayoutEffect(() => {
     onFailed(true)
     return () => onFailed(false)
   }, [onFailed])
@@ -358,6 +360,11 @@ export default function ArtifactDetailPageCanvas({
                 <ArtifactUpstreamSync artifact={artifact} stateRead={stateRead} UpstreamSyncBanner={UpstreamSyncBanner}
                   onBeforeMutate={async () => {
                     if (!(await flushCanvas(slug))) throw new Error(i18nT('components.canvas.save_failed_title'))
+                  }}
+                  // Opens the publish column, never toggles it closed; the chat yields it as in toggleOwn.
+                  onPublish={() => {
+                    if (chatOpen) { sidebarUserToggledRef.current = true; setPanel('none') }
+                    setOwn('publish')
                   }} />
                 <ArtifactPublicationNotices artifact={artifact} editorRead={editorRead} />
                 {/* No hand-off: the board may hold a waiting autosave not yet saved anywhere. */}

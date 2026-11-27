@@ -92,6 +92,8 @@ export interface WorkerKitView {
   unenforced_denies?: string[]
   /** The file's blocked commands only the gate checks, in a simple command or plain chain; the worker refuses any other non-read-only command while one is left. */
   conditional_denies?: string[]
+  /** Set on an add whose new gateway-routed MCP server the gateway serves only after a restart. */
+  gateway_restart_required?: boolean
 }
 export interface WorkerKitChange {
   /** `disabledTools` / `disabledServers`: a limit on a server the worker base declares. */
@@ -101,6 +103,9 @@ export interface WorkerKitChange {
   /** `added`: written by the add. `skipped`: already present, so left alone. */
   /** `replaced`: the behaviour-directions slot already holds other directions. */
   change: 'added' | 'replaced' | 'skipped'
+  /** On an added `toolsSettings` row: the spellings the agent set this tool under,
+   *  written once under this key with the stricter of their settings. */
+  merged_from?: string[]
 }
 export interface WorkerKitPreview {
   member: string

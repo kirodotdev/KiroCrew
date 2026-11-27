@@ -2621,6 +2621,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.kiro-managed-environments",
+    "label": "Kiro Managed Environments",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_client",
+    "description": "Adds Kiro-managed remote machines to Add Crew in Settings > Remote Crew. Turning this on opens none until you launch one.",
+    "hint": "The machines use your company sign-in. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. To chat here again, sign in with another account.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.let-agents-control-your-other-sessions",
     "label": "Let agents control your other sessions",
     "labelKey": "pages.settings.sessionControlSection.session_control_tools",
@@ -2776,19 +2789,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "developer.use-your-company-s-sign-in",
-    "label": "Use your company's sign-in",
-    "labelKey": "pages.developer.featurePreviewsTab.crew_client",
-    "description": "Uses your company's own sign-in for its portal.",
-    "hint": "Some companies install Kiro Crew with their own company sign-in. Turn this on to use it. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. Otherwise nothing changes.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
     "id": "developer.visual-refresh",
     "label": "Visual refresh",
     "labelKey": "pages.developer.featurePreviewsTab.visual_refresh",
@@ -2832,6 +2832,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_provider",
     "tab": "developer",
     "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
+    "id": "developer.worker-status-under-the-reply",
+    "label": "Worker status under the reply",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_reply_status",
+    "description": "A conductor's latest reply says what its workers are doing.",
+    "hint": "Under a conductor's latest finished reply, one line says how many of its workers need you, have stalled, are running or are waiting. Click it to open Workers in the side panel. Useful when the sidebar is closed, on a phone, or in split view. Older replies show nothing, and the line goes away when no worker is busy.",
+    "tab": "developer",
+    "type": "toggle",
     "occurrence": 1,
     "params": {
       "sub": "feature-previews"

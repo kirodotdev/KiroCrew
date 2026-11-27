@@ -67,7 +67,8 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     ``events=<n>`` shortens each tail, ``item_id`` / ``state`` / ``since`` select
     rows (``accept_batch`` stays built from the WHOLE board, because its contract
     is the whole bar), and ``compact=true`` returns the status columns alone, the
-    derived flags among them, with no events, acceptance or batch. The route does
+    derived flags among them, with no events, acceptance or batch. A compact or
+    ``item_id`` read carries the goal's first line alone (:func:`_goal_line`). The route does
     not size the reply: the MCP tool that carries it to a model fits it to that
     runtime's cut (``mcp_work._fit_ledger``), measured on the text it delivers.
     """
@@ -204,6 +205,11 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         goal_items_used=record.goal_items_used,
         max_depth=depth_cap,
     )
+    if compact or options.get("item_id") is not None:
+        # A patrol or one-item read re-runs every cycle and needs the goal only to
+        # recognise it; the whole goal stays on the plain read. ``goal_id`` and
+        # ``goal_version`` still say whether it changed since that read.
+        conductor["goal"] = _goal_line(record.goal)
     payload: dict[str, Any] = {"conductor": conductor, "items": rows}
     if compact:
         payload["compact"] = True
@@ -426,6 +432,20 @@ def _published_payload(
         "published_fields_only": True,
         "note": _PUBLISHED_NOTE,
     }
+
+
+#: The most characters of the goal a compact or one-item read carries.
+_GOAL_LINE_MAX = 200
+
+
+def _goal_line(goal: str) -> str:
+    """*goal*'s first line, at most :data:`_GOAL_LINE_MAX` characters, ending in an
+    ellipsis when anything was left out (a later line or the rest of this one)."""
+    text = str(goal or "").strip()
+    line = (text.splitlines() or [""])[0].rstrip()
+    if len(line) > _GOAL_LINE_MAX:
+        return line[: _GOAL_LINE_MAX - 1].rstrip() + "\u2026"
+    return line + "\u2026" if line != text else line
 
 
 #: The fields a ``compact=true`` row carries: what a patrol cycle reads to decide

@@ -31,6 +31,7 @@ from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retr
 from kiro_crew.config.paths import data_home  # noqa: F401
 from kiro_crew.external_text import external_text_requires_redaction  # noqa: F401
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV  # noqa: F401
+from kiro_crew.path_component import is_single_path_component  # noqa: F401
 from kiro_crew.pinned_fs import (  # noqa: F401
     PinnedPathRefusal,
     open_in_pinned_parent,
@@ -137,7 +138,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_dispatchable_member_name,
         is_person_created_crewmate,
         is_readable_member_name,
-        is_single_path_component,
         is_valid_member_name,
         key_new_crew,
         mark_create_request,

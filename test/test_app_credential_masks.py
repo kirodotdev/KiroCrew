@@ -34,8 +34,10 @@ _MODES = ("standard", "cc", "strict")
 _PREFIXES = (".kiro/crew", ".kirocrew")
 
 
-#: The real shipped-manifest reader, for the one test that pins what the built-ins declare.
+#: The real shipped-manifest reader, for the one test that pins what the built-ins declare,
+#: and the real reader of what a pin row froze for a deleted copy, the rest of that leg.
 _SHIPPED_MANIFESTS = credential_masks._builtin_manifests
+_FROZEN_DECLARATIONS = credential_masks._frozen_builtin_declarations
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +46,7 @@ def _fresh_cache(_floor_monkeypatch):
     # Every other case reads only the manifests it writes, not what the built-ins ship.
     # The floor's own patcher, so a test's ``monkeypatch.undo()`` cannot lift it.
     _floor_monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
+    _floor_monkeypatch.setattr(credential_masks, "_frozen_builtin_declarations", lambda _kind: [])
     yield
     credential_masks.clear_cache()
 
@@ -165,8 +168,12 @@ class TestManifest:
 
 class TestWhereDeclarationsAreRead:
     def test_the_shipped_built_ins_declare_exactly_the_notes_state_directory(self, monkeypatch):
-        """Notes keeps its token, registry and settings in a masked directory of its own."""
+        """Notes keeps its token, registry and settings in a masked directory of its own.
+
+        Whether its wheel copy ships or its pin row froze the copy a release deleted.
+        """
         monkeypatch.setattr(credential_masks, "_builtin_manifests", _SHIPPED_MANIFESTS)
+        monkeypatch.setattr(credential_masks, "_frozen_builtin_declarations", _FROZEN_DECLARATIONS)
         assert credential_masks.declared_masks(installed=False) == {"md-notebook": ("state/",)}
 
     def test_an_installed_app_declares_leaves_under_its_own_data_dir(self, home):

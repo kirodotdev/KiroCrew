@@ -27,6 +27,7 @@ ROUTES = [
     ("POST", "/api/managed-environments/env-001/resume"),
     ("POST", "/api/managed-environments/env-001/delete"),
     ("POST", "/api/managed-environments/env-001/ssh-session"),
+    ("POST", "/api/managed-environments/env-001/adopt"),
     ("GET", "/api/managed-environments/ssh-config"),
     ("POST", "/api/managed-environments/ssh-config"),
 ]
@@ -103,6 +104,7 @@ def test_a_real_teammate_is_refused_on_every_lane_route_and_the_owner_passes(
     handler = {
         "list": routes.list_handler,
         "ssh-session": routes.ssh_session,
+        "adopt": routes.adopt,
         "ssh-config": routes.ssh_config_handler,
     }.get(path.rsplit("/", 1)[1], routes.act)
     teammate = _request("ssm", path, method)

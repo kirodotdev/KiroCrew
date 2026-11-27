@@ -5,7 +5,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { type ErrorReport, findReport } from '../../utils/errorReport'
 import { isStaleProjectDirError, resolveFolderAgent, resolveFolderProjectDir } from '../../utils/folderAgent'
 import { unwrapResult } from '@reduxjs/toolkit'
-import { captureForkOrigin, createSlot, forkMayOpen, type ForkOrigin, requestSlotFolderOpen } from '../../store/chatSlice'
+import { captureForkOrigin, createSlot, forkMayOpen, forkOpenSettled, forkOpenStarted, type ForkOrigin, requestSlotFolderOpen, switchSlot } from '../../store/chatSlice'
 import { focusComposer } from '../chat/composerFocus'
 import { i18nT } from '../../i18n/t'
 import type { Slot } from './types'
@@ -16,9 +16,10 @@ import type { BoardColumnMutations } from './board'
 import { errMessage } from '../../utils/thunkError'
 import { useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { api } from '../../api/client'
+import { prepareAppSession, type SessionCreateItem } from '../../apps/sessionCreateContributions'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
-import { crewVersionMismatchText, currentCrewWindow, openCrewWindow } from '../chat/crew-window/crewWindowStore'
+import { crewVersionMismatchText, crewWindowCalls, currentCrewWindow, openCrewWindow } from '../chat/crew-window/crewWindowStore'
 import { useStore } from 'react-redux'
 import type { RootState } from '../../store'
 
@@ -411,8 +412,43 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
     },
     onError: onNewChatError,
   })
+  // A Sessions New row an app contributed: the app prepares the project first, then
+  // the create carries it (`projectAtCreate`), so the server binds it before the
+  // session is first published and a refused directory makes no session. Any failure
+  // reports through `newChatError`, like every other local create here. The create
+  // never activates by itself: once it settles, the session opens only if the person
+  // is still where they clicked, crew windows included (they live outside the Redux
+  // origin), so a session opened meanwhile keeps the view.
+  const createAppSessionMutation = useMutation({
+    mutationFn: async (item: SessionCreateItem) => {
+      setNewChatError('')
+      // Numbered at the pick, like a fork that may open its child, and held until
+      // it opened or failed: a request clicked later still opens over it.
+      let released = false
+      const release = () => { if (!released) { released = true; dispatch(forkOpenSettled()) } }
+      dispatch(forkOpenStarted())
+      const origin = captureForkOrigin(store.getState())
+      // Counted, not compared: opening a crew session and closing it again is a move too.
+      const originWindowCalls = crewWindowCalls()
+      try {
+        const prepared = await prepareAppSession(queryClient, item)
+        const slot = await dispatch(createSlot({ mode: mode || '', project: prepared.project, projectAtCreate: true, activate: false, ...(prepared.title ? { title: prepared.title } : {}) })).unwrap()
+        if (slot?.key && forkMayOpen(store.getState(), origin) && crewWindowCalls() === originWindowCalls) {
+          const switching = dispatch(switchSlot({ key: slot.key, announceOnMissing: true, gesture: true, requestSeq: origin.seq }))
+          release()
+          onSelectSlot?.(slot.key)
+          focusComposer()
+          await switching
+        }
+        return slot
+      } finally {
+        release()
+      }
+    },
+    onError: onNewChatError,
+  })
   return {
     remoteCrewChatPreview,
-    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation,
+    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation, createAppSessionMutation,
   }
 }

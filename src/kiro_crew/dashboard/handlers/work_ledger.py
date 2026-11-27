@@ -133,6 +133,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.work_ledger_read import (  # noqa: F401
         _CHANNEL_ANSWER_FIELDS,
         _COMPACT_ROW_FIELDS,
+        _GOAL_LINE_MAX,
         _MAX_EVENT_TAIL,
         _PUBLISHED_NOTE,
         _QUERY_FALSE,
@@ -140,6 +141,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _UNPLACED_WHY,
         _bar_is_placed,
         _find_slot,
+        _goal_line,
         _passes_filters,
         _published_payload,
         _read_options,

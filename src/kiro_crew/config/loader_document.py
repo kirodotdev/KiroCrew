@@ -1121,6 +1121,8 @@ def update_config_locked(
             # Every locked raw edit lands here, not in save(), so this is where the retired keys
             # go; config.local.json is the operator's own file and keeps what it holds.
             _resolution.drop_retired_section_keys(result)
+            # A raw edit of a channel's agent makes it the owner's (slack.shared_access).
+            _sections.drop_stale_shared_agents(result)
         if stamp_meta:
             result = stamp_config_meta(result)
         if unreadable is None:

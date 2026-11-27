@@ -48,6 +48,7 @@ vi.mock('../components/ChatPane', () => ({
     leading,
     onFileOpen,
     onFolderOpen,
+    noSignIn,
   }: {
     slotKey: string
     focused?: boolean
@@ -60,8 +61,9 @@ vi.mock('../components/ChatPane', () => ({
     leading?: { inset?: boolean; control?: React.ReactNode }
     onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
     onFolderOpen?: (path: string) => void
+    noSignIn?: boolean
   }) => (
-    <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-ptt={pushToTalk ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
+    <div data-testid={`pane-${slotKey}`} data-no-sign-in={noSignIn ? 'yes' : 'no'} data-focused={focused ? 'yes' : 'no'} data-ptt={pushToTalk ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
       {leading?.control}
       {focused !== undefined && <PaneDim dimmed={!focused} />}
       <button type="button" aria-label={`focus ${slotKey}`} onClick={onFocus} />
@@ -1065,5 +1067,17 @@ describe('SessionGridView — a session dropped on a pane (#36883)', () => {
     expect(screen.queryByTestId('pane-a')).toBeNull()
     expect(screen.getByTestId('pane-e').dataset.focused).toBe('yes')
     expect(screen.getByTestId('pane-c').dataset.focused).toBe('no')
+  })
+})
+
+describe('SessionGridView — Kiro sign-in on a signed-out row', () => {
+  it('lets every pane offer Sign in unless the host withholds it (embedded or popout)', async () => {
+    renderGrid('a')
+    expect((await screen.findByTestId('pane-a')).getAttribute('data-no-sign-in')).toBe('no')
+  })
+
+  it('hands the host\u2019s noSignIn to every pane', async () => {
+    renderWithProviders(<SessionGridView onClose={vi.fn()} onCollapse={vi.fn()} seedSlot="a" noSignIn />)
+    expect((await screen.findByTestId('pane-a')).getAttribute('data-no-sign-in')).toBe('yes')
   })
 })

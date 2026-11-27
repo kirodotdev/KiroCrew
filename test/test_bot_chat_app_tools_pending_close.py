@@ -1243,7 +1243,7 @@ async def test_notify_app_disabled_runs_before_bot_stop_in_teardown(monkeypatch)
 
     order: list[str] = []
 
-    async def _fake_notify(name: str) -> None:
+    async def _fake_notify(name: str, **_: object) -> None:
         order.append("notify")
 
     async def _fake_stop(state, app_name):

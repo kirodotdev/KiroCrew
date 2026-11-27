@@ -117,3 +117,28 @@ def test_a_revoke_before_the_save_drops_the_repair(store, caplog):
     assert not stored.approved.get(_STEM)
     assert not stored.approved_pairs.get(_STEM)
     assert not stored.approved_displays.get(_STEM)
+
+
+def test_a_prefold_approval_carries_over_through_the_casing_repair(tmp_path, monkeypatch):
+    """An approval written before the PATH fold, for the spelling the casing
+    repair has since rewritten, still covers the unchanged launch."""
+    from kiro_crew.mcp_gateway import hashing
+    from kiro_crew.mcp_gateway import launch_approval_heal as heal
+
+    monkeypatch.setattr(
+        env_mod, "saved_command_casing", lambda path: _REPAIRED if path == _APPROVED else path
+    )
+    # The folded and literal env digests differ, as for a PATH the gateway appends to.
+    monkeypatch.setattr(mod, "env_fingerprint", lambda env: "folded")
+    literal = hashing.hash_declared_env(_ENV)
+    approved_hash = mod.hash_command(_APPROVED, [])
+    approvals = mod.LaunchApprovals()
+    approvals.approved[_STEM] = {f"{approved_hash}:{literal}"}
+    approvals.approved_pairs[_STEM] = {mod.launch_pair(approved_hash, literal)}
+
+    live_hash = mod.hash_command(_REPAIRED, [])
+    found = heal.prefold_approval_of(
+        approvals, _STEM, f"{live_hash}:folded", (literal, literal), (_REPAIRED, [])
+    )
+
+    assert found == (f"{approved_hash}:{literal}", mod.launch_pair(approved_hash, literal))

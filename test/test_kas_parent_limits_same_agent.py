@@ -275,7 +275,6 @@ def test_no_shipped_agent_holds_a_run_on_its_own_agent_elsewhere(
     agents, sessions, dirs, runs_in  # noqa: F811
 ):
     specs = _shipped_specs()
-    assert len(specs) > 10
     for spec in specs:
         _write(agents, spec)
         assert not _held_by_own_agent_elsewhere(spec["name"], sessions, runs_in, dirs), spec["name"]

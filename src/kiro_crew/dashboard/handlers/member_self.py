@@ -77,6 +77,9 @@ SELF_PROPOSALS: dict[str, str] = {
     # The crewmate's one offer to write its own Dashboard page
     # (``offer_dashboard_page``): the yes wakes it to write the page.
     "dashboard_page": "crewmate.dashboard_page",
+    # Deletes and edits of the crewmate's own facts and experiences
+    # (``propose_memory_changes``), each row ticked or unticked by the user.
+    "memory": "crewmate.memory",
 }
 
 #: The requests a crewmate may make in its own thread from a turn the user did
@@ -239,7 +242,7 @@ async def api_member_self_propose(request: web.Request) -> web.Response:
     if who is None:
         _audit(sk, OP_PROPOSE_SELF, "denied", "not a Bot thread")
         return _deny(403, "not_a_crewmate", "only a Bot, in its own chat, can ask this")
-    member, _store = who
+    member, thread_store = who
     name = body.get("request")
     if not isinstance(name, str) or name not in SELF_PROPOSALS:
         _audit(sk, OP_PROPOSE_SELF, "denied", "unknown_request")
@@ -296,6 +299,12 @@ async def api_member_self_propose(request: web.Request) -> web.Response:
             _audit(sk, OP_PROPOSE_SELF, "denied", "invalid_params")
             return _deny(400, "invalid_params", "'key_results' takes only items")
         params = {"member": member, "items": raw.get("items")}
+    elif name == "memory":
+        from kiro_crew.dashboard.handlers.member_memory_self import memory_params
+
+        refused, params = await memory_params(sk, member, thread_store, raw)
+        if refused is not None:
+            return refused
     elif name == "dashboard_page":
         if raw:
             _audit(sk, OP_PROPOSE_SELF, "denied", "invalid_params")

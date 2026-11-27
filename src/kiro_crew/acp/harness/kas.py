@@ -59,6 +59,7 @@ from kiro_crew.acp.harness.base import (
 )
 from kiro_crew.acp.harness.kas_missing_agent import _kiro_cli_builtin_reason, _missing_agent_reason
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
+from kiro_crew.acp.kas_agents_session_hoist import without_subagent_refused_servers
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
@@ -464,7 +465,7 @@ def resolve_projected_spec(
         # A user-level custom agent gets Crew's default servers, through the helper
         # the kiro-cli skill view applies too, so the two paths cannot drift. Added
         # first, so the checkout's switch-offs reach them as well.
-        spec = with_default_crew_servers(agent, spec)
+        spec = with_default_crew_servers(agent, spec, edition_ask_rules=True)
         if isinstance(project, dict):
             spec = _with_project_switch_offs(spec, project)
         return spec, agents_dir
@@ -499,7 +500,7 @@ def resolve_projected_spec(
     if not declared:
         try:
             spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
-            return with_default_crew_servers(agent, spec), agents_dir
+            return with_default_crew_servers(agent, spec, edition_ask_rules=True), agents_dir
         except KasAgentTranslationError as exc:
             # Asked again after the read failed, so a spec that appeared meanwhile
             # and cannot be read keeps its own reason.
@@ -1413,6 +1414,7 @@ class KasHarness(MembershipHarness):
 
                 spec, prompt_dir = merge_at_spawn(agent, bound), agents_dir
             else:
+                kas_agents_mod.refuse_held_spec(paths_mod.spec_dir_for(agent, agents_dir), agent)
                 try:
                     spec, prompt_dir = resolve_projected_spec(
                         agents_dir,
@@ -1740,6 +1742,8 @@ class KasHarness(MembershipHarness):
                 # A sub-agent run is refused what the sessions above it are refused.
                 custom_agents = hold_to_parents(custom_agents, agent, session_key, folder)
                 custom_agents = limit_to_founders(custom_agents, agent, spec, founding)
+                # Nor does it start a server whose every tool refuses it.
+                custom_agents = without_subagent_refused_servers(custom_agents, session_key)
             except ParentLimitsUnreadable as exc:
                 # Refused, never started without its parents' denies.
                 raise AcpAgentUnavailable(str(exc), agent=agent) from exc

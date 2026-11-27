@@ -6,15 +6,18 @@
  * name and starts the core's launch; the server's own preflight checks every setting, the
  * sign-in and the service, and the panel shows the progress card and any error. Launch is
  * held until this computer's ssh config has the lane's block, which one button beside
- * Launch adds.
+ * Launch adds. Below it, the person's environments another client made (Kiro web, the IDE,
+ * another Crew) each take Add, which adds that environment as the crew named above.
  */
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Link2, Rocket } from 'lucide-react'
+import { Check, Link2, Plus, Rocket } from 'lucide-react'
 import { Btn, Input } from '../ui'
 import ErrorNotice from '../ErrorNotice'
 import type { RemoteProvisionerFormProps } from '../remoteProvisionerRenderers'
+import { api } from '../../api/client'
 import { managedEnvApi } from '../../api/managedEnvApi'
+import { MANAGED_ENV_LIST_KEY, STATE_LABEL_KEY, rowState } from './SandboxCrewRowActions'
 import { i18nT } from '../../i18n/t'
 
 const SSH_CONFIG_KEY = ['managed-env-ssh-config'] as const
@@ -77,6 +80,92 @@ function SshSettings({ state, add }: ReturnType<typeof useSshSettings>) {
         />
       )}
     </div>
+  )
+}
+
+/** Listed states the server refuses to add: gone or on the way out. */
+const NOT_ADDABLE = new Set(['DELETED', 'DELETING', 'FAILED'])
+
+/** The person's environments another client made, each with Add. The server checks the id
+ *  against a fresh List for this sign-in, then writes the crew row; Crew never deletes it.
+ *  An added id whose crew row is gone (a failed row write, or the core Remove) is offered
+ *  again, so Add can write the row. */
+function OtherEnvironments({ name, nameOk, sshReady, disabled, onAdded }: {
+  name: string
+  nameOk: boolean
+  sshReady: boolean
+  disabled: boolean
+  /** The add for `name` succeeded. */
+  onAdded: (name: string) => void
+}) {
+  const qc = useQueryClient()
+  // staleTime 0: environments are made elsewhere, so every mount and focus reads again.
+  const list = useQuery({ queryKey: MANAGED_ENV_LIST_KEY, queryFn: managedEnvApi.list, retry: false, staleTime: 0 })
+  // The panel's own crew list, read from its cache (this form fetches nothing for it).
+  const crews = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances(), enabled: false })
+  const add = useMutation({
+    mutationFn: (req: { sandboxId: string; name: string }) => managedEnvApi.adopt(req.sandboxId, req.name),
+    onSuccess: (_out, req) => onAdded(req.name),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: MANAGED_ENV_LIST_KEY })
+      void qc.invalidateQueries({ queryKey: ['instances'] })
+    },
+  })
+  const hosts = crews.data ? new Set(crews.data.instances.map((c) => c.ssh_host)) : undefined
+  const rowless = (host?: string) => !!hosts && !!host && !hosts.has(host)
+  const rows = (list.data?.sandboxes ?? []).filter(
+    (s) => !s.own && (!s.adopted || rowless(s.ssh_host)) && !NOT_ADDABLE.has(s.status),
+  )
+  // A failed read shows even over cached rows: they may be stale.
+  const listFailed = list.error ? (
+    <ErrorNotice
+      askAgent
+      title={i18nT('managedEnv.row.list_failed')}
+      message={(list.error as Error).message || i18nT('managedEnv.row.list_failed')}
+      onDismiss={() => void list.refetch()}
+    />
+  ) : null
+  if (rows.length === 0 && !add.isError) return listFailed
+  const ready = nameOk && sshReady
+  return (
+    <section className="space-y-2 border-t border-border pt-3" aria-labelledby="managed-env-others" data-testid="managed-env-others">
+      <h4 id="managed-env-others" className="text-sm font-medium">{i18nT('managedEnv.form.others_title')}</h4>
+      <p className="text-xs text-[var(--text-secondary)]">{i18nT('managedEnv.form.others_note')}</p>
+      {listFailed}
+      <ul className="space-y-1">
+        {rows.map((s) => (
+          <li key={s.sandbox_id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <span className="min-w-0 break-all">
+              {s.display_name || s.sandbox_id}{' '}
+              <span className="text-xs text-[var(--text-secondary)]">{i18nT(STATE_LABEL_KEY[rowState(s.status)])}</span>
+            </span>
+            <Btn
+              type="button"
+              busy={add.isPending && add.variables?.sandboxId === s.sandbox_id}
+              disabled={!ready || disabled || add.isPending}
+              aria-describedby={ready ? undefined : 'managed-env-add-why'}
+              onClick={() => add.mutate({ sandboxId: s.sandbox_id, name })}
+            >
+              <Plus size={14} aria-hidden="true" /> {i18nT('managedEnv.form.add')}
+            </Btn>
+          </li>
+        ))}
+      </ul>
+      {!ready && (
+        <p id="managed-env-add-why" className="text-xs text-[var(--text-secondary)]">
+          {!sshReady ? i18nT('managedEnv.form.add_needs_ssh') : i18nT('managedEnv.form.add_needs_name')}
+        </p>
+      )}
+      {add.isError && (
+        // The typed crew name outlives this form (nameDraft), so a hand-off loses nothing.
+        <ErrorNotice
+          askAgent
+          title={i18nT('managedEnv.form.add_failed')}
+          message={(add.error as Error).message}
+          onDismiss={() => add.reset()}
+        />
+      )}
+    </section>
   )
 }
 
@@ -179,6 +268,16 @@ export default function SandboxLaunchForm({ provisioner, launch, launching, disa
           </span>
         )}
       </div>
+      <OtherEnvironments
+        name={name}
+        nameOk={ok}
+        sshReady={sshReady}
+        disabled={disabled || launching}
+        // Clear only the name that was added: one typed while it was in flight stays.
+        onAdded={(added) => {
+          if (nameDraft === added) setName('')
+        }}
+      />
     </form>
   )
 }

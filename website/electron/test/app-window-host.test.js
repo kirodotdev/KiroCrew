@@ -256,6 +256,31 @@ test("a shortcut opens its window and is delivered once the page is ready", asyn
   assert.deepStrictEqual(panel.webContents.sent.length, 2);
 });
 
+test("each shortcut press is reported once as an app open on the shell's own gateway", async (t) => {
+  const { host, fake, state } = await started([appRow("pets", OVERLAY_APP)]);
+  t.after(() => host.stop());
+  const views = () => state.fetches.filter((f) => f.url.includes("/api/telemetry/app-view"));
+  assert.deepStrictEqual(views(), [], "starting the host reports nothing");
+  fake.registered.get("CommandOrControl+Alt+P")();
+  fake.registered.get("CommandOrControl+Alt+P")();
+  await settle();
+  const sent = views();
+  assert.strictEqual(sent.length, 2);
+  assert.strictEqual(sent[0].url, `${BACKEND}/api/telemetry/app-view?token=tok`);
+  assert.strictEqual(sent[0].init.method, "POST");
+  assert.strictEqual(sent[0].init.headers["Content-Type"], "application/json");
+  assert.deepStrictEqual(JSON.parse(sent[0].init.body), { app: "pets", surface: "shortcut", event: "opened" });
+});
+
+test("a failing report leaves the shortcut working", async (t) => {
+  const { host, fake, state } = await started([appRow("pets", OVERLAY_APP)]);
+  t.after(() => host.stop());
+  state.status = new Error("offline");
+  fake.registered.get("CommandOrControl+Alt+P")();
+  await settle();
+  assert.ok(fake.created.find((w) => w.loaded[0].includes("/panel")), "the shortcut's window still opened");
+});
+
 test("disabling the app closes its windows and releases its shortcuts", async (t) => {
   const { host, fake, state, lines } = await started([appRow("pets", OVERLAY_APP)]);
   t.after(() => host.stop());

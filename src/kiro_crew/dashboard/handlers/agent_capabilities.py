@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection
+from collections.abc import Callable, Collection
+from functools import partial
 from types import SimpleNamespace
 from typing import cast
 
@@ -90,24 +91,39 @@ def _put_routed(service: CapabilityService, name: str, body: object) -> tuple[di
     if not ids:
         return result, {}
     try:
-        stubs = frozenset(KiroCrewConfig.load().mcp_gateway.stub_servers)
         servers = _load_spec(name)[1].get("mcpServers") or {}
     except Exception:  # noqa: BLE001 - the save is done; it only skips the refresh
         logger.warning("Could not read the routing after a Bot save", exc_info=True)
         return result, {}
-    return result, {i: servers.get(i) for i in ids if _routes(i, servers.get(i), stubs)}
+    return result, routed_entries({i: servers.get(i) for i in ids})
 
 
-async def _put_and_refresh_overlays(service: CapabilityService, name: str, body: object) -> dict:
-    """Save under the overlay refresh, so the Bot's worker gets its new routed stub.
+def routed_entries(servers: dict[str, object]) -> dict[str, object]:
+    """The *servers* just saved in a Bot's own file that the current
+    ``mcp_gateway.stub_servers`` routes (``_routes``), each with its entry. Blocking."""
+    if not servers:
+        return {}
+    try:
+        stubs = frozenset(KiroCrewConfig.load().mcp_gateway.stub_servers)
+    except Exception:  # noqa: BLE001 - the save is done; it only skips the refresh
+        logger.warning("Could not read the routing after a Bot save", exc_info=True)
+        return {}
+    return {i: entry for i, entry in servers.items() if _routes(i, entry, stubs)}
 
-    The write runs as the refresh's ``register`` step, under the broker's
-    refresh lock: a write landing between the refresh's probe and its publish
-    would publish a stub for a target the daemon does not hold. With no broker
-    (or a refresh that failed before registering) the save runs here instead.
+
+async def save_and_refresh_overlays(save: Callable[[], tuple[dict, dict]]) -> dict:
+    """Run *save* under the overlay refresh, so the Bot's worker gets its new routed stub.
+
+    *save* writes the Bot's file and answers ``(result, routed)``: what the
+    route returns, and the gateway-routed servers the write gave the file
+    (:func:`routed_entries`). It runs as the refresh's ``register`` step, under the
+    broker's refresh lock: a write landing between the refresh's probe and its
+    publish would publish a stub for a target the daemon does not hold. With no
+    broker (or a refresh that failed before registering) it runs here instead.
     A routed server the refresh did not publish as a stub (it asked for a
     restart, raised, found no broker, or the running broker does not serve that
-    server yet) is surfaced as ``gateway_restart_required`` for the change card.
+    server yet) is surfaced as ``gateway_restart_required`` on the result: the
+    change card and **Add abilities** say so.
     """
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
     from kiro_crew.mcp_gateway.overlay_refresh import refresh_after_agent_change
@@ -117,7 +133,7 @@ async def _put_and_refresh_overlays(service: CapabilityService, name: str, body:
     async def _register() -> bool:
         try:
             async with _get_config_lock():
-                box.append(await drained_to_thread(_put_routed, service, name, body))
+                box.append(await drained_to_thread(save))
         except Exception as exc:  # noqa: BLE001 - re-raised below, after the refresh
             # A refused save wrote nothing, so there is nothing to rewrite.
             box.append(exc)
@@ -130,7 +146,7 @@ async def _put_and_refresh_overlays(service: CapabilityService, name: str, body:
     refreshed = await refresh_after_agent_change(_register)
     if not box:  # no broker serves, or the refresh failed before registering
         async with _get_config_lock():
-            box.append(await drained_to_thread(_put_routed, service, name, body))
+            box.append(await drained_to_thread(save))
     if isinstance(box[0], BaseException):
         raise box[0]
     result, routed = box[0]
@@ -167,7 +183,7 @@ async def api_member_capabilities(request: web.Request) -> web.Response:
             if request.method == "POST":
                 result = await drained_to_thread(service.preview, name, body)
             else:
-                result = await _put_and_refresh_overlays(service, name, body)
+                result = await save_and_refresh_overlays(partial(_put_routed, service, name, body))
                 request.app["state"].push_refresh("agents")
                 if result.get("mode") == "mate":
                     # A crewmate that owns its file: its running workers mount

@@ -934,6 +934,136 @@ async def _container_image_fields(channel: str) -> dict[str, str]:
     }
 
 
+def _already_noted(version: str) -> bool:
+    note = update_restart_ready.current()
+    return (
+        note is not None
+        and note.reason == update_restart_ready.REASON_STAGED
+        and note.version == version
+    )
+
+
+def unnoted_offer() -> str:
+    """The offered version :func:`note_installed_beside` should look for, or ``""``.
+
+    ``""`` while no newer version is on offer or the note already names it. No
+    I/O, so a status frame may ask it on the loop before it hops to the thread.
+    """
+    if _update_info.get("update_available") is not True:
+        return ""
+    version = str(_update_info.get("latest_version") or "")
+    if not version or _already_noted(version):
+        return ""
+    return version
+
+
+#: The dist-info stems a managed tree's Kiro Crew can carry: ``kirocrew`` on every
+#: channel but LTS, which ships as its own distribution ``kirocrew-lts``
+#: (``build-wheel.yml``), whose dist-info is ``kirocrew_lts-<version>``.
+_DIST_INFO_STEMS = ("kirocrew", "kirocrew_lts")
+#: How much of a METADATA file is read: its header block, where ``Version:`` sits
+#: right after ``Metadata-Version`` and ``Name``.
+_METADATA_HEAD_BYTES = 4096
+
+
+def _restart_tree_version() -> str:
+    """The ``kirocrew`` version installed in the tree a restart would exec, or ``""``.
+
+    Read from that tree's one ``kirocrew-*.dist-info/METADATA`` (a glob and one
+    small file), not by importing anything from it. Covers both trees a managed
+    venv restarts into: a versioned ``crew-venv-<version>`` that ``kirocrew
+    update`` built, and the fixed ``crew-venv`` the install script rebuilds in
+    place. A tree outside the managed layout (a pipx venv, or any install that
+    restarts ``sys.executable``) reads as ``""``: its writers do not hold the
+    layout's update lock, so :func:`_restart_tree_holds_settled` could not tell
+    a finished install from one that may still roll back. The LTS edition's
+    distribution name is read too (:data:`_DIST_INFO_STEMS`).
+    """
+    import os
+    from pathlib import Path
+
+    from kiro_crew.platform import wheel_engine
+
+    tree = Path(os.path.realpath(Path(wheel_engine.respawn_executable()).parent.parent))
+    if not wheel_engine.managed_venv_layout().is_managed_tree(tree):
+        # A pipx venv or any other tree outside the managed layout: its writers
+        # do not hold the layout's update lock, so a read there settles nothing.
+        return ""
+    site = "lib/python3*/site-packages"
+    for dist in _DIST_INFO_STEMS:
+        for metadata in sorted(tree.glob(f"{site}/{dist}-*.dist-info/METADATA")):
+            # The header block (``Version:`` is in its first lines) and no more:
+            # a bounded read of a file the install wrote, never the whole body.
+            with open(metadata, encoding="utf-8", errors="replace") as fh:
+                head = fh.read(_METADATA_HEAD_BYTES)
+            for line in head.split("\n\n", 1)[0].splitlines():
+                if line.startswith("Version:"):
+                    return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _restart_tree_holds_settled(version: str) -> bool:
+    """Read the restart tree again under the layout's update lock, taken without waiting.
+
+    The install script rebuilds the fixed ``crew-venv`` in place, and an
+    interrupted run restores the previous tree from its EXIT rollback, so a
+    tree that already reads as *version* may still be undone. Every writer of
+    the layout (that script, and the engine in any process) holds the update
+    lock until its tree is committed, so a busy lock means "not settled yet":
+    ``False``, and a later frame asks again. Taken only once the unlocked read
+    already matched, so a status frame does not contend for the lock while
+    nothing new is installed.
+    """
+    from kiro_crew.platform import wheel_engine
+
+    try:
+        fd = wheel_engine.hold_update_lock()
+    except wheel_engine.WheelUpdateError:
+        # Busy (another writer holds it) or no lock at all: nothing settled to report.
+        return False
+    try:
+        return _restart_tree_version() == version
+    finally:
+        wheel_engine.release_update_lock(fd)
+
+
+def note_installed_beside(version: str) -> None:
+    """Record an offered *version* that another process already installed.
+
+    ``kirocrew update`` run in a terminal, a re-run of the install script, or a
+    second gateway on the same install installs the version beside this one
+    without this process taking part, so nothing here marks it "update ready,
+    restart to use it" and the dashboard keeps offering an update that only a
+    restart is missing. When the tree a restart now would exec holds exactly
+    *version* (:func:`_restart_tree_version`), still does once no writer holds
+    the layout's update lock (:func:`_restart_tree_holds_settled`), and no live
+    target sends the next start elsewhere, record it as the in-process apply does. Called by the
+    update check and by every status frame
+    (``status_counts.cached_status_snapshot``), so an open tab learns it within
+    one frame. A note already naming *version* is left alone, so a policy
+    floor's ``mandatory`` flag survives.
+
+    Blocking (it resolves the link on disk): call it off the event loop.
+    """
+    # In-function: the update check runs on every layout, and this resolves the
+    # managed-venv layout only when a newer version is on offer.
+    from kiro_crew.service import live_target
+
+    if _already_noted(version):
+        return
+    try:
+        if live_target.read_target() is not None or _restart_tree_version() != version:
+            return
+        if not _restart_tree_holds_settled(version):
+            return
+    except Exception:  # noqa: BLE001 -- an unreadable layout only means nothing to report
+        logger.debug(
+            "Could not tell whether v%s is installed beside this one", version, exc_info=True
+        )
+        return
+    update_restart_ready.mark(update_restart_ready.REASON_STAGED, version=version)
+
+
 async def _check_release_feed(capability: UpdateCapability) -> None:
     """Compare a feed-checkable install against the release channel it came from.
 
@@ -995,6 +1125,11 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
             error_code=ERR_VERSION_UNPARSEABLE,
         )
         return
+
+    if available is True:
+        # Before the verdict lands, so the frame that offers the update already
+        # says it is installed when another process installed it.
+        await asyncio.to_thread(note_installed_beside, remote_version)
 
     extra: dict[str, object] = {}
     pub_date = manifest.get("pub_date")

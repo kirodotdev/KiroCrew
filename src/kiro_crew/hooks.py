@@ -1350,11 +1350,16 @@ class ScriptHook:
     #: stdout ``run_script_hook`` returns, cut after redaction and marked. ``0``
     #: leaves only the stream cap. In memory only, like ``spec_origin``.
     max_output_size: int = 0
+    #: An agent spec hook document's own ``name``, when it can also name the hook in
+    #: a policy's ``hooks`` list (``hook_event_governance.hook_stable_name``); ``""``
+    #: otherwise. In memory only, like ``spec_origin``.
+    spec_name: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data.pop("spec_origin", None)
         data.pop("max_output_size", None)
+        data.pop("spec_name", None)
         return data
 
     @classmethod

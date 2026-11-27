@@ -132,3 +132,34 @@ def test_the_config_reader_keeps_only_text():
     assert read(ENDPOINT) == ENDPOINT
     assert read(7) == ""
     assert read(None) == ""
+
+
+def _signin_cfg(start_url: object, profile_arn: object, on: bool = False):
+    return SimpleNamespace(
+        dashboard=SimpleNamespace(feature_previews={"crew_client": on}),
+        instances=SimpleNamespace(
+            managed_env_start_url=start_url, managed_env_profile_arn=profile_arn
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "start_url, profile_arn, want",
+    [
+        ("https://start.example.com/start", "arn:aws:sso:::instance/example", True),
+        ("https://start.example.com/start", "", False),
+        ("", "arn:aws:sso:::instance/example", False),
+        ("  ", "arn:aws:sso:::instance/example", False),
+        (None, None, False),
+    ],
+)
+def test_the_config_body_says_whether_both_sign_in_values_are_set(
+    monkeypatch, start_url, profile_arn, want
+):
+    """Read with the preview off; the body carries the answer, never the values."""
+    from kiro_crew.dashboard.handlers import core_config_view
+
+    monkeypatch.setattr(core_config_view, "_masked_config_dict", lambda _c: {})
+    body = core_config_view._config_body(_signin_cfg(start_url, profile_arn))
+    assert body["managed_env_available"] is want
+    assert "example" not in repr(body)

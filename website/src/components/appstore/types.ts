@@ -185,6 +185,8 @@ export type InstalledApp = {
   browserSitesGrant?: { approved: string[]; staged: string[] }
   /** `permissions.kiroOperations` the owner approved, and the ones waiting; absent when undeclared. */
   kiroOperationsGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.browserRecipes` the owner approved, the ones waiting, the watch ones split by the separate run-by-itself yes, and whether the `app_browser_sdk` preview is on; grant entries, absent when undeclared. */
+  browserRecipesGrant?: { approved: string[]; staged: string[]; watchOn?: string[]; watchOff?: string[]; preview?: boolean }
   /** `permissions.browser` verbs the owner approved, the ones waiting, and whether the `app_browser_sdk` preview is on; absent when undeclared. */
   browserGrant?: { approved: string[]; staged: string[]; preview: boolean }
   installedAt: string

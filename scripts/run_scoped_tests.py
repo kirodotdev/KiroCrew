@@ -60,6 +60,13 @@ Windows run would be re-enabled by the very gate meant to run only what is
 related. The set subtracted is the hook's own (``platform_collect_ignore_helpers``):
 the same list file, the same platform rule, the same ``test/<name>``-only reach.
 
+Those explicit paths are collected with ``-p scripts.explicit_file_targets``
+loaded. pytest resolves each file argument by collecting its directory again and
+offering every sibling to the collection hooks; for a related set of hundreds of
+files under ``test/`` that is millions of offers per xdist worker, minutes before
+the first test runs. The plugin ignores every path pytest asks about, which is
+only ever a sibling no argument names, so the collected node IDs are unchanged.
+
 Frontend is the same shape over vitest specs, re-rooted to ``cwd=website``.
 
 The set is never silently swapped for the full suite because it came out large:
@@ -191,6 +198,14 @@ _SCAN_EXCLUDE = ("node_modules", "__pycache__", "_vendor", "build", "dist", ".ve
 # that a rename cannot quietly turn "we ran a subset" back into a claim of a full
 # local run.
 RELATED_VERDICT = "related: {count} test file(s) (full suite deferred to CI)"
+
+#: Loaded with ``-p`` into every backend related-set run. pytest collects a file
+#: argument's directory once per argument and offers every sibling entry to its
+#: collection hooks each time; with hundreds of targets under ``test/`` that walk
+#: is minutes per xdist worker before the first test runs. The plugin answers the
+#: ignore hook for every sibling first, which pytest only asks about paths no file
+#: argument can match. Why that keeps node IDs identical: scripts/explicit_file_targets.py.
+EXPLICIT_FILE_TARGETS_PLUGIN = "scripts.explicit_file_targets"
 
 
 def local_gate_workers() -> int:
@@ -608,7 +623,16 @@ def backend_argv(targets: list[str] | None) -> list[str]:
         # `--` ends option parsing so nothing after it can be read as a flag.
         # Coverage is off: a subset's coverage is not comparable to the repo
         # floor, which is why CI skips the coverage lane for its reduced runs.
-        argv += ["--no-cov", "--", *validated_targets(targets, REPO_ROOT)]
+        # The plugin keeps pytest from re-walking every sibling of every target
+        # (see its docstring); `python -m pytest` with cwd=REPO_ROOT is what
+        # makes `scripts.` importable, the same way CI loads its own plugins.
+        argv += [
+            "--no-cov",
+            "-p",
+            EXPLICIT_FILE_TARGETS_PLUGIN,
+            "--",
+            *validated_targets(targets, REPO_ROOT),
+        ]
     return argv
 
 
@@ -1083,6 +1107,14 @@ def _self_test() -> int:
     be = backend_argv([real])
     check("backend reduced argv has --no-cov", "--no-cov" in be)
     check("backend reduced argv separates positionals with --", "--" in be and be[-1] == real)
+    check(
+        "backend reduced argv loads the explicit-file plugin as an option",
+        be.index("-p") + 1 == be.index(EXPLICIT_FILE_TARGETS_PLUGIN) < be.index("--"),
+    )
+    check(
+        "the explicit-file plugin is a real module",
+        (REPO_ROOT / "scripts" / "explicit_file_targets.py").is_file(),
+    )
     for hostile in ("--config=evil.ini", "-p no:randomly", "../outside.py", "/etc/passwd"):
         try:
             backend_argv([hostile])

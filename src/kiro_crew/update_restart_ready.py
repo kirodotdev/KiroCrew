@@ -3,8 +3,10 @@
 A running gateway is never restarted by an update (the decision entry
 "updates never restart a running gateway" in ``docs/decisions``).
 What the paths can do instead is leave a note here: an update was
-staged beside the running install (by the scheduler, or by an approved in-app
-wheel), or the running install's served assets are gone, and a person decides when
+staged beside the running install (by the scheduler, by an approved in-app
+wheel, or by another process such as ``kirocrew update``, which
+``updates_check.note_installed_beside`` notices), or the running install's
+served assets are gone, and a person decides when
 to restart. The dashboard reads the note through
 the status frame (``update_restart_ready*``) and shows it on the update pill and
 in the update dialog, and a diagnostics bundle it collects compares the staged

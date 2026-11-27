@@ -146,6 +146,39 @@ def test_an_auto_mode_job_still_writes_inside_the_allowed_paths(tmp_path, agents
     assert _auto_refusal(_write(_client(tmp_path), tmp_path / "docs" / "a.md")) is None
 
 
+_ALIAS_SHELL = {"executeBash": {"denyByDefault": True, "allowedCommands": ["git status"]}}
+
+
+@pytest.mark.parametrize(
+    ("tools_settings", "request_for", "setting", "branch"),
+    [
+        (_ALIAS_SHELL, lambda c, root: _shell(c, "rm notes.txt"), "denyByDefault", "none of"),
+        (
+            _ALIAS_SHELL,
+            lambda c, root: _shell(c, "git status && rm notes.txt"),
+            "denyByDefault",
+            "a chain",
+        ),
+        (
+            {"fsWrite": {"fallbackAction": "deny", "allowedPaths": ["docs/**"]}},
+            lambda c, root: _write(c, root / "src" / "a.py"),
+            "fallbackAction",
+            "allowedPaths",
+        ),
+    ],
+    ids=["shell-no-match", "shell-composed", "write"],
+)
+def test_a_refusal_names_the_setting_whatever_spelling_the_spec_used(
+    tmp_path, agents_dir, tools_settings, request_for, setting, branch
+) -> None:
+    """An alias-spelled spec is refused under a name its author can find in it."""
+    _write_spec(agents_dir, tools_settings)
+    reason = _auto_refusal(request_for(_client(tmp_path), tmp_path))
+    assert reason is not None and branch in reason
+    assert setting in reason
+    assert "toolsSettings." not in reason
+
+
 def test_a_withheld_array_still_refuses(tmp_path, agents_dir) -> None:
     """A session whose settings file Crew does not govern runs without Crew's MCP
     array, but claude's own shell still runs, so the allowlist must still hold."""

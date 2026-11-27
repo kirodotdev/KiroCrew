@@ -1373,8 +1373,12 @@ def queue_for_next_turn(
     queued_work: Any = None,
     knowledge: dict[str, Any] | None = None,
     pastes: list[dict[str, Any]] | None = None,
+    source_channels: tuple[str, ...] = (),
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
+
+    *source_channels* are the channels admission judges the entry by. The entry
+    carries them from the moment it joins the queue.
 
     *queued_work* is the fair-admission result for a parked send; its work id is
     stamped on the entry before the durable verdict, because the write weighs it.
@@ -1501,12 +1505,14 @@ def queue_for_next_turn(
         meta.update(knowledge)
     if pastes:
         meta[PASTES_META_KEY] = pastes
+    channels: dict[str, Any] = {"source_channels": source_channels} if source_channels else {}
     qid = slot.queue_append(
         message,
         meta=meta,
         directive_user_origin=directive_user_origin,
         directive_channel_origin=directive_channel_origin,
         directive_owner_origin=directive_owner_origin,
+        **channels,
     )
     if queued_work is not None:
         from kiro_crew.shared_crew import admission_entry as _sc_entry

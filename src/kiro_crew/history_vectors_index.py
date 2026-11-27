@@ -38,12 +38,21 @@ INDEXED, WITHHELD, GONE, RETRY = "indexed", "withheld", "gone", "retry"
 #:
 #: 2: the size-rotated archive head is read before the live file. Rows stored
 #: before held the live file only, and its unchanged stat still vouches for them.
-CORPUS_VERSION = 2
+#:
+#: 3: each message text is redacted, the text search results show.
+CORPUS_VERSION = 3
 
 
 def chunker_value(tokenizer: "Tokenizer") -> str:
-    """The value ``session_state.chunker`` holds for rows *tokenizer* chunked now."""
-    return f"{tokenizer.signature}|corpus:{CORPUS_VERSION}"
+    """The value ``session_state.chunker`` holds for rows *tokenizer* chunked now.
+
+    It names the loaded redaction rules too: chunks hold the text search results
+    show, redacted under those rules, so a change of rules re-chunks every session.
+    """
+    from kiro_crew.history_index import loaded_rules_marker
+
+    rules = loaded_rules_marker()[:16]
+    return f"{tokenizer.signature}|corpus:{CORPUS_VERSION}|rules:{rules}"
 
 
 class Tokenizer(NamedTuple):

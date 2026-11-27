@@ -459,6 +459,8 @@ class PublishProvider(ABC):
         A provider whose sharing model declares ``expiration_choices_days`` must also
         accept ``expires_in_days: int | None`` (``None`` = no expiry). It is passed
         only to such a provider, so one that declares no choices keeps this signature.
+        ``expires_in_days=N`` means the destination removes the copy N days after
+        creating it; Kiro Crew records that date and stops treating the copy as live.
         """
 
     @abstractmethod
@@ -482,7 +484,13 @@ class PublishProvider(ABC):
 
     @abstractmethod
     async def unpublish(self, *, external_id: str) -> None:
-        """Delete from the destination. Raises ``PublishError`` on failure."""
+        """Delete from the destination. Raises ``PublishError`` on failure.
+
+        A provider that declares ``expiration_choices_days`` returns normally when the
+        destination itself reports that the id does not exist (it expired, or was already
+        removed). An unreachable, unauthorized or throttled reply still raises; a stored
+        expiry date is never the evidence.
+        """
 
     async def fetch_state(self, *, external_id: str) -> dict | None:
         """Return live sharing state ``{visibility, shared_with}`` from the

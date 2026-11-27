@@ -48,7 +48,7 @@ import json
 import os
 import re
 import socket
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 
 #: Longest summary line the board shows.
@@ -87,8 +87,9 @@ DONE = "done"
 LOST = "lost"
 CLOSED = "closed"
 
-#: Every row state, most urgent first. Rows themselves stay in dispatch order, so
-#: a pinned board never reshuffles under the reader's eye.
+#: Every row state, most urgent first: what needs the owner, what is stuck, what
+#: runs, what waits, what is finished. The board shows its rows in this order
+#: (:func:`by_urgency`), so a row the owner must act on is never below the fold.
 STATES: tuple[str, ...] = (WAITING_ON_YOU, BLOCKED, LOST, WORKING, IDLE, DONE, CLOSED)
 #: Rows that are working or waiting: while one shows, the board is kept current
 #: (the watcher's backstop and the publisher's stale-stamp edit).
@@ -97,7 +98,7 @@ ACTIVE_STATES = frozenset({WORKING, WAITING_ON_YOU})
 STATE_LABELS = {
     WORKING: "working",
     IDLE: "idle",
-    WAITING_ON_YOU: "waiting on you",
+    WAITING_ON_YOU: "needs you",
     BLOCKED: "blocked",
     DONE: "done",
     LOST: "lost",
@@ -108,8 +109,24 @@ STATE_LABELS = {
 def row_label(row: "WorkerRow") -> str:
     """The words for a row's state: a pending approval names its tool."""
     if row.waiting_on == "approval":
-        return f"waiting on you: approve {row.approval_tool or 'a tool'}"
+        return f"needs you: approve {row.approval_tool or 'a tool'}"
     return STATE_LABELS.get(row.state, row.state)
+
+
+def by_urgency(rows: "Iterable[WorkerRow]") -> "tuple[WorkerRow, ...]":
+    """*rows* most urgent state first (:data:`STATES`), dispatch order within a state."""
+    return tuple(sorted(rows, key=lambda r: STATES.index(r.state) if r.state in STATES else 0))
+
+
+def idle_wait(row: "WorkerRow") -> str:
+    """What an idle row's own pull request says it waits on: ``"CI"`` while its
+    checks run, ``"review"`` once they pass on an open one, else ``""`` (the board
+    cannot tell). From the forge's facts only, never from what the worker said."""
+    if row.state != IDLE or not row.pr_number:
+        return ""
+    if row.pr_ci == "running" and row.pr_state in {"open", "draft"}:
+        return "CI"
+    return "review" if row.pr_ci == "passed" and row.pr_state == "open" else ""
 
 
 #: The board's overall state words.
@@ -830,7 +847,8 @@ class WorkerRow:
     report_stamp: str = ""
     round: int = 0
     #: What a ``waiting_on_you`` row waits on: ``approval`` (a tool approval on
-    #: the worker's session) or ``report`` (a report naming a person).
+    #: the worker's session), ``report`` (a report naming a person) or ``ask`` (the
+    #: conductor asked the person about the item; its worker's report names nobody).
     waiting_on: str = ""
     #: For an ``approval`` wait, what it asks for: one :data:`APPROVAL_WORDS`
     #: phrase (``""`` when the kind is unknown), never the approval's own text.
@@ -864,6 +882,12 @@ class WorkerRow:
     @property
     def needs_owner(self) -> bool:
         return self.state == WAITING_ON_YOU
+
+    @property
+    def pages_owner(self) -> bool:
+        """Whether the board pages the owner for this row. Not for an ``ask`` wait:
+        the conductor relayed that question to the person in its own reply."""
+        return self.needs_owner and self.waiting_on != "ask"
 
     @property
     def settled(self) -> bool:
@@ -909,14 +933,14 @@ class BoardSnapshot:
 
     @property
     def shown(self) -> tuple[WorkerRow, ...]:
-        """The rows on display: every open row first (dispatch order), then the
-        most recently dispatched settled ones, at most :data:`MAX_SHOWN`."""
-        open_rows = [r for r in self.rows if not r.settled]
+        """The rows on display, most urgent first (:func:`by_urgency`): the open
+        rows, then the most recently dispatched settled ones, at most :data:`MAX_SHOWN`."""
+        open_rows = by_urgency(r for r in self.rows if not r.settled)
         settled = [r for r in self.rows if r.settled]
         room = max(0, MAX_SHOWN - len(open_rows))
         keep = set(id(r) for r in open_rows[:MAX_SHOWN])
         keep.update(id(r) for r in (settled[-room:] if room else []))
-        return tuple(r for r in self.rows if id(r) in keep)
+        return by_urgency(r for r in self.rows if id(r) in keep)
 
     @property
     def omitted(self) -> int:
@@ -924,10 +948,11 @@ class BoardSnapshot:
 
     @property
     def plan_rows(self) -> tuple[WorkerRow, ...]:
-        """The rows the plan block shows: all of them up to :data:`MAX_TASKS`, else the
-        :data:`MAX_TASKS` - 1 most urgent (open first, then by state), in dispatch order."""
+        """The rows the plan block shows, most urgent first (:func:`by_urgency`): all
+        of them up to :data:`MAX_TASKS`, else the :data:`MAX_TASKS` - 1 most urgent
+        (open first, then by state)."""
         if len(self.rows) <= MAX_TASKS:
-            return self.rows
+            return by_urgency(self.rows)
         # Open rows first, by state; settled ones newest first (the board keeps
         # the newest settled rows only, so the oldest are never the ones shown).
         urgent = sorted(
@@ -935,7 +960,7 @@ class BoardSnapshot:
             key=lambda p: ((1, 0, -p[0]) if p[1].settled else (0, STATES.index(p[1].state), p[0])),
         )
         keep = {id(r) for _i, r in urgent[: MAX_TASKS - 1]}
-        return tuple(r for r in self.rows if id(r) in keep)
+        return by_urgency(r for r in self.rows if id(r) in keep)
 
     @property
     def total(self) -> int:
@@ -969,6 +994,7 @@ def row_state(
     live: str,
     verdict: str | None = None,
     handed_back: bool = False,
+    asked: bool = False,
 ) -> str:
     """The derived row state, from the item and its worker's live session.
 
@@ -977,15 +1003,18 @@ def row_state(
     1. a closed item: ``accepted`` is done, ``rejected`` / ``abandoned`` closed;
     2. a tool approval waiting on the worker's session: waiting on you;
     3. a turn in flight or queued: working (a fresh turn outranks an old report);
-    4. a ``blocked`` / ``question`` report the conductor already answered (a
+    4. *asked*, the conductor asked the person about the item and nobody answered
+       since (the Board's own ``awaits_person`` rule): waiting on you, whatever the
+       worker last reported;
+    5. a ``blocked`` / ``question`` report the conductor already answered (a
        ``decide`` at or after it) or a ``done`` the conductor's evaluator failed:
        the move is the worker's again, so the report's own word does not apply
        (idle, or lost when gone);
-    5. a ``blocked`` / ``question`` report a person must move: waiting on you;
-    6. any other ``blocked`` / ``question``: blocked (a service, or the conductor);
-    7. a session that is gone: done when it last reported done, else lost;
-    8. a ``done`` report: done (awaiting the conductor's acceptance);
-    9. otherwise idle (open, quiet, or not dispatched yet).
+    6. a ``blocked`` / ``question`` report a person must move: waiting on you;
+    7. any other ``blocked`` / ``question``: blocked (a service, or the conductor);
+    8. a session that is gone: done when it last reported done, else lost;
+    9. a ``done`` report: done (awaiting the conductor's acceptance);
+    10. otherwise idle (open, quiet, or not dispatched yet).
     """
     if item_state == "accepted":
         return DONE
@@ -995,6 +1024,8 @@ def row_state(
         return WAITING_ON_YOU
     if live in {LIVE_RUNNING, LIVE_QUEUED}:
         return WORKING
+    if asked:
+        return WAITING_ON_YOU
     if handed_back or (status == "done" and verdict == "fail"):
         return LOST if live == LIVE_GONE else IDLE
     if status in _ASKING_STATUSES:
@@ -1039,9 +1070,9 @@ def aggregate_line(
     dropped_done: int = 0,
     dropped_closed: int = 0,
 ) -> str:
-    """``"2 working · 1 waiting on you · 1 of 4 done · 1 PR open"``: the one-line status.
+    """``"1 needs you · 2 working · 1 of 4 done · 1 PR open"``: the one-line status.
 
-    Only non-zero counts are named, in urgency order after "working"; the done
+    Only non-zero counts are named, most urgent first (:data:`STATES`); the done
     count always follows, then the open PRs when there are any. Settled items
     not kept as rows count too. An empty board says so.
     """
@@ -1050,9 +1081,9 @@ def aggregate_line(
         return "No helper agents yet"
     counts = _counts(rows, dropped_done, dropped_closed)
     parts: list[str] = []
-    if counts[WORKING]:
-        parts.append(f"{counts[WORKING]} working")
-    for state in (WAITING_ON_YOU, BLOCKED, LOST, IDLE):
+    if counts[WAITING_ON_YOU]:
+        parts.append(_plural(counts[WAITING_ON_YOU], "needs you", "need you"))
+    for state in (BLOCKED, LOST, WORKING, IDLE):
         if counts[state]:
             parts.append(f"{counts[state]} {STATE_LABELS[state]}")
     if counts[CLOSED]:

@@ -16,6 +16,16 @@ name survives the refactor that moves the line. The closing section marks what i
 verified and what is not, because a citation is worth nothing if the reader
 cannot tell which claims were actually checked.
 
+**Where main stands now.** The pinned facts below describe the gap as it was.
+On main, KAS engines that advertise `sessionCapabilities.close` take
+`session/close`, which disposes the session in memory and keeps its record
+(`KasHarness.release` in `src/kiro_crew/acp/harness/kas.py`); `KasHarness.teardown`
+still sends `_kiro/session/delete` when the verb is missing. KAS is a member of
+`ACP_BACKENDS_SESSION_SHARING`, and `src/kiro_crew/acp/kas_subagent_sharing.py`
+lets a KAS chat's own process host its sub-agents only when that process can
+release a session this way (plus the other checks listed there); otherwise each
+sub-agent gets a dedicated process.
+
 ## The one-line ask
 
 Expose the in-memory teardown KAS already implements — `KiroAgent.disposeSession`

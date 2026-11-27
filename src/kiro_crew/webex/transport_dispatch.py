@@ -774,6 +774,21 @@ class WebexDispatcher:
         allowed = {e.lower() for e in (getattr(section, "allowed_emails", None) or []) if e}
         return bool(email) and email.lower() in allowed
 
+    def _is_owner(self, email: str) -> bool:
+        """Whether *email* may change YOLO and answer approval prompts here.
+
+        ``webex.owner_email`` when it is set, else the only allow-listed email
+        (:func:`~kiro_crew.messaging.commands.is_channel_owner`). Read live.
+        """
+        from kiro_crew.messaging.commands import is_channel_owner
+
+        section = self._live_cfg().webex
+        return self._sender_allowed(email) and is_channel_owner(
+            (email,),
+            owner=getattr(section, "owner_email", ""),
+            allowed=getattr(section, "allowed_emails", None) or (),
+        )
+
     def _bot_name(self) -> str:
         """The bot's display name, for stripping its own @mention in a space."""
         client = self.client

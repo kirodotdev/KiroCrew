@@ -2,28 +2,33 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { Trans } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal, X } from 'lucide-react'
+import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, X } from 'lucide-react'
 import { api } from '../../api/client'
 import { requestRefresh } from '../../lib/pollRule'
-import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, FilteredEmpty, SearchInput, Skeleton, IconButton } from '../../components/ui'
+import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, FilteredEmpty, SearchInput, Skeleton, IconButton, PanelSectionHeader } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 import { findReport, parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
-import VectorMemoryCard, { SEMANTIC_CARD_ID } from './VectorMemoryCard'
+import { useVectorMemoryState } from './useVectorMemoryState'
 import EmbeddingModelCard from './EmbeddingModelCard'
-import MemoryStoreCard, {
+import {
   MEMORY_QUERY_PREFIXES,
   MEMORY_STORES_KEY,
   MemoryScopeNotice,
+  MemoryStoreNotices,
+  MemoryStoreStats,
+  MemoryStoreSwitcher,
   useMemoryStores,
 } from './MemoryStoreCard'
-import MemoryCarveCard from './MemoryCarveCard'
+import { MemoryEmbeddedLine } from './memoryPage/MemoryEmbeddedLine'
+import { MemoryGraphPanel } from './memoryPage/MemoryGraphPanel'
 import MemoryRetiredCard from './MemoryRetiredCard'
 import MemoryBackupsCard from './MemoryBackupsCard'
 import MemoryFailuresCard from './MemoryFailuresCard'
 import MemberMemoryPanel from './MemberMemoryPanel'
-import MemoryRecordsEditor from './MemoryRecordsEditor'
+import MemoryPageShell from './memoryPage/MemoryPageShell'
+import MemoryList from './memoryPage/MemoryList'
 import MemoryDocCard from './MemoryDocCard'
 import Modal from '../../components/Modal'
 import { useConfirm } from '../../components/ConfirmDialog'
@@ -134,8 +139,12 @@ export const MEMORY_FOCUS_LESSONS = 'lessons'
 /** `?focus=` value that lands the global Memory view on the Repeated failures
  *  card: the link of the weekly repeated-failures bell note. */
 export const MEMORY_FOCUS_FAILURES = 'failures'
+/** `?focus=` value that opens the memory page on its Graph tab. */
+export const MEMORY_FOCUS_GRAPH = 'graph'
 /** The Lessons card, the landing spot for that focus when vector memory is off. */
 export const LESSONS_CARD_ID = 'memory-lessons-card'
+
+/** Settings > Developer > Memory: the memory graph and internals. */
 
 /** `requestRefresh`'s id for the turn-end store-list read, and its gap: the
  *  gateway sends at most one turn-end frame per 1.5 s. */
@@ -245,9 +254,10 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
     if (dirty) setPendingStore(next)
     else applyStore(next)
   }
+  const switcher = <MemoryStoreSwitcher store={store} onStoreChange={choose} />
+  const notices = <MemoryStoreNotices store={store} />
   return <>
-    <MemoryStoreCard store={store} onStoreChange={choose} compact={!!store} />
-    {store ? identityReady ? <MemberMemoryPanel key={store} store={store} summary={selected!} onDirtyChange={setDirty} focusLessonKey={store === landingStore.current && focus === MEMORY_FOCUS_LESSONS ? focusLessonKey ?? undefined : undefined} /> : <Card>
+    {store ? identityReady ? <MemberMemoryPanel key={store} store={store} summary={selected!} switcher={switcher} notices={notices} onDirtyChange={setDirty} focusFailures={focus === MEMORY_FOCUS_FAILURES} focusGraph={focus === MEMORY_FOCUS_GRAPH} focusLessonKey={store === landingStore.current && focus === MEMORY_FOCUS_LESSONS ? focusLessonKey ?? undefined : undefined} /> : <div className="space-y-4">{/* No switcher until the owner loads: it would name the store by its directory. */}<Card>
       {stores.isPending && !queryReadFailed(stores) ? <div role="status" aria-busy="true" className="flex min-w-0 items-center gap-3">
         <Skeleton className="h-12 w-12 shrink-0 motion-reduce:animate-none" />
         <div className="min-w-0 flex-1 space-y-2">
@@ -268,7 +278,7 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
           }}>{i18nT('pages.kiroCrewAgentsPage.open_crew_manager')}</Btn>
         </div>
       </>}
-    </Card> : <GlobalMemoryTab refreshTrigger={trigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} focusLessonKey={store === landingStore.current ? focusLessonKey ?? undefined : undefined} focusFailures={focus === MEMORY_FOCUS_FAILURES} />}
+    </Card></div> : <GlobalMemoryTab switcher={switcher} notices={notices} refreshTrigger={trigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} focusLessonKey={store === landingStore.current ? focusLessonKey ?? undefined : undefined} focusFailures={focus === MEMORY_FOCUS_FAILURES} focusGraph={focus === MEMORY_FOCUS_GRAPH} />}
     {pendingStore !== null && <Modal open title={i18nT('memoryV2.discard_title')} onClose={() => setPendingStore(null)}><div className="flex flex-col gap-3">
       <p className="text-[13px]">{i18nT('memoryV2.discard_explanation')}</p>
       <div className="flex flex-wrap gap-2">
@@ -279,17 +289,16 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
   </>
 }
 
-function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, focusLessonKey, focusFailures = false }: { refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean; focusLessonKey?: string; focusFailures?: boolean }) {
+function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, focusLessons = false, focusLessonKey, focusFailures = false, focusGraph = false }: { switcher: ReactNode; notices: ReactNode; refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean; focusLessonKey?: string; focusFailures?: boolean; focusGraph?: boolean }) {
   const queryClient = useQueryClient()
   // The failed-session link leaves this tab; through the same guard as the
   // outer tab's exits, since the drafts held here are what the guard protects.
   const navigate = useNavigate()
   const leave = useGuardedLeave()
   const [recordDirty, setRecordDirty] = useState(false)
-  const [vectorDirty, setVectorDirty] = useState(false)
   const [embedDirty, setEmbedDirty] = useState(false)
-  const [recordsOpen, setRecordsOpen] = useState(false)
   const [docDirty, setDocDirty] = useState<Record<string, boolean>>({})
+  const onNewDraft = useCallback((d: boolean) => setDocDirty(old => old.newDraft === d ? old : { ...old, newDraft: d }), [])
   /** The memory store every store-aware card on this page reads, ON THE WIRE.
    *
    *  `''` means no store is NAMED, which the gateway resolves to the global store —
@@ -337,24 +346,28 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, 
   const [settingsUnsaved, setSettingsUnsaved] = useState(false)
   // Typed but not yet added or saved: leaving drops these too, and so does an
   // open lesson edit.
-  const dirty = recordDirty || vectorDirty || embedDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved || editing !== null
+  const dirty = recordDirty || embedDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved || editing !== null
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
   const [lessonRequestError, setLessonRequestError] = useState<string | null>(null)
   // The lessons list itself could not be read: on open and refresh (`load`),
   // or right after an Add that was stored (`add`). Without it a failed read
   // left the table on "No lessons yet" with nothing saying why.
   const [lessonsLoadError, setLessonsLoadError] = useState<{ step: 'load' | 'add'; message: string } | null>(null)
-  const [migrated, setMigrated] = useState(false)
-  const [vectorActive, setVectorActive] = useState(false)
-  // `vectorActive` reads false until the vector card's status answers, so the
-  // lessons landing spot is chosen only once it has: before that the Lessons
-  // card can render and then vanish under a store that keeps lessons as
-  // `lesson.*` rows in the Semantic browser instead.
-  const [vectorSettled, setVectorSettled] = useState(false)
+  // `vectorActive` reads false until both status reads answer, so the lessons
+  // landing spot is chosen only once they have: before that the Lessons card
+  // can render and then vanish under a store that keeps lessons as `lesson.*`
+  // records in the Memories list instead.
+  const vector = useVectorMemoryState()
+  const { active: vectorActive, settled: vectorSettled } = vector
+  // Either read may say so first: the memory settings or the store's own stats.
+  const [settingsMigrated, setMigrated] = useState(false)
+  const migrated = settingsMigrated || vector.migrated
   const lessonsFocused = useRef(false)
   useEffect(() => {
     if (!focusLessons || !vectorSettled || lessonsFocused.current) return
-    const target = document.getElementById(vectorActive ? SEMANTIC_CARD_ID : LESSONS_CARD_ID)
+    // With vector memory on, the Memories list lands on the lesson itself.
+    if (vectorActive) { lessonsFocused.current = true; return }
+    const target = document.getElementById(LESSONS_CARD_ID)
     if (!target) return
     lessonsFocused.current = true
     target.scrollIntoView({ block: 'start' })
@@ -407,7 +420,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, 
   // A lesson saved from the Repeated failures card: with vector memory on, the
   // list the page shows is the vector card's semantic browser, not `lessons`.
   const reloadSavedLesson = useCallback(async () => {
-    await Promise.all([loadLessons(), queryClient.invalidateQueries({ queryKey: ['member-memory', 'default'] })])
+    await Promise.all([loadLessons(), ...MEMORY_QUERY_PREFIXES.map(queryKey => queryClient.invalidateQueries({ queryKey }))])
   }, [loadLessons, queryClient])
   const showLessons = useCallback((step: 'load' | 'add') => {
     const seq = lessonsReadSeq.current + 1
@@ -451,7 +464,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, 
       setDeleteError({ step: 'nothing' })
     }
     try {
-      await loadLessons()
+      await reloadSavedLesson()
     } catch (e) {
       setDeleteError({ step: 'refresh', message: e instanceof Error ? e.message : String(e) })
     }
@@ -528,6 +541,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, 
     const keys = listed.map((s: SessionInfo) => s.key)
     if (keys.length === 0) { setConsolidateMsg(<><XCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.no_sessions_to_consolidate_start_a_chat_first')}</>); setConsolidating(false); return }
     const results = await Promise.allSettled(keys.map((k: string) => api.consolidateMemory(k, true)))
+    for (const prefix of MEMORY_QUERY_PREFIXES) void queryClient.invalidateQueries({ queryKey: prefix })
     const succeeded = results.filter(r => r.status === 'fulfilled').length
     // Sort every rejection: a refusal the route names by its code is a skip the
     // user asked for by choosing the mode, counted apart from a request that
@@ -699,7 +713,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, 
     // edit's own notice, titled as saved-but-not-reloaded, so the old wording
     // still in the table does not read as a lost edit.
     try {
-      await loadLessons()
+      await reloadSavedLesson()
     } catch (e) {
       setEditError({ step: 'refresh', message: e instanceof Error ? e.message : String(e) })
     }
@@ -719,7 +733,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, 
     }
     if (result.outcome === 'inserted' || result.outcome === 'enriched') {
       setRule('')
-      await showLessons('add')
+      await Promise.all([showLessons('add'), ...MEMORY_QUERY_PREFIXES.map(queryKey => queryClient.invalidateQueries({ queryKey }))])
       return
     }
     if (result.outcome === 'unchanged') {
@@ -746,281 +760,287 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, 
       }),
     })
   }
+  const globalLabel = i18nT('pages.kiroCrewAgentsPage.global_memory_v1')
   return (<>
-    <Card><CardTitle>{i18nT('pages.overview.memoryTab.memory_settings')} <InfoTip text={i18nT('pages.overview.memoryTab.controls_how_conversation_history_is_consolidate')} /></CardTitle>
-      <div className="flex gap-3 items-end flex-wrap">
-        <label htmlFor="memory-idle-hours" className="flex flex-col gap-1 text-[13px] text-muted">
-          <span>{i18nT('pages.overview.memoryTab.consolidation_idle_hours')}</span>
-          <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={IDLE_HOURS_MIN} max={IDLE_HOURS_MAX} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={idleHours} onChange={e => { settingsTouched.current.idle = true; settingsEdited.current.idle = true; setSettingsUnsaved(true); setIdleHours(Number(e.target.value)) }} />
-        </label>
-        {!migrated && (
-          <label htmlFor="memory-max-days" className="flex flex-col gap-1 text-[13px] text-muted">
-            <span>{i18nT('pages.overview.memoryTab.history_retention_days')}</span>
-            <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={MAX_DAYS_MIN} max={MAX_DAYS_MAX} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={maxDays} onChange={e => { settingsTouched.current.days = true; settingsEdited.current.days = true; setSettingsUnsaved(true); setMaxDays(Number(e.target.value)) }} />
-          </label>
-        )}
-        <Btn onClick={saveSettings} disabled={settingsSaving}>{settingsSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn>
-        <Btn onClick={consolidate} disabled={consolidating}>{consolidating ? <><Hourglass className="lucide-inline" /> {i18nT('pages.overview.memoryTab.running')}</> : <><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryTab.summarize_now')}</>}</Btn>
-        {/* What the button does, under it on its own line: the blind reader
-            hesitated over "summarize WHAT" without it and pressed with it (the
-            UX lane's read of two heads). Names the button rather than saying
-            "it", since the line sits under the whole row. */}
-        <p className="basis-full m-0 text-[12px] text-muted" data-testid="summarize-now-help">{i18nT('pages.overview.memoryTab.summarize_now_help')}</p>
-        {/* No hand-off, for the same unsaved drafts as the notice below. */}
-        <ErrorNotice
-          className="basis-full"
-          title={i18nT('pages.overview.memoryTab.settings_load_failed')}
-          message={settingsLoadError}
-          onDismiss={() => setSettingsLoadError(null)}
-          askAgent={false}
-        />
-        <ErrorNotice
-          className="basis-full"
-          title={i18nT('pages.overview.memoryTab.settings_save_failed')}
-          message={settingsError}
-          onDismiss={() => setSettingsError(null)}
-          askAgent={false}
-        />
-        {/* No hand-off: the tab holds unsaved drafts -- the lesson rule being
-            typed below and the store text in the editors -- that the hand-off's
-            navigation would discard. The block variant on its own flex line
-            (`basis-full`) so the button row stays a row. */}
-        {consolidateFailure && (
-          <ErrorNotice
-            className="basis-full"
-            title={consolidateFailure.title}
-            /* Plain words a person can act on -- what happened, and that pressing
-               the button again retries it; the server's raw string is the journal
-               key the structured report is looked up by, so it rides as `report`
-               and, verbatim, as the footer's secondary detail under the failed
-               session's key. The detail carries a visible label ("Server's
-               reply:") so the message's "shown below" unambiguously points at it
-               and marks it as foreign text -- the backend still says
-               "consolidat*" where every label here says "Summarize", and unlabelled
-               the reader doubted it concerned the button they pressed. */
-            message={consolidateFailure.summary}
-            report={findReport(consolidateFailure.raw)}
-            footer={<>
-              {consolidateFailure.session !== undefined && (
-                /* The session by its TITLE, as the sidebar names it ("Untitled session"
-                   when it has none), and a way to act on it: the same guarded navigation as
-                   the tab's other exits, since a click leaves the drafts this tab holds. */
-                <span className="block text-[12px]" data-testid="consolidate-failed-session">
-                  <Trans
-                    i18nKey="pages.overview.memoryTab.consolidate_failed_session"
-                    count={consolidateFailure.count}
-                    values={{ session: sessionDisplayTitle(consolidateFailure.session) }}
-                    // eslint-disable-next-line jsx-a11y/control-has-associated-label -- the control's label is the session title `Trans` renders inside it
-                    components={{ session: <button
-                      type="button"
-                      className="p-0 border-none bg-transparent font-body text-[12px] text-inherit underline underline-offset-2 cursor-pointer hover:text-accent"
-                      data-testid="consolidate-failed-session-link"
-                      onClick={() => {
-                        const destination = `/chat?sid=${encodeURIComponent(consolidateFailure.session?.key ?? '')}`
-                        leave(() => navigate(destination), destination)
-                      }}
-                    /> }}
-                  />
-                </span>
-              )}
-              <span className="block text-[12px] text-muted" data-testid="consolidate-failed-reply">
-                <Trans
-                  i18nKey="pages.overview.memoryTab.consolidate_failed_reply"
-                  values={{ reply: consolidateFailure.raw }}
-                  components={{ reply: <span className="font-mono" data-testid="consolidate-failed-detail" /> }}
-                />
+    <MemoryPageShell id="default" label={globalLabel} onDraftChange={onNewDraft} switcher={switcher} notices={notices} embedded={<MemoryEmbeddedLine store="" />} mountAll initialTab={focusFailures ? 'failures' : focusGraph ? 'graph' : 'memories'} canCreate canRecall onCreated={() => { void showLessons('load') }}
+      memories={controls => <>
+        {/* With vector memory off the store has no records to list; its lessons are the card below. */}
+        {!(vectorSettled && !vectorActive) && <MemoryList jump={controls.jump} store="default" storeName={globalLabel} privateMemory={false} focusKey={focusLessons ? focusLessonKey : undefined} focusLessons={focusLessons}
+          selecting={controls.selecting} onSelectingChange={controls.setSelecting}
+          onDirtyChange={setRecordDirty} onRecovery={() => controls.openTab('recovery')} />}
+        {!vectorActive && (
+          <Card id={LESSONS_CARD_ID}><CardTitle>{i18nT('pages.overview.memoryTab.lessons')} <InfoTip text={i18nT('pages.overview.memoryTab.persistent_lessons_injected_into_every_session_a')} /></CardTitle>
+          <div className="flex gap-2 items-center flex-wrap mb-3">
+            <Input aria-label={i18nT('pages.overview.memoryTab.rule')} placeholder={i18nT('pages.overview.memoryTab.rule_e_g_always_use_tabs_not_spaces')} style={{ flex: 2 }} value={rule} onChange={e => setRule(e.target.value)} />
+            <SimpleSelect
+              aria-label={i18nT('pages.overview.memoryTab.category')}
+              style={{ flex: '0 0 140px' }}
+              options={['knowledge', 'tool', 'preference']}
+              optionLabels={[i18nT('pages.overview.memoryTab.knowledge'), i18nT('pages.overview.memoryTab.tool'), i18nT('pages.overview.memoryTab.preference')]}
+              value={cat}
+              onChange={setCat}
+            />
+            <SendBtn onClick={addLesson}>{i18nT('pages.overview.memoryTab.add')}</SendBtn>
+            {/* No hand-off: it would discard the unsaved rule draft in this row. */}
+            <ErrorNotice
+              className="basis-full"
+              title={i18nT('pages.overview.memoryTab.lesson_request_failed')}
+              message={lessonRequestError}
+              onDismiss={() => setLessonRequestError(null)}
+              askAgent={false}
+            />
+            {lessonFeedback && (
+              <span
+                role={lessonFeedback.tone === 'error' ? 'alert' : 'status'}
+                className={`text-[13px] ${
+                  lessonFeedback.tone === 'error'
+                    ? 'text-danger'
+                    : lessonFeedback.tone === 'warning'
+                      ? 'text-warn'
+                      : 'text-muted'
+                }`}
+              >
+                {lessonFeedback.text}
               </span>
-            </>}
-            onDismiss={() => { setConsolidateFailure(null); setConsolidateMsg('') }}
-            askAgent={false}
-            testId="consolidate-failed"
+            )}
+          </div>
+          <SearchInput
+            className="mb-3 max-w-sm"
+            aria-label={i18nT('pages.overview.memoryTab.search_lessons')}
+            placeholder={i18nT('pages.overview.memoryTab.search_lessons')}
+            value={lessonQuery}
+            onChange={e => setLessonQuery(e.target.value)}
           />
+          {/* No agent hand-off: it navigates away, and the Add row above may hold
+              an unsaved rule draft. */}
+          <ErrorNotice
+            title={i18nT(lessonsLoadError?.step === 'add' ? 'pages.overview.memoryTab.lesson_added_refresh_failed' : 'pages.overview.memoryTab.lessons_load_failed')}
+            message={lessonsLoadError?.message}
+            /* Not dismissible: clearing it would let the empty state claim a list
+               the read never returned. A later successful read clears it. */
+            askAgent={false}
+          />
+          <ErrorNotice
+            title={i18nT(deleteError?.step === 'refresh' ? 'pages.overview.memoryTab.lessons_refresh_failed' : 'pages.overview.memoryTab.delete_failed')}
+            message={deleteError?.step === 'nothing' ? i18nT('pages.overview.memoryTab.delete_matched_nothing') : deleteError?.message}
+            onDismiss={() => setDeleteError(null)}
+            askAgent={false}
+            className="mb-2"
+          />
+          {/* No hand-off: the row being edited holds an unsaved draft. */}
+          <ErrorNotice
+            title={i18nT(editError?.step === 'refresh' ? 'pages.overview.memoryTab.edit_saved_refresh_failed' : 'pages.overview.memoryTab.edit_failed')}
+            message={editError?.message}
+            onDismiss={() => setEditError(null)}
+            askAgent={false}
+            className="mb-2"
+          />
+          {/* Scrolls sideways rather than clipping: five columns plus a long path
+              fragment overrun a narrow viewport, and the card hides overflow. */}
+          <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.scope')} sortKey="repo_scope" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.source')} sortKey="source" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
+            <tbody>{lessonsLoadError && lessons.length === 0 && editing === null ? null : lessons.length === 0 && editing === null ? <tr><td colSpan={6}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.length === 0 ? <tr><td colSpan={6}><FilteredEmpty query={lessonQuery} onClear={() => setLessonQuery('')} /></td></tr> : sortedLessons.map((l) => {
+              const key = lessonKey(l)
+              // The rule cell holds the same text as a box while editing.
+              const draft = editing?.key === key ? editing.text : null
+              return <tr key={key} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{draft === null ? l.rule : <Input className="w-full" aria-label={i18nT('pages.overview.memoryTab.edit_rule')} autoFocus disabled={editing?.saving} value={draft} onChange={e => setEditing(old => old && { ...old, text: e.target.value })} />}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{sourceCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">{fmtDateTimeNumeric(l.ts)}</td>
+                <td className="px-2.5 py-2 border-b border-border text-sm"><div className="flex gap-1.5">{draft === null ? <>
+                  {/* Edit only on a JSONL row (one that names its file tier); vector lessons
+                      are edited in the Semantic browser. No Edit where the scope cannot be
+                      sent back as stored, or the rule is listed redacted. */}
+                  {l.scope !== undefined && l.repo_scope !== null && l.rule_editable !== false && <Btn disabled={editing !== null} onClick={() => { setEditError(null); setEditing({ key, row: l, text: l.rule }) }}>{i18nT('pages.overview.memoryTab.edit')}</Btn>}
+                  <Btn danger onClick={() => deleteLesson(l)}>{i18nT('pages.overview.memoryTab.delete')}</Btn>
+                </> : <>
+                  <Btn primary disabled={!draft.trim() || editing?.saving} onClick={() => saveEdit(l)}>{i18nT('pages.overview.memoryTab.save')}</Btn>
+                  <Btn disabled={editing?.saving} onClick={() => { setEditError(null); setEditing(null) }}>{i18nT('pages.overview.memoryTab.cancel')}</Btn>
+                </>}</div></td></tr>
+            })}</tbody></table></div></Card>
         )}
-        {consolidateMsg && <span className={`text-[13px] ${consolidateOk ? 'text-ok' : 'text-danger'}`} data-testid="consolidate-msg">{consolidateMsg}</span>}
-        {consolidateMsg && consolidateStanding && (
-          <IconButton
-            aria-label={i18nT('pages.overview.memoryTab.dismiss_summary_result')}
-            title={i18nT('pages.overview.memoryTab.dismiss_summary_result')}
-            onClick={() => { setConsolidateMsg(''); setConsolidateStanding(false) }}
-          >
-            <X size={13} aria-hidden="true" />
-          </IconButton>
-        )}
+      </>}
+      panels={{
+        graph: <MemoryGraphPanel store="" />,
+        // With semantic memory on, the three text documents are gone and Global has no profile.
+        profile: vectorActive ? null : <>
+        {/* The graph is its own tab. This user-facing V1 browser keeps its
+            preferences, projects, history, semantic/episodic records, recovery,
+            settings and lessons in the normal page flow. */}
+        {/* `vectorActive` comes from the vector card, which reads the global store,
+            independently of the picked one — so these three text documents are hidden whenever THAT
+            store has migrated to semantic memory, whichever store the picker names.
+            Pre-existing coupling, kept rather than widened: making the gate per-store
+            needs the vector card to take the picker too, and that card is where the
+            migration state is actually known. */}
+        {!vectorActive && (<>
+          {/* `key={store}`: a remount is what drops an unsaved draft when the scope
+              changes, so a body typed against one store can never be saved into
+              another. */}
+          <MemoryDocCard
+            key={`preferences-${store}`}
+            docKey="preferences"
+            onDirtyChange={dirty => setDocDirty(old => old.preferences === dirty ? old : { ...old, preferences: dirty })}
+            store={store}
+            title={i18nT('pages.overview.memoryTab.preferences')}
+            info={i18nT('pages.overview.memoryTab.learned_user_preferences_coding_style_tools_work')}
+            rows={8}
+            placeholder={i18nT('pages.overview.memoryTab.loading')}
+            read={s => api.memoryPreferences(s)}
+            write={(c, s) => api.saveMemoryPreferences(c, s)}
+          />
+          <MemoryDocCard
+            key={`projects-${store}`}
+            docKey="projects"
+            onDirtyChange={dirty => setDocDirty(old => old.projects === dirty ? old : { ...old, projects: dirty })}
+            store={store}
+            title={i18nT('pages.overview.memoryTab.projects')}
+            rows={8}
+            placeholder={i18nT('pages.overview.memoryTab.loading')}
+            read={s => api.memoryProjects(s)}
+            write={(c, s) => api.saveMemoryProjects(c, s)}
+          />
+          <MemoryDocCard
+            key={`history-${store}`}
+            docKey="history"
+            onDirtyChange={dirty => setDocDirty(old => old.history === dirty ? old : { ...old, history: dirty })}
+            store={store}
+            title={i18nT('pages.overview.memoryTab.daily_history')}
+            rows={10}
+            mono
+            placeholder={i18nT('pages.overview.memoryTab.no_history_yet')}
+            read={s => api.memoryHistory(s)}
+            write={(c, s) => api.saveMemoryHistory(c, s)}
+          />
+        </>)}
+        </>,
+        recovery: <>
+        {/* Store-specific keys REMOUNT each card on a store switch, which discards
+            its per-store local state. Without it, MemoryBackupsCard keeps an ARMED
+            restore across the switch — and a backup's name is not unique across stores
+            (one sweep stamps every store's copy identically, and every store's file
+            stem is `memory`), so the same-named row of the newly picked store renders
+            already-confirmed and one click restores a store the operator never armed.
+            Its "Back up now" and "Restored" status lines have the same problem in a
+            milder form: they would report a mutation that landed on the store the card
+            no longer shows. */}
+        {storeReadable && <MemoryRetiredCard key={`retired-${store}`} store={store} />}
+        <MemoryBackupsCard key={`backups-${store}`} store={store} />
+        </>,
+        failures: <>
+        {/* Its open draft joins the page's leave guards through `docDirty`. */}
+        <MemoryFailuresCard
+          refreshTrigger={refreshTrigger}
+          onLessonSaved={reloadSavedLesson}
+          focus={focusFailures}
+          onDirtyChange={d => setDocDirty(old => old.failures === d ? old : { ...old, failures: d })}
+        />
+        </>,
+        settings: <>
+        {/* The format, counts and backups the store picker card showed above the page. */}
+        {selectedStore && <Card><PanelSectionHeader label={i18nT('memoryPage.store_title')} /><div className="mt-3"><MemoryStoreStats selected={selectedStore} /></div></Card>}
+        <Card><CardTitle>{i18nT('pages.overview.memoryTab.memory_settings')} <InfoTip text={i18nT('pages.overview.memoryTab.controls_how_conversation_history_is_consolidate')} /></CardTitle>
+          <div className="flex gap-3 items-end flex-wrap">
+            <label htmlFor="memory-idle-hours" className="flex flex-col gap-1 text-[13px] text-muted">
+              <span>{i18nT('pages.overview.memoryTab.consolidation_idle_hours')}</span>
+              <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={IDLE_HOURS_MIN} max={IDLE_HOURS_MAX} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={idleHours} onChange={e => { settingsTouched.current.idle = true; settingsEdited.current.idle = true; setSettingsUnsaved(true); setIdleHours(Number(e.target.value)) }} />
+            </label>
+            {!migrated && (
+              <label htmlFor="memory-max-days" className="flex flex-col gap-1 text-[13px] text-muted">
+                <span>{i18nT('pages.overview.memoryTab.history_retention_days')}</span>
+                <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={MAX_DAYS_MIN} max={MAX_DAYS_MAX} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={maxDays} onChange={e => { settingsTouched.current.days = true; settingsEdited.current.days = true; setSettingsUnsaved(true); setMaxDays(Number(e.target.value)) }} />
+              </label>
+            )}
+            <Btn onClick={saveSettings} disabled={settingsSaving}>{settingsSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn>
+            <Btn onClick={consolidate} disabled={consolidating}>{consolidating ? <><Hourglass className="lucide-inline" /> {i18nT('pages.overview.memoryTab.running')}</> : <><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryTab.summarize_now')}</>}</Btn>
+            {/* What the button does, under it on its own line: the blind reader
+                hesitated over "summarize WHAT" without it and pressed with it (the
+                UX lane's read of two heads). Names the button rather than saying
+                "it", since the line sits under the whole row. */}
+            <p className="basis-full m-0 text-[12px] text-muted" data-testid="summarize-now-help">{i18nT('pages.overview.memoryTab.summarize_now_help')}</p>
+            {/* No hand-off, for the same unsaved drafts as the notice below. */}
+            <ErrorNotice
+              className="basis-full"
+              title={i18nT('pages.overview.memoryTab.settings_load_failed')}
+              message={settingsLoadError}
+              onDismiss={() => setSettingsLoadError(null)}
+              askAgent={false}
+            />
+            <ErrorNotice
+              className="basis-full"
+              title={i18nT('pages.overview.memoryTab.settings_save_failed')}
+              message={settingsError}
+              onDismiss={() => setSettingsError(null)}
+              askAgent={false}
+            />
+            {/* No hand-off: the tab holds unsaved drafts -- the lesson rule being
+                typed below and the store text in the editors -- that the hand-off's
+                navigation would discard. The block variant on its own flex line
+                (`basis-full`) so the button row stays a row. */}
+            {consolidateFailure && (
+              <ErrorNotice
+                className="basis-full"
+                title={consolidateFailure.title}
+                /* Plain words a person can act on -- what happened, and that pressing
+                   the button again retries it; the server's raw string is the journal
+                   key the structured report is looked up by, so it rides as `report`
+                   and, verbatim, as the footer's secondary detail under the failed
+                   session's key. The detail carries a visible label ("Server's
+                   reply:") so the message's "shown below" unambiguously points at it
+                   and marks it as foreign text -- the backend still says
+                   "consolidat*" where every label here says "Summarize", and unlabelled
+                   the reader doubted it concerned the button they pressed. */
+                message={consolidateFailure.summary}
+                report={findReport(consolidateFailure.raw)}
+                footer={<>
+                  {consolidateFailure.session !== undefined && (
+                    /* The session by its TITLE, as the sidebar names it ("Untitled session"
+                       when it has none), and a way to act on it: the same guarded navigation as
+                       the tab's other exits, since a click leaves the drafts this tab holds. */
+                    <span className="block text-[12px]" data-testid="consolidate-failed-session">
+                      <Trans
+                        i18nKey="pages.overview.memoryTab.consolidate_failed_session"
+                        count={consolidateFailure.count}
+                        values={{ session: sessionDisplayTitle(consolidateFailure.session) }}
+                        // eslint-disable-next-line jsx-a11y/control-has-associated-label -- the control's label is the session title `Trans` renders inside it
+                        components={{ session: <button
+                          type="button"
+                          className="p-0 border-none bg-transparent font-body text-[12px] text-inherit underline underline-offset-2 cursor-pointer hover:text-accent"
+                          data-testid="consolidate-failed-session-link"
+                          onClick={() => {
+                            const destination = `/chat?sid=${encodeURIComponent(consolidateFailure.session?.key ?? '')}`
+                            leave(() => navigate(destination), destination)
+                          }}
+                        /> }}
+                      />
+                    </span>
+                  )}
+                  <span className="block text-[12px] text-muted" data-testid="consolidate-failed-reply">
+                    <Trans
+                      i18nKey="pages.overview.memoryTab.consolidate_failed_reply"
+                      values={{ reply: consolidateFailure.raw }}
+                      components={{ reply: <span className="font-mono" data-testid="consolidate-failed-detail" /> }}
+                    />
+                  </span>
+                </>}
+                onDismiss={() => { setConsolidateFailure(null); setConsolidateMsg('') }}
+                askAgent={false}
+                testId="consolidate-failed"
+              />
+            )}
+            {consolidateMsg && <span className={`text-[13px] ${consolidateOk ? 'text-ok' : 'text-danger'}`} data-testid="consolidate-msg">{consolidateMsg}</span>}
+            {consolidateMsg && consolidateStanding && (
+              <IconButton
+                aria-label={i18nT('pages.overview.memoryTab.dismiss_summary_result')}
+                title={i18nT('pages.overview.memoryTab.dismiss_summary_result')}
+                onClick={() => { setConsolidateMsg(''); setConsolidateStanding(false) }}
+              >
+                <X size={13} aria-hidden="true" />
+              </IconButton>
+            )}
 
-        {migrated && <span className="text-[12px] text-muted ml-2">{i18nT('pages.overview.memoryTab.semantic_memory_active_text_files_are_read_only')}</span>}
-      </div>
-    </Card>
-    <VectorMemoryCard
-      onActiveChange={setVectorActive}
-      onMigratedChange={setMigrated}
-      onSettledChange={setVectorSettled}
-      onDirtyChange={setVectorDirty}
-      initialSemanticFilter={focusLessons ? 'lesson.' : undefined}
-      focusKey={focusLessons ? focusLessonKey : undefined}
-    />
-    <EmbeddingModelCard onDirtyChange={setEmbedDirty} />
-    <details onToggle={event => setRecordsOpen(event.currentTarget.open)}>
-      <summary className="min-h-11 cursor-pointer rounded-lg border border-border p-3 text-[13px] text-muted">
-        <SlidersHorizontal className="lucide-inline mr-2" aria-hidden="true" />
-        {i18nT('memoryV2.edit_saved_memories')}
-      </summary>
-      {recordsOpen && <div className="mt-4"><MemoryRecordsEditor store="default" onDirtyChange={setRecordDirty} /></div>}
-    </details>
-    {/* The graph explorer lives on Developer. This user-facing V1 browser keeps
-        its preferences, projects, history, semantic/episodic records, recovery,
-        settings and lessons in the normal page flow. */}
-    {/* `vectorActive` comes from the vector card, which reads the global store,
-        independently of the picked one — so these three text documents are hidden whenever THAT
-        store has migrated to semantic memory, whichever store the picker names.
-        Pre-existing coupling, kept rather than widened: making the gate per-store
-        needs the vector card to take the picker too, and that card is where the
-        migration state is actually known. */}
-    {!vectorActive && (<>
-      {/* `key={store}`: a remount is what drops an unsaved draft when the scope
-          changes, so a body typed against one store can never be saved into
-          another. */}
-      <MemoryDocCard
-        key={`preferences-${store}`}
-        docKey="preferences"
-        onDirtyChange={dirty => setDocDirty(old => old.preferences === dirty ? old : { ...old, preferences: dirty })}
-        store={store}
-        title={i18nT('pages.overview.memoryTab.preferences')}
-        info={i18nT('pages.overview.memoryTab.learned_user_preferences_coding_style_tools_work')}
-        rows={8}
-        placeholder={i18nT('pages.overview.memoryTab.loading')}
-        read={s => api.memoryPreferences(s)}
-        write={(c, s) => api.saveMemoryPreferences(c, s)}
-      />
-      <MemoryDocCard
-        key={`projects-${store}`}
-        docKey="projects"
-        onDirtyChange={dirty => setDocDirty(old => old.projects === dirty ? old : { ...old, projects: dirty })}
-        store={store}
-        title={i18nT('pages.overview.memoryTab.projects')}
-        rows={8}
-        placeholder={i18nT('pages.overview.memoryTab.loading')}
-        read={s => api.memoryProjects(s)}
-        write={(c, s) => api.saveMemoryProjects(c, s)}
-      />
-      <MemoryDocCard
-        key={`history-${store}`}
-        docKey="history"
-        onDirtyChange={dirty => setDocDirty(old => old.history === dirty ? old : { ...old, history: dirty })}
-        store={store}
-        title={i18nT('pages.overview.memoryTab.daily_history')}
-        rows={10}
-        mono
-        placeholder={i18nT('pages.overview.memoryTab.no_history_yet')}
-        read={s => api.memoryHistory(s)}
-        write={(c, s) => api.saveMemoryHistory(c, s)}
-      />
-    </>)}
-    {/* Store-specific keys REMOUNT each card on a store switch, which discards
-        its per-store local state. Without it, MemoryBackupsCard keeps an ARMED
-        restore across the switch — and a backup's name is not unique across stores
-        (one sweep stamps every store's copy identically, and every store's file
-        stem is `memory`), so the same-named row of the newly picked store renders
-        already-confirmed and one click restores a store the operator never armed.
-        Its "Back up now" and "Restored" status lines have the same problem in a
-        milder form: they would report a mutation that landed on the store the card
-        no longer shows. */}
-    {storeReadable && <MemoryCarveCard key={`carve-${store}`} store={store} />}
-    {storeReadable && <MemoryRetiredCard key={`retired-${store}`} store={store} />}
-    <MemoryBackupsCard key={`backups-${store}`} store={store} />
-    {/* Its open draft joins the page's leave guards through `docDirty`. */}
-    <MemoryFailuresCard
-      refreshTrigger={refreshTrigger}
-      onLessonSaved={reloadSavedLesson}
-      focus={focusFailures}
-      onDirtyChange={d => setDocDirty(old => old.failures === d ? old : { ...old, failures: d })}
-    />
-    {!vectorActive && (
-      <Card id={LESSONS_CARD_ID}><CardTitle>{i18nT('pages.overview.memoryTab.lessons')} <InfoTip text={i18nT('pages.overview.memoryTab.persistent_lessons_injected_into_every_session_a')} /></CardTitle>
-      <div className="flex gap-2 items-center flex-wrap mb-3">
-        <Input aria-label={i18nT('pages.overview.memoryTab.rule')} placeholder={i18nT('pages.overview.memoryTab.rule_e_g_always_use_tabs_not_spaces')} style={{ flex: 2 }} value={rule} onChange={e => setRule(e.target.value)} />
-        <SimpleSelect
-          aria-label={i18nT('pages.overview.memoryTab.category')}
-          style={{ flex: '0 0 140px' }}
-          options={['knowledge', 'tool', 'preference']}
-          optionLabels={[i18nT('pages.overview.memoryTab.knowledge'), i18nT('pages.overview.memoryTab.tool'), i18nT('pages.overview.memoryTab.preference')]}
-          value={cat}
-          onChange={setCat}
-        />
-        <SendBtn onClick={addLesson}>{i18nT('pages.overview.memoryTab.add')}</SendBtn>
-        {/* No hand-off: it would discard the unsaved rule draft in this row. */}
-        <ErrorNotice
-          className="basis-full"
-          title={i18nT('pages.overview.memoryTab.lesson_request_failed')}
-          message={lessonRequestError}
-          onDismiss={() => setLessonRequestError(null)}
-          askAgent={false}
-        />
-        {lessonFeedback && (
-          <span
-            role={lessonFeedback.tone === 'error' ? 'alert' : 'status'}
-            className={`text-[13px] ${
-              lessonFeedback.tone === 'error'
-                ? 'text-danger'
-                : lessonFeedback.tone === 'warning'
-                  ? 'text-warn'
-                  : 'text-muted'
-            }`}
-          >
-            {lessonFeedback.text}
-          </span>
-        )}
-      </div>
-      <SearchInput
-        className="mb-3 max-w-sm"
-        aria-label={i18nT('pages.overview.memoryTab.search_lessons')}
-        placeholder={i18nT('pages.overview.memoryTab.search_lessons')}
-        value={lessonQuery}
-        onChange={e => setLessonQuery(e.target.value)}
-      />
-      {/* No agent hand-off: it navigates away, and the Add row above may hold
-          an unsaved rule draft. */}
-      <ErrorNotice
-        title={i18nT(lessonsLoadError?.step === 'add' ? 'pages.overview.memoryTab.lesson_added_refresh_failed' : 'pages.overview.memoryTab.lessons_load_failed')}
-        message={lessonsLoadError?.message}
-        /* Not dismissible: clearing it would let the empty state claim a list
-           the read never returned. A later successful read clears it. */
-        askAgent={false}
-      />
-      <ErrorNotice
-        title={i18nT(deleteError?.step === 'refresh' ? 'pages.overview.memoryTab.lessons_refresh_failed' : 'pages.overview.memoryTab.delete_failed')}
-        message={deleteError?.step === 'nothing' ? i18nT('pages.overview.memoryTab.delete_matched_nothing') : deleteError?.message}
-        onDismiss={() => setDeleteError(null)}
-        askAgent={false}
-        className="mb-2"
-      />
-      {/* No hand-off: the row being edited holds an unsaved draft. */}
-      <ErrorNotice
-        title={i18nT(editError?.step === 'refresh' ? 'pages.overview.memoryTab.edit_saved_refresh_failed' : 'pages.overview.memoryTab.edit_failed')}
-        message={editError?.message}
-        onDismiss={() => setEditError(null)}
-        askAgent={false}
-        className="mb-2"
-      />
-      {/* Scrolls sideways rather than clipping: five columns plus a long path
-          fragment overrun a narrow viewport, and the card hides overflow. */}
-      <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.scope')} sortKey="repo_scope" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.source')} sortKey="source" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
-        <tbody>{lessonsLoadError && lessons.length === 0 && editing === null ? null : lessons.length === 0 && editing === null ? <tr><td colSpan={6}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.length === 0 ? <tr><td colSpan={6}><FilteredEmpty query={lessonQuery} onClear={() => setLessonQuery('')} /></td></tr> : sortedLessons.map((l) => {
-          const key = lessonKey(l)
-          // The rule cell holds the same text as a box while editing.
-          const draft = editing?.key === key ? editing.text : null
-          return <tr key={key} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{draft === null ? l.rule : <Input className="w-full" aria-label={i18nT('pages.overview.memoryTab.edit_rule')} autoFocus disabled={editing?.saving} value={draft} onChange={e => setEditing(old => old && { ...old, text: e.target.value })} />}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{sourceCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">{fmtDateTimeNumeric(l.ts)}</td>
-            <td className="px-2.5 py-2 border-b border-border text-sm"><div className="flex gap-1.5">{draft === null ? <>
-              {/* Edit only on a JSONL row (one that names its file tier); vector lessons
-                  are edited in the Semantic browser. No Edit where the scope cannot be
-                  sent back as stored, or the rule is listed redacted. */}
-              {l.scope !== undefined && l.repo_scope !== null && l.rule_editable !== false && <Btn disabled={editing !== null} onClick={() => { setEditError(null); setEditing({ key, row: l, text: l.rule }) }}>{i18nT('pages.overview.memoryTab.edit')}</Btn>}
-              <Btn danger onClick={() => deleteLesson(l)}>{i18nT('pages.overview.memoryTab.delete')}</Btn>
-            </> : <>
-              <Btn primary disabled={!draft.trim() || editing?.saving} onClick={() => saveEdit(l)}>{i18nT('pages.overview.memoryTab.save')}</Btn>
-              <Btn disabled={editing?.saving} onClick={() => { setEditError(null); setEditing(null) }}>{i18nT('pages.overview.memoryTab.cancel')}</Btn>
-            </>}</div></td></tr>
-        })}</tbody></table></div></Card>
-    )}
+            {migrated && <span className="text-[12px] text-muted">{i18nT('pages.overview.memoryTab.semantic_memory_active_text_files_are_read_only')}</span>}
+          </div>
+        </Card>
+        <EmbeddingModelCard onDirtyChange={setEmbedDirty} />
+        </>,
+      }} />
     {confirmDialog}
   </>)
 }

@@ -190,6 +190,21 @@ helper inside the function that uses it, or bind it on the facade as `hooks.py` 
 for its read owners: a new module-level name in an owner changes what the facade
 serves.
 
+## A whole-value pattern checks with `fullmatch`
+
+In Python `$` matches at the end of the string and also just before a final newline,
+so `PATTERN.match(value)` with `^[a-z0-9]{1,32}$` passes `value + "\n"`. A check that
+must describe the whole value uses `PATTERN.fullmatch(value)` or ends its pattern in
+`\Z`.
+
+`test/test_anchored_pattern_match_ratchet.py` counts, per file under `src/kiro_crew`,
+the `match` and `search` calls on a literal pattern ending in `$` (a `search` only when
+the pattern also starts with `^` or `\A`), and holds each file to the count in
+`test/anchored_pattern_match_baseline.txt`: a count may go down, never up, and a file
+not listed starts at zero. `re.MULTILINE` patterns and `src/kiro_crew/security/` are
+outside the scan. A site that reads one line of text and wants `$` says so on its line
+with `# newline-ok: <reason>`.
+
 ## No file over 2,000 lines
 
 A hand-written code file holds at most 2,000 lines: Python, TypeScript and
@@ -409,6 +424,11 @@ byte-order mark to the first field.
 
 Icons are `lucide-react` components with `className="lucide-inline"`. Never an
 emoji in the UI, never a hand-rolled SVG.
+Host code imports icons by name (`import { X } from 'lucide-react'`). The build
+rewrites each name to that icon's own module
+(`website/scripts/lib/lucideDeepImports.mjs`) and fails on any other import of
+the `lucide-react` barrel, which would pull every icon into the first load.
+Only `src/app-sdk/shared-modules.ts` imports the whole barrel, for installed apps.
 Where emoji may stay outside the web UI: [the 2026-11-18 emoji decision](../../decisions/2026-11-18-emoji-are-replaced-only-in-the-web-ui.md).
 
 Never hardcode a user-facing English string, and never format a date, number or

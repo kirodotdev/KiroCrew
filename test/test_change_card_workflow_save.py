@@ -31,8 +31,19 @@ from kiro_crew.dashboard.handlers.workflows import (
     api_workflow_definitions_create,
 )
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.workflows import library as workflow_library
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary, WorkflowSlugTakenError
 from kiro_crew.workflows.validate import validate
+
+
+@pytest.fixture(autouse=True)
+def _no_builtin_workflows(tmp_path, _floor_monkeypatch):
+    """These tests assert what the library folder holds, so the shipped
+    built-in tier is left out; ``test_workflows_builtin.py`` covers it."""
+    _floor_monkeypatch.setattr(
+        workflow_library, "BUILTIN_WORKFLOWS_DIR", tmp_path / "no-builtin-workflows"
+    )
+
 
 SAVE = "workflow.save"
 UPDATE = "workflow.update"
@@ -173,6 +184,7 @@ def test_update_refuses_a_missing_or_non_python_definition_and_no_change():
     for snapshot, code in (
         ({"exists": False}, "not_found"),
         (_update_snapshot(format="task-plan"), "not_python"),
+        (_update_snapshot(builtin=True), "builtin"),
         (_update_snapshot(), "no_change"),
     ):
         with pytest.raises(catalog.CardCatalogError) as exc:

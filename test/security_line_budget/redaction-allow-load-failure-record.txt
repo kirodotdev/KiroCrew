@@ -1,0 +1,2 @@
++32
+redaction_allow._load names why an allowed-hosts file that is there loaded as empty (unreadable, not valid JSON, not a JSON object): one WARNING and one redaction.allowed_hosts.load_failed SEL event per path and reason, beside the existing dropped-entries report. A missing file stays silent and the result is unchanged, so a failed read still allows no host.

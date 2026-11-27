@@ -477,6 +477,12 @@ Rules:
   from the page's global chords — but that isolation follows the React tree, so
   an overlay rendered as a *sibling* of `<Modal>` is outside it. See
   [Keyboard isolation](#keyboard-isolation-dialogs-and-the-overlays-above-them).
+- A dialog a Radix menu item opened returns focus to the menu's trigger on
+  close, and does so from its own unmount, never from the close handler: the
+  dialog's focus restore runs at unmount and would undo an earlier move. The
+  menu side is `useMenuOpensDialog`; the dialog side is `onCloseAutoFocus` on a
+  Radix `DialogContent` (`onDialogCloseAutoFocus`) or `returnFocusTo` on a
+  `Modal` (`openerRef`).
 - A virtualized transcript is not a live region. Scrolling mounts and unmounts
   rows, so `aria-live` on the scroller would announce old messages again. New
   messages are spoken through the one stable, offscreen polite live region in
@@ -957,7 +963,10 @@ files own it:
   layers, emits `@tailwind utilities` UNLAYERED (see the header comment there:
   the component CSS after it was written against v3's unlayered utilities and
   must keep competing with them on plain specificity), and lists the template
-  sources with `@source`. Then the Preflight compensation, three v3 Preflight
+  sources with `@source`. It also imports `src/tailwind-adopted-app-classes.css`,
+  the generated, append-only list of utilities adopted former built-ins use
+  (theming-contract, *Adopted apps' utilities*); never hand-edit it. Then the
+  Preflight compensation, three v3 Preflight
   defaults restored as token-backed base rules (default border colour
   `var(--border)`, placeholder colour `var(--muted)`, `cursor: pointer` on
   enabled buttons). Then the imports of `font-faces.css`, `design-tokens.css` and

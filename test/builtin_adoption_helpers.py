@@ -261,6 +261,28 @@ class World:
         return io.BytesIO(self.archive if self.archive_body is None else self.archive_body)
 
 
+def drop_wheel_copy(world: World, *, freeze: bool = True) -> None:
+    """Delete the fixture app's wheel package and keep its pin row.
+
+    That is what a release ships once it deletes a pinned app's wheel copy: the row
+    then carries the copy's ``deletedCopy`` (``adoption_pin.py freeze``), which
+    *freeze* False leaves out. The wheel root stays, empty, as the one manifest source.
+    """
+    if freeze:
+        from kiro_crew.apps.builtin_adoption_baseline import freeze_deleted_copy
+
+        frozen = freeze_deleted_copy(world.wheel)
+        table = pins_mod._PINS_PATH
+        document = json.loads(table.read_text(encoding="utf-8"))
+        for row in document["pins"]:
+            if row["name"] == NAME:
+                row[pins_mod.DELETED_COPY_KEY] = frozen
+        table.write_text(json.dumps(document), encoding="utf-8")
+        pins_mod.load_adoption_pins.cache_clear()
+    shutil.rmtree(world.wheel)
+    exec_mod.invalidate_shipped_builtin_apps()
+
+
 def write_builtin_record(
     *,
     enabled: bool = True,

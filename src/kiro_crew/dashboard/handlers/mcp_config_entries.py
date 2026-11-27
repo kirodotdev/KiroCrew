@@ -43,9 +43,10 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
     (``config_dir()/mcp.json``, i.e. ~/.kiro/crew/mcp.json) → kiro global →
     edition-contributed provider scopes.  Returns a shallow copy with
     ``disabled`` stripped (the caller decides whether to disable in its target
-    scope), and with the rendered spec's ``x-kirocrew-derived`` and
-    ``x-kirocrew-withheld`` records stripped too: they hold only in the file the
-    rebuild wrote them into, and a record of additions refuses them as unknown keys.
+    scope), and with the rendered spec's ``x-kirocrew-derived``,
+    ``x-kirocrew-withheld``, ``x-kirocrew-app-source`` and ``x-kirocrew-copied``
+    records stripped too: they hold only in the file the rebuild wrote them into (a
+    copy is not app-sourced), and a record of additions refuses them as unknown keys.
 
     The agents-dir candidate is an AGENT SPEC and is read through the hardened
     reader (size cap, sensitive-symlink screen, non-object rejection, SEL denial
@@ -57,11 +58,16 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
     agent-spec reader does not describe them.
     """
 
-    from kiro_crew.mcp_provenance import DERIVED_KEY, WITHHELD_KEY  # noqa: PLC0415
+    from kiro_crew.mcp_provenance import (  # noqa: PLC0415
+        COPIED_KEY,
+        DERIVED_KEY,
+        SOURCE_KEY,
+        WITHHELD_KEY,
+    )
 
-    # ``disabled`` is the target scope's to decide; the two provenance records
+    # ``disabled`` is the target scope's to decide; the provenance records
     # describe the rendered agent spec they were written into.
-    not_copied = {"disabled", DERIVED_KEY, WITHHELD_KEY}
+    not_copied = {"disabled", DERIVED_KEY, WITHHELD_KEY, SOURCE_KEY, COPIED_KEY}
 
     def _usable(data: dict[str, Any]) -> dict | None:
         # By raw key or alias: a slash-named entry serves its canonical row.
@@ -172,6 +178,21 @@ def _another_scope_declares(name: str) -> bool:
         servers = _load_json_or_empty(path).get("mcpServers")
         entry = servers.get(name) if isinstance(servers, dict) else None
         if isinstance(entry, dict) and _declares_server(entry):
+            return True
+    return False
+
+
+def _name_held_elsewhere(name: str) -> bool:
+    """Whether the Kiro Crew store or a provider global holds *name* as a key.
+
+    The rebuild then mounts that entry under *name*, and a Kiro global raw key whose
+    alias is *name* beside it as ``<name>-2``
+    (``mcp_aliases.raw_tools_project_onto_alias``), so the tool-off route keeps the
+    row's list under *name* instead of putting it on that raw key.
+    """
+    for path in (_kirocrew_mcp_json(), *[s.global_json for s in _extra_mcp_scopes()]):
+        servers = _load_json_or_empty(path).get("mcpServers")
+        if isinstance(servers, dict) and name in servers:
             return True
     return False
 

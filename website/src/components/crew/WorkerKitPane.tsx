@@ -156,9 +156,10 @@ export default function WorkerKitPane({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<unknown>(null)
   // What the last successful add wrote, shown until the next pick: how many
-  // items it added, whether it replaced the directions, and whether any of
-  // them is an approval (those have no row here).
-  const [done, setDone] = useState<{ count: number; replaced: boolean; approvals: boolean } | null>(null)
+  // items it added, whether it replaced the directions, whether any of them is
+  // an approval (those have no row here), and whether a new gateway-routed
+  // server waits for a gateway restart.
+  const [done, setDone] = useState<{ count: number; replaced: boolean; approvals: boolean; restart: boolean } | null>(null)
 
   const clear = () => { setTemplate(''); setPreview(null); setErr(null) }
 
@@ -197,7 +198,7 @@ export default function WorkerKitPane({
     setBusy(true)
     setErr(null)
     try {
-      await crewWorkerKitApi.apply(member, {
+      const applied = await crewWorkerKitApi.apply(member, {
         template: preview.template,
         revision: preview.revision,
         ...(leftOut(preview) ? { without_write_fallback: true } : {}),
@@ -207,6 +208,7 @@ export default function WorkerKitPane({
         count: wrote.length,
         replaced: preview.changes.some(isReplacement),
         approvals: preview.runs_unasked || wrote.some(c => c.section === 'allowedTools'),
+        restart: applied.gateway_restart_required === true,
       })
       setPreview(null)
       setTemplate('')
@@ -319,6 +321,7 @@ export default function WorkerKitPane({
                 {done.count > 0 && i18nT('crewWorkerKit.done_added', { count: done.count, name })}
                 {done.replaced && `${done.count > 0 ? ' ' : ''}${i18nT('crewWorkerKit.done_replaced')}`}
                 {done.approvals && ` ${i18nT('crewWorkerKit.done_approvals')}`}
+                {done.restart && ` ${i18nT('crewWorkerKit.done_restart_required')}`}
               </span>
               {done.approvals && onOpenApprovals && (
                 // The stock Btn is transparent with a `--border` edge, which
@@ -427,15 +430,23 @@ export default function WorkerKitPane({
                             </span>
                           )}
                           {changeLabel(c) !== null && (
-                            <span
-                              className={`min-w-0 truncate ${c.change === 'skipped' ? 'text-muted' : 'text-text'}`}
-                              title={c.id}
-                              data-testid="worker-kit-change-name"
-                            >
-                              {/* A tool whose write fallbackAction the add leaves out says so, not just its name. */}
-                              {c.section === 'toolsSettings' && preview.left_out?.includes(`toolsSettings.${c.id}.fallbackAction`)
-                                ? i18nT('crewWorkerKit.change_without_auto_run', { name: changeLabel(c) })
-                                : changeLabel(c)}
+                            <span className="flex min-w-0 flex-col gap-0.5">
+                              <span
+                                className={`min-w-0 truncate ${c.change === 'skipped' ? 'text-muted' : 'text-text'}`}
+                                title={c.id}
+                                data-testid="worker-kit-change-name"
+                              >
+                                {/* A tool whose write fallbackAction the add leaves out says so, not just its name. */}
+                                {c.section === 'toolsSettings' && preview.left_out?.includes(`toolsSettings.${c.id}.fallbackAction`)
+                                  ? i18nT('crewWorkerKit.change_without_auto_run', { name: changeLabel(c) })
+                                  : changeLabel(c)}
+                              </span>
+                              {/* A tool the agent set under two spellings is written once, under this row's key. */}
+                              {c.section === 'toolsSettings' && c.merged_from && c.merged_from.length > 0 && (
+                                <span className="min-w-0 truncate text-[11px] text-muted" data-testid="worker-kit-merged-from">
+                                  {i18nT('crewWorkerKit.change_merged_from', { spellings: c.merged_from.join(' + ') })}
+                                </span>
+                              )}
                             </span>
                           )}
                         </li>

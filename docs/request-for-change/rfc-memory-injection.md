@@ -24,7 +24,10 @@ superseded-by: []
   rollback. Once that landed, the owner removed `shadow` from those three flags
   ahead of the 30-day retirement in P6: each takes `off` or `enforce`, a stored
   `shadow` reads as `enforce`, and `kirocrew memory shadow report` no longer
-  lists them. The other stages stay default off and are not decided. Checked at `0c5d8bd5f3`.
+  lists them. On 2026-11-26 the owner did the same for R2
+  (`memory.relevance_rule`) in one step, also before the bar: default
+  `enforce`, `shadow` removed, a stored `shadow` reads as `enforce`, `off` stays
+  the rollback. The other stages stay default off and are not decided. Checked at `0c5d8bd5f3`.
 - Author: iamwhatever
 - Created: 2026-11-09
 - Code is cited by symbol and file at `79bff1f741`; the docs lint keeps line
@@ -178,8 +181,12 @@ Write-side facts that matter for later sections:
 | Findings | same ranking | `_LESSON_EXPERIENCE_CAP` (5%) | any shared stemmed `\w+` word, no length floor | `any_lesson_overlap`, `_lesson_words` (`lessons.py`) |
 | Preferences | all `pref.*` rows | `_PREFS_STARTUP_CAP = 12_700` | none | `get_preferences_context` (`vector_memory_runtime/semantic.py`) |
 | Task facts, default (V1) | hybrid rank | `_SEMANTIC_MEMORY_CAP` (7.7%) | none | `get_semantic_context` (`semantic.py`) |
-| Task facts, private (V2) | candidates with evidence | same | `relevance_evidence`, cosine floors 0.62 / 0.57 | `semantic_candidates_v2` (`semantic.py`); `relevance_evidence`, `SHORT_COSINE_FLOOR`, `LONG_COSINE_FLOOR` (`memory_v2.py`) |
-| Episodic | vector search | `_EPISODIC_INJECT_CAP = 3_000` | cosine 0.55 (0.42 for long text) | `_EPISODIC_RELEVANCE_THRESHOLD` (`vector_memory_runtime/episodic_search.py`) |
+| Task facts, private (V2) | candidates with evidence | same | `relevance_evidence`, cosine floors 0.62 / 0.57 (0.55 / 0.57 for an instructed query) | `semantic_candidates_v2` (`semantic.py`); `relevance_evidence`, `SHORT_COSINE_FLOOR`, `LONG_COSINE_FLOOR`, `INSTRUCTED_SHORT_COSINE_FLOOR`, `INSTRUCTED_LONG_COSINE_FLOOR` (`memory_v2.py`) |
+| Episodic | vector search | `_EPISODIC_INJECT_CAP = 3_000` | cosine 0.55 (0.42 for long text); 0.515 (0.375) for an instructed query | `_EPISODIC_RELEVANCE_THRESHOLD`, `_EPISODIC_INSTRUCTED_RELEVANCE_THRESHOLD` (`vector_memory_runtime/episodic_search.py`) |
+
+An instructed query is one embedded with the model's query instruction, which
+the bundled Qwen3 model and `ollama:qwen3-embedding*` get
+(`embedding.query_is_instructed`); other models use the plain floors.
 
 Ranking inputs differ by store. The default store passes a query vector to the
 rule block only when the activity block already ranked against the first
@@ -297,7 +304,10 @@ folding and whitespace collapse, must be a substring of one turn whose role is
 the person's and that carries no relayed-message marker. A turn the person
 edited is matched in its final stored form. A quote shorter than three P4
 tokens does not count. A relayed agent message never counts, even if it quotes
-the person.
+the person. The quote must also back the rule: the cosine between the store
+embedder's vectors of the quote and the rule is at least 0.6, so a real but
+unrelated sentence ("help me fix this bug" for "always run the full test
+suite") does not count. With no vector, no quote counts.
 
 **P3 Item identity.** One function `same_item(a, b)` used everywhere:
 
@@ -319,7 +329,8 @@ and is never folded into another row.
   This is the shipped `split_cjk_word` rule, reused unchanged.
 - Admission needs at least one shared significant token.
 - For task facts, both stores use the V2 gate: a row must carry
-  `relevance_evidence` (lexical token or cosine above the 0.62 / 0.57 floors).
+  `relevance_evidence` (lexical token or cosine above the 0.62 / 0.57 floors,
+  0.55 / 0.57 for an instructed query).
 
 **P5 Budget model.** Each block is one row of one table (section 4.3, Select).
 A block declares its cap, its admission gate, its order, and the line it prints
@@ -341,7 +352,7 @@ standing rule applies whatever the topic.
   existing row, so no rollback needs a data migration.
 - A flag is retired when its `enforce` has been the default for 30 days with no
   rollback: one follow-up pull request deletes the flag, its `off` and `shadow`
-  code and its receipt fields. R1, R4 and kind routing are the exception the
+  code and its receipt fields. R1, R2, R4 and kind routing are the exception the
   Status line records: their `shadow` code went early, by the owner's decision,
   and their `off` stays as the rollback.
 
@@ -487,16 +498,17 @@ Each stage is one pull request, independently shippable and abandonable.
 
 **Signed scope.** A maintainer has signed R1 only (authority order, flag
 `memory.rule_authority_order`, shadow first). On 2026-11-20 the owner made R1
-and R4 default `enforce` on early shadow data, before the bar in section 5.2. R3's quote check and
+and R4 default `enforce` on early shadow data, before the bar in section 5.2, and
+R2 on 2026-11-26. R3's quote check and
 tier policy wait for shadow counts of how many would-be demotions the user
-repeats. R0a, R2 and R4 to R6 are proposals; each needs its own sign-off.
+repeats. R0a and R4 to R6 are proposals; each needs its own sign-off.
 
 | # | Stage | Flag (default `off`) | Shadow signal | Pass metric | Rollback |
 |---|---|---|---|---|---|
 | R0 | Receipt fields and caps | none (fields written only under a stage's `shadow`) | n/a | receipts stay under every cap in a test that writes past them; off-mode lines unchanged byte for byte | revert the PR |
 | R0a | Admit: provenance and origin gate | provenance: none (additive metadata, always on); gate: `memory.lesson_origin_gate` | per day: passes, passes with no person-sent turn, lessons read, rule-tier lessons, would-be demotions, for consolidation and `learn_add` apart; shadow also keeps the would-be demoted lesson keys | re-teach rate of demoted rows <= control; zero demotions in a span with a person-sent turn; zero L1 rows from a person's own turn demoted | provenance: revert the PR (old rows stay valid); gate: flag off, rows already written `on_topic` stay findings and stay retrievable |
 | R1 | Select: authority order | `memory.rule_authority_order` (default `enforce` since 2026-11-20) | ids that enter and leave the rule block | L1 coverage up; miss rate of dropped L3 rows <= control | flag off |
-| R2 | Select: shared matcher | `memory.relevance_rule` | rows admitted only under the old gate | miss rate <= control | flag off |
+| R2 | Select: shared matcher | `memory.relevance_rule` (default `enforce` since 2026-11-26) | rows admitted only under the old gate | miss rate <= control | flag off |
 | R3 | Admit: tier policy | `memory.lesson_tier_policy` | new keys that would be stored `on_topic`; quote check pass and fail counts | re-teach rate of would-be `on_topic` rows <= control | flag off; rows already written keep their tier and stay retrievable through findings and recall |
 | R4 | Identify: render fold | `memory.lesson_fold` (default `enforce` since 2026-11-20) | (leader, folded) id pairs | no L1 folded; miss rate <= control | flag off |
 | R5 | Identify: private write and backfill | `memory.member_lesson_dedup` | would-be merges; default store 0.85-0.95 merge count | miss rate <= control; zero L1 merges | flag off; revert retired rows from revisions |
@@ -543,10 +555,11 @@ shadow answers the C2 agent-text question with live counts. Its rules:
 - **Modes.** `off`: nothing is read; prompt and writes are byte-identical.
   `shadow`: writes as `off` and logs. `enforce`: applies the demotion. No mode
   changes the prompt or a stored row.
-- **Known gaps.** A mixed span keeps its tiers: tracing one lesson to one turn
-  is not deterministic today, and the L2 quote check (R3) is the precise fix.
-  A `learn_add` from a session with no live chat (a sub-agent, a channel
-  thread) is left as submitted. An auto-nudge counts as automatic even in a
+- **Per lesson.** A mixed span keeps its tiers under R0a: R0a does not trace
+  one lesson to one turn. The mixed-span gap is closed by R3 `enforce`, which
+  judges each standing lesson by the P2 quote check, not by R0a.
+- **Known gaps.** A `learn_add` from a session with no live chat (a sub-agent,
+  a channel thread) is left as submitted. An auto-nudge counts as automatic even in a
   loop the person armed. A transcript written before `meta.human` existed
   reads as automatic. A messaging-channel session (Discord, Telegram, Slack and
   the rest) is not gated at all: most channel transports write the person's
@@ -593,11 +606,12 @@ produce the counts that sign-off waits for. Its rules:
   lesson keeps its tier only with a `user_quote` that passes the P2 check.
   `learn_add`, dashboard and CLI writes and every stored row are unchanged.
   A messaging-channel session is not gated, for R0a's reason.
-- **Prompt.** Only `enforce` asks for `user_quote`. Asking changes the tier the
-  model picks, so a shadow that asked would stop measuring today's writes.
-  `shadow` therefore counts every standing lesson as a would-be demotion (an
-  upper bound on `enforce`), and its quote counts cover only quotes the model
-  offers unasked; quote pass and fail rates come from `enforce`.
+- **Prompt.** Only R3 `enforce` asks for `user_quote`; R0a never does. Asking
+  changes the tier the model picks, so a shadow that asked would stop measuring
+  today's writes. `shadow` therefore asks in one separate bounded call after the
+  writes, shown only the `always` rules and the person's own unrelayed messages,
+  and runs its quotes through the same check; the pass, fail and support counts
+  come from that call. Its answer never reaches a write.
 - **Re-teach.** Under `shadow`, each `learn_add` with a vector is compared,
   before its write, with the stored vectors of the logged would-be demoted
   keys; a cosine above 0.85 counts as a re-teach. An agent's own
@@ -727,17 +741,21 @@ the same revisions an edit writes.
   keeps its own cursor and finishes over several nights.
 - Row budget per run, split from the cost cap: at most 2,500 rows past the
   cursor. On a store of about 17,000 rows that gains about 200 a day, this row
-  budget alone covers the backlog in about a week of runs; the approval list
-  (below) can hold it back longer. A caught-up store reads only the rows written
+  budget covers the backlog in about a week of runs. A caught-up store reads only the rows written
   since. Scanning rows spends no model tokens; the model step keeps its own
   20,000 input-token cap per run (7.5), and a pair that does not fit the tokens
   left stops the run before its batch, so the next run reads it again.
 - Every run: at most 10 minutes of wall clock. The run stops at the next batch
   boundary when any chat starts.
-- When the approval list is full (500 entries), the cursor stops before the batch
-  whose proposal did not fit and later runs read nothing until a person makes
-  room: the scan pauses rather than skip a candidate. A proposal too large for
-  an empty list is refused instead.
+- Each run first rechecks the open approval list and drops a proposal whose rows
+  are gone or changed, or that today's candidate rules no longer give. When the
+  list is still full (500 entries or the byte cap), the oldest proposals of
+  earlier runs roll off to make room, counted per kind in the run receipt and
+  the day's counters. A proposal is a report entry only, so rolling one off
+  changes no memory row, and a list nobody works through never stops the scan.
+  Only when this run's own proposals fill the list does the cursor stop before
+  the batch whose proposal did not fit, so the next run reads it again. A
+  proposal too large for an empty list is refused instead.
 - Rows that lack a vector are embedded on the bulk queue.
 
 ### 7.5 Candidates, found by code

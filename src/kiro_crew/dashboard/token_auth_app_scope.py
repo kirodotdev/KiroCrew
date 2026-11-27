@@ -376,6 +376,47 @@ def _scope_refusal(app_name: str, path: str) -> ScopeRefusal:
     )
 
 
+#: The separator of a URL path (never a filesystem path), as the router splits it.
+_URL_PATH_SEP = "/"
+
+#: The leading URL path segments after which the next segment names an app
+#: (``_app_owns_path``).
+_APP_ID_PREFIXES = (("api", "apps"), ("apps",))
+
+
+def _path_names_one_app(request: web.Request) -> bool:
+    """Whether the app id the router reads from *request*'s path is the one the scope check reads.
+
+    The scope check reads the decoded path, where an escaped ``/`` is a separator.
+    The router splits on the raw ``/`` only, so ``%2F`` stays inside one segment,
+    and hands the handler that segment decoded: ``/api/apps/a%2F..%2Fb/config``
+    reads as app ``a`` here and joins ``a/../b`` onto the apps folder there. So on
+    an app path the router's app segment must be one plain name
+    (``is_app_dir_name``), and the decoded path may hold no ``.`` or ``..``
+    segment. Any other path is left to the scope check.
+    """
+    from urllib.parse import unquote
+
+    from kiro_crew.apps.manifest_names import is_app_dir_name
+
+    # The router's segments: the raw path (``raw_path`` carries the query) split on
+    # its own separators, each decoded as the router decodes ``{name}``.
+    raw = request.raw_path.partition("?")[0]
+    routed = [unquote(seg) for seg in raw.split(_URL_PATH_SEP)][1:]
+    for prefix in _APP_ID_PREFIXES:
+        if tuple(routed[: len(prefix)]) == prefix and len(routed) > len(prefix):
+            name = routed[len(prefix)]
+            if name and not is_app_dir_name(name):
+                return False
+            break
+    else:
+        return True
+    decoded = request.path.replace("\\", _URL_PATH_SEP)
+    return "\x00" not in decoded and not any(
+        seg in (".", "..") for seg in decoded.split(_URL_PATH_SEP)
+    )
+
+
 def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Response | None:
     """Return a 403 response if an app token is out of scope, else None.
 
@@ -385,7 +426,7 @@ def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Re
     """
     if not app_name:
         return None
-    if app_token_path_allowed(app_name, path):
+    if _path_names_one_app(request) and app_token_path_allowed(app_name, path):
         return None
     # SEL audit for the permission decision (matches the sibling deny paths in
     # the middleware, which log_api_access in addition to _log_auth).

@@ -426,7 +426,11 @@ _CARRIED_WHOLE: dict[str, frozenset[str]] = {
 def _carried_whole(path: str) -> bool:
     """Whether the ``<tool>.<key>`` *path* names a list of :data:`_CARRIED_WHOLE`."""
     tool, sep, key = path.rpartition(".")
-    return bool(sep) and key in _CARRIED_WHOLE.get(tools_settings_family(tool), frozenset())
+    family = tools_settings_family(tool)
+    return bool(sep) and (
+        key in _CARRIED_WHOLE.get(family, frozenset())
+        or key in _CARRIED_INERT.get(family, frozenset())
+    )
 
 
 def unjudged_denies(spec: dict[str, Any]) -> list[str]:
@@ -471,7 +475,16 @@ CARRIED_TOOLS_SETTINGS: dict[str, frozenset[str]] = {
     "web_fetch": frozenset({"blocked"}),
     # KAS turns ``availableAgents`` into a ``subagent`` deny, and Crew's spawn gate
     # reads the worker's merged spec for it (``agent_policy.parent_template_allowlists``).
-    "subagent": frozenset({"availableAgents", "trustedAgents"}),
+    # ``autoAllow`` and ``defaultAgent`` are carried as written (:data:`_CARRIED_INERT`).
+    "subagent": frozenset({"availableAgents", "trustedAgents", "autoAllow", "defaultAgent"}),
+}
+
+#: Keys carried as written although no engine applies them: neither KAS nor
+#: kiro-cli's documented sub-agent settings read them, so an ordinary session of
+#: the agent ignores them too, and the worker behaves exactly as that session
+#: does. The session-start notice still names them as not applied.
+_CARRIED_INERT: dict[str, frozenset[str]] = {
+    "subagent": frozenset({"autoAllow", "defaultAgent"}),
 }
 
 #: Families carried under one spelling only. The spawn gate reads

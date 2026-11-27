@@ -71,6 +71,8 @@ export function useSettingsSearchGovernance(
   })
   const channelsOn = cfgQ.isSuccess
     && (cfgQ.data as { dashboard?: { channels_enabled?: unknown } } | undefined)?.dashboard?.channels_enabled === true
+  // The same read says whether Feature Previews draws Kiro Managed Environments.
+  const managedEnvAvailable = (cfgQ.data as { managed_env_available?: unknown } | undefined)?.managed_env_available === true
   // The `['slack-config']` read Settings > Slack itself renders from, from cache
   // only: it carries the server's own answer to whether Connections offers the
   // Slack card (`slack_mcp_card`), which with the saved switch is the page's whole
@@ -107,7 +109,7 @@ export function useSettingsSearchGovernance(
     ? computerUse.supported && computerUse.cursor_motion_supported
     : gatewayPlatform === 'windows' ? false : undefined
   return useMemo(
-    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown, remoteControlShown, cursorMotionShown }),
-    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown, remoteControlShown, cursorMotionShown],
+    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled, channelsOn, managedEnvAvailable, slackToolsShown, remoteControlShown, cursorMotionShown }),
+    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled, channelsOn, managedEnvAvailable, slackToolsShown, remoteControlShown, cursorMotionShown],
   )
 }

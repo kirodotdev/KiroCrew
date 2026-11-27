@@ -13,6 +13,7 @@ Focused on the guarantees that did NOT exist when this logic lived inside
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import time
@@ -1138,3 +1139,35 @@ class TestChannelReadsNoAttachments:
         assert out.count("[") == 1
         assert out.count("]") == 1
         assert " — " in out
+
+
+def test_a_refused_attachment_temp_delete_is_logged_without_its_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A delete the OS refuses (Windows: a scanner holding the file) logs one
+    WARNING naming the error and no path; a missing file stays silent."""
+    held, gone, freed = (tmp_path / f"{n}.png" for n in ("held", "gone", "freed"))
+    held.write_bytes(b"png")
+    freed.write_bytes(b"png")
+    real_unlink = os.unlink
+
+    def unlink(path: str) -> None:
+        if path == str(held):
+            raise PermissionError(13, "Permission denied", path)
+        real_unlink(path)
+
+    # Scoped to the call: a fixture teardown's rmtree calls os.unlink(dir_fd=).
+    with (
+        monkeypatch.context() as patched,
+        caplog.at_level(logging.DEBUG, logger="kiro_crew.messaging.attachments"),
+    ):
+        patched.setattr(os, "unlink", unlink)
+        cleanup([str(held), str(gone), str(freed)])
+    records = [r for r in caplog.records if r.name == "kiro_crew.messaging.attachments"]
+    assert len(records) == 1, [r.getMessage() for r in records]
+    record = records[0]
+    message = record.getMessage()
+    assert record.levelno == logging.WARNING
+    assert "PermissionError" in message and "errno=13" in message
+    assert str(tmp_path) not in message and "held" not in message
+    assert held.exists() and not freed.exists()

@@ -11,6 +11,7 @@ module too (:mod:`kiro_crew._facade_mirror`). This module never imports the faca
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -30,25 +31,27 @@ from kiro_crew.dashboard.handlers.mcp_gateway_routes import (
     _assess_server,
     _collect_server_rows,
     _env_pooling_outcome,
+    _folder_declarations,
     _freeze_stub_servers,
     _launch_specs_for,
     _local_overlay_section,
     _overlay_shadowed_keys,
-    declared_launch,
 )
 from kiro_crew.dashboard.handlers.mcp_probe import _probe_currency
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.mcp_gateway import hazards, launch_resolve
+from kiro_crew.mcp_gateway import folder_use, hazards, launch_resolve
 from kiro_crew.mcp_gateway.launch_approval import (
     approve,
     check_store_rewritable,
     display_launches,
     load_approvals,
     refused_servers,
+    refused_share_records,
     restore,
     revoke,
     target_stem,
 )
+from kiro_crew.mcp_gateway.launch_approval_heal import forget_trust
 from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.sel import sel
 
@@ -247,6 +250,27 @@ def _set_cwd_bindings(section: dict, bindings: Mapping[str, str]) -> None:
         section.pop("cwd_use_launch", None)
 
 
+def _launch_already_approved(name: str) -> bool:
+    """Whether the store approves every launch *name* resolves to now. BLOCKING.
+
+    A launch that cannot be resolved counts as unapproved, which sends the page
+    to the press that shows and approves it.
+    """
+    try:
+        resolved = launch_resolve.resolve_launches([name]).get(name) or []
+    except Exception as exc:
+        logger.warning("mcp launch resolution failed: %s", exc)
+        return False
+    approvals = load_approvals()
+    stem = target_stem(name)
+    fingerprints = approvals.approved.get(stem, set())
+    pairs = approvals.approved_pairs.get(stem, set())
+    return bool(resolved) and all(
+        launch.fingerprint in fingerprints and launch.approval_identities <= pairs
+        for launch in resolved
+    )
+
+
 async def api_mcp_gateway_server_launches(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
@@ -297,6 +321,85 @@ async def api_mcp_gateway_server_launches(request: web.Request) -> web.Response:
     return web.json_response({"launches": previews, "errors": errors})
 
 
+def _trust_refusal(request: web.Request, name: str, code: str, error: str) -> web.Response:
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation=f"mcp_stub_rejected_{code}",
+        outcome="denied",
+        source="dashboard",
+        resources=f"code={code} names={name}"[:256],
+    )
+    return web.json_response({"error": error, "code": code}, status=409)
+
+
+async def _grant_trust_from_row(request: web.Request, name: str) -> web.Response:
+    """Turn "Always trust changes to this server" on from the Sharing row.
+
+    Called past the owner gate. Only for a server that is shared now and whose
+    current launch the store approves with no refusal pending: the grant then
+    records those same launches through :func:`approve`, as the Review press
+    does, so it trusts later changes and approves nothing the owner has not.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        launches = await asyncio.to_thread(launch_resolve.resolve_launches, [name])
+    except Exception as exc:
+        logger.warning("mcp launch resolution failed: %s", exc)
+        return web.json_response(
+            {"error": "could not resolve the launch", "code": "launch_resolve_failed"},
+            status=503,
+        )
+    async with _MCP_GATEWAY_APPLY_LOCK:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if name not in set(cfg.mcp_gateway.stub_servers):
+            return _trust_refusal(
+                request, name, "trust_needs_shared", "share this server before trusting changes"
+            )
+        current = launches.get(name) or []
+        approvals = await asyncio.to_thread(load_approvals)
+        refused = await asyncio.to_thread(refused_servers)
+        stem = target_stem(name)
+        approved_now = (
+            bool(current)
+            and name not in launches.over_cap
+            and display_launches(name, current)["complete"]
+            and not refused_share_records([name], refused)
+            and all(
+                launch.approval_identities
+                and all(
+                    approvals.admits_launch(stem, *pair.split(":", 1))
+                    for pair in launch.approval_identities
+                )
+                for launch in current
+            )
+        )
+        if not approved_now:
+            return _trust_refusal(
+                request,
+                name,
+                "trust_needs_approved_launch",
+                "approve this server's launch in Review before trusting changes",
+            )
+        try:
+            await asyncio.to_thread(functools.partial(approve, {name: current}, trusted=[name]))
+        except OSError as exc:
+            logger.warning("mcp launch approval store write failed: %s", exc)
+            return web.json_response(
+                {"error": "could not record the launch approval", "code": "approval_write_failed"},
+                status=503,
+            )
+    # The same record the Review press's grant writes.
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="mcp_gateway_set_stub",
+        outcome="ok",
+        source="dashboard",
+        resources=f"name={name} stub=True trust_changes=True",
+    )
+    return web.json_response({"ok": True, "name": name, "trust_changes": True})
+
+
 async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     """POST /api/mcp-gateway/servers/stub — toggle servers' stub flag.
 
@@ -326,11 +429,17 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
 
     ``cwd_use`` (``uses_cwd`` / ``not_used``, single form only) records the
     operator's answer to "share this server across chats?" in
-    ``mcp_gateway.cwd_use``; sent without ``stub`` it records only that. A
+    ``mcp_gateway.cwd_use``. Sent without ``stub`` it records that answer, and
+    when the answer changes whether this server is routed the broker applies it
+    too; the reply's ``routing_changed`` says which. An answer that would route a
+    launch the store does not approve is refused (``expected_launch_required``)
+    and writes nothing, so the page shows the launch and approves it. A
     routed backend runs in one fixed folder outside the project, so ``stub: true``
-    is refused (``cwd_unconfirmed``) for a server that is not Kiro Crew's own and
-    is not answered ``not_used``, and this route is the only writer of the launch
-    approvals the rewriter needs before it wraps a server.
+    is refused (``cwd_unconfirmed``) for a server no fact clears
+    (``mcp_gateway.folder_use``: Kiro Crew's own, the edition's list) and is not
+    answered ``not_used``. A roots observation refuses it only when every source
+    agrees (``folder_use.roots_keeps_per_chat``). This route is the only writer of the
+    launch approvals the rewriter needs before it wraps a server.
 
     ``expected_entry`` optionally constrains an approval to the command, args and
     env shown on an ``mcp.server`` card. The card middleware binds this field to
@@ -351,11 +460,12 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         _CWD_USES,
         _resolve_cwd_use,
         _resolve_cwd_use_launch,
-        effective_cwd_answer,
+        _resolve_stub_servers,
     )
     from kiro_crew.config.loader import (  # noqa: F811
         ConfigReadError,
         ConfigWriteRefused,
+        KiroCrewConfig,
         config_path,
         update_config_locked,
     )
@@ -429,6 +539,41 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 {"error": "this server is not asked", "code": "cwd_use_not_asked"},
                 status=400,
             )
+    # ``trust_changes: false`` sent alone is the Sharing row's "stop trusting
+    # changes": it only takes the choice off, so the next changed launch asks.
+    if stub is None and cwd_answer is None and body.get("trust_changes") is False and not batch:
+        async with _MCP_GATEWAY_APPLY_LOCK:
+            try:
+                await asyncio.to_thread(forget_trust, names)
+            except OSError as exc:
+                logger.warning("mcp launch approval store write failed: %s", exc)
+                sel().log_api_access(
+                    caller=request.get("user", "dashboard"),
+                    operation="mcp_gateway_trust_changes",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=f"name={name} code=approval_write_failed"[:256],
+                )
+                return web.json_response(
+                    {
+                        "error": "could not record the launch approval",
+                        "code": "approval_write_failed",
+                    },
+                    status=503,
+                )
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="mcp_gateway_trust_changes",
+            outcome="ok",
+            source="dashboard",
+            resources=f"name={name} trust_changes=False"[:256],
+        )
+        return web.json_response({"ok": True, "name": name, "trust_changes": False})
+    # ``trust_changes: true`` sent alone is the Sharing row's tick: the owner's
+    # click turns the choice back on for a server that is shared and whose
+    # current launch the store already approves, so it approves no new launch.
+    if stub is None and cwd_answer is None and body.get("trust_changes") is True and not batch:
+        return await _grant_trust_from_row(request, name)
     if (stub is None and cwd_answer is None) or (stub is not None and not isinstance(stub, bool)):
         return web.json_response({"error": "stub must be a boolean"}, status=400)
     if batch and stub:
@@ -496,6 +641,22 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # "Always trust changes to this server": only the Review dialog's press sends
+    # it, with the launch it shows. A card (``expected_entry``), which an agent
+    # proposes, never carries it.
+    trust_changes = body.get("trust_changes", False)
+    if not isinstance(trust_changes, bool) or (
+        trust_changes and (expected_launch is None or "expected_entry" in body)
+    ):
+        _log_stub_rejection("trust_changes_invalid")
+        return web.json_response(
+            {
+                "error": "trust_changes is only valid on one approval of a launch shown here",
+                "code": "trust_changes_invalid",
+            },
+            status=400,
+        )
+
     expected_entry = body.get("expected_entry")
     if "expected_entry" in body and (batch or not stub or not isinstance(expected_entry, dict)):
         return web.json_response(
@@ -508,6 +669,51 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     # would otherwise observe it runs at the next gateway start, and an agent
     # can edit ``mcp.json`` or a spec in between. Before any write, so a name
     # with nothing to approve changes nothing.
+    # An answer sent alone can still put a rostered server back into routing (the
+    # roster lists it, and the answer was what kept it per chat). The broker then
+    # applies only a launch the store already approves; any other launch goes
+    # through the press below, which pins and approves it.
+    answer_launch_approved = False
+    if stub is None and cwd_answer == _CWD_NOT_USED:
+        answer_launch_approved = await asyncio.to_thread(_launch_already_approved, name)
+    # Resolution rebuilds the specs, so the write must bind the answer to a scan
+    # taken afterwards. Keep an early roots guard to avoid rebuilding refused
+    # launches, then refresh and recheck that scan if the stub resolves a launch.
+    declarations = await asyncio.to_thread(_folder_declarations)
+    gw_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).mcp_gateway
+    folder_free = await asyncio.to_thread(folder_use.edition_folder_free)
+    asked_roots = await asyncio.to_thread(folder_use.roots_requesting, gw_cfg.socket_path)
+
+    def _roots_refusal() -> web.Response | None:
+        if not stub or resolve_eligibility:
+            return None
+        stored_answers = dict(getattr(gw_cfg, "cwd_use", None) or {})
+        stored_bindings = dict(getattr(gw_cfg, "cwd_use_launch", None) or {})
+        if cwd_answer is not None:
+            # The answer sent with this press is the one the write below records,
+            # bound the same way, so it is the one the folder rule reads.
+            stored_answers[name] = cwd_answer
+            stored_bindings.pop(name, None)
+            launch_now = declarations.launch(name)
+            if cwd_answer == _CWD_NOT_USED and launch_now:
+                stored_bindings[name] = launch_now
+        if declarations.per_chat(names, asked_roots, folder_free, stored_answers, stored_bindings):
+            _log_stub_rejection("cwd_roots")
+            return web.json_response(
+                {
+                    "error": (
+                        "this server asked a chat for its project folder, so each "
+                        "chat runs its own copy. Nothing was changed."
+                    ),
+                    "code": "cwd_roots",
+                },
+                status=409,
+            )
+        return None
+
+    roots_refusal = _roots_refusal()
+    if roots_refusal is not None:
+        return roots_refusal
     launches: dict[str, list[Any]] = {}
     if stub:
         try:
@@ -522,6 +728,10 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 },
                 status=503,
             )
+        declarations = await asyncio.to_thread(_folder_declarations)
+        roots_refusal = _roots_refusal()
+        if roots_refusal is not None:
+            return roots_refusal
         over_cap = [n for n in names if n in getattr(launches, "over_cap", ())]
         if over_cap:
             return _launch_over_cap_response(over_cap)
@@ -595,7 +805,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             )
 
         if expected_entry is not None and not await asyncio.to_thread(
-            launch_resolve.matches_entry, expected_entry, launches.get(name, [])
+            launch_resolve.matches_entry, expected_entry, launches.get(name, []), server=name
         ):
             _log_stub_rejection("launch_differs_from_card")
             return web.json_response(
@@ -686,6 +896,15 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                     # The response already names the failure that led here.
                     logger.warning("mcp launch approval restore failed: %s", exc)
 
+        # Finish withdrawing trust before writing config, so a failure only
+        # needs to restore the approval rows revoked above.
+        if stub is False:
+            try:
+                await asyncio.to_thread(forget_trust, names)
+            except OSError as exc:
+                await _restore_revoked()
+                return _approval_write_failed(exc)
+
         # A stub on writes the config before it records the approval, so a store
         # the approval write would refuse is refused first, with nothing written.
         if stub and any(launches.get(n) for n in names):
@@ -697,13 +916,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         # The launch each name declares now, which a ``not_used`` answer is bound
         # to. A scan that fails reads as "cannot tell", which keeps every answer
         # exactly as it reads today rather than asking again.
-        current_launch: dict[str, str | None] = {}
-        if cwd_answer is not None or stub:
-            try:
-                rows = await asyncio.to_thread(_collect_server_rows)
-                current_launch = {n: declared_launch(rows.get(n)) for n in names}
-            except Exception:
-                logger.warning("mcp server scan for the cwd answer failed", exc_info=True)
+        current_launch = {n: declarations.launch(n) for n in names}
 
         # Read here, off the loop, so ``list_servers()`` and its own config reads
         # stay out of the locked read-modify-write below.
@@ -722,11 +935,25 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         # asked for.
         resolved: dict[str, Any] = {}
 
+        def _routes(section: dict) -> bool:
+            """Whether the rewriter would route *name* from this config state."""
+            merged = _deep_merge(section, overlay)
+            if name not in _resolve_stub_servers(merged):
+                return False
+            return not declarations.per_chat(
+                (name,),
+                asked_roots,
+                folder_free,
+                _resolve_cwd_use(merged),
+                _resolve_cwd_use_launch(merged),
+            )
+
         def _mutate(data: dict) -> dict | None:
             section = data.setdefault("mcp_gateway", {})
             if not isinstance(section, dict):
                 refused["code"] = "mcp_gateway_not_object"
                 return None
+            routed_before = stub is None and _routes(section)
             if cwd_answer is not None:
                 answers = _resolve_cwd_use(section)
                 answers[name] = cwd_answer
@@ -738,6 +965,14 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                     bindings[name] = launch_now
                 _set_cwd_bindings(section, bindings)
             if stub is None:
+                # This handler decides whether the answer changed routing, from
+                # the same resolver and folder rule the rewriter reads.
+                routed_after = _routes(section)
+                if routed_after and not routed_before and not answer_launch_approved:
+                    refused["code"] = "expected_launch_required"
+                    return None
+                resolved["routing_changed"] = routed_after != routed_before
+                resolved["routing_added"] = routed_after and not routed_before
                 resolved["eligible"] = []
                 return data
             written = list(names)
@@ -755,8 +990,16 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 unconfirmed = [
                     n
                     for n in written
-                    if n not in KIROCREW_BIN_MCP_SERVERS
-                    and effective_cwd_answer(answers.get(n), bindings.get(n), current_launch.get(n))
+                    if folder_use.folder_free_source(
+                        n,
+                        folder_free,
+                        folder_use.effective_answer(n, answers, bindings, current_launch.get(n)),
+                        asked_roots=(
+                            not resolve_eligibility and folder_use.roots_observed(n, asked_roots)
+                        ),
+                    )
+                    is None
+                    and folder_use.effective_answer(n, answers, bindings, current_launch.get(n))
                     != _CWD_NOT_USED
                 ]
                 if unconfirmed and not resolve_eligibility:
@@ -885,6 +1128,17 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         if refused.get("code") == "mcp_gateway_not_object":
             await _restore_revoked()
             return web.json_response({"error": "mcp_gateway is not an object"}, status=500)
+        if refused.get("code") == "expected_launch_required":
+            # The press's own answer when it carries no launch: the page shows
+            # the launch and sends it with this answer, as a press does.
+            _log_stub_rejection("expected_launch_required")
+            return web.json_response(
+                {
+                    "error": "display the launch before approving it",
+                    "code": "expected_launch_required",
+                },
+                status=409,
+            )
         if refused.get("code") == "cwd_unconfirmed":
             await _restore_revoked()
             _log_stub_rejection("cwd_unconfirmed")
@@ -898,13 +1152,15 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-
         # Turning a stub on approves the launches resolved above for the names written.
         decided = list(resolved.get("eligible") or [])
         if stub and decided:
             approved = {n: launches[n] for n in decided if launches.get(n)}
             try:
-                await asyncio.to_thread(approve, approved)
+                if trust_changes:
+                    await asyncio.to_thread(functools.partial(approve, approved, trusted=decided))
+                else:
+                    await asyncio.to_thread(approve, approved)
             except OSError as exc:
                 return _approval_write_failed(exc)
 
@@ -921,13 +1177,17 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         # Nothing qualified means nothing was written, so there is no new link for
         # an apply to pick up.
         nothing_written = bool(resolve_eligibility and stub and not resolved.get("eligible"))
-        if stub is None and not nothing_written:
-            # Only the working-folder answer was written: nothing routes
-            # differently until a stub press, so the broker is left alone.
+        if stub is None and not resolved.get("routing_changed"):
+            # Only the working-folder answer was written and it routes nothing
+            # differently, so the broker is left alone.
             applied = {"applied": True, "restart_required": False}
         elif apply is not None and not nothing_written:
             try:
-                applied = await apply(launch_approved=stub is True)
+                # An answer that adds a routed name restarts the broker even when
+                # the configured set is unchanged: only roots kept it per chat.
+                applied = await apply(
+                    launch_approved=stub is True or bool(resolved.get("routing_added"))
+                )
             except Exception as exc:
                 sel().log_api_access(
                     caller=request.get("user", "dashboard"),
@@ -955,7 +1215,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         operation="mcp_gateway_set_stub",
         outcome="ok",
         source="dashboard",
-        resources=f"{audited} stub={stub}",
+        resources=f"{audited} stub={stub} trust_changes={trust_changes}",
     )
     subject: dict[str, Any] = {"names": names} if batch else {"name": name}
     outcome: dict[str, Any] = {}
@@ -969,6 +1229,10 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             "skipped": resolved.get("skipped") or [],
             "sharing_on": resolved.get("sharing_on"),
         }
+    if stub is None:
+        # The page reads this rather than guessing from row flags whether the
+        # answer put the server back into routing.
+        outcome = {"routing_changed": bool(resolved.get("routing_changed"))}
     if name_not_string:
         logger.warning(
             "mcp gateway set-stub: name is a %s, not a string; saved as %r",

@@ -204,7 +204,9 @@ class TestSentOncePerEngineConversation:
         first, second = chat.wire.sent
 
         block = first[first.index(MARKER) : first.index(REQUEST)]
-        assert first.replace(block, "") == second
+        # The [PROJECT] line has its own slot (test_context_lines_once.py).
+        project = first[first.index("[PROJECT]") :].split("\n\n", 1)[0] + "\n\n"
+        assert first.replace(block, "").replace(project, "") == second
 
     @pytest.mark.asyncio
     async def test_the_built_message_does_not_change_with_the_acknowledgment(

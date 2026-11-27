@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -64,6 +65,8 @@ SECRET_SUMMARY = "SECRET-SUMMARY wired the admin password into config"
 SECRET_STEP = "cat /srv/secret-notes.txt"
 SECRET_BRANCH = "feat/secret-branch"
 DASHBOARD = "https://dash.example/chat/"
+#: The render's clock.
+_CLOCK = datetime(2026, 10, 18, 10, 30, tzinfo=timezone.utc)
 #: A wait that never ends is a lost run, not a failure: half the suite's test timeout.
 _LOST_RUN_SECS = 60.0
 
@@ -273,7 +276,10 @@ def test_two_workers_post_one_message_in_the_thread_with_a_row_each(world, slack
     _, channel, thread_ts, blocks, _text_ = posts[0]
     assert (channel, thread_ts) == (CHANNEL, ANCHOR)  # INTO the thread, not top level
     plan = next(b for b in blocks if b["type"] == "plan")
-    assert [t["title"] for t in plan["tasks"]] == ["Fix the login", "Write the docs"]
+    assert [t["title"] for t in plan["tasks"]] == [
+        "Working: Fix the login",
+        "Working: Write the docs",
+    ]
     # The board's pointer is kept under the thread's own key.
     record = surface_store.store().get(thread_key(CHANNEL, ANCHOR))
     assert record is not None and record.board_ts == "100.1"
@@ -394,7 +400,8 @@ def test_the_rows_look_is_one_line_with_the_title_linking_the_workers_chat():
     text = render.row_text(row, lambda key: f"{DASHBOARD}{key}", brief=True)
     assert "\n" not in text
     assert text.startswith(f"*<{DASHBOARD}chat-w1|Fix &lt;the&gt; login>*")
-    assert "Waiting on you" in text and "SECRET" not in text and "run a command" not in text
+    assert "*Needs you*: approve its tool call" in text
+    assert "SECRET" not in text and "run a command" not in text
 
 
 def test_a_plan_block_slack_refuses_falls_back_to_the_rows_in_the_thread(world, slack):
@@ -422,6 +429,190 @@ def test_a_worker_waiting_on_the_owner_pages_them_in_the_thread_without_its_repo
     assert "SECRET" not in text and f"{DASHBOARD}chat-it_00000001" in text
     world.refresh()
     assert len(slack.of("post_message")) == 1  # once per waiting spell
+
+
+# ── needs you first, each row's state without opening it ─────────────────
+
+
+def _asked(item: _Item, *, answered: bool = False) -> _Item:
+    """*item* as the store seam marks one the conductor asked the owner about."""
+    item.asks_person = True
+    item.answered_by_event = answered
+    return item
+
+
+def test_a_task_the_conductor_asked_the_owner_about_reads_needs_you_not_idle(world, slack):
+    # Three idle workers. The conductor asked the owner about two of them: one whose
+    # worker said `blocked` (and got the conductor's "hold on"), one that said
+    # `progress`. The third waits on something else.
+    world.worker("it_00000001", title="Waits on a PR")
+    _asked(world.worker("it_00000002", title="Blocked, asked", status="blocked"), answered=True)
+    _asked(world.worker("it_00000003", title="Progress, asked"))
+    for item in world.items:
+        world.live[item.worker_session_key] = "idle"
+    world.state.owner_id = OWNER
+    world.refresh()
+
+    plan = next(b for b in slack.of("post_blocks")[0][3] if b["type"] == "plan")
+    assert plan["title"] == "2 need you · 1 idle · 0 of 3 done"
+    # Each title leads with its state word, and the rows that need the owner lead.
+    assert [t["title"] for t in plan["tasks"]] == [
+        "Needs you: Blocked, asked",
+        "Needs you: Progress, asked",
+        "Idle: Waits on a PR",
+    ]
+    needs = json.dumps(plan["tasks"][0]["details"])
+    assert "answer its question" in needs and f"{DASHBOARD}chat-it_00000002" in needs
+    sent = _text(slack.of("post_blocks"))
+    assert "SECRET" not in sent  # still nothing the worker said
+    # The conductor's own reply carried the question: the board pages nobody for it.
+    assert slack.of("post_message") == []
+
+
+def test_an_ask_holds_the_row_only_while_its_worker_is_not_running():
+    facts = {"item_state": "open", "status": "progress", "reason": None}
+    waits = model.row_state(**facts, live=model.LIVE_IDLE, asked=True)
+    assert waits == model.WAITING_ON_YOU
+    assert model.row_state(**facts, live=model.LIVE_RUNNING, asked=True) == model.WORKING
+    assert model.row_state(**facts, live=model.LIVE_IDLE) == model.IDLE
+    # It outranks the conductor's own answer to the report, and a chat that is gone.
+    answered = {"item_state": "open", "status": "blocked", "reason": None, "handed_back": True}
+    assert model.row_state(**answered, live=model.LIVE_IDLE, asked=True) == model.WAITING_ON_YOU
+    assert model.row_state(**answered, live=model.LIVE_GONE, asked=True) == model.WAITING_ON_YOU
+    assert (
+        model.row_state(
+            item_state="accepted", status="done", reason=None, live=model.LIVE_IDLE, asked=True
+        )
+        == model.DONE
+    )
+
+
+def test_a_report_naming_a_person_keeps_its_own_wait_and_only_an_ask_alone_is_unpaged():
+    named = _asked(
+        _Item("it_00000001", status="question", reason="needs_human", worker_session_key="chat-w1")
+    )
+    alone = _asked(_Item("it_00000002", status="progress", worker_session_key="chat-w2"))
+    snap = source.project(
+        SimpleNamespace(goal="", round=1), [named, alone], lambda key: model.LIVE_IDLE
+    )
+    assert [(r.state, r.waiting_on, r.pages_owner) for r in snap.rows] == [
+        (model.WAITING_ON_YOU, "report", True),
+        (model.WAITING_ON_YOU, "ask", False),
+    ]
+    # The pinned board says what an ask needs in fixed words, not the worker's report.
+    details = json.dumps(render._details(snap.rows[1], _CLOCK))
+    assert "answer its question" in details and "SECRET" not in details
+
+
+def _state_rows() -> tuple[model.WorkerRow, ...]:
+    """One row per state, in dispatch order: the least urgent first."""
+    return (
+        model.WorkerRow(item_id="it_1", title="Closed", state=model.CLOSED, closed_as="rejected"),
+        model.WorkerRow(item_id="it_2", title="Done", state=model.DONE),
+        model.WorkerRow(item_id="it_3", title="Quiet", state=model.IDLE),
+        model.WorkerRow(item_id="it_4", title="Busy", state=model.WORKING),
+        model.WorkerRow(item_id="it_5", title="Gone", state=model.LOST),
+        model.WorkerRow(item_id="it_6", title="Asks", state=model.BLOCKED),
+        model.WorkerRow(
+            item_id="it_7", title="Yours", state=model.WAITING_ON_YOU, waiting_on="approval"
+        ),
+        model.WorkerRow(item_id="it_8", title="Busy too", state=model.WORKING),
+    )
+
+
+@pytest.mark.parametrize("brief", [True, False])
+def test_rows_are_listed_needs_you_then_stuck_working_waiting_done(brief):
+    snapshot = model.BoardSnapshot(rows=_state_rows())
+    plan = render.plan_block(snapshot, lambda key: "", now=_CLOCK, brief=brief)
+    # No row needs opening to read its state, and dispatch order holds within a state.
+    assert [t["title"] for t in plan["tasks"]] == [
+        "Needs you: Yours",
+        "Stuck: Asks",
+        "Lost: Gone",
+        "Working: Busy",
+        "Working: Busy too",
+        "Idle: Quiet",
+        "Done: Done",
+        "Rejected: Closed",
+    ]
+    assert (
+        plan["title"]
+        == "1 needs you · 1 blocked · 1 lost · 2 working · 1 idle · 1 closed · 1 of 8 done"
+    )
+    # The other looks follow the same order.
+    assert [r.title for r in snapshot.shown] == [
+        t["title"].split(": ", 1)[1] for t in plan["tasks"]
+    ]
+    tab = render.workers_view_blocks(snapshot, lambda key: "", now=_CLOCK)
+    open_ids = [b["block_id"] for b in tab if str(b.get("block_id", "")).endswith("-text")]
+    assert open_ids == [f"worker-it_{n}-text" for n in (7, 6, 5, 4, 8, 3)]
+    # The snapshot itself keeps dispatch order: only what is shown is sorted.
+    assert [r.item_id for r in snapshot.rows] == [f"it_{n}" for n in range(1, 9)]
+
+
+@pytest.mark.parametrize(
+    ("pr_state", "ci", "word"),
+    [
+        ("open", "running", "Idle, waiting on CI"),
+        ("draft", "running", "Idle, waiting on CI"),
+        ("open", "passed", "Idle, waiting on review"),
+        ("draft", "passed", "Idle"),  # a draft is not in review yet
+        ("open", "failed", "Idle"),  # the fix is the worker's own move
+        ("merged", "passed", "Idle"),
+        ("open", "", "Idle"),
+    ],
+)
+def test_an_idle_row_says_what_its_own_pull_request_waits_on(pr_state, ci, word):
+    row = model.WorkerRow(
+        item_id="it_1",
+        title="Fix the login",
+        state=model.IDLE,
+        pr_number=9,
+        pr_state=pr_state,
+        pr_ci=ci,
+        summary=SECRET_SUMMARY,
+    )
+    assert render.state_word(row) == word
+    brief = render.brief_snapshot(model.BoardSnapshot(rows=(row,)))
+    plan = render.plan_block(brief, lambda key: "", now=_CLOCK, brief=True)
+    assert plan["tasks"][0]["title"] == f"{word}: Fix the login"
+    # Only an idle row with a pull request of its own is given a reason.
+    assert model.idle_wait(model.WorkerRow(item_id="it_2", title="t", state=model.IDLE)) == ""
+    busy = model.WorkerRow(
+        item_id="it_3",
+        title="t",
+        state=model.WORKING,
+        pr_number=9,
+        pr_state="open",
+        pr_ci="running",
+    )
+    assert model.idle_wait(busy) == "" and render.state_word(busy) == "Working"
+
+
+def test_a_brief_row_that_needs_the_owner_says_what_for_in_fixed_words():
+    approval = model.WorkerRow(
+        item_id="it_1",
+        title="Ship",
+        state=model.WAITING_ON_YOU,
+        waiting_on="approval",
+        approval_tool="a command",
+        step=f"Running {SECRET_STEP}",
+        session_key="chat-w1",
+    )
+    asked = model.WorkerRow(
+        item_id="it_2",
+        title="Pick",
+        state=model.WAITING_ON_YOU,
+        waiting_on="ask",
+        summary=SECRET_SUMMARY,
+        session_key="chat-w2",
+    )
+    snapshot = render.brief_snapshot(model.BoardSnapshot(rows=(approval, asked)))
+    plan = render.plan_block(snapshot, lambda key: f"{DASHBOARD}{key}", now=_CLOCK, brief=True)
+    first, second = (t["details"]["elements"][0]["elements"] for t in plan["tasks"])
+    assert [e["text"] for e in first] == ["approve its tool call", " · ", "Open in dashboard"]
+    assert [e["text"] for e in second] == ["answer its question", " · ", "Open in dashboard"]
+    assert "SECRET" not in json.dumps(plan) and "secret-notes" not in json.dumps(plan)
 
 
 # ── only while the switch is on ───────────────────────────────────────────

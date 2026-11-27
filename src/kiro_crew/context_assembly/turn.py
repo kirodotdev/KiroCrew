@@ -65,7 +65,7 @@ def post_compaction_parts(
     The agent contract, the critical rules (same variant and opt-out as session
     start, left out where the session head holds that exact text), the memory
     activity index, the skills index (same gate and glob restriction as session
-    start), the learned-lessons block (same store,
+    start), the owner's preferences and the learned-lessons block (same store,
     gates and budgets as session start, ranked against *query_text*, the user's
     own text for this turn), the CURRENT reply-style preferences, the Claude Code
     backend's steering resources (same gate as session start) and the CURRENT
@@ -174,9 +174,9 @@ def post_compaction_parts(
                 + ctx._neutralize_structural_markers(skills_ctx)
                 + "\n[END REINJECTED]\n\n"
             )
-    # Lessons are session-start context too: the user's standing corrections
-    # went with the compaction, and nothing else brings them back (the
-    # per-message block only adds new matches, and is off by default).
+    # Preferences and lessons are session-start context too: the user's standing
+    # rules and corrections went with the compaction, and nothing else brings
+    # them back (the per-message block only adds new matches, and is off by default).
     parts.extend(
         lessons_parts(
             builder,
@@ -225,14 +225,36 @@ def lessons_parts(
     essentials: str,
     query_text: str,
 ) -> list[str]:
-    """The learned-lessons block a turn re-sends when session start may be gone.
+    """The owner's preferences and learned lessons a turn re-sends when session start may be gone.
 
-    Same store, gates and budgets as session start, ranked against *query_text*.
+    Same store, gates and budgets as session start, ranked against *query_text*:
+    the whole preferences document and the ``pref.*`` rows under their startup
+    allowance, then the lessons block.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     parts: list[str] = []
     _essentials = essentials
+    _prefs_ctx = _store_admission.compaction_preferences_block(
+        builder,
+        private=private_owner,
+        blocks_reads=blocks_reads,
+        context_groups=context_groups,
+        workspace=workspace,
+        memory_store=memory_store,
+        model_window=model_window,
+        essentials=_essentials,
+        query_text=query_text,
+        session_key=session_key,
+    )
+    if _prefs_ctx:
+        # The preferences document and its rows are user- and agent-written:
+        # scrub the payload, keep the trusted wrapper outside it.
+        parts.append(
+            "[REINJECTED AFTER COMPACTION — owner preferences]\n"
+            + ctx._neutralize_structural_markers(_prefs_ctx)
+            + "\n[END REINJECTED]\n\n"
+        )
     _lessons_ctx = _store_admission.compaction_lessons_block(
         builder,
         private=private_owner,
@@ -509,6 +531,55 @@ def thread_context_parts(
     return blocks
 
 
+def project_line(
+    *, project: str | None, context_groups: frozenset[str] | None, session_key: str | None
+) -> str:
+    """The turn's ``[PROJECT]`` line, ``""`` when it carries none.
+
+    :func:`rail_parts` adds it to every turn; ``build_message`` also binds it as a
+    delivery slot, so the engine is sent an unchanged line once per conversation.
+    """
+    from kiro_crew.session_environment import remote_workspace_for
+
+    # A remote session works in the GUEST's directory; naming the gateway checkout
+    # (which its tools cannot reach) sent the model to the wrong machine. Values
+    # come from operator config (profile name, workdir).
+    remote = remote_workspace_for(session_key)
+    if not _inclusion._group_included(context_groups, _inclusion.CONTEXT_GROUP_PROJECT):
+        return ""
+    if remote is not None and not remote[1]:
+        # No directory: the agent itself runs in a Kiro cloud sandbox, which Kiro
+        # Crew never reaches, so name the sandbox and nothing on the gateway.
+        return (
+            f"[PROJECT] This session runs in a Kiro Cloud Sessions sandbox ({remote[0]}). "
+            "Its files, commands and tools all live in that sandbox. Kiro Crew's own "
+            "tools, MCP servers and the gateway machine's files are not available "
+            "there.\n\n"
+        )
+    if remote is not None:
+        env_name, env_workdir = remote
+        return (
+            f"[PROJECT] This session runs in a remote environment ({env_name}). "
+            f"Its working directory is {env_workdir} on that remote machine, "
+            "reached only through the @workspace tools (read_file, write_file, "
+            "edit_file, list_directory, glob, grep, run_command). Files, commands, "
+            "the OS and installed tools all describe that remote machine. "
+            "Subagents you spawn run in the same remote environment. "
+            "The gateway machine that hosts you is a different computer, and "
+            "anything describing it (paths, host memory) is not this session's "
+            "workspace.\n\n"
+        )
+    if project:
+        return (
+            f"[PROJECT] Active project directory: {project}\n"
+            "This is the codebase you are working in for this session. "
+            "File search, @-mentions, and code references are scoped to "
+            "this directory. Prefer files and patterns from this project "
+            "when answering questions.\n\n"
+        )
+    return ""
+
+
 def rail_parts(
     *,
     project: str | None,
@@ -533,33 +604,14 @@ def rail_parts(
     # the active project, even when set/changed after session start.
     from kiro_crew.session_environment import remote_workspace_for
 
-    # A remote session works in the GUEST's directory; naming the gateway checkout
-    # (which its tools cannot reach) sent the model to the wrong machine. Values
-    # come from operator config (profile name, workdir).
     remote = remote_workspace_for(session_key)
     project_on = _inclusion._group_included(context_groups, _inclusion.CONTEXT_GROUP_PROJECT)
-    if remote is not None and project_on and not remote[1]:
-        # No directory: the agent itself runs in a Kiro cloud sandbox, which Kiro
-        # Crew never reaches, so name the sandbox and nothing on the gateway.
-        parts.append(
-            f"[PROJECT] This session runs in a Kiro Cloud Sessions sandbox ({remote[0]}). "
-            "Its files, commands and tools all live in that sandbox. Kiro Crew's own "
-            "tools, MCP servers and the gateway machine's files are not available "
-            "there.\n\n"
-        )
-    elif remote is not None and project_on:
-        env_name, env_workdir = remote
-        parts.append(
-            f"[PROJECT] This session runs in a remote environment ({env_name}). "
-            f"Its working directory is {env_workdir} on that remote machine, "
-            "reached only through the @workspace tools (read_file, write_file, "
-            "edit_file, list_directory, glob, grep, run_command). Files, commands, "
-            "the OS and installed tools all describe that remote machine. "
-            "Subagents you spawn run in the same remote environment. "
-            "The gateway machine that hosts you is a different computer, and "
-            "anything describing it (paths, host memory) is not this session's "
-            "workspace.\n\n"
-        )
+    _project_line = project_line(
+        project=project, context_groups=context_groups, session_key=session_key
+    )
+    if _project_line:
+        parts.append(_project_line)
+    if remote is not None and project_on and remote[1]:
         from kiro_crew.session_environment import take_workspace_recreated
 
         if take_workspace_recreated(session_key):
@@ -569,14 +621,6 @@ def rail_parts(
                 "conversation are gone. Re-clone or rebuild before relying on them; "
                 "anything pushed to git is still on its remote.\n\n"
             )
-    elif project and project_on:
-        parts.append(
-            f"[PROJECT] Active project directory: {project}\n"
-            "This is the codebase you are working in for this session. "
-            "File search, @-mentions, and code references are scoped to "
-            "this directory. Prefer files and patterns from this project "
-            "when answering questions.\n\n"
-        )
 
     # Board state — the session's dashboard board tags, so the agent knows
     # its own workflow lane and which tags it is allowed to change with

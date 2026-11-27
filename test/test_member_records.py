@@ -28,6 +28,7 @@ from kiro_crew.apps import bot_grant_store, protected_app_state
 from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard import (
     crew_api_approval_records,
+    crew_api_conversations,
     crew_api_response_records,
     local_authorization,
 )
@@ -130,6 +131,7 @@ def test_the_spelled_names_match_their_owners() -> None:
         protected_app_state.APP_STARTUP_KIND,
         crew_api_approval_records.APPROVALS_KIND,
         crew_api_response_records.RESPONSES_KIND,
+        crew_api_conversations.CONVERSATIONS_KIND,
     )
     assert member_records.MIGRATED_KINDS == (
         members.RULES_DIR_NAME,

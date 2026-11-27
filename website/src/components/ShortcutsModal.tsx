@@ -6,7 +6,7 @@ import { useQuickSearchShortcut } from '../hooks/useQuickSearchShortcut'
 import { usePanelToggleShortcuts } from '../hooks/usePanelToggleShortcuts'
 import { canRecordGlobalHotkey, useGlobalHotkey } from '../hooks/useGlobalHotkey'
 import { chordReachable, formatQuickSearchKeys, formatChordKeys } from '../lib/quickSearchShortcut'
-import { PANEL_TOGGLE_IDS, TERMINAL_PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcuts'
+import { PANEL_TOGGLE_IDS, TERMINAL_FOCUS_PANEL_TOGGLE_IDS, TERMINAL_PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcuts'
 import { formatAcceleratorKeys, type GlobalHotkeyInfo } from '../lib/globalHotkey'
 import { isElectron } from '../lib/electron'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
@@ -312,6 +312,7 @@ export const PANEL_TOGGLE_LABEL_KEY: Record<PanelToggleId, string> = {
   'terminal-prev': 'hooks.useKeyboardShortcuts.previous_terminal',
   'terminal-next': 'hooks.useKeyboardShortcuts.next_terminal',
   'side-terminal': 'hooks.useKeyboardShortcuts.toggle_side_terminal',
+  'terminal-clear': 'hooks.useKeyboardShortcuts.clear_terminal',
 }
 
 /**
@@ -334,7 +335,16 @@ export function PanelToggleRows({ ids }: { ids: PanelToggleId[] }) {
             {/* A div, not a span: the label and the "Not set" state are separate
                 catalog units; a block label ends the inline text run so the i18n
                 render gate never sees them joined into one string. */}
-            <div className="text-[13px] text-text">{i18nT(PANEL_TOGGLE_LABEL_KEY[id])}</div>
+            {/* A terminal-focus command can share its chord with a global one
+                (Clear terminal and Search Everywhere on Cmd+K), so say which fires. */}
+            {TERMINAL_FOCUS_PANEL_TOGGLE_IDS.has(id)
+              ? (
+                  <div>
+                    <div className="text-[13px] text-text">{i18nT(PANEL_TOGGLE_LABEL_KEY[id])}</div>
+                    <div className="text-muted text-[11px]">{i18nT('components.shortcutsModal.terminal_focus_only')}</div>
+                  </div>
+                )
+              : <div className="text-[13px] text-text">{i18nT(PANEL_TOGGLE_LABEL_KEY[id])}</div>}
             {chord && chordReachable(chord)
               ? <span className="flex items-center gap-1"><KeyCapSequence caps={formatChordKeys(chord)} plus /></span>
               : <div className="text-muted text-[11px]">{i18nT('components.shortcutsModal.unset')}</div>}
@@ -493,10 +503,12 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     if (matchesQuery(sectionName, normalizedQuery, queryWithoutPlus)) return activeIds
     return activeIds.filter(id => {
       const label = i18nT(PANEL_TOGGLE_LABEL_KEY[id]).toLowerCase()
+      const qualifier = TERMINAL_FOCUS_PANEL_TOGGLE_IDS.has(id) ? i18nT('components.shortcutsModal.terminal_focus_only').toLowerCase() : ''
       const chord = panelBindings[id]
       const chordStr = chord && chordReachable(chord) ? formatChordKeys(chord).join(' ').toLowerCase() : ''
       return (
         matchesQuery(label, normalizedQuery, queryWithoutPlus) ||
+        (qualifier !== '' && matchesQuery(qualifier, normalizedQuery, queryWithoutPlus)) ||
         matchesQuery(chordStr, normalizedQuery, queryWithoutPlus)
       )
     })

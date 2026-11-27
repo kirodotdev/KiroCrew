@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from aiohttp import web
@@ -26,7 +27,10 @@ from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
-from kiro_crew.dashboard.handlers.mcp_agent_sync import _builtin_mcp_server_names
+from kiro_crew.dashboard.handlers.mcp_agent_sync import (
+    _app_owned_mcp_servers,
+    _builtin_mcp_server_names,
+)
 from kiro_crew.dashboard.handlers.mcp_config_files import (
     _GLOBAL_MCP_JSON,
     _KIRO_GLOBAL_SURFACE,
@@ -335,6 +339,7 @@ def _stamp_config_state(
     global_mcps: Any,
     kirocrew_mcps: Any,
     builtin_names: frozenset[str] = frozenset(),
+    app_owned: Mapping[str, str] | None = None,
 ) -> None:
     """Stamp the config-derived fields onto one serialized server row.
 
@@ -403,6 +408,10 @@ def _stamp_config_state(
     d["kirocrewManaged"] = kc_spec is not None
     # One of Kiro Crew's own servers: the table locks its off switch.
     d["builtin"] = name in builtin_names
+    # An installed app's server: the table has no Uninstall for it, and names
+    # the app whose removal is the one that removes the server.
+    if app_owned and (app := app_owned.get(name)):
+        d["app"] = app
     shared_off = mcp_entry_is_muted(spec)
     store_off = mcp_entry_is_muted(kc_spec)
     is_disabled = shared_off or store_off or d.get("disabled") is True
@@ -509,6 +518,7 @@ async def _run_mcp_probe(state: DashboardState | None) -> None:
         global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
         kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
         builtin = await asyncio.to_thread(_builtin_mcp_server_names)
+        app_owned = await asyncio.to_thread(_app_owned_mcp_servers)
 
         # Route through probe_all() so the fan-out is bounded by its
         # PROBE_MAX_CONCURRENCY semaphore. An
@@ -522,7 +532,7 @@ async def _run_mcp_probe(state: DashboardState | None) -> None:
         for s in probed:
             d = s.to_dict()
             spec = global_mcps.get(s.name, {})
-            _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
+            _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin, app_owned)
             if isinstance(spec, dict) and spec.get("disabledTools"):
                 d["disabledTools"] = spec["disabledTools"]
             result.append(d)
@@ -613,6 +623,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # page load -- a slow data-home mount would stall the loop and its heartbeat.
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
     builtin = await asyncio.to_thread(_builtin_mcp_server_names)
+    app_owned = await asyncio.to_thread(_app_owned_mcp_servers)
     result: list[dict] = []
     for s in servers:
         d = s.to_dict()
@@ -639,7 +650,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
             d["status"] = cached.get("status", d["status"])
             d["tools"] = cached.get("tools", d["tools"])
             d["error"] = cached.get("error", d["error"])
-        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
+        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin, app_owned)
         err = d.get("error")
         if err:
             from kiro_crew.security import redact
@@ -684,16 +695,47 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
-def _agent_mcp_server_names(agent: str) -> list[str] | None:
-    """The sorted names of the servers kiro-cli mounts for the user-level spec *agent*.
+def _live_backend_of_slot(request: web.Request) -> str:
+    """The backend the live session of the ``?slot=`` chat runs on, else kiro-cli's.
+
+    Read from the session itself (``capabilities_of(provider).backend``), never
+    from a value the caller sends. The slot key only selects which session to ask:
+    a missing or unknown slot, one with no live session, a backend this build does
+    not know, and an app caller that does not own the slot and its session
+    (``slot_ownership.app_owns_slot_session``, the rule the per-slot routes apply)
+    all answer ``ACP_BACKEND_KIRO``, which is what this endpoint assumed before.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO, ACP_BACKENDS_KNOWN
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
+
+    name = (request.query.get("slot") or "").strip()
+    state = request.app.get("state")
+    slot = getattr(state, "_slots", {}).get(name) if name else None
+    if slot is None:
+        return ACP_BACKEND_KIRO
+    request_app = request.get("app", "")
+    if request_app and not app_owns_slot_session(request_app, slot):
+        return ACP_BACKEND_KIRO
+    try:
+        provider = state.sessions.get_provider(effective_session_key(slot))
+    except (AttributeError, KeyError):
+        return ACP_BACKEND_KIRO
+    backend = capabilities_of(provider).backend
+    return backend if backend in ACP_BACKENDS_KNOWN else ACP_BACKEND_KIRO
+
+
+def _agent_mcp_server_names(agent: str, backend: str) -> list[str] | None:
+    """The sorted names of the servers *backend* mounts for the user-level spec *agent*.
 
     The spec's own ``mcpServers``, and the enabled servers of the global
-    ``mcp.json`` that its ``includeMcpJson`` opt-in mounts beside them
-    (``agent_sdk.mcp_json_reach``). ``None`` when no spec declares that name. A
-    thread-side read: it walks the agents directory and parses specs (both forms)
-    until the first match, then reads the global file when the spec opts in.
+    ``mcp.json`` that its ``includeMcpJson`` opt-in mounts beside them on a
+    backend that reads that file (``agent_sdk.mcp_json_reach``). ``None`` when no
+    spec declares that name. A thread-side read: it walks the agents directory and
+    parses specs (both forms) until the first match, then reads the global file
+    when the spec opts in.
     """
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
     from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
 
     for f in iter_agent_spec_files(kiro_agents_dir_path(), ordered=False):
@@ -709,7 +751,7 @@ def _agent_mcp_server_names(agent: str) -> list[str] | None:
             # must answer an empty list, not a 500 from ``sorted(None)``.
             servers = spec.get("mcpServers")
             names = set(servers) if isinstance(servers, dict) else set()
-            return sorted(names.union(mcp_json_server_names(spec, ACP_BACKEND_KIRO)))
+            return sorted(names.union(mcp_json_server_names(spec, backend)))
     return None
 
 
@@ -718,9 +760,11 @@ async def api_mcp_active(request: web.Request) -> web.Response:
 
     For non-kirocrew agents, reads ``mcpServers`` from the agent's config
     in ``~/.kiro/agents/``, plus the global ``~/.kiro/settings/mcp.json``
-    servers when that config opts in with ``includeMcpJson``: the servers
-    kiro-cli loads when ``--agent <name>`` is passed. For kirocrew (or no
-    agent), reads every scope through the one launch predicate.
+    servers when that config opts in with ``includeMcpJson`` and the chat's
+    backend mounts that file. ``?slot=`` names the chat whose live session's
+    backend is asked (:func:`_live_backend_of_slot`); without one the answer is
+    kiro-cli's. For kirocrew (or no agent), reads every scope through the one
+    launch predicate.
     """
     agent = request.query.get("agent", "")
 
@@ -741,7 +785,8 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     # directory and reads specs until the name matches, so it runs in a thread:
     # a large directory must not stall every other request on the loop.
     if agent and agent != "kirocrew":
-        agent_mcps = await asyncio.to_thread(_agent_mcp_server_names, agent)
+        backend = _live_backend_of_slot(request)
+        agent_mcps = await asyncio.to_thread(_agent_mcp_server_names, agent, backend)
         if agent_mcps is None:
             return web.json_response([])
         return web.json_response([{"name": n, "enabled": True} for n in agent_mcps])
@@ -796,11 +841,12 @@ async def _probed_rows(servers: list[Any], overlapped_shutdown: bool) -> list[di
     global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
     builtin = await asyncio.to_thread(_builtin_mcp_server_names)
+    app_owned = await asyncio.to_thread(_app_owned_mcp_servers)
     result: list[dict[str, Any]] = []
     for s in servers:
         d = s.to_dict()
         spec = global_mcps.get(s.name, {})
-        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
+        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin, app_owned)
         if isinstance(spec, dict) and spec.get("disabledTools"):
             d["disabledTools"] = spec["disabledTools"]
         result.append(d)

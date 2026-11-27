@@ -104,6 +104,12 @@ function pruneStagedScopes(servers: McpServer[], prev: Record<string, PendingCha
       p = { scopes }
       dropped = true
     }
+    // An app's server cannot be uninstalled from here either: the rebuild writes
+    // it back from the app's manifest, so a restored draft's uninstall is dropped.
+    if (s?.app && p.uninstall) {
+      p = { scopes: p.scopes ?? {} }
+      dropped = true
+    }
     if (s && (p.uninstall || hasPendingScopeChange(s, p))) next[name] = p
     else dropped = true
   }
@@ -1132,6 +1138,14 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         <InfoTip text={i18nT('pages.overview.mcpTab.builtin_help')} placement="top" />
                       </span>
                     )}
+                    {s.app && (
+                      <span className="inline-flex items-center gap-1">
+                        <Badge variant="muted" className="text-[10px] px-1.5 py-0.5 font-body" style={{ color: 'var(--text)' }} data-testid="mcp-app-owned-chip">
+                          {i18nT('pages.overview.mcpTab.app_owned', { app: s.app })}
+                        </Badge>
+                        <InfoTip text={i18nT('pages.overview.mcpTab.app_owned_help', { app: s.app })} placement="top" />
+                      </span>
+                    )}
                     {managedProvider && (onManagedProviderClick ? (
                       <button
                         type="button"
@@ -1521,8 +1535,10 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           included -- so a greyed-out button would lie about it. The
                           hover text says exactly that; a re-enable stays out (a
                           separate decision), but a removal the user asks for is not
-                          a re-enable. */}
-                      {s.builtin !== true && (
+                          a re-enable. Not on an app's server: the rebuild writes it
+                          back from the app's manifest, so the chip says which app
+                          to remove instead. */}
+                      {s.builtin !== true && !s.app && (
                         <Btn danger onClick={() => stageUninstall(s.name)} title={disabledInConfig ? i18nT('pages.overview.mcpTab.uninstall_disabled_in_config_help') : undefined}>{i18nT('pages.overview.mcpTab.uninstall')}</Btn>
                       )}
                     </div>

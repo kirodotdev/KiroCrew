@@ -88,6 +88,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # mcp_identity_trusted: dropping it revokes the verified-identity
         # half (child_mcp_identity_trusted) for every crossing event.
         raw_params_trusted=e.raw_params_trusted,
+        # The transports refuse such a request before it is yielded; kept so a
+        # consumer never reads a contradicted call as an ordinary one.
+        tool_call_id_reused=e.tool_call_id_reused,
         shell_classified=e.shell_classified,
         # Dropping this would let a KAS spawn reach the prompt unvetted
         # against the spawn policy on this surface.

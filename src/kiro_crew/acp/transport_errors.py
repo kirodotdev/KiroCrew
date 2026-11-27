@@ -41,6 +41,11 @@ from kiro_crew.acp.image_dimension_wedge import (
     format_many_image_dimension_message,
     is_many_image_dimension,
 )
+from kiro_crew.acp.malformed_request_errors import (
+    _RE_MALFORMED_REQUEST,
+    ADAPTER_INVALID_JSON_BODY_TEXT,
+    is_adapter_invalid_json_body,
+)
 from kiro_crew.acp.model_registry_errors import (
     MODEL_REGISTRY_UNAVAILABLE_TEXT,
     is_model_registry_unavailable,
@@ -1047,20 +1052,6 @@ _RE_GENERATE_FAILED = re.compile(r"failed to generate a response", re.IGNORECASE
 # so the two branches can word their guidance for the moment each one fails.
 _RE_PROCESS_FAILED = re.compile(r"failed to process the request", re.IGNORECASE)
 
-# kiro-cli's structural rejection of a payload the backend could not parse:
-# "Improperly formed request". This string has NO source-side handling and
-# passes through the unknown-shape branch verbatim, so the user gets
-# the raw provider text with no repair affordance. This is a DETERMINISTIC
-# rejection (the payload was rejected for its shape, not a momentary backend
-# fault), so retrying the identical payload can only reproduce the same
-# rejection: it is TERMINAL (non-retryable). Matched against the provider `data`
-# field only (like model-unavailable / generate-failed), so a stray echo of the
-# phrase in the JSON-RPC `message` cannot flip an unrelated error into this
-# branch. Drives BOTH _format_acp_error (repair guidance) and
-# _is_transient_raw_error (terminal verdict) so wording and retry-eligibility
-# never drift.
-_RE_MALFORMED_REQUEST = re.compile(r"[Ii]mproperly formed request", re.IGNORECASE)
-
 # kiro-cli's deterministic context-window rejection. It can arrive before the
 # first model event, when a custom agent's prompt, resources, and MCP schemas
 # already fill the window, or mid-conversation, when accumulated history does.
@@ -1122,7 +1113,8 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     wording. :class:`AcpError` carries this verdict (``.transient``) to the
     retry layer (``llm_helpers``, ``chat_runner``). Precedence:
     unentitled-model(terminal) → usage-limit(terminal) →
-    malformed-request(terminal) → context-window-overflow(terminal) →
+    malformed-request(terminal) → adapter invalid-JSON-body(terminal) →
+    context-window-overflow(terminal) →
     unsupported-image(terminal) → oversized-request(terminal) →
     adapter input-too-long(terminal) → request-size-exceeded(terminal) →
     model-unavailable → throttle →
@@ -1168,6 +1160,8 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
         # fall-through, and so a future transient marker added below cannot
         # accidentally match malformed-request wording.
         return False
+    if is_adapter_invalid_json_body(message):
+        return False  # the claude adapter's unparsable body: the same history every time
     if is_many_image_dimension(data):
         # Terminal on this conversation: an image already in the native history
         # exceeds the provider's 2000px many-image cap, so replaying the same
@@ -1277,7 +1271,9 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
     *haystack* is the message text (formatted or raw); *data* is the raw JSON-RPC
     ``error.data`` field when the caller has it (defaults to *haystack*), because
     the malformed-request and model-unavailable patterns are matched against the
-    provider's own field only, never against a phrase echo in ``message``.
+    provider's own field only, never against a phrase echo in ``message``. The
+    one exception is the claude adapter's invalid-JSON-body refusal, which only
+    ever rides in ``message`` and is read from *haystack*, anchored at its start.
 
     Precedence mirrors :func:`_is_transient_raw_error` exactly: usage-limit →
     malformed-request → model-unavailable → throttle → credential-propagation →
@@ -1291,7 +1287,7 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
     data_field = text if data is None else data
     if _RE_USAGE_LIMIT.search(text):
         return ProviderErrorClass(PROVIDER_ERROR_USAGE_LIMIT, False, "usage limit")
-    if _RE_MALFORMED_REQUEST.search(data_field):
+    if _RE_MALFORMED_REQUEST.search(data_field) or is_adapter_invalid_json_body(text):
         return ProviderErrorClass(PROVIDER_ERROR_MALFORMED_REQUEST, False, "malformed request")
     if _RE_MODEL_UNAVAILABLE.search(data_field) or _RE_MODEL_TEMP_UNAVAILABLE.search(data_field):
         return ProviderErrorClass(PROVIDER_ERROR_MODEL_UNAVAILABLE, True, "model unavailable")
@@ -1487,6 +1483,8 @@ def _format_acp_error_worded(
                 "tools already fill the window, so reduce them."
                 f"{req_id_suffix}"
             )
+        elif is_adapter_invalid_json_body(message):
+            formatted = f"{ADAPTER_INVALID_JSON_BODY_TEXT}{req_id_suffix}"
         elif _RE_ADAPTER_INPUT_TOO_LONG.search(message):
             # The provider's sentence first (it is what the CLI prints), then
             # the fix. Surface-blind like its kiro-cli sibling above: it names
@@ -1862,6 +1860,7 @@ def _raise_acp_error(
     if (
         _context_overflow
         or _RE_MALFORMED_REQUEST.search(raw_data_field)
+        or is_adapter_invalid_json_body(raw_message_field)
         or _image_format_unsupported
         or _image_dimension_wedge
         or _RE_OVERSIZED_REQUEST.search(raw_data_field)

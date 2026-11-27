@@ -31,6 +31,7 @@ import {
 } from '../apps/builtinRegistry'
 import { isValidAppId } from '../apps/appIdentity'
 import { AppIdentityProvider, useAppIdentity, useTrustedAppId } from '../app-sdk/identity'
+import { wheelCopyDrift } from './shippedWheelCopies'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -57,8 +58,10 @@ describe('builtin registry appIds', () => {
   const coreRoutes = Object.keys(BUILTIN_COMPONENT_REGISTRY)
 
   it('reads a real manifest set, so the assertions below cannot pass vacuously', () => {
-    expect(manifests.length).toBeGreaterThan(10)
-    expect(coreRoutes.length).toBeGreaterThan(15)
+    const none = { added: [], dropped: [] }
+    expect(wheelCopyDrift(manifests.map((m) => m.name)), 'the shipped app.json walk').toEqual(none)
+    const appIds = coreRoutes.map((route) => BUILTIN_COMPONENT_REGISTRY[route].appId)
+    expect(wheelCopyDrift(appIds), 'the registry appIds').toEqual(none)
   })
 
   it('holds every appId to the storage-key charset', () => {

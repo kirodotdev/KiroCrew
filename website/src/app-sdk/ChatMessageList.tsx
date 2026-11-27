@@ -395,7 +395,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const wrapper = (children: React.ReactNode, isUser = false) => (
       <div key={key} className="px-4 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
         <div data-jump-target={jumpTarget} className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}${ring}`}>
-          <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
+          <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full pb-1 -mb-1 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
             {children}
           </div>
         </div>

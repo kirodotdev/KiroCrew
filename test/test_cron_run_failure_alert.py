@@ -228,6 +228,20 @@ class TestScriptFailureReachesTheUser:
         bodies = _bodies(gw)
         assert any("RuntimeError" in b and "data-home conflict" in b for b in bodies)
 
+    @pytest.mark.asyncio
+    async def test_reported_failure_is_told_without_an_exception_type(self) -> None:
+        """A failure the run reported is not a RuntimeError the script raised."""
+        gw = _make_gw()
+        job = _script_job()
+        reason = "Script exited with code 2. The end of its error output:\nwarning line 60"
+        await _run_script(gw, job, {"status": "error", "error": reason, "exit_code": 2})
+        assert job.last_error == reason
+        bodies = _bodies(gw)
+        assert any("Script exited with code 2" in b for b in bodies)
+        assert not any("RuntimeError" in b for b in bodies)
+        _, text = gw.slack.post_message.await_args.args
+        assert "RuntimeError" not in text
+
 
 class TestCommandFailureReachesTheUser:
     @pytest.mark.asyncio

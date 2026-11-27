@@ -12,7 +12,10 @@ A record is written once, when its turn has ended. A turn still running is held 
 memory only (:attr:`ResponseStore.live`), so a turn the gateway did not see end
 leaves nothing behind.
 
-Records are kept :data:`RETENTION_SECS`. A read treats an older one as absent and
+Records are kept :data:`RETENTION_SECS`: from the turn's own start, or, for a turn
+of a conversation, from when that conversation's latest turn was admitted or ended
+(:meth:`ResponseStore.keep_with`), so a conversation's turns are kept as long as the
+conversation is. A read treats an older one as absent and
 removes it; :meth:`ResponseStore.sweep` removes the others, at most once an hour,
 when a record is written.
 
@@ -30,6 +33,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 from typing import Any, Final
 
 from kiro_crew import platform_compat
@@ -37,6 +41,10 @@ from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retr
 from kiro_crew.dashboard.crew_api_approval_records import set_aside
 
 logger = logging.getLogger(__name__)
+
+# Serialize both stores' retention decisions and renewals in worker threads.
+# shortcut: one process; use a process-shared lock if gateways share a data home.
+RETENTION_LOCK: Final = RLock()
 
 #: The record kind under ``member-records/``; one of ``member_records.RECORD_KINDS``.
 RESPONSES_KIND: Final = "crew-api-responses"
@@ -97,6 +105,7 @@ class RecordNotDurable(OSError):
 
 
 _ID_RE: Final = re.compile(r"resp_[0-9a-f]{32}")
+_CONVERSATION_ID_RE: Final = re.compile(r"conv_[0-9a-f]{32}")
 _ITEM_ID_RE: Final = re.compile(r"msg_[0-9a-f]{32}")
 _SUFFIX: Final = ".json"
 #: What follows a record's file name once ``crew_api_approval_records.set_aside``
@@ -107,6 +116,11 @@ _ASIDE: Final = ".damaged-"
 def is_response_id(value: str) -> bool:
     """Whether *value* is an id this gateway gives a response."""
     return _ID_RE.fullmatch(value) is not None
+
+
+def is_conversation_id(value: Any) -> bool:
+    """Whether *value* is an id this gateway gives a conversation."""
+    return isinstance(value, str) and _CONVERSATION_ID_RE.fullmatch(value) is not None
 
 
 def _need(ok: bool, what: str) -> None:
@@ -124,7 +138,8 @@ def _is_item_id(value: Any) -> bool:
 
 # What follows holds a record to the one shape this module's writer gives it. Every
 # field a read serves is one of three kinds, and a read route relies on that:
-#   fixed    an id of this gateway's shape, a number, or one of the values named here;
+#   fixed    an id of this gateway's shape (the turn's, an item's, the conversation's),
+#            a number, or one of the values named here;
 #   text     ``text``, ``message`` and the stream's ``deltas``: free text, which a
 #            read redacts;
 #   as sent  ``metadata``, ``model`` and ``crew.ignored_parameters``: the owner's own.
@@ -153,6 +168,9 @@ _RESPONSE_KEYS: Final = frozenset(
         "crew",
     }
 )
+#: The conversation a turn ran in, as ``{"id": "conv_..."}``. A ``Response`` kept by
+#: a build that knew no conversations has no such field.
+_CONVERSATION_KEY: Final = "conversation"
 
 
 def _check_part(part: Any, kind: str) -> None:
@@ -190,7 +208,18 @@ def _check_item(item: Any, roles: tuple[str, ...], kind: str) -> None:
 
 def _check_response(response: Any, response_id: str) -> None:
     """A ``Response`` as ``POST /v1/responses`` builds it for a turn that ended."""
-    _need(isinstance(response, dict) and set(response) == _RESPONSE_KEYS, "response")
+    _need(
+        isinstance(response, dict) and set(response) - {_CONVERSATION_KEY} == _RESPONSE_KEYS,
+        "response",
+    )
+    if _CONVERSATION_KEY in response:
+        conversation = response[_CONVERSATION_KEY]
+        _need(
+            isinstance(conversation, dict)
+            and set(conversation) == {"id"}
+            and is_conversation_id(conversation["id"]),
+            "response conversation",
+        )
     error, cut, crew = response["error"], response["incomplete_details"], response["crew"]
     metadata = response["metadata"]
     _need(
@@ -399,10 +428,45 @@ class ResponseStore:
             # RecursionError: a file nested deeper than the parser goes.
             self._set_aside(path)
             return None
-        if self._expired(record["created_at"]):
-            path.unlink(missing_ok=True)
-            return None
+        with RETENTION_LOCK:
+            kept_from = record["created_at"]
+            if "conversation" in record["response"]:
+                # Read the file's current retention time while renewal is excluded.
+                try:
+                    kept_from = max(kept_from, path.stat().st_mtime)
+                except FileNotFoundError:
+                    return None
+            if self._expired(kept_from):
+                path.unlink(missing_ok=True)
+                return None
         return record
+
+    def discard(self, response_id: str) -> None:
+        """Remove the record of *response_id*, so the turn reads as one not kept."""
+        if is_response_id(response_id):
+            with RETENTION_LOCK:
+                self._path(response_id).unlink(missing_ok=True)
+
+    def keep_with(self, response_ids: list[str], latest_turn_at: float) -> None:
+        """Keep the records of a conversation's turns as long as the conversation.
+
+        *latest_turn_at* is when the conversation's latest turn was admitted or ended,
+        the moment its own retention counts from. It becomes each file's time, which :meth:`load`
+        and :meth:`sweep` read a conversation turn's age from. A file's time is only
+        ever moved later. A record that is gone is skipped. A time that cannot be set
+        raises its ``OSError``: the caller then does not move the conversation's own
+        time later, so no turn's record goes before its conversation does.
+        """
+        with RETENTION_LOCK:
+            for response_id in response_ids:
+                if not is_response_id(response_id):
+                    continue
+                path = self._path(response_id)
+                try:
+                    if path.stat().st_mtime < latest_turn_at:
+                        os.utime(path, (latest_turn_at, latest_turn_at))
+                except FileNotFoundError:
+                    continue
 
     def set_aside(self, response_id: str) -> None:
         """Move the record of *response_id* out of the way: no answer could be built
@@ -456,9 +520,10 @@ class ResponseStore:
             if entry.name != name and not aside:
                 continue
             try:
-                if self._expired(entry.stat(follow_symlinks=False).st_mtime):
-                    os.unlink(entry.path)
-                    removed += 1
+                with RETENTION_LOCK:
+                    if self._expired(os.stat(entry.path, follow_symlinks=False).st_mtime):
+                        os.unlink(entry.path)
+                        removed += 1
             except OSError:
                 continue
         return removed

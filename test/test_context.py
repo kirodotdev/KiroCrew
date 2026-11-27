@@ -985,10 +985,11 @@ class TestContextBuilder:
         """A resumed session (ACP session/load restored native history) must
         NOT re-inject the full session context — the restored transcript
         already contains the original session-start injection. Only the
-        minimal header (date/identity) plus a resume marker is injected."""
+        minimal header (date/identity) plus a resume marker is injected. The
+        owner's preferences are rules, like the lessons, so they are re-sent."""
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)
-        store.write("# Memory\n\nUser likes lobsters.")
+        store.write("# Memory\n\nUser likes lobsters.\n\n# Active Projects\n\n- Otter rollout\n")
         builder = ContextBuilder(
             memory=store,
             skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
@@ -996,7 +997,8 @@ class TestContextBuilder:
         msg, _ = builder.build_message("hello", is_new_session=True, resumed=True)
         assert "[SESSION RESUMED" in msg, "resume marker missing"
         assert "[AGENT SYSTEM PROMPT]" not in msg, "persona must not be re-injected"
-        assert "lobsters" not in msg, "memory must not be re-injected"
+        assert "Otter rollout" not in msg, "memory activity must not be re-injected"
+        assert "lobsters" in msg, "the owner's preferences are re-sent"
         assert "[CURRENT DATE]" in msg, "minimal date header missing"
         assert "[CRITICAL RULES" in msg, "UI-contract rules must be re-anchored on resume"
         assert "hello" in msg

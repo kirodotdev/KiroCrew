@@ -54,8 +54,8 @@ async function restoreButton(restoreValue: string): Promise<HTMLElement> {
   renderWithProviders(<MemoryRecordsEditor store="member-review" privateMemory />)
   fireEvent.click(await screen.findByRole('button', { name: 'View details' }))
   const detail = screen.getByRole('dialog', { name: 'Memory details' })
-  const older = (await within(detail).findAllByText('Recorded change'))[1].closest('details')!
-  fireEvent.click(within(older).getByText('Recorded change').closest('summary')!)
+  const older = (await within(detail).findAllByText(/^(Edited|Created)$/))[1].closest('details')!
+  fireEvent.click(within(older).getByText(/^(Edited|Created)$/).closest('summary')!)
   return within(older).getByRole('button', { name: /^Restore / })
 }
 

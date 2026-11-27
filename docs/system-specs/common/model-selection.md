@@ -629,6 +629,19 @@ the claude backend advertised that alias, so the adapter resolves its own curren
 model rather than the registry's versioned id. With a cold cache, or a backend that
 advertises only versioned ids, the registry fold applies.
 
+Every passthrough alias is also listed on a registry row (`haiku` on
+`haiku-5.5-1m`, as `opus` and `sonnet` are on their rows), and that row answers
+what the bare spelling cannot. It carries the alias's `supports_effort`: a
+version-less `haiku` has no version for `effort.haiku_supports_effort` to read, so
+the row that owns the alias decides, and a Haiku spelling no row owns stays
+refused. And it makes the versioned spellings (`claude-haiku-5.5`,
+`claude-haiku-5-5`) the claude backend's own vocabulary, so a pin spelled that way
+stays in scope on claude instead of being read as chosen for kiro, translates to
+the row's provider id, and reaches an adapter that advertises only the alias as
+`haiku` through the version-less-alias fallback above. Without the row the two
+checks disagree: the alias pins but drops the effort, and the versioned id keeps
+the effort but is scoped out.
+
 Three more sites apply the same rule on the wire, and one on the picker:
 `AcpClient._apply_startup_model`, `apply_configured_model` for a session on a
 shared runtime (above), the warm-pool post-claim switch in `session_allocation.py`
@@ -753,6 +766,21 @@ its own once the cache refreshes with a list that carries it.
   the dashboard resets the session so a cold start runs the inherited level or none.
   The dashboard's clear passes `every_model=True`, so a live clear also drops the
   levels stored for models the session ran before, as the reset would.
+- A Default the dashboard records without that live clear still reaches kiro-cli,
+  which reads its level from the workspace `cli.json` at spawn. Mid-turn, the
+  route defers the push but runs `forget_effort` at once: the stored levels and
+  the model's `cli.json` entry go, with no RPC under the turn, and the session's
+  recorded override drops. With no live session (or a live clear that raised, a
+  model that takes no effort, a rebind), it sets `slot._effort_overlay_clear`,
+  persisted beside the effort as `effort_overlay_clear`. The slot's next dashboard
+  spawn (`dashboard/effort_overlay_mark.py`) passes it as `clear_effort_overlay`,
+  bypasses the warm pool, and the provider's start removes that model's entry
+  before it reads the file back (`_clear_default_overlay_entry`); the mark drops
+  once that clear lands. A Bot chat's follow clear marks a chat that held a level
+  the same way.
+  An unpinned (`auto`) session is not covered: it has no model id until kiro-cli
+  names one at spawn. A chat that never picked a level is unmarked and still
+  mirrors the file.
 - The chat composer reads `GET /api/chat/slots/{slot}/selection-capabilities` for
   the active ACP session's backend, effort support, and ordered effort levels. A
   missing session answers `known: false`. Where the level rides the model
@@ -766,7 +794,9 @@ its own once the cache refreshes with a list that carries it.
   30 seconds, and a model or agent switch invalidates it immediately. Where the
   harness carries a session option (goose, pi) or a model pair (codex), a live
   session on that harness runs a model of its own, and its levels can follow that
-  model. It reports a definite `false` only when its build advertises no effort
+  model. The session read is the crew's own (a slot that picked that crew, never a
+  template slot of the same name), else the newest on that harness; a template
+  slot reads the newest. It reports a definite `false` only when its build advertises no effort
   option. An option offering `off` alone, or no level, reports `null` with no
   levels: that is the other session's model speaking (goose does this per model).
   A pair-id harness with the option reports `effort_supported: null` and keeps

@@ -48,7 +48,7 @@ from kiro_crew.apps.manager_records import (
 from kiro_crew.apps.manager_tree import _check_path_safety, gateway_data_dir_obstruction
 from kiro_crew.apps.manifest import app_name_error
 from kiro_crew.apps.point_grants import grant_source
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.pinned_fs import supports_pinned_walk
 from kiro_crew.platform import current_context, safe_context_call
@@ -509,6 +509,16 @@ def _adoption_pin_names() -> frozenset[str]:
         return frozenset()
 
 
+def builtin_approved_grants(grants: dict[str, list[str]] | None) -> dict[str, list[str]]:
+    """The approved set a built-in stores at every start: everything its copy declares.
+
+    *grants* is ``point_grants.grant_source`` of the wheel copy. A record adopted once
+    that copy is gone is carried from the same set of the copy its pin row froze
+    (``builtin_adoption_baseline``), so both paths end with the same grants.
+    """
+    return _declared_grant_entries(grants)
+
+
 def _app_declares_backend(app_data: dict[str, Any]) -> bool:
     """Whether a manifest declares a backend the gateway proxy can reach.
 
@@ -811,7 +821,7 @@ def register_builtin_apps() -> int:
             # A built-in approves what it SHIPS, stored here at every start so the set
             # follows an upgrade: the app.json copy below is agent-writable and grants
             # nothing it adds.
-            _write_approved_grants(name, _declared_grant_entries(grant_source(app_data)))
+            _write_approved_grants(name, builtin_approved_grants(grant_source(app_data)))
             _write_installed(name, existing)
         else:
             # Use defaultEnabled from definition (defaults to True for backward compat)
@@ -853,7 +863,7 @@ def register_builtin_apps() -> int:
             # A built-in approves what it ships (see the branch above). Stored with the
             # first record, so one registered after the one-time import is not left
             # approving nothing.
-            _write_approved_grants(name, _declared_grant_entries(grant_source(app_data)))
+            _write_approved_grants(name, builtin_approved_grants(grant_source(app_data)))
             _write_installed(name, meta)
 
         # Persist manifest so dashboard can show full info
@@ -1099,7 +1109,7 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
     try:
         for path in (manifest_path, installed_path):
             if path.is_file():
-                os.replace(path, path.with_name(path.name + RETIRED_RECORD_SUFFIX))
+                replace_with_retry(path, path.with_name(path.name + RETIRED_RECORD_SUFFIX))
     except OSError as exc:
         logger.error("cleanup_migrated_builtin: failed to clean up %s: %s", name, exc)
         return AppResult(

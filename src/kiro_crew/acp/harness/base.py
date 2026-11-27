@@ -841,7 +841,7 @@ class HarnessAdapter(LaunchAdapter):
         *,
         agent_capabilities: dict[str, Any],
     ) -> tuple[dict[str, Any], str | None]:
-        """The ``session/new`` / ``session/load`` params to send, and the agent to activate.
+        """The ``session/new`` / restore params to send, and the agent to activate.
 
         Asked after the runtime built the request and before it goes out. This
         default sends what the runtime built and activates the agent the caller asked

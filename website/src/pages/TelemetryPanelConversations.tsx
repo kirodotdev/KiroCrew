@@ -4,7 +4,7 @@
  *  occupancy and headroom colour thresholds they read. Both name and link a
  *  conversation row through the same two rules, `sessionLabel` and
  *  `linksToConversation`. */
-import React, { useContext, useMemo } from 'react'
+import React, { useContext, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, Coins } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -12,6 +12,7 @@ import { api } from '../api/client'
 import ErrorNotice from '../components/ErrorNotice'
 import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
+import SimpleSelect from '../components/SimpleSelect'
 import TruncatedText from '../components/TruncatedText'
 import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { usePersistedBool } from '../hooks/usePersistedBool'
@@ -89,7 +90,7 @@ const headroomColor = (turns: number): string | undefined =>
 
 // ── Spend ──────────────────────────────────────────────────────
 
-type SpendGroup = 'session' | 'category' | 'model'
+type SpendGroup = 'session' | 'category' | 'model' | 'purpose'
 
 /** One row of GET /api/usage/turns — the same shard rows the totals above
  *  aggregate, returned individually. Every numeric field is optional: the
@@ -413,7 +414,32 @@ function categoryLabel(name: string): string {
   return name === 'bg' ? i18nT('pages.telemetryPanel.category_bg') : name
 }
 
-function shareCols(first: string, total: number, unit: SpendUnit, firstTip?: string): Col<CostRow>[] {
+/**
+ * The Purpose rows are the backend's four fixed names, so each gets a translated
+ * label; a name this build does not know renders as itself.
+ */
+function purposeLabel(name: string): string {
+  switch (name) {
+    case 'turn':
+      return i18nT('pages.telemetryPanel.purpose_turn')
+    case 'helper':
+      return i18nT('pages.telemetryPanel.purpose_helper')
+    case 'automation':
+      return i18nT('pages.telemetryPanel.purpose_automation')
+    case 'unknown':
+      return i18nT('pages.telemetryPanel.purpose_unknown')
+    default:
+      return name
+  }
+}
+
+function shareCols(
+  first: string,
+  total: number,
+  unit: SpendUnit,
+  firstTip?: string,
+  label: (name: string) => string = categoryLabel,
+): Col<CostRow>[] {
   return [
     {
       key: 'name',
@@ -424,7 +450,7 @@ function shareCols(first: string, total: number, unit: SpendUnit, firstTip?: str
       tip: firstTip,
       left: true,
       sort: r => r.name,
-      render: r => categoryLabel(r.name),
+      render: r => label(r.name),
     },
     {
       key: 'credits',
@@ -453,7 +479,7 @@ function shareCols(first: string, total: number, unit: SpendUnit, firstTip?: str
   ]
 }
 
-const SPEND_GROUPS = ['session', 'category', 'model'] as const
+const SPEND_GROUPS = ['session', 'category', 'model', 'purpose'] as const
 
 /**
  * How many rows a spend block plots before the remainder folds into one row.
@@ -602,15 +628,27 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
   // the two cards can be grouped, sorted and opened independently. A window
   // billed in one unit keeps the keys it always had, whatever that unit is.
   const keySuffix = nested ? ':usd' : ''
-  const [group, setGroup] = usePersistedChoice<SpendGroup>(
+  const [chosenGroup, setGroup] = usePersistedChoice<SpendGroup>(
     `telemetry:spend-group${keySuffix}`,
     SPEND_GROUPS,
     'session',
   )
+  // An older gateway sends no by_purpose, so the Purpose choice is not offered and
+  // a remembered one falls back to the session grouping.
+  const hasPurpose = c.by_purpose !== undefined
+  const group: SpendGroup = chosenGroup === 'purpose' && !hasPurpose ? 'session' : chosenGroup
   // Closed on first paint. The table answers "which row exactly", which is a
   // second question: the blocks above it already say where the credits went, and
   // opening on 45 rows puts the answer below the fold.
   const [tableOpen, setTableOpen] = usePersistedBool(`telemetry:spend-table-open${keySuffix}`, false)
+  // '' is every origin. The options are the window's own origins (`by_category`,
+  // grouped over every row), so an app's sessions can be picked out of the table
+  // by the same name its bar carries. A choice the window no longer holds reads
+  // as no filter rather than as an empty table.
+  const [origin, setOrigin] = useState('')
+  const origins = c.by_category.map(r => r.name)
+  const convos =
+    origin && origins.includes(origin) ? c.conversations.filter(v => v.category === origin) : c.conversations
   const bands = c.context_bands
   const unit = spendUnit(c)
   const fmtAmount = (v: number) => fmtSpend(v, unit)
@@ -761,18 +799,38 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
               </span>
               <SegmentedControl<SpendGroup>
                 collapse={false}
+                // Content-sized segments: one row at desktop widths. Four groupings
+                // in the longer locales outgrow a phone-width card, whose overflow
+                // is hidden, so wrap there rather than clip.
+                wrap="hug"
                 value={group}
                 onChange={setGroup}
                 segments={[
                   { key: 'session', label: i18nT('pages.telemetryPanel.session_col') },
                   { key: 'category', label: i18nT('pages.telemetryPanel.category_col') },
                   { key: 'model', label: i18nT('pages.telemetryPanel.model_col') },
+                  ...(hasPurpose
+                    ? [{ key: 'purpose' as const, label: i18nT('pages.telemetryPanel.purpose_col') }]
+                    : []),
                 ]}
               />
+              {group === 'session' && origins.length > 1 && (
+                // Capped to the row so a long app name shrinks the trigger
+                // instead of pushing the table controls past a narrow pane.
+                <div className="min-w-0 max-w-full">
+                  <SimpleSelect
+                    options={['', ...origins]}
+                    optionLabels={[i18nT('pages.telemetryPanel.all_origins'), ...origins.map(categoryLabel)]}
+                    value={origins.includes(origin) ? origin : ''}
+                    aria-label={i18nT('pages.telemetryPanel.filter_by_origin')}
+                    onChange={setOrigin}
+                  />
+                </div>
+              )}
             </div>
             {group === 'session' ? (
               <DataTable<CostConvo>
-                rows={c.conversations}
+                rows={convos}
                 key={`telemetry-spend-conversation${keySuffix}`}
                 tableId={`telemetry-spend-conversation${keySuffix}`}
                 cols={convoCols(
@@ -787,16 +845,29 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
               />
             ) : (
               <DataTable<CostRow>
-                rows={group === 'model' ? c.by_model : c.by_category}
+                rows={
+                  group === 'model'
+                    ? c.by_model
+                    : group === 'purpose'
+                      ? (c.by_purpose ?? [])
+                      : c.by_category
+                }
                 key={`telemetry-spend-share${keySuffix}`}
                 tableId={`telemetry-spend-share${keySuffix}`}
                 cols={shareCols(
                   group === 'model'
                     ? i18nT('pages.telemetryPanel.model_col')
-                    : i18nT('pages.telemetryPanel.category_col'),
+                    : group === 'purpose'
+                      ? i18nT('pages.telemetryPanel.purpose_col')
+                      : i18nT('pages.telemetryPanel.category_col'),
                   c.credits,
                   unit,
-                  group === 'model' ? undefined : i18nT('pages.telemetryPanel.category_col_tip'),
+                  group === 'model'
+                    ? undefined
+                    : group === 'purpose'
+                      ? i18nT('pages.telemetryPanel.purpose_col_tip')
+                      : i18nT('pages.telemetryPanel.category_col_tip'),
+                  group === 'purpose' ? purposeLabel : categoryLabel,
                 )}
                 rowKey={r => r.name}
                 defaultSort="credits"
@@ -876,10 +947,12 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
  * no category, and link all of them.
  */
 function linksToConversation(
-  convo: Pick<CostConvo, 'title' | 'category'> | undefined,
+  convo: Pick<CostConvo, 'title' | 'channel'> | undefined,
   navigable: string | undefined,
 ): boolean {
-  return !!convo?.title && !!navigable && convo.category === navigable
+  // The transport, not the origin: a dashboard chat an app opened is filed under
+  // `app:<name>` but still opens at /chat like any other dashboard chat.
+  return !!convo?.title && !!navigable && convo.channel === navigable
 }
 
 function sessionLabel(convo: CostConvo | undefined, slot: string): string {

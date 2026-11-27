@@ -56,6 +56,25 @@ APPROVAL_OWNER_OR_ASKER_TEXT = (
 APPROVAL_NOT_WAITING_TEXT = (
     "This approval isn't waiting for an answer any more, so nothing changed."
 )
+#: What a shared user's Trust press on a native or transport card says once it is
+#: answered. The grant covers that person's own turns in ``{where}``, never the
+#: session: the owner's turns, other people's and helper agents still ask.
+SHARED_TRUST_ON_TEXT = (
+    "🔓 Trusted for your messages in {where}: their tools run without asking. "
+    "Helper agents still ask. "
+    "Blocked tools stay blocked. "
+    "Type `!trust off` to stop."
+)
+#: ``{where}`` for a thread, and for a 1:1 DM that runs as one session
+#: (``slack.dm_single_session``), where the grant covers every thread of the DM.
+SHARED_TRUST_IN_THREAD = "this thread"
+SHARED_TRUST_IN_FLAT_DM = "this whole DM"
+#: The same press where the thread can hold no such grant (it runs a dashboard
+#: chat's or a cron's session, or a ``permission_mode`` rule denies ``trust``).
+SHARED_TRUST_ONE_TOOL_TEXT = (
+    "✅ Approved this one tool. Trust is not on for your messages here, "
+    "so the next tool asks again."
+)
 
 
 def _refused_press_text(key: str) -> str:
@@ -154,11 +173,29 @@ async def _handle_tool_approval(
             "trust_tool": "🤝 Trusted",
             "reject_tool": "🚫 Rejected",
         }.get(effective_action, "")
-        if label:
+        # A shared user's Trust press on a native prompt covers their own turns in
+        # the thread, or only the one tool: say which. The card goes once its turn
+        # resumes, so the presser is also told privately. A linked dashboard slot's
+        # card answers ``trust_tool``: its session's Trust, as the owner's press.
+        own_notice = ""
+        if action_id == "trust_tool" and is_shared_listed(user_id):
+            # The native path keys a turn by its thread, a single-session DM too.
+            own_notice = {
+                "trust_own_turns": SHARED_TRUST_ON_TEXT.format(where=SHARED_TRUST_IN_THREAD),
+                "approve_tool": SHARED_TRUST_ONE_TOOL_TEXT,
+            }.get(effective_action, "")
+        if own_notice or label:
             try:
-                await _orch.slack.update_message(channel, msg_ts, text=label)
+                await _orch.slack.update_message(channel, msg_ts, text=own_notice or label)
             except Exception:
                 pass
+        if own_notice:
+            try:
+                await _orch.slack.post_ephemeral(
+                    channel, user_id, own_notice, thread_ts=thread_ts or None
+                )
+            except Exception:
+                logger.debug("Failed to send the shared Trust notice", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

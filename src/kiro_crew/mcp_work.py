@@ -74,11 +74,12 @@ from types import ModuleType
 from typing import Any
 from urllib.parse import urlencode
 
-# Same cross-module reuse as ``mcp_dashboard``: the authenticated loopback client
-# to the gateway lives in ``mcp_core``, and its heavy dependencies are
-# function-local so importing it here is cheap.
+# The authenticated loopback client to the gateway lives in ``mcp_core_parts``.
+# Import it from there, not from the ``mcp_core`` facade: the facade loads the
+# whole core server, about 460 more modules and 23 MB in every chat.
 from kiro_crew import work_preview, work_verify
-from kiro_crew.mcp_core import _get, _post, _resolve_session_key, require_strict_session_key
+from kiro_crew.mcp_core_parts.gateway import _get, _post
+from kiro_crew.mcp_core_parts.identity import _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (

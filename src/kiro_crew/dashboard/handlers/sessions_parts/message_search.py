@@ -31,6 +31,7 @@ from kiro_crew.history import (
     transcript_stem,
 )
 from kiro_crew.history_search import search_candidate_cap, search_coverage
+from kiro_crew.search_shown_text import shown_text
 from kiro_crew.security import redact
 from kiro_crew.validation import sanitize_string
 
@@ -137,10 +138,11 @@ def message_hits(
 ) -> tuple[list[dict], int]:
     """``(hits, hit_count)`` for the messages of one transcript that match *query*.
 
-    A message is a hit when its string ``content`` passes the session search's own
-    gate on its own (``needles_match_text``: every required term, the adjacency
-    floor, no excluded term), its role is in *roles*, and, with *since*, its ``ts``
-    is not older. ``index`` is the message's position in *messages*, which callers
+    A message is a hit when its string ``content``, redacted the way its excerpt
+    shows it, passes the session search's own gate on its own
+    (``needles_match_text``: every required term, the adjacency floor, no
+    excluded term), its role is in *roles*, and, with *since*, its ``ts`` is not
+    older. ``index`` is the message's position in *messages*, which callers
     pass as the paging corpus (``read_messages_chained_full``). Hits are in
     transcript order; only the first *max_hits* carry an excerpt, all are counted.
     """
@@ -158,15 +160,16 @@ def message_hits(
             at = _iso_epoch(msg.get("ts"))
             if at is not None and at < since:
                 continue
+        # Redacted whole before it is matched and cut: a credential split by the
+        # excerpt's edge loses the shape the redactor recognizes. Memoized, so a
+        # message read again is not redacted again.
+        text = shown_text(content)
         if not history_search.needles_match_text(
-            query.needles, content.casefold(), query.adjacency_floor
+            query.needles, text.casefold(), query.adjacency_floor
         ):
             continue
         count += 1
         if len(hits) < max_hits:
-            # Redacted whole before it is cut: a credential split by the excerpt's
-            # edge loses the shape the redactor recognizes.
-            text = redact(content)
             anchor = history_search.tiered_first_hit([text], query.tiers)
             pos, needle = (anchor[1], anchor[2]) if anchor else (0, "")
             hit: dict[str, Any] = {

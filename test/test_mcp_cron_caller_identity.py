@@ -302,6 +302,41 @@ def test_the_channel_default_also_comes_from_the_caller_block() -> None:
     assert job is not None and job.channel == "C0FROMBLOCK"
 
 
+def test_a_non_slack_channel_is_not_the_default() -> None:
+    """``channel`` holds a Slack channel id, so a WeCom caller's id is never defaulted.
+
+    The direct dispatch applies the same default as the gateway hop; a job stored with
+    ``wecom:someuser`` as its channel would skip delivery by origin.
+    """
+    _as_session("wecom:kirocrew:direct:someuser", channel="wecom:someuser")
+    job_id = _add_job(f"chan-{uuid.uuid4().hex[:8]}")
+
+    job = CronService(base_dir=mcp_cron.config_dir()).get_job(job_id)
+    assert job is not None and job.channel is None
+
+
+def test_a_non_slack_channel_is_not_forwarded_as_the_default(monkeypatch) -> None:
+    """The gateway hop forwards the default as an argument the server validates.
+
+    ``wecom:someuser`` can never pass ``channel``'s check, so forwarding it refused
+    every ``cron_add`` from a WeCom chat before a job existed.
+    """
+    forwarded: dict = {}
+
+    def fake_post(path, payload, session_key=None):
+        forwarded.update(payload["arguments"])
+        return {"result": "Added job abc"}
+
+    monkeypatch.setattr("kiro_crew.mcp_core._post", fake_post)
+    _as_session("wecom:kirocrew:direct:someuser", channel="wecom:someuser")
+
+    result = mcp_cron._call_tool("cron_add", {"name": "remind", "message": "go", "every": 120})
+
+    assert result == "Added job abc"
+    assert "channel" not in forwarded
+    mcp_cron._validate_args("cron_add", forwarded)
+
+
 # 5: ownerless rows, recorded owners and the audit trail
 
 

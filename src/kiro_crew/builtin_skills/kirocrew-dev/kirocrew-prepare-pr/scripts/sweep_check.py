@@ -686,7 +686,8 @@ def run(base, git_dir=None, cwd=None, prior_counts=None, blocked_pushes=None):
         return EXIT_ENV
     rc, branch, _ = _git(["symbolic-ref", "--short", "-q", "HEAD"], cwd)
     branch_ref = "refs/remotes/origin/" + branch.strip() if rc == 0 and branch.strip() else ""
-    rc, names, _ = _git(["diff", "--name-only", "-z", base_ref, "HEAD"], cwd)
+    # What HEAD changes since it left the base: the base may have moved on since.
+    rc, names, _ = _git(["diff", "--name-only", "-z", base_ref + "...HEAD"], cwd)
     changed = {n for n in names.split("\0") if n}
 
     entries, parse_problems = parse_sweep(text)

@@ -10,7 +10,7 @@ describe('queued wait on an unreadable cgroup usage file', () => {
   })
 
   it('drops a cause it does not render, and any cause on another kind', () => {
-    expect(parseSubagentQueuedReason({ slot: 's', queued: 1, reason: 'low_memory', cause: 'host_read_unanswered' })?.cause)
+    expect(parseSubagentQueuedReason({ slot: 's', queued: 1, reason: 'low_memory', cause: 'lane_share' })?.cause)
       .toBeUndefined()
     expect(parseSubagentQueuedReason({ slot: 's', queued: 1, reason: 'memory_pressure', cause: UNREADABLE })?.cause)
       .toBeUndefined()

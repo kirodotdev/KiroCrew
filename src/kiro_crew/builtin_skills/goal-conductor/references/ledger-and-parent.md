@@ -34,6 +34,8 @@ each one's `title`, `acceptance`, `round`, your `decision`, the worker's reporte
 `status` and `summary`, its claimed `artifacts` and `pr`, your recorded `verdict`
 and `fails`, and its `state`. It is keyed to your session, it survives
 compaction, and it is the only place an item's acceptance condition lives.
+A `compact=true` or `item_id` read carries only the goal's first line (an
+ellipsis marks a cut); read with neither for the whole goal.
 The ledger files are a cache of the crew log: when a ledger call is refused with
 `cache_dirty`, or the ledger reads as damaged or missing, run
 `work_ledger_rebuild` (no arguments) to rebuild it from that record.

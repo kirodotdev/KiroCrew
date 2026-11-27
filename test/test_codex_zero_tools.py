@@ -50,8 +50,8 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     EVENT_PERMISSION_REQUEST,
-    METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
+    METHOD_SESSION_RESUME,
 )
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
 from kiro_crew.agent_sdk.capabilities import capabilities_for
@@ -324,7 +324,7 @@ class _Plane:
     def install(self, rt: AcpRuntime, stack: ExitStack) -> None:
         async def _send_and_await(method, params, timeout=None):
             self.methods.append(method)
-            return self._response if method in (METHOD_SESSION_NEW, METHOD_SESSION_LOAD) else {}
+            return self._response if method in (METHOD_SESSION_NEW, METHOD_SESSION_RESUME) else {}
 
         async def _send_request(method, params, **_kw):
             self.methods.append(method)
@@ -401,10 +401,10 @@ async def test_the_create_path_carries_the_flag_onto_the_handle(zero_tools):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("zero_tools", [True, False])
 async def test_the_load_path_carries_the_flag_onto_the_handle(zero_tools):
-    """``session/load`` re-declares the array, so a resumed session is governed by the
+    """``session/resume`` re-declares the array, so a resumed session is governed by the
     same parse as a new one."""
     rt = _codex_runtime()
-    # codex-acp advertises ``loadSession`` in its ``initialize`` answer.
+    # codex-acp advertises ``sessionCapabilities.resume`` in its ``initialize`` answer.
     rt._can_load_session = True
     plane = _Plane("sid-resumed")
     with ExitStack() as stack:
@@ -414,7 +414,7 @@ async def test_the_load_path_carries_the_flag_onto_the_handle(zero_tools):
         )
         handle = await rt.load_session("", "sid-resumed", cwd="/w", agent="kirocrew")
 
-    assert METHOD_SESSION_LOAD in plane.methods
+    assert METHOD_SESSION_RESUME in plane.methods
     assert METHOD_SESSION_NEW not in plane.methods
     assert handle.spec_zero_tools is zero_tools
 

@@ -34,6 +34,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_INVALID_NAME,
     DENY_CAUSE_POLICY,
     DENY_CAUSE_PROVENANCE_UNRETAINED,
+    DENY_CAUSE_REUSED_CALL_ID,
     DENY_CAUSE_SURFACE_POLICY,
     DENY_CAUSE_UNREADABLE_IDENTITY,
     STEER_NOTICE_BOUND_SECS,
@@ -172,6 +173,13 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "then reissue this one on its own; if its input is very large, split the "
         "work into smaller calls. If it is refused again, say so and stop with the "
         "reason.",
+    ),
+    DENY_CAUSE_REUSED_CALL_ID: (
+        "was refused by the Kiro Crew gateway because its call id was already used "
+        "by an earlier call with different arguments, so which call would run could "
+        "not be told",
+        "nothing judged the action itself. Reissue it as a new call; if it is "
+        "refused again, say so and stop with the reason.",
     ),
 }
 

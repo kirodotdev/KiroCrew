@@ -20,7 +20,8 @@ Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``, ``_child_env_names``,
 ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_mcp_json_names``,
-``_mcp_notifications``, ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
+``_mcp_notifications``, ``_mcp_ref_spec``, ``_mcp_report``, ``_mcp_spec_dropped``,
+``_native_skill_projection``,
 ``_pi_gate_nonce``, ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``,
 ``_spawn_work_dir``, ``_stub_session_token``, ``_work_dir``,
 ``member_context``.
@@ -44,6 +45,7 @@ from kiro_crew.acp.mcp_ref_guard import (
     warn_unresolved_server_refs,
     warn_unset_env_placeholders,
 )
+from kiro_crew.acp.mcp_session_report import BUCKET_CAP as MCP_REPORT_BUCKET_CAP
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.mcp_sign_in_probe import schedule_sign_in_probe
 from kiro_crew.acp.member_goal_mount import append_member_goal_server
@@ -1579,6 +1581,12 @@ def _begin_session_report(self: AcpClient, servers: Any) -> None:
     # failure, and recording it first would erase it.
     pruned, self._mcp_pruned = getattr(self, "_mcp_pruned", ()), ()
     omitted, self._mcp_pruned_omitted = getattr(self, "_mcp_pruned_omitted", 0), 0
+    # The spec writer's drops are left out of every attempt alike, so they are read,
+    # not consumed. The array never carries one, so none repeats a pruned name.
+    pruned = (*pruned, *getattr(self, "_mcp_spec_dropped", ()))
+    # One cap over both, with the overflow counted, as the prune counts its own.
+    omitted += max(0, len(pruned) - MCP_REPORT_BUCKET_CAP)
+    pruned = pruned[:MCP_REPORT_BUCKET_CAP]
     # Only a server the report admitted counts as configured for the ref guard:
     # a name the failed bucket refused must get no row anywhere.
     self._mcp_pruned_names = record_pruned(self._mcp_report, pruned, omitted)
@@ -1647,17 +1655,21 @@ def mcp_session_report(self: AcpClient) -> McpSessionReport:
     return self._mcp_report
 
 
-async def wait_for_declared_mcp(self: AcpClient, timeout: float) -> tuple[str, ...]:
+async def wait_for_declared_mcp(
+    self: AcpClient, timeout: float, skip: tuple[str, ...] = ()
+) -> tuple[str, ...]:
     """Hold until every server the agent spec declares has reported; never raises.
 
     The dedicated-transport twin of ``AcpSessionHandle.wait_for_declared_mcp``,
     for an unattended run before its first prompt: the init drain stops a second
-    after it starts, so a slow server can miss it. Returns the declared servers
-    that are not ready, in spec order; empty when all are.
+    after it starts, so a slow server can miss it. A server in *skip* is not
+    waited for. Returns the declared servers that are not ready, in spec order;
+    empty when all are.
     """
-    if self._mcp_report.declared_unreported() and timeout > 0:
+    waited = tuple(name for name in self._mcp_report.declared if name not in skip)
+    if self._mcp_report.unreported(waited) and timeout > 0:
         try:
-            await self._drain_notifications(duration=timeout, until_declared=True)
+            await self._drain_notifications(duration=timeout, until_declared=waited)
         except Exception:
             logger.debug("declared MCP wait failed", exc_info=True)
     return self._mcp_report.declared_not_ready()

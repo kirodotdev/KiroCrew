@@ -280,6 +280,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'developer.folder-conductor': ['folder parent chat', 'conductor at top of folder', 'folder lead chat'],
   'developer.jev-api-key': ['jev key', 'decision model key', 'jev token'],
   'developer.kas-sub-agents': ['kas subagents', 'engine sub-agents', 'in-engine subagents'],
+  'developer.kiro-managed-environments': ['sso', 'company login', 'single sign-on', 'idc portal', 'remote machine', 'cloud machine'],
   'developer.let-agents-control-your-other-sessions': ['agents message other sessions', 'cross session control', 'agents close my chats', 'session control tools'],
   'developer.mark-out-of-date-dashboard-fields': ['stale fields', 'outdated dashboard', 'stale dashboard fields'],
   'developer.mcp-sign-in-by-kiro-crew': ['mcp oauth', 'connect github mcp', 'mcp server login', 'sign in to mcp servers'],
@@ -292,11 +293,11 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'developer.send-pending-approvals-to-chat-apps': ['approvals in slack', 'approve from slack', 'approval notifications in chat apps'],
   'developer.session-environments': ['remote workspace', 'cloud workspace', 'coder', 'sprites', 'run a chat in a container'],
   'developer.shared-crew': ['share my crew', 'invite people', 'people tab', 'team crew', 'multi user'],
-  'developer.use-your-company-s-sign-in': ['sso', 'company login', 'single sign-on', 'idc portal'],
   'developer.visual-refresh': ['new look', 'new design', 'redesign', 'new ui'],
   'developer.wake-bots-to-update-out-of-date-fields': ['refresh stale fields', 'wake bots', 'update dashboard fields'],
   'developer.webhooks': ['webhook', 'incoming webhook', 'http hook', 'external triggers'],
   'developer.which-judge-answers': ['judge', 'pick a judge', 'judge choice', 'small model or decision model'],
+  'developer.worker-status-under-the-reply': ['worker status in chat', 'workers under the reply', 'see what workers are doing', 'conductor worker count'],
 
   // Display
   'display.command-completion': ['terminal autocomplete', 'shell completion', 'tab completion'],

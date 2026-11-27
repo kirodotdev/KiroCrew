@@ -11,7 +11,12 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
-from kiro_crew.slack.stream_window import CONTINUES_BELOW, stream_clock, stream_due_for_renewal
+from kiro_crew.slack.stream_window import (
+    CONTINUES_BELOW,
+    message_landed_since,
+    stream_clock,
+    stream_due_for_renewal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +26,14 @@ class StreamRenewal:
 
     slack: Any
     channel: str
+    thread_ts: str | None
     _finalized: bool
     _renewal_closed: bool = False
+    _text_since_step: bool = False
     _use_slack_stream: bool
     _stream_ts: str | None
     _stream_started_at: float
+    _stream_messages_noted: int | None
     _renewal: asyncio.Task | None
     _active_task_id: str
     _task_state: dict[str, tuple[str, str]]
@@ -43,13 +51,18 @@ class StreamRenewal:
             # cancellation can leave here.
             await asyncio.wait([renewal])
 
-    async def _renew_stream_if_due(self) -> None:
+    async def _renew_stream_if_due(self, *, step: bool = False) -> None:
         """Move to a fresh stream before Slack's 10-minute limit closes this one.
 
         Slack would close it itself and mark the running step's card as an error
         on a turn that is still going (``stream_window``). The running step is
         closed on the old message with a "continues below" title and opened
         again on the new one, so the reader sees it go on rather than fail.
+
+        A caller drawing a running step (``step``) also moves once a person's
+        message has landed in the thread below this stream, so the steps go on
+        under that message. Text never moves for one: an answer already being
+        written stays in one piece above it.
 
         One renewal at a time: a caller that comes while one is under way waits
         for it, so its card or text lands on the new message and a second
@@ -65,7 +78,17 @@ class StreamRenewal:
                 or self._renewal_closed
                 or not self._use_slack_stream
                 or not self._stream_ts
-                or not stream_due_for_renewal(self._stream_started_at, stream_clock())
+                or not (
+                    stream_due_for_renewal(self._stream_started_at, stream_clock())
+                    or (
+                        step
+                        # A rescue can release reply text before the tool timer stops.
+                        and not self._text_since_step
+                        and message_landed_since(
+                            self.channel, self.thread_ts, self._stream_messages_noted
+                        )
+                    )
+                )
             ):
                 return
             renewal = self._renewal = asyncio.ensure_future(self._renew_stream())
@@ -89,7 +112,7 @@ class StreamRenewal:
                 )
             except Exception:
                 logger.warning("Slack append_task failed closing a renewed stream", exc_info=True)
-        logger.info("Slack stream near its 10-minute limit — renewing")
+        logger.info("Renewing the Slack stream: its age, or a newer message below it")
         if await self._rotate_stream() and task_id:
             assert self._stream_ts is not None
             # Its held narration now finishes it there (``_finish_pending_step``).

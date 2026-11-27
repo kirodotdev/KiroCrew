@@ -29,6 +29,7 @@ import { withMemorySource } from '../../utils/agentLabel'
 import { harnessManagedNoteBackend, type useAutoCompactThreshold } from './autoCompact'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuidePredicate } from '../../guide/guidePredicates'
+import { appRegistryPrefetchHandlers } from '../appRegistryPrefetch'
 
 /* The context shelf under the composer: its measured width (which collapses
    the chips to icons) and the controls that stand on it -- app session
@@ -146,6 +147,8 @@ export function SessionControlChips({ sessionControls, shelfCompact, onSessionCo
       // host's outside-click closes the popover and the chip's toggle
       // then re-opens it — a flicker instead of a dismissal.
       data-session-control-chip=""
+      // Opening a control loads its app bundle, which needs the app registry.
+      {...appRegistryPrefetchHandlers}
       title={chipName}
       aria-label={chipName}
     >

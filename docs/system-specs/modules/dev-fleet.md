@@ -2541,6 +2541,21 @@ stale rather than certified against the post-build HEAD.
   there would report a freshly synced main venv as unbuilt, which reads as "the
   cutover failed". Every other worktree keeps the stamp requirement.
 
+**Provision's own dist check is stricter than `has_dist`.** `has_dist` keeps a
+dist it cannot verify (presence-only) so the Fleet view never hides one, but
+`build_dist` decides whether to skip the build with
+`_dist_serves_current_source`, which also rebuilds when the dist cannot carry the
+source a pod would run: `website/` has uncommitted or untracked changes
+(`git status --porcelain --untracked-files=normal -- website`, so a repo's
+`status.showUntrackedFiles` cannot hide a new file, and a checkout that names a
+`filter.<name>.clean` driver reads dirty without running it, per
+`update_governance.repo_exec_driver_reason`; the stamp names `HEAD:website`, not the
+working tree), or the dist's `build-id.json` carries an empty `websiteTree`,
+which `vite.config.ts` writes when it built from a dirty tree. Otherwise a
+dist built mid-edit would be kept by every later provision after the edits are
+committed, and the pod would serve the old bundle. With no resolvable `HEAD:website`
+it keeps the dist, as `has_dist` does.
+
 The venv/`node_modules` manifest lives INSIDE the git directory (`git rev-parse
 --git-path kirocrew-provision.json`, a per-worktree private path), not in the
 working tree, so it is invisible to `git status` / `_rebase_locked` / "Prune

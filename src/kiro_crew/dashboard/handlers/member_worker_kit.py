@@ -52,17 +52,30 @@ async def api_member_worker_kit(request: web.Request) -> web.Response:
             raise WorkerKitError("invalid_json", 400) from None
         if request.method == "POST":
             return web.json_response(await drained_to_thread(mate_worker_kit.preview, name, body))
-        from kiro_crew.dashboard.handlers.agents import _get_config_lock
+        from kiro_crew.dashboard.handlers.agent_capabilities import (
+            routed_entries,
+            save_and_refresh_overlays,
+        )
 
-        async with _get_config_lock():
-            result, policy_changed = await drained_to_thread(
-                mate_worker_kit.apply_reporting, name, body
-            )
+        policy_changed = False
+        routed: dict = {}
+
+        def _add() -> tuple[dict, dict]:
+            nonlocal policy_changed, routed
+            view, policy_changed, added = mate_worker_kit.apply_reporting(name, body)
+            routed = routed_entries(added)
+            return view, routed
+
+        # Under the overlay refresh, so a gateway-routed server the add copies
+        # reaches the Bot's overlay, or the answer says a restart is needed.
+        result = await save_and_refresh_overlays(_add)
         request.app["state"].push_refresh("agents")
-        if policy_changed:
-            # A live worker keeps the KAS permission batch it registered, so a
-            # new restriction holds only once it is reloaded onto the file
-            # (``crewmate_worker_reload``; a busy one at its turn end).
+        if policy_changed or routed:
+            # A live worker keeps the KAS permission batch it registered and the
+            # servers it mounted, so it is reloaded onto the file, as the
+            # capabilities save reloads it, after a new restriction or a copied
+            # gateway-routed server (``crewmate_worker_reload``; a busy one at its
+            # turn end).
             from kiro_crew.dashboard.crewmate_worker_reload import schedule_reload_workers
 
             schedule_reload_workers(request.app["state"], name)

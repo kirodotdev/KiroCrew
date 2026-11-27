@@ -31,3 +31,24 @@ async def test_set_stub_reads_the_overlay_in_a_worker_thread(toggle_home, monkey
     assert resp.status == 200
     assert seen, "the overlay was not read"
     assert threading.get_ident() not in seen, "the overlay was read on the event loop"
+
+
+@pytest.mark.asyncio
+async def test_set_stub_loads_the_config_in_a_worker_thread(toggle_home, monkeypatch) -> None:
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    seen: list[int] = []
+    real_load = KiroCrewConfig.load.__func__
+
+    def _load(cls, *args, **kwargs):
+        seen.append(threading.get_ident())
+        return real_load(cls, *args, **kwargs)
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_load))
+
+    resp = await mcp_mod.api_mcp_gateway_set_stub(_stub_request({"name": "srv", "stub": False}))
+
+    assert resp.status == 200
+    assert seen, "the config was not loaded"
+    assert threading.get_ident() not in seen, "the config was loaded on the event loop"

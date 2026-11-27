@@ -226,6 +226,20 @@ async def test_the_buttons_sit_under_what_they_approve(gateway):
 
 
 @pytest.mark.asyncio
+async def test_the_buttons_sit_under_the_mcp_server_the_call_goes_to(gateway):
+    # Two servers can expose one tool name: the DM names the proven server and
+    # tool between the note and what the call runs, as the native card does.
+    from kiro_crew.slack.handler import mcp_identity_text
+
+    await _open(gateway, tool_title="email_send", mcp_identity=("corpsmtp", "email_send"))
+    [(blocks, _text)] = gateway.slack_client.blocks
+    assert [b["type"] for b in blocks] == ["section", "context", "section", "actions"], blocks
+    [line] = blocks[1]["elements"]
+    assert line == {"type": "mrkdwn", "text": mcp_identity_text("corpsmtp", "email_send")}
+    assert "*corpsmtp*" in line["text"]
+
+
+@pytest.mark.asyncio
 async def test_what_they_approve_cannot_close_its_fence_or_render_markup(gateway):
     # Untrusted input that closes the fence and adds a disguised link or a ping
     # must stay literal text inside the one code block above Approve.

@@ -93,6 +93,12 @@ READONLY_REASONS: dict[str, str] = {
     # Off, a vault read leaves no row in the security event log
     # (secrets/read_audit.py note_reads), so only the operator turns it.
     "dashboard.audit_secret_reads": WHY_SIGN_IN,
+    # Whether a session-less internal call from a sandboxed process is refused
+    # (dashboard/token_auth_sessionless.py): only the operator turns it.
+    "dashboard.sessionless_internal_calls": WHY_REACH,
+    # Whether an unattested declared session key over TCP is refused
+    # (token_auth_callers.unattested_session_key_mode): only the operator turns it.
+    "dashboard.unattested_session_keys": WHY_REACH,
     # The decision judge's provider timeout: its owner control lives behind the
     # consent route, not in config.json.
     "decisions.provider.timeout_ms": WHY_OWNED,
@@ -123,6 +129,7 @@ READONLY_REASONS: dict[str, str] = {
     "tunnel.relay_viewer_enabled": WHY_REACH,
     "dashboard.tailscale.bind_refresh_chains": WHY_REACH,
     "dashboard.tailscale.pin_scope": WHY_REACH,
+    "dashboard.tailscale.https_port": WHY_REACH,
     "dashboard.shared_crew.containment_enabled": WHY_REACH,
     "dashboard.shared_crew.hard_limits": WHY_REACH,
     "dashboard.shared_crew.ssm_port": WHY_REACH,
