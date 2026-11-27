@@ -3196,7 +3196,12 @@ that set, is charged as `empty reply`.
 Private V2 extraction retains its per-store `memory-consolidation:` session and
 cleanup path: once `remove` retires the runtime, the session's mapping, its Crew
 transcript and the conversation's backend record (`cleanup_session`) are deleted;
-a `remove` that raises keeps all three. Acquisition timing includes startup and semaphore acquisition;
+a `remove` that raises keeps all three. One `_consolidate` pass keeps that session
+for all of its member calls (the extraction, then the kind labels or the lesson
+quotes; `begin_member_consolidation_pass`): each later call on the same store
+starts on a fresh conversation of the same runtime (`new_conversation`), and the
+pass's `finally` retires it once. A call on another store, a failed call, or a
+provider without `new_conversation` retires its own runtime as before. Acquisition timing includes startup and semaphore acquisition;
 it is not a measurement of queue wait alone.
 
 **Row counts off the loop.** `maybe_consolidate(key)` runs on the event loop

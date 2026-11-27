@@ -170,6 +170,15 @@ async def _consolidate(
     # The output being published, named in the warning when a later hold is
     # refused after an earlier output committed (see the Withheld arm below).
     stage = "publication"
+    # The pass's member model calls (extraction, kind labels, lesson quotes) share
+    # one engine process, retired in the finally below. Function-local: a
+    # module-level name here would join the facade's served surface.
+    from kiro_crew.llm_helpers import (
+        begin_member_consolidation_pass,
+        end_member_consolidation_pass,
+    )
+
+    member_pass = begin_member_consolidation_pass()
     try:
         # Persistence global switch, checked here as well as in the automatic
         # entry points so the manual triggers (POST /api/memory/consolidate,
@@ -1561,6 +1570,7 @@ async def _consolidate(
                 self._logger.debug(
                     "Consolidation lease release did not complete for %s", key, exc_info=True
                 )
+        await end_member_consolidation_pass(self._sessions, member_pass)
     return None
 
 
