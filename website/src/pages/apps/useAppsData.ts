@@ -705,7 +705,9 @@ export default function useAppsData(): AppsData {
       libraryView(apps, libraryViewRef.current)
         .map(a => ({
           ...a,
-          updateAvailable: updateMap.has(a.name),
+          // Same gate as Update All: a locked or app-managed app has no store
+          // update, so its tile offers none (the update route refuses it).
+          updateAvailable: isUpdatable(a, updateMap),
           _newVersion: updateMap.get(a.name),
         })),
     [apps, updateMap],
