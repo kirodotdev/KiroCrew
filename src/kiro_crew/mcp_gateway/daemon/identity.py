@@ -319,13 +319,35 @@ _AGENT_BINDINGS: "OrderedDict[str, tuple[frozenset[str], int, Optional[str]]]" =
 def _bind_agents(
     token: str, agents: frozenset[str], pid: int, pid_start_id: Optional[str] = None
 ) -> None:
-    """Record ``token`` -> *agents* from an owner-sent binding (most recent last)."""
+    """Record ``token`` -> *agents* from an owner-sent binding (most recent last).
+
+    Over the cap, entries whose runtime pid is gone are dropped first, the rule
+    the gateway's own cache keeps (``claim._evict_dead_bindings_over_cap``): a
+    live session's binding outlives newer ones, because losing it leaves a
+    reconnecting stub's private backend with no declared env. Only when the
+    table is still over the cap is the oldest entry dropped, with a warning.
+    """
     if not token:
         return
     _AGENT_BINDINGS.pop(token, None)
     _AGENT_BINDINGS[token] = (agents, pid, pid_start_id)
+    if len(_AGENT_BINDINGS) <= _MAX_TOKEN_BINDINGS:
+        return
+    for old_token, (_agents, old_pid, _start) in list(_AGENT_BINDINGS.items()):
+        if len(_AGENT_BINDINGS) <= _MAX_TOKEN_BINDINGS:
+            return
+        if old_token != token and not platform_compat.pid_exists(old_pid):
+            _AGENT_BINDINGS.pop(old_token, None)
     while len(_AGENT_BINDINGS) > _MAX_TOKEN_BINDINGS:
-        _AGENT_BINDINGS.popitem(last=False)
+        evicted, (_agents, evicted_pid, _start) = _AGENT_BINDINGS.popitem(last=False)
+        # The key is a bearer token: name it by its hash, never the token itself.
+        logger.warning(
+            "agent-binding table over its %d cap with every entry live; evicted the "
+            "oldest binding (token sha256 %s, pid %d)",
+            _MAX_TOKEN_BINDINGS,
+            _mount_key(evicted)[:16],
+            evicted_pid,
+        )
 
 
 def _refresh_bound_agents(token: str, pid: int) -> int:

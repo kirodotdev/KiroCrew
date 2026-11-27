@@ -569,6 +569,46 @@ async def test_a_non_owner_binding_leaves_the_stub_with_no_declared_env(
     assert reason and "tok-cli-local" not in reason
 
 
+def test_the_daemon_binding_table_evicts_dead_sessions_before_a_live_one(monkeypatch) -> None:
+    """Over the cap, only bindings whose runtime pid is gone are dropped.
+
+    The oldest binding belongs to a live session, so it survives newer dead ones,
+    as the gateway's own cache keeps it (``claim._evict_dead_bindings_over_cap``).
+    """
+    from kiro_crew.mcp_gateway.daemon import identity as identity_mod
+
+    live, dead = RUNTIME_PID, OTHER_RUNTIME_PID
+    monkeypatch.setattr(identity_mod, "_MAX_TOKEN_BINDINGS", 2)
+    monkeypatch.setattr(identity_mod.platform_compat, "pid_exists", lambda pid: pid == live)
+    gw._AGENT_BINDINGS.clear()
+    gw._bind_agents("tok-live-old", frozenset({OWN_AGENT}), live)
+    gw._bind_agents("tok-dead-1", frozenset({OWN_AGENT}), dead)
+    gw._bind_agents("tok-dead-2", frozenset({OWN_AGENT}), dead)
+    gw._bind_agents("tok-live-new", frozenset({OWN_AGENT}), live)
+    assert list(gw._AGENT_BINDINGS) == ["tok-live-old", "tok-live-new"]
+
+
+def test_the_daemon_binding_table_drops_the_oldest_live_one_with_a_warning(
+    monkeypatch, caplog
+) -> None:
+    """When every entry over the cap is live, the oldest goes and a WARNING says so."""
+    from kiro_crew.mcp_gateway.daemon import identity as identity_mod
+
+    monkeypatch.setattr(identity_mod, "_MAX_TOKEN_BINDINGS", 2)
+    monkeypatch.setattr(identity_mod.platform_compat, "pid_exists", lambda _pid: True)
+    gw._AGENT_BINDINGS.clear()
+    for token in ("tok-a", "tok-b", "tok-c"):
+        gw._bind_agents(token, frozenset({OWN_AGENT}), RUNTIME_PID)
+    caplog.clear()  # tok-c's bind already evicted tok-a
+    with caplog.at_level("WARNING"):
+        gw._bind_agents("tok-d", frozenset({OWN_AGENT}), RUNTIME_PID)
+    assert list(gw._AGENT_BINDINGS) == ["tok-c", "tok-d"]
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert identity_mod._mount_key("tok-b")[:16] in warnings[0]
+    assert "tok-b" not in warnings[0], "the bearer token itself is never logged"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("reply", "expected"),
