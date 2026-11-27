@@ -1256,6 +1256,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             // would be rejected and blank that pane until reconnect.
             onFolderOpen={connected ? handleFolderOpen : undefined}
             onOpenCrewTab={handleOpenCrewTab}
+            // The single-chat surface's own sign-in rule (transcriptRendering).
+            noSignIn={embedded || popout}
             onClose={() => setSplitMode(false)}
             onCollapse={(slot, anchorTs, anchorMid, gesture) => {
               // A session reference the user may be told about (split-pane
