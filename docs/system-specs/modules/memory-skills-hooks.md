@@ -1011,7 +1011,7 @@ The history consolidation prompt includes a `"lessons"` key that extracts only i
 {"history_idle_hours": 3.0, "history_max_days": 365}
 ```
 
-Exposed on dashboard: Overview → Memory tab → Memory Settings card. Changes apply immediately to running consolidator via `PUT /api/memory/settings`.
+Exposed on dashboard: Settings → Memory → Memory Settings card. Changes apply immediately to running consolidator via `PUT /api/memory/settings`.
 
 The PUT clamps, never refuses, an in-range type: `history_idle_hours` to 0.5–24 and
 `history_max_days` to 7–365. The card's inputs carry the same bounds and clamp before
@@ -1900,11 +1900,117 @@ raw agent file writes cannot modify managed SQLite state.
 | Unavailable or corrupt memory | Learned-memory operations report unavailability; manual essentials remain usable. No global fallback or replacement empty database |
 | The first Bot (`mate`) | An ordinary member, created with its own private V2 store like any explicit creation; never on Global memory ([crew mode](crew-mode.md)) |
 
-The Memory tab has separate global and member views. Member links address
-`/settings/overview?view=memory&store=<store>`; every member data request carries
-that explicit owner-authorized store. The global settings and global vector
-browser do not mount inside a member view. The member view supplies its own
-compact identity header and a single Overview back action. It uses the app's
+The memory page is its own Settings entry, **Settings > Memory**
+(`/settings/memory`; `pages/settings/MemoryPanel.tsx`, routes in
+`pages/settings/memoryRoute.ts`): inside Overview it was too hard to find. It has
+separate global and member views. Member links address
+`/settings/memory?store=<store>`; every member data request carries that explicit
+owner-authorized store. An old `/settings/overview?view=memory…` link (or bare
+`/settings?view=memory…`) is redirected there with its `store`, `focus` and
+`lesson` kept. The global settings and global vector browser do not mount inside
+a member view. Settings draws the page's one back row and the Memory title, so a
+phone shows "‹ Account & Settings" and "Memory" above the store picker.
+
+The Memories list filters on the lesson fields, the write origin (Source), an
+experience's tags and, on a bot's store, the **Channel** (`surface`) and
+**Member** (`crew`) that wrote each row (`memory_record_facets.FACET_GROUPS`; a
+Global V1 row has neither, so it counts toward no value). These two groups
+replace the gear tab's former Explore memory card, which grouped by the same
+columns. On a phone the filter sheet has a search box that narrows every group's
+values by label and keeps their counts; the wide rail has none. The phone layout
+is keyed on `useIsMobile` (below 768 px), not on a width class, so the toolbar
+wraps and the search box keeps its own row on a 640–767 px phone too. The wide
+filter rail has the same search box and a hide control at its top; hidden, the
+toolbar's Filters button (with the active count) shows it again, and the choice
+is kept per browser (`kirocrew:memory-filters-collapsed`). The rail is sticky and
+as tall as the window, scrolling on its own while the list scrolls; Confidence
+sits at its top; each group lists its values most rows first (ticked ones first)
+and scrolls inside 16 rows, with a fade and "Scroll to see more" until its last
+row shows. Its right edge drags (or arrow keys move) its width between 200 and
+420 px, kept per browser (`kirocrew:memory-filters-width`). Layout follows the
+content area's own width, not the window's: below the rail plus a 480 px list
+the rail gives way to the Filters button and the filter sheet. The detail stacks
+below the list when the remaining width cannot hold a 320 px list beside its
+384 px detail column; the filters then use the sheet too. A toolbar
+narrower than 40rem (a container query) puts the search box on its own row.
+Source counts an origin written as `<prefix>:<id>` under its prefix
+(`memory_record_facets.source_group`), so the one-per-chat
+`consolidation:dashboard:<session>` origins are one Learned from chat value; the
+record keeps its full source. The list reads its rows and its counts as two
+requests, so the first rows never wait for the counts, and the server keeps the
+last few searches' row summaries (`memory_edit._cached_summaries`) until the
+store changes, so a filter, sort or page reads only the rows it shows.
+The browser never holds the whole store: every filter, sort, search, `ref`
+selection and count runs on the server, which sends one page of 50 and exact
+counts. The next page loads as the end of the list scrolls within 800 px of the
+view, and "1–N of total" shows under the rows. The server also keeps the facet
+counts per summary list, kind and filter set (`memory_edit._cached_facets`), so
+a repeated filter is not counted twice; a write builds a new summary list, which
+misses both caches. An off-screen row is neither laid out nor painted
+(`content-visibility: auto`), so a list scrolled deep stays smooth.
+A date range (Today, Last 7 days, Last 30 days, or a custom from–to pair of
+local days in the platform's date fields) filters on the time the list is
+sorted by: `updated`, or `created` under that sort. It is a server filter
+(`since` inclusive, `until` exclusive, UTC ISO; `date_field=created`, parsed by
+`memory_record_facets.parse_filters`), so every count agrees with the rows, and
+it shows as one removable chip that Clear all also removes. A quick range is
+kept by name, so "Last 7 days" moves with the calendar.
+
+Each Source value in the rail, and each kind pill, carries a (?)
+with one sentence on what the type means (`memoryTypeTips`); on a bot's page a
+tip that speaks of the bot names it. The (?) sits outside the checkbox's label
+and beside the pill, so opening it never ticks a filter or picks a kind.
+The embedding download's progress, its setup
+errors with Retry and the model disclosure live in the Embedding Model card
+(`EmbeddingSetupStatus`); whether the global store runs as vector memory is read
+from the same status queries (`useVectorMemoryState`). The page no longer shows
+the old Vector Memory card.
+
+A wheel over the rail moves the innermost scroller under the pointer that can
+still move (a value group, then the rail, `MemoryRail.routeWheel`) and never the
+page; the rail's height is the part of its scroll area in view, so its end is
+always reachable. The rail and the record detail open and shut over 225 ms
+(width with the list reflowing beside it, the content clipped; the detail also
+slides and fades, and switching records only crossfades); reduced motion snaps.
+`ref` filters to exact records by ten hex digits of `sha256("kind:id")`
+(`memory_record_facets.record_ref`, at most 500), the Graph tab's hand-off: a
+fact or lesson node carries its `record`, a click on one opens that memory in the
+Memories tab, and a box drawn on empty canvas offers "N selected" and Show in
+Memories, which replaces the list's search, kind and filters with one removable
+chip. The Graph fills the content width and the window height below it (at least
+420 px) and re-fits on resize. On desktop it follows the Figma model: wheel or
+two-finger swipe pans, pinch or Ctrl/Cmd + wheel zooms at the pointer, drag on
+empty canvas selects, Space + drag or middle-drag pans (Space is taken only while
+focus is on the page body or inside the graph, so a focused control elsewhere
+keeps it); touch keeps sigma's own
+pan and pinch. Tags are filter toggles in rows and in the detail panel, which
+shows each score as its bare value, the grouped source label (raw source on
+hover), one Created time and plain-text revisions ("Edited · time", "Current").
+New memory saves a fact or a lesson, picked at the top of its form; the ⋯ menu
+has no create action. A row's filterable
+chips (lesson category, applies, scope, tags, source) are toggle buttons that
+tick or clear that value in its group without opening the row.
+
+Colour follows the approved mock (S2/S3): the accent marks selection, primary
+actions, checkboxes and Every session; an open or picked row is an 8% accent
+tint; the row a Lesson saved link lands on gets the saved tint and an `--ok` bar
+with "Just saved"; the picked kind pill is filled with the text colour on both
+themes; each kind's icon has its own theme colour (fact `--info-text`, lesson
+`--accent`, experience `--ok-text`); Global memory's avatar is the `--tile-blue`
+tile; only Confidence below 0.5 is red.
+
+The page's Graph tab, after Memories, draws the selected store
+(`GET /api/memory/graph?store=`, the same owner-gated resolver as the profile
+documents; a bot's lessons come from its own vector tier, never the Global
+lessons file). It mounts on first visit only. Settings > Developer has no memory
+page any more; `/settings/developer/memory` opens `/settings/memory?focus=graph`.
+
+The embedded line under the header reads "X of Y embedded": X is every fact,
+lesson and experience with a stored vector (`memory_stats`'s `embedded_count`,
+experiences only, plus `semantic_embedded`), Y every live one. Its info tip says
+that the X rows can be found by meaning and the rest by words only until the
+gateway's repair pass fills their vectors in (`_repair_member_memory`, in the
+background). A gateway without `semantic_embedded` counts experiences only. It uses the app's
 theme colors, the owning member's avatar, category
 icons, three-line card previews and
 reduced-motion-aware transitions. Full content and readable source/copy
@@ -2091,11 +2197,26 @@ Experiences as recallable events. Narrow Explore memory results use wrapping
 cards that retain memory type, content, member and channel. Restore keeps its
 original control visible while a separate warning, Confirm and Cancel appear.
 
-Choose starting knowledge is an explicit owner operation. The owner selects a
-source and up to 50 fact, directive or episode identities. The server validates
+Copy from another memory (a bot page's ⋯ menu on every width, and its empty
+list) is an explicit owner operation. The owner picks a source, narrows it with
+kind pills (Facts, Lessons, Experiences, all on by default, the last one cannot
+be turned off) and a search, then picks individual fact, directive or episode
+identities or ticks the one copy-everything box. That box reads Copy all with
+no search and Select all matching with one, and copies every source row of the
+picked kinds that the search matches, with no cap: the dialog reads the source
+page by page while it copies (skipping experience pages when Experiences is
+off), so nothing is loaded up front.
+`POST /api/memory/seed` takes at most `MAX_SEED_ITEMS` (50) per request, a
+request-body bound: each copy is one row write whose vector the backfill sweep
+fills later. So the dialog (`pages/overview/memorySeedBatches.ts`) sends 50-item
+batches in order, shows running counts (copied, already there, failed) and ends
+on one result line. It stops at the first batch that is partial or refused, or a
+source page that fails to read. Each batch commits before the next is sent, so a
+stopped run keeps what it copied, and running it again skips those rows
+(`seed_item_if_absent` reports them `existing`). Per batch the server validates
 the complete selection before writing, copies without overwriting target
-identities, and reports imported/skipped outcomes with reasons and provenance.
-No row is selected automatically. This is selective copying, not V1 migration.
+identities, and reports outcomes with reasons and provenance. No row is
+selected automatically. This is selective copying, not V1 migration.
 
 V1 fresh-session context keeps complete preferences and eligible project-scoped
 lessons as protected context. With `memory.inject_activity` on (the default) the
@@ -3515,13 +3636,10 @@ code is never swallowed. `model_active` reports the serving loaded backend
 separately. A known model is shown as active or configured-but-inactive; the
 latter retains a neutral provenance badge. An unknown model identity shows the
 localized fallback without a bundled/custom badge, so provenance does not read
-as a claim that the model is known. The Vector Memory card's Embeddings stat tile
-agrees with that header: once `setup_step` is idle or done nothing is
-progressing, so `model_active` (or, for an older backend without it,
-`model_available` then `server_healthy`) reads `false` as a muted `not active`,
-an absent answer as a muted `unknown`, and only `true` as the success-coloured
-`active`; it never guesses "model loading". A progressing or failed
-`setup_step` keeps precedence and shows its localized step label. `repair` names its `open_stores` scope, pending invalidations,
+as a claim that the model is known. The setup status inside the same card
+(`EmbeddingSetupStatus`) shows a progressing or failed `setup_step` with its
+localized step label, the download's megabytes and percent, and Retry; it
+never guesses "model loading". `repair` names its `open_stores` scope, pending invalidations,
 remaining live NULL vectors, deferred closed/unavailable stores and unknown scope.
 It does not open closed stores or claim they are repaired. Public re-embed status
 is `deferred` rather than `done` while that scope is incomplete. Progress counts
@@ -3538,9 +3656,9 @@ joined through the `fmtList` seam (`Intl.ListFormat` for the UI language), so an
 omitted unit never leaves a `0 …` clause or a dangling separator, and each
 clause still selects its own localized plural form. The sentence names its
 scope (`across all memory stores`): the counts cover every active store (open
-ones inspected, closed ones deferred) while the Vector Memory card's stat tiles
-count only the store shown, so without the scope the two sets of numbers
-cannot be reconciled on the page. All three zero renders
+ones inspected, closed ones deferred) while the Memory page's counts cover
+only the store shown, so without the scope the two sets of numbers cannot be
+reconciled on the page. All three zero renders
 nothing; `unknown_scope` wins over any counts. `unknown_scope` copy names what actually happens (the
 check retries automatically while the page is open; a closed store is rebuilt
 when it next opens; persistent display means read the gateway log) rather than
@@ -3584,9 +3702,9 @@ First verification emits one WARNING about inherited vectors;
 embedding status keeps the same text in `setup_warning` until explicit apply.
 The warning is written for the operator, not in code vocabulary: the vectors
 predate the record of which model file produced them, and a changed file needs
-the model reapplied. The Memory tab's vector card renders it as a status notice
-with a link that moves focus to the Embedding Model card's path field, so the
-fix is reachable from the notice. When the same status also carries a
+the model reapplied. The Embedding Model card's setup status renders it as a
+status notice with a link that moves focus to the card's path field, so the fix
+is reachable from the notice. When the same status also carries a
 `model_path_*` error code (the configured file is missing, unreadable or not a
 file), the warning swaps its "reapply" clause for "fix the model path first, then
 apply" (`legacy_vectors_warning_path_error`). When the path field is mounted,
@@ -3594,8 +3712,7 @@ this warning owns the only settings link and suppresses the separate path-error
 pointer. Without the legacy warning the pointer remains: one sentence naming the
 fault and its cost (keyword search meanwhile), with the adjacent
 `Open embedding model settings` link as the only statement of where the fix
-lives, so the destination is not said twice. Without the field the
-Vector Memory card retains the complete error. Non-path errors remain complete.
+lives, so the destination is not said twice. Non-path errors remain complete.
 The Embedding Model card echoes
 the localized path error under its path field and keeps Apply disabled while the
 field still shows the configured path: submitting it would fail with the same
@@ -4564,7 +4681,7 @@ the findings: the sandbox withholds the security log from foreign-harness childr
 `memory.repeated_failures_notice` on (default off; a wrong-typed value reads as off,
 with the loader's type-mismatch warning), the bell gets at most one note per 7 days on
 the `system.memory` channel, and only when `scan` finds at least one recurring failure.
-The note names no tool and quotes no error; its link (`?view=memory&focus=failures`)
+The note names no tool and quotes no error; its link (`/settings/memory?focus=failures`)
 scrolls the Memory view to the card, which is where the findings are read. The
 heartbeat calls `RepeatedFailuresNotifier.maybe_check` on every beat, which costs one
 clock read: the first check runs 10 minutes after start and then once a day, in a task
@@ -8172,6 +8289,22 @@ have no confidence (experiences) or no importance (facts and lessons) always
 come last under that sort, newest first, whichever way it runs. `match` is a
 word score from 0 to 1, with a key hit weighted above a text hit, and each
 entry of a `match` page carries it.
+
+`mode=meaning` (with search words) ranks by meaning instead: the words are
+embedded once with the store's own embedding function, outside the store lock,
+and every live fact, lesson and experience is scored by the cosine between that
+vector and its stored one, with the store's own `_stored_similarity_scorer`
+(`memory_record_meaning`). The words are not matched as words then, and the sort
+is that score, highest first, carried as each entry's `match`. A row with no
+vector or one of another width scores 0. Rows under `MEANING_CUTOFF` (0.45) are
+left out of the list and the facet counts, and the body's `hidden` counts the
+ones the kind and filters would have listed; `weak=1` lists them too. With no
+embedding model the route answers 409 `meaning_unavailable`. The scores go on
+copies of the cached row summaries, never on the cached pass itself. On the page
+the Words / Meaning switch sits inside the search box while the toolbar is at
+least 32rem wide (`SWITCH_INLINE_MIN`, measured on the toolbar) and takes its own
+row below the box otherwise, so it never covers the typed text; its labels never
+wrap.
 
 `POST /api/memory/records/refresh` resolves up to 500 exact
 identities after a concurrent change without discarding the user's draft. Its

@@ -236,3 +236,21 @@ async def test_a_facet_value_holding_a_credential_is_not_returned(env):
     assert response.status == 200, response.text
     assert secret not in response.text
     assert json.loads(response.text)["facets"]["scope"] == {"website": 1}
+
+
+@pytest.mark.asyncio
+async def test_record_listing_by_meaning_validates_its_mode_and_needs_a_model(env):
+    tier = env.tiers[""]
+    tier.embed_fn = None
+    tier.embed_fn_factory = None
+    tier.set_semantic("user.a", "first", 0.9, "user_explicit")
+    for bad in ({"mode": "fuzzy", "q": "x"}, {"weak": "yes", "q": "x"}, {"mode": "meaning"}):
+        refused = await memory_edit.api_memory_records(
+            request(env, query={"store": "default", **bad}, owner=True)
+        )
+        assert refused.status == 400
+    no_model = await memory_edit.api_memory_records(
+        request(env, query={"store": "default", "mode": "meaning", "q": "first"}, owner=True)
+    )
+    assert no_model.status == 409
+    assert json.loads(no_model.text)["code"] == "meaning_unavailable"

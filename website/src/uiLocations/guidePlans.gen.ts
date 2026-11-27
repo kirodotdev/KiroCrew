@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:cfdababfaa089fbe57bc72a3c6d4a7b0c70c707c78b93bbe18585dfbbd714273"
+export const GUIDE_BUILD_DIGEST = "sha256:200148dd7bae3f4911e1d7b71d1e4648b9fb271e6e2cb77c991251145935baa7"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -112,7 +112,6 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "notifications.mute-channel",
   "notifications.page-clear-all",
   "notifications.page-mark-all-read",
-  "overview.memory-details",
   "schedule.add-job",
   "schedule.batch-actions",
   "schedule.cancel-run",
@@ -2518,23 +2517,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "desktop:members.switcher.unread-more",
             "location": "members.switcher.unread-more",
             "label_key": "pages.membersPage.switch_crewmate"
-          }
-        ]
-      }
-    ]
-  },
-  "overview.memory-details": {
-    "version": 2,
-    "label_key": "pages.overviewPage.view_details",
-    "placements": [
-      {
-        "id": "any",
-        "route": "/settings/overview",
-        "steps": [
-          {
-            "id": "any:overview.memory-details",
-            "location": "overview.memory-details",
-            "label_key": "pages.overviewPage.view_details"
           }
         ]
       }

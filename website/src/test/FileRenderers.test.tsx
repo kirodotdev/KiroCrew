@@ -587,7 +587,7 @@ describe('OfficeViewer', () => {
   it('extracts the basename from a Windows path with backslash separators', async () => {
     // Kiro Crew ships native on Windows where filePath arrives as
     // C:\Users\...\report.docx. A `/`-only split would surface the whole
-    // path — split on BOTH separators to match MarkdownRenderer/VectorMemoryCard.
+    // path — split on BOTH separators to match MarkdownRenderer.
     stubPreview({}, false, 415)  // force fallback so the download card is visible
     renderWithQuery(<OfficeViewer filePath="C:\\Users\\harpreet\\Documents\\report.docx" />)
     await waitFor(() => {

@@ -293,7 +293,7 @@ describe('LTS: Debug tools hidden', () => {
     lockLts()
     await renderPanel()
     const names = within(screen.getByRole('listbox', { name: 'Developer' })).getAllByRole('option').map(o => o.textContent?.trim())
-    expect(names).toEqual(['Feature Previews', 'Logs', 'System', 'Telemetry', 'Storage', 'Memory', 'Config', 'Archive'])
+    expect(names).toEqual(['Feature Previews', 'Logs', 'System', 'Telemetry', 'Storage', 'Config', 'Archive'])
   })
 
   it('its page path heals to the first page', async () => {
