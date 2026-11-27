@@ -377,7 +377,10 @@ def decode_path_for_display(path: str) -> str:
     return DISPLAY_SEP.join(seg_decoded(s) for s in path.split(DISPLAY_SEP))
 
 
-_DIFF_TARGET_RE = re.compile(r"^\+\+\+ (?:b/)?(.+?)\s*$", re.MULTILINE)
+# The path ends on a non-space (or is one character), so the trailing ``\s*``
+# is the only reader of the whitespace after it: a lazy path beside ``\s*$``
+# rescanned that run once per path character. Every match is unchanged.
+_DIFF_TARGET_RE = re.compile(r"^\+\+\+ (?:b/)?(.*\S|[^\n])\s*$", re.MULTILINE)
 _DIFF_DEV_NULL_RE = re.compile(r"^--- /dev/null\s*$", re.MULTILINE)
 _FINDING_RE = re.compile(r"^Finding\b", re.ASCII)
 
