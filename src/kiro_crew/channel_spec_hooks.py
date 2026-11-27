@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.hooks import ScriptHookStore, permission_pre_tool_block
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
 
 
@@ -40,9 +42,17 @@ async def turn_spec(client: Any, agent_name: str) -> TurnSpecHooks:
 
 
 async def pre_tool_refusal(
-    spec: TurnSpecHooks, client: Any, event: Any, session_key: str
+    spec: TurnSpecHooks,
+    client: Any,
+    event: Any,
+    session_key: str,
+    *,
+    on_policy_refused: Callable[[], None] | None = None,
 ) -> str | None:
-    """Why *spec*'s PreToolUse hooks refuse *event*'s permission request, or ``None``."""
+    """Why *spec*'s PreToolUse hooks refuse *event*'s permission request, or ``None``.
+
+    *on_policy_refused* is passed to :func:`permission_pre_tool_block`.
+    """
     if not spec.gated:
         return None
     if spec.unreadable:
@@ -65,6 +75,7 @@ async def pre_tool_refusal(
         session_key=session_key,
         acp_session_id=sid if isinstance(sid, str) and sid else None,
         raw_tool_params=getattr(event, "raw_tool_params", None),
+        on_policy_refused=on_policy_refused,
     )
 
 
@@ -88,6 +99,15 @@ class SessionSpecGate:
     async def observe(self, event: Any) -> None:
         """Nothing to re-read: each request reads the spec the session runs then."""
 
-    async def refusal(self, event: Any) -> str | None:
+    async def refusal(self, event: Any) -> tuple[str, bool] | None:
+        """``(reason, policy_refused)``, the ``spec_floor`` shape ``_resolve_permission`` reads."""
         spec = await turn_spec(self._client, "")
-        return await pre_tool_refusal(spec, self._client, event, self._session_key)
+        refused: list[bool] = []
+        reason = await pre_tool_refusal(
+            spec,
+            self._client,
+            event,
+            self._session_key,
+            on_policy_refused=lambda: refused.append(True),
+        )
+        return None if reason is None else (reason, bool(refused))

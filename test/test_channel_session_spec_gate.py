@@ -71,7 +71,11 @@ def guard(monkeypatch) -> dict:
     async def fake_run(hook, context="", hook_event=None, cwd=None, **_kw):
         record["runs"].append((hook.command, (hook_event or {}).get("session_key")))
         return ScriptHookResult(
-            hook_id=hook.id, hook_name=hook.name, event=hook.event, exit_code=record["exit"]
+            hook_id=hook.id,
+            hook_name=hook.name,
+            event=hook.event,
+            exit_code=record["exit"],
+            refused=record.get("refused", False),
         )
 
     class _Sel:
@@ -120,6 +124,19 @@ async def test_a_subagent_report_turn_asks_the_parent_agents_spec_guard(
     assert guard["runs"] == [("guard.sh", parent_key)] * runs
     assert guard["agents"] == ["a1"] * runs
     assert len(_spec_hook_denials(guard)) == int(refused)
+
+
+@pytest.mark.asyncio
+async def test_a_guard_a_policy_refused_to_run_is_audited_as_refused_on_a_report_turn(guard):
+    guard["refused"] = True
+    parent = _Session(ACP_BACKEND_KAS)
+    orch = _slack_nudge_orchestrator()
+    await orch._inject_with_retry(SimpleNamespace(id="sa-1"), parent, "report", _KEY, "slack")
+    # The call is still refused, and its audit row says a policy refused the hook.
+    assert (parent.rejected, parent.approved) == (["rq1"], [])
+    mechanisms = [(r.get("metadata") or {}).get("mechanism") for r in guard["rows"]]
+    assert "spec_hook_refused" in mechanisms
+    assert _spec_hook_denials(guard) == []
 
 
 @pytest.mark.asyncio
