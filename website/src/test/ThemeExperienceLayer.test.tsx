@@ -15,7 +15,7 @@ vi.mock('../hooks/useTheme', () => ({
 
 import ThemeExperienceLayer from '../components/ThemeExperienceLayer'
 import { saveExperienceChoice } from '../utils/themeConsent'
-import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, registerThemeDecorBehindSlot, registerThemeDecorSlot, __resetThemeDecorSlot } from '../lib/themeDecorLayer'
+import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, registerThemeDecorBehindSlot, registerThemeDecorSlot, registerThemeMuteSlot, __resetThemeDecorSlot } from '../lib/themeDecorLayer'
 
 // The layer reads `instances.activeId` (it unmounts when a remote Crew is active),
 // so every mount needs a Redux Provider. Shim `render` through RTL's `wrapper`
@@ -403,6 +403,60 @@ describe('ThemeExperienceLayer', () => {
     setTheme()
     render(<ThemeExperienceLayer />)
     expect(screen.getByRole('button', { name: /mute theme sounds/i })).toBeInTheDocument()
+  })
+
+  // #43431: on a phone the composer dock fills the bottom edge, so a toggle in
+  // the bottom-right corner lands on its send/stop button. On a narrow screen
+  // with a dock mounted, the toggle lives in the dock's slot (which rides the
+  // dock's top edge); otherwise it keeps the fixed corner.
+  describe('mute toggle placement (#43431)', () => {
+    const muteButton = () => screen.getByRole('button', { name: /mute theme sounds/i })
+    const narrow = () => mockMatchMediaBy((q) => /max-width:\s*767px/.test(q))
+    function mountSlot() {
+      const slot = document.createElement('div')
+      document.body.appendChild(slot)
+      act(() => registerThemeMuteSlot(slot))
+      return slot
+    }
+    beforeEach(() => {
+      localStorage.setItem('mc-theme-consent-bikini-bottom', 'consented-v2')
+      setTheme()
+    })
+
+    it('portals into the composer dock slot on a narrow screen', () => {
+      narrow()
+      const slot = mountSlot()
+      try {
+        render(<ThemeExperienceLayer />)
+        expect(slot).toContainElement(muteButton())
+        const classes = muteButton().className.split(/\s+/)
+        expect(classes).not.toContain('fixed')
+        expect(classes).toContain('pointer-events-auto')
+        expect(classes).toContain('mc-touch-hit')
+      } finally {
+        slot.remove()
+      }
+    })
+
+    it('keeps the fixed desktop corner on a wide screen, even with a dock mounted', () => {
+      const slot = mountSlot()
+      try {
+        render(<ThemeExperienceLayer />)
+        expect(slot).not.toContainElement(muteButton())
+        const classes = muteButton().className.split(/\s+/)
+        for (const c of ['fixed', 'bottom-safe-offset-4', 'right-safe-offset-4', 'z-[50]', 'mc-touch-hit']) expect(classes).toContain(c)
+      } finally {
+        slot.remove()
+      }
+    })
+
+    it('keeps the fixed corner on a narrow screen with no composer dock', () => {
+      narrow()
+      render(<ThemeExperienceLayer />)
+      const classes = muteButton().className.split(/\s+/)
+      expect(classes).toContain('fixed')
+      expect(classes).toContain('bottom-safe-offset-4')
+    })
   })
 
   it('message router honours theme:resize from a theme frame and ignores other types', () => {

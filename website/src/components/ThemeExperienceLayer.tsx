@@ -60,7 +60,7 @@ import { isSoundMuted, loadSoundSettings, themeTriggerForNotification } from '..
 import { useIsNarrowViewport } from '../hooks/useIsMobile'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
-import { OVERLAY_Z_MAX, useThemeDecorBehindSlot, useThemeDecorSlot } from '../lib/themeDecorLayer'
+import { OVERLAY_Z_MAX, useThemeDecorBehindSlot, useThemeDecorSlot, useThemeMuteSlot } from '../lib/themeDecorLayer'
 import { useAppSelector } from '../store'
 
 import { i18nT } from '../i18n/t'
@@ -249,6 +249,7 @@ export default function ThemeExperienceLayer() {
   // there is no chrome to sit under yet.
   const decorSlot = useThemeDecorSlot()
   const behindSlot = useThemeDecorBehindSlot()
+  const muteSlot = useThemeMuteSlot()
 
   const active = colorTheme.startsWith('custom-')
     ? customThemeDataMap.get(colorTheme.slice('custom-'.length))
@@ -903,6 +904,24 @@ export default function ThemeExperienceLayer() {
   const overlays = <>{mountedOverlays.filter((d) => d.layer !== 'behind').map(overlayFrame)}</>
   const behindOverlays = <>{mountedOverlays.filter((d) => d.layer === 'behind').map(overlayFrame)}</>
 
+  // Mute toggle — only while Sounds is on for a pack that ships audio. On a
+  // phone the composer dock spans the bottom edge, so a corner-pinned toggle
+  // lands on its send/stop button (#43431). While a dock is mounted the toggle
+  // portals into the dock's slot, which rides the dock's top edge whatever the
+  // draft's height; elsewhere, and from md up, it keeps the corner.
+  const muteInDock = isNarrow && muteSlot !== null
+  const muteButton = (
+    <button
+      type="button"
+      onClick={toggleMute}
+      title={muted ? i18nT('components.themeExperienceLayer.unmute_theme_sounds') : i18nT('components.themeExperienceLayer.mute_theme_sounds')}
+      aria-label={muted ? i18nT('components.themeExperienceLayer.unmute_theme_sounds') : i18nT('components.themeExperienceLayer.mute_theme_sounds')}
+      className={`mc-touch-hit ${muteInDock ? 'pointer-events-auto' : 'fixed bottom-safe-offset-4 right-safe-offset-4 z-[50]'} flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-text shadow-lg hover:bg-bg-hover`}
+    >
+      {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+    </button>
+  )
+
   return (
     <>
       {/* Themed topbar strip (static chrome — shown even under reduced-motion). */}
@@ -952,18 +971,7 @@ export default function ThemeExperienceLayer() {
       {/* Without a shell (popout, embed) nothing sits on top to cover them, so they are skipped. */}
       {behindSlot && createPortal(behindOverlays, behindSlot)}
 
-      {/* Mute toggle — only while Sounds is on for a pack that ships audio. */}
-      {soundsOn && hasAudio && (
-        <button
-          type="button"
-          onClick={toggleMute}
-          title={muted ? i18nT('components.themeExperienceLayer.unmute_theme_sounds') : i18nT('components.themeExperienceLayer.mute_theme_sounds')}
-          aria-label={muted ? i18nT('components.themeExperienceLayer.unmute_theme_sounds') : i18nT('components.themeExperienceLayer.mute_theme_sounds')}
-          className="fixed bottom-safe-offset-4 right-safe-offset-4 z-[50] flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-text shadow-lg hover:bg-bg-hover"
-        >
-          {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-        </button>
-      )}
+      {soundsOn && hasAudio && (muteInDock ? createPortal(muteButton, muteSlot) : muteButton)}
     </>
   )
 }

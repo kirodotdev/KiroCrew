@@ -75,6 +75,7 @@ import { KnowledgePicker } from '../KnowledgePicker'
 import { JumpToBottomButton } from '../../../app-sdk/ChatScrollChrome'
 import WorkflowProgressBar from '../WorkflowProgressBar'
 import { tryQuickSend } from '../../../lib/quickSend'
+import { registerThemeMuteSlot } from '../../../lib/themeDecorLayer'
 import { i18nT } from '../../../i18n/t'
 import { acpBackendName } from '../../../api/acpBackend'
 import { fmtDateFields, fmtNumber } from '../../../i18n/format'
@@ -429,6 +430,10 @@ export default function ComposerDockView({
                 `right: dockGutter` keeps the scrollbar column clear (above). */}
             <div ref={dockRef} className="absolute left-0 bottom-0 pointer-events-none" style={{ right: dockGutter }} data-testid="composer-dock-root" {...{ [SELECTION_INERT_ATTR]: '' }} data-scroll-peek-stop="">
               <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />
+              {/* On a phone ThemeExperienceLayer portals its sound mute toggle
+                  here: right of the centred jump button, above the dock's top
+                  edge, so it rises with the dock and never lands on send/stop. */}
+              <div ref={registerThemeMuteSlot} className="absolute -top-12 right-4 z-10 pointer-events-none" data-testid="theme-mute-slot" />
               {/* Status chrome never claims more than half the pane. The dock
                   is anchored to the pane's bottom edge and grows upward, so an
                   opening keyboard — which shrinks the layout viewport — would
