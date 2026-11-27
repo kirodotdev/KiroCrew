@@ -32,6 +32,12 @@ export function countLines(before: string, after: string): { added: number; remo
   if (before === after) return { added: 0, removed: 0 }
   const a = linesOf(before)
   const b = linesOf(after)
+  // When only one side ends in a newline, git counts the other side's unterminated last line
+  // as changed, so keep that line distinct (a newline never occurs inside a line).
+  if (a.length && b.length && before.endsWith('\n') !== after.endsWith('\n')) {
+    const open = before.endsWith('\n') ? b : a
+    open[open.length - 1] += '\n'
+  }
   const m = a.length, n = b.length
   // LCS with rolling rows: O(mn) time, O(min(m,n)) space.
   // 1M cell cap = ~1000x1000 lines which covers anything inside our 200KB snapshot cap comfortably.
