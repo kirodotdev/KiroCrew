@@ -340,13 +340,14 @@ def _move_cases() -> list:
             [
                 (sections.ChannelConfig, "activation", "always"),
                 (sections.ChannelConfig, "agent", "reviewer"),
+                (sections.ChannelConfig, "bot", "helper"),
                 (sections.ChannelConfig, "thread_follow", False),
                 # Kept only beside the agent it names, so the moved default is that agent.
                 (sections.ChannelConfig, "shared_agent", "reviewer"),
             ],
             {"slack": {"channels": {"C1": {}}}},
             lambda c: dataclasses.astuple(c.slack_channels["C1"]),
-            ("always", "reviewer", False, "reviewer"),
+            ("always", "reviewer", "helper", False, "reviewer"),
         ),
         _case(
             "workspaces.dir-omitted",

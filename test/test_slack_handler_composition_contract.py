@@ -252,8 +252,9 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: ``requester`` on ``post_linked_approval`` (the shared user whose message opened
 #: the linked slot's turn may answer its card), and the keyword-only
 #: ``thread_trust`` on ``post_linked_approval`` and ``_build_approval_blocks`` (a
-#: Conductor thread's conductor's card reads "Trust this thread").
-_BASE_SHAPE_DIGEST = "fc8ec146418aa93d86018bd577305dde64ccc0f7653b48086015588f15aaf893"
+#: Conductor thread's conductor's card reads "Trust this thread"), and ``bot`` on
+#: ``_persist_channel_config`` (``!channel bot`` saves a channel's Bot).
+_BASE_SHAPE_DIGEST = "6745aaa7f3b8d7bb076f5ff28974625b434730bd1d29fbd9efa6d7e0753031a6"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

@@ -161,6 +161,22 @@ def _reset_thread_messages():
 
 
 @per_test_guard
+def _reset_channel_handler_locks(_floor_monkeypatch):
+    """A channel's claim lock binds to the loop that first contends it; each test has its own."""
+    from kiro_crew.slack import channel_handler
+
+    _floor_monkeypatch.setattr(channel_handler, "_locks", {})
+
+
+@per_test_guard
+def _reset_channel_handler_threads(_floor_monkeypatch):
+    """The threads each channel's handler chat answered are process state; each test starts empty."""
+    from kiro_crew.slack import channel_handler
+
+    _floor_monkeypatch.setattr(channel_handler, "_answered", {})
+
+
+@per_test_guard
 def _enterprise_bypass(_floor_monkeypatch) -> None:
     """Set a default validated team_id so _route_message doesn't reject messages."""
     _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")

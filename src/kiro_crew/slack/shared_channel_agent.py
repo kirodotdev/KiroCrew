@@ -45,6 +45,10 @@ LINKED_CHAT_TEXT = (
     "⛔ A dashboard chat is linked to a thread in this channel, and a new agent "
     "could cut it off. Only the bot owner can change the agent here."
 )
+CHANNEL_HANDLER_TEXT = (
+    "⛔ The bot owner gave this channel one Bot or Conductor for every thread. "
+    "Only they can change who answers here."
+)
 NO_AGENT_TEXT = "This channel has no agent set."
 CLEARED_TEXT = "This channel is back on the default agent for new threads."
 
@@ -249,8 +253,20 @@ async def _take_back(handler: Any, channel: str, agent: str, written: str) -> No
 
 
 async def handle(cmd_text: str, channel: str, user: str) -> str:
-    """``!channel ...`` from a confirmed shared user; the reply to post."""
-    from kiro_crew.slack import handler
+    """``!channel ...`` from a confirmed shared user; the reply to post.
+
+    Run under the channel's handler lock, which the owner's ``!channel agent``,
+    ``!channel bot`` and ``!channel conductor`` hold through their own check and
+    write: a channel gets an agent, a Channel Bot or a Channel Conductor, never two.
+    """
+    from kiro_crew.slack import channel_handler
+
+    async with channel_handler.lock(channel):
+        return await _handle(cmd_text, channel, user)
+
+
+async def _handle(cmd_text: str, channel: str, user: str) -> str:
+    from kiro_crew.slack import channel_handler, handler
 
     parts = cmd_text.split(maxsplit=2)
     if len(parts) < 2 or parts[1].lower() != "agent":
@@ -265,6 +281,12 @@ async def handle(cmd_text: str, channel: str, user: str) -> str:
     if await asyncio.to_thread(_is_code_channel, channel):
         _audit(user, "denied", channel, "code channel")
         return CODE_CHANNEL_TEXT
+    # The owner's Channel Bot or Channel Conductor answers every thread here
+    # (``slack/channel_handler.py``), so the channel takes no agent beside it and
+    # has none to clear. The store read above loaded what this lookup reads.
+    if channel_handler.handler_refusal(channel):
+        _audit(user, "denied", channel, "channel bot or conductor")
+        return CHANNEL_HANDLER_TEXT
     pin = _pin(handler, channel)
     if pin is None or (pin[0] and not pin[1]):
         _audit(user, "denied", channel, "owner's agent")

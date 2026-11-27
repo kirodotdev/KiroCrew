@@ -88,7 +88,12 @@ def _on(_floor_monkeypatch, tmp_path):
 
 
 def _bind(
-    channel: str = PRIVATE, *, key: str = "chat-conductor", ended: bool = False, opener: str = ""
+    channel: str = PRIVATE,
+    *,
+    key: str = "chat-conductor",
+    ended: bool = False,
+    opener: str = "",
+    channel_wide: bool = False,
 ) -> Binding:
     from kiro_crew.slack.code_channels.store import store
 
@@ -101,6 +106,7 @@ def _bind(
             thread=True,
             room=ROOM_PRIVATE,
             opener=opener,
+            channel_wide=channel_wide,
         )
     )
     if ended:
@@ -236,6 +242,26 @@ def test_the_one_refusal_both_commands_share():
     assert ct.switch_refusal("!bot", PRIVATE, THREAD, "") == ct.LOCKED_TEXT
     assert ct.switch_refusal("!conductor", PRIVATE, THREAD, "") == ct.ALREADY_TEXT
     assert ct.switch_refusal("!bot", PRIVATE, "1.2", "") == ""
+
+
+@pytest.mark.parametrize("channel_wide, ended", [(False, True), (True, False), (True, True)])
+def test_any_other_bound_thread_is_still_refused(channel_wide, ended):
+    _bind(channel_wide=channel_wide, ended=ended)
+    assert ct.switch_refusal("!bot", PRIVATE, THREAD, "") == ct.LOCKED_TEXT
+    assert ct.switch_refusal("!conductor", PRIVATE, THREAD, "") == ct.ALREADY_TEXT
+
+
+def test_a_dropped_channel_conductors_thread_may_start_again(monkeypatch, dashboard):
+    from kiro_crew.slack.code_channels.store import store
+
+    _bind(channel_wide=True)
+    store().drop_channel_conductor(PRIVATE, THREAD)
+    assert ct.switch_refusal("!bot", PRIVATE, THREAD, "") == ""
+    assert ct.switch_refusal("!conductor", PRIVATE, THREAD, "") == ""
+    _room(monkeypatch, private=True)
+    assert _refusal(_Slack()) == ("", ROOM_PRIVATE)
+    assert _refusal(_Slack(), channel_wide=True) == ("", ROOM_PRIVATE)
+    assert _gate(_Slack(), "keep going", slot=None) is False
 
 
 # ── the locks ─────────────────────────────────────────────────────────────
@@ -455,6 +481,40 @@ def test_an_ended_thread_runs_nothing_and_never_falls_back(ended, slot):
     assert slack.posts == [(PRIVATE, ct.ENDED_TEXT, THREAD)]
 
 
+def test_the_owners_channel_command_reaches_a_closed_channel_conductors_handler():
+    _bind(channel_wide=True)
+    assert _gate(_Slack(), "!channel conductor off", slot=None) is False
+    assert _gate(_Slack(), "<@U0BOT00001> !channel conductor off", slot=None) is False
+
+
+@pytest.mark.parametrize("ended, slot", [(True, "live"), (True, None), (False, None)])
+def test_an_ordinary_ended_thread_answers_a_channel_command_as_ended(ended, slot):
+    _bind(ended=ended)
+    slack = _Slack()
+    assert _gate(slack, "!channel conductor off", slot=slot) is True
+    assert _gate(slack, "<@U0BOT00001> !channel conductor off", slot=slot) is True
+    assert slack.posts == [(PRIVATE, ct.ENDED_TEXT, THREAD)] * 2
+
+
+def test_a_channel_command_is_still_ended_where_it_would_not_reach_its_handler():
+    _bind(channel_wide=True, ended=True)
+    slack = _Slack()
+    assert _gate(slack, "!channel conductor off") is False
+    # A live slot's route runs a mentioned bang as a turn, and an OPTIONS answer is content.
+    assert _gate(slack, "<@U0BOT00001> !channel conductor off") is True
+    assert _gate(slack, "!channel conductor off", slot=None, interpret_commands=False) is True
+    assert slack.posts == [(PRIVATE, ct.ENDED_TEXT, THREAD)] * 2
+
+
+def test_a_non_owner_in_a_live_channel_conductor_thread_is_dropped(_on):
+    _bind(channel_wide=True)
+    slack = _Slack()
+    assert _gate(slack, "please also do X", user=STRANGER) is True
+    assert _gate(slack, "!channel conductor off", user=STRANGER, slot=None) is True
+    assert slack.posts == []
+    assert slack.ephemerals == [(PRIVATE, STRANGER, ct.OWNER_ONLY_TEXT, THREAD)]
+
+
 def test_the_linked_thread_router_asks_the_gate_first(monkeypatch):
     """``route_linked_thread`` refuses a non-owner in a Conductor thread before routing."""
     _bind()
@@ -663,6 +723,31 @@ def test_slash_conductor_refused_room_posts_nothing(monkeypatch, dashboard):
     _room(monkeypatch, private=False)
     slack, replies = _slash(monkeypatch, "goal", channel=PUBLIC)
     assert slack.posts == [] and "public channels are off" in replies[0]
+
+
+@pytest.mark.parametrize("handler", ["bot", "conductor"])
+def test_slash_conductor_in_a_channel_with_a_handler_posts_nothing(monkeypatch, dashboard, handler):
+    from kiro_crew.slack import channel_handler
+    from kiro_crew.slack.code_channels.store import store
+
+    _room(monkeypatch)
+    if handler == "bot":
+        monkeypatch.setattr(channel_handler, "channel_bot", lambda channel: "research")
+    else:
+        binding = Binding(
+            channel_id=PRIVATE,
+            team_id=TEAM,
+            session_key="chat-conductor",
+            anchor_ts=THREAD,
+            thread=True,
+            room=ROOM_PRIVATE,
+            channel_wide=True,
+        )
+        store().put_thread_binding(binding)
+    why = channel_handler.handler_refusal(PRIVATE)
+    assert why
+    slack, replies = _slash(monkeypatch, "fix the build")
+    assert slack.posts == [] and replies == [f"❌ {why}"]
 
 
 def test_overlapping_slash_conductors_each_post_where_they_were_typed(monkeypatch, dashboard):

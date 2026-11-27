@@ -1357,6 +1357,8 @@ async def test_is_allowed_user_stays_owner_only_for_a_confirmed_shared_user() ->
 #: is_shared_user(x)``). A new one is a decision, made here.
 _ADMISSION_SITES = {
     "slack/agent_sessions/session_events.py",
+    # A Channel Bot's chat moves to a thread only for a sender the linked route hears.
+    "slack/channel_handler.py",
     # A code channel a shared user opened admits them (opener_admitted, opener_of_request).
     "slack/code_channels/shared_refusal.py",
     "slack/events.py",

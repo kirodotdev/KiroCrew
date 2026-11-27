@@ -21,7 +21,9 @@ Two kinds of thread are pointed elsewhere instead of written around:
   command (``/kirocrew approval trust``);
 * a thread linked to a dashboard chat or a cron runs its turns on that session,
   whose Trust has no per-sender rung: a shared user's message there would run
-  without asking, so the owner sets it in that session's own picker.
+  without asking, so the owner sets it in that session's own picker. ``!trust``
+  grants nothing in a channel that a Channel Bot or Channel Conductor answers,
+  for the same reason: that chat runs every thread there.
 
 A channel-born dashboard tab runs on the thread's own session yet is not a linked
 thread here, and the card's Trust button also raises that tab's Trust. ``!trust
@@ -199,7 +201,13 @@ async def handle(
     if await asyncio.to_thread(_has_own_approval_setting, channel, reply_ts):
         _audit(user, "denied", f"session={session_key}", "code_channel_owns_mode")
         return CODE_CHANNEL_TEXT
-    if _is_linked(state, session_key, reply_ts):
+    from kiro_crew.slack import channel_handler
+
+    # A Channel Bot's or Channel Conductor's chat runs this thread's next message, so
+    # a grant on the thread's own session would report Trust on while every tool still
+    # asks. ``off`` and ``status`` still reach a grant made before the channel had one.
+    handled = word in _ON_WORDS and bool(channel_handler.handler_refusal(channel))
+    if handled or _is_linked(state, session_key, reply_ts):
         _audit(user, "denied", f"session={session_key}", "linked_dashboard_chat")
         return LINKED_TEXT
     if word in _STATUS_WORDS:
