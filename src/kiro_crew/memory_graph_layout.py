@@ -37,7 +37,6 @@ import json
 import math
 import os
 import re
-import sqlite3
 import subprocess
 import sys
 import time
@@ -48,6 +47,9 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
+# The store's own SQLite library: a second copy in the gateway keeps its own lock
+# table, so its close drops the store connections' POSIX locks on memory.db.
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.memory_graph_files import GRAPH_LAYOUT_FILE as SIDECAR_NAME
 
 #: Bumped when the file's tables or the meaning of a column change; an older

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -30,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import memory_graph_layout as gl
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.memory_graph_files import (
     BUILDING_SUFFIX,
     GRAPH_LAYOUT_FILE,

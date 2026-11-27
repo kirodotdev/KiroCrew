@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 from pathlib import Path
 from typing import Any, Callable
 
 from aiohttp import web
 
 from kiro_crew import memory_edit
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.dashboard.handlers._shared import _redact_memory_field
 from kiro_crew.dashboard.handlers._shared_memory_stores import (
     resolve_requested_memory_store,

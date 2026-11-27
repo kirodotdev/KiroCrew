@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +29,7 @@ from typing import Iterable, Sequence
 import numpy as np
 
 from kiro_crew import memory_graph_layout as gl
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.memory_graph_files import PAGE_CAP
 
 #: Ids per ``IN (...)`` lookup, under SQLite's variable limit on every build.
