@@ -176,7 +176,7 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
               // accepted. No opacity dim: the accent fill is the wrapper's, so a
               // dim here would fade only the label, and dimming the wrapper would
               // drag down the caret, whose menu still opens offline.
-              className={`mc-touch-hit-y flex items-center h-7 rounded-s-md cursor-pointer bg-transparent border-none text-accent-fg transition-all disabled:opacity-70 disabled:cursor-wait disabled:active:scale-100 ${connected ? 'hover:bg-accent-hover active:scale-95' : ''} ${compactHeader ? 'justify-center w-7' : 'gap-1.5 pl-2 pr-2.5 text-[12px] font-semibold'}`}
+              className={`mc-touch-hit-y flex items-center h-7 rounded-s-md cursor-pointer bg-transparent border-none text-accent-fg transition-all focus-visible:outline-offset-[-2px] focus-visible:outline-accent-fg disabled:opacity-70 disabled:cursor-wait disabled:active:scale-100 ${connected ? 'hover:bg-accent-hover active:scale-95' : ''} ${compactHeader ? 'justify-center w-7' : 'gap-1.5 pl-2 pr-2.5 text-[12px] font-semibold'}`}
               // Same gesture contract as a session row: plain click creates and
               // switches; Cmd/Ctrl-click and middle-click create the session as
               // a background TAB and leave the user where they are. Create
@@ -208,7 +208,7 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
             <DropdownMenu guideScope="menu:sessions.create-menu" open={newChatMenuOpen} onOpenChange={o => { setNewChatMenuOpen(o); if (!o) setRemoteCrewError('') }}>
               <DropdownMenuTrigger asChild>
                 <button
-                  className="mc-touch-hit-end flex items-center justify-center w-6 h-7 rounded-e-md cursor-pointer bg-transparent border-none text-accent-fg hover:bg-black/10 active:scale-95 transition-all"
+                  className="mc-touch-hit-end flex items-center justify-center w-6 h-7 rounded-e-md cursor-pointer bg-transparent border-none text-accent-fg hover:bg-black/10 active:scale-95 transition-all focus-visible:outline-offset-[-2px] focus-visible:outline-accent-fg"
                   title={i18nT('pages.chatSidebar.create')} aria-label={i18nT('pages.chatSidebar.more_create_options')} {...uiLocation('sessions.create-menu')}><ChevronDown size={13} /></button>
               </DropdownMenuTrigger>
               {/* max-w bounds the menu: the mode descriptions below are full

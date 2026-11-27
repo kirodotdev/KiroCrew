@@ -17,7 +17,7 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import { useMenuOpensDialog } from '../hooks/useMenuOpensDialog'
 import { i18nT } from '../i18n/t'
 
-const TILE = 'flex-col items-center gap-1 w-[76px] px-1 py-2 border-transparent hover:border-border text-[12px] text-text'
+const TILE = 'flex-col items-center gap-1 w-[76px] px-1 py-2 border-transparent hover:border-border text-[12px] text-text focus-visible:outline-offset-[-2px]'
 const ICON_BOX = 'w-10 h-10 rounded-lg border border-border bg-bg-elevated flex items-center justify-center text-accent'
 const LABEL = 'truncate min-w-0 max-w-full'
 

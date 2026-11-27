@@ -191,7 +191,7 @@ describe('ArtifactsPage wires the collapse to the chrome, narrow only', () => {
     // Each stays in its own parent (the header is a sibling of the scrolling
     // column, the chats section lives inside the dnd column) so the expanded
     // layout is unchanged.
-    expect(src.match(/<CollapsibleChrome collapsed=\{chromeCollapsed\}>/g)).toHaveLength(3)
+    expect(src.match(/<CollapsibleChrome collapsed=\{chromeCollapsed\}(?:\s+outsetX)?>/g)).toHaveLength(3)
   })
 
   it('listens on the element that CONTAINS the scroller, not the scroller', () => {

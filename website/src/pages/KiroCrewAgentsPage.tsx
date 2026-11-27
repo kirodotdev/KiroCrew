@@ -338,7 +338,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   return (
     <>
       {!embedded && <PageHeader title={i18nT('pages.kiroCrewAgentsPage.agents')} subtitle={i18nT('pages.kiroCrewAgentsPage.manage_agent_workspace_memory_store_bindings')} />}
-      <div className={`${embedded ? '' : 'px-4 md:px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
+      <div className={`${embedded ? '-mx-1 -mt-1 px-1 pt-1' : 'px-4 md:px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
         {/* A roster that failed to load must not read as "you have no crews":
             the empty state below would say exactly that. Hand-off only while the
             editor AND the create dialog are closed — open, the editor's unsaved

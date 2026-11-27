@@ -69,7 +69,7 @@ export { VIRTUALIZE_AT } from './ArtifactsPageGallery'
  * clipped on the first paint, and a ResizeObserver keeps the number honest when
  * the toolbar rewraps (a rotation, a longer tag name, a locale change).
  */
-function CollapsibleChrome({ collapsed, children }: { collapsed: boolean; children: React.ReactNode }) {
+function CollapsibleChrome({ collapsed, outsetX = false, children }: { collapsed: boolean; outsetX?: boolean; children: React.ReactNode }) {
   const inner = useRef<HTMLDivElement | null>(null)
   const shell = useRef<HTMLDivElement | null>(null)
   const [natural, setNatural] = useState<number | null>(null)
@@ -96,13 +96,17 @@ function CollapsibleChrome({ collapsed, children }: { collapsed: boolean; childr
     <div
       ref={shell}
       {...{ [CHROME_ATTR]: '' }}
-      className="overflow-hidden transition-[height,opacity] ease-out motion-reduce:transition-none"
+      className="overflow-hidden transition-[height,opacity,margin] ease-out motion-reduce:transition-none"
       // Duration comes from the hook's constant, not a Tailwind `duration-*`
       // class: the settle window that stops the collapse from re-triggering is
       // derived from the same number, and a hardcoded class here would let the
       // two drift apart silently.
       style={{
         height: collapsed ? 0 : (natural ?? undefined),
+        // 4px of clip room so a focused control's outline is not cut off. The
+        // inline outset is opt-in: only a parent with a side gutter can absorb it
+        // without gaining a sideways scroll.
+        margin: outsetX ? (collapsed ? '0 -4px' : '-4px') : (collapsed ? '0' : '-4px 0'),
         opacity: collapsed ? 0 : 1,
         transitionDuration: `${COLLAPSE_MS}ms`,
       }}
@@ -113,7 +117,7 @@ function CollapsibleChrome({ collapsed, children }: { collapsed: boolean; childr
         * `offsetHeight` — the measured height then comes out 12px short, the
         * shell clips exactly that margin, and the gap between the chrome and
         * the section below it disappears. */}
-      <div ref={inner} className="flow-root">{children}</div>
+      <div ref={inner} className={`flow-root ${outsetX ? 'p-1' : 'py-1'}`}>{children}</div>
     </div>
   )
 }
@@ -1056,7 +1060,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
           * the filters are the other 180px of the 317px of pinned chrome; the
           * breadcrumb and folder cards below stay put because they are content,
           * not chrome. */}
-        <CollapsibleChrome collapsed={chromeCollapsed}>
+        <CollapsibleChrome collapsed={chromeCollapsed} outsetX>
         {/* `flex-wrap` moves the ACTION GROUP to its own line when the title
           * cannot share one with it — it does not let the button row itself
           * wrap, which is what would cost the row its ranking. Without it the
@@ -1294,7 +1298,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               * above it. */}
             <div
               {...(galleryOwnsScroll ? { [CHROME_ATTR]: '' } : {})}
-              className={galleryOwnsScroll ? 'shrink-0 max-h-[45%] overflow-y-auto' : ''}
+              className={galleryOwnsScroll ? 'shrink-0 max-h-[45%] overflow-y-auto px-1' : ''}
             >
             {view === 'grid' && !filtersActive && scopeFolderId && (
               <FolderBreadcrumbBar folders={folders} currentFolderId={scopeFolderId} onNavigate={openFolder} />
@@ -1358,7 +1362,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               * views fold the docs into their own rows instead. Skipped while
               * folder-scoped (docs are unfiled) and in the Starred view. */}
             {view === 'grid' && !hideSessionDocs && ((filtersActive && !sideNavFolder) || !scopeFolderId) && (
-              <CollapsibleChrome collapsed={chromeCollapsed}>
+              <CollapsibleChrome collapsed={chromeCollapsed} outsetX>
                 <SessionDocsGallery
                   docs={sessionDocs}
                   pending={sessionDocsQ.isPending}

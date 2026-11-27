@@ -310,7 +310,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               matching where every browser puts it. */}
           {!isMobile && <NavHistoryArrows />}
           {isMobile && (
-            <button className="group p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')} {...uiLocation('shell.mobile-menu')}>
+            <button className="group p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0 focus-visible:outline-offset-[-2px]" onClick={toggleNav} aria-label={i18nT('app.open_menu')} {...uiLocation('shell.mobile-menu')}>
               {/* The product logo, not a generic menu glyph. A narrow layout has exactly
                   one nav affordance, and it opens the same rail whose header carries this
                   same `avatar` on a wide one -- so it is the same asset, the same

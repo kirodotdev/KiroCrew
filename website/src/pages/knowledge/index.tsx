@@ -717,7 +717,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
         <div role="tablist" aria-label={i18nT('pages.knowledge.index.knowledge_library')} className="flex gap-1">
           {TABS.map((t, i) => {
             const { ref, ...roving } = rovingTab(i)
-            const tabClass = `flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`
+            const tabClass = `flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 focus-visible:outline-offset-[-2px] focus-visible:rounded-md whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`
             return t === 'sources' ? (
               // Its own render site, so find_ui can read the registered tab's label key.
               <button key={t} type="button" role="tab" id={tabId(t)}

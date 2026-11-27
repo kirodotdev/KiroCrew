@@ -227,6 +227,7 @@ html[data-browser-live-takeover] [data-pinned-prompt-band] {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  overflow: visible;
 }
 [data-settings-box] [data-settings-box] > * {
   padding-left: 0;
