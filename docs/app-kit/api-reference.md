@@ -1142,6 +1142,8 @@ and the install prompt says so.
   `refused` with the server's reason, `unknown` when it was accepted but its answer could
   not be read (it may be running, so do not resend), `response-late` when no answer came in
   time (check the session before sending again) and `transport-error` when it never left.
+  The message shows at once in every dashboard tab that has the session open, as one typed
+  in the composer does.
 - `decide` takes the `pendingApproval` object from `sessions` and resolves to
   `{ outcome: 'decided' }`, or `settled` (someone else decided it first), `gone` (it is no
   longer pending) or `failed`, each with the sentence the dashboard's approval card shows.

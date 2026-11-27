@@ -150,6 +150,19 @@ describe('an external app with the documented declaration', () => {
     expect(post.body).toMatchObject({ message: 'look at the logs', slot: 'chat-new', steer: true })
   })
 
+  it('gives each send its own send id, so a tab that has the session open draws the message', async () => {
+    const { result } = external(DOCUMENTED)
+    await act(async () => { await result.current.send('chat-new', 'first') })
+    await act(async () => { await result.current.send('chat-new', 'second') })
+    const ids = requests
+      .filter((r) => r.path === '/api/chat')
+      .map((r) => (r.body as { meta?: { sendId?: string } }).meta?.sendId)
+    expect(ids).toHaveLength(2)
+    expect(ids[0]).toMatch(/^[A-Za-z0-9_-]{1,128}$/)
+    expect(ids[1]).toMatch(/^[A-Za-z0-9_-]{1,128}$/)
+    expect(ids[0]).not.toBe(ids[1])
+  })
+
   it('creates a session the person owns, not one the app owns', async () => {
     const { result } = external(DOCUMENTED)
     let made: unknown

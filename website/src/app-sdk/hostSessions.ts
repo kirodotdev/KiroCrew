@@ -46,6 +46,7 @@ import type { ApprovalTarget, ChatSlot } from '../types'
 import { approvalGoneKey, coordinatorTarget, nativeTarget } from '../types/approvalTarget'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
+import { mintSendId } from '../utils/sendDelivery'
 import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useAppIdentity } from './identity'
 import { AppSdkContext, apiPathAllowed, permissionDenied } from './scopedApi'
@@ -227,7 +228,9 @@ export function useHostSessions(): HostSessions {
   const send = useCallback(async (sessionKey: string, message: string, opts?: { steer?: boolean }) => {
     const refused = firstRefused(HOST_SESSIONS_PATHS.send)
     if (refused) throw refuse(refused)
-    const receipt = await sendTurn({ message, slot: sessionKey, steer: !!opts?.steer })
+    // The send id is what makes the gateway echo the row to every tab that has this
+    // session open; no composer drew the app's message, so nothing else would.
+    const receipt = await sendTurn({ message, slot: sessionKey, steer: !!opts?.steer, meta: { sendId: mintSendId() } })
     return receipt.reason !== undefined ? { status: receipt.status, reason: receipt.reason } : { status: receipt.status }
   }, [firstRefused, refuse])
 
