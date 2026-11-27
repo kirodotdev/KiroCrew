@@ -265,3 +265,20 @@ async def test_a_skipped_probe_keeps_the_last_real_sign_in_verdict(
 
     assert calls.count(["whoami"]) == whoami_runs
     assert status["authenticated"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_crewmate_pinned_to_a_harness_bots_cannot_run_on_keeps_whoami(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Such a pin runs the Bot on KAS (CrewBackendPin.checked), which signs in via
+    # kiro-cli, though the stored pin names another harness.
+    from kiro_crew import crewmate_harness
+
+    monkeypatch.setattr(crewmate_harness, "bots_cannot_run_on", lambda backend: True)
+    pin = SimpleNamespace(acp_backend="goose")
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE, agents={"helper": pin})
+
+    await _status_poll(service)
+
+    assert ["whoami"] in calls

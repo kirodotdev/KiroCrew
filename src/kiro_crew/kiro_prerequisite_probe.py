@@ -357,7 +357,9 @@ def _whoami_skip_allowed() -> bool:
     to a harness a host logout retires (``backends_retired_by_host_logout``, the
     harnesses that run on kiro-cli's sign-in): the bot route
     (``agent.member_acp_backend``, when any crewmate exists), a crewmate's own
-    ``agents.<name>.acp_backend`` pin, or a session created on such a harness.
+    ``agents.<name>.acp_backend`` pin, a Bot that runs on KAS though no field
+    names it (``crewmate_harness.bots_may_run_on_kas``), or a session created on
+    such a harness.
     Blocking (reads config); unreadable reads as not, which keeps the probe.
 
     shortcut: a sub-agent spawned with an explicit ``backend=`` writes no session
@@ -369,6 +371,7 @@ def _whoami_skip_allowed() -> bool:
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, backend_from_stored
     from kiro_crew.agent_sdk.host_auth import backends_retired_by_host_logout
     from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.crewmate_harness import bots_may_run_on_kas
     from kiro_crew.members_parts.member_sessions import _SESSION_BACKEND_PICKS
 
     try:
@@ -379,6 +382,10 @@ def _whoami_skip_allowed() -> bool:
             routes = [backend_from_stored(getattr(a, "acp_backend", "")) for a in agents.values()]
             routes.extend(backend_from_stored(v) for v in list(_SESSION_BACKEND_PICKS.values()))
             if any(r in retired for r in routes if isinstance(r, str)):
+                return False
+            # A pin to a harness Bots cannot run on, or an inherited bot route,
+            # runs the Bot on KAS though no field names it.
+            if bots_may_run_on_kas(config):
                 return False
             return (
                 not agents
