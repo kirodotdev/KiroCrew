@@ -51,6 +51,7 @@ import AppStoreDialog from '../../components/appstore/AppStoreDialog'
 import { appActionNotice, botChatStopFailedSlugs } from '../../components/appstore/backendRefused'
 import { botStopAppState, initialFromRoute, stopResultOf, useBotChatStop } from '../../components/appstore/useBotChatStop'
 import { reportAppView } from '../../lib/appViewTelemetry'
+import { appRegistryPrefetchHandlers } from '../../components/appRegistryPrefetch'
 
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
@@ -311,6 +312,8 @@ export default function LibraryPage() {
         layoutId={`library-tile-${app.name}`}
         layout="position"
         transition={reduceMotion ? TILE_MOVE_REDUCED : TILE_MOVE}
+        // Opening a routed app loads its bundle, which needs the app registry.
+        {...(app.manifest?.openCommand ? undefined : appRegistryPrefetchHandlers)}
       >
         <ErrorBoundary
           scope="apps:installed-card"

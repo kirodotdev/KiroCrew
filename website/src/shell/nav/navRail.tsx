@@ -20,6 +20,7 @@ import { appPathname } from '../../lib/basePath'
 import { MOBILE_NAV_WIDTH, type AppShell } from '../appShell'
 import { NavItem, NavBadge, NavRowLayoutKey } from './navRow'
 import { AppRowPopoutAction } from './appRowPopoutAction'
+import { appRegistryPrefetchHandlers } from '../../components/appRegistryPrefetch'
 import { DockMatesSection, useDockMates, useDockMatesSectionOpen } from './matesDock'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { coversPaneProps } from '../../hooks/paneVisibility'
@@ -295,14 +296,14 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 <SortableContext items={sortableRows.map(n => n.id)} strategy={verticalListSortingStrategy}>
                   {sortableRows.map(n => (
                     <AppRailMenu key={n.id} row={n} dragActive={dragActive}>
-                      <div role="presentation"><SortableAppNavRow id={n.id}>{renderAppRow(n)}</SortableAppNavRow></div>
+                      <div role="presentation" {...appRegistryPrefetchHandlers}><SortableAppNavRow id={n.id}>{renderAppRow(n)}</SortableAppNavRow></div>
                     </AppRailMenu>
                   ))}
                 </SortableContext>
                 {/* Pulled-in active overflow row(s): static, non-draggable. */}
                 {pulledInRows.map(n => (
                   <AppRailMenu key={n.id} row={n} dragActive={dragActive}>
-                    <div role="presentation">{renderAppRow(n)}</div>
+                    <div role="presentation" {...appRegistryPrefetchHandlers}>{renderAppRow(n)}</div>
                   </AppRailMenu>
                 ))}
                 {/* The ghost has no menu because it is a second rendering of the dragged row. */}

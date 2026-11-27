@@ -27,6 +27,7 @@ import { RefreshCw } from 'lucide-react'
 import ErrorNotice from './ErrorNotice'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { AppApiProvider } from '../app-sdk'
+import { importAppBundle } from './appBundleImport'
 import { i18nT } from '../i18n/t'
 import type { ResolvedSessionControl } from '../hooks/useSessionControls'
 import { withBase } from '@/lib/basePath'
@@ -142,7 +143,7 @@ export default function SessionControlHost({
   const LazyControl = useMemo(
     () =>
       lazy(() =>
-        import(/* @vite-ignore */ bundlePath).catch(err => {
+        importAppBundle<{ session: SessionControlContext; onClose: () => void }>(bundlePath).catch(err => {
           // eslint-disable-next-line no-console -- surface bundle load failures for debugging
           console.error(
             `[SessionControl] failed to load ${control.appName}/${control.id} from ${bundlePath}:`,
