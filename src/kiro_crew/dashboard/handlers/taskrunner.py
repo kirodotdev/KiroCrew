@@ -446,6 +446,9 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
 
     Body: ``{"spec": "path/to/file.md"}`` or ``{"spec": "__inline__:# Task content..."}``
     Inline specs are written to a temp file in the work directory.
+    Every step gets the memory group unless the body sends ``"include_memory":
+    false``: a run a person starts keeps memory, and the model's ``task_run``
+    tool always sends the flag.
     """
     owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.start")
     if owner_denied is not None:
@@ -498,6 +501,8 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     from kiro_crew.shared_crew.admission_run_link import link_run
     from kiro_crew.shared_crew.containment import principal_scope
 
+    # Only an explicit false withholds memory; absent, null or any other value keeps it.
+    include_memory = body.get("include_memory") is not False
     runner = state.task_runner
     run_admission = await admit_background_run(
         request,
@@ -512,6 +517,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             body.get("workspace_dir", ""),
             body.get("source"),
             body.get("auto_approve") is True,
+            include_memory,
         ),
     )
     if run_admission.rejected:
@@ -569,6 +575,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
                 auto_approve=auto_approve,
                 session_key=origin,
                 execution_context=execution,
+                include_memory=include_memory,
                 **({"input_content": inline_content} if inline_content is not None else {}),
                 **({"task_id": run_id} if run_id else {}),
             )

@@ -421,9 +421,17 @@ class WorkflowScope:
         provider,
         resumed=False,
         skill_trigger_text: str | None = None,
+        include_memory: bool = False,
     ):
+        """The turn text for *key*: *text* inside the session context ``build_message`` gives.
+
+        A workflow node gets the memory group (preferences, facts, history,
+        episodes, memory index) only when its ``ctx.agent(memory=True)`` call
+        asked (*include_memory*); lessons and project are kept either way.
+        """
         await self.prepare(context, key)
         from kiro_crew.context_assembly.budget import window_for_provider_client
+        from kiro_crew.context_assembly.inclusion import CHILD_GROUPS_WITHOUT_MEMORY
         from kiro_crew.executors import run_in_embed_pool
 
         if context is None:
@@ -458,6 +466,7 @@ class WorkflowScope:
             context_provider=provider,
             resumed=resumed,
             skill_trigger_text=skill_trigger_text,
+            context_groups=None if include_memory else CHILD_GROUPS_WITHOUT_MEMORY,
         )
         return full
 

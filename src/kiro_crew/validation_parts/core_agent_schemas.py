@@ -154,12 +154,14 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # "unknown field".
         FieldSpec("solo_reason", str, max_len=MAX_SHORT_STRING),
         FieldSpec("solo_details", str, max_len=MAX_MEDIUM_STRING),
-        # Switchable context groups the sub-agent inherits. Explicit
-        # ``default=True`` rather than the implicit ``None``: the semantic
-        # default is "on", and without it an explicit JSON ``null`` cleans to
-        # ``None``, which a consumer coercing with ``bool()`` would read as a
-        # withheld group — the opposite of what the caller asked for.
-        FieldSpec("include_memory", bool, default=True),
+        # Switchable context groups the sub-agent inherits. Explicit defaults
+        # rather than the implicit ``None``, so an explicit JSON ``null`` cleans
+        # to the same value as an absent field. Memory is off unless the call
+        # asks: the parent already holds it and writes the facts the child needs
+        # into the task. Lessons and project are on. ``POST /api/spawn`` reads
+        # an absent or null memory flag as true itself, so a spawn a person
+        # starts from the dashboard keeps every group.
+        FieldSpec("include_memory", bool, default=False),
         FieldSpec("include_lessons", bool, default=True),
         FieldSpec("include_project", bool, default=True),
         # DELEGATE TO A CREW BY NAME. A crew is a crew-member alias in
@@ -224,8 +226,8 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
         # As on spawn_run: batch-wide completion-notification opt-out.
         FieldSpec("silent", bool),
-        # Context groups, as on spawn_run: batch-wide, all default True.
-        FieldSpec("include_memory", bool, default=True),
+        # Context groups, as on spawn_run: batch-wide, memory off unless asked.
+        FieldSpec("include_memory", bool, default=False),
         FieldSpec("include_lessons", bool, default=True),
         FieldSpec("include_project", bool, default=True),
         # Retired solo-spawn gate fields, accepted and ignored as on spawn_run.
@@ -361,6 +363,8 @@ TASK_RUN_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("spec", str, required=True, max_len=MAX_LONG_STRING),
         FieldSpec("name", str, max_len=200),
+        # Off unless set: the run's steps get no memory group (see Project).
+        FieldSpec("include_memory", bool),
     ],
 )
 

@@ -677,13 +677,16 @@ focused sub-agent…") prepended; an explicit `agent=` does not, so the named
 agent's own contract is not overridden. A run resumed after an unexpected
 cancellation also carries `_CANCEL_RESUME_PREFIX`.
 
-**Switchable context groups.** `spawn_run` exposes three booleans, all defaulting
-to true, declared once in `mcp_tools/spawn_parts/schemas.py` → `_context_group_props` so the two
-spawn tools cannot drift:
+**Switchable context groups.** `spawn_run` exposes three booleans, declared once in `mcp_tools/spawn_parts/schemas.py` → `_context_group_props` so the two
+spawn tools cannot drift. `include_memory` defaults to false on the agent tools (the
+schema default in `validation_parts/core_agent_schemas.py`); `include_lessons` and
+`include_project` default to true. `POST /api/spawn` reads an absent memory flag as
+true, so a person's dashboard spawn keeps every group, and a `crew` / `target_member`
+delegation keeps the member's own memory unless the call withholds it by name:
 
 | Flag | Drops | Advertised rule |
 |---|---|---|
-| `include_memory` | preferences, activity index, semantic, provenance — and, for a V2 member, its briefing layer and manual anchors (§5) | false when the task is fully specified by the text you wrote |
+| `include_memory` | preferences, activity index, semantic, provenance, the `[Memory tools]` pointer — and, for a V2 member, its briefing layer and manual anchors (§5) | default false: write the facts the child needs into the task; true only when you cannot say which facts matter |
 | `include_lessons` | learned corrections, user profile | false only when the child purely reads and reports |
 | `include_project` | `[PROJECT]`, `[DOCUMENTATION]`, steering | false when the work is outside the active project tree |
 
@@ -691,7 +694,14 @@ spawn tools cannot drift:
 both `build_message` and the `state.json` record read, so a retried or continued
 run sees the scope its caller asked for. Anything withheld is named to the child
 in `[CONTEXT SCOPE]` — an unexplained gap makes a sub-agent invent user
-preferences, and naming it converts that into an honest "not provided".
+preferences, and naming it converts that into an honest "not provided". When memory
+is withheld the notice also says to ask `memory_recall` one specific question, since
+the `[Memory tools]` pointer went with the group. A workflow node
+(`WorkflowMemoryScope.prompt`) passes `CHILD_GROUPS_WITHOUT_MEMORY` (lessons and
+project) unless `ctx.agent(memory=True)` asked for memory. A task step
+(`task_executor`) passes it when the run's `include_memory` is false: the `task_run`
+tool sends false unless the call set `include_memory=true`, while a run a person
+starts (`POST /api/taskrunner` with no flag, the chat command) keeps memory.
 
 The same two groups can be dropped for one agent, on any surface. An agent spec
 that sets `includeCrossSessionContext: false` loses the `memory` and `lessons`

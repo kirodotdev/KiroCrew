@@ -217,6 +217,7 @@ def _serialize_runs(self: TaskRunner) -> str:
                     "spec_content": run.spec_content,
                     "auto_approve": run.auto_approve,
                     "agent": run.agent,
+                    "include_memory": run.include_memory,
                     "workflow_run_id": run.workflow_run_id,
                     "workflow_id": run.workflow_id,
                     "workflow_slug": run.workflow_slug,
@@ -507,6 +508,8 @@ def _load_runs(self: TaskRunner) -> None:
                 tasks=tasks,
                 auto_approve=item.get("auto_approve", False),
                 agent=item.get("agent", ""),
+                # A run persisted before the flag existed keeps memory.
+                include_memory=item.get("include_memory") is not False,
                 workflow_run_id=item.get("workflow_run_id", ""),
                 workflow_id=item.get("workflow_id", ""),
                 workflow_slug=item.get("workflow_slug", ""),

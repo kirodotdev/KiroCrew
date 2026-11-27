@@ -241,7 +241,8 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> "str | DeferredTool":
         return "Error: 'agents' array is required"
     cwd = args.get("cwd") or ""
     silent = args.get("silent") is True
-    # Context scope: batch-wide, absent ⇒ true (same rule as spawn_run).
+    # Context scope: batch-wide, same rule as spawn_run (the schema defaults
+    # memory to false and lessons and project to true).
     sa_groups = {
         k: False
         for k in ("include_memory", "include_lessons", "include_project")

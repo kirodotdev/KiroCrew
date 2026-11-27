@@ -83,7 +83,15 @@ def task_run(name: str, args: dict[str, Any]) -> str:
     spec = args["spec"]
     task_name = args.get("name", "")
     _src = "cron" if mcp_core._resolve_session_key().startswith("cron:") else "mcp"
-    d = mcp_core._post("/api/taskrunner", {"spec": spec, "name": task_name, "source": _src})
+    # Always explicit: the endpoint reads an absent flag as a person's start and
+    # keeps memory, so the model's run withholds it unless the call asked.
+    body = {
+        "spec": spec,
+        "name": task_name,
+        "source": _src,
+        "include_memory": args.get("include_memory") is True,
+    }
+    d = mcp_core._post("/api/taskrunner", body)
     if d.get("error"):
         return f"Error: {d['error']}"
 

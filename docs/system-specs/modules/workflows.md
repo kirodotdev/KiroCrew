@@ -136,6 +136,7 @@ run_id`.
 async def agent(
     self, prompt: str, *, label=None, phase=None, schema=None, model=None,
     agent=None, effort=None, cwd=None, session=None, nudge=None, backend=None,
+    memory=False,
 ) -> AgentResult
 ```
 
@@ -229,6 +230,18 @@ backend (`<name>@<backend>`), because a live session cannot change harness. With
 `model=`, the session's model comes from the default-model ladder scoped to that
 backend, which is auto when nothing is pinned for it. The spawn and cwd gates and
 the run's memory scope apply as to any other step.
+
+`memory` decides whether the step gets the memory group (preferences, stored facts,
+history, episodes, memory index). Unset, the step's `build_message` runs with
+`context_groups=CHILD_GROUPS_WITHOUT_MEMORY` (lessons and project only) and its
+`[CONTEXT SCOPE]` notice names the withheld group and points at `memory_recall`;
+`memory=True` passes every group, as before. Only a `True` adds `memory` to the
+call's options, so a call that does not ask keeps its replay fingerprint. Memory
+is injected when a session starts, so a named `session=` is scoped to it too
+(`<name>#memory`, after any `@<backend>`): a chain started without memory cannot take
+it on later. The
+author turn that drafts a script from the operator's intent is not a node and keeps
+every group.
 
 > Open question: the per-call `nudge` dict is part of the frozen signature and
 > reaches `opts`, but neither shipped `agent_fn` reads it, so today it has no
@@ -1704,6 +1717,7 @@ never spawns `kiro-cli` in tests. Two production adapters:
   A `session=<key>` call bypasses the pool entirely, since it needs a stable named
   session rather than a reset-between-uses worker. So does a `backend=` call: every
   warm worker runs the default harness, so it runs on a one-shot unpooled session.
+  A `memory=True` call does too: warm workers start without memory.
 
   Per-call `agent` / `model` / `cwd` / `effort` overrides each get their **own** warm
   sub-pool, so a multi-specialist fan-out still gets warm reuse per specialist and

@@ -163,6 +163,7 @@ async def run(
         status="running",
         source=source,
         agent=existing.agent if existing else "",
+        include_memory=existing.include_memory if existing else True,
         workflow_run_id=existing.workflow_run_id if existing else "",
         workflow_id=existing.workflow_id if existing else "",
         workflow_slug=existing.workflow_slug if existing else "",
@@ -357,6 +358,7 @@ async def start_background(
     execution_context: ExecutionContext | None = None,
     input_content: str | None = None,
     task_id: str = "",
+    include_memory: bool = True,
 ) -> str:
     """Plan and execute *spec_path* in the background; returns the task id.
 
@@ -368,6 +370,10 @@ async def start_background(
 
     *task_id*, from :func:`mint_task_id`, is the id a caller recorded before
     the start (fair admission links it first); one already in use is refused.
+
+    *include_memory* (default on) gives every step the memory group; off, steps
+    get lessons and project context only. The model's ``task_run`` tool turns it
+    off unless asked.
     """
     requested_id = task_id  # the pruning loops below rebind ``task_id``
     execution = await capture_admission_execution(
@@ -451,6 +457,7 @@ async def start_background(
                 source=source,
                 auto_approve=bool(auto_approve),
                 agent=agent,
+                include_memory=include_memory is True,
                 execution_context=execution,
             )
             await self._bind_run_execution(

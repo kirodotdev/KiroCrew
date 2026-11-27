@@ -64,7 +64,11 @@ def _posted(args: dict[str, Any], tool: str = "spawn_run") -> list[dict]:
 
 
 class TestSpawnRunToolForwarding:
-    """The omit-when-true wire contract: only a withheld group is sent."""
+    """The omit-when-true wire contract: only a withheld group is sent.
+
+    Memory is withheld unless the call asks for it, so a call naming nothing
+    still sends ``include_memory: false``.
+    """
 
     def test_withheld_group_is_sent_as_false(self):
         bodies = _posted({"task": "x", "include_memory": False})
@@ -77,9 +81,10 @@ class TestSpawnRunToolForwarding:
         assert "include_lessons" not in bodies[0]
         assert "include_project" not in bodies[0]
 
-    def test_nothing_sent_when_no_flag_is_passed(self):
+    def test_only_memory_is_withheld_when_no_flag_is_passed(self):
+        """The agent tool withholds memory unless asked; the other groups stay omitted."""
         bodies = _posted({"task": "x"})
-        assert "include_memory" not in bodies[0]
+        assert bodies[0]["include_memory"] is False
         assert "include_lessons" not in bodies[0]
         assert "include_project" not in bodies[0]
 
@@ -105,12 +110,14 @@ class TestSpawnSubAgentsToolForwarding:
         assert len(bodies) == 2
         assert all(b["include_project"] is False for b in bodies)
 
-    def test_absent_flags_are_not_sent_as_false(self):
+    def test_absent_flags_withhold_only_memory(self):
         bodies = _posted(
             {"agents": [{"prompt": "a"}]},
             tool="spawn_sub_agents",
         )
-        assert "include_memory" not in bodies[0]
+        assert bodies[0]["include_memory"] is False
+        assert "include_lessons" not in bodies[0]
+        assert "include_project" not in bodies[0]
 
 
 class TestSchemaCoercion:
@@ -119,8 +126,8 @@ class TestSchemaCoercion:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            # JSON null means "unset"; it must not read as a withheld group.
-            pytest.param(None, True, id="test_explicit_null_resolves_to_kept_not_withheld"),
+            # JSON null means "unset", the same as an absent field: memory off.
+            pytest.param(None, False, id="test_explicit_null_resolves_like_absent"),
             pytest.param(False, False, id="test_explicit_false_survives"),
         ],
     )
@@ -128,9 +135,9 @@ class TestSchemaCoercion:
         cleaned = validate_tool_args({"task": "x", "include_memory": value}, SPAWN_RUN_SCHEMA)
         assert cleaned["include_memory"] is expected
 
-    def test_absent_field_cleans_to_true(self):
+    def test_absent_field_cleans_to_its_default(self):
         cleaned = validate_tool_args({"task": "x"}, SPAWN_RUN_SCHEMA)
-        assert cleaned["include_memory"] is True
+        assert cleaned["include_memory"] is False
         assert cleaned["include_lessons"] is True
         assert cleaned["include_project"] is True
 

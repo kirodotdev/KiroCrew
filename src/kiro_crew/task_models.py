@@ -161,6 +161,11 @@ class Project:
     # The agent every session of this run opens with ("" = the default agent).
     # Kept per run and persisted: one runner serves every run of the gateway.
     agent: str = ""
+    # Whether each step gets the memory group (preferences, facts, history,
+    # episodes, memory index). On unless the starter withheld it (the model's
+    # task_run tool does unless asked); lessons and project context reach every
+    # step either way. Persisted with the run.
+    include_memory: bool = True
     work_dir: str = ""
     last_task_time: float = 0.0
     branch_name: str = ""

@@ -209,11 +209,19 @@ class _SpawnRunStep(DeferredTool):
 
 def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     """Prepare a background batch; its deferred steps submit one task at a time."""
-    # The call's own arguments: validation fills an absent flag with its default
-    # true, so only the raw call can say which block the caller named.
+    # The call's own arguments: validation fills an absent flag with its
+    # default, so only the raw call can say which block the caller named.
     raw = mcp_core.current_call_raw_args()
     named_true = [g for g in ("memory", "lessons") if raw.get(f"include_{g}") is True]
+    # A call reached without a tools/call in flight has no raw args; its own
+    # args are then the call as made.
+    asked = raw or (args if isinstance(args, dict) else {})
     args = validate_tool_args(args, SPAWN_RUN_SCHEMA)
+    # A crew delegation runs on that member's own store, which the parent never
+    # read and so cannot write into the task: it keeps its memory unless the
+    # call withholds it by name.
+    if (args.get("crew") or args.get("target_member")) and asked.get("include_memory") is None:
+        args["include_memory"] = True
 
     tasks = args.get("tasks")
     task = args.get("task")
@@ -280,9 +288,10 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     keep = bool(args.get("keep"))
     silent = args.get("silent") is True
     light = args.get("light") is True
-    # Context scope: absent ⇒ true, so a parent that passes nothing gets the
-    # same context a normal session would.
-    inc_memory = args.get("include_memory", True) is not False
+    # Context scope: memory only when the call asked for it (the schema's
+    # default is false: the parent writes the facts a child needs into its
+    # task); lessons and project absent ⇒ true.
+    inc_memory = args.get("include_memory") is True
     inc_lessons = args.get("include_lessons", True) is not False
     inc_project = args.get("include_project", True) is not False
     if agents_list and len(agents_list) != len(task_list):

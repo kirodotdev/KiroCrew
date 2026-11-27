@@ -103,7 +103,7 @@ _STABLE_TEXT = {
 }
 
 _STABLE_TEXT_SHA256 = {
-    "context_scope_all_withheld": "98ed04f8fca6f805d76f7fd3f518c63f221d5af6da6636fd30b28dc217207a0a",
+    "context_scope_all_withheld": "0eb372a720c3e3f1ce48bfe44174ccd3572a9d2fb8c8bbb8b11d3ed533fbf1db",
     "critical_rules": "7589a55a642c92f893a87f499fa91d7d6fcae3d424283dfbbe11979c8bcb2e2e",
     "critical_rules_channel": "a55668069ebcf5a45055d59028c2b57f39e86546b2639fe88385f765e7ef6257",
     "critical_rules_subagent": "89db6c776715d0b6358e140b8b13afba64bfe287e6e862e57b978baa09844d1b",
@@ -824,13 +824,13 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "subagent_scope": (
-        "4df13fdaeffbcf481322fbd7c75f970b3277969789fcf52fff12aeaacc00a8bc",
+        "b562d930b16e7a3ece745758d748556197e4af5610e6cef284a83804d44aab30",
         [
             ("agent_instructions", 145),
             ("session_wrapper", 297),
             ("agent_identity", 25),
             ("surface", 195),
-            ("context_scope", 249),
+            ("context_scope", 306),
             ("workspace_identity", 371),
             ("docs_pointer", 235),
             ("unclassified", 26),

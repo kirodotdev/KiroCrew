@@ -339,12 +339,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
         "include_memory": {
             "type": "boolean",
             "description": (
-                "Default true. Set false when the task is FULLY specified by the text "
-                "you wrote — read these files, run this command, validate this finding, "
-                "summarize this log. This is the normal case for parallel fan-out. If "
-                "the sub-agent needs one fact from your memory, put that fact in the "
-                "task text instead of turning this back on. Keep true when the task is "
-                "open-ended about the user's own work or history."
+                "Default false: the child gets none of your memory (preferences, facts, "
+                "history); write the facts it needs into the task. True only for "
+                "open-ended work on the user's own history. A crew delegation keeps "
+                "that member's memory."
             ),
         },
         "include_lessons": {

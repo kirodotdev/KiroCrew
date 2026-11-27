@@ -658,7 +658,11 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "isolate": body.get("isolate", ""),
                 "model": body.get("model", ""),
                 "reasoning_effort": body.get("reasoning_effort", ""),
-                "include_memory": body.get("include_memory", True),
+                # Absent or null keeps memory here: the schema's false default
+                # is the agent tool's, and this door also serves a person's spawn.
+                "include_memory": (
+                    True if body.get("include_memory") is None else body["include_memory"]
+                ),
                 "include_lessons": body.get("include_lessons", True),
                 "include_project": body.get("include_project", True),
                 # The dict is CLOSED -- validate_tool_args only sees what is

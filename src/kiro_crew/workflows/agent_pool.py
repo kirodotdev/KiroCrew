@@ -249,6 +249,8 @@ class _WorkflowSessionWorker:
                 resumed=self._resumed,
                 agent=self._agent,
                 cwd=self._cwd,
+                # A memory step never reaches a warm worker (``agent_fn``).
+                include_memory=False,
             )
         # Wall clock for THIS turn only (acp leaves TurnUsage.duration_ms at 0),
         # started right before the turn so session reuse is not charged to it.
@@ -429,8 +431,8 @@ def build_pooled_agent_fn(
     distinct ``(agent, model, cwd, effort)`` identity gets its OWN warm sub-pool (so a
     multi-specialist fan-out still gets warm reuse per specialist, and a worker
     built for one identity never serves a call that asked for another). Calls
-    with no override share the default sub-pool. A ``backend=`` call skips the pool
-    and runs on a one-shot session of its own. ``pool.shutdown()`` tears down every
+    with no override share the default sub-pool. A ``backend=`` or ``memory=True``
+    call skips the pool and runs on a one-shot session of its own. ``pool.shutdown()`` tears down every
     sub-pool.
     """
     worker_ids = itertools.count()
@@ -536,6 +538,7 @@ def build_pooled_agent_fn(
                     resumed=_resumed,
                     agent=opts.get("agent") or default_agent,
                     cwd=opts.get("cwd") or cwd,
+                    include_memory=opts.get("memory") is True,
                 )
             # Wall clock for this turn only (acp leaves TurnUsage.duration_ms at 0).
             _turn_t0 = time.monotonic()
@@ -595,8 +598,9 @@ def build_pooled_agent_fn(
             opts = {**opts, "cwd": step_cwd}
         opts_token = _STEP_OPTS.set(opts)
         try:
-            # Warm workers run the default harness.
-            if opts.get("session") is not None or backend_kwargs:
+            # Warm workers run the default harness, and their sessions started
+            # without memory, so a ``memory=True`` step gets a session of its own.
+            if opts.get("session") is not None or backend_kwargs or opts.get("memory") is True:
                 return await _run_unpooled(prompt, opts, backend_kwargs)
             target = _pool_for(
                 opts.get("agent"), opts.get("model"), opts.get("cwd"), opts.get("effort")

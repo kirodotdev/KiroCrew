@@ -1056,6 +1056,9 @@ class WorkflowService:
                     # Triggers read the operator's intent, not the authoring
                     # instructions or the reference workflows quoted around it.
                     skill_trigger_text=intent,
+                    # The author turn drafts the script from the operator's own
+                    # intent, not a node the script starts, so it keeps memory.
+                    include_memory=True,
                 )
                 stop_reasons.clear()
                 text = await stream_and_collect(
