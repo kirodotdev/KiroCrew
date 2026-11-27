@@ -54,6 +54,7 @@ from kiro_crew.taskq.model import KIND_WORKFLOW_AGENT, SIDE_EFFECT_UNKNOWN
 
 # Per-step tool-call ceiling is imported from agent_exec so the pooled and cold
 # paths cannot diverge; ``test_workflows_agent_pool.py`` pins them equal.
+from kiro_crew.workflows import shared_nodes
 from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
     StepStopWatch,
@@ -68,6 +69,7 @@ from kiro_crew.workflows.agent_exec import (
     step_text,
     vet_step_spawn,
 )
+from kiro_crew.workflows.shared_nodes import acquire_step_session
 
 logger = logging.getLogger(__name__)
 
@@ -158,8 +160,12 @@ class _WorkflowSessionWorker:
         memory_scope: Any = None,
         context_builder: Any = None,
         effort: Optional[str] = None,
+        parent_session_key: str = "",
     ) -> None:
         self._sessions = sessions
+        # The run's launching chat: its KAS process may host this worker's
+        # session (``shared_nodes``).
+        self._parent_session_key = parent_session_key
         self._key = key
         self._agent = agent
         self._model = model
@@ -182,13 +188,16 @@ class _WorkflowSessionWorker:
         # Read before the session is acquired: a start cancelled in an await after
         # the acquisition would leave the session held with no worker to release it.
         delete_delay = await self._configured_delete_delay()
-        provider, self._is_new, self._resumed = await self._sessions.get_or_create(
+        provider, self._is_new, self._resumed = await acquire_step_session(
+            self._sessions,
             self._key,
+            parent_session_key=self._parent_session_key,
             agent=self._agent,
             model=self._model,
             cwd=self._cwd,
             extra_env=self._extra_env,
-            **self._effort_kwargs,
+            effort_kwargs=self._effort_kwargs,
+            memory_scope=self._memory_scope,
         )
         self._provider = provider
         provider.set_delete_delay(delete_delay)
@@ -371,6 +380,7 @@ class _WorkflowSessionWorker:
             await self._sessions.destroy(self._key)
         except Exception:
             logger.debug("workflow pool: destroy failed for %s", self._key, exc_info=True)
+        shared_nodes.forget(self._key)
         self._provider = None
 
     def is_alive(self) -> bool:
@@ -443,6 +453,7 @@ def build_pooled_agent_fn(
                 memory_scope=memory_scope,
                 context_builder=context_builder,
                 effort=effort,
+                parent_session_key=session_key,
             )
 
         return WorkerPool(

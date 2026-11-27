@@ -134,7 +134,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "mapped_session_keys": ("function", False, "602c14087aa8", "facade"),
     "mapped_sid": ("function", False, "f1d40e624ae4", "facade"),
     "mark_continuable": ("function", False, "958babeb61c8", "facade"),
-    "open_task_session": ("function", True, "79d5142a16be", "facade"),
+    "open_task_session": ("function", True, "b6982a2383ce", "facade"),
     "project_aws_profile": ("function", False, "cb2074e9df23", "companions"),
     "record_failure": ("function", True, "1eda252b53bd", "facade"),
     "record_success": ("function", False, "958babeb61c8", "facade"),

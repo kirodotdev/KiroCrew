@@ -42,6 +42,7 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
     #                       no intra-pkg siblings — an OPTIONAL adapter, not engine layer
     "agent_pool": set(),  # warm-session agent_fn adapter; imports acp.worker_pool +
     #                       llm_helpers (external), no intra-pkg siblings — OPTIONAL adapter
+    "shared_nodes": set(),  # which process a step's session opens on; external deps only
     "store": set(),  # durable JSON-per-run persistence; imports config.paths + security
     #                  (external), no intra-pkg siblings — an OPTIONAL persistence adapter
     # reusable-definition persistence; shares store path resolution and

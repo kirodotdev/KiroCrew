@@ -185,10 +185,12 @@ async def open_task_session(
     approval_policy: str = "",
     _won_race_retries: int = 0,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    runtime: Any = None,
 ) -> tuple[LLMProvider, bool, bool]:
     """Open a task session on its run-scoped shared runtime (``start_priority``:
     rule ``kiro_crew.start_priority``), after the Kiro account check
-    (:meth:`_acquire_after_identity_check`)."""
+    (:meth:`_acquire_after_identity_check`). *runtime*: a live process the
+    caller chose instead (``SessionAllocationService.open_task_session``)."""
     async with self._acquire_after_identity_check(identity_checked=False):
         return await self._allocation_boundary().open_task_session(
             parent_session_key,
@@ -198,6 +200,7 @@ async def open_task_session(
             approval_policy=approval_policy,
             _won_race_retries=_won_race_retries,
             start_priority=start_priority,
+            runtime=runtime,
         )
 
 

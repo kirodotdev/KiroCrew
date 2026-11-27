@@ -49,7 +49,8 @@ from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
 from kiro_crew.security import redact
 from kiro_crew.session_directive import strip_quoted_markers
-from kiro_crew.workflows import WorkflowStepInterrupted
+from kiro_crew.workflows import WorkflowStepInterrupted, shared_nodes
+from kiro_crew.workflows.shared_nodes import acquire_step_session
 
 logger = logging.getLogger(__name__)
 
@@ -413,15 +414,22 @@ def build_agent_fn(
                 key = memory_scope.worker_key(f"named:{session}")
             await memory_scope.prepare(context_builder, key)
 
-        provider, is_new, _resumed = await sessions.get_or_create(
+        # On a KAS chat's own process when it may host the step (shared_nodes),
+        # else a process of its own as before.
+        provider, is_new, _resumed = await acquire_step_session(
+            sessions,
             key,
+            parent_session_key=session_key,
             agent=opts.get("agent") or default_agent,
             model=opts.get("model") or default_model,
             cwd=step_cwd or cwd,
             extra_env=extra_env,
-            **effort_kwargs,
-            **backend_kwargs,
+            effort_kwargs=effort_kwargs,
+            backend_kwargs=backend_kwargs,
+            named=not ephemeral,
+            memory_scope=memory_scope,
         )
+        shared = shared_nodes.is_placed(key)
         try:
             if is_new:
                 # Nobody can reconnect a slow MCP server for a step, so its first
@@ -485,11 +493,15 @@ def build_agent_fn(
         finally:
             # Every successful acquire owns a lease, including stateful calls.
             # Returning it without cleanup keeps the named provider and history.
+            # A step on its chat's process always ends its session there, so it
+            # never idles on a process it does not own.
             try:
                 sessions.release(key, cleanup=ephemeral)
-                if ephemeral and memory_scope is not None:
+                if ephemeral and (memory_scope is not None or shared):
                     await sessions.destroy(key)
             except Exception:  # noqa: BLE001 - cleanup must not mask the result
                 logger.warning("workflow session lease release failed", exc_info=True)
+            finally:
+                shared_nodes.forget(key)
 
     return agent_fn
