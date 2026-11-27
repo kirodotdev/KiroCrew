@@ -1,0 +1,6 @@
++4
+The live stream redactor's `_outside_batch_spans` returns a cut at the buffer's start
+without reading the batch credential plan: no span starts before the buffer, so the
+plan cannot move that cut. A unit the detectors hold from the buffer's start reports
+that cut on every feed, and each feed re-read the whole held buffer through the plan.
+The skip changes no cut, no span and no redaction.

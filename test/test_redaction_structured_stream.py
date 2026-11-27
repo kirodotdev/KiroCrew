@@ -240,6 +240,27 @@ def test_the_rest_of_a_held_value_s_line_goes_with_the_value(entry: str) -> None
         assert _fed(entry, chunks) == f"Cookie: session={TAG}\nok\n", [len(c) for c in chunks[:3]]
 
 
+def test_a_value_held_from_the_buffer_start_does_not_reread_the_batch_plan_per_feed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The detectors hold the header from the buffer's start on every feed of its value,
+    # and no batch span can straddle that cut, so the plan is not read for it.
+    from kiro_crew.security import text_redaction
+
+    reads = 0
+    batch_spans = text_redaction._batch_spans
+
+    def counted(buf: str) -> list[tuple[int, int]]:
+        nonlocal reads
+        reads += 1
+        return batch_spans(buf)
+
+    monkeypatch.setattr(text_redaction, "_batch_spans", counted)
+    text = "Cookie: session=" + _held_value(1000) + "; theme=dark\nok\n"
+    assert _fed("production", list(text)) == f"Cookie: session={TAG}; theme=dark\nok\n"
+    assert reads <= 2, reads
+
+
 @pytest.mark.parametrize("entry", _ENTRIES)
 @pytest.mark.parametrize("lead", _HELD_LEADS)
 def test_a_stream_that_ends_inside_a_held_value_sends_only_the_mask(entry: str, lead: str) -> None:
