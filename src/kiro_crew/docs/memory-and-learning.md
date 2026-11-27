@@ -209,11 +209,14 @@ If `config.json` or its `dashboard` section cannot be read, new chats fail close
 to Temporary until the file is fixed and the gateway restarts.
 
 Set via the dashboard Welcome view (ghost button), the mode icon in the chat
-header, Slack (`!incognito` / `!temporary` prefix), or Telegram (`/incognito` /
-`/temporary`). Telegram spells them as commands because it has a command grammar;
-the modes, the guarantees and the durability are the same on both channels, and
-both accept a question after the modifier to mark the conversation and answer in
-one message. The gateway keeps one small record per private conversation and
+header, Slack (`!incognito` / `!temporary` prefix), Telegram (`/incognito` /
+`/temporary`), or Discord (`!incognito` / `!temporary`, or the same names in its
+`/` menu). Telegram spells them as commands because it has a command grammar;
+the modes, the guarantees and the durability are the same on all three channels,
+and each accepts a question after the modifier to mark the conversation and answer
+in one message. On a chat channel the mode is Kiro Crew's alone: the agent process
+is not told about it, so ACP frame recording, when it is on, still records the
+conversation, and a Claude Code agent still uses its own automatic memory. The gateway keeps one small record per private conversation and
 retains at most 10,000 of them; if that limit is ever reached, a modifier on a
 conversation that is not yet private is refused with a message saying so, and the
 message it was attached to is NOT processed -- it is never run with the mode
@@ -344,9 +347,9 @@ Kiro Crew automatically consolidates conversations into memory:
 No manual action needed — it happens in the background. The manual trigger
 (**Summarize now** on the Memory page, **Settings → Memory**, or `POST /api/memory/consolidate`) refuses
 an Incognito or Temporary session with a 403 no matter which session triggers it,
-and the background paths skip those sessions — including a Slack or Telegram
-thread marked `!incognito` / `!temporary`, whose mode is recorded in the thread's
-own transcript header so it holds across restarts — so the mode table above holds
+and the background paths skip those sessions — including a Slack, Telegram or
+Discord conversation marked incognito or temporary, whose mode is recorded in the
+conversation's own transcript header so it holds across restarts — so the mode table above holds
 for every route. Summarize now reports those sessions as skipped, not failed.
 A real failure shows as an error notice with the server's reply and a link to
 the affected session; press Summarize now again to retry. The button writes

@@ -3019,8 +3019,8 @@ APPROVE/TRUST presses outright, but an explicit REJECT press (Slack transport +
 native `reject_tool`, Discord `a:…:0`, Telegram `a:…:0`) is allowed through to
 RESOLVE the pending approval as refused (`False`). A reject is itself a denial —
 exactly what the policy wants — and silently dropping it would strand the kiro-cli
-approval future until it times out (~300s) with the tool neither run nor cleanly
-refused. So a blocked APPROVE on a governed-off channel also resolves the future
+approval future until it times out (`agent.tool_approval_timeout_secs` on Slack
+and Discord, 300 s on Telegram) with the tool neither run nor cleanly refused. So a blocked APPROVE on a governed-off channel also resolves the future
 as denied (prompt refusal) rather than returning without resolving.
 
 ### Governance policy viewer (`GET /api/governance/policy`)

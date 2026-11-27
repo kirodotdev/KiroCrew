@@ -48,7 +48,8 @@ passed through unchanged. kiro-cli's built-in agents (`kiro_default`,
 
 Send `/agent` (`!agent` on Discord) to see the conversation's agent and the
 agents you can pick: the same list Telegram's `/agent` picker shows, so Kiro
-Crew's own agents and app agents are not offered. `/agent <name>` switches:
+Crew's own agents and app agents are not offered. In Discord's `/` menu, the
+`/agent` argument suggests names from that list as you type. `/agent <name>` switches:
 the conversation moves to that agent's latest conversation in this chat, or a
 new one, and switching back returns to the one you left. `/agent default` goes
 back to the default agent. `/new` after a switch always starts fresh. A switch waits until the
