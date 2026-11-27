@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from skills_helpers import _settled
 
 from kiro_crew import platform_compat, skill_trust
 from kiro_crew.skill_usage import SkillUsageLedger
@@ -1277,7 +1278,7 @@ class TestBudgetEndpointAgainstTheRealLoader:
             encoding="utf-8",
         )
 
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
         result = _compute_budget(loader)
 
         keys = {row["key"] for row in result["rows"]}
@@ -1324,7 +1325,7 @@ class TestBudgetEndpointAgainstTheRealLoader:
         )
 
         skill_trust.grant_project_trust(project)
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
         # The project IS trusted, and its skill IS enumerable when asked for.
         assert "project-only" in {n for n, _, _ in loader._iter(project)}
@@ -1353,7 +1354,7 @@ class TestRowsExplainThemselves:
     def _loader(self, skills_root: Path):
         from kiro_crew.skills import SkillsLoader
 
-        return SkillsLoader(skills_path=skills_root, install_builtins=False)
+        return _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
     def test_description_and_origin_reach_the_row(self, tmp_path):
         from kiro_crew.dashboard.handlers.skill_budget import _compute_budget
@@ -1478,7 +1479,7 @@ class TestStartupIndexCounts:
         skills_root = tmp_path / "skills"
         self._seed(skills_root, 400)
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: KiroCrewConfig()))
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
         result = _budget_response(loader)
 
@@ -1504,7 +1505,7 @@ class TestStartupIndexCounts:
             "load",
             classmethod(lambda cls: KiroCrewConfig(skills=SkillsConfig(lazy_load=False))),
         )
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
         counts = _startup_index(loader)
 
@@ -1537,7 +1538,7 @@ class TestStartupIndexCounts:
             encoding="utf-8",
         )
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: KiroCrewConfig()))
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
         caps = ctx._resolve_caps(None)
         assert (pinned / "SKILL.md").stat().st_size > caps.skills
 
@@ -1560,7 +1561,7 @@ class TestStartupIndexCounts:
         skills_root = tmp_path / "skills"
         self._seed(skills_root, 3)
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: KiroCrewConfig()))
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
         counts = _startup_index(loader)
 
