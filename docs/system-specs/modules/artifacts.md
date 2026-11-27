@@ -2006,6 +2006,17 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   selection that mixes kinds has no shared controls and gets no toolbar; it still
   moves, deletes and copies as one. Resize handles and connect dots stay with a
   single shape.
+- **A text box is as tall as its text.** Its height grows as text wraps or lines
+  are added and shrinks as text goes, so its handles set only its width; the
+  selection ring, hit area, connectors and toolbar follow the fitted height.
+  The file's stored height is a hint (JSON Canvas requires one on every node):
+  the editor measures the real height once the canvas is laid out
+  (`textFit.ts`; a canvas mounted hidden, such as a background tab, shows stored
+  heights until it is shown) and shows it without an edit, so opening a canvas
+  never autosaves or adds an undo step. A box is written at its fitted height
+  when it is next edited, and an edit leaves every box it did not touch at its
+  stored height. Shapes and stickies keep their
+  fixed size. The backend still reads the stored height.
 - **Zoom is one menu.** Its trigger shows the zoom; zoom in, zoom out, 100% and
   fit are its items, as in FigJam's corner control.
 - **Read-only where a save could do harm.** A past version opens pan-and-zoom

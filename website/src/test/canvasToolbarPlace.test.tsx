@@ -63,7 +63,8 @@ it('right-clicking a shape of another kind swaps the toolbar and opens the menu 
   act(() => { fireEvent.pointerUp(window, at(100, 60)) })
   act(() => { reportLayout() })
   expect(screen.getByTestId('canvas-toolbar')).toBeTruthy()
-  act(() => { fireEvent.contextMenu(canvas, at(500, 60)) })
+  // The text box is one line tall, so the click lands near its top.
+  act(() => { fireEvent.contextMenu(canvas, at(500, 10)) })
   act(() => { reportLayout() })
   expect(screen.getByTestId('canvas-context-menu')).toBeTruthy()
   expect(screen.getByTestId('canvas-text-toolbar')).toBeTruthy()

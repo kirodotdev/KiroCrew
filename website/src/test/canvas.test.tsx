@@ -1199,8 +1199,9 @@ describe('the canvas', () => {
     const rects = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
     try {
       render(<Harness initial={{ ...emptyCanvas(), shapes: [{ ...sticky('r', 0, 0, 'Text'), kind }] }} />)
-      press(100, 100)
-      release(100, 100)
+      // Near the top: a text box is only as tall as its one line.
+      press(100, 10)
+      release(100, 10)
       // A 320x568 phone leaves a 420px canvas starting at y=148. Measure the
       // actual panel top, including the toolbar and its margin, not a fixed guess.
       let height = 420
