@@ -318,9 +318,9 @@ class TestManagedServersFollowTheControlPlane:
         from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
         from kiro_crew.mcp_discovery import _MANAGED_SERVERS_CALLER_AWARE
 
-        # computer: tenant-nonce gated. cron and secrets: outside this layer's
-        # measured scope (secrets is opt-in, credential-bearing egress).
-        excluded = {"kirocrew-computer", "kirocrew-cron", "kirocrew-secrets"}
+        # computer: tenant-nonce gated. secrets: outside this layer's measured
+        # scope (opt-in, credential-bearing egress).
+        excluded = {"kirocrew-computer", "kirocrew-secrets"}
         assert len(MANAGED_STUB_FOLLOWERS) == len(set(MANAGED_STUB_FOLLOWERS))
         assert set(MANAGED_STUB_FOLLOWERS) == (
             _MANAGED_SERVERS_CALLER_AWARE - {MANAGED_STUB_LEADER} - excluded
@@ -328,8 +328,18 @@ class TestManagedServersFollowTheControlPlane:
         assert POOLING_REQUIRES_TENANT_NONCE <= excluded
         assert set(MANAGED_STUB_FOLLOWERS) <= set(KIROCREW_BIN_MCP_SERVERS)
 
-    def test_the_cron_server_never_follows(self) -> None:
-        assert "kirocrew-cron" not in _resolve_stub_servers({"stub_servers": ["kirocrew-core"]})
+    def test_the_cron_server_follows_core(self) -> None:
+        """Cron reads its caller per call, so it is pooled whenever core is."""
+        assert "kirocrew-cron" in _resolve_stub_servers({"stub_servers": ["kirocrew-core"]})
+        assert "kirocrew-cron" not in _resolve_stub_servers({"stub_servers": ["builder-mcp"]})
+
+    def test_an_operator_can_keep_the_cron_server_direct(self) -> None:
+        resolved = _resolve_stub_servers(
+            {"stub_servers": ["kirocrew-core"], "stub_overrides": {"kirocrew-cron": False}}
+        )
+        assert "kirocrew-cron" not in resolved
+        assert "kirocrew-core" in resolved
+        assert "kirocrew-guide" in resolved
 
     def test_a_follower_turned_on_survives_core_turned_off_later(self) -> None:
         from kiro_crew.dashboard.handlers.mcp import _record_stub_decisions

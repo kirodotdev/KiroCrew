@@ -133,19 +133,25 @@ MANAGED_STUB_LEADER = "kirocrew-core"
 #: already declares, so an opt-in server still reaches only the agents granted it.
 #:
 #: This is ``mcp_discovery._MANAGED_SERVERS_CALLER_AWARE`` minus the leader,
-#: ``kirocrew-computer``, ``kirocrew-cron`` and ``kirocrew-secrets``. It is spelled out rather than
+#: ``kirocrew-computer`` and ``kirocrew-secrets``. It is spelled out rather than
 #: derived because this module may import only ``config.fields`` (the config
 #: boundary contract) and ``mcp_discovery`` pulls in aiohttp and the probe
 #: executor. A ratchet test pins the equality, so a new caller-aware server fails
 #: it until it is placed here or in the test's exclusions with a reason.
 #:
+#: ``kirocrew-cron`` keeps nothing per session in its process: every tool takes
+#: the caller from the injected block (``mcp_core_parts.identity``), the delivery
+#: channel too (gatewayd exports no ``KIROCREW_CHANNEL_ID`` to a pooled backend),
+#: and the job store is opened per call. Each KAS sub-agent otherwise started its
+#: own ``kirocrew mcp-cron``.
+#:
 #: ``kirocrew-computer`` drives the desktop and pools only behind a
 #: per-connection tenant nonce (``mcp_caller.POOLING_REQUIRES_TENANT_NONCE``), so
-#: it stays an explicit choice. ``kirocrew-cron`` is not excluded for a known
-#: hazard: it is simply outside what this layer was measured on, and stays one
-#: operator toggle away like any other server. ``kirocrew-secrets`` is the same:
-#: an opt-in, credential-bearing egress server this layer was not measured on.
+#: it stays an explicit choice. ``kirocrew-secrets`` is an opt-in,
+#: credential-bearing egress server this layer was not measured on, and stays one
+#: operator toggle away like any other server.
 MANAGED_STUB_FOLLOWERS: tuple[str, ...] = (
+    "kirocrew-cron",
     "kirocrew-guide",
     "kirocrew-mate",
     "kirocrew-panel",
