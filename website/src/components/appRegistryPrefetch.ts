@@ -14,17 +14,31 @@ let inFlight: { demanded: boolean } | null = null
 
 function start(): Promise<unknown> {
   if (!registry) {
-    inFlight = { demanded: false }
-    registry = import('../app-sdk/shared-modules').then(
-      m => { inFlight = null; return m },
-      (e: unknown) => {
-        // A failed fetch (offline, a redeploy dropped the chunk) must not stick:
-        // the next open tries again.
-        registry = null
-        inFlight = null
-        throw e
+    // Marked before the import, and the handlers are chained on a separate
+    // statement: chained on `import()` itself, Vite's build puts them inside its
+    // preload wrapper, so they ran (and cleared the mark) before the wrapper
+    // fired `vite:preloadError`, and main.tsx then reloaded the page.
+    const load = { demanded: false }
+    inFlight = load
+    const p = import('../app-sdk/shared-modules')
+    const settle = () => { if (inFlight === load) inFlight = null }
+    registry = p.then(
+      m => {
+        settle()
+        // main.tsx cancels the preload error of a hover or startup load; Vite
+        // then resolves to undefined instead of rejecting.
+        if (!m) throw new Error('app registry chunk failed to load')
+        return m
       },
-    )
+      (e: unknown) => { settle(); throw e },
+    ).catch((e: unknown) => {
+      // A failed fetch (offline, a redeploy dropped the chunk): forget it so the
+      // next call imports again. The browser keeps the failed import in its
+      // module map, though, so that call fails at once with no new request; the
+      // next app the user opens then takes main.tsx's one reload, which loads it.
+      registry = null
+      throw e
+    })
   }
   return registry
 }

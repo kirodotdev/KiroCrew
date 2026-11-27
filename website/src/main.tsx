@@ -127,8 +127,9 @@ window.addEventListener('vite:preloadError', (event) => {
   if (isCatalogChunkError(preloadError)) return
   // A hover or idle preload of the terminal is not worth a reload over unsaved work.
   if (isSpeculativeTerminalChunkError(preloadError)) return
-  // Nor is a hover preload of the app registry (appRegistryPrefetch.ts).
-  if (isSpeculativeAppRegistryChunkError(preloadError)) return
+  // Nor is a hover or startup-mount load of the app registry (appRegistryPrefetch.ts).
+  // Cancelled so Vite does not rethrow it; the load sees the failure itself.
+  if (isSpeculativeAppRegistryChunkError(preloadError)) { event.preventDefault(); return }
   const AT_KEY = 'vite-preload-reloaded-at'
   const N_KEY = 'vite-preload-reload-count'
   const COOLDOWN_MS = 10_000
