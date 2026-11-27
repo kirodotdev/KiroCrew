@@ -41,12 +41,34 @@ pages cost about the same budget spread over more, slower calls.
 Output is one JSON object per line on stdout, one per open pull request:
 
     {"number": 123, "sha": "<oid>", "pr_updated_at": "<ISO8601>",
-     "readiness": {"state": "pending", "updated_at": "<ISO8601>"} | null,
+     "readiness": {"state": "pending", "updated_at": "<ISO8601>",
+                   "description": "<text>"} | null,
      "newest_completed_check_at": "<ISO8601>" | null,
      "newest_failed_check_at": "<ISO8601>" | null,
      "newest_review_at": "<ISO8601>" | null,
+     "comments_read": true,
+     "newest_comment_at": "<ISO8601>" | null,
      "running_checks": 0,
      "checks_complete": true}
+
+Two of those fields exist so the sweep can skip a REST read per pull request,
+and each says whether it was READ, because the sweep skips only on an answer:
+
+- `readiness.description` is the status's own description (`""` when it has
+  none). The key is ABSENT when the answer did not carry it, and the sweep then
+  reads the description over REST.
+- `newest_comment_at` is the newest `updatedAt` across the pull request's issue
+  comments, null when it has none. It is an answer only when `comments_read` is
+  true; when false the sweep makes its comment read as if this field did not
+  exist. A disposition record is an issue comment, so one created or edited
+  after a verdict makes this timestamp newer than the verdict: the sweep reads
+  the comments exactly when that holds.
+
+Both ride on `PR_PAGE_QUERY`. A page that query cannot get is asked once more
+with `PR_PAGE_QUERY_PLAIN`, the same query without them, before the page size
+is reduced: if that answers, the rest of the sweep uses the plain query and
+every record says "not read", so the sweep makes its REST reads instead of
+skipping any. One extra request per page failure, at most.
 
 A 200 body can carry `errors` next to usable `data`: GitHub nulls the one field
 it could not resolve (one pull request's rollup timing out, say) and reports it
@@ -58,7 +80,8 @@ as "no verdict published" and re-fire that pull request on transient trouble;
 one whose rollup could not be read is emitted with `checks_complete: false`, so
 the evidence is marked partial rather than read as "no checks"; one whose
 review timeline could not be read is still emitted, with a null
-`newest_review_at`, since missing review evidence can only fail to re-fire.
+`newest_review_at`, since missing review evidence can only fail to re-fire;
+one whose comments could not be read is emitted with `comments_read: false`.
 Only a body whose `data` lacks the connection being walked is a failed attempt.
 
 Degradation is deliberate: when even a page of one pull request fails, the walk
@@ -155,7 +178,20 @@ BACKOFF_SECONDS = (2.0, 4.0)
 # UPDATED_AT DESC is the order `gh pr list` used, kept so the log reads the same
 # way; the sweep sorts its own candidates by staleness afterwards, so the order
 # here decides nothing.
-PR_PAGE_QUERY = """
+#
+# Two fragments are optional, and PR_PAGE_QUERY carries both:
+#
+# - `StatusContext.description`, the text pr-readiness.yml writes beside the
+#   state. The sweep classifies a pending by it.
+# - the pull request's most recently updated issue comment:
+#   `comments(first: 1, orderBy: {field: UPDATED_AT, direction: DESC})`.
+#   `IssueCommentOrderField` has the one value UPDATED_AT, and `updatedAt` moves
+#   on an edit as well as on creation, so this is the newest change to any issue
+#   comment. One node, no body.
+#
+# PR_PAGE_QUERY_PLAIN is the same document without them; see the module
+# docstring for when it is used.
+_PR_PAGE_QUERY_TEMPLATE = """
 query($owner: String!, $name: String!, $first: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: $first, after: $cursor,
@@ -164,7 +200,7 @@ query($owner: String!, $name: String!, $first: Int!, $cursor: String) {
       nodes {
         number
         updatedAt
-        headRefOid
+        headRefOid%(comments)s
         timelineItems(last: 10,
                       itemTypes: [PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT]) {
           nodes {
@@ -176,7 +212,7 @@ query($owner: String!, $name: String!, $first: Int!, $cursor: String) {
         commits(last: 1) {
           nodes {
             commit {
-              status { contexts { context state createdAt } }
+              status { contexts { context state createdAt%(description)s } }
               statusCheckRollup {
                 contexts(first: 100) {
                   totalCount
@@ -198,6 +234,16 @@ query($owner: String!, $name: String!, $first: Int!, $cursor: String) {
   }
 }
 """
+
+COMMENTS_FRAGMENT = """
+        comments(first: 1, orderBy: {field: UPDATED_AT, direction: DESC}) {
+          nodes { updatedAt }
+        }"""
+PR_PAGE_QUERY = _PR_PAGE_QUERY_TEMPLATE % {
+    "comments": COMMENTS_FRAGMENT,
+    "description": " description",
+}
+PR_PAGE_QUERY_PLAIN = _PR_PAGE_QUERY_TEMPLATE % {"comments": "", "description": ""}
 
 # Remaining rollup pages for ONE commit, reached by oid. There is no way to
 # resume a nested connection from the pull-request query, so the commit is
@@ -241,6 +287,7 @@ class Counters:
         self.oversized = 0
         self.shrinks = 0
         self.left_out = 0
+        self.plain_pages = 0
 
 
 def _graphql(
@@ -324,8 +371,8 @@ def _errors_by_pr_node(errors: Any) -> tuple[dict[int, set[str]], bool]:
 
     Returns `(touched, page_wide)`: `touched[i]` holds `"checks"` when an error
     path under node `i` runs through `statusCheckRollup`, `"reviews"` when it
-    runs through `timelineItems`, and `"status"` for any other field of that
-    node (the status list, or the commit above it, which nulls the status too).
+    runs through `timelineItems`, `"comments"` when it runs through `comments`,
+    and `"status"` for any other field of that node (the status list, or the commit above it, which nulls the status too).
     An error with no path under the page's nodes cannot be placed and sets
     `page_wide`, which the caller treats as touching every node every way.
     """
@@ -344,6 +391,8 @@ def _errors_by_pr_node(errors: Any) -> tuple[dict[int, set[str]], bool]:
             kind = "checks"
         elif "timelineItems" in rest:
             kind = "reviews"
+        elif "comments" in rest:
+            kind = "comments"
         else:
             kind = "status"
         touched.setdefault(index, set()).add(kind)
@@ -364,15 +413,22 @@ def _readiness(commit: dict[str, Any], status_context: str) -> dict[str, str] | 
     check-runs, and a check-run named like the aggregate would then be able to
     decide the sweep. States are lower-cased to the spelling the workflow's
     `case` arms use (GitHub's REST spelling).
+
+    `description` is present only when the answer carried the field, so a
+    record from the plain query says nothing about it and the sweep reads it
+    over REST. A status with no description answers `""`.
     """
     contexts = ((commit.get("status") or {}).get("contexts")) or []
     for context in contexts:
         if (context or {}).get("context") != status_context:
             continue
-        return {
+        verdict = {
             "state": str(context.get("state") or "").lower(),
             "updated_at": str(context.get("createdAt") or ""),
         }
+        if "description" in context:
+            verdict["description"] = str(context.get("description") or "")
+        return verdict
     return None
 
 
@@ -432,6 +488,27 @@ def _newest_review(pr: dict[str, Any]) -> str | None:
     return _newest(stamps)
 
 
+def _newest_comment(pr: dict[str, Any]) -> tuple[bool, str | None]:
+    """`(read, newest updatedAt)` for the pull request's issue comments.
+
+    `read` is False when the answer carries no usable `comments` connection:
+    the plain query never asks for it, and a field error nulls it. A pull
+    request with no comment at all is read, with no timestamp.
+    """
+    connection = pr.get("comments")
+    if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+        return False, None
+    stamps = [
+        str(node["updatedAt"])
+        for node in connection["nodes"]
+        if isinstance(node, dict) and node.get("updatedAt")
+    ]
+    if len(stamps) != len(connection["nodes"]):
+        # A node with no timestamp is not an answer about that comment.
+        return False, None
+    return True, _newest(stamps)
+
+
 def _scan_pr(
     pr: dict[str, Any],
     *,
@@ -440,8 +517,13 @@ def _scan_pr(
     status_context: str,
     counters: Counters,
     checks_complete: bool = True,
+    comments_usable: bool = True,
 ) -> dict[str, Any] | None:
-    """One output record. `checks_complete=False` when the page already nulled the rollup."""
+    """One output record.
+
+    `checks_complete=False` when the page already nulled the rollup, and
+    `comments_usable=False` when it reported an error under the comments.
+    """
     number = pr.get("number")
     sha = pr.get("headRefOid")
     if not isinstance(number, int) or not sha:
@@ -508,6 +590,7 @@ def _scan_pr(
             break
         page_info = contexts.get("pageInfo") or {}
 
+    comments_read, newest_comment = _newest_comment(pr) if comments_usable else (False, None)
     return {
         "number": number,
         "sha": str(sha),
@@ -516,6 +599,8 @@ def _scan_pr(
         "newest_completed_check_at": _newest(completed),
         "newest_failed_check_at": _newest(failed),
         "newest_review_at": _newest_review(pr),
+        "comments_read": comments_read,
+        "newest_comment_at": newest_comment,
         "running_checks": running,
         "checks_complete": checks_complete,
     }
@@ -543,6 +628,7 @@ def main(argv: list[str] | None = None) -> int:
     counters = Counters()
     cursor: str | None = None
     page_size = PR_PAGE_SIZE
+    query = PR_PAGE_QUERY
     # True for the first request after a shrink: the failed size already spent
     # its attempts ruling out a transient, so each smaller size is probed once.
     probe = False
@@ -551,11 +637,30 @@ def main(argv: list[str] | None = None) -> int:
         if cursor:
             variables["cursor"] = cursor
         document, reason = _graphql(
-            PR_PAGE_QUERY,
+            query,
             variables,
             required=("repository", "pullRequests"),
             attempts=1 if probe else ATTEMPTS,
         )
+        if document is None and query is not PR_PAGE_QUERY_PLAIN:
+            # Ask the same page without the two optional fragments, once. An
+            # answer means they are what failed, so the sweep goes on without
+            # them and reads over REST what they would have told it.
+            document, plain_reason = _graphql(
+                PR_PAGE_QUERY_PLAIN,
+                variables,
+                required=("repository", "pullRequests"),
+                attempts=1,
+            )
+            if document is not None:
+                query = PR_PAGE_QUERY_PLAIN
+                print(
+                    f"::warning::readiness sweep scan: a page of {page_size} pull requests "
+                    f"failed with the description and comment fields ({reason}) and "
+                    "answered without them; the rest of this sweep scans without them "
+                    "and the sweep reads descriptions and comments over REST.",
+                    file=sys.stderr,
+                )
         if document is None:
             if page_size > 1:
                 smaller = max(1, page_size // 2)
@@ -579,6 +684,8 @@ def main(argv: list[str] | None = None) -> int:
             break
         probe = False
         counters.pr_pages += 1
+        if query is PR_PAGE_QUERY_PLAIN:
+            counters.plain_pages += 1
         connection = ((document.get("data") or {}).get("repository") or {}).get(
             "pullRequests"
         ) or {}
@@ -587,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
         left_out: list[Any] = []
         for index, pr in enumerate(nodes):
             pr = pr or {}
-            hit = {"status", "checks"} if page_wide else touched.get(index, set())
+            hit = {"status", "checks", "comments"} if page_wide else touched.get(index, set())
             if "status" in hit:
                 # The readiness status could not be read. A record with a null
                 # `readiness` would read as "no verdict published" and re-fire
@@ -602,6 +709,7 @@ def main(argv: list[str] | None = None) -> int:
                 status_context=args.status_context,
                 counters=counters,
                 checks_complete="checks" not in hit,
+                comments_usable="comments" not in hit,
             )
             if record is None:
                 continue
@@ -614,7 +722,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"::warning::readiness sweep scan: a page of {page_size} pull requests "
                 f"answered with field errors ({_error_summary(document['errors'])}). "
                 f"Left out, readiness status unreadable: {names or 'none'}; a pull "
-                "request whose rollup was nulled is emitted with checks_complete: false.",
+                "request whose rollup was nulled is emitted with checks_complete: false, "
+                "and one whose comments were nulled with comments_read: false.",
                 file=sys.stderr,
             )
         page_info = connection.get("pageInfo") or {}
@@ -630,7 +739,8 @@ def main(argv: list[str] | None = None) -> int:
         f"{counters.pr_pages} GraphQL pages, {counters.context_pages} context pages, "
         f"{counters.oversized} PRs with >{CONTEXTS_PAGE_SIZE} contexts, "
         f"{counters.shrinks} page-size reductions (ending at {page_size}), "
-        f"{counters.left_out} PRs left out on field errors",
+        f"{counters.left_out} PRs left out on field errors, "
+        f"{counters.plain_pages} pages without the description and comment fields",
         file=sys.stderr,
     )
     return 0

@@ -5441,6 +5441,33 @@ Two subtleties:
   at `DISPATCH_COST` each; the rest wait for the next tick, oldest first. A stale-green
   rescue is never deferred by the reserve. `test_pr_readiness_sweep_debounce.py` pins both.
 
+  The sweep's own first pass stays off that budget too. Two of its decisions need a
+  fact per pull request that is not a check-run: which kind of pending a status is (its
+  description), and whether a disposition record changed after a terminal verdict (the
+  issue comments). The scan carries both on the query it already makes:
+  `StatusContext.description`, and the pull request's most recently updated issue
+  comment (`comments(first: 1, orderBy: {field: UPDATED_AT, direction: DESC})`). The
+  sweep classifies a pending from the row's description, and makes the REST comment read
+  only when the newest issue comment is newer than the verdict. A disposition record is
+  an issue comment and an edit moves its `updatedAt` as creation does, so a record
+  created or edited after the verdict always opens that gate; a label, a review or a
+  push, which also move the pull request's `updatedAt`, do not. The scan is read
+  minutes before the loop that uses it, so a record posted after the scan read that
+  pull request is seen on the next tick, in either direction: a green that such a
+  record contradicts can stand one tick longer. The REST read has the same race for a
+  record posted just after it, and what bounds both is the disposition rule's harm
+  model: a violating record acts only on a later review round, which takes a push, and a
+  push recomputes readiness.
+  Only an answer skips a
+  read: a row whose description key is absent, whose `comments_read` is not true, or
+  whose comment time does not parse gets the REST read. A page the query cannot get with
+  the two fields is asked once without them (`PR_PAGE_QUERY_PLAIN`), and the rest of
+  that sweep then scans without them and reads over REST. The job counts its `gh` calls
+  and ends with a `rest-calls:` line, like `pr-readiness.yml`.
+  `test_pr_readiness_sweep_scan_reads.py` runs the sweep with and without the scan's
+  answers over the same states and pins that the dispatches are identical and that a
+  record newer than the verdict is always read.
+
   One pending is re-fired without check evidence: a re-check hold (`readiness check(s)
   changed since evaluation; re-checking <lane>`) on a head whose check-runs the scan
   counts have all completed, once it is `STALE_MINUTES` old. The hold counts on its lane's
