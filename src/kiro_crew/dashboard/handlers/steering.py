@@ -1131,6 +1131,11 @@ def _offload(fn: Any, *args: Any) -> Any:
 
 async def api_steering(request: web.Request) -> web.Response:
     """GET /api/steering — list the effective steering files (both roots)."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "steering.list")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     project_dir, project_state = active_project_state(state, _read_session_key(request))
     # rglob + per-file stat/head-read over two roots is browser-triggerable
@@ -1353,6 +1358,12 @@ def _project_precondition(
 
 async def api_steering_detail(request: web.Request) -> web.Response:
     """GET/PUT/DELETE /api/steering/{key} — read, update, or delete one file."""
+    if request.method == "GET":
+        from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+        owner_denied = await require_owner_for_dashboard_caller(request, "steering.read")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     project_dir = active_project_dir(state, _read_session_key(request))
@@ -1403,9 +1414,8 @@ async def api_steering_detail(request: web.Request) -> web.Response:
         # Content is returned verbatim, NOT credential-redacted, and that is
         # deliberate: this response populates the editor and is written straight
         # back on save, so redacting here would overwrite the user's own file
-        # with [REDACTED] markers — a data-loss bug traded for no real
-        # confidentiality gain, since the recipient is the same local OS user who
-        # owns the file. Same reasoning (and same behavior) as api_skill_detail.
+        # with [REDACTED] markers. Only the owner or an admitted teammate gets
+        # here (the gate at the top). Same reasoning as api_skill_detail.
         # Listing metadata IS redacted — see _redact_meta().
         return web.json_response(
             {

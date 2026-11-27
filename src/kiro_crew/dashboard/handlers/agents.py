@@ -174,6 +174,7 @@ from kiro_crew.dashboard.agent_admin.agent_config import (  # noqa: F401
 from kiro_crew.dashboard.agent_admin.agent_detail import (  # noqa: F401
     _agent_detail_candidates,
     _merge_resources_delta,
+    _redact_mcp_server_secrets,
     _reorder_named,
     api_agent_detail,
 )

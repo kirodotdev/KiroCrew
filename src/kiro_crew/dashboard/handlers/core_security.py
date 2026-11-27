@@ -119,6 +119,9 @@ async def api_sel_verify(request: web.Request) -> web.Response:
     the endpoint must not answer ``ok`` over the live log alone. ``detail``
     carries the reason and is empty when verifiable.
     """
+    denied = await require_owner_for_dashboard_caller(request, "sel.verify")
+    if denied is not None:
+        return denied
 
     # Same offload rationale as api_sel_events, including deferring _sel() into
     # the callable: verify_integrity() reads the whole log file to check the HMAC
@@ -148,7 +151,7 @@ async def api_sel_verify(request: web.Request) -> web.Response:
     )
 
 
-async def api_security_stats(_request: web.Request) -> web.Response:
+async def api_security_stats(request: web.Request) -> web.Response:
     """GET /api/security/stats — live security feature counts.
 
     Every count is DERIVED from the control it describes (``security_posture``),
@@ -163,6 +166,9 @@ async def api_security_stats(_request: web.Request) -> web.Response:
     Uses ``posture_counts_async`` rather than the full snapshot so serving three
     integers does not build (and serialize) the whole ~45 KB item payload.
     """
+    refusal = await require_owner_for_dashboard_caller(request, "security.stats")
+    if refusal is not None:
+        return refusal
     denied = 0
     try:
         from kiro_crew.dashboard.handlers.security import build_denied_commands_snapshot_async

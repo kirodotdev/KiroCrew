@@ -419,7 +419,12 @@ _UNSENT_AUTHORED = frozenset({"name", "matcher", "command"})
 @_store_failure_guard
 async def api_kiro_hooks(request: web.Request) -> web.Response:
     """GET /api/kiro-hooks — read-only view of kiro-cli agent hooks from kirocrew.json."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
     from kiro_crew.platform import redact_via_context as redact
+
+    denied = await require_owner_for_dashboard_caller(request, "kiro_hooks.list")
+    if denied is not None:
+        return denied
 
     agent_cfg = kiro_agents_dir_path() / "kirocrew.json"
     # ``kirocrew.json`` lives in the user-writable, tool-shared agents dir, so

@@ -863,3 +863,172 @@ async def test_an_admitted_session_still_reads_the_run_snapshot() -> None:
     resp = await _answer(handler, request)
     assert resp.status == 200
     assert json.loads(resp.body)["run_id"] == "run1"
+
+
+# ── The owner's spec editors, steering, agent hooks and security counts ──────
+#
+# Rows from the real route table, judged like the families above. A read that
+# would walk the host's steering roots is stopped where it starts, which is past
+# the gate.
+
+#: Refused to a session that is neither the owner nor a teammate.
+SPEC_READ_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", "/api/agents/detail/{name}"),
+        ("GET", "/api/agent/config"),
+        ("GET", "/api/mcp/custom/{name}"),
+        ("GET", "/api/steering"),
+        ("GET", "/api/steering/{key}"),
+        ("GET", "/api/kiro-hooks"),
+        ("GET", "/api/security/stats"),
+        ("GET", "/api/sel/verify"),
+    }
+)
+
+
+def _spec_read_table() -> dict[tuple[str, str], Any]:
+    from kiro_crew.dashboard import routes as routes_pkg
+
+    table = dict(_route_table())
+    for name in ("agents", "skills"):
+        app = web.Application()
+        getattr(routes_pkg, name).register(app)
+        for route in app.router.routes():
+            canonical = route.resource.canonical if route.resource else ""
+            table.setdefault((route.method, canonical), route.handler)
+    return table
+
+
+SPEC_READ_TABLE = _spec_read_table()
+
+
+def _spec_read_rows() -> list[tuple[str, str, Any, dict]]:
+    rows = []
+    for method, canonical in sorted(SPEC_READ_ROUTES):
+        names = [part[1:-1] for part in canonical.split("/") if part.startswith("{")]
+        values = {"name": "tester", "key": "user/notes.md"}
+        match_info = {name: values[name] for name in names}
+        path = canonical
+        for name, value in match_info.items():
+            path = path.replace("{" + name + "}", value)
+        rows.append((method, path, SPEC_READ_TABLE.get((method, canonical)), match_info))
+    return rows
+
+
+SPEC_READ_ROWS = _spec_read_rows()
+
+
+@pytest.fixture
+def _steering_stopped(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew.dashboard.handlers import steering
+
+    async def _stopped(*_args, **_kwargs):
+        raise _Reached
+
+    _floor_monkeypatch.setattr(steering, "_offload", _stopped)
+
+
+def test_every_spec_read_route_is_registered() -> None:
+    missing = [f"{m} {p}" for m, p, handler, _ in SPEC_READ_ROWS if handler is None]
+    assert missing == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_steering_stopped")
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), SPEC_READ_ROWS)
+async def test_spec_read_refuses_a_session_that_is_neither_owner_nor_teammate(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_app(), "other", method, path, match_info)
+    assert await _refused(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_steering_stopped")
+@pytest.mark.parametrize("who", ("owner", *TEAMMATES))
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), SPEC_READ_ROWS)
+async def test_spec_read_admits_the_owner_and_each_teammate(
+    who: str, method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_app(), who, method, path, match_info)
+    assert await _past_gate(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_steering_stopped")
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), SPEC_READ_ROWS)
+async def test_spec_read_leaves_app_tokens_and_internal_callers_to_their_own_controls(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    app_request = _request(_app(), "owner", method, path, match_info)
+    app_request["app"] = "notes"
+    app_request["is_dashboard_user"] = False
+    internal = make_mocked_request(method, path, app=_app(), match_info=match_info)
+    internal["internal_auth"] = True
+    for request in (app_request, internal):
+        assert await _past_gate(handler, request)
+
+
+_TOKEN = "ghp_0123456789abcdefABCDEF0123456789abcd"
+
+_SPEC_WITH_SECRETS = {
+    "name": "tester",
+    "mcpServers": {
+        "issues": {"command": "issues-mcp", "env": {"ISSUES_TOKEN": _TOKEN}},
+        "remote": {"url": "https://mcp.example.test", "headers": {"Authorization": _TOKEN}},
+    },
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", ("other", "owner", "relay"))
+async def test_the_agent_detail_read_hides_mcp_env_and_header_values(
+    who: str, tmp_path, _floor_monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stdio server's env token and a remote server's header never leave the read.
+
+    A chat-link session (an empty app claim, neither owner nor teammate) is refused
+    before the spec is read; the owner and a teammate get names, not values.
+    """
+    from kiro_crew.dashboard.handlers import agents
+
+    spec_file = tmp_path / "tester.json"
+    spec_file.write_text(json.dumps(_SPEC_WITH_SECRETS), encoding="utf-8")
+    _floor_monkeypatch.setattr(
+        agents, "_agent_detail_candidates", lambda _name: [(spec_file, _SPEC_WITH_SECRETS)]
+    )
+    _floor_monkeypatch.setattr(agents, "agent_skill_views", lambda *_a: ([], []))
+    handler = SPEC_READ_TABLE[("GET", "/api/agents/detail/{name}")]
+    request = _request(_app(), who, "GET", "/api/agents/detail/tester", {"name": "tester"})
+
+    resp = await _answer(handler, request)
+
+    assert _TOKEN not in resp.body.decode()
+    if who == "other":
+        assert _is_owner_refusal(resp)
+        return
+    assert resp.status == 200
+    servers = json.loads(resp.body)["mcpServers"]
+    assert set(servers["issues"]["env"]) == {"ISSUES_TOKEN"}
+    assert set(servers["remote"]["headers"]) == {"Authorization"}
+    assert servers["issues"]["command"] == "issues-mcp"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", ("other", "relay"))
+async def test_a_non_owner_reads_a_stdio_mcp_server_without_its_env_token(who: str) -> None:
+    """A chat-link session is refused; a teammate gets the env names, not the token."""
+    from kiro_crew.dashboard.handlers import mcp_custom
+
+    entry = {"command": "issues-mcp", "env": {"ISSUES_TOKEN": _TOKEN}}
+    handler = SPEC_READ_TABLE[("GET", "/api/mcp/custom/{name}")]
+    request = _request(_app(), who, "GET", "/api/mcp/custom/issues", {"name": "issues"})
+    with patch.object(mcp_custom, "_get_kirocrew_entry", lambda _name: dict(entry)):
+        resp = await _answer(handler, request)
+
+    assert _TOKEN not in resp.body.decode()
+    if who == "other":
+        assert _is_owner_refusal(resp)
+        return
+    assert resp.status == 200
+    assert set(json.loads(resp.body)["spec"]["env"]) == {"ISSUES_TOKEN"}
