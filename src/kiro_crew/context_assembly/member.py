@@ -332,8 +332,12 @@ def build_member_section(
     include_briefing: bool = True,
     desk_withheld: bool = False,
     dispatch_mounted: bool | None = None,
+    briefing_out: list[str] | None = None,
 ) -> str:
     """Assemble the four-layer identity for a member's bound execution.
+
+    ``briefing_out``, when given, receives the layer-4 text exactly as it sits
+    in the section, so a delivery can acknowledge it apart from the rest.
 
     Layer ownership (precedence is the injection order — earlier outranks
     later — with ONE stated exception: layer 3's header explicitly claims
@@ -568,6 +572,8 @@ def build_member_section(
             _fill("conductor.assignment_head", briefing_path=str(briefing_path))
             + (briefing if briefing else _prompt("conductor.assignment_empty"))
         )
+        if briefing_out is not None:
+            briefing_out.append(parts[-1])
     elif briefing_ok:
         # Read, but not the member's to write, so the header says whose file it
         # is now: it names the file, so a member can point the user at a stale
@@ -578,6 +584,8 @@ def build_member_section(
             _fill("conductor.assignment_head_read_only", briefing_path=str(briefing_path))
             + (briefing if briefing else _prompt("conductor.assignment_empty_read_only"))
         )
+        if briefing_out is not None:
+            briefing_out.append(parts[-1])
     elif desk_withheld:
         # No layer 4 and no placeholder: placeholders speak to a member AT ITS
         # DESK, and a turn off the desk has no layer 4 to miss. Its memory scope
@@ -625,8 +633,12 @@ def build_v2_essentials(
     desk_withheld: bool,
     provider_type: str | None,
     dispatch_mounted: bool | None = None,
+    briefing_out: list[str] | None = None,
 ) -> str:
     """Refresh complete member essentials without opening learned memory.
+
+    ``briefing_out``, when given, receives the member's ``[CURRENT ASSIGNMENT]``
+    text as rendered inside the returned envelope.
 
     ``desk_withheld`` is :func:`_desk_withheld`'s verdict for the turn being
     built and is handed to the member-section builder unchanged: the
@@ -673,12 +685,14 @@ def build_v2_essentials(
     include_project = not blocks_reads and _inclusion._group_included(
         context_groups, _inclusion.CONTEXT_GROUP_PROJECT
     )
+    briefing: list[str] = []
     identity = builder._build_member_section(
         owner,
         strict=True,
         include_briefing=reads,
         desk_withheld=desk_withheld,
         dispatch_mounted=dispatch_mounted,
+        briefing_out=briefing,
     )
     # A validation pass measures the largest envelope any harness can build,
     # so it keeps inheritance and never reads kiro-cli's opt-out. On a normal
@@ -799,6 +813,9 @@ def build_v2_essentials(
         )
         documents[folder_insert_at:folder_insert_at] = fitted
     envelope = render_essentials(documents, identity=identity)
+    if briefing_out is not None and briefing:
+        # Neutralized as render_essentials neutralizes the identity around it.
+        briefing_out.append(ctx._neutralize_structural_markers(briefing[0]))
     if native_envelope_out is not None:
         native = native_documents or {}
         native_envelope_out.append(

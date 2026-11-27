@@ -2435,6 +2435,13 @@ while byte-identical to the last acknowledged snapshot, so a reading in the
 block would resend the whole section on every `key_result_progress`. The
 Bot reads current values with `goal_read`.
 
+The briefing is the one part of the snapshot acknowledged on its own. The
+builder hands its rendered `[CURRENT ASSIGNMENT]` text to the delivery as the
+bind's `volatile` span (`build_member_section(briefing_out=...)`), so while the
+rest of the snapshot is acknowledged, a `save_notes` edit sends that section
+alone; any other change, and every forced bind (a start, a compaction, a
+resume), sends the whole snapshot with the briefing in it.
+
 `ContextBuilder` injects the owner's identity, current permanent rules and
 bound custom-template persona on fresh, warm, resumed, post-compaction and
 minimal turns, including delegated and cron turns with no DM member argument.

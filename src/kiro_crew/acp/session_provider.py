@@ -74,6 +74,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER
 from kiro_crew.agent_sdk.tool_gate import ADAPTER_EXPOSED_CREDENTIAL_LEAVES
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
@@ -879,7 +880,12 @@ class AcpSessionProvider(LLMProvider):
                     trace_turns.traced(
                         self,
                         self.essential_delivery.stream(
-                            message, send, lambda: self.context_incarnation
+                            message,
+                            send,
+                            lambda: self.context_incarnation,
+                            cancel_keeps_history=lambda: capabilities_for(
+                                self.backend
+                            ).keeps_history_on_cancel,
                         ),
                     ),
                 )
@@ -1204,7 +1210,8 @@ class AcpSessionProvider(LLMProvider):
         """Cancel the current turn."""
         if not self._handle.is_turn_active:
             return "no_turn"
-        self.essential_delivery.invalidate()
+        if not capabilities_for(self.backend).keeps_history_on_cancel:
+            self.essential_delivery.invalidate()
         try:
             await self._handle.cancel(grace_secs=wait_ack_timeout)
             if wait_ack_timeout > 0:

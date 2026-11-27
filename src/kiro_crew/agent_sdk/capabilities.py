@@ -336,6 +336,15 @@ class SessionCapabilities:
     #: on a landed turn, so a wrong guess repeats it instead of losing it.
     keeps_prompt_on_unlanded_turn: bool
 
+    #: Whether a cancelled turn leaves the conversation the harness already held
+    #: as it was, so what earlier turns delivered (a member's essentials, the
+    #: reply-format rules) is still there and is not sent again after a cancel.
+    #:
+    #: True for KAS, whose session log shows no revert after a cancel. False
+    #: everywhere else, an unknown backend included: there a cancel voids every
+    #: delivery receipt, so a wrong guess re-sends a block instead of losing it.
+    keeps_history_on_cancel: bool
+
     #: Whether the harness answers a rejected permission request by ending a
     #: clean ``end_turn`` on the refusal itself, leaving it unanswered, so a
     #: sub-agent turn that ends that way is read as ending on the refusal.
@@ -445,6 +454,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         crew_sends_persona_prompt=is_claude_backend_name(backend),
         loads_steering_natively=backend == ACP_BACKEND_KAS,
         keeps_prompt_on_unlanded_turn=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
+        keeps_history_on_cancel=backend == ACP_BACKEND_KAS,
         ends_turn_on_permission_reject=backend == ACP_BACKEND_OPENCODE,
         names_crew_tools_by_fused_name=backend == ACP_BACKEND_PI or is_claude_backend_name(backend),
         model_auto_switches_in_place=backend == ACP_BACKEND_KAS,
@@ -494,6 +504,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     crew_sends_persona_prompt=False,
     loads_steering_natively=False,
     keeps_prompt_on_unlanded_turn=False,
+    keeps_history_on_cancel=False,
     ends_turn_on_permission_reject=False,
     names_crew_tools_by_fused_name=False,
     model_auto_switches_in_place=False,
