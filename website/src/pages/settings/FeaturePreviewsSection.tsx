@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { ArrowRight } from 'lucide-react'
 
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
@@ -202,6 +202,14 @@ export function FeaturePreviewsSection() {
   const kasSubagents = usePreviewFlag(PREVIEW_KAS_SUBAGENTS)
   const workerGrill = usePreviewFlag(PREVIEW_WORKER_GRILL)
   const crewClient = usePreviewFlag(PREVIEW_CREW_CLIENT)
+  // Kiro Managed Environments needs sign-in values a plain install does not hold, so
+  // its row shows where the gateway says they are set (`managed_env_available`) OR
+  // the stored switch is already on: the gateway still offers the lane then, and
+  // this row is the only way to turn it off. Never under the LTS lock.
+  const managedEnvAvailable = useQuery<{ managed_env_available?: boolean }>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  }).data?.managed_env_available === true
   const appBrowserSdk = usePreviewFlag(PREVIEW_APP_BROWSER_SDK)
   const widgets = usePreviewFlag(PREVIEW_WIDGETS)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
@@ -396,10 +404,10 @@ export function FeaturePreviewsSection() {
             onChange={v => setPreviewFlag(PREVIEW_WORKER_GRILL, v)}
           />
         )}
-        {/* Company sign-in (`crew_client`): a gateway switch read at each sign-in
-            (`auth/login/endpoints.py`). NO ingress button: it changes how the
-            existing company sign-in behaves. */}
-        {!previewsOff && (
+        {/* Kiro Managed Environments (`crew_client`): a gateway switch read by the
+            launch lane and at each sign-in (`managed_env/`, `auth/login/endpoints.py`).
+            NO ingress button: the lane appears in the existing launch form. */}
+        {!previewsOff && (managedEnvAvailable || crewClient) && (
           <SettingsToggle
             label={i18nT('pages.developer.featurePreviewsTab.crew_client')}
             description={i18nT('pages.developer.featurePreviewsTab.crew_client_desc_summary')}
