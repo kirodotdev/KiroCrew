@@ -3130,6 +3130,23 @@ tree did not move while the command ran. After changing something that no packag
 lockfile names (a built `dist/`, a hand edit under `node_modules`), run
 `python3 scripts/local-gate.py --no-reuse`.
 
+The backend related set reaches pytest as explicit file paths, collected with
+`-p scripts.explicit_file_targets` loaded. pytest resolves a file argument by
+collecting its directory again for every argument and offering each sibling entry to
+`pytest_ignore_collect` and `pytest_collect_file`; `test/` has about 8,900 entries,
+so a related set of hundreds of files is millions of offers per xdist worker, which on
+Windows also fall back to `samefile` on each path mismatch, and the gate spent 18 to 40
+minutes collecting before its first test. The plugin answers the ignore hook first,
+with "ignore", for every path pytest asks about. pytest asks about no initial path and
+no directory above one (`Dir.collect` and `Package.collect` check `Session.isinitpath`
+first), so everything it is asked about is a sibling no argument names, and the
+collected node IDs, their order and the conftests loaded along each argument's path are
+the ones the plain walk produces. Explicit arguments still bypass every ignore rule,
+which is why `run_scoped_tests.py` keeps subtracting the platform collect-ignore list
+itself. The plugin refuses a directory argument as a usage error, since it would collect
+nothing under it. `test/test_explicit_file_targets.py` pins the runner's own argv
+against a file-offer counter and the node-ID parity with and without the plugin.
+
 The whole suite with the configured defaults is a human's run, not a gate:
 
 ```bash
