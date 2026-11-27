@@ -13,6 +13,7 @@ from skills_helpers import _settled
 from kiro_crew import platform_compat, skill_trust
 from kiro_crew.skill_usage import SkillUsageLedger
 from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.wait import wait_until
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1260,7 +1261,16 @@ class TestBudgetEndpointAgainstTheRealLoader:
     `_cached_frontmatter`. That is convenient, but it meant a required-argument
     change to the real method could crash this endpoint with every test green --
     which is precisely what happened. This test calls the real thing.
+
+    Every loader here is ``_settled`` before it is read: a fresh skills root
+    answers ``[]`` once the background walk outlasts the loader's two-second
+    cold-start budget, which a loaded Windows runner does.
     """
+
+    @pytest.fixture(autouse=True)
+    def _close_loaders(self, close_skills_loaders):
+        # Settling starts each loader's catalog worker; close it and join it.
+        yield
 
     def test_the_budget_computes_over_a_real_loader(self, tmp_path):
         from kiro_crew.dashboard.handlers.skill_budget import _compute_budget
@@ -1278,7 +1288,7 @@ class TestBudgetEndpointAgainstTheRealLoader:
             encoding="utf-8",
         )
 
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
         result = _compute_budget(loader)
 
         keys = {row["key"] for row in result["rows"]}
@@ -1325,10 +1335,14 @@ class TestBudgetEndpointAgainstTheRealLoader:
         )
 
         skill_trust.grant_project_trust(project)
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
-        # The project IS trusted, and its skill IS enumerable when asked for.
-        assert "project-only" in {n for n, _, _ in loader._iter(project)}
+        # The project IS trusted, and its skill IS enumerable when asked for. The
+        # project scope has its own cold-start walk, so wait for it to publish.
+        wait_until(
+            lambda: "project-only" in {n for n, _, _ in loader._iter(project)},
+            describe=lambda: f"catalog_status={loader.catalog_status(project)!r}",
+        )
 
         keys = {row["key"] for row in _compute_budget(loader)["rows"]}
         assert "global-one" in keys, keys
@@ -1354,7 +1368,7 @@ class TestRowsExplainThemselves:
     def _loader(self, skills_root: Path):
         from kiro_crew.skills import SkillsLoader
 
-        return SkillsLoader(skills_path=skills_root, install_builtins=False)
+        return _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
     def test_description_and_origin_reach_the_row(self, tmp_path):
         from kiro_crew.dashboard.handlers.skill_budget import _compute_budget
@@ -1457,7 +1471,17 @@ class TestRowsExplainThemselves:
 
 
 class TestStartupIndexCounts:
-    """``index_listed`` / ``index_total`` come from the loader's own render."""
+    """``index_listed`` / ``index_total`` come from the loader's own render.
+
+    Each loader is ``_settled`` first. A fresh root of hundreds of skills is
+    exactly the walk that outlasts the two-second cold-start budget on a loaded
+    Windows runner, and the render then counts an empty catalog (``0 == 400``).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _close_loaders(self, close_skills_loaders):
+        # Settling starts each loader's catalog worker; close it and join it.
+        yield
 
     @staticmethod
     def _seed(skills_root: Path, count: int) -> None:
@@ -1505,7 +1529,7 @@ class TestStartupIndexCounts:
             "load",
             classmethod(lambda cls: KiroCrewConfig(skills=SkillsConfig(lazy_load=False))),
         )
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
         counts = _startup_index(loader)
 
@@ -1538,7 +1562,7 @@ class TestStartupIndexCounts:
             encoding="utf-8",
         )
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: KiroCrewConfig()))
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
         caps = ctx._resolve_caps(None)
         assert (pinned / "SKILL.md").stat().st_size > caps.skills
 
@@ -1561,7 +1585,7 @@ class TestStartupIndexCounts:
         skills_root = tmp_path / "skills"
         self._seed(skills_root, 3)
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: KiroCrewConfig()))
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
         counts = _startup_index(loader)
 

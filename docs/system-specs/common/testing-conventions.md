@@ -223,7 +223,11 @@ import as a duration-named argument.
   everywhere else: ``platform_log_append._APPEND_TIMEOUT_SECONDS`` under the
   ``model.route`` strip, ``skills._COLD_CATALOG_WAIT_SECS`` under a cold
   ``get_context``. Set it to ``FALLBACK_TIMEOUT_SECS`` in the test or a shared fixture
-  (``test_decisions_strip_rides_message.generous_decision_log_append``). K19 sees only
+  (``test_decisions_strip_rides_message.generous_decision_log_append``). A test
+  over a real ``SkillsLoader`` on a fresh root passes it through
+  ``skills_helpers._settled`` before the first read, so an enumeration, a budget
+  screen or an index count never reads the empty answer of a walk still running
+  (``test_skill_budget.TestStartupIndexCounts``, 400 skills, ``assert 0 == 400``). K19 sees only
   a wrong override, never a missing one, so trace the asserted value back through
   every budget on its path.
 
