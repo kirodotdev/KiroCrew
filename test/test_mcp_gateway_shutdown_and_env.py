@@ -1040,3 +1040,28 @@ class TestPrivateBackendDeclaredEnv:
         sidecar.write_text(json.dumps({"A": "2"}), encoding="utf-8")
 
         assert gatewayd._declared_env_for_private_backend(key, declaring_agent=_AGENT) == {}
+
+
+def test_only_a_project_key_gets_agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A chat's kiro-cli child gets ``agent.env``; its per-project stand-in gets the
+    layer its session's launch applied, from the record, not a live config read."""
+    from dataclasses import replace
+
+    from kiro_crew.mcp_gateway import rewriter_env
+    from kiro_crew.mcp_gateway.hashing import PROJECT_TARGET_PREFIX
+    from kiro_crew.mcp_gateway.project_binding import ProjectBinding
+
+    monkeypatch.setattr(rewriter_env, "_configured_agent_env", lambda: {"HTTPS_PROXY": "http://live"})
+    monkeypatch.setenv(PROJECT_TARGET_PREFIX + "FILES", "files-bin --stdio")
+    monkeypatch.setenv("KIROCREW_MCP_TARGET_FILES", "files-bin --stdio")
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    key = PoolKey("files", "cmd", "env", "/data/workspace/_default", "1.0", 1000)
+    plan = ProjectBinding(key.work_dir, "standard", env_layer=(("HTTPS_PROXY", "http://p"),))
+    monkeypatch.setitem(gatewayd._PROJECT_PLANS, plan.sandbox_hash(), plan)
+    project = gatewayd.env_target_resolver(replace(key, sandbox_hash=plan.sandbox_hash()))
+    shared = gatewayd.env_target_resolver(key)
+    assert project is not None and shared is not None
+    assert project[2]["HTTPS_PROXY"] == "http://p"
+    assert "HTTPS_PROXY" not in shared[2]
+    # No sibling's launch, arguments and all, reaches a per-project backend.
+    assert not [k for k in project[2] if "MCP_TARGET_" in k or "MCP_PROJECT_TARGET_" in k]

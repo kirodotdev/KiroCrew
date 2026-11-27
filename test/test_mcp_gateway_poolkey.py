@@ -34,7 +34,7 @@ _VALID = {
 }
 
 
-def test_pool_key_field_set_is_exactly_the_six_dimensions() -> None:
+def test_pool_key_field_set_is_exactly_the_seven_dimensions() -> None:
     """The key's field set is asserted EXPLICITLY so adding or removing a
     pool dimension has to be a deliberate test change, never a silent one.
 
@@ -52,6 +52,8 @@ def test_pool_key_field_set_is_exactly_the_six_dimensions() -> None:
         "binary_version",
         # security boundary
         "os_uid",
+        # per-project backends only, set by the daemon from its session record
+        "sandbox_hash",
     }
 
 

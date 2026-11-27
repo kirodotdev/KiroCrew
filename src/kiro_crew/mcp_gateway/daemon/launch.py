@@ -40,6 +40,7 @@ from kiro_crew.mcp_gateway.admission import (
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.control_plane import CONTROL_PLANE_BACKENDS
 from kiro_crew.mcp_gateway.hashing import (
+    PROJECT_TARGET_PREFIX,
     hash_command,
     hash_effective_env,
     hash_launch_env,
@@ -57,6 +58,7 @@ from kiro_crew.sandbox import without_python_env
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
     from kiro_crew.mcp_gateway.backend import Backend
+    from kiro_crew.mcp_gateway.project_binding import ProjectBinding
 else:
     from kiro_crew.mcp_gateway.daemon import facade
 
@@ -260,9 +262,11 @@ def _declared_env_launch_approved(pool_key: PoolKey, pairs: dict[str, str]) -> b
     """Whether ``pairs`` is the env of an operator-approved launch of this server.
 
     Empty ``pairs`` is approved vacuously: there is nothing to forward, so there
-    is nothing for an approval to authorise.
+    is nothing for an approval to authorise. A per-project key (``sandbox_hash``)
+    needs none either: its backend runs inside the session's own sandbox, where
+    the chat itself would hand the server this env.
     """
-    if not pairs:
+    if not pairs or pool_key.sandbox_hash:
         return True
     if _launch_approved_from_snapshot(
         pool_key.server_name,
@@ -433,7 +437,8 @@ def resolvable_target_stems(env: Optional[dict[str, str]] = None) -> list[str]:
     # ``target_env_stem`` strips the prefix (canonical or the legacy
     # ``MC_MCP_TARGET_``) and the args-disambiguated suffix, so a hashed-only
     # entry still reports the server it serves.
-    stems = {stem for key in source if (stem := launch_approval.target_env_stem(key))}
+    # A per-project target is reported tagged: it is resolved from its own map.
+    stems = {stem for key in source if (stem := launch_approval.coverage_stem(key))}
     return sorted(stems)
 
 
@@ -783,8 +788,20 @@ def _backend_work_dir() -> Optional[str]:
 
 
 def _target_spec(pool_key: PoolKey) -> str:
-    """The ``KIROCREW_MCP_TARGET_<SERVER>`` mapping for *pool_key*, or ``""`` when none is set."""
-    base = "KIROCREW_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
+    """The ``KIROCREW_MCP_TARGET_<SERVER>`` mapping for *pool_key*, or ``""`` when none is set.
+
+    A per-project key (``sandbox_hash``) reads only the per-project map
+    (``hashing.PROJECT_TARGET_PREFIX``), and every other key only the approved one.
+    """
+    stem = pool_key.server_name.upper().replace("-", "_")
+    if pool_key.sandbox_hash:
+        project = PROJECT_TARGET_PREFIX + stem
+        return (
+            os.environ.get(project + "__" + pool_key.command_args_hash)
+            or os.environ.get(project)
+            or ""
+        )
+    base = "KIROCREW_MCP_TARGET_" + stem
     # Accept the legacy MC_MCP_TARGET_ prefix for overlays/daemons written by
     # older versions that haven't been regenerated.
     legacy_base = "MC_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
@@ -842,8 +859,11 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     # not proof of what it runs. Spawn only a command+args the operator
     # approved for this name (``launch_approval``). ``None`` is the clean
     # "no target" rejection, so the stub falls back to a launch inside the
-    # session sandbox. Fails closed on a missing or unreadable store.
-    if not _launch_approved_from_snapshot(
+    # session sandbox. Fails closed on a missing or unreadable store. A
+    # per-project key is the one exception: its command comes from the
+    # per-project map, and ``_acquire_backend`` starts it only inside the
+    # sandbox the owner recorded for the session, as the chat itself would.
+    if not pool_key.sandbox_hash and not _launch_approved_from_snapshot(
         pool_key.server_name,
         hash_command(command, args),
         _approval_env_identity(pool_key),
@@ -861,7 +881,11 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     work_dir = _backend_work_dir()
     if work_dir is None:
         work_dir = pool_key.work_dir
-    elif os.path.normcase(pool_key.work_dir) != os.path.normcase(work_dir):
+    elif not pool_key.sandbox_hash and os.path.normcase(pool_key.work_dir) != os.path.normcase(
+        work_dir
+    ):
+        # A per-project key's work dir is the daemon's own record, not the
+        # frame's; ``_acquire_backend`` spawns it there, inside its sandbox.
         logger.warning(
             "mcp-gateway: %r registered work dir %r; spawning in %r instead",
             pool_key.server_name,
@@ -885,6 +909,23 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
         bind_control_plane_to_owner(env, pool_key.server_name)
     else:
         env = without_python_env(env)
+    if pool_key.sandbox_hash:
+        # A per-project backend stands in for the server a chat's kiro-cli starts,
+        # and that child gets the env its launch added (``agent.env`` and the
+        # driver's ``extra_env``) over the gateway env and under the declared env
+        # (``acp.launch``). The record carries that layer as the session's launch
+        # applied it, and the key carries its digest, so a session started under
+        # another layer gets its own backend. The sandbox wrap's scrub still runs
+        # after it. A shared key gets none of it.
+        plan = facade.project_plan_for_key(pool_key)
+        if plan is not None:
+            env.update(dict(plan.env_layer))
+        # The daemon's target map names every server's launch, arguments
+        # included. A chat's own server never sees its siblings' launches, so
+        # neither does its stand-in.
+        for key in tuple(env):
+            if launch_approval.coverage_stem(key) is not None:
+                env.pop(key, None)
     # No KIROCREW_CHANNEL_ID is exported into the backend env. Copying it from
     # PoolKey.channel_id would only make sense while a backend was owned by one
     # channel. A pooled backend serves several channels, so a
@@ -943,6 +984,32 @@ def resolve_once_resolver(inner: TargetResolver) -> TargetResolver:
     return _resolver
 
 
+def _project_agent_socket(
+    target: tuple[str, list[str], dict[str, str], str],
+    plan: ProjectBinding,
+    socket_path: str,
+) -> tuple[str, list[str], dict[str, str], str]:
+    """*target* with the agent socket when the session's own tier forwards it.
+
+    A chat's kiro-cli child keeps ``SSH_AUTH_SOCK`` when its tier leaves ``~/.ssh``
+    readable (``sandbox._forward_ssh_auth_sock``). A per-project backend runs under
+    that same tier and hidden dirs, so it gets the same verdict and can use no key
+    the session's sandbox hides; the wrap judges it again (``backend``). BLOCKING.
+    """
+    from kiro_crew.sandbox import _forward_ssh_auth_sock
+
+    try:
+        forward = _forward_ssh_auth_sock(plan.sandbox_mode, plan.hidden_dirs)
+        refusal = agent_socket.agent_socket_refusal(socket_path)
+    except Exception:
+        logger.debug("per-project ssh-agent verdict failed; offering no socket", exc_info=True)
+        return target
+    if not forward or refusal is not None:
+        return target
+    command, args, env, work_dir = target
+    return command, args, {**env, "SSH_AUTH_SOCK": socket_path}, work_dir
+
+
 def agent_socket_resolver(inner: TargetResolver, socket_path: str) -> TargetResolver:
     """Wrap *inner* so a backend the operator named gets the gateway's agent socket.
 
@@ -959,7 +1026,10 @@ def agent_socket_resolver(inner: TargetResolver, socket_path: str) -> TargetReso
       resolves to one;
     * ``agent_socket.agent_socket_refusal`` finds nothing wrong with the path.
 
-    It covers every launch of the server, pooled or connection-private. gatewayd
+    A per-project key is judged by its session's tier instead, with no grant
+    (:func:`_project_agent_socket`), as the chat's own server is.
+
+    It covers every shared launch of the server, pooled or connection-private. gatewayd
     resolves and approves a launch by the name's normalized form (``my-server``
     and ``my_server`` are one), so a grant reaches every launch the operator
     approved under that form. Anything else passes the target through
@@ -991,6 +1061,9 @@ def agent_socket_resolver(inner: TargetResolver, socket_path: str) -> TargetReso
         if target is None:
             return None
         name = pool_key.server_name
+        plan = facade.project_plan_for_key(pool_key)
+        if plan is not None:
+            return _project_agent_socket(target, plan, socket_path)
         try:
             granted = name in ssh_auth_sock_consent.mcp_gateway_backends_granted()
         except Exception:

@@ -356,7 +356,9 @@ async def load_session(
         worker_stubs = _kas_worker_stub_names(
             self.acp_backend, pool_agent, session_key or "", pooled
         )
-        mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+        mcp_servers, stub_token = await self._own_stub_session(
+            mcp_servers, session_key, session_work_dir
+        )
         # After the token stamp, so a label element never carries the token.
         mcp_servers = await self._session_label_elements(
             mcp_servers, active_agent, session_work_dir, session_key

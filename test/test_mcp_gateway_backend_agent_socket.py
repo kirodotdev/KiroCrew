@@ -12,11 +12,13 @@ Pinned here, each negative beside a positive control taken the same way:
   independent of the agent-spawn ``enabled`` bit;
 * the value is the boot value, carried across an in-app exec, never a socket the
   live environment was repointed at later;
-* the daemon env and command line are unchanged without a grant, a boot socket,
-  or on Windows, and the socket never travels on argv;
+* the daemon gets the boot socket whenever one was recorded, never on Windows,
+  and never on argv; gatewayd takes it out of its own env at start;
 * gatewayd re-reads the grant on every resolve, offers the socket only to a
-  granted, approved, non-control-plane name with a vetted path, re-judges it
-  before the fork, and never widens what may spawn;
+  granted, approved, non-control-plane shared name with a vetted path,
+  re-judges it before the fork, and never widens what may spawn;
+* a per-project key gets it on its session tier's own verdict, as the chat's
+  own server does, with no grant;
 * the shared scrub itself is unchanged.
 """
 
@@ -443,14 +445,14 @@ def _captured_daemon_spawn(
 
 
 @_POSIX_ONLY
-def test_no_grant_leaves_the_daemon_env_unchanged(
+def test_the_daemon_gets_the_boot_socket_only_when_one_was_recorded(
     home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    agent_socket.record_boot_agent_socket({"SSH_AUTH_SOCK": "/run/boot.sock"})
     _argv, env = _captured_daemon_spawn(monkeypatch, tmp_path)
     assert _DAEMON_ENV not in env
-    # Control: the same gateway with a grant hands the daemon its boot socket.
-    _grant(home, {_FIELD: ["notes-mcp"]})
+    # Control: a recorded boot socket reaches the daemon with no grant, for the
+    # per-project backends whose session tier forwards it.
+    agent_socket.record_boot_agent_socket({"SSH_AUTH_SOCK": "/run/boot.sock"})
     argv, env = _captured_daemon_spawn(monkeypatch, tmp_path)
     assert env[_DAEMON_ENV] == "/run/boot.sock"
     # Never on the command line, which every local process can read.
@@ -471,13 +473,16 @@ def test_the_daemon_gets_the_boot_socket_not_the_live_one(
     assert env["PATH"]
 
 
-def test_the_agent_spawn_grant_alone_hands_nothing(
-    home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@_POSIX_ONLY
+def test_the_agent_spawn_grant_alone_hands_a_shared_backend_nothing(
+    home: Path, live_socket: str
 ) -> None:
-    agent_socket.record_boot_agent_socket({"SSH_AUTH_SOCK": "/run/boot.sock"})
     _grant(home, {"enabled": True})
-    _argv, env = _captured_daemon_spawn(monkeypatch, tmp_path)
-    assert _DAEMON_ENV not in env
+    resolver = gw.agent_socket_resolver(_inner(), live_socket)
+    assert "SSH_AUTH_SOCK" not in resolver(_key("notes-mcp"))[2]
+    # Control: the backend grant for the same name hands it over.
+    _grant(home, {"enabled": True, _FIELD: ["notes-mcp"]})
+    assert resolver(_key("notes-mcp"))[2]["SSH_AUTH_SOCK"] == live_socket
 
 
 @_POSIX_ONLY
@@ -511,14 +516,17 @@ def test_native_windows_hands_nothing(home: Path, monkeypatch: pytest.MonkeyPatc
     assert GatewayManager._backend_agent_socket() is None
 
 
-def test_an_unreadable_grant_hands_nothing(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    agent_socket.record_boot_agent_socket({"SSH_AUTH_SOCK": "/run/boot.sock"})
-
+@_POSIX_ONLY
+def test_an_unreadable_grant_hands_a_shared_backend_nothing(
+    home: Path, monkeypatch: pytest.MonkeyPatch, live_socket: str
+) -> None:
     def _boom() -> frozenset[str]:
         raise OSError("store on fire")
 
     monkeypatch.setattr(ssh_auth_sock_consent, "mcp_gateway_backends_granted", _boom)
     assert GatewayManager._backend_agent_socket() is None
+    resolver = gw.agent_socket_resolver(_inner(), live_socket)
+    assert "SSH_AUTH_SOCK" not in resolver(_key("notes-mcp"))[2]
 
 
 # --- gatewayd takes it out of its own env ------------------------------------------
@@ -584,8 +592,8 @@ def _inner(env: dict[str, str] | None = None):
     return lambda _key: ("demo-bin", ["--stdio"], target_env, "/work")
 
 
-def _key(name: str) -> Any:
-    return SimpleNamespace(server_name=name)
+def _key(name: str, sandbox_hash: str = "") -> Any:
+    return SimpleNamespace(server_name=name, sandbox_hash=sandbox_hash)
 
 
 @_POSIX_ONLY
@@ -618,6 +626,59 @@ def test_a_control_plane_backend_never_gets_it_even_if_named(
     assert "SSH_AUTH_SOCK" not in resolver(_key(name))[2]
     # Control: the other name in the same grant is offered it.
     assert resolver(_key("notes-mcp"))[2]["SSH_AUTH_SOCK"] == live_socket
+
+
+def _project_plans(monkeypatch: pytest.MonkeyPatch, plans: dict[str, Any]) -> None:
+    monkeypatch.setattr(gw, "project_plan_for_key", lambda key: plans.get(key.sandbox_hash))
+
+
+@_POSIX_ONLY
+def test_a_project_key_gets_the_socket_on_its_tiers_own_verdict(
+    home: Path, monkeypatch: pytest.MonkeyPatch, live_socket: str, sel: list[dict[str, Any]]
+) -> None:
+    from kiro_crew.mcp_gateway.project_binding import ProjectBinding
+
+    ssh_dir = str(Path.home() / ".ssh")
+    _project_plans(
+        monkeypatch,
+        {
+            "std": ProjectBinding("/p", "standard"),
+            "strict": ProjectBinding("/p", "strict"),
+            "masked": ProjectBinding("/p", "standard", (ssh_dir,)),
+        },
+    )
+    resolver = gw.agent_socket_resolver(_inner(), live_socket)
+    # No grant names this server: the standard tier leaves ~/.ssh readable, so the
+    # chat's own server keeps the socket and its per-project stand-in does too.
+    assert resolver(_key("notes-mcp", "std"))[2]["SSH_AUTH_SOCK"] == live_socket
+    # A tier or mask that hides ~/.ssh forwards nothing without the agent consent.
+    assert "SSH_AUTH_SOCK" not in resolver(_key("notes-mcp", "strict"))[2]
+    assert "SSH_AUTH_SOCK" not in resolver(_key("notes-mcp", "masked"))[2]
+    # The same name as a shared key still needs the backend grant.
+    assert "SSH_AUTH_SOCK" not in resolver(_key("notes-mcp"))[2]
+    assert sel == []
+
+
+@_POSIX_ONLY
+def test_a_project_key_gets_no_refused_socket(
+    home: Path, monkeypatch: pytest.MonkeyPatch, live_socket: str, private_dir: str
+) -> None:
+    from kiro_crew.mcp_gateway.project_binding import ProjectBinding
+
+    _project_plans(monkeypatch, {"std": ProjectBinding("/p", "standard")})
+    regular = os.path.join(private_dir, "not-a-socket")
+    Path(regular).write_text("x")
+    assert (
+        "SSH_AUTH_SOCK"
+        not in gw.agent_socket_resolver(_inner(), regular)(_key("notes-mcp", "std"))[2]
+    )
+    # Control: the vetted socket is offered to the same key.
+    assert (
+        gw.agent_socket_resolver(_inner(), live_socket)(_key("notes-mcp", "std"))[2][
+            "SSH_AUTH_SOCK"
+        ]
+        == live_socket
+    )
 
 
 @_POSIX_ONLY

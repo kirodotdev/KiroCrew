@@ -525,6 +525,28 @@ def _folder_declarations():
     return read_declarations(kiro_agents_dir_path(), mate_agents_dir())
 
 
+def _project_routing(gw_cfg: Any, observed: Mapping[str, Any]) -> tuple[Any, Any]:
+    """``(routing, declarations)``: which servers get one backend per project. BLOCKING.
+
+    Read as the rewriter reads it. A per-project Share switch the operator turned
+    off is reported apart, as ``declined``, so ``dont_share`` is empty here. The
+    rows endpoint and :func:`mcp_sharing_can_turn_on` both build it here, so the
+    row facts and the page's sharing switch rule cannot drift apart.
+    """
+    from kiro_crew.mcp_gateway import folder_use
+
+    declarations = _folder_declarations()
+    routing = folder_use.ProjectRouting(
+        edition=folder_use.edition_folder_free(),
+        answers=dict(getattr(gw_cfg, "cwd_use", None) or {}),
+        bindings=dict(getattr(gw_cfg, "cwd_use_launch", None) or {}),
+        observed_roots=frozenset(n for n in observed if folder_use.asks_for_roots(observed, n)),
+        dont_share=frozenset(),
+        declarations=declarations,
+    )
+    return routing, declarations
+
+
 def _env_pooling_outcome(
     row: dict[str, Any], forward_declared_env: bool, identity_keys: Collection[str]
 ) -> tuple[bool, bool]:
@@ -655,7 +677,6 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     global switch (``mcp_gateway.enabled``), reported by the status endpoint.
     """
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
-    from kiro_crew.mcp_gateway import folder_use
     from kiro_crew.mcp_gateway.rewriter import (
         UNPOOLABLE_SERVERS,
         pool_identity_env_keys,
@@ -678,14 +699,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     observed, preflights = await asyncio.to_thread(_load_shareability_state)
     probe_current, probeable = await asyncio.to_thread(_probe_view)
     trusted_stems = (await asyncio.to_thread(load_approvals)).trusted
-    folder_free = await asyncio.to_thread(folder_use.edition_folder_free)
-    declarations = await asyncio.to_thread(_folder_declarations)
-    answers = getattr(gw_cfg, "cwd_use", None) or {}
-    bindings = getattr(gw_cfg, "cwd_use_launch", None) or {}
-    observed_roots = frozenset(n for n in observed if folder_use.asks_for_roots(observed, n))
-    roots_excluded = declarations.per_chat(
-        rows.keys(), observed_roots, folder_free, answers, bindings
-    )
+    routing, declarations = await asyncio.to_thread(_project_routing, gw_cfg, observed)
 
     result: list[dict[str, Any]] = []
     for name in sorted(rows):
@@ -697,9 +711,20 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
         # operator's choice. The UI needs both — one disables the control, the
         # other sets it — and collapsing them would make an unstubbable server
         # look like one the operator declined.
-        asked_roots = name in roots_excluded
-        answer = folder_use.effective_answer(name, answers, bindings, declarations.launch(name))
-        can_stub = is_stdio and not denylisted and not asked_roots
+        can_stub = is_stdio and not denylisted
+        # Shared by chats of one project, inside their sandbox, with no approval.
+        # Its row's control is the per-project Share switch, not the Share press.
+        per_project = can_stub and routing.per_project(name)
+        # Neither folder-free nor per-project (a vault reference, an unreadable
+        # declaration): the Share press is refused with ``per_chat``, so the row
+        # offers none.
+        per_chat = can_stub and not per_project and not routing.folder_free(name)
+        # Why, for the row: an agent file that could not be read, or a vault value.
+        per_chat_reason = (
+            ""
+            if not per_chat
+            else ("vault" if declarations is not None and declarations.complete else "unreadable")
+        )
         # ``stub_servers`` is the only thing that produces a stub, so it is the
         # only thing this row may report. ``entry_poolable`` is still returned
         # below as information — a spec-level ``poolable: true`` does not opt a
@@ -759,16 +784,9 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 # on page-wide never re-enables it (it only enables servers
                 # nobody chose for).
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
-                # A mixed roots observation keeps the question and approval path.
-                "cwd_use": answer,
-                "cwd_proven": folder_use.folder_free_source(
-                    name,
-                    folder_free,
-                    answer,
-                    asked_roots=folder_use.roots_observed(name, observed_roots),
-                )
-                is not None,
-                "cwd_roots": asked_roots,
+                "per_project": per_project,
+                "per_chat": per_chat,
+                "per_chat_reason": per_chat_reason,
                 "entry_poolable": row["entry_poolable"],
                 "pooling_blocked_by_env": pooling_blocked,
                 "pooling_blocked_by_env_when_shared": nothing_shared,
@@ -798,12 +816,12 @@ def mcp_sharing_can_turn_on() -> bool:
     The backend half of the page's own rule (``canEnableSharing`` in
     ``McpManagement.tsx``, over ``autoShareCandidates`` in ``mcpManagementModel.ts``),
     computed from the same reads the status and rows endpoints serve: this host runs
-    the broker, and either a server is already marked to share or at least one server
-    turning sharing on would mark. Keep the two in step; a pointer at a switch that
-    stays disabled is a dead end. Never raises: an unreadable reading answers False.
+    the broker, and either a server is already marked to share, or turning sharing
+    on would share one: a folder-free server nobody declined, or a per-project one
+    whose env leaves something shared. A one-per-chat row counts for neither. Keep
+    the two in step; a pointer at a switch that stays disabled is a dead end. Never
+    raises: an unreadable reading answers False.
     """
-    from kiro_crew.config.integration_sections import effective_cwd_answer
-    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
     from kiro_crew.mcp_gateway.rewriter import UNPOOLABLE_SERVERS
 
     try:
@@ -813,22 +831,30 @@ def mcp_sharing_can_turn_on() -> bool:
         stub_set = set(gw_cfg.stub_servers)
         if stub_set:
             return True
+        from kiro_crew.mcp_gateway.rewriter import pool_identity_env_keys
+
         overrides = getattr(gw_cfg, "stub_overrides", None) or {}
-        cwd_use = getattr(gw_cfg, "cwd_use", None) or {}
-        cwd_launch = getattr(gw_cfg, "cwd_use_launch", None) or {}
         refused = refused_servers()
+        observed, _preflights = _load_shareability_state()
+        routing, _declarations = _project_routing(gw_cfg, observed)
+        forward_declared_env = bool(getattr(gw_cfg, "forward_declared_env", False))
+        identity_keys = pool_identity_env_keys()
         for name, row in _collect_server_rows().items():
             if row["transport"] != "stdio" or name in UNPOOLABLE_SERVERS:
                 continue
-            if overrides.get(name) is False or name in refused:
-                continue
-            answer = effective_cwd_answer(
-                cwd_use.get(name), cwd_launch.get(name), declared_launch(row)
-            )
-            # ``needsCwdAnswer``: only Kiro Crew's own servers, or an explicit
-            # ``not_used``, share without asking about the project's files.
-            if name in KIROCREW_BIN_MCP_SERVERS or answer == "not_used":
+            if routing.per_project(name):
+                # Shares per project once sharing is on; a declined one counts
+                # too, since this switch is the only way back to its row.
+                if not _env_blocks_every_share(row, forward_declared_env, identity_keys):
+                    return True
+            elif (
+                routing.folder_free(name)
+                and overrides.get(name) is not False
+                and name not in refused
+            ):
                 return True
+            # Neither (a vault reference, an unreadable declaration): one copy
+            # per chat whatever the switch says, so nothing to point at.
         return False
     except Exception:  # noqa: BLE001 - a reading that fails offers no pointer
         logger.debug("could not read whether MCP sharing can be turned on", exc_info=True)

@@ -232,7 +232,7 @@ def _registered_line(frame: dict[str, Any]) -> bytes:
         '{"type":"registered","backend_id":"pending-%s","pool_label":%s,'
         '"fingerprint":%s,'
         '"capabilities":["ensure_backend","bridge_ping","poolable_ack",'
-        '"spawn_queue","tenant_nonce"]}\n'
+        '"spawn_queue","tenant_nonce","project_scope"]}\n'
         % (
             pool_key.stable_hash()[:12],
             json.dumps(pool_key.human_readable()),

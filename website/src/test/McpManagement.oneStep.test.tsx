@@ -132,33 +132,66 @@ describe('one-step sharing', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
+  // With sharing off the row switch is disabled, so the write that asks next
+  // is a paused row's Approve press.
+  const approvePaused = async () =>
+    fireEvent.click(
+      await screen.findByRole('button', { name: rowName('new_command_button', 'alpha-mcp') }, { timeout: 5000 }),
+    )
+
   it('keeps the confirm closed when the marked list cannot be read back', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: false }) as never)
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
+      status({
+        enabled: false,
+        stub: ['alpha-mcp'],
+        launch_refused: {
+          'alpha-mcp': {
+            reason: 'changed_needs_reapproval',
+            complete: true,
+            expected_launch: 'alpha-identity',
+            commands: [['/opt/alpha', '--two']],
+            approved_commands: [['/opt/alpha', '--one']],
+          },
+        },
+      }) as never,
+    )
     vi.spyOn(api, 'mcpGatewayServers')
-      .mockResolvedValueOnce({ servers: [server()] } as never)
+      .mockResolvedValueOnce({ servers: [server({ stub: true, in_allowlist: true })] } as never)
       .mockRejectedValue(new Error('read failed'))
-    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue(launch() as never)
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: true } as never)
 
     mount()
-    fireEvent.click(await findRowSwitch())
+    await approvePaused()
     await waitFor(() => expect(setStub).toHaveBeenCalledTimes(1), { timeout: 5000 })
     // Chain: the stub POST -> the read-back fails -> no dialog.
     expect(await screen.findByText(M('servers_failed'), undefined, { timeout: 5000 })).toBeTruthy()
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('marks the server, then asks before turning page-wide sharing on', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: false }) as never)
-    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
+  it('approves a paused server, then asks before turning page-wide sharing on', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
+      status({
+        enabled: false,
+        stub: ['alpha-mcp'],
+        launch_refused: {
+          'alpha-mcp': {
+            reason: 'changed_needs_reapproval',
+            complete: true,
+            expected_launch: 'alpha-identity',
+            commands: [['/opt/alpha', '--two']],
+            approved_commands: [['/opt/alpha', '--one']],
+          },
+        },
+      }) as never,
+    )
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server({ stub: true, in_allowlist: true })] } as never)
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: true } as never)
     const enable = vi.spyOn(api, 'mcpGatewayEnable').mockResolvedValue({ ping_ok: true } as never)
-    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue(launch() as never)
 
     mount()
-    fireEvent.click(await findRowSwitch())
-    // Chain: the press -> the launch read -> the stub POST -> the switch's own confirm.
-    await waitFor(() => expect(setStub).toHaveBeenCalledTimes(1), { timeout: 5000 })
+    await approvePaused()
+    // Chain: the press -> the stub POST pinned to the refused launch -> the switch's own confirm.
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'alpha-identity'), { timeout: 5000 })
     const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })
     expect(enable).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: M('confirm_turn_on') }))
@@ -581,20 +614,16 @@ describe('the page-wide switch', () => {
     await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', false, undefined), { timeout: 5000 })
   })
 
-  it.each([
-    ['sharing is off', false, {}],
-  ])('keeps a marked row on and turnable off when %s', async (_why, enabled, over) => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled, stub: ['alpha-mcp'] }) as never)
+  it('draws a marked row off and disabled while sharing is off', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: false, stub: ['alpha-mcp'] }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
-      servers: [server({ stub: true, in_allowlist: true, ...over })],
+      servers: [server({ stub: true, in_allowlist: true })],
     } as never)
-    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: false } as never)
 
     mount()
     const control = await findRowSwitch()
-    expect(control.getAttribute('aria-checked')).toBe('true')
-    fireEvent.click(control)
-    await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', false, undefined), { timeout: 5000 })
+    expect(control.getAttribute('aria-checked')).toBe('false')
+    expect((control as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('asks before it turns sharing on, and turns it on only on the confirm', async () => {

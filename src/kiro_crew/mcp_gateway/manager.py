@@ -1068,32 +1068,34 @@ class GatewayManager:
 
     @staticmethod
     def _backend_agent_socket() -> Optional[str]:
-        """The boot-time agent socket to offer named shared backends, or ``None``.
+        """The boot-time agent socket gatewayd may offer, or ``None``.
 
-        ``None`` on Windows, when the gateway recorded no socket at boot, when the
-        operator named no backend, and when the grant cannot be read: each leaves
-        the daemon env unchanged. BLOCKING (reads the consent leaf).
+        gatewayd takes it out of its own environment at start, so no backend
+        inherits it. It offers it to the shared backends the operator names in
+        ``ssh_auth_sock_consent.json`` and to a per-project backend whose session
+        tier forwards it (``daemon.launch.agent_socket_resolver``). ``None`` on
+        Windows and when the gateway recorded no socket at boot. BLOCKING (reads
+        the consent leaf for the warning below).
         """
         if platform_compat.IS_WINDOWS:
             return None
+        socket_path = agent_socket.boot_agent_socket()
+        if socket_path:
+            return socket_path
         from kiro_crew import ssh_auth_sock_consent
 
         try:
             granted = ssh_auth_sock_consent.mcp_gateway_backends_granted()
         except Exception:
-            logger.debug("ssh-agent backend grant unreadable; offering no socket", exc_info=True)
+            logger.debug("ssh-agent backend grant unreadable", exc_info=True)
             return None
-        if not granted:
-            return None
-        socket_path = agent_socket.boot_agent_socket()
-        if not socket_path:
+        if granted:
             logger.warning(
                 "mcp-gateway: ssh_auth_sock_consent.json names %s, but this gateway was "
                 "started without a usable SSH_AUTH_SOCK, so no backend receives one",
                 ", ".join(sorted(granted)),
             )
-            return None
-        return socket_path
+        return None
 
     @staticmethod
     def _gatewayd_log_path() -> Path:
@@ -1114,15 +1116,11 @@ class GatewayManager:
         no second config read and cannot disagree with what a spawn would apply.
         Stems, not server names: see ``gatewayd.resolvable_target_stems``.
         """
-        stems: set[str] = set()
-        for key in self._spec.mcp_target_env:
-            for prefix in ("KIROCREW_MCP_TARGET_", "MC_MCP_TARGET_"):
-                if key.startswith(prefix):
-                    stem = key[len(prefix):].split("__", 1)[0]
-                    if stem:
-                        stems.add(stem)
-                    break
-        return stems
+        from kiro_crew.mcp_gateway.launch_approval import coverage_stem
+
+        # Per-project targets count too, tagged: a daemon that does not report
+        # them would refuse every per-project stub of that server.
+        return {stem for key in self._spec.mcp_target_env if (stem := coverage_stem(key))}
 
     def _adoption_drift(self, pong: dict) -> list[str]:
         """Warn when an incumbent daemon's target map does not cover this spec.

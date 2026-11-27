@@ -248,6 +248,119 @@ async def send_claim(
         return False
 
 
+def build_session_project_frame(
+    session_key: str,
+    work_dir: str,
+    sandbox_mode: str,
+    hidden_dirs: tuple[str, ...] = (),
+    expose_files: tuple[str, ...] = (),
+    *,
+    stub_session_token: str = "",
+    pid: Optional[int] = None,
+    seal_folder: str = "",
+    readonly_layer: tuple[tuple[str, ...], tuple[str, ...]] = ((), ()),
+    env_layer: Optional[dict[str, str]] = None,
+) -> Optional[dict]:
+    """The ``session-project`` frame for one session, or ``None`` when none applies. BLOCKING.
+
+    The daemon keys and confines a per-project backend by it
+    (``daemon.project_scope``). The root is the folder the chat starts in, the
+    cwd and root a chat's own server gets from kiro-cli, so a server that reads
+    "." or finds its repository from its cwd sees the same folder either way.
+    Chats in one folder share a backend; a chat in another folder gets its own.
+    The sandbox fields are the ones the session's
+    own runtime was wrapped with. A session with no sandbox (``off``) or no
+    working directory sends nothing: the daemon refuses an ``off`` plan, and
+    those stubs start their servers in the chat.
+
+    *readonly_layer* is the operator's read-only paths and exceptions the
+    runtime's wrap applied; a backend is keyed by them and spawned only under
+    the same ones.
+
+    *env_layer* is the env the runtime's launch added over the gateway env
+    (``agent.env`` and the driver's ``extra_env``); a backend is keyed by its
+    digest and started from it. Its values travel only on the owner-only socket.
+
+    *seal_folder* is the folder the runtime's own wrap sealed the project MCP
+    files of. A backend seals its root's files instead, so a chat in another
+    folder sends nothing rather than lose the seals its own server has.
+
+    A session with no key yet (a warm-pool session) is named by its
+    *stub_session_token* and runtime *pid* instead, with that pid's start token,
+    so its stubs are served by the project backend before a chat claims it.
+    """
+    if not work_dir or not sandbox_mode or sandbox_mode == "off":
+        return None
+    if seal_folder and os.path.realpath(seal_folder) != os.path.realpath(work_dir):
+        return None
+    frame: dict = {
+        "type": "session-project",
+        "root": os.path.abspath(work_dir),
+        "sandbox_mode": sandbox_mode,
+        "hidden_dirs": list(hidden_dirs),
+        "expose_files": list(expose_files),
+        "readonly_paths": list(readonly_layer[0]),
+        "readonly_exceptions": list(readonly_layer[1]),
+        "env_layer": dict(env_layer or {}),
+    }
+    if session_key:
+        frame["session_key"] = session_key
+    elif stub_session_token and isinstance(pid, int) and not isinstance(pid, bool) and pid > 1:
+        frame["stub_session_token"] = stub_session_token
+        frame["pid"] = pid
+        frame["pid_start_id"] = platform_compat.get_process_start_id(pid)
+    else:
+        return None
+    return frame
+
+
+async def _send_session_project_inner(socket_path: str, frame: dict) -> bool:
+    reader, writer = await transport.connect(socket_path)
+    try:
+        writer.write(json.dumps(frame).encode("utf-8") + b"\n")
+        await writer.drain()
+        raw = await reader.readline()
+        resp = json.loads(raw.decode("utf-8")) if raw else {}
+        if isinstance(resp, dict) and resp.get("type") in (
+            "session-project-set",
+            "session-project-cleared",
+        ):
+            return True
+        logger.warning(
+            "session-project not recorded for session_key=%s: %r",
+            frame.get("session_key") or "(warm session)",
+            resp,
+        )
+        return False
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+
+
+async def send_session_project(socket_path: str, frame: dict) -> bool:
+    """Send one ``session-project`` frame to gatewayd. True when recorded.
+
+    Best-effort under the claim's time budget: a refusal, a missing socket or a
+    timeout logs and returns False, and that session's per-project stubs start
+    their servers in the chat instead.
+    """
+    try:
+        return await asyncio.wait_for(
+            _send_session_project_inner(socket_path, frame), timeout=_CLAIM_TIMEOUT_SECS
+        )
+    except (OSError, asyncio.TimeoutError, ValueError) as exc:
+        logger.warning(
+            "session-project send failed (per-project stubs run in the chat): "
+            "session_key=%s: %s",
+            frame.get("session_key") or "(warm session)",
+            exc,
+        )
+        return False
+
+
 def schedule_claim(
     socket_path: Optional[str],
     pid: Optional[int],

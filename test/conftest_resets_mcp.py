@@ -1,4 +1,4 @@
-"""Per-test resets of process-global MCP discovery and agent-rebuild state.
+"""Per-test resets of process-global MCP discovery, gateway and agent-rebuild state.
 
 Part of ``test/conftest.py``, which imports and re-binds these names so pytest registers
 each fixture as the suite conftest's own; see the import block there. Plain module,
@@ -119,3 +119,24 @@ def _fresh_backend_tmp_socket_room_warnings(_floor_monkeypatch):
 
     _floor_monkeypatch.setattr(backend_tmp, "_warned_roots", set(), raising=False)
     _floor_monkeypatch.setattr(backend_tmp, "_SUN_PATH_BYTES", sys.maxsize, raising=False)
+
+
+@per_test_guard
+def _fresh_mcp_project_bindings():
+    """Clear the daemon's per-project records before and after each test.
+
+    ``mcp_gateway.daemon.project_scope`` keeps session bindings, sandbox plans and
+    owner-claimed tokens in module-level tables; one test's entries would change
+    which key or attestation a later test's connection gets.
+    """
+
+    def clear():
+        scope = sys.modules.get("kiro_crew.mcp_gateway.daemon.project_scope")
+        if scope is not None:
+            scope.reset_project_bindings()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()

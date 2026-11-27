@@ -756,9 +756,10 @@ class McpGatewayConfig:
             "sharing possible for that server — so it is the one per-server "
             "decision. Empty by default: an unstubbed server is launched by the "
             "session itself, the same process topology as running without the "
-            "broker, and an empty list means no broker runs at all. Whether "
-            "stubbed servers SHARE one backend is the separate global switch "
-            "(mcp_gateway.enabled). Managed from MCP Management.",
+            "broker, and an empty list with sharing off means no broker runs at "
+            "all. Whether stubbed servers SHARE one backend is the separate "
+            "global switch (mcp_gateway.enabled); with it on, every other stdio "
+            "server gets a per-project stub too. Managed from MCP Management.",
             restart=True,
         ),
     )
@@ -787,7 +788,9 @@ class McpGatewayConfig:
             "without overwriting your choices, and lets you turn one server off "
             "without pinning yourself to today's roster. Written by MCP "
             "Management when a toggle disagrees with the roster, and dropped "
-            "again when you toggle it back to agree. Empty by default.",
+            "again when you toggle it back to agree. A false entry is also a "
+            "per-project server's Share switch turned off: each chat then launches its own. "
+            "Empty by default.",
             restart=True,
         ),
     )
@@ -795,18 +798,15 @@ class McpGatewayConfig:
         default_factory=dict,
         metadata=_meta(
             "Working Folder Answers",
-            "Per server, whether it reads the folder it starts in: uses_cwd (it "
-            "does, so each chat launches its own) or not_used (it can start in one "
-            "folder for all chats). "
-            "A routed server runs in one fixed folder outside the project, shared "
-            "by every chat, so MCP Management routes a server only after it is "
-            "answered not_used, and a server answered uses_cwd is never routed. "
-            "Kiro Crew's own servers, and those the edition lists, are not asked: "
-            "they never read the folder. A server seen asking a chat for its roots "
-            "keeps one copy per chat and is not asked, unless it is answered "
-            "not_used, uses a secret:// reference, or the edition lists it; "
-            "then the usual rules apply. "
-            "A server missing here is unanswered. Written by MCP Management.",
+            "Per server, a fact about the folder it starts in: uses_cwd (it reads "
+            "it) or not_used (it can start in one folder for all chats). A "
+            "not_used server, like Kiro Crew's own and those the edition lists, "
+            "can be shared as one copy for all chats, outside every chat sandbox, "
+            "once its launch is approved. Every other server is shared by the "
+            "chats of one project, inside their sandbox, unless a declaration "
+            "names a secret:// reference; uses_cwd, or a server seen asking a chat "
+            "for its roots, counts as that even when the edition lists it. "
+            "A server missing here has no fact. Written by an MCP server card.",
             restart=True,
         ),
     )
@@ -815,10 +815,10 @@ class McpGatewayConfig:
         metadata=_meta(
             "Working Folder Answer Launches",
             "Per server, the launch (command and arguments, hashed) a not_used "
-            "answer in cwd_use was given for. When the server is later declared "
-            "with a different command or arguments, MCP Management asks the "
-            "working-folder question again before routing it. An answer with no "
-            "entry here keeps working as given. Written by MCP Management.",
+            "fact in cwd_use was given for. When the server is later declared "
+            "with a different command or arguments, the fact does not hold for "
+            "that launch and the server is shared per project. A fact with no "
+            "entry here holds as given. Written with cwd_use.",
             restart=True,
         ),
     )

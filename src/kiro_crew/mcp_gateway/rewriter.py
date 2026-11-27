@@ -568,6 +568,8 @@ def rewrite_agents(
     cwd_answers: Mapping[str, str] | None = None,
     cwd_bindings: Mapping[str, str] | None = None,
     folder_free: frozenset[str] = frozenset(),
+    dont_share: frozenset[str] = frozenset(),
+    project_backends: bool = False,
 ) -> tuple[dict[str, int], dict[str, str]]:
     """Populate ``overlay_dir`` with rewritten copies of ``source_dir/*.json``.
 
@@ -605,6 +607,13 @@ def rewrite_agents(
             the stub set: when ``False`` no stub is marked shareable, so each
             connection gets its own backend while the stubs stay in place — the
             state that lets a stubbed server render UI without co-tenancy.
+        project_backends: With *pooling_enabled*, a stdio server not known to
+            be folder-free gets a per-project stub whether or not
+            *stub_servers* names it
+            (:class:`~kiro_crew.mcp_gateway.folder_use.ProjectRouting`). The
+            gateway start sets it (``launch_resolve.rewrite_kwargs``).
+        dont_share: Server names the operator keeps one per chat
+            (``mcp_gateway.stub_overrides`` set to ``false``); never per-project.
         approvals: The operator's approved launch fingerprints
             (:mod:`kiro_crew.mcp_gateway.launch_approval`). When given, only an
             approved launch is wrapped, a cache-served result that names an
@@ -628,22 +637,48 @@ def rewrite_agents(
 
     # Compute the name-wide outcome before either wrapping site or the cache.
     # Probes still resolve every launch, regardless of the folder decision.
-    from kiro_crew.mcp_gateway.folder_use import read_declarations, roots_requesting
+    # The TYPE_CHECKING block names ProjectRouting too; this is the run-time import.
+    from kiro_crew.mcp_gateway.folder_use import (  # noqa: F811
+        ProjectRouting,
+        read_declarations,
+        roots_requesting,
+    )
 
     configured_stub_set = stub_servers or frozenset()
-    observed_roots = (
-        frozenset() if getattr(approvals, "probe", False) else roots_requesting(socket_path)
+    probe = bool(getattr(approvals, "probe", False))
+    observed_roots = frozenset() if probe else roots_requesting(socket_path)
+    # Sharing off means no backend is shared, so no stub is per-project either.
+    # A probe pass resolves the launches an operator approves for the one shared
+    # backend, so it wraps every server the shared way.
+    routes_projects = project_backends and pooling_enabled and not probe
+    declarations = (
+        read_declarations(source_dir, mate_source_dir)
+        if observed_roots or routes_projects
+        else None
     )
     roots_excluded = (
-        read_declarations(source_dir, mate_source_dir).per_chat(
+        declarations.per_chat(
             configured_stub_set,
             observed_roots,
             folder_free,
             cwd_answers or {},
             cwd_bindings or {},
         )
-        if observed_roots
+        if observed_roots and declarations is not None
         else frozenset()
+    )
+    # One backend per project for every server not known to be folder-free.
+    project_routing = (
+        ProjectRouting(
+            edition=folder_free,
+            answers=dict(cwd_answers or {}),
+            bindings=dict(cwd_bindings or {}),
+            observed_roots=observed_roots,
+            dont_share=dont_share,
+            declarations=declarations,
+        )
+        if routes_projects and declarations is not None
+        else None
     )
 
     # An install upgraded from an older release can still carry a settings
@@ -737,6 +772,9 @@ def rewrite_agents(
     # Keep the configured roster and its managed launches fixed for live refresh;
     # observed roots only invalidate cached overlays, not the broker's policy.
     current_inputs["roots_excluded"] = sorted(roots_excluded)
+    if project_routing is not None:
+        current_inputs["project_routing"] = project_routing.fingerprint()
+        current_inputs["project_roots"] = sorted(observed_roots)
     if approvals is not None:
         current_inputs["launch_approvals"] = approvals.digest()
     with _PASS_INPUTS_LOCK:
@@ -820,6 +858,7 @@ def rewrite_agents(
                     loaded,
                     configured_stub_set,
                     roots_excluded=roots_excluded,
+                    project_routing=project_routing,
                     pooling_enabled=pooling_enabled,
                     forward_env=forward_env,
                     identity_keys=identity_keys,
@@ -1055,6 +1094,7 @@ def rewrite_agents(
                 approval_mode=approval_mode,
                 stub_servers=configured_stub_set,
                 roots_excluded=roots_excluded,
+                project_routing=project_routing,
                 pooling_enabled=pooling_enabled,
                 forward_env=forward_env,
                 identity_keys=identity_keys,
@@ -1155,6 +1195,7 @@ def rewrite_agents(
                     approval_mode=approval_mode,
                     stub_servers=configured_stub_set,
                     roots_excluded=roots_excluded,
+                    project_routing=project_routing,
                     pooling_enabled=pooling_enabled,
                     forward_env=forward_env,
                     identity_keys=identity_keys,
@@ -1453,8 +1494,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         mcp_entry_is_remote,
     )
     from kiro_crew.mcp_gateway import STUB_MODULE  # noqa: F401
-    from kiro_crew.mcp_gateway.folder_use import roots_observed  # noqa: F401
+    from kiro_crew.mcp_gateway.folder_use import ProjectRouting, roots_observed  # noqa: F401
     from kiro_crew.mcp_gateway.hashing import (  # noqa: F401
+        PROJECT_SCOPED_FLAG,
+        PROJECT_TARGET_PREFIX,
         STUB_FLAGS_FLAG,
         decode_target_args,
         encode_target_args,

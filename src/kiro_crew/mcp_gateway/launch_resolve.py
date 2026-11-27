@@ -78,6 +78,11 @@ def rewrite_kwargs(cfg: KiroCrewConfig, stub_servers: frozenset[str]) -> dict[st
         "cwd_answers": cfg_gw.cwd_use,
         "cwd_bindings": cfg_gw.cwd_use_launch,
         "folder_free": edition_folder_free(),
+        "project_backends": True,
+        # A server the operator turned off keeps one copy per chat, never per project.
+        "dont_share": frozenset(
+            name for name, on in (cfg_gw.stub_overrides or {}).items() if on is False
+        ),
     }
 
 

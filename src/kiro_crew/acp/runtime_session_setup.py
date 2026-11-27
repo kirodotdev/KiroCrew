@@ -18,8 +18,9 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
 ``_member_context``, ``_native_launch_resources``, ``_native_launch_sources``,
 ``_native_launch_view_alias``, ``_native_skill_projection``, ``_remote_workspace``,
-``_session_queues``,
-``_ssh_auth_sock_forwarded``, ``_start_launch_name``, ``_tool_search_wire``,
+``_sandbox_expose_files``, ``_sandbox_hidden_dirs``, ``_sandbox_mode``,
+``_sandbox_readonly_layer``, ``_session_env_layer``, ``_session_queues``,
+``_spawn_work_dir``, ``_ssh_auth_sock_forwarded``, ``_start_launch_name``, ``_tool_search_wire``,
 ``_wire_mode_id``, ``_work_dir``.
 """
 
@@ -67,9 +68,11 @@ from kiro_crew.agent_sdk.project_mcp_holds import hold_project_servers
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
 from kiro_crew.config import live
 from kiro_crew.mcp_gateway.claim import (
+    build_session_project_frame,
     mint_stub_session_token,
     send_agent_binding,
     send_claim,
+    send_session_project,
     stub_entry_agents,
 )
 from kiro_crew.mcp_gateway.mate_overlays import MATE_WORKER_AGENT
@@ -806,7 +809,7 @@ async def _mirrored_session_mcp(
         # Its by-name lookup above answers nothing; the projection withholds
         # exactly the entries these stubs replace, from this one lookup.
         stubbed = frozenset(str(s["name"]) for s in stubs if s.get("name"))
-    stubs, stub_token = await self._own_stub_session(stubs, session_key)
+    stubs, stub_token = await self._own_stub_session(stubs, session_key, work_dir)
 
     def _project_and_snapshot() -> tuple[Any, Any, frozenset[str]]:
         # One hop, two reads of the same file: the projection the array is
@@ -1074,7 +1077,10 @@ async def _confirm_member_projection(self: AcpRuntime, handle: AcpSessionHandle)
 
 
 async def _own_stub_session(
-    self: AcpRuntime, entries: list[dict[str, Any]], session_key: str
+    self: AcpRuntime,
+    entries: list[dict[str, Any]],
+    session_key: str,
+    work_dir: str | Path | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Mint the token that names ONE session on this shared runtime.
 
@@ -1107,6 +1113,17 @@ async def _own_stub_session(
     missing/wedged gatewayd under its own timeout and returns False, and a
     session whose key is not known yet (a warm-pool worker, claimed later)
     is named by the ``rekey()`` claim instead.
+
+    With the claim goes the session's ``session-project`` record: *work_dir*
+    and the sandbox plan this runtime was wrapped with, which
+    a per-project backend is keyed and confined by (``daemon.project_scope``).
+    Both are awaited before ``session/new`` for the same reason, and both are
+    best-effort: without the record that session's per-project stubs start their
+    servers in the chat. A session with no key yet (a warm-pool session) sends
+    no claim, but its record still goes out, named by the token and this
+    runtime's pid: kiro-cli starts its stubs now, long before a chat claims it,
+    and the claim keeps both the working directory and the sandbox, so the
+    record still holds once the ``rekey()`` claim names the session.
     """
     token = mint_stub_session_token()
     entries = attach_stub_session_token(entries, token)
@@ -1119,14 +1136,33 @@ async def _own_stub_session(
         await send_agent_binding(
             self._mcp_gateway_socket, self.pid, token, stub_entry_agents(entries)
         )
-    if entries and self._mcp_gateway_socket and session_key and self.pid:
-        await send_claim(
-            self._mcp_gateway_socket,
-            self.pid,
-            session_key,
-            None,
-            token,
+        frame = await asyncio.to_thread(
+            functools.partial(
+                build_session_project_frame,
+                session_key,
+                str(work_dir or ""),
+                self._sandbox_mode,
+                tuple(self._sandbox_hidden_dirs),
+                tuple(self._sandbox_expose_files),
+                stub_session_token=token,
+                pid=self.pid,
+                seal_folder=str(getattr(self, "_spawn_work_dir", "") or ""),
+                readonly_layer=getattr(self, "_sandbox_readonly_layer", ((), ())),
+                env_layer=dict(getattr(self, "_session_env_layer", None) or {}),
+            )
         )
+        sends = []
+        if session_key:
+            sends.append(send_claim(self._mcp_gateway_socket, self.pid, session_key, None, token))
+        if frame is None and session_key:
+            # No record applies to this start (another folder, no sandbox): clear
+            # the one an earlier runtime of this session left, so its stubs start
+            # their servers in the chat rather than in that earlier project.
+            frame = {"type": "session-project", "session_key": session_key, "root": ""}
+        if frame is not None:
+            sends.append(send_session_project(self._mcp_gateway_socket, frame))
+        if sends:
+            await asyncio.gather(*sends)
     return entries, token
 
 

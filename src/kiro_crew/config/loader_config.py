@@ -1486,10 +1486,10 @@ class KiroCrewConfig:
         # stub is what carries both the render/callback path and any sharing —
         # so an empty stub set means no stub, no daemon, and no gateway in the
         # path at all (AcpClient falls through to per-session MCP). Sharing
-        # (``enabled``) is not consulted here: it decides how a stubbed server's
-        # backend is ACQUIRED, and on its own routes nothing.
+        # (``enabled``) routes too: with it on, every stdio server not known to
+        # be folder-free gets a per-project stub, whatever the stub set holds.
         _gw = self.mcp_gateway
-        if _gw.stub_servers:
+        if _gw.stub_servers or _gw.enabled:
             # Imported on the one branch that reads it: the rewriter loads the gateway
             # manager and the sandbox, which a process that only reads config (every
             # stdio MCP server, most CLI commands) never uses.

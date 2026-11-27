@@ -696,6 +696,9 @@ class AcpClient:
         # The mask set this spawn asked for, so a trusted corroboration run can
         # exercise the same mounts rather than a weaker profile.
         self._sandbox_hidden_dirs: tuple[str, ...] = ()
+        self._sandbox_expose_files: tuple[str, ...] = ()  # set by the launch tail
+        self._sandbox_readonly_layer: tuple[tuple[str, ...], tuple[str, ...]] = ((), ())
+        self._session_env_layer: dict[str, str] = {}  # set by the launch tail
         self._ssh_auth_sock_forwarded = False  # set by the launch tail
         self._child_env_names: frozenset[str] = frozenset()  # set by the launch tail
         self._jsonl_pos: int = 0  # track read position in session JSONL for tool results

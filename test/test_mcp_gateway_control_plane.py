@@ -62,6 +62,7 @@ def test_wire_publishes_manager_and_callbacks_onto_dashboard_state() -> None:
         _mcp_gateway_manager="MGR",
         _apply_mcp_gateway_enabled="ENABLE_CB",
         _apply_mcp_stub="POOLABLE_CB",
+        _apply_mcp_dont_share="DONT_SHARE_CB",
         _refresh_mcp_resolutions="RESOLVE_CB",
         _stop_mcp_broker="STOP_CB",
     )
@@ -69,6 +70,7 @@ def test_wire_publishes_manager_and_callbacks_onto_dashboard_state() -> None:
     assert ds._mcp_gateway_manager == "MGR"
     assert ds._mcp_gateway_apply == "ENABLE_CB"
     assert ds._mcp_gateway_apply_stub == "POOLABLE_CB"
+    assert ds._mcp_gateway_apply_dont_share == "DONT_SHARE_CB"
     # The pre-resolve refresh is wired the same way: the handler reads it off
     # DashboardState, so leaving it on the orchestrator makes the endpoint 503.
     assert ds._mcp_resolve_refresh == "RESOLVE_CB"

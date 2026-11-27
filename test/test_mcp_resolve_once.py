@@ -408,6 +408,12 @@ class TestLaunchSpecs:
         )
         assert out == [("npx", ["-y", "old@1.0.0"])]
 
+    def test_a_per_project_target_is_pre_installed_too(self) -> None:
+        from kiro_crew.mcp_gateway.hashing import PROJECT_TARGET_PREFIX
+
+        out = R.launch_specs({PROJECT_TARGET_PREFIX + "FILES": "npx -y files@1.0.0"})
+        assert out == [("npx", ["-y", "files@1.0.0"])]
+
     def test_unparsable_and_empty_are_skipped(self) -> None:
         assert R.launch_specs({"KIROCREW_MCP_TARGET_A": '"unterminated'}) == []
         assert R.launch_specs({"KIROCREW_MCP_TARGET_B": "   "}) == []
@@ -873,6 +879,58 @@ class TestEnsureAndPrefetch:
         # The npm target is reported unresolved; the non-npm one is not reported
         # at all, because there is nothing to pre-resolve about a plain binary.
         assert outcomes == {"foo@1.0.0": "unresolved"}
+
+    async def test_a_target_only_a_project_names_installs_in_the_strict_tier(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """It has no launch approval and no session tier yet, so its scripts get
+        the strictest tier; a launch a shared target also names keeps its own."""
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway.hashing import PROJECT_TARGET_PREFIX
+
+        modes: dict[str, str] = {}
+
+        async def fake_install(_home, spec, **kw):
+            modes[spec.package] = kw["mode"]
+
+        monkeypatch.setattr(R, "install", fake_install)
+        # A host with a sandbox backend; without one the target is skipped (below).
+        monkeypatch.setattr(sandbox, "detect_backend", lambda _mode="auto": "bwrap")
+        await R.prefetch(
+            str(tmp_path),
+            {
+                PROJECT_TARGET_PREFIX + "FILES": "npx -y files@1.0.0",
+                PROJECT_TARGET_PREFIX + "BOTH": "npx -y both@1.0.0",
+                "KIROCREW_MCP_TARGET_BOTH": "npx -y both@1.0.0",
+                "KIROCREW_MCP_TARGET_A": "npx -y foo@1.0.0",
+            },
+        )
+        assert modes == {"files@1.0.0": "strict", "both@1.0.0": "standard", "foo@1.0.0": "standard"}
+
+    async def test_a_target_only_a_project_names_is_not_installed_without_a_sandbox(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """With no sandbox backend its install scripts would run unconfined, and
+        it has no approval: it is left to the chat. Approved targets still go."""
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway.hashing import PROJECT_TARGET_PREFIX
+
+        installed: list[str] = []
+
+        async def fake_install(_home, spec, **_kw):
+            installed.append(spec.package)
+
+        monkeypatch.setattr(R, "install", fake_install)
+        monkeypatch.setattr(sandbox, "detect_backend", lambda _mode="auto": "none")
+        outcomes = await R.prefetch(
+            str(tmp_path),
+            {
+                PROJECT_TARGET_PREFIX + "FILES": "npx -y files@1.0.0",
+                "KIROCREW_MCP_TARGET_A": "npx -y foo@1.0.0",
+            },
+        )
+        assert installed == ["foo@1.0.0"]
+        assert outcomes["files@1.0.0"] == "skipped"
 
     async def test_prefetch_survives_a_raising_target(self, tmp_path, monkeypatch) -> None:
         def boom(*_a, **_k):

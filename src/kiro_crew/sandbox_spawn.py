@@ -610,6 +610,10 @@ def sandboxed_spawn_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
+    extra_expose_files: tuple[str, ...] = (),
+    project_folder: str = "",
+    forward_ssh_auth_sock: bool = False,
+    forward_ssh_auth_sock_out: list[bool] | None = None,
     first_party_fixed_argv: bool = False,
     is_kiro_cli: bool | None = None,
 ) -> tuple[list[str], dict[str, str], str | None]:
@@ -645,6 +649,14 @@ def sandboxed_spawn_argv(
             runtime parent that the child must be able to write — see
             :func:`wrap_argv`. Validated; refused candidates degrade to the
             sealed behavior rather than blocking the spawn.
+        extra_expose_files: Threaded to :func:`wrap_argv`: files kept readable
+            inside the hidden dirs, as a session's plan names them.
+        project_folder: Threaded to :func:`wrap_argv`: the folder whose project
+            MCP files are sealed read-only, as for the session working there.
+        forward_ssh_auth_sock / forward_ssh_auth_sock_out: Threaded to
+            :func:`wrap_argv`, which re-judges the forward on the tier it applies.
+            The returned env never carries ``SSH_AUTH_SOCK``; a caller that asked
+            for the forward reads the verdict from *forward_ssh_auth_sock_out*.
         is_kiro_cli: Threaded to :func:`wrap_argv`. Whether the child carries
             its own internal sandbox, which cannot nest inside Crew's. Exposed
             here so a DELEGATING spawn can route through this chokepoint instead
@@ -665,26 +677,21 @@ def sandboxed_spawn_argv(
         pass *scrubbed_env* as the subprocess ``env=`` and unlink *cleanup_path*
         (a temp launcher/profile) after the child exits.
     """
-    if extra_hidden_dirs or extra_visible_dirs or extra_private_dirs or extra_writable_dirs:
-        wrapped, cleanup = wrap_argv(
-            argv,
-            mode=mode,
-            strip_python_env=strip_python_env,
-            extra_hidden_dirs=extra_hidden_dirs,
-            extra_visible_dirs=extra_visible_dirs,
-            extra_private_dirs=extra_private_dirs,
-            extra_writable_dirs=extra_writable_dirs,
-            first_party_fixed_argv=first_party_fixed_argv,
-            is_kiro_cli=is_kiro_cli,
-        )
-    else:
-        wrapped, cleanup = wrap_argv(
-            argv,
-            mode=mode,
-            strip_python_env=strip_python_env,
-            first_party_fixed_argv=first_party_fixed_argv,
-            is_kiro_cli=is_kiro_cli,
-        )
+    wrapped, cleanup = wrap_argv(
+        argv,
+        mode=mode,
+        strip_python_env=strip_python_env,
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
+        forward_ssh_auth_sock_out=forward_ssh_auth_sock_out,
+        extra_hidden_dirs=extra_hidden_dirs,
+        extra_visible_dirs=extra_visible_dirs,
+        extra_private_dirs=extra_private_dirs,
+        extra_writable_dirs=extra_writable_dirs,
+        extra_expose_files=extra_expose_files,
+        project_folder=project_folder,
+        first_party_fixed_argv=first_party_fixed_argv,
+        is_kiro_cli=is_kiro_cli,
+    )
     # ``wrap_argv`` only strips PYTHONPATH/PYTHONHOME inside the launcher script,
     # so on the fail-open path (no sandbox backend, opted-in unsandboxed exec) it
     # returns argv unmodified and the strip never happens. Apply the same strip

@@ -491,7 +491,7 @@ describe('the Review dialog', () => {
     fireEvent.click(box)
     fireEvent.click(within(search).getByRole('button', { name: M('approve_button') }))
     await waitFor(
-      () => expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown', false, undefined, true),
+      () => expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown', false, true),
       { timeout: 5000 },
     )
     fireEvent.click(within(block(dialog, 'tickets-mcp')).getByRole('button', { name: M('approve_button') }))
@@ -512,7 +512,7 @@ describe('the Review dialog', () => {
       fireEvent.click(glyph)
       const tip = await screen.findByRole('tooltip', undefined, { timeout: 5000 })
       // Bottom-anchored just above the glyph; a tip beside it would set `top`
-      // and grow down over Don't share / Share across chats.
+      // and grow down over the row switches.
       expect(tip.style.top).toBe('')
       expect(parseFloat(tip.style.bottom)).toBe(900 - 400 + 10)
     } finally {

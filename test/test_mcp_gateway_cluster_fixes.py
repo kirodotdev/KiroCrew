@@ -55,9 +55,10 @@ class TestEnableRebuildsFactory:
         }
 
     @pytest.mark.asyncio
-    async def test_disable_also_calls_refresh_defaults(self) -> None:
-        """Disabling must also rebuild the factory so new sessions stop
-        injecting stubs pointing at a dead socket."""
+    async def test_disable_resets_open_chats_when_it_stops_a_broker(self) -> None:
+        """Disabling must rebuild the factory so new sessions stop injecting
+        stubs pointing at a dead socket. A broker it stops held open chats'
+        per-project records, so those chats are reset, which rebuilds it."""
         from kiro_crew.slack.gateway import GatewayOrchestrator
 
         orch = GatewayOrchestrator.__new__(GatewayOrchestrator)
@@ -67,13 +68,17 @@ class TestEnableRebuildsFactory:
         orch.sessions = MagicMock()
         orch.sessions.refresh_defaults = AsyncMock()
 
+        reset = AsyncMock(return_value=1)
         with patch.object(type(orch), "_stop_mcp_broker", new_callable=AsyncMock):
-            with patch("kiro_crew.slack.gateway.KiroCrewConfig") as mock_cfg:
+            with patch("kiro_crew.slack.gateway.KiroCrewConfig") as mock_cfg, patch(
+                "kiro_crew.dashboard.handlers.sessions.reset_sessions", reset
+            ):
                 mock_cfg.load.return_value = MagicMock(mcp_gateway=MagicMock(enabled=False))
                 orch._cfg = mock_cfg.load.return_value
                 result = await orch._apply_mcp_gateway_enabled(False)
 
-        orch.sessions.refresh_defaults.assert_awaited_once()
+        reset.assert_awaited_once_with(orch.dashboard_state, reload_factory=True)
+        orch.sessions.refresh_defaults.assert_not_awaited()
         assert result == {
             "enabled": False,
             "running": False,

@@ -26,7 +26,6 @@ import {
   type LaunchRefusal,
   launchIsApprovable,
   type McpRowState,
-  offersRootsAnswer,
 } from './mcpManagementModel'
 import {
   type DrawnLaunch,
@@ -260,12 +259,9 @@ export function ServerDetailsBody({
 }) {
   return (
     <div className="min-w-0 space-y-2 rounded-lg bg-[var(--hover)] px-3 py-2 text-[12px] leading-relaxed text-[var(--muted)]">
-      {/* A roots row that offers its answer already says why on the row. */}
-      {!offersRootsAnswer(server) && (
-        <p id={detailsWhyId(server.name)} className="m-0 break-words text-[12.5px] [overflow-wrap:anywhere]">
-          {i18nT(detailsWhyKey(server, state, refusal))}
-        </p>
-      )}
+      <p id={detailsWhyId(server.name)} className="m-0 break-words text-[12.5px] [overflow-wrap:anywhere]">
+        {i18nT(detailsWhyKey(server, state, refusal))}
+      </p>
       {refusal ? (
         <RefusalLaunch refusal={refusal} />
       ) : server.transport === 'stdio' ? (
@@ -456,6 +452,15 @@ export function serverNameId(name: string): string {
   return `mcp-row-name-${name}`
 }
 
+/** The page-wide sharing switch. While it is off, each row's disabled switch
+ *  names it as its description: it is the one control that turns them back on. */
+export const HERO_SWITCH_ID = 'mcp-hero-switch'
+
+/** A row switch's description: the row's own, plus the page-wide switch while sharing is off. */
+function rowSwitchDescribedBy(describedBy: string | undefined, sharingOn: boolean): string | undefined {
+  return sharingOn ? describedBy : [describedBy, HERO_SWITCH_ID].filter(Boolean).join(' ')
+}
+
 /** A labelled button's size and focus ring, shared by every button on the page. */
 export const SHARE_BUTTON_CLASS =
   'shrink-0 px-3 py-1.5 font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]'
@@ -516,12 +521,46 @@ function ShareSwitch({
 }
 
 /**
+ * A per-project row's one control: the Share switch, on by default. On shares
+ * the server by the chats of one project; off keeps it one per chat (stored as
+ * the operator's "don't share" choice). It approves nothing, so it never asks.
+ */
+export function ProjectShareSwitch({
+  server,
+  busy,
+  sharingOn = true,
+  describedBy,
+  onChange,
+}: {
+  server: McpManagedServer
+  busy: boolean
+  // With page-wide sharing off every chat runs its own copy, so the switch reads
+  // off and is disabled; the saved choice stays in config for when it is on.
+  sharingOn?: boolean
+  describedBy?: string
+  onChange: (dontShare: boolean) => void
+}) {
+  const labelId = `mcp-share-label-${server.name}`
+  const on = sharingOn && server.declined !== true
+  return (
+    <ShareSwitch
+      on={on}
+      disabled={busy || !sharingOn}
+      labelId={labelId}
+      labelledBy={`${labelId} ${serverNameId(server.name)}`}
+      describedBy={rowSwitchDescribedBy(describedBy, sharingOn)}
+      onClick={() => onChange(on)}
+    />
+  )
+}
+
+/**
  * The one control a row offers: an "Enable MCP sharing" switch.
  *
  * Turning it on is one click: the page reads the launch and, if it can be
  * approved, writes the share carrying its `expected_launch` (see
- * `McpManagement`). Turning it off stops sharing, or takes the mark off while
- * page-wide sharing is off. A row whose launch was refused runs nothing
+ * `McpManagement`). Turning it off stops sharing. While page-wide sharing is
+ * off it reads off and is disabled; the mark stays saved for when it is on. A row whose launch was refused runs nothing
  * shared, so it draws no switch: it offers an "Approve update" button carrying
  * the refused launch's own `expected_launch` and a "Don't share this server"
  * button that takes the mark off and approves nothing. A
@@ -534,6 +573,7 @@ export function ShareAction({
   busy,
   reading,
   supported,
+  sharingOn = true,
   describedBy,
   onShare,
   onConfirm,
@@ -546,6 +586,8 @@ export function ShareAction({
   /** True while this row's press is reading the launch it will pin. */
   reading: boolean
   supported: boolean
+  /** Page-wide sharing: off, the switch reads off and is disabled, as on a per-project row. */
+  sharingOn?: boolean
   describedBy?: string
   onShare: () => void
   onConfirm: (expectedLaunch: string) => void
@@ -562,7 +604,7 @@ export function ShareAction({
   // On, the switch always turns off. Off, it turns on only where sharing works.
   // A marked row that cannot share (an env a shared copy would withhold, or a
   // refused launch with no approvable identity) is not drawn as a switch: an
-  // "on" switch beside "direct" or "Can't share" gives two answers. It gets
+  // "on" switch beside "one per chat" or "Can't share" gives two answers. It gets
   // one plain Remove button, which takes the mark off.
   const cannotShare =
     server.stub &&
@@ -586,11 +628,11 @@ export function ShareAction({
   }
   const toggle = (
     <ShareSwitch
-      on={server.stub}
-      disabled={busy || (!server.stub && (!supported || reading))}
+      on={sharingOn && server.stub}
+      disabled={!sharingOn || busy || (!server.stub && (!supported || reading))}
       labelId={labelId}
       labelledBy={`${labelId} ${rowName}`}
-      describedBy={describedBy}
+      describedBy={rowSwitchDescribedBy(describedBy, sharingOn)}
       onClick={server.stub ? onStop : onShare}
     />
   )

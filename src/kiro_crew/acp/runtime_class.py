@@ -810,6 +810,12 @@ class AcpRuntime:
         # The mask set this spawn asked for, so a trusted corroboration run can
         # exercise the same mounts rather than a weaker profile.
         self._sandbox_hidden_dirs: tuple[str, ...] = ()
+        # The exposed files the same spawn asked for: with the mask set, the plan a
+        # per-project MCP backend of this runtime's sessions runs under.
+        self._sandbox_expose_files: tuple[str, ...] = ()
+        # The read-only layer the same wrap applied (set by the launch tail).
+        self._sandbox_readonly_layer: tuple[tuple[str, ...], tuple[str, ...]] = ((), ())
+        self._session_env_layer: dict[str, str] = {}  # set by the launch tail
         self._ssh_auth_sock_forwarded = False  # set by the launch tail
         self._child_env_names: frozenset[str] = frozenset()  # set by the launch tail
         # Unroutable-frame drop accounting: (sessionId, method) → count since

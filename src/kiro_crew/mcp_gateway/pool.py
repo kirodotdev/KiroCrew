@@ -7,7 +7,10 @@ MUST be in :class:`PoolKey`, or two sessions can see cross-tenant state.
 The 6 dimensions captured below are the spawn-time inputs that influence a
 Kiro MCP subprocess: identity (``server_name``), execution
 (``command_args_hash``, ``effective_env_hash``, ``work_dir``,
-``binary_version``), and security (``os_uid``).
+``binary_version``), and security (``os_uid``). A per-project backend
+(``daemon.project_scope``) adds a seventh, ``sandbox_hash``, and its
+``work_dir`` is the project root; both come from the daemon's own record of
+the session, and every other key leaves ``sandbox_hash`` empty.
 
 The rule cuts both ways. An attribute that does NOT change backend
 behavior must stay OUT of the key: the hash is injective over every field,
@@ -262,6 +265,13 @@ class PoolKey:
     # Security boundary
     os_uid: int
 
+    # Per-project backends only (``daemon.project_scope``): the digest of the
+    # project root and sandbox plan the gateway recorded for the session. Empty
+    # for every other key, and then left out of :meth:`stable_hash`, so the
+    # digest of every key that existed before it is unchanged. Never read off a
+    # Register frame: the daemon sets it from its own session records.
+    sandbox_hash: str = ""
+
     # --- Constructors ------------------------------------------------------
 
     @classmethod
@@ -278,7 +288,7 @@ class PoolKey:
         missing = [
             f.name
             for f in cls.__dataclass_fields__.values()  # type: ignore[attr-defined]
-            if f.name not in register
+            if f.name not in register and f.name != "sandbox_hash"
         ]
         if missing:
             raise ValueError(f"Register payload missing required fields: {missing}")
@@ -331,7 +341,10 @@ class PoolKey:
         fixes key order, ``asdict`` recursively unwraps the dataclass, and
         SHA-256 is collision-resistant for security-identity purposes.
         """
-        payload = json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        fields = asdict(self)
+        if not fields["sandbox_hash"]:
+            del fields["sandbox_hash"]
+        payload = json.dumps(fields, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def human_readable(self) -> str:

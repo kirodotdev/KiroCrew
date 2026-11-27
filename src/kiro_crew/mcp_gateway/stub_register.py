@@ -474,6 +474,10 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         # per-connection backend exist without making every key
         # connection-private.
         "poolable": bool(args.poolable),
+        # Asks for a per-project backend (``daemon.project_scope``). Like
+        # ``poolable``, it selects how the backend is acquired; the daemon fills
+        # the key's root and sandbox plan from its own session record.
+        "project_scoped": bool(getattr(args, "project_scoped", False)),
         # Wire-compat ballast, NOT a pool dimension: an adopted daemon that
         # outlived a package upgrade (the manager adopts anything answering
         # ``pong`` with no version handshake — see the capability comment in
