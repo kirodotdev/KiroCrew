@@ -232,6 +232,9 @@ async def _judge_results(
         criteria = scenario.judge_criteria or scenario.description
         for sr in result.sessions:
             for tr in sr.turns:
+                if tr.error:
+                    # Its assertions already failed with the turn; there is no reply to judge.
+                    continue
                 for idx, (a, _) in enumerate(tr.assertion_results):
                     if a.type == AssertionType.JUDGE:
                         try:
@@ -260,7 +263,8 @@ async def _run_eval(args: argparse.Namespace) -> None:
 
     Exits 1 when a scenario name is unknown (nothing runs), when a session refuses
     the ``--model`` at start (nothing is scored or saved), or when any scenario
-    fails (after the report is written); returns normally when every one passes.
+    fails or checks nothing (after the report is written); returns normally when
+    every one passes.
     """
 
     scenarios = await asyncio.to_thread(_load_eval_scenarios, args)
@@ -351,7 +355,9 @@ async def _run_eval(args: argparse.Namespace) -> None:
             )
 
     overall = sum(1 for r in results if r.passed)
-    print(f"\nOverall: {overall}/{len(results)} scenarios passed")
+    from kiro_crew.eval.runner import not_evaluated_note
+
+    print(f"\nOverall: {overall}/{len(results)} scenarios passed{not_evaluated_note(results)}")
 
     # Save results
     results_dir = Path.cwd() / "eval_results"
@@ -387,14 +393,14 @@ async def _run_eval(args: argparse.Namespace) -> None:
             baseline.print_comparison(found, gate.max_drop)
             reasons = found.reasons
             # The gate only adds: a regression fails the run, and so does every failure.
-            failed_run = failed_run or bool(found.regressions)
+            failed_run = failed_run or bool(found.regressions or found.not_evaluated)
         if junit_path:
             await asyncio.to_thread(baseline.write_junit, junit_path, rows, reasons)
 
     if failed_run:
-        # A failed scenario, or a score below the baseline when one is given, must fail
-        # the command, so `kirocrew eval && next` stops and a script can gate on it.
-        # The report is already on disk.
+        # A failed or not evaluated scenario, or a score below the baseline when one is
+        # given, must fail the command, so `kirocrew eval && next` stops and a script
+        # can gate on it. The report is already on disk.
         sys.exit(1)
 
 
