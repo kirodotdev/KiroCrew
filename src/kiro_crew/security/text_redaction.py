@@ -766,16 +766,19 @@ class StreamRedactor:
                 # still going at the buffer end may hold more of the chain, so it
                 # is dropped whole and the next chunk continues the drop.
                 rest = _STREAM_DISCARD_RUN_RES["credential-run"].match(self._buf, chain_end)
-                if rest is not None and stream_aws_anchor.label_backoff(
+                credential_reaches_end = rest is not None and stream_aws_anchor.label_backoff(
                     self._buf, rest.end(), chain_end
-                ) == len(self._buf):
-                    chain_end = len(self._buf)
+                ) == len(self._buf)
+                if credential_reaches_end:
+                    # Carry a possible split label into the discard, but never
+                    # carry any of the chain's already-decided credentials.
+                    chain_end = max(chain_end, len(self._buf) - stream_aws_anchor.LABEL_CARRY)
                 commit = self._buf[:chain_start]
                 dropped = self._buf[chain_start:chain_end]
                 self._buf = self._buf[chain_end:]
                 out = self._redact_window(commit) if commit else ""
                 self._left(dropped)
-                self._discarding = not self._buf
+                self._discarding = credential_reaches_end or not self._buf
                 self._discard_kind = ("credential-run",) if self._discarding else None
                 self._discarded = 0
                 return out + _redaction._REDACTED_CREDENTIAL_TAG

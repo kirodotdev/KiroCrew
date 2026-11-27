@@ -193,6 +193,23 @@ def test_the_chat_stream_keeps_a_label_after_a_dropped_chain(size: int, label: s
     assert _kept(parts, out) == []
 
 
+@pytest.mark.parametrize("split", range(len("Authorization:")))
+@pytest.mark.parametrize("label", ["Authorization:", "authorization:"])
+def test_the_chat_stream_carries_a_split_label_when_a_chain_first_drops(
+    split: int, label: str
+) -> None:
+    from kiro_crew import security
+
+    parts = ["hf_" + synth(34, ALNUM, 100 + k) for k in range(14)]
+    token = synth(30, ALNUM, 300)
+    stream = security.StreamRedactor()
+    out = stream.feed("tokens: " + "".join(parts) + "/" + label[:split])
+    rest = label[split:] + " " * 1500 + "Bearer " + token + " end"
+    out += "".join(stream.feed(c) for c in rest) + stream.flush()
+    assert token not in out
+    assert _kept(parts, out) == []
+
+
 @pytest.mark.parametrize("size", [7, 64])
 def test_the_chat_stream_keeps_the_text_after_a_dropped_chain(size: int) -> None:
     from kiro_crew import security
