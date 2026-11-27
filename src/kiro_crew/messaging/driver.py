@@ -273,8 +273,11 @@ def empty_turn_notice(
 # kiro-cli embeds this protocol frame in ordinary agent_message_chunk text when
 # it folds a mid-turn steer. It is transport metadata, not assistant speech.
 _STEER_PREFIX = "[STEERING"
+# No ``\s*`` after the colon: the lazy group already admits that whitespace, and
+# two quantifiers that can both take it make a failed match quadratic. The one
+# reader of the group strips it.
 _STEER_MARKER_RE = re.compile(
-    r"^\[STEERING\s+steer-[0-9a-f-]+(?:\s*:\s*(.*?))?\]$",
+    r"^\[STEERING\s+steer-[0-9a-f-]+(?:\s*:(.*?))?\]$",
     re.IGNORECASE | re.DOTALL,
 )
 _MAX_STEER_MARKER_CHARS = 16_384
