@@ -6,7 +6,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
 import { takeSkipFocusOnShow } from '../utils/terminalQuietShow'
-import { ensureTerminalConnection, pasteWhenOpen, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, useTerminalAtLimit, retryTerminalConnection } from '../utils/terminalRegistry'
+import { ensureTerminalConnection, pasteIntoTerminal, takesEarlyInput, useTerminalInputCapped, dismissTerminalInputCapped, EARLY_INPUT_CAP, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, useTerminalAtLimit, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
@@ -23,6 +23,7 @@ import { attachOsc52Copy, type Osc52CopyHandle } from '../lib/terminalOsc52'
 
 import { i18nT } from '../i18n/t'
 import { searchOpeners, registerDestroyTerm } from './terminalSessions'
+import { useStandInKeys } from '../utils/terminalStandInKeys'
 import { apiTransport } from '../api/apiTransport'
 /* ── Per-session xterm instance cache ──
  * Keyed by PTY session id. Instances persist across tab switches / chat
@@ -320,7 +321,7 @@ function cellKey(term: Terminal): string {
 }
 
 /* ── Terminal view for one session ── */
-function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen, onToggleFullscreen, focusBeforeLoad, typedBeforeLoad }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean; onToggleFullscreen?: () => void; focusBeforeLoad?: Element | null; typedBeforeLoad?: { current: string } }) {
+function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen, onToggleFullscreen, focusBeforeLoad }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean; onToggleFullscreen?: () => void; focusBeforeLoad?: Element | null }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   // The terminal plus its overlays: the touch listeners and the selection
@@ -438,15 +439,14 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     return !!active && active !== document.body && active !== before && !wrapperRef.current?.contains(active)
   }
   const proxyRef = useRef<HTMLTextAreaElement>(null)
+  const standIn = useStandInKeys(sessionId)
+  const inputCapped = useTerminalInputCapped(sessionId)
   useLayoutEffect(() => {
     if (holding && visible && !quietShow.current && !focusMovedDuringLoad()) proxyRef.current?.focus({ preventScroll: true })
   }, [holding, visible])
-  // Hand-off: whatever reached the stand-in goes to the shell as a paste, so
-  // the shell's bracketed-paste guard holds and a newline in it does not run
-  // a command; the focus moves to xterm's own field (the focus effect below),
-  // field to field, so the keyboard stays up.
-  // Seeded with what LazyCliPanel's stand-in caught while this chunk loaded.
-  const proxyText = useRef(typedBeforeLoad?.current ?? '')
+  // Hand-off: the stand-in sends each key to the shell as typed (standInKeys),
+  // so nothing is left to hand over; the focus moves to xterm's own field (the
+  // focus effect below), field to field, so the keyboard stays up.
   const handingOff = useRef(false)
   // Only a hold the user could see hands off: a hidden held tab opens later
   // and takes focus like any tab switched to.
@@ -470,12 +470,19 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
       measuredWith.set(term, cellKey(term))
     }
     fit.fit()
-    const pending = proxyText.current
-    proxyText.current = ''
-    // A pane that waited for its chunk (LazyCliPanel) opens xterm in the commit
-    // that dials the socket, and keys sent before it opens are dropped, so the
-    // paste waits for the open and goes ahead of keys typed after it.
-    if (pending) pasteWhenOpen(sessionId, pending)
+    // A paste into xterm before its first socket settles joins the early-input
+    // queue as a paste, so it waits for bracketed paste like a stand-in's;
+    // xterm's own handler would turn it into key bytes and its newlines would run.
+    const field = term.textarea
+    const onPaste = (ev: ClipboardEvent) => {
+      if (!takesEarlyInput(sessionId)) return
+      ev.preventDefault()
+      ev.stopImmediatePropagation()
+      const text = ev.clipboardData?.getData('text/plain')
+      if (text) pasteIntoTerminal(sessionId, text)
+    }
+    field?.addEventListener('paste', onPaste, true)
+    return () => field?.removeEventListener('paste', onPaste, true)
   }, [term, fit, holding, sessionId])
 
   // Focus + refit when becoming visible. Re-measure here too so a pane that
@@ -701,6 +708,17 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
             onDismiss={() => setOsc52Result('idle')}
           />
         )}
+        {inputCapped && (
+          // No hand-off: a terminal pane sits beside the chat composer's unsent draft,
+          // and the dropped input is gone; the notice only says so.
+          <ErrorNotice
+            variant="inline"
+            testId="cli-panel-early-input-capped"
+            className="absolute top-2 left-2 z-20 max-w-[calc(100%-1rem)] rounded-md border border-border bg-bg-elevated px-2 py-1 shadow-sm"
+            message={i18nT('components.cliPanel.early_input_capped', { size: EARLY_INPUT_CAP / 1024 })}
+            onDismiss={() => dismissTerminalInputCapped(sessionId)}
+          />
+        )}
         {osc52Result === 'copied' && (
           <div
             role="status"
@@ -721,9 +739,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            // Starts with what LazyCliPanel's stand-in caught, so typing here adds to it.
-            defaultValue={proxyText.current}
-            onChange={e => { proxyText.current = e.currentTarget.value }}
+            {...standIn}
           />
         )}
         {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
@@ -901,7 +917,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
  * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
  * bucket; the module-level termCache keeps them warm across tab/chat switches.
  */
-export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat, deferOpen, onToggleFullscreen, focusBeforeLoad, typedBeforeLoad }: {
+export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat, deferOpen, onToggleFullscreen, focusBeforeLoad }: {
   sessionId: string
   cwd?: string
   /** Open the shell in this chat's REMOTE session workspace instead of locally. */
@@ -919,9 +935,6 @@ export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible
   /** Set by LazyCliPanel when this pane waited for its chunk: where the focus
    *  was when it asked. A focus moved elsewhere meanwhile is left alone. */
   focusBeforeLoad?: Element | null
-  /** Set by LazyCliPanel: what its stand-in caught while the chunk loaded,
-   *  handed to the shell as a paste once xterm opens. */
-  typedBeforeLoad?: { current: string }
 }) {
   useEffect(() => { ensureThemeObserver(); ensureTerminalFontSync() }, [])
   return (
@@ -932,7 +945,7 @@ export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible
       className="flex flex-col w-full h-full overflow-hidden px-3 pt-2"
       style={{ background: 'var(--term-bg, var(--bg))' }}
     >
-      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} deferOpen={deferOpen} onToggleFullscreen={onToggleFullscreen} focusBeforeLoad={focusBeforeLoad} typedBeforeLoad={typedBeforeLoad} />
+      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} deferOpen={deferOpen} onToggleFullscreen={onToggleFullscreen} focusBeforeLoad={focusBeforeLoad} />
     </div>
   )
 }

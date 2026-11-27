@@ -2498,7 +2498,8 @@
       "use_starting_directory": "Use terminal starting directory",
       "use_starting_directory_hint": "Opens a new shell in the server's configured terminal directory (dashboard.terminal.cwd, otherwise the server's home directory). The failed command is not sent again.",
       "loading": "Starting terminal…",
-      "load_failed": "The terminal couldn't load. Check the connection to the gateway, then try again."
+      "load_failed": "The terminal couldn't load. Check the connection to the gateway, then try again.",
+      "early_input_capped": "Input typed while the terminal was starting went past {{size}} KB; the rest was not sent."
     },
     "codeBlock": {
       "add_comment": "Add comment",

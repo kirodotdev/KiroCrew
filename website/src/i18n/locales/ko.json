@@ -6896,7 +6896,8 @@
       "use_starting_directory": "터미널 시작 디렉터리 사용",
       "use_starting_directory_hint": "서버에 설정된 터미널 디렉터리(dashboard.terminal.cwd, 없으면 서버의 홈 디렉터리)에서 새 셸을 엽니다. 실패한 명령은 다시 보내지 않습니다.",
       "loading": "터미널을 시작하는 중…",
-      "load_failed": "터미널을 불러오지 못했습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요."
+      "load_failed": "터미널을 불러오지 못했습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
+      "early_input_capped": "터미널이 시작되는 동안 입력한 내용이 {{size}}KB를 넘어 나머지는 전송되지 않았습니다."
     },
     "codeBlock": {
       "add_comment": "댓글 추가",
