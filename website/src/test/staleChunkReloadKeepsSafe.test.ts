@@ -29,7 +29,7 @@ function handlerSource(): string {
 }
 
 /** Install the real handler against a fake window; return what it did. */
-async function harness(opts: { safe: boolean }) {
+async function harness(opts: { safe: boolean; speculativeRegistry?: boolean }) {
   const { code } = await transformWithOxc(handlerSource(), 'main-preload-handler.ts', { lang: 'ts' })
   const log: string[] = []
   const bootHref = `http://localhost:5476/?token=abc${opts.safe ? '&safe=1' : ''}`
@@ -56,7 +56,7 @@ async function harness(opts: { safe: boolean }) {
   }
   new Function(
     'window', 'sessionStorage', 'isCatalogChunkError', 'isSpeculativeTerminalChunkError', 'isSpeculativeAppRegistryChunkError', 'reloadKeepingSafe', code,
-  )(win, sessionStorage, () => false, () => false, () => false, () => reloadKeepingSafe(win as unknown as Window))
+  )(win, sessionStorage, () => false, () => false, () => !!opts.speculativeRegistry, () => reloadKeepingSafe(win as unknown as Window))
   expect(listener).not.toBeNull()
   const preventDefault = vi.fn()
   listener!({ payload: new Error('Failed to fetch dynamically imported module'), preventDefault })
@@ -76,5 +76,12 @@ describe('stale-chunk recovery reload (main.tsx vite:preloadError)', () => {
     const h = await harness({ safe: false })
     expect(h.preventDefault).toHaveBeenCalledTimes(1)
     expect(h.log).toEqual(['reload'])
+  })
+
+  it('cancels a hover or startup app-registry failure without reloading', async () => {
+    // Cancelled, or Vite rethrows it; not reloaded, or a hover drops unsaved work.
+    const h = await harness({ safe: false, speculativeRegistry: true })
+    expect(h.preventDefault).toHaveBeenCalledTimes(1)
+    expect(h.log).toEqual([])
   })
 })
