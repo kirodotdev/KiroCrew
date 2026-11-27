@@ -1680,9 +1680,11 @@ When `kirocrew-core` is in the stub set, Kiro Crew's other caller-aware managed
 servers join it (`config.integration_sections.MANAGED_STUB_FOLLOWERS`), so each
 is one shared backend instead of one process per session. They already need no
 launch approval (managed launch), get the per-session token from gatewayd, and
-consume the injected caller block. `kirocrew-computer` stays out (tenant-nonce
-gated), and so do `kirocrew-cron` and the opt-in, credential-bearing
-`kirocrew-secrets` (both outside what this layer was measured on).
+consume the injected caller block. `kirocrew-cron` is one of them: it keeps no
+per-session state in its process and reads the caller, and the caller's channel,
+from that block on every call. `kirocrew-computer` stays out (tenant-nonce
+gated), and so does the opt-in, credential-bearing `kirocrew-secrets` (outside
+what this layer was measured on).
 Joining the stub set mounts nothing: only
 servers a spec already declares are wrapped. An operator can turn any one off in
 MCP Management; that choice is stored as an override and survives later
