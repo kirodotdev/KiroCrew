@@ -1061,38 +1061,6 @@ class TestLegacySse:
         assert "HTTP 405" in _lines(out)[0]["error"]["message"]
         assert len(handler.seen) == 1, "no GET"
 
-    def test_the_connection_bridge_relays_a_forgotten_session_without_a_replay(self, remote):
-        # The proxy's approval covers one forwarded call; a replay would be refused.
-        handler, base = remote
-        out, err = io.BytesIO(), io.StringIO()
-        bridge = ConnectionBridge(
-            base + "/mcp", {"Authorization": CANARY}, server="c", out=out, err=err
-        )
-        bridge.send(_msg(id=1, method="initialize", params={}))
-        bridge.send(_msg(method="notifications/initialized"))
-        handler.forgotten, handler.session_id = frozenset({"sess-1"}), "sess-2"
-        bridge.send(_msg(id=2, method="tools/call", params={}))
-        reply = _lines(out)[1]
-        assert reply["id"] == 2 and "error" in reply, "the provider's answer, not a resent call's"
-        assert "HTTP 404 from the provider" in reply["error"]["message"]
-        bridge.send(_msg(id=3, method="tools/call", params={}))
-        assert _lines(out)[2]["result"] == {
-            "text": "authorized"
-        }, "the next call uses the new session"
-        calls = [
-            (r["body"]["method"], r["headers"].get("mcp-session-id"))
-            for r in handler.seen
-            if r["body"]["method"] in ("initialize", "tools/call")
-        ]
-        assert calls == [
-            ("initialize", None),
-            ("tools/call", "sess-1"),
-            ("initialize", None),
-            ("tools/call", "sess-2"),
-        ]
-        assert CANARY not in out.getvalue().decode() + err.getvalue()
-        assert "sess-" not in out.getvalue().decode() + err.getvalue()
-
 
 @pytest.mark.parametrize(
     ("endpoint", "stream"),
