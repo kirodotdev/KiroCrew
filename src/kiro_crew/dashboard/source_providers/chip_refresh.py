@@ -27,7 +27,10 @@ from kiro_crew.dashboard.source_providers import (
     sanitize,
 )
 from kiro_crew.dashboard.source_providers.chip_status import _CheckUpdateCallback
-from kiro_crew.dashboard.source_providers.contract import SourceProviderNotConfigured
+from kiro_crew.dashboard.source_providers.contract import (
+    SourceProviderError,
+    SourceProviderNotConfigured,
+)
 
 # Bound both running and semaphore-waiting tasks. A paced overflow URL is
 # re-stamped `(now, cached status)` instead of creating a new task on every slots
@@ -56,9 +59,26 @@ _CHECK_FORCE_MIN_INTERVAL_SECS = 10.0
 # after a restart.
 _IDLE_CHECK_TTL_SECS = 15 * 60
 _IDLE_CHECK_PER_ROUND = 2
+# A chip read that GitHub answered "not a pull request" (a link to an issue
+# number, or a cut link that names one) is not read again for this long, under
+# any tier or a turn boundary: the next read would give the same answer. Not
+# forever, because a number not used yet can become a pull request later.
+_NOT_A_CHANGE_TTL_SECS = cache._TERMINAL_TTL_SECS
 # [window start, idle re-reads started in it]. One window for every owner
 # socket's driver, so a second dashboard window does not double the idle cost.
 _idle_check_window: list[float] = [float("-inf"), 0.0]
+
+
+def _answered_not_a_change(
+    url: str, entry: tuple[float, dict[str, str] | None] | None, now: float
+) -> bool:
+    """Whether GitHub recently answered that a statusless URL is not a pull request."""
+    not_a_change_at = chip_status._check_not_a_change.get(url)
+    return (
+        not_a_change_at is not None
+        and not (entry and entry[1])
+        and now - not_a_change_at < _NOT_A_CHANGE_TTL_SECS
+    )
 
 
 def _chip_refresh_due(
@@ -127,6 +147,8 @@ def schedule_check_refresh(
         entry = chip_status._check_cache.get(url)
         if not _chip_refresh_due(entry, now, force=force):
             continue
+        if _answered_not_a_change(url, entry, now):
+            continue
         if url in chip_status._check_inflight:
             refreshing.append(url)
             continue
@@ -175,6 +197,8 @@ def schedule_idle_check_refresh(
       no status at all. A chip that has never yielded a status (its first read
       failed, or the pending cap backed it off) is retried on that same path
       once the chip TTL has passed, so a boot hiccup does not leave it blank for the slow clock.
+      A read GitHub answered "not a pull request" is the exception: see
+      ``_NOT_A_CHANGE_TTL_SECS``.
     """
     now = time.monotonic()
     unread: list[str] = []
@@ -183,6 +207,8 @@ def schedule_idle_check_refresh(
         if url in chip_status._check_inflight:
             continue
         entry = chip_status._check_cache.get(url)
+        if _answered_not_a_change(url, entry, now):
+            continue
         if entry is None:
             unread.append(url)
         elif entry[1] is None:
@@ -226,6 +252,8 @@ def schedule_expanded_check_refresh(
         if url in chip_status._check_inflight:
             continue
         entry = chip_status._check_cache.get(url)
+        if _answered_not_a_change(url, entry, now):
+            continue
         if _chip_refresh_due(entry, now, force=False):
             due.append((entry[0] if entry else float("-inf"), url))
     free = max(_CHECK_PENDING_MAX - len(chip_status._check_inflight), 0)
@@ -310,11 +338,17 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
     # Set when a queued follow-up forced read was due but did not start (the
     # pending cap refused it); the result below is then cached as already due.
     followup_deferred = False
+    # Set when GitHub answered that the URL is not a pull request; recorded only
+    # once this read is known to be the latest word on the URL (below).
+    not_a_change = False
     try:
         async with chip_status._check_semaphore:
             status = await _fetch_check_status(url)
-    except Exception:
+    except Exception as exc:
         status = None
+        not_a_change = isinstance(exc, SourceProviderError) and exc.reason == runner.NOT_A_CHANGE
+    else:
+        chip_status._check_not_a_change.pop(url, None)
     finally:
         chip_status._check_inflight.discard(url)
         if url in chip_status._check_force_pending:
@@ -385,6 +419,8 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
     latest = chip_status._check_cache.get(url)
     if latest is not previous:
         return
+    if not_a_change:
+        chip_status._check_not_a_change[url] = time.monotonic()
     if status is not None:
         # Same keep-known rule as the full-payload writer: an unsettled merge read
         # must not erase a settled one, or this refresh would strip the pair,
