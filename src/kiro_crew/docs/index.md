@@ -26,7 +26,9 @@ Kiro Crew's own engine bundle (`kirocrew kas install`, see `agent.kas_bundle` in
 [Getting Started](getting-started.md) for the source install, the pip channel
 index, first-time setup, and connecting messaging channels. Already using
 kiro-cli? [Coming from kiro-cli](coming-from-kiro-cli.md) explains what carries
-over and what changes.
+over and what changes. Using Claude Code?
+[Coming from Claude Code](coming-from-claude-code.md) says what Kiro Crew adds
+around it.
 
 ## Core Capabilities
 
@@ -129,6 +131,8 @@ gracefully rather than failing the turn.
 - [Getting Started](getting-started.md): installation, first-time setup, running in the background
 - [Coming from kiro-cli](coming-from-kiro-cli.md): how Kiro Crew relates to kiro-cli, what
   carries over, why a chat behaves differently, and how to get CLI-style behaviour
+- [Coming from Claude Code](coming-from-claude-code.md): what Kiro Crew adds around
+  Claude Code, each piece in plain terms, and how to run Claude Code as the harness
 - [Configuration](configuration.md): config file reference, environment variables, sandbox
 - [Use Cases](use-cases.md): real-world workflows from the community
 - [Troubleshooting](troubleshooting.md): common issues and fixes

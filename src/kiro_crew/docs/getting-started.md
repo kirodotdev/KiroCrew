@@ -130,6 +130,8 @@ with when it is offered, else the first, and names the one it used.
 Already a kiro-cli user? [Coming from kiro-cli](coming-from-kiro-cli.md) covers
 what carries over (agents, MCP servers, steering, your login), why a Crew chat
 behaves differently from `kiro-cli chat`, and how to get CLI-style behaviour.
+Coming from Claude Code? [Coming from Claude Code](coming-from-claude-code.md)
+says what Kiro Crew adds around it and how to run Claude Code as the harness.
 
 ## First-Time Setup
 
