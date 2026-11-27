@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from session_once_helpers import without_once_fields
 
 from kiro_crew.dashboard import chat_fork, create_rate_limit
 from kiro_crew.dashboard import session_control as sc
@@ -826,12 +827,12 @@ class TestTheTool:
         _, dash = _tool({}, _OK)
         (post,) = dash.requests
         assert post.path == "/api/session-control/fork"
-        assert post.body == {"source": "", "title": ""}
+        assert without_once_fields(post.body) == {"source": "", "title": ""}
         assert post.session_key == "dashboard:chat-1-100"
 
     def test_source_title_and_fork_point_are_forwarded(self):
         _, dash = _tool({"source": "chat-2", "title": "cluster 3", "at_message_index": 7}, _OK)
-        assert dash.requests[-1].body == {
+        assert without_once_fields(dash.requests[-1].body) == {
             "source": "chat-2",
             "title": "cluster 3",
             "at_message_index": 7,

@@ -493,6 +493,46 @@ def test_a_crew_create_refuses_local_only_fields(env):
     assert env.peer.calls == []
 
 
+_REQUEST_ID = "0123456789abcdef0123456789abcdef"
+
+
+def test_a_crew_create_resent_after_its_reply_was_lost_opens_one_crew_session(env):
+    """The tool resends a create whose reply was lost under the same id; the hub
+    answers the resend from the first reply and keeps the id to itself."""
+    env.peer.reply("POST", "api/chat/slots", 200, {"key": "chat-77"})
+    keyed = {"crew": "lab", "request_id": _REQUEST_ID, "request_attempt": 0}
+    first = _call(env, "create", **keyed)
+    resent = _call(env, "create", **{**keyed, "request_attempt": 1})
+    assert first[0] == 200, first
+    assert (first[1]["replay"], resent[1]["replay"]) == ("first", "replayed")
+    (opened,) = [c for c in env.peer.calls if c["path"] == "api/chat/slots"]
+    assert "request_id" not in opened["body"] and "request_attempt" not in opened["body"]
+
+
+def test_a_crew_send_resent_after_its_reply_was_lost_delivers_once(env):
+    target = _create(env)
+    env.peer.calls.clear()
+    keyed = {"crew": "lab", "target": target, "message": "go", "request_id": _REQUEST_ID}
+    first = _call(env, "send", **keyed)
+    resent = _call(env, "send", **keyed)
+    assert first[0] == 200, first
+    assert resent[1]["replay"] == "replayed"
+    assert [c["path"] for c in env.peer.calls if c["method"] == "POST"] == ["api/chat"]
+
+
+def test_a_crew_replay_passes_the_crew_callers_gate_again(env):
+    """A caller the crew= gate now refuses gets no kept reply, and nothing reruns."""
+    target = _create(env)
+    env.peer.calls.clear()
+    keyed = {"crew": "lab", "target": target, "message": "go", "request_id": _REQUEST_ID}
+    assert _call(env, "send", **keyed)[0] == 200
+    env.caller.agent = "some-other-agent"
+    status, body = _call(env, "send", **keyed)
+    assert (status, body["code"]) == (403, "conductor_mode_only")
+    assert "replay" not in body
+    assert [c["path"] for c in env.peer.calls if c["method"] == "POST"] == ["api/chat"]
+
+
 def test_a_template_kind_reaches_the_peer_create(env):
     """D6: the peer resolves a same-named crew member first unless the create says
     ``template``, so the kind rides the create; without it nothing changes."""

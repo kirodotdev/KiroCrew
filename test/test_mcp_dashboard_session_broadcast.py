@@ -18,7 +18,10 @@ the other seven.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
+from session_once_helpers import without_once_fields
 
 from kiro_crew import mcp_dashboard as md
 from kiro_crew import validation
@@ -42,7 +45,8 @@ def _frame(tool: str, args: dict, route: str, resp: dict) -> tuple[str, Dashboar
 
 
 def _bc(args: dict, resp: dict) -> tuple[str, DashboardRequest]:
-    return _frame("session_broadcast", args, "POST /api/session-control/broadcast", resp)
+    out, sent = _frame("session_broadcast", args, "POST /api/session-control/broadcast", resp)
+    return out, dataclasses.replace(sent, body=without_once_fields(sent.body))
 
 
 def _st(resp: dict) -> tuple[str, DashboardRequest]:

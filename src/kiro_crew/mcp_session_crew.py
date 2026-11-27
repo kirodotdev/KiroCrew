@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import quote
 
 from kiro_crew.conductor_patrol import reply_line
+from kiro_crew.mcp_session_once import _post_once, lost_reply_error, possible_double
 from kiro_crew.mcp_tools.dashboard_client import DashboardError
 from kiro_crew.mcp_tools.table import ToolContext
 from kiro_crew.platform import redact_via_context as redact
@@ -105,6 +106,24 @@ def _on(resp: dict[str, Any]) -> str:
     return f"on crew `{name}`"
 
 
+#: Hub refusals that mean the request may have reached the crew while its answer
+#: never came back (``remote_dispatch_routes.peer_call``): a reply cut off partway,
+#: or no reply at all. The crew may have acted, so neither is a refusal.
+_CREW_MAY_HAVE_ACTED = frozenset({"crew_peer_interrupted", "proxy_peer_unreachable"})
+
+
+def _unknown_outcome(refused: DashboardError, verb: str, outcome: str, check: str) -> str:
+    """The reply for a crew *verb* that may still have happened, or "" for a refusal."""
+    if refused.body.get("transport_error"):
+        return lost_reply_error(verb, outcome, check, refused)
+    if refused.code in _CREW_MAY_HAVE_ACTED:
+        return (
+            f"Error: the crew did not answer this {verb} ({refused.error}). The {outcome}. "
+            f"Do NOT {verb} it again: {check} first."
+        )
+    return ""
+
+
 def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
     payload = {
         k: args[k]
@@ -115,9 +134,21 @@ def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
     if extra:
         return f"Error: session_create with crew does not take {', '.join(extra)}."
     try:
-        resp = ctx.client.post("/api/session-control/create", payload, session_key=ctx.caller_key)
+        # shortcut: a gateway older than this tool refuses the id fields with
+        # crew_field_unsupported and opens nothing; restarting it clears that.
+        created = _post_once(ctx, "/api/session-control/create", payload)
     except DashboardError as refused:
+        unknown = _unknown_outcome(
+            refused,
+            "create",
+            "crew session may still have been opened",
+            "look for it on your board with work_ledger_read, or ask the user to "
+            "check that crew's sidebar group",
+        )
+        if unknown:
+            return redact(unknown)
         return redact(f"Error: could not create a session on that crew: {refused.error}")
+    resp = created.resp
     title = f" ({resp['title']})" if resp.get("title") else ""
     agent = f" bound to `{resp['agent']}`" if resp.get("agent") else ""
     note = f" The title was not set: {resp['title_error']}." if resp.get("title_error") else ""
@@ -159,6 +190,8 @@ def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
     # A bound worker's reports are pulled only on the conductor's work-ledger
     # patrol tick, so its create says whether one runs, as a local bind does.
     patrol = reply_line(resp) if resp.get("work_item_id") else ""
+    if created.resent_unprotected:
+        note += f" Warning: {possible_double('a second crew session may have been opened')}."
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}`{title} {_on(resp)}{agent}. It is empty "
         f"and waiting in that crew's sidebar group.{note} Pass crew and this key as "
@@ -175,16 +208,30 @@ def run_crew_send(args: dict[str, Any], ctx: ToolContext) -> str:
     if args.get("steer"):
         payload["steer"] = True
     try:
-        resp = ctx.client.post("/api/session-control/send", payload, session_key=ctx.caller_key)
+        sent = _post_once(ctx, "/api/session-control/send", payload)
     except DashboardError as refused:
+        unknown = _unknown_outcome(
+            refused,
+            "send",
+            "message may still have been delivered",
+            "read the target with session_read_message and crew",
+        )
+        if unknown:
+            return redact(unknown)
         return redact(f"Error: could not send to that crew session: {refused.error}")
+    resp = sent.resp
     if resp.get("steered") is True:
         how = "steered into its running turn"
     elif args.get("steer"):
         how = "queued (the crew could not steer its running turn)"
     else:
         how = "delivered (queued if busy)"
-    return redact(f"\U0001f4e8 Message {how} to `{resp.get('target')}` {_on(resp)}.")
+    twice = (
+        f" Warning: {possible_double('the message may have been delivered twice')}."
+        if sent.resent_unprotected
+        else ""
+    )
+    return redact(f"\U0001f4e8 Message {how} to `{resp.get('target')}` {_on(resp)}.{twice}")
 
 
 def run_crew_read(args: dict[str, Any], ctx: ToolContext) -> str:

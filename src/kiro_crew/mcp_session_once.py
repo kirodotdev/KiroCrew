@@ -1,7 +1,10 @@
-"""Post a ``session_send`` or ``session_create`` once per tool call, across lost replies.
+"""Post a session-control call once per tool call, across lost replies.
 
-The gateway can finish a send or create after the client stopped waiting for its
-reply. Each call therefore carries one request id, the post is repeated under that
+Used by every session tool whose call opens a session or delivers something:
+``session_create``, ``session_send`` (both also with ``crew``), ``session_fork``,
+``session_broadcast``, ``session_continue``, ``session_set_note`` and
+``work_dispatch``'s create and seed. The gateway can finish such a call after the
+client stopped waiting for its reply. Each call therefore carries one request id, the post is repeated under that
 id while the reply is lost, and the gateway answers a repeat with the first post's
 reply (``dashboard.session_control_replay``). :mod:`kiro_crew.mcp_dashboard_session_runs`
 calls these helpers.
@@ -16,16 +19,16 @@ from typing import Any, NamedTuple
 from kiro_crew.mcp_tools.dashboard_client import DashboardError
 from kiro_crew.mcp_tools.table import ToolContext
 
-#: The body field ``session_send`` and ``session_create`` carry their per-call id in,
+#: The body field these tools carry their per-call id in,
 #: the gateway's ``session_control_replay.REQUEST_ID_FIELD`` (a test pins the two).
 #: Spelled out here because importing the gateway module would load aiohttp into
 #: every chat's tool server.
 _REQUEST_ID_FIELD = "request_id"
 
-#: Posts ``session_send`` and ``session_create`` make while their reply is lost
+#: Posts each of these tools makes while its reply is lost
 #: (``transport_error``: the gateway may have done the work). Each repeat carries the
-#: same id, so the gateway answers it with the first post's reply instead of sending
-#: or creating again. ``ask_question`` resends its open on the same terms.
+#: same id, so the gateway answers it with the first post's reply instead of doing
+#: the work again. ``ask_question`` resends its open on the same terms.
 LOST_REPLY_ATTEMPTS = 3
 
 #: Seconds between those posts.
@@ -81,8 +84,12 @@ def _replays_first_outcome(refused: DashboardError, request_id: str) -> bool:
     return _is_replay(refused.body, request_id) and refused.code not in _REPLAY_UNKNOWN_CODES
 
 
-def _post_once(ctx: ToolContext, path: str, body: dict[str, Any]) -> _OnceReply:
+def _post_once(
+    ctx: ToolContext, path: str, body: dict[str, Any], *, timeout: float | None = None
+) -> _OnceReply:
     """POST *body* under one fresh id, repeating it only while the reply is lost.
+
+    *timeout* is each post's own wait, for a route that needs longer than the default.
 
     Raises the last :class:`DashboardError`: a refusal at once, a lost reply only
     after :data:`LOST_REPLY_ATTEMPTS` posts. A resend's refusal that cannot show the
@@ -92,7 +99,7 @@ def _post_once(ctx: ToolContext, path: str, body: dict[str, Any]) -> _OnceReply:
     for attempt in range(LOST_REPLY_ATTEMPTS):
         keyed = {**body, _REQUEST_ID_FIELD: request_id, _ATTEMPT_FIELD: attempt}
         try:
-            resp = ctx.client.post(path, keyed, session_key=ctx.caller_key)
+            resp = ctx.client.post(path, keyed, session_key=ctx.caller_key, timeout=timeout)
         except DashboardError as refused:
             lost = bool(refused.body.get("transport_error"))
             if attempt > 0 and not lost and not _replays_first_outcome(refused, request_id):
@@ -107,11 +114,17 @@ def _post_once(ctx: ToolContext, path: str, body: dict[str, Any]) -> _OnceReply:
     raise AssertionError("unreachable: the last attempt returns or raises")
 
 
-def lost_reply_error(verb: str, outcome: str, check: str, refused: DashboardError) -> str:
-    """The reply when every post's reply was lost: the work may still have happened."""
+def lost_reply_error(
+    verb: str, outcome: str, check: str, refused: DashboardError, *, again: str = ""
+) -> str:
+    """The reply when every post's reply was lost: the work may still have happened.
+
+    *again* is the verb of the "Do NOT ... it again" line when *verb* is a noun.
+    """
     return (
         f"Error: no reply from the gateway to this {verb} after {LOST_REPLY_ATTEMPTS} "
-        f"tries ({refused.error}). The {outcome}. Do NOT {verb} it again: {check} first."
+        f"tries ({refused.error}). The {outcome}. Do NOT {again or verb} it again: "
+        f"{check} first."
     )
 
 
