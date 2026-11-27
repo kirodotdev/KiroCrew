@@ -190,7 +190,13 @@ and attributes their usage rows, as that agent, and the spawn gate vets that
 agent. The `kirocrew` floor, a carrier bound to a member and an app's own agent
 (its chat runs a launch copy no step session carries) and a template with no
 user-level spec (one only a checkout declares) give no default, so those steps run
-the configured pool agent.
+the configured pool agent. Such a step starts as the pool's agent when it claims
+a queued warm-pool process and as the literal `kirocrew` when it cold-starts, so
+`agent_exec.vet_step_spawn` asks `capabilities.spawn` about each of those names
+(`agent_exec.unnamed_step_agents`; the pool's agent only while the warm pool is
+sized or still holds a process) and refuses the step when the `agents` scope
+leaves out either one. An unnamed step is never asked about as `""`, which the
+scope does not read.
 
 `effort` is the step's reasoning effort. Both shipped adapters
 (`agent_exec.build_agent_fn`, `agent_pool.build_pooled_agent_fn`) hand it to

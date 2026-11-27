@@ -234,8 +234,36 @@ async def apply_step_effort(provider: Any, level: Optional[str]) -> None:
         logger.warning("step effort %r refused; the session keeps its effort: %s", level, exc)
 
 
+def unnamed_step_agents(sessions: Any) -> tuple[str, ...]:
+    """The agents a step that names none can start as, for the spawn gate to vet.
+
+    ``get_or_create(agent=None)`` claims a warm-pool process when one is queued,
+    and that process runs the pool's agent (``session_pool._claim_from_pool``
+    compares against ``_pool_agent``); otherwise it cold-starts the literal
+    ``kirocrew`` (``providers/acp_runtime_start.py``), the name
+    ``shared_nodes._DEDICATED_DEFAULT_AGENT`` records. Which one serves a step is
+    decided after the gate, so the gate vets both. The pool's agent is a candidate
+    only while the pool is sized or still holds a process: with no warm pool every
+    unnamed step cold-starts, and vetting a name it cannot run as would refuse it
+    for nothing. In-memory reads, no await.
+    """
+    pool_agent = getattr(sessions, "_pool_agent", "") or ""
+    size = getattr(sessions, "_pool_size", 0)
+    queue = getattr(sessions, "_warm_pool", None)
+    warm = (isinstance(size, int) and size > 0) or (
+        isinstance(queue, asyncio.Queue) and not queue.empty()
+    )
+    pool_name = pool_agent if warm and isinstance(pool_agent, str) else ""
+    return tuple(dict.fromkeys(a for a in (pool_name, shared_nodes._DEDICATED_DEFAULT_AGENT) if a))
+
+
 async def vet_step_spawn(
-    *, session_key: str, agent: Optional[str], cwd: Optional[str], app: str = ""
+    *,
+    session_key: str,
+    agent: Optional[str],
+    cwd: Optional[str],
+    app: str = "",
+    sessions: Any = None,
 ) -> Optional[str]:
     """Run the two spawn gates on one ``ctx.agent()`` step; return the cwd to launch in.
 
@@ -244,8 +272,11 @@ async def vet_step_spawn(
     ``capabilities.spawn`` ceiling of the PARENT surface, and the
     ``agent.subagent_cwd_allowed_roots`` allowlist for a caller-named launch
     directory. Both helpers get the arguments the subagent admission gate passes
-    them (``gate.py`` declares ``agent: str = ""``/``app: str = ""``, so an unnamed
-    agent is the empty string there and here); nothing new is decided here.
+    them. A step that names no agent (and whose run has no default) is vetted as
+    every agent it can start as (:func:`unnamed_step_agents`, read off
+    ``sessions``), so a ``capabilities.spawn.scopes.agents`` scope binds it as it
+    binds a named one; the admission gate's later effective-agent check
+    (``subagent_manager/run_turn.py``) plays that part for ``spawn_run``.
 
     ``session_key`` is the run's originating session (the parent surface the
     profile is resolved against). ``app`` is the calling app's identity, which binds
@@ -281,10 +312,12 @@ async def vet_step_spawn(
     # module); that chain is acyclic only while ``slack/__init__`` stays lazy.
     from kiro_crew.subagent import _vet_spawn_governance, validate_cwd
 
-    denial = _vet_spawn_governance(session_key, agent or "", app=app)
-    if denial:
-        logger.warning("workflow agent step refused by governance: %s", denial)
-        raise WorkflowSpawnRefused(f"spawn refused by governance: {denial}")
+    for name in (agent,) if agent else unnamed_step_agents(sessions):
+        denial = _vet_spawn_governance(session_key, name, app=app)
+        if denial:
+            logger.warning("workflow agent step refused by governance: %s", denial)
+            unnamed = "" if agent else f" (the step names no agent, so it may run as {name!r})"
+            raise WorkflowSpawnRefused(f"spawn refused by governance: {denial}{unnamed}")
     if not cwd:
         return cwd
 
@@ -404,6 +437,7 @@ def build_agent_fn(
             agent=opts.get("agent") or default_agent,
             cwd=opts.get("cwd"),
             app=app,
+            sessions=sessions,
         )
         # Per-call isolated session by default; caller-named session when session=.
         session = step_session_name(opts)

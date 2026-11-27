@@ -323,6 +323,51 @@ async def test_the_agent_scope_refuses_only_the_agent_outside_it(monkeypatch) ->
     assert [row["agent"] for row in permitted] == [OTHER_AGENT, OTHER_AGENT], permitted
 
 
+async def test_the_agent_scope_binds_a_step_that_names_no_agent(monkeypatch) -> None:
+    """A step with no ``agent`` (and no run default) is vetted as the agent it runs.
+
+    ``get_or_create(agent=None)`` cold-starts the literal ``kirocrew``, so an
+    ``agents`` scope that leaves ``kirocrew`` out must refuse the step. Asking the
+    scope about ``""`` instead skipped it, and the step ran the full default agent.
+    """
+    _deny_one_agent(monkeypatch, "kirocrew")
+
+    refused = await _drive_both_step_paths("unnamed-scoped-out", {})
+    assert not refused, (
+        "a step that names no agent allocated a child session although the "
+        f"agents scope excludes the agent it starts as: {refused!r}"
+    )
+
+    sessions = _RecordingSessions("unnamed-raise")
+    fn = build_agent_fn(sessions, run_id="wf-unnamed-raise", session_key=PARENT_SESSION_KEY)
+    with pytest.raises(WorkflowSpawnRefused) as caught:
+        await fn("do work", {})
+    assert "'kirocrew'" in str(caught.value), caught.value
+
+    # Control: the same scope still admits a step that names a permitted agent.
+    permitted = await _drive_both_step_paths("unnamed-control", {"agent": OTHER_AGENT})
+    assert len(permitted) == 2, permitted
+
+
+async def test_an_unnamed_step_is_also_vetted_as_the_warm_pool_s_agent(monkeypatch) -> None:
+    """A warm-pool process runs the pool's agent, so that name is vetted while one can serve."""
+    _deny_one_agent(monkeypatch, "pool-agent")
+    sessions = _RecordingSessions("unnamed-pool")
+    sessions._pool_agent = "pool-agent"
+    sessions._pool_size = 1
+    fn = build_agent_fn(sessions, run_id="wf-unnamed-pool", session_key=PARENT_SESSION_KEY)
+
+    with pytest.raises(WorkflowSpawnRefused):
+        await fn("do work", {})
+    assert not sessions.created, sessions.created
+
+    # Control: with no warm pool the step can only cold-start as ``kirocrew``, so
+    # the pool's agent is not asked about and the step spawns.
+    sessions._pool_size = 0
+    assert await fn("do work", {})
+    assert len(sessions.created) == 1, sessions.created
+
+
 async def test_an_app_bound_profile_refuses_the_app_s_own_workflow_spawn(monkeypatch) -> None:
     """F1 parity: the app identity reaches the ceiling, so an app profile binds.
 
