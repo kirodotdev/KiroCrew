@@ -324,6 +324,14 @@ export function useChatPageSessionController({
    * stages it under the created session's key before activating that session.
    */
   const initialPrefillRef = useRef(initialNewRef.current ? (searchParams.get('prefill') ?? '') : '')
+  /**
+   * `&mode=conductor` on the same `?new=1` link: the new session opens in
+   * conductor mode, through the create's own conductor switch (`createSlot`'s
+   * `crewMode`, the path `dashboard.new_chat_crew_mode` takes). `conductor` is the
+   * only value read; any other is ignored. Read only with `?new=1`, like `prefill`,
+   * and it sends nothing either.
+   */
+  const initialConductorRef = useRef(initialNewRef.current && searchParams.get('mode') === 'conductor')
   // Deep-link mount activation in progress — stops the sync effect from stripping
   // ?sid before activation lands. Cleared once activeSlot is truthy.
   const pendingSidRef = useRef(!!initialSidRef.current)
@@ -491,9 +499,11 @@ export function useChatPageSessionController({
     mutationFn: async () => {
       const prompt = initialPrefillRef.current
       const appDraftLaunch = appDraftLaunchRef.current
-      const action = await dispatch(createSlot({ mode, agent: appDraftAgentRef.current, ...appDraftSlotOptionsRef.current, prefill: prompt || undefined }))
+      const crewMode = initialConductorRef.current || undefined
+      const action = await dispatch(createSlot({ mode, agent: appDraftAgentRef.current, ...appDraftSlotOptionsRef.current, prefill: prompt || undefined, crewMode }))
       // A rejected create throws here and keeps the prompt for the retry.
       const slot = unwrapResult(action)
+      initialConductorRef.current = false
       if (appDraftLaunch && slot?.key) trackLaunchedDraft(slot, prompt)
       // Spent once: a retry of a failed create still carries the same intent, but
       // must not re-seed a session the user has since typed into.
@@ -541,6 +551,7 @@ export function useChatPageSessionController({
     newRequestConsumedRef.current = true
     initialNewRef.current = false
     initialPrefillRef.current = searchParams.get('prefill') ?? initialPrefillRef.current
+    initialConductorRef.current = searchParams.get('mode') === 'conductor' || initialConductorRef.current
     const launchWindow = window as Window & {
       __mc_chat_launch?: {
         ts?: number; message?: string; agent?: string; slotKey?: string; autoSend?: boolean
@@ -1200,6 +1211,7 @@ export function useChatPageSessionController({
     next.set('sid', activeSlot)
     next.delete('slot')
     next.delete('prefill')
+    next.delete('mode')
     next.delete('autoSend')
     next.delete('newSession')
     next.delete('msg')

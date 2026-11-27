@@ -64,12 +64,17 @@ type NewChatConfig = { default_memory_mode?: unknown; new_chat_crew_mode?: unkno
  * `createSlot.fulfilled` skips a row already listed, so the switch is also
  * patched onto that row (`updateSlot`): a socket that drops before the switch
  * broadcast would otherwise leave the row showing the plain agent.
+ *
+ * `asked`: the create itself asked for conductor mode (the `/chat?new=1&mode=conductor`
+ * link), so the setting is not read; every other check still applies.
  */
-async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | undefined, publish: (patch: Partial<ChatSlot> & { key: string }) => void): Promise<void> {
+async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | undefined, publish: (patch: Partial<ChatSlot> & { key: string }) => void, asked = false): Promise<void> {
   if (!slot?.key || (crewModeEnabled() === false && featurePreviewLockKnown())) return
   try {
-    const cfg = config ?? await api.dashboardConfig() as NewChatConfig
-    if (cfg?.new_chat_crew_mode !== true) return
+    if (!asked) {
+      const cfg = config ?? await api.dashboardConfig() as NewChatConfig
+      if (cfg?.new_chat_crew_mode !== true) return
+    }
     // One-shot: the page's first chat can be made before the edition lock is known.
     await whenFeaturePreviewLockKnown()
     if (!crewModeEnabled()) return
@@ -93,7 +98,7 @@ async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | un
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; projectAtCreate?: boolean; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; startModeDefault?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; projectAtCreate?: boolean; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; crewMode?: boolean; startModeDefault?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
   { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean } }
 >(
   'chat/createSlot',
@@ -161,8 +166,10 @@ export const createSlot = createAsyncThunk<
     const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, typeof opts === 'string' ? undefined : opts?.projectFromSlot, startModeDefault, ...(projectAtCreate ? [project as string] : []))
     // `crewModeDefault` is OPT-IN like `defaultFolder`: only the person's own New
     // chat entry points pass it, so an app's launch or a hand-off never lands on
-    // the conductor.
-    if (typeof opts === 'object' && opts.crewModeDefault === true) await startNewChatInCrewMode(slot, config, patch => dispatch(updateSlot(patch)))
+    // the conductor. `crewMode` asks for it outright, whatever the setting says.
+    if (typeof opts === 'object' && (opts.crewModeDefault === true || opts.crewMode === true)) {
+      await startNewChatInCrewMode(slot, config, patch => dispatch(updateSlot(patch)), opts.crewMode === true)
+    }
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.

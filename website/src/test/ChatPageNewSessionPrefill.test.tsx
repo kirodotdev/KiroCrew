@@ -41,6 +41,7 @@ import { performSlotSwitch } from '../lib/slotSwitch'
 import { captureUrlToken } from '../lib/urlToken'
 import { bindSlotReadSender, flushSlotRead, _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { i18nT } from '../i18n/t'
+import { resetCrewModeCatalog } from '../lib/crewMode'
 import * as transport from '../chat-core/transport/sendTurn'
 import * as revisionSeed from '../hooks/sharedCrew/sendRevisionSeed'
 import type { useKnowledgeFetch } from '../pages/chat/useKnowledgeFetch'
@@ -70,8 +71,11 @@ const cancelQueuedRequest = vi.fn()
 const deleteChatSlot = vi.fn()
 const discardChatSlot = vi.fn()
 const slackLink = vi.fn()
+const chatSlotAgent = vi.fn()
 vi.mock('../api/client', () => ({
   api: {
+    chatSlotAgent: (...a: unknown[]) => chatSlotAgent(...a),
+    agentCatalog: vi.fn().mockResolvedValue({ agents: [], default_agent: 'kirocrew', crew_mode_agent: 'kirocrew-conductor', conductor_agents: ['kirocrew-conductor'] }),
     answerQuestion: (...a: unknown[]) => answerQuestion(...a),
     cancelQueuedMessage: (...a: unknown[]) => cancelQueuedRequest(...a),
     chatSlots: vi.fn().mockResolvedValue([]),
@@ -290,6 +294,49 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
   })
 })
 
+describe('ChatPage — /chat?new=1&prefill=&mode=conductor opens the new session in conductor mode', { timeout: 20_000 }, () => {
+  const CONDUCTOR = 'kirocrew-conductor'
+  beforeEach(() => {
+    chatSlotAgent.mockReset()
+    chatSlotAgent.mockResolvedValue({ ok: true, agent: CONDUCTOR, agent_kind: 'template' })
+  })
+  afterEach(() => { resetCrewModeCatalog() })
+
+  it('switches the created session to the conductor and keeps the prompt seeded', async () => {
+    const store = await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}&mode=conductor`)
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    expect(chatSlotAgent).toHaveBeenCalledWith(NEW_SLOT, CONDUCTOR, 'template')
+    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    // The param is spent with the others: the address bar names the session only.
+    await waitFor(() => expect(new URLSearchParams(locationInTest.search).get('sid')).toBe(NEW_SLOT))
+    expect(new URLSearchParams(locationInTest.search).has('mode')).toBe(false)
+    expect(new URLSearchParams(locationInTest.search).has('prefill')).toBe(false)
+  })
+
+  it('sends nothing: the seeded prompt still waits for a human Enter', async () => {
+    await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}&mode=conductor`)
+    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    await waitFor(() => expect(chatSlotAgent).toHaveBeenCalled())
+    expect(sendChat).not.toHaveBeenCalled()
+  })
+
+  it.each(['plan', 'Conductor', 'crew', ''])('ignores mode=%s and creates a plain session', async (value) => {
+    const store = await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}&mode=${value}`)
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    expect(chatSlotAgent).not.toHaveBeenCalled()
+    expect(sendChat).not.toHaveBeenCalled()
+  })
+
+  it('ignores mode=conductor without new=1', async () => {
+    await renderAt('/chat?mode=conductor')
+    await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+    expect(createChatSlot).not.toHaveBeenCalled()
+    expect(chatSlotAgent).not.toHaveBeenCalled()
+  })
+})
 
 describe('App SDK chat launch intent', () => {
   function launch(options: {

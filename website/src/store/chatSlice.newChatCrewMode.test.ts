@@ -104,6 +104,19 @@ describe('createSlot new chat conductor mode default', () => {
     expect(api.chatSlotAgent).not.toHaveBeenCalled()
   })
 
+  // `crewMode`: the `/chat?new=1&mode=conductor` link asks for conductor mode itself.
+  it('switches a create that asks for conductor mode even while the setting is off', async () => {
+    api.dashboardConfig.mockResolvedValue({ default_memory_mode: 'persistent', new_chat_crew_mode: false })
+    const slot = await created({ crewMode: true })
+    expect(api.chatSlotAgent).toHaveBeenCalledWith('NEW', CONDUCTOR, 'template')
+    expect(slot.agent).toBe(CONDUCTOR)
+  })
+
+  it('still leaves a create that asks for conductor mode plain where the chip is not offered', async () => {
+    await created({ crewMode: true, memory_mode: 'incognito' }, { memory_mode: 'incognito' })
+    expect(api.chatSlotAgent).not.toHaveBeenCalled()
+  })
+
   it('waits for the edition lock before deciding, then switches once a standard build answers', async () => {
     vi.useFakeTimers()
     onTestFinished(() => { vi.useRealTimers() })
