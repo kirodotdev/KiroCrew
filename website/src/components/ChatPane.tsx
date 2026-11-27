@@ -321,10 +321,14 @@ export default function ChatPane({
   // message instead, so an optimistic bubble would render a duplicate).
   const busy = useAppSelector((s) => selectComposerBusy(s, slotKey))
   // Parent link for the "↳ fork of <parent>" tag. forked_from is the parent's
-  // history key (dashboard:<slot>); strip the prefix to match the bare slot key.
-  const parentKey = paneSlot?.forked_from ? paneSlot.forked_from.replace(/^dashboard:/, '') : null
+  // history key: dashboard:<slot>, or a channel parent's linked key (slack:<ts>),
+  // which matches that slot's linked_session_key instead of its slot key.
+  const forkedFrom = paneSlot?.forked_from
+  const parentKey = forkedFrom ? forkedFrom.replace(/^dashboard:/, '') : null
   const parentSlot = useAppSelector((s) =>
-    parentKey ? slotRowByKey(s.dashboard.slots, parentKey) : undefined,
+    forkedFrom && parentKey
+      ? slotRowByKey(s.dashboard.slots, parentKey) ?? s.dashboard.slots.find((x) => x.linked_session_key === forkedFrom)
+      : undefined,
   )
   // An untitled parent reads "Untitled session", never its slot key; the tag's
   // hover keeps the key so two untitled parents stay tellable apart. A parent
@@ -963,12 +967,26 @@ export default function ChatPane({
             onAttempt={() => setTitleError(null)}
           />
           {parentKey && (
-            <span
-              className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]"
-              title={i18nT('components.chatPane.forked_from', { name: parentHoverName })}
-            >
-              ↳ {parentTitle}
-            </span>
+            // A link only when the parent is a session this host can open; a
+            // parent that is gone or out of reach keeps the plain tag.
+            onSessionOpen && parentSlot ? (
+              <button
+                type="button"
+                data-testid="chat-pane-fork-parent"
+                className="shrink-0 text-[10px] text-accent bg-accent/10 hover:bg-accent/20 rounded-full px-1.5 py-0.5 truncate max-w-[38%] border-none cursor-pointer"
+                title={i18nT('components.chatPane.forked_from', { name: parentHoverName })}
+                onClick={() => onSessionOpen(parentSlot.key)}
+              >
+                ↳ {parentTitle}
+              </button>
+            ) : (
+              <span
+                className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]"
+                title={i18nT('components.chatPane.forked_from', { name: parentHoverName })}
+              >
+                ↳ {parentTitle}
+              </span>
+            )
           )}
           <span className="flex-1" />
           {running && (

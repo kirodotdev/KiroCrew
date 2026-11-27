@@ -28,6 +28,8 @@ import { messageRowKey, turnLeadKey, msgIdentityKey } from '../ChatPageMessageCo
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { MessageSearchScope } from '../../../hooks/SearchHighlightContext'
 import { isJumpTarget } from '../../../hooks/JumpRevealContext'
+import ForkPointMarker from '../ForkPointMarker'
+import { forkChildrenAt, forkPointsOf, forkPointsSignature, type ForkPointIndex } from '../forkPoints'
 import { UserMessage, AssistantMessage } from '..'
 import { warmBriefBodyOf } from '../../../components/chat/WarmBriefCard'
 import { grillRowId } from '../../../components/chat/GrillCard'
@@ -225,6 +227,16 @@ export function useTranscriptRendering({
   // Decides which more private forks the message menu offers (only stricter modes).
   const activeSlotMemoryMode = filteredSlots.find(s => s.key === activeSlot)?.memory_mode
 
+  // Forks of this session, by the row each was cut after. Keyed on a signature of
+  // the fork fields alone, so an ordinary slot-list frame keeps the same index and
+  // does not re-render every settled turn through the renderer deps below.
+  const forkPointsSig = `${activeSlot ?? ''}\n${forkPointsSignature(filteredSlots, activeSlot)}`
+  const forkPointsCache = useRef<{ sig: string; index: ForkPointIndex } | null>(null)
+  if (forkPointsCache.current?.sig !== forkPointsSig) {
+    forkPointsCache.current = { sig: forkPointsSig, index: forkPointsOf(filteredSlots, activeSlot) }
+  }
+  const forkPoints = forkPointsCache.current.index
+
   // Session documents (in-session artifacts) for the active slot. Used only to
   // badge file-change rows that are tracked docs/artifacts (e.g. a generated
   // PR body) rather than source-file edits. Shares the ['session-artifacts',
@@ -400,6 +412,8 @@ export function useTranscriptRendering({
     // visibleIndexMap is O(1) per row.
     const messageId = typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
     const canResolveOnServer = !!messageId && !isStreaming && !isInject
+    // Only a user or assistant row can be a fork point (the fork copies no other role).
+    const forksHere = isStreaming || isInject ? [] : forkChildrenAt(forkPoints, m)
     // The reply a running Regenerate may replace: the new one streams in below it.
     const beingReplaced = !!messageId && replacingMids.has(messageId)
     // Only the first answer row after the previous reply starts the new version;
@@ -489,6 +503,7 @@ export function useTranscriptRendering({
           )}
         </div>
       </div>
+      {forksHere.length > 0 && <ForkPointMarker forks={forksHere} onOpen={selectSessionTab} />}
       </MessageSearchScope>
     )
       },
@@ -579,7 +594,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, handleForkWithMemoryMode, activeSlotMemoryMode, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, stableQuoteJumpFor, quoteMark, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, framed, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, forkPoints, connected, handleFork, handleForkWithModel, handleForkWithMemoryMode, activeSlotMemoryMode, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, stableQuoteJumpFor, quoteMark, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, framed, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -606,9 +621,21 @@ export function useTranscriptRendering({
     // A role nobody claims renders as the conversational bubble -- what the
     // if-chain's fall-through did, so an unknown role is visible, never lost.
     // By reference: the merged list's tail is an SDK default, not the bubble.
-    return (entry ?? bubbleRenderer).render(m, ctx)
+    const renderer = entry ?? bubbleRenderer
+    const out = renderer.render(m, ctx)
+    // The bubble draws its own fork marker. Any other row a fork was cut at
+    // (a compaction notice, a status card) gets the marker below it here.
+    if (renderer === bubbleRenderer || out == null) return out
+    const forksHere = forkChildrenAt(forkPoints, m)
+    if (forksHere.length === 0) return out
+    return (
+      <Fragment key={key}>
+        {out}
+        <ForkPointMarker forks={forksHere} onOpen={selectSessionTab} />
+      </Fragment>
+    )
   // eslint-disable-next-line react-hooks/exhaustive-deps -- messagesRef is a useRef (stable for the page's lifetime) that the rule cannot see across the owner boundary; listing it would also put the flush-volatile `messages` name the dep-hygiene ratchet (TurnBlock.rowMemo.test.tsx) bans back in this array
-  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, handleArtifactOpen, connectionsUiOn])
+  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, handleArtifactOpen, connectionsUiOn, forkPoints, selectSessionTab])
 
   // Hoisted out of the row map so every TurnBlock receives the SAME function
   // identity per render — an inline closure there re-created it per row per
