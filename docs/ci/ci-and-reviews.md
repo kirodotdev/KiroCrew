@@ -807,8 +807,28 @@ Turning selection off on them is safe.
   `scripts/ci_test_selection_ledger_night.py`: restore the ledger, read at most
   700 REST requests' worth of the last two days' pull-request runs with
   `scripts/ci_test_selection_ledger.py`, report on the whole ledger, and upload
-  `ledger.jsonl`, `rates.json` and `summary.md` as the artifact
+  `ledger.jsonl`, `notes.jsonl`, `rates.json` and `summary.md` as the artifact
   `test-selection-ledger`, kept 90 days. The summary goes to the job summary.
+- **A failure is not counted against the diff for one of five reasons.** Its
+  shard went green on a rerun (`rerun_green`); the watcher's main-red issue was
+  open and named its file when the row was recorded (`main_red`); the file
+  failed on another branch within three days (`shared`); another branch failed
+  the file and passed it on a rerun within 14 days (`flake`); or a main-red
+  issue the watcher wrote named the file while the run was created, open or
+  closed since (`from_main`). The last two are decided at report time by
+  `scripts/ci_test_selection_ledger_causes.py`, from the ledger and from
+  `notes.jsonl`, where each pass writes the spans of the main-red issues it
+  listed in its one issues request. A rerun on the failure's own branch is no
+  flake, and notes that do not read as notes label nothing. A Windows miss
+  that stays counted, was never rerun and is its file's only failure in 14
+  days carries the note `one_off` in the Windows miss table: it changes no
+  count, and a person reads those rows.
+- **The Windows auto-off line says whether the pass settled.** A pass reads the
+  newest runs first and stops at its budget, so what clears a failure may sit
+  in a run it has not reached. A pass that left a listed run unread is not
+  `settled`: its line holds the answer of the newest settled pass of the last
+  36 hours (`held_from`), and with none that recent it is judged on the rows
+  as they stand. `test/test_ci_test_selection_ledger_causes.py` pins both.
 - **A pass keeps out of a low pool.** It reads nothing unless the hour's pool
   holds 7,500 requests beyond what it may spend. Under that it uploads nothing
   and ends green with a notice; it never waits for a reset, and a later pass

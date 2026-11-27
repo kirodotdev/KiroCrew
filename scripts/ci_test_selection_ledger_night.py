@@ -6,8 +6,8 @@
 It restores the ledger the last pass kept, reads a bounded part of the
 pull-request runs since `SINCE` with `scripts/ci_test_selection_ledger.py`, then
 reports on the whole ledger. `DIR` ends holding `ledger.jsonl`, `summary.md`
-and, unless the rates are withheld, `rates.json`: the one artifact the workflow
-uploads, and only when this script wrote `upload=true` to `GITHUB_OUTPUT`. It
+and, unless the rates are withheld, `rates.json`, with `notes.jsonl` once a pass
+has read: the one artifact the workflow uploads, and only when this script wrote `upload=true` to `GITHUB_OUTPUT`. It
 reads `GH_TOKEN`, `GITHUB_REPOSITORY`, `DEFAULT_BRANCH`, `SINCE`, `RESTORE_RUN`,
 `START_EMPTY`, `GITHUB_OUTPUT` and `GITHUB_STEP_SUMMARY`. It posts nothing and
 changes nothing on GitHub.
@@ -41,6 +41,11 @@ back through at most `WALK_RUNS` of them.
 
 Rows older than `KEEP_DAYS` days are dropped when the ledger is restored, and
 the first line says how many.
+
+`notes.jsonl` (the main-red spans and the settled passes,
+`scripts/ci_test_selection_ledger_causes.py`) is restored from the same archive
+when it holds one. An archive without it, or with one that does not read as
+notes, restores none: no note then labels a failure, and the pass goes on.
 
 What a pass spends
 ------------------
@@ -77,11 +82,13 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import ci_test_selection_ledger as ledger  # noqa: E402  (path set immediately above)
+import ci_test_selection_ledger_causes as causes  # noqa: E402
 import ci_test_selection_step as step  # noqa: E402
 
 WORKFLOW = "test-selection-ledger.yml"
 ARTIFACT = "test-selection-ledger"
 LEDGER_NAME = "ledger.jsonl"
+NOTES_NAME = "notes.jsonl"
 RATES_NAME = "rates.json"
 SUMMARY_NAME = "summary.md"
 # What one pass may spend and what the hour's pool must keep beyond it: a pass
@@ -204,6 +211,10 @@ def restore(get: step.Get, env: Mapping[str, str], path: Path, today: datetime) 
             run, artifact = last_kept(get, repo, token, branch)
         archive = step.download(get, repo, artifact, token, MAX_ARCHIVE_BYTES)
         text = step.member(archive, LEDGER_NAME, alone=False, most=MAX_LEDGER_BYTES)
+        try:
+            notes = step.member(archive, NOTES_NAME, alone=False, most=causes.MAX_NOTES_BYTES)
+        except step.NoBundle:
+            notes = None
     except step.NothingPublished as nothing:
         return f"The ledger starts empty tonight: {nothing}. Earlier days of data are not in it."
     except step.RateLimited as limited:
@@ -217,6 +228,8 @@ def restore(get: step.Get, env: Mapping[str, str], path: Path, today: datetime) 
             f"the last ledger could not be restored: {type(error).__name__}: {error}"
         ) from error
     kept, dropped = restored_rows(text, path, today)
+    if notes is not None:
+        path.with_name(NOTES_NAME).write_bytes(notes)
     old = f", {dropped} older than {KEEP_DAYS} days dropped" if dropped else ""
     hand = ", named by hand (`restore_run`)" if wanted else ""
     return (
@@ -267,7 +280,7 @@ def night(
     # An empty ledger is still a file: the next pass restores what this one uploads.
     path.touch()
     with tempfile.TemporaryDirectory() as scratch:
-        common = ["--ledger", str(path), "--root", str(root)]
+        common = ["--ledger", str(path), "--root", str(root), "--notes", str(out / NOTES_NAME)]
         read = run_ledger(
             [*common, "--since", since, "--limit", str(LIMIT)]
             + ["--max-calls", str(MAX_CALLS - counted.calls), "--reserve", str(RESERVE)]
