@@ -9,6 +9,19 @@
  */
 
 /**
+ * The lines of `text` as a line-oriented diff reads them: a final newline ends
+ * the last line rather than opening another, so `''` is no lines and `'a\nb\n'`
+ * is two, which is how `git diff --numstat` counts. The empty tail would read
+ * a new two-line file as +3 and a cleared one as -3.
+ */
+function linesOf(text: string): string[] {
+  if (!text) return []
+  const lines = text.split('\n')
+  if (lines[lines.length - 1] === '') lines.pop()
+  return lines
+}
+
+/**
  * Line-level diff count via LCS — correctly attributes moves as +N/-N
  * (a moved line shows up as a removal at the old position and an addition
  * at the new). Falls back to a cheap multiset count for huge files to bound
@@ -17,11 +30,14 @@
  */
 export function countLines(before: string, after: string): { added: number; removed: number } {
   if (before === after) return { added: 0, removed: 0 }
-  // Guard empty strings: ''.split('\n') yields [''] (1 phantom line), which would
-  // mis-count a new file as +1/-1 instead of +1, and a fully cleared file as
-  // +1/-2 instead of -2. Treat empty content as zero lines.
-  const a = before ? before.split('\n') : []
-  const b = after ? after.split('\n') : []
+  const a = linesOf(before)
+  const b = linesOf(after)
+  // When only one side ends in a newline, git counts the other side's unterminated last line
+  // as changed, so keep that line distinct (a newline never occurs inside a line).
+  if (a.length && b.length && before.endsWith('\n') !== after.endsWith('\n')) {
+    const open = before.endsWith('\n') ? b : a
+    open[open.length - 1] += '\n'
+  }
   const m = a.length, n = b.length
   // LCS with rolling rows: O(mn) time, O(min(m,n)) space.
   // 1M cell cap = ~1000x1000 lines which covers anything inside our 200KB snapshot cap comfortably.
