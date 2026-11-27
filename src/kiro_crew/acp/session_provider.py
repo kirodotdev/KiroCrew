@@ -248,6 +248,9 @@ class AcpSessionProvider(LLMProvider):
         # Set by a dashboard MCP write on a re-injecting host; applied at the
         # next turn boundary (``apply_pending_mcp_reinjection``).
         self._mcp_reinject_pending: bool = False
+        # A shared KAS sub-agent's tenancy from its bind to its shutdown
+        # (``hold_shared_session``); None otherwise.
+        self._session_claim: str | None = None
 
     # ── LLMProvider interface ──
 
@@ -315,7 +318,9 @@ class AcpSessionProvider(LLMProvider):
         because a turn is what a signal destroys and because a claim paired inside
         one function cannot outlive it -- an object-lifetime claim would leak on
         any path that drops a provider without shutting it down, and a leaked
-        claim refuses that pid's kills for the life of the gateway.
+        claim refuses that pid's kills for the life of the gateway. A child on a
+        KAS parent also holds :meth:`hold_shared_session` from its bind, which
+        only its shutdown releases.
 
         Returns None for an owning provider, which already holds a lease for its
         whole session: a second claim would defend a process that is defended, and
@@ -406,6 +411,12 @@ class AcpSessionProvider(LLMProvider):
             )
         except Exception:
             logger.debug("_end_shared_turn: orphaned runtime teardown failed", exc_info=True)
+
+    # A shared KAS sub-agent's hold on its parent's process, and an owner's close of
+    # its own session on a process its refused kill left alive
+    # (``acp/session_provider_shared.py``).
+    hold_shared_session = _sp_shared.hold_shared_session
+    _close_own_session_left_on_process = _sp_shared.close_own_session_left_on_process
 
     @property
     def close_leaves_mcp_servers(self) -> bool:
@@ -667,12 +678,20 @@ class AcpSessionProvider(LLMProvider):
                 killed = True
             except Exception:
                 logger.debug("AcpSessionProvider.shutdown: runtime kill failed", exc_info=True)
-            # The kill returning is not evidence the app servers under it are gone:
-            # a descendant that left the process group survives it. Only a whole
-            # tree confirmed dead settles the close (``_sp_shared.teardown_confirmed``).
-            sid = getattr(self._handle, "session_id", None)
-            if not (killed and _sp_shared.teardown_confirmed(self._runtime, sid, killed=True)):
-                _sp_shared.note_unconfirmed_teardown(self, self._runtime, sid)
+            closed = False
+            try:
+                closed = await self._close_own_session_left_on_process()
+            finally:
+                # The kill returning is not evidence the app servers under it are
+                # gone: a descendant that left the process group survives it. Only a
+                # whole tree confirmed dead settles the close
+                # (``_sp_shared.teardown_confirmed``), or, on a process a refused kill
+                # left alive, the host's answer to the close sent above.
+                sid = getattr(self._handle, "session_id", None)
+                if not closed and not (
+                    killed and _sp_shared.teardown_confirmed(self._runtime, sid, killed=True)
+                ):
+                    _sp_shared.note_unconfirmed_teardown(self, self._runtime, sid)
         else:
             # Session-sharing subagent: the runtime is SHARED with co-tenant
             # sessions (parent + sibling subagents), so we must NOT kill it.
@@ -703,39 +722,45 @@ class AcpSessionProvider(LLMProvider):
             # Before the first await, so a sharing decision made meanwhile sees it.
             self._runtime.subagent_departed = True
             try:
-                if self._handle.is_turn_active and not self.turn_survives_disconnect:
-                    try:
-                        await asyncio.wait_for(self._handle.cancel(), timeout=5.0)
-                    except Exception:
-                        logger.debug(
-                            "AcpSessionProvider.shutdown: session cancel failed", exc_info=True
-                        )
-            finally:
-                destroyed = False
                 try:
-                    if (
-                        getattr(self._handle, "keep_transcript", False) is True
-                        and self._runtime.can_release() is True
-                    ):
-                        # A host whose teardown verb deletes the record (KAS) but
-                        # that can free a session and keep it: the record is
-                        # ``spawn_continue``'s resume material, so the session is
-                        # closed instead, and the tombstone pruner deletes the
-                        # record with the run folder.
-                        with self._runtime.keep_record_on_teardown(self._handle.session_id):
+                    if self._handle.is_turn_active and not self.turn_survives_disconnect:
+                        try:
+                            await asyncio.wait_for(self._handle.cancel(), timeout=5.0)
+                        except Exception:
+                            logger.debug(
+                                "AcpSessionProvider.shutdown: session cancel failed", exc_info=True
+                            )
+                finally:
+                    destroyed = False
+                    try:
+                        if (
+                            getattr(self._handle, "keep_transcript", False) is True
+                            and self._runtime.can_release() is True
+                        ):
+                            # A host whose teardown verb deletes the record (KAS) but
+                            # that can free a session and keep it: the record is
+                            # ``spawn_continue``'s resume material, so the session is
+                            # closed instead, and the tombstone pruner deletes the
+                            # record with the run folder.
+                            with self._runtime.keep_record_on_teardown(self._handle.session_id):
+                                await self._handle.destroy()
+                        else:
                             await self._handle.destroy()
-                    else:
-                        await self._handle.destroy()
-                    destroyed = True
-                except Exception:
-                    logger.debug("AcpSessionProvider.shutdown: destroy failed", exc_info=True)
-                # Same judge as every other teardown branch (``teardown_confirmed``).
-                sub_sid = getattr(self._handle, "session_id", None)
-                if not (
-                    destroyed
-                    and _sp_shared.teardown_confirmed(self._runtime, sub_sid, killed=False)
-                ):
-                    _sp_shared.note_unconfirmed_teardown(self, self._runtime, sub_sid)
+                        destroyed = True
+                    except Exception:
+                        logger.debug("AcpSessionProvider.shutdown: destroy failed", exc_info=True)
+                    # Same judge as every other teardown branch (``teardown_confirmed``).
+                    sub_sid = getattr(self._handle, "session_id", None)
+                    if not (
+                        destroyed
+                        and _sp_shared.teardown_confirmed(self._runtime, sub_sid, killed=False)
+                    ):
+                        _sp_shared.note_unconfirmed_teardown(self, self._runtime, sub_sid)
+            finally:
+                # After the close, so the last party off an orphaned process ends it
+                # only once this session has left it (``hold_shared_session``).
+                claim, self._session_claim = getattr(self, "_session_claim", None), None
+                await self._end_shared_turn(claim)
             # destroy() deletes the shared-subagent session transcript
             # (~/.kiro/sessions/cli/{sid}.json+.jsonl); no separate cleanup call
             # needed. cleanup_session() below remains for the LLMProvider API.

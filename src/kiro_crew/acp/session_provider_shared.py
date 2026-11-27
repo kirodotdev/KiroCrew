@@ -12,9 +12,10 @@ method: the class binds it by name, so it reads and writes the provider's own
 state on the instance, and a patch of the method on the class or on an instance
 reaches every caller.
 
-Instance fields written: ``_runtime_lease``.
+Instance fields written: ``_runtime_lease``, ``_session_claim``.
 
-Instance fields read: ``_handle``, ``_runtime``, ``_runtime_lease``.
+Instance fields read: ``_handle``, ``_runtime``, ``_runtime_lease``,
+``_session_claim``, ``_session_key``, ``_owns_runtime``.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew.acp.types import ACP_BACKEND_KAS
-from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP
+from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP, claim_runtime_tenancy
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
@@ -387,3 +388,60 @@ async def shutdown_shared(self: AcpSessionProvider) -> None:
                 logger.debug("AcpSessionProvider.shutdown: kill settle failed", exc_info=True)
         if cancelled is not None:
             raise cancelled
+
+
+def hold_shared_session(self: AcpSessionProvider) -> None:
+    """Defend a KAS parent's process from this sub-agent's bind to its shutdown.
+
+    A turn claim (``AcpSessionProvider._claim_shared_turn``) defends only a turn,
+    and a child spends real time between its ``session/new`` and its first prompt
+    (the MCP readiness wait). A parent recycle in that gap killed the process
+    under the bound child, which then ended as a runtime death with no retry.
+    Held here, the recycle's kill is refused the way a mid-turn child refuses
+    it, and the child's own shutdown hands the orphan back
+    (``AcpSessionProvider._end_shared_turn``).
+
+    Released only by the provider's shutdown, which every path that binds a
+    shared child reaches: the run's teardown, a stale-batch replacement and a
+    reap all shut the provider down. KAS only: the other shared hosts keep the
+    turn-scoped claim alone. A refusal (a teardown already committed) is not
+    raised: the provider is already published, and a raise here would make the
+    start fall back to a dedicated process and drop this live handle. The first
+    turn's own claim then reports the dead process.
+    """
+    on_kas = getattr(self._runtime, "acp_backend", None) == ACP_BACKEND_KAS
+    if self._owns_runtime or getattr(self, "_session_claim", None) is not None or not on_kas:
+        return
+    try:
+        self._session_claim = claim_runtime_tenancy(
+            self._runtime,
+            holder=f"subagent:{self._session_key or 'unnamed'}",
+            session_key=self._session_key or "",
+        )
+    except Exception:
+        logger.warning("hold_shared_session: the shared process could not be held", exc_info=True)
+
+
+async def close_own_session_left_on_process(self: AcpSessionProvider) -> bool:
+    """Close this owner's KAS session on a process its kill left alive.
+
+    The kill is refused while a sub-agent still holds the process. KAS keeps a
+    loaded session's lease in the process that loaded it, so the successor that
+    loads this session on a new process would have every turn refused until
+    the child finishes. Closed here, with its record kept, only the children
+    stay on the orphan. Returns whether the host confirmed the close; False
+    when nothing was sent (the kill went through, or another backend).
+    """
+    on_kas = getattr(self._runtime, "acp_backend", None) == ACP_BACKEND_KAS
+    if self.memory_mode != "persistent" or not on_kas or not self._runtime.is_alive():
+        return False
+    sid = getattr(self._handle, "session_id", None)
+    if not sid:
+        return False
+    try:
+        with self._runtime.keep_record_on_teardown(sid):
+            await self._handle.destroy()
+    except Exception:
+        logger.debug("AcpSessionProvider.shutdown: close on a held process failed", exc_info=True)
+        return False
+    return teardown_confirmed(self._runtime, sid, killed=False)
