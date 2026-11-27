@@ -21,7 +21,7 @@ from collections import OrderedDict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, TypeVar
 
 from kiro_crew.embeddings_llama import EmbeddingBackend, LlamaCppEmbedder
 from kiro_crew.embeddings_model import (
@@ -36,6 +36,7 @@ from kiro_crew.embeddings_model import (
     resolve_custom_model,
 )
 from kiro_crew.embeddings_ollama import (
+    OLLAMA_EGRESS_ERROR,
     _is_loopback_host,
     build_ollama_backend,
     ollama_backend_selected,
@@ -56,6 +57,8 @@ from kiro_crew.embeddings_settings import (
 )
 
 logger = logging.getLogger("kiro_crew.embeddings")
+
+_B = TypeVar("_B", bound=EmbeddingBackend)
 
 
 class _ReconcilableStore(Protocol):
@@ -118,9 +121,11 @@ def build_gated_candidate(path: Path) -> LlamaCppEmbedder:
     signature matches what :func:`resolve_custom_model` would compute for the
     same file — otherwise a real model change could look like no change.
     """
-    return LlamaCppEmbedder(
+    candidate = LlamaCppEmbedder(
         model_path=path, dim=0, model_id=_custom_model_id(path, ""), serving=False
     )
+    # The apply route checked the source; the tag lets a later deny retire it.
+    return _with_policy_tag(candidate, "custom", True)
 
 
 def build_gated_bundled() -> LlamaCppEmbedder:
@@ -142,7 +147,7 @@ def build_gated_bundled() -> LlamaCppEmbedder:
         model_path=default_model_path(), dim=_DEFAULT_DIM, model_id=_MODEL_ID, serving=False
     )
     backend._uses_bundled_identity = True
-    return backend
+    return _with_policy_tag(backend, "bundled", True)
 
 
 def activate_shared_embedder() -> bool:
@@ -490,11 +495,16 @@ def default_embedding_backend() -> EmbeddingBackend:
 
     memory = _read_memory_config()
     if ollama_backend_selected(memory):
-        # resolve_ollama_settings refuses an unpermitted source or host itself.
-        return _with_policy_tag(build_ollama_backend(memory), _source_gov.OLLAMA)
+        # resolve_ollama_settings refuses an unpermitted source or host itself, and
+        # the tag records that same answer (not a second read that could differ).
+        server = build_ollama_backend(memory)
+        error = str(getattr(getattr(server, "_settings", None), "error", "") or "")
+        refused = error in (_source_gov.refused_reason(_source_gov.OLLAMA), OLLAMA_EGRESS_ERROR)
+        return _with_policy_tag(server, _source_gov.OLLAMA, not refused)
     spec = resolve_custom_model()
     if spec is None:
-        if _source_gov.source_permitted(_source_gov.BUNDLED):
+        permitted = _source_gov.source_permitted(_source_gov.BUNDLED)
+        if permitted:
             backend = LlamaCppEmbedder()
         else:
             # Refused like a broken path: no vectors, keyword search, and the
@@ -509,8 +519,10 @@ def default_embedding_backend() -> EmbeddingBackend:
                 model_id=_MODEL_ID,
             )
         backend._uses_bundled_identity = True
-        return _with_policy_tag(backend, _source_gov.BUNDLED)
-    return _with_policy_tag(_custom_backend(spec), _source_gov.CUSTOM)
+        return _with_policy_tag(backend, _source_gov.BUNDLED, permitted)
+    return _with_policy_tag(
+        _custom_backend(spec), _source_gov.CUSTOM, spec.error_code != _source_gov.LOCKED_CODE
+    )
 
 
 def _custom_backend(spec: Any) -> LlamaCppEmbedder:
@@ -543,28 +555,42 @@ def _custom_backend(spec: Any) -> LlamaCppEmbedder:
     return LlamaCppEmbedder(model_path=spec.path, dim=spec.dim, model_id=spec.model_id)
 
 
-def _policy_allows(backend: EmbeddingBackend, source: str, *, audit: bool = False) -> bool:
+def _policy_allows(backend: EmbeddingBackend, source: str) -> bool:
     """Whether the LTS policy lets *backend* serve: its source, and for a non-loopback
     Ollama server also its host (``network.egress``). Only called in an LTS build."""
     from kiro_crew import embedding_source_governance as _source_gov
 
-    if not _source_gov.source_permitted(source, audit=audit):
+    if not _source_gov.source_permitted(source):
         return False
     if source != _source_gov.OLLAMA:
         return True
     url = str(getattr(getattr(backend, "_settings", None), "url", "") or "")
-    host = urllib.parse.urlsplit(url).hostname or ""
+    try:
+        host = urllib.parse.urlsplit(url).hostname or ""
+    except ValueError:  # an unparsable URL never sends (resolve_ollama_settings)
+        host = ""
     return not host or _is_loopback_host(host) or _source_gov.egress_permitted(host)
 
 
-def _with_policy_tag(backend: EmbeddingBackend, source: str) -> EmbeddingBackend:
+def _with_policy_tag(backend: _B, source: str, allowed: bool) -> _B:
     """Record, in an LTS build, which source *backend* is and whether the policy
-    allowed it, so :func:`get_shared_embedder` notices when that answer changes."""
+    *allowed* it when it was built, so :func:`get_shared_embedder` notices when that
+    answer changes. A refusal is written to SEL."""
     from kiro_crew.edition import is_lts
 
     if is_lts():
         backend._embedding_source = source  # type: ignore[attr-defined]
-        backend._policy_allowed = _policy_allows(backend, source, audit=True)  # type: ignore[attr-defined]
+        backend._policy_allowed = allowed  # type: ignore[attr-defined]
+        if not allowed:
+            from kiro_crew import edition_locks
+            from kiro_crew import embedding_source_governance as _source_gov
+
+            edition_locks.audit_refusal(
+                f"embedding_source:{source}",
+                _source_gov.SCOPE,
+                source,
+                _source_gov.refused_reason(source),
+            )
     return backend
 
 

@@ -56,6 +56,7 @@ from kiro_crew.embeddings_settings import (
     _N_CTX,
     _POOLING_TYPE_LAST,
     _PRIORITY_SENTINEL,
+    _REJECTED_MODEL_SENTINEL,
     PRIORITY_BULK,
     PRIORITY_INTERACTIVE,
     PRIORITY_NORMAL,
@@ -662,6 +663,10 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 self._load_failed_at
                 and time.monotonic() - self._load_failed_at < _LLM_LOAD_RETRY_SECS
             ):
+                return
+            if self._model_path.name == _REJECTED_MODEL_SENTINEL:
+                # A rejected or policy-refused source never loads, even if a file
+                # was placed at the sentinel path.
                 return
             if not model_file_present(self._model_path):
                 # Not a failure — the background download may still be in flight.

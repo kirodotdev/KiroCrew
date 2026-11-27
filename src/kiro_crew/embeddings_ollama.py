@@ -58,6 +58,12 @@ _READY_TTL_FAIL_SECS = 5.0
 _PROBE_TIMEOUT_SECS = 5.0
 
 
+#: The settings error an LTS build reports when ``network.egress`` refuses the host.
+OLLAMA_EGRESS_ERROR = (
+    "the organisation's network egress policy does not allow memory.ollama_url's host"
+)
+
+
 @dataclass(frozen=True)
 class OllamaSettings:
     """The validated ``memory.ollama_*`` settings. ``error`` is empty when usable."""
@@ -105,7 +111,7 @@ def _url_error(url: str, allow_remote: bool) -> str:
     from kiro_crew.embedding_source_governance import egress_permitted
 
     if not egress_permitted(host):
-        return "the organisation's network egress policy does not allow memory.ollama_url's host"
+        return OLLAMA_EGRESS_ERROR
     return ""
 
 
@@ -408,6 +414,9 @@ class OllamaHttpEmbedder(EmbeddingBackend):
             return None
         out: list[list[float]] = []
         for start in range(0, len(texts), _BATCH_SIZE):
+            # A backend retired mid-batch (a policy deny, a model change) sends no more.
+            if not self._usable():
+                return None
             chunk = self._request(list(texts[start : start + _BATCH_SIZE]))
             if chunk is None:
                 return None

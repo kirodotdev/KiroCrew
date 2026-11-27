@@ -244,13 +244,86 @@ class TestTheCachedEmbedder:
         policy(_rule("allow", "[ollama]"))
         assert emb.get_shared_embedder() is not first
 
-    def test_a_gated_candidate_is_not_rechecked(self, policy, memory):
-        candidate = emb.build_gated_bundled()
-        candidate._embedding_source = gov.BUNDLED
-        candidate._policy_allowed = True
+    @pytest.mark.parametrize("build", ["bundled", "custom"])
+    def test_a_dashboard_applied_model_is_rechecked_once_it_serves(
+        self, policy, memory, tmp_path, build
+    ):
+        policy(_rule("allow", "[bundled, custom]"))
+        if build == "bundled":
+            candidate = emb.build_gated_bundled()
+        else:
+            model = tmp_path / "m.gguf"
+            model.write_bytes(b"\0" * 64)
+            candidate = emb.build_gated_candidate(model)
         emb.install_shared_embedder(candidate)
         policy(_rule("allow", "[ollama]"))
+        # Gated: it serves nothing, and the apply in flight owns it.
         assert emb.get_shared_embedder() is candidate
+        assert emb.activate_shared_embedder() is True
+        assert emb.get_shared_embedder() is not candidate
+
+    def test_the_tag_is_the_answer_the_build_used(self, policy, memory, monkeypatch):
+        """A policy change between the build's check and its tag is seen next read."""
+        policy(_rule("allow", "[ollama]"))
+        _ollama(memory)
+        real = emb.build_ollama_backend
+
+        def build_then_revoke(section):
+            backend = real(section)
+            policy(_rule("allow", "[bundled]"))
+            return backend
+
+        monkeypatch.setattr(emb, "build_ollama_backend", build_then_revoke)
+        backend = emb.default_embedding_backend()
+        assert backend._policy_allowed is True
+        emb.install_shared_embedder(backend)
+        monkeypatch.setattr(emb, "build_ollama_backend", real)
+        assert emb.get_shared_embedder() is not backend
+
+    def test_a_retired_server_sends_no_more_chunks(self, policy, memory):
+        policy(_rule("allow", "[ollama]"))
+        _ollama(memory)
+        backend = emb.default_embedding_backend()
+        sent: list = []
+
+        def request(chunk):
+            sent.append(chunk)
+            backend.close()
+            return [[0.0] * backend.dim for _ in chunk]
+
+        backend._request = request
+        backend._failing = False
+        assert backend.embed_batch([f"t{i}" for i in range(20)]) is None
+        assert len(sent) == 1
+
+    def test_an_unparsable_ollama_url_falls_back_without_raising(self, policy, memory):
+        policy(_rule("allow", "[ollama]"))
+        _ollama(memory, "https://[::1")
+        backend = emb.get_shared_embedder()
+        assert backend.is_ready() is False
+
+
+def test_the_sentinel_path_never_loads_even_when_a_file_is_there(policy, memory, tmp_path):
+    from kiro_crew import embeddings_llama
+
+    policy(_rule("allow", "[ollama]"))
+    backend = emb.default_embedding_backend()
+    assert _refused_local(backend)
+    backend._model_path = tmp_path / _REJECTED_MODEL_SENTINEL
+    backend._model_path.write_bytes(b"\0" * (1 << 20))
+    started: list = []
+    original = embeddings_llama.threading.Thread
+
+    def spy(*args: Any, **kwargs: Any):
+        started.append(kwargs.get("name"))
+        return original(*args, **kwargs)
+
+    embeddings_llama.threading.Thread = spy  # type: ignore[assignment]
+    try:
+        backend._kick_background_load()
+    finally:
+        embeddings_llama.threading.Thread = original  # type: ignore[assignment]
+    assert "kc-embed-load" not in started
 
 
 # --- the dashboard routes --------------------------------------------------------------
