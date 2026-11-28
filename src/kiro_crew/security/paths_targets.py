@@ -101,6 +101,9 @@ def _candidate_forms(
     candidates.add(expanded)
     if raw != expanded:
         candidates.update((os.path.normpath(raw), raw))
+    # A relative input anchored or resolved under a loopback-share CWD or base_dir
+    # only becomes a share path here, so fold each form again; this only adds forms.
+    candidates.update([_fold_windows_alias(form) for form in candidates])
     # Win32 drops a final name's trailing dots and spaces on open, so judge each form trimmed too.
     candidates.update([_trim_windows_name_ends(form) for form in candidates])
     return candidates

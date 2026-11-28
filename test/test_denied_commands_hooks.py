@@ -890,6 +890,50 @@ class TestSearchDenyTargetSynthesis:
         target = hooks._search_deny_target({"path": spelling, "pattern": "*"})
         assert target == f"file-search path={field}"
 
+    @pytest.mark.parametrize(
+        ("rule", "root"),
+        [
+            # A rule written in the share spelling still refuses a search the fold
+            # rewrites to the drive path.
+            ("file-search path=//localhost/c$/private*", "\\\\localhost\\C$\\private"),
+            # A rule written in the drive spelling refuses the share spelling.
+            ("file-search path=C:/private*", "\\\\localhost\\C$\\private"),
+            ("file-search path=C:/private*", "C:\\private"),
+        ],
+    )
+    def test_a_loopback_share_search_meets_a_rule_in_either_spelling(self, monkeypatch, rule, root):
+        import ntpath
+
+        from kiro_crew import hooks
+        from kiro_crew.security import paths_resolver
+
+        class _NtOs:
+            name, sep, altsep, path = "nt", "\\", "/", ntpath
+
+            def __getattr__(self, attr):
+                return getattr(os, attr)
+
+        monkeypatch.setattr(hooks, "os", _NtOs())
+        monkeypatch.setattr(paths_resolver, "_ON_WINDOWS", True)
+        result = HookManager(HooksConfig(auto_deny_tools=[rule])).on_tool_call(
+            "look around",
+            tool_kind="read",
+            raw_params={"path": root, "pattern": "**/*"},
+        )
+        assert result.action == TOOL_DENY
+        assert hooks._search_deny_targets({"path": "C:\\public", "pattern": "*"}) == (
+            "file-search path=C:/public",
+        )
+        # Only the loopback fold is skipped in the second target: a namespace alias of
+        # a local root still reads as that root, so a UNC rule does not newly refuse it.
+        assert hooks._search_deny_targets({"path": "\\\\?\\C:\\work", "pattern": "*"}) == (
+            "file-search path=C:/work",
+        )
+        other = HookManager(HooksConfig(auto_deny_tools=["file-search path=//*"])).on_tool_call(
+            "look around", tool_kind="read", raw_params={"path": "\\\\?\\C:\\work", "pattern": "*"}
+        )
+        assert other.action != TOOL_DENY
+
     def test_tilde_and_home_var_expand_to_the_real_root(self, monkeypatch, tmp_path):
         from kiro_crew.hooks import _search_deny_target
 

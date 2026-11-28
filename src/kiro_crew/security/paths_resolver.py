@@ -711,13 +711,60 @@ _WIN_DEFAULT_STREAM_RE = re.compile(
 )
 
 
-def _fold_windows_alias(path: str) -> str:
-    """Lexically fold a Windows alias of a local path to its plain spelling; identity off Windows."""
+#: A drive's administrative share on THIS machine: ``\\localhost\C$\x``,
+#: ``\\127.0.0.1\C$\x`` and their ``\\?\UNC\``, ``\\.\UNC\`` and ``\??\UNC\`` forms open
+#: the local ``C:\x`` for a member of the local Administrators group. Only loopback
+#: hosts are folded; a share on any other host stays lexical and is never probed.
+#: shortcut: the machine's own name (``\\MYHOST\C$``) and ``ADMIN$`` are not folded;
+#: fold them too if a report shows the fence missed one.
+_WIN_LOOPBACK_ADMIN_SHARE_RE = re.compile(
+    r"^(?:[\\/]{2}(?:[?.][\\/]UNC[\\/])?|\\\?\?[\\/]UNC[\\/])"
+    r"(?:localhost|127(?:\.\d{1,3}){3}|::1|0--1\.ipv6-literal\.net)"
+    r"[\\/]([A-Za-z])\$(?=[\\/]|$)",
+    re.IGNORECASE,
+)
+
+_DOT_DOT_SEGMENT_RE = re.compile(r"(?:^|[\\/])\.\.(?:[\\/]|$)")
+
+
+def _fold_loopback_admin_share(path: str) -> str:
+    """Fold a loopback admin-share prefix to its drive (``\\\\localhost\\C$\\x`` -> ``C:\\x``).
+
+    Only the prefix is rewritten, so a glob after it survives: governance folds an
+    operator's path PATTERN with this too, which keeps a rule written in the share
+    spelling meeting the folded item. Identity off Windows.
+    """
+    if not _ON_WINDOWS:
+        return path
+    m = _WIN_LOOPBACK_ADMIN_SHARE_RE.match(path)
+    if m is None:
+        return path
+    rest = path[m.end() :]
+    # A device form (``\\.\UNC\``, ``\\?\UNC\``, ``\??\UNC\``) is rooted above the
+    # share, so a ``..`` after it can leave ``localhost\C$`` for another host, where
+    # ``C:\..`` stays on the drive. Such a path is not the drive path: leave it.
+    if "unc" in m[0].lower() and _DOT_DOT_SEGMENT_RE.search(rest):
+        return path
+    return m[1].upper() + ":" + (rest or "\\")
+
+
+def _fold_windows_namespace(path: str) -> str:
+    """``_fold_windows_alias`` without the loopback-share fold; identity off Windows.
+
+    The item governance also matches a rule against as written, so a rule that names
+    a share in a spelling the loopback fold cannot rewrite (``\\\\*\\C$\\x``) keeps
+    meeting what it met before that fold existed.
+    """
     if not _ON_WINDOWS:
         return path
     folded = _WIN_LOCAL_NS_RE.sub("", path, count=1)
     folded += "\\" if folded != path and len(folded) == 2 else ""  # bare volume -> drive root
     return _WIN_DEFAULT_STREAM_RE.sub("", folded)
+
+
+def _fold_windows_alias(path: str) -> str:
+    """Lexically fold a Windows alias of a local path to its plain spelling; identity off Windows."""
+    return _fold_windows_namespace(_fold_loopback_admin_share(path))
 
 
 def _trim_windows_name_ends(path: str) -> str:

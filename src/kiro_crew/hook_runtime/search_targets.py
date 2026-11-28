@@ -53,7 +53,7 @@ def _expand_home_vars(value: str) -> str:
     return value
 
 
-def _normalize_search_path(value: str) -> str:
+def _normalize_search_path(value: str, *, loopback: bool = True) -> str:
     """Canonicalize a search root so one spelling reaches a rule.
 
     ``~``, ``$HOME``, and ``.``/``..`` segments all name a tree a rule must be able
@@ -64,7 +64,9 @@ def _normalize_search_path(value: str) -> str:
 
     Steps: expand the home variables and ``~``, fold a Windows alias of a local path
     (``//?/C:/x``, a ``::$DATA`` stream suffix) to its plain spelling with the
-    keystone's own ``_fold_windows_alias``, ``normpath``, rewrite separators to ``/``,
+    keystone's own ``_fold_windows_alias`` (with ``loopback=False`` its
+    ``_fold_windows_namespace`` half, which leaves a loopback admin share as written,
+    as ``_search_deny_targets`` also emits it), ``normpath``, rewrite separators to ``/``,
     and collapse a leading ``//`` to ``/`` on POSIX. The separator rewrite keeps the
     emitted grammar OS-independent: ``normpath`` produces backslash separators on
     Windows, so a rule authored with ``/`` — the form the spec documents — would
@@ -118,7 +120,7 @@ def _normalize_search_path(value: str) -> str:
     fixed HOME spellings and the current user's own home, and once the home prefix is
     chosen nothing later in the string can displace it.
     """
-    from kiro_crew.security.paths_resolver import _fold_windows_alias
+    from kiro_crew.security.paths_resolver import _fold_windows_alias, _fold_windows_namespace
 
     try:
         expanded = _expand_home_vars(value)
@@ -127,7 +129,8 @@ def _normalize_search_path(value: str) -> str:
             if home:
                 rest = expanded[1:].lstrip(os.sep + (os.altsep or ""))
                 expanded = home + os.sep + rest if rest else home
-        path = os.path.normpath(_fold_windows_alias(expanded))
+        fold = _fold_windows_alias if loopback else _fold_windows_namespace
+        path = os.path.normpath(fold(expanded))
     except (OSError, ValueError):
         return value
     path = path.replace(os.sep, "/")
@@ -151,7 +154,21 @@ def _is_search_shaped(raw_params: Mapping) -> bool:
     return isinstance(operation, str) and operation in _RECURSIVE_SEARCH_OPERATIONS
 
 
-def _search_deny_target(raw_params: dict | None) -> str:
+def _search_deny_targets(raw_params: dict | None) -> tuple[str, ...]:
+    """Every distinct deny target of a file-search call: with and without the loopback fold.
+
+    A rule is text matched against the target, so it cannot be folded the way a
+    governance path pattern is. A rule authored in a loopback admin-share spelling
+    (``path=//localhost/C$/private*``) would stop meeting the folded root and the
+    search would run; matching the root with only that fold skipped too means the
+    fold only adds roots a rule refuses, and every other alias fold still applies to
+    both. Empty when the arguments are not search-shaped.
+    """
+    targets = (_search_deny_target(raw_params), _search_deny_target(raw_params, loopback=False))
+    return tuple(t for t in dict.fromkeys(targets) if t)
+
+
+def _search_deny_target(raw_params: dict | None, *, loopback: bool = True) -> str:
     """Synthesize a deny-matcher target from a file-search call's scope arguments.
 
     Both deny tiers match TEXT, and they are handed the display title plus — for a
@@ -198,7 +215,7 @@ def _search_deny_target(raw_params: dict | None) -> str:
             if not text:
                 continue
             if canonical == _SEARCH_PATH_FIELD:
-                text = _normalize_search_path(text)
+                text = _normalize_search_path(text, loopback=loopback)
             fields.append(f"{canonical}={_encode_search_field(text)}")
             break
     return " ".join(fields)

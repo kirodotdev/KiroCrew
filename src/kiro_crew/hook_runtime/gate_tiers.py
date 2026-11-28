@@ -48,7 +48,7 @@ if TYPE_CHECKING:
         _is_host_search_builtin_call,
         _normalize_tool_name,
         _note_title_only_grant_pattern,
-        _search_deny_target,
+        _search_deny_targets,
         _tool_matches,
         audit_bash_exfiltration,
         builtin_names,
@@ -914,8 +914,7 @@ def _tier_search_target(facts: GateFacts, tier: GateTier) -> ToolHookResult | No
     (ratcheted in the tests), so a built-in's only possible hit is the incidental
     one this tier exists to drop.
     """
-    search_target = _search_deny_target(facts.call.raw_params)
-    if search_target:
+    for search_target in _search_deny_targets(facts.call.raw_params):
         reason = facts.authority.is_denied_synthesized_target(
             search_target,
             facts.manager.operator_denied_regexes(),
