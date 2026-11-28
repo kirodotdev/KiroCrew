@@ -287,6 +287,8 @@ class TestCapAlignment:
         # is accepted on POST/PATCH /api/crons and has no CRON_ADD_SCHEMA entry.
         "channel_type",
         "target_id",
+        # The chat a job also posts into: named on POST /api/crons only.
+        "target_session_key",
     }
 
     def test_table_caps_match_cron_add_schema(self):

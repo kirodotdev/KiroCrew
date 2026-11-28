@@ -358,6 +358,10 @@ class CronJob:
     # be treated as "not filed"; the run still delivers and the skip is recorded
     # once (``cron_inject.chat_folder_for_minted_tab``).
     chat_folder_id: str = ""
+    # The dashboard chat (``dashboard:<slot>``) a result is ALSO posted into,
+    # named on ``POST /api/crons``. Delivery only: the job keeps its own tab,
+    # session and identity. ``""`` posts into no other chat.
+    target_session_key: str = ""
     # Optional project directory an agent job's session runs in.
     # ``""`` (and a record written before the field existed) keeps
     # today's cwd: the bound agent's workspace, else the per-session scratch
