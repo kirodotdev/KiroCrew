@@ -31,7 +31,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import TYPE_CHECKING, Iterable, Mapping
 
 from kiro_crew.atomic_write import (
     atomic_write,
@@ -46,6 +46,10 @@ from kiro_crew.dashboard.revocation_gen import (
     current_revocation_gen_or_none,
 )
 from kiro_crew.dashboard.token_secret import _get_secret, auth_store_staging_dir
+from kiro_crew.dashboard.urls import dashboard_path_prefix
+
+if TYPE_CHECKING:
+    from aiohttp import web
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,9 @@ MAX_REFRESH_TTL_SECS = 30 * 86400  # 30 days
 # future "/api/auth/*" handler that should NOT see the refresh cookie
 # must add its own scrubbing — but that's a deliberate choice we'd
 # rather make than have logout silently no-op.
+#
+# Behind a prefix-stripping proxy the browser-facing path is
+# ``<prefix>/api/auth``: writers take it from ``refresh_cookie_path``.
 REFRESH_COOKIE_PATH = "/api/auth"
 
 # Per-port cookie name prefixes. Browser cookies are NOT isolated by port
@@ -1301,6 +1308,12 @@ def refresh_cookie_name(port: str | int) -> str:
     return f"{REFRESH_COOKIE_PREFIX}{port}"
 
 
+def refresh_cookie_path(request: web.Request) -> str:
+    """The refresh cookie's path: ``/api/auth`` under the sub-path of ``dashboard.url``."""
+    # nosemgrep: python.flask.security.audit.directly-returned-format-string.directly-returned-format-string -- a cookie Path value, never a response body
+    return dashboard_path_prefix(request.app.get("dashboard_url", "")) + REFRESH_COOKIE_PATH
+
+
 def bears_session_cookie_for_host(host_header: str, cookies: Mapping[str, str]) -> bool:
     """True if *cookies* hold an access or refresh cookie for the Host's port.
 
@@ -1316,16 +1329,18 @@ def bears_session_cookie_for_host(host_header: str, cookies: Mapping[str, str]) 
 
 
 def foreign_port_cookies(
-    cookie_names: Iterable[str], current_port: str | int
+    cookie_names: Iterable[str], current_port: str | int, refresh_path: str = REFRESH_COOKIE_PATH
 ) -> list[tuple[str, str]]:
     """Return ``(name, path)`` pairs for per-port auth cookies of OTHER ports.
 
     ``cookie_names`` is what the browser sent (e.g. ``request.cookies``);
     ``current_port`` is the port THIS gateway resolved for the request
     (``_cookie_port_from_host``), whose own pair is always preserved.
+    ``refresh_path`` is where this request's refresh cookie lives
+    (``refresh_cookie_path``).
 
     The returned ``path`` matches how each cookie was originally set
-    (access = ``/``, refresh = ``/api/auth``) because cookie deletion is
+    (access = ``/``, refresh = ``<prefix>/api/auth``) because cookie deletion is
     path-sensitive: a ``Set-Cookie`` with ``max_age=0`` only removes a
     cookie when its ``path`` matches the one used to set it. Suffixes must
     be digit-only, so non-port names — including the legacy ``mc_token``
@@ -1339,7 +1354,7 @@ def foreign_port_cookies(
     for name in cookie_names:
         for prefix, path in (
             (ACCESS_COOKIE_PREFIX, ACCESS_COOKIE_PATH),
-            (REFRESH_COOKIE_PREFIX, REFRESH_COOKIE_PATH),
+            (REFRESH_COOKIE_PREFIX, refresh_path),
         ):
             if not name.startswith(prefix):
                 continue

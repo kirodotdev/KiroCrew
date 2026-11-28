@@ -20,10 +20,11 @@ import ipaddress
 import logging
 import os
 import socket
+import string
 import sys
 import threading
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,28 @@ def dashboard_origin(url: str) -> str:
     if port == default_port:
         port = None
     return f"{scheme}://{host}:{port}" if port else f"{scheme}://{host}"
+
+
+#: What one segment of a sub-path may hold: RFC 3986's unreserved characters, so a
+#: prefix can never end a cookie's ``Path`` attribute early or name another path.
+_PATH_SEGMENT_CHARS = frozenset(string.ascii_letters + string.digits + "-._~")
+
+
+def dashboard_path_prefix(url: str) -> str:
+    """Return the sub-path *url* serves the dashboard under (``/kirocrew``), or ``""``.
+
+    Behind a proxy that publishes the dashboard at ``https://host/kirocrew`` and strips
+    ``/kirocrew`` before forwarding, ``dashboard.url`` is that public URL, sub-path
+    included. ``""`` (the root) for an invalid URL, no path or ``/``, and for a path with
+    an empty, ``.``/``..`` or other-character segment.
+    """
+    if not dashboard_origin(url):
+        return ""
+    path = urlsplit(_ensure_scheme(url)).path.rstrip("/")
+    for segment in path.split(sep="/")[1:]:  # URL text, not a filesystem path
+        if segment in ("", ".", "..") or not set(segment) <= _PATH_SEGMENT_CHARS:
+            return ""
+    return path
 
 
 def dashboard_link_origin(dashboard_url: str, tunnel_url: str = "") -> str:

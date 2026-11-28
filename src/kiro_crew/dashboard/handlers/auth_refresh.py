@@ -23,12 +23,12 @@ from aiohttp import web
 from kiro_crew.dashboard.origin import check_origin, is_https_request
 from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
-    REFRESH_COOKIE_PATH,
     _get_state,
     cookie_jar_needs_pruning,
     foreign_port_cookies,
     generate_refresh_token,
     refresh_cookie_name,
+    refresh_cookie_path,
     refresh_token_ancestors,
     refresh_token_boot,
     refresh_token_embed_forward_port,
@@ -259,7 +259,7 @@ def _set_refresh_cookie(
     token: str,
     session_exp: float,
 ) -> None:
-    """Set the per-port refresh cookie, path-restricted to /api/auth/.
+    """Set the per-port refresh cookie at ``refresh_cookie_path`` (``<prefix>/api/auth``).
 
     Path scope covers BOTH /api/auth/refresh and /api/auth/logout so
     the cookie is sent to the logout endpoint (otherwise logout cannot
@@ -281,7 +281,7 @@ def _set_refresh_cookie(
         samesite="Lax",
         # See _set_access_cookie for the conditional-Secure rationale.
         secure=is_https_request(request),
-        path=REFRESH_COOKIE_PATH,
+        path=refresh_cookie_path(request),
         max_age=max_age,
     )
 
@@ -292,7 +292,7 @@ def _clear_refresh_cookie(
 ) -> None:
     port = request.app.get("port", 7777)
     cookie_name = refresh_cookie_name(_cookie_port_from_host(request, port))
-    resp.set_cookie(cookie_name, "", max_age=0, path=REFRESH_COOKIE_PATH)
+    resp.set_cookie(cookie_name, "", max_age=0, path=refresh_cookie_path(request))
 
 
 def _expire_foreign_port_cookies(
@@ -315,7 +315,7 @@ def _expire_foreign_port_cookies(
         return
     port = request.app.get("port", 7777)
     current = _cookie_port_from_host(request, port)
-    for name, path in foreign_port_cookies(request.cookies, current):
+    for name, path in foreign_port_cookies(request.cookies, current, refresh_cookie_path(request)):
         resp.set_cookie(name, "", max_age=0, path=path)
 
 
