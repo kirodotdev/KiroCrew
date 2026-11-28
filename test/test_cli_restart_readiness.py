@@ -17,6 +17,7 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
 )
 
 from kiro_crew.service.common import RestartReport
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
 class TestRestartReadinessVerdict:
@@ -829,6 +830,53 @@ class TestWaitGatewayReady:
         assert verdict == (cli_server._READY_DIED, 1)
         probe.assert_not_called()
         assert "Still starting" not in capsys.readouterr().out
+
+    def test_windows_zero_exit_is_the_exec_successor_and_is_waited_for(self):
+        """Windows ``os.execv`` ends the waited process with 0 while the updated gateway starts."""
+        from kiro_crew import cli_server
+
+        proc = self._proc([0])
+        fake_time = self._scripted_clock([0.0, 1.0, 2.0])
+        with (
+            patch("kiro_crew.platform_compat.IS_WINDOWS", True),
+            patch("kiro_crew.cli_server._probe_gateway_ready", side_effect=[0, 200]),
+            patch("kiro_crew.cli_server._replacement_is_serving", return_value=True),
+            patch.object(cli_server, "time", fake_time),
+        ):
+            verdict = cli_server._wait_gateway_ready(
+                proc, 7777, None, timeout=FALLBACK_TIMEOUT_SECS
+            )
+
+        assert verdict == (cli_server._READY_OK, None)
+        # Once it has exited it is never asked again.
+        assert proc.poll.call_count == 1
+
+    def test_windows_zero_exit_at_the_deadline_with_nothing_serving_times_out(self):
+        from kiro_crew import cli_server
+
+        with (
+            patch("kiro_crew.platform_compat.IS_WINDOWS", True),
+            patch("kiro_crew.cli_server._probe_gateway_ready", return_value=503),
+        ):
+            verdict = cli_server._wait_gateway_ready(self._proc([None, 0]), 7777, None, timeout=0)
+
+        assert verdict == (cli_server._READY_TIMEOUT, None)
+
+    @pytest.mark.parametrize(("windows", "status"), [(True, 3), (False, 0)])
+    def test_a_non_zero_exit_or_any_posix_exit_is_still_a_death(self, windows, status):
+        from kiro_crew import cli_server
+
+        probe = MagicMock(return_value=0)
+        with (
+            patch("kiro_crew.platform_compat.IS_WINDOWS", windows),
+            patch("kiro_crew.cli_server._probe_gateway_ready", probe),
+        ):
+            verdict = cli_server._wait_gateway_ready(
+                self._proc([status]), 7777, None, timeout=FALLBACK_TIMEOUT_SECS
+            )
+
+        assert verdict == (cli_server._READY_DIED, status)
+        probe.assert_not_called()
 
     def test_missing_marker_is_never_the_replacement(self):
         """An absent marker is the handover's own state, not proof of a new gateway.

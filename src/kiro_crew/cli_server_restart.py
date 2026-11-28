@@ -624,6 +624,9 @@ def _wait_gateway_ready(
       liveness probe because we are the child's parent, so it both detects the
       exit and yields the status the operator needs. (Same shape as ``pod``'s
       ``_wait_healthy`` bailing out on a dead unit instead of burning the wait.)
+      On Windows a zero status is not a death: a boot-time update apply re-execs,
+      and Windows ``os.execv`` ends the waited process with 0 while a successor
+      starts, so the wait keeps probing the port (:func:`_poll_until_serving`).
     * **A zero timeout still probes once.** The deadline is checked *after* the
       probe, so a collapsed timeout reports what is actually there instead of a
       reflexive failure.
@@ -686,7 +689,13 @@ def _poll_until_serving(
     then *serving* (``True`` ends it as :data:`_POLL_SERVED`). The deadline is
     checked only after that, so a zero *budget* still asks once. At the deadline
     *exited* is asked again, so a child that died during the last probe is not
-    reported as still running. One "still starting" line is printed on the first
+    reported as still running. On Windows a zero status is not an exit: Windows
+    implements ``os.execv`` by starting a successor and ending the caller with 0,
+    which is what a boot-time update apply's re-exec looks like, so the wait stops
+    asking *exited* and keeps probing until the deadline. POSIX ``execv`` keeps the
+    pid, and a non-zero status is a death on every platform. The cost: a Windows
+    replacement that exits 0 with no successor is reported at the deadline as not
+    ready rather than at once. One "still starting" line is printed on the first
     pass after :data:`_RESTART_READY_SOFT_CHECKPOINT` seconds while the deadline
     is still ahead.
 
@@ -703,6 +712,7 @@ def _poll_until_serving(
     checkpoint = start + _RESTART_READY_SOFT_CHECKPOINT
     checkpoint_printed = False
     applying_printed = False
+    exec_hands_off = platform_compat.IS_WINDOWS
     while True:
         if exited is not None:
             status = exited()
@@ -713,7 +723,9 @@ def _poll_until_serving(
                     # every process running from the install, this one included,
                     # so this waiter must end rather than wait for the port.
                     return _POLL_HANDED_OFF, None, 0
-                return _POLL_EXITED, status, 0
+                if status != 0 or not exec_hands_off:
+                    return _POLL_EXITED, status, 0
+                exited = None
         if serving():
             return _POLL_SERVED, None, 0
         now = time.monotonic()
@@ -726,7 +738,9 @@ def _poll_until_serving(
                 if status is not None:
                     if update_next_start.handed_off(apply_pid(), since=started_wall):
                         return _POLL_HANDED_OFF, None, 0
-                    return _POLL_EXITED, status, 0
+                    if status != 0 or not exec_hands_off:
+                        return _POLL_EXITED, status, 0
+                    exited = None
             pid = apply_pid()
             # By pid, or by a record written since this wait began: a replacement
             # started through a launcher shim has a pid of its own.
