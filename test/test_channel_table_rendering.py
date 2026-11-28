@@ -447,8 +447,8 @@ class TestPerTargetPolicies:
         from kiro_crew.slack.format import to_slack_mrkdwn
 
         assert to_slack_mrkdwn(WIDE_TABLE) == (
-            "• *Provider:* GitHub | *Auth:* OAuth app | *Status:* Gated "
-            "| *Notes:* needs an installed app first"
+            "*Provider | Auth | Status | Notes*\n"
+            "• *GitHub:* OAuth app | Gated | needs an installed app first"
         )
 
 
