@@ -330,14 +330,18 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         session = request.headers.get("X-Session-Key", "")
         enter_work_phase("admission")
         # A private collection names the lessons the recall rendered for the shadow
-        # trace's outcome line; it is read only by that line, and opened only while
-        # a stage is on, so a recall with every flag off pays nothing for it.
-        from kiro_crew import injection_receipts
+        # trace's outcome line and for the owner's memory graph; it is read only by
+        # those two, and opened only while a stage is on or an owner dashboard is
+        # open, so a recall with neither pays nothing for it.
+        from kiro_crew import injection_receipts, memory_graph_activity
         from kiro_crew import memory_shadow_trace as trace
 
         tracing = bool(session) and tier is not None and trace.observing()
+        watched = tier is not None and memory_graph_activity.owner_watching(state)
         filter_kwargs: dict[str, Any] = {} if filters is None else {"filters": filters}
-        with injection_receipts.collect() if tracing else contextlib.nullcontext({}) as sink:
+        with (
+            injection_receipts.collect() if tracing or watched else contextlib.nullcontext({})
+        ) as sink:
             result = (
                 await run_in_embed_pool(
                     tier.recall,
@@ -462,6 +466,13 @@ async def api_memory_recall(request: web.Request) -> web.Response:
     await _commit_and_record_recall(session, decision_pending, payload)
     if session and request.get("internal_auth") is True and "store" not in request.query:
         await _record_recall_outcome(state, session, name or "", payload, recalled_lessons)
+    if watched:
+        memory_graph_activity.announce(
+            state,
+            name or "",
+            memory_graph_activity.RECALL,
+            memory_graph_activity.recalled_ids(payload, recalled_lessons),
+        )
     return web.json_response(
         payload,
         dumps=lambda body: recall_json(body, ensure_ascii=False, context_cap=_RECALL_CONTEXT_CAP),

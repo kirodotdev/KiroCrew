@@ -22,11 +22,14 @@ import { KindPills } from './memoryPage/KindPills'
 import type { KindTab } from './memoryPage/memoryListView'
 import { attachGraphGestures, type Box } from './memoryGraphGestures'
 import {
-  FETCH_MARGIN, LABEL_PX, MAX_LABELS, LINK_BUDGET, TOPIC_LINE_HEIGHT, labelGrid, topicLinePx, topicLines, topicOrder, NODE_BUDGET, canvasLabel, memoryLines, contains, dotPxAt, drawnLinks, fitBox, linkAlpha, linkLevel, linkRule, linksInView, inkAlpha, topicLinkAlpha, topicLinks, labelBudget, zoomFromFit, nextInDirection, panBy, placeLabels, screenRectToBox, showsNodes,
+  FETCH_MARGIN, LABEL_PX, MAX_LABELS, LINK_BUDGET, TOPIC_LINE_HEIGHT, labelGrid, topicLinePx, topicLines, topicOrder, NODE_BUDGET, canvasLabel, memoryLines, contains, dotPxAt, drawnLinks, fitBox, linkAlpha, linkLevel, linkRule, linksInView, inkAlpha, topicLinkAlpha, topicLinks, labelBudget, zoomFromFit, nextInDirection, panBy, placeLabels, screenRectToBox, showsNodes, drawnInBox, DRAW_MARGIN, followOffset,
   toScreen, visibleBox, zoomAt, type Dir, type DrawnLink, type LabelCandidate, type PlacedLabel, type ScreenMark, type Size, type View,
 } from './memoryGraph/graphView'
 import { NodeCache, PAGE_ROWS, gridStep, tilesFor } from './memoryGraph/nodeCache'
-import { KIND_SHAPE, KIND_SIZE, readGraphColors, topicColors, type GraphColors } from './memoryGraph/graphColors'
+import { KIND_SHAPE, KIND_SIZE, cssRgb, readGraphColors, topicColors, type GraphColors } from './memoryGraph/graphColors'
+import { BreathLayer, breathView } from './memoryGraph/graphBreathLayer'
+import { ActivityRunner, LINK_BOW, MEMORY_ACTIVITY_EVENT, type ActivityFrame } from './memoryGraph/graphActivityRunner'
+import { easeOut, lerp, litFrom, litLinkAlpha, litMark, litScale, litTopic, mixMarks, type Fade, type Lit, type Mark } from './memoryGraph/graphLight'
 
 // Bundle shape, not runtime: cosmos.gl's d3 modules sit in the `vendor-d3`
 // chunk, which stays a lazy chunk of its own only while a page reaches it
@@ -39,16 +42,20 @@ export const loadD3 = () => import('d3')
 /** Smallest canvas height; otherwise it fills the window below its toolbar. */
 const MIN_CANVAS = 420
 /** The dashboard's standard motion: a cluster opening into its nodes, a camera move. */
-const MOTION_MS = 250
-const easeOut = (t: number) => 1 - (1 - t) ** 3
+export const MOTION_MS = 250
+export const SEARCH_DEBOUNCE_MS = 300
 /** Past this many nodes on screen, labels name clusters rather than memories. */
 const DENSE_LABELS = 300
+/** A topic name stays through a settle while its disc is at least this wide on screen (CSS px). */
+const KEEP_TOPIC_PX = 24
+/** Rank added to a name already shown, so a settle keeps it before it adds others. */
+const KEEP_RANK = 1e6
 /** A faded experience never drops below this opacity, so it stays findable. */
 const MIN_ALPHA = 0.45
-const DIMMED_ALPHA = 0.1
 /** A cluster's soft disc is never smaller than this, in CSS pixels. */
 const CLUSTER_MIN_PX = 7
-const MATCH_EXTRA_PX = 3
+/** Nor larger than this, lit or not. */
+const CLUSTER_MAX_PX = 56
 /** Place replacement labels this long after the view stops moving. */
 const SETTLE_MS = 120
 /** A zoom resizes the marks at most this often; the settle sizes them exactly. */
@@ -131,11 +138,21 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   const colorsRef = useRef<GraphColors | null>(null)
   const hoveredRef = useRef<number | null>(null)
   const reduced = useReducedMotion()
+  /** The breathing and the light a memory read spreads (graphActivityRunner). */
+  const activityRef = useRef<ActivityRunner | null>(null)
+  /** The breath as one image over the canvas (graphBreathLayer), when WebGL 2 allows it. */
+  const breathRef = useRef<BreathLayer | null>(null)
+  /** Whether the canvas is on screen at all (scrolled to, its tab shown). */
+  const onScreenRef = useRef(true)
+  /** The layout box and zoom of the last node pick, including picks that keep every node. */
+  const drawnBoxRef = useRef<{ box: GraphBbox; k: number } | null>(null)
   const phone = useIsMobile()
   // A touch screen has no Space key: one finger pans there.
   const touch = useIsTouchDevice()
   const touchRef = useRef(touch)
   touchRef.current = touch
+  /** Whether the last pointer on the canvas was a finger (a touch laptop has both). */
+  const touchInputRef = useRef(false)
   const reducedRef = useRef(reduced)
   reducedRef.current = reduced
   const jump = useJumpToMemories()
@@ -149,9 +166,10 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   kindsRef.current = kinds
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
-  const [matches, setMatches] = useState<Set<string> | null>(null)
-  const matchesRef = useRef(matches)
-  matchesRef.current = matches
+  /** What a search lit, and how many memories that is. */
+  const [lit, setLit] = useState<{ set: Lit; total: number } | null>(null)
+  /** The lighting on the canvas: fading from one lit set (or none) to the next. */
+  const fadeRef = useRef<Fade>({ from: null, to: null, t: 1 })
   const [box, setBox] = useState<Box | null>(null)
   const [picked, setPicked] = useState<GraphBoxPick | null>(null)
   const [selectPending, setSelectPending] = useState(false)
@@ -171,8 +189,24 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
    *  re-renders only that layer, not the whole tab, which cost a settle 100+ ms. */
   const labelsRef = useRef<PlacedLabel[]>([])
   const labelSink = useRef<(labels: PlacedLabel[]) => void>(() => {})
+  /** The camera each name was placed under, and its element: between placements a
+   *  name rides the live camera, so it stays on its cluster in the frame the marks move. */
+  const labelViews = useRef(new WeakMap<PlacedLabel, View>())
+  const labelEls = useRef(new Map<PlacedLabel, HTMLElement>())
+  const followLabel = useCallback((l: PlacedLabel, el: HTMLElement) => {
+    const from = labelViews.current.get(l)
+    if (!from) return
+    const d = followOffset(from, viewRef.current, sizeRef.current, { x: l.box.x + l.box.width / 2, y: l.box.y + l.box.height / 2 })
+    el.style.translate = `${d.x}px ${d.y}px`
+  }, [])
+  const trackLabel = useCallback((l: PlacedLabel, el: HTMLElement | null) => {
+    if (!el) { labelEls.current.delete(l); return }
+    labelEls.current.set(l, el); followLabel(l, el)
+  }, [followLabel])
+  const followLabels = useCallback(() => { for (const [l, el] of labelEls.current) followLabel(l, el) }, [followLabel])
   const setLabels = useCallback((next: PlacedLabel[]) => {
     if (next.length === 0 && labelsRef.current.length === 0) return
+    for (const l of next) labelViews.current.set(l, { ...viewRef.current })
     labelsRef.current = next; labelSink.current(next)
   }, [])
   const [hover, setHover] = useState<PlacedLabel | null>(null)
@@ -244,15 +278,22 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     const tint = topicColors(clusters, boundsRef.current, colorsRef.current?.dark ?? false).text
     // Topic names are placed in spiral order (topicOrder), one size for the view,
     // each on its own disc, skipped when its grid cell already has a name or it
-    // would touch one already placed.
+    // would touch one already placed. While a set is lit, only the topics
+    // holding hits keep their names, each with its hit count.
     const zoom = zoomFromFit(view, size, boundsRef.current)
+    const lit = fadeRef.current.to
+    // The names on screen now: a settle keeps them first and adds others only where there is room.
+    const shownIds = new Set(labelsRef.current.map(l => l.id))
     const topics = () => {
-      const named = clusters.filter(c => c.label && c.count > 0)
+      const named = clusters.filter(c => c.label && c.count > 0 && (!lit || lit.clusters.has(c.id)))
       const order = topicOrder(named, view, size, boundsRef.current, zoom)
       const px = topicPx(size.width)
       return named.map((c, i) => {
-        const lines = topicLines(c.label!, line => widthOf(line, px, true), topicLinePx(size.width))
-        return { id: `c${c.id}`, at: toScreen(view, size, c), text: lines.join(' '), lines, rank: -order[i], px, color: tint.get(c.id), centred: true }
+        const hits = lit?.clusters.get(c.id)
+        const lines = topicLines(hits ? litTopic(c.label!, fmtNumber(hits)) : c.label!, line => widthOf(line, px, true), topicLinePx(size.width))
+        // A name already shown keeps its place while its cluster stays in view and big enough.
+        const keep = shownIds.has(`c${c.id}`) && 2 * c.r * view.k >= KEEP_TOPIC_PX
+        return { id: `c${c.id}`, at: toScreen(view, size, c), text: lines.join(' '), lines, rank: -order[i] + (keep ? KEEP_RANK : 0), kept: keep, px, color: tint.get(c.id), centred: true }
       })
     }
     let cands: LabelCandidate[]
@@ -262,8 +303,10 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       const markPx = dotPx(view, size, boundsRef.current)
       // Only what is on screen is counted and named: cutting a label for each of
       // tens of thousands of memories cost a settle hundreds of ms on a phone.
+      // While a set is lit, only its hits are named.
       const seen: { n: GraphNodeRow; at: { x: number; y: number } }[] = []
       for (const n of shown.items) {
+        if (lit && !lit.glow.has(n.id)) continue
         const at = toScreen(view, size, n)
         if (at.x >= 0 && at.y >= 0 && at.x <= size.width && at.y <= size.height) seen.push({ n, at })
         if (seen.length > DENSE_LABELS) break
@@ -275,7 +318,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
         // cut: one that does not fit, or would cover others, is left unnamed.
         cands = seen.flatMap(({ n, at }) => {
           const lines = memoryLines(canvasLabel(n), line => widthOf(line, LABEL_PX))
-          return lines ? [{ id: n.id, at, text: lines.join(' '), lines, rank: n.weight + (matchesRef.current?.has(n.id) ? 10 : 0), mark: markPx }] : []
+          return lines ? [{ id: n.id, at, text: lines.join(' '), lines, rank: n.weight + (lit?.glow.has(n.id) ? 10 : 0) + (shownIds.has(n.id) ? KEEP_RANK : 0), mark: markPx }] : []
         })
         marks = cands.map(n => ({ id: n.id, at: n.at, px: markPx }))
       }
@@ -307,12 +350,21 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     const topic = topicColors(clustersRef.current, boundsRef.current, colors.dark).dot
     const focusIndex = shown.mode === 'nodes' && focusRef.current ? shown.items.findIndex(x => (x as GraphNodeRow).id === focusRef.current) : -1
     const at = hoveredRef.current ?? (focusIndex >= 0 ? focusIndex : null)
+    const { from, to, t } = fadeRef.current, e = easeOut(t)
     const rgba = new Float32Array(links.length * 4)
     links.forEach((l, i) => {
       const rgb = topic.get(l.cluster) ?? colors.unclustered
-      const focus = at === null ? 'none' : l.a === at || l.b === at ? 'lit' : 'dim'
+      let alpha: number
+      if (at !== null) alpha = linkAlpha(zoom, l.sim, l.a === at || l.b === at ? 'lit' : 'dim')
+      else if (l.hub) alpha = topicLinkAlpha(l.sim)
+      else {
+        // A lit set strengthens the links between its hits; one memory's own links outrank it.
+        const base = linkAlpha(zoom, l.sim, 'none'), a = (shown.items[l.a] as GraphNodeRow).id, b = (shown.items[l.b] as GraphNodeRow).id
+        const next = litLinkAlpha(base, to, a, b)
+        alpha = e >= 1 ? next : lerp(litLinkAlpha(base, from, a, b), next, e)
+      }
       // Written in place: a temporary array per link fed the garbage collector.
-      rgba[i * 4] = rgb[0]; rgba[i * 4 + 1] = rgb[1]; rgba[i * 4 + 2] = rgb[2]; rgba[i * 4 + 3] = l.hub ? topicLinkAlpha(l.sim) : linkAlpha(zoom, l.sim, focus)
+      rgba[i * 4] = rgb[0]; rgba[i * 4 + 1] = rgb[1]; rgba[i * 4 + 2] = rgb[2]; rgba[i * 4 + 3] = alpha
     })
     g.setLinkColors(rgba)
   }, [])
@@ -350,33 +402,41 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
    *  search match larger), a cluster about as wide on screen as it is. */
   const sizesRef = useRef(new Float32Array())
   const markSizes = useCallback((nodePx: number) => {
-    const shown = shownRef.current, m = matchesRef.current, k = viewRef.current.k
+    const shown = shownRef.current, k = viewRef.current.k
+    const { from, to, t } = fadeRef.current, e = easeOut(t)
+    /** How much larger the fade draws a mark now: from the old set's size toward the new one's. */
+    const scale = (glow: (set: Lit) => number | undefined) => {
+      const next = litScale(to, to ? glow(to) : undefined)
+      return e >= 1 ? next : lerp(litScale(from, from ? glow(from) : undefined), next, e)
+    }
     // One buffer per shown set: a zoom asks ten times a second, and a new array
     // each time fed the garbage collector pauses of 100 ms and more.
     if (sizesRef.current.length !== shown.items.length) sizesRef.current = new Float32Array(shown.items.length)
     const sizes = sizesRef.current
     shown.items.forEach((item, i) => {
       if (shown.mode === 'clusters') {
-        // A soft disc about as wide on screen as the cluster, never a blob.
-        sizes[i] = Math.max(CLUSTER_MIN_PX, Math.min(48, 2 * (item as GraphCluster).r * k))
+        // A soft disc about as wide on screen as the cluster, never a blob; larger while it holds a hit.
+        const c = item as GraphCluster
+        sizes[i] = Math.min(CLUSTER_MAX_PX, Math.max(CLUSTER_MIN_PX, Math.min(48, 2 * c.r * k)) * scale(set => (set.clusters.has(c.id) ? 1 : undefined)))
       } else {
         const node = item as GraphNodeRow
-        sizes[i] = (m?.has(node.id) ? nodePx + MATCH_EXTRA_PX : nodePx) * KIND_SIZE[node.kind]
+        sizes[i] = nodePx * KIND_SIZE[node.kind] * scale(set => set.glow.get(node.id))
       }
     })
     return sizes
   }, [])
 
-  /** Sizes alone, for the frames of a zoom: a full paint at every step costs the frame. */
-  const resize = useCallback(() => {
-    cosmosRef.current?.setPointSizes(markSizes(dotPx(viewRef.current, sizeRef.current, boundsRef.current)))
-  }, [markSizes])
-
   /** Colours and sizes of what is shown, for the current search and focus. */
   const paint = useCallback(() => {
     const g = cosmosRef.current, colors = colorsRef.current
     if (!g || !colors) return
-    const shown = shownRef.current, m = matchesRef.current, n = shown.items.length
+    const shown = shownRef.current, n = shown.items.length
+    const { from, to, t } = fadeRef.current, e = easeOut(t)
+    /** A mark as the fade shows it now: from the old set's look toward the new one's. */
+    const lighted = (base: Mark, glow: (set: Lit) => number | undefined) => {
+      const next = litMark(base, to, to ? glow(to) : undefined)
+      return e >= 1 ? next : mixMarks(litMark(base, from, from ? glow(from) : undefined), next, e)
+    }
     const nodePx = dotPx(viewRef.current, sizeRef.current, boundsRef.current), k = viewRef.current.k
     const topic = topicColors(clustersRef.current, boundsRef.current, colors.dark).dot
     const byId = new Map(clustersRef.current.map(c => [c.id, c]))
@@ -384,21 +444,23 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     const ink = new Map(clustersRef.current.map(c => [c.id, inkAlpha(c.count, nodePx, c.r * k)]))
     const rgba = new Float32Array(n * 4), shapes = new Float32Array(n)
     shown.items.forEach((item, i) => {
-      let rgb: [number, number, number], alpha: number
+      let mark: Mark
       if (shown.mode === 'clusters') {
         const c = item as GraphCluster
-        rgb = topic.get(c.id) ?? colors.unclustered; alpha = 0.35
+        // Lit while it holds a hit; markSizes sizes it.
+        mark = lighted({ rgb: topic.get(c.id) ?? colors.unclustered, alpha: 0.35, px: 0 }, set => (set.clusters.has(c.id) ? 1 : undefined))
       } else {
         const node = item as GraphNodeRow
-        // Colour is the topic; kind is the shape.
-        rgb = topic.get(node.cluster) ?? colors.unclustered
         shapes[i] = KIND_SHAPE[node.kind]
         const share = byId.has(node.cluster) ? ink.get(node.cluster)! : 1
         // An experience fades with recall's weight for it; facts and lessons do not.
-        alpha = share * (node.kind === 'episode' ? Math.max(MIN_ALPHA, Math.min(1, node.weight)) : 1)
-        if (m) alpha = m.has(node.id) ? 1 : DIMMED_ALPHA
+        mark = lighted({
+          rgb: topic.get(node.cluster) ?? colors.unclustered,
+          alpha: share * (node.kind === 'episode' ? Math.max(MIN_ALPHA, Math.min(1, node.weight)) : 1),
+          px: 0,
+        }, set => set.glow.get(node.id))
       }
-      rgba[i * 4] = rgb[0]; rgba[i * 4 + 1] = rgb[1]; rgba[i * 4 + 2] = rgb[2]; rgba[i * 4 + 3] = alpha
+      rgba[i * 4] = mark.rgb[0]; rgba[i * 4 + 1] = mark.rgb[1]; rgba[i * 4 + 2] = mark.rgb[2]; rgba[i * 4 + 3] = mark.alpha
     })
     g.setPointColors(rgba)
     g.setPointSizes(markSizes(nodePx))
@@ -413,7 +475,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
    * each cluster: its nodes start at the cluster's centre and move to their own
    * places (instant with reduced motion).
    */
-  const refreshShown = useCallback(() => {
+  const refreshShown = useCallback((cameraOnly = false) => {
     const g = cosmosRef.current
     if (!g) return
     const before = shownRef.current
@@ -425,17 +487,38 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     const cached = (t: Tile) => cacheRef.current.has(`${tiles.kindKey}|${t.key}`)
     const nodeLevel = wholeRef.current || showsNodes(viewRef.current, sizeRef.current, clusters)
     const zoomedIn = !!boundsRef.current && !contains(visibleBox(viewRef.current, sizeRef.current), boundsRef.current)
-    const wantNodes = nodeLevel
+    let wantNodes = nodeLevel
       && (before.mode === 'nodes' || tiles.tiles.every(cached) || (zoomedIn && tiles.tiles.some(cached)))
+    // While a pan or zoom by hand goes on, the level of detail holds in both
+    // directions: clusters only scale and memories stay memories, and the level is
+    // decided once after the settle, so the picture never flips under the finger.
+    const moving = performance.now() - handMovedAt.current < SETTLE_MS
+    if (moving && before.items.length > 0) {
+      if (before.mode === 'clusters' && wantNodes) return
+      if (before.mode === 'nodes') wantNodes = true
+    }
     let next: Shown
     if (wantNodes) {
       const want = kindsRef.current
-      next = { mode: 'nodes', items: cacheRef.current.all().filter(n => !want || want.includes(n.kind)) }
+      const all = cacheRef.current.all().filter(n => !want || want.includes(n.kind))
+      // Only the clusters around the view go to the canvas: each frame costs per memory drawn.
+      const box = visibleBox(viewRef.current, sizeRef.current, DRAW_MARGIN)
+      const items = drawnInBox(all, clusters, box)
+      drawnBoxRef.current = { box, k: viewRef.current.k }
+      next = { mode: 'nodes', items }
     } else {
+      drawnBoxRef.current = null
       // shortcut: overview clusters include every kind; filter them when replies carry per-kind counts.
       next = { mode: 'clusters', items: clusters.filter(c => c.count > 0) }
     }
+    const keepActivity = cameraOnly && before.mode === 'nodes' && next.mode === 'nodes'
+    if (keepActivity && next.items.length === before.items.length && next.items.every((n, i) => n.id === before.items[i].id)) {
+      // Keep the array, link tables and GPU positions for an unchanged camera pick.
+      if (lastK.current !== viewRef.current.k || zoomDirty.current) { paint(); g.render(0, 0) }
+      return
+    }
     shownRef.current = next
+    if (!keepActivity && next.items !== before.items) activityRef.current?.reset()
     // Links join the memories drawn now; clusters have none.
     allLinksRef.current = next.mode === 'nodes' ? drawnLinks(next.items as GraphNodeRow[]) : []
     topicLinksRef.current = next.mode === 'nodes' ? topicLinks(allLinksRef.current, next.items as GraphNodeRow[], clusters) : []
@@ -458,10 +541,12 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     } else {
       // Nodes that arrived since the last draw join at their places, with no motion.
       g.setPointPositions(pos, true)
+      if (keepActivity) activityRef.current?.remap(before.items as GraphNodeRow[])
       paint()
       g.render(0, 0)
     }
-    placeOverlay()
+    // The names are picked again at the settle; until then they ride the camera.
+    if (!moving) placeOverlay()
   }, [clusters, paint, pickLinks, placeOverlay])
 
   // ---- fetching nodes for the view -------------------------------------------
@@ -479,6 +564,8 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   const swappedAt = useRef(0)
   /** When the view last moved (syncView). */
   const movedAt = useRef(0)
+  /** The last pan or zoom by hand (finger, wheel, keys), not a camera flight. */
+  const handMovedAt = useRef(-Infinity)
   const swapIn = useCallback(() => {
     if (swapFrame.current !== null) return
     // Each swap re-uploads every drawn mark: tiles arriving together join in one.
@@ -554,20 +641,35 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   const paintedAt = useRef(0)
   /** A zoom moved past the last repaint: the settle repaints. */
   const zoomDirty = useRef(false)
+  /** The canvas holds clusters far outside the view: all of them with the view
+   *  zoomed in past the store's edge, or a set picked two zoom steps further out. */
+  const drawsTooMuch = useCallback(() => {
+    const d = drawnBoxRef.current, b = boundsRef.current, view = viewRef.current
+    if (d) return view.k / d.k > 2
+    return !!b && !contains(visibleBox(view, sizeRef.current, DRAW_MARGIN), b)
+  }, [])
   /** Draw the current view now: camera, dot sizes, clusters or memories, and labels after it settles. */
   const syncView = useCallback(() => {
     movedAt.current = performance.now()
+    breathRef.current?.hold()
     applyView()
+    followLabels()
     const nodesNow = wholeRef.current || showsNodes(viewRef.current, sizeRef.current, clusters)
-    if ((shownRef.current.mode === 'nodes') !== nodesNow) refreshShown()
+    const drawnBox = drawnBoxRef.current
+    // A pan or zoom by hand keeps the level it started on (refreshShown); the settle decides it.
+    const handMoving = performance.now() - handMovedAt.current < SETTLE_MS
+    const nodesShown = shownRef.current.mode === 'nodes'
+    // A view that left the memories handed to the canvas picks them again at once.
+    const outgrown = (nodesNow || (handMoving && nodesShown)) && drawnBox !== null && !contains(drawnBox.box, visibleBox(viewRef.current, sizeRef.current))
+    if ((!handMoving && nodesShown !== nodesNow) || outgrown) refreshShown(true)
     else if (lastK.current !== viewRef.current.k) {
-      // Dots and cluster discs are sized by zoom, so a zoom resizes them; a pan does
-      // not. Repainting tens of thousands of marks every frame of a zoom costs the
-      // frame on a phone, so a zoom repaints at most every PAINT_MS and once more
-      // when it settles; between repaints the camera still moves every frame.
-      // Mid-zoom only the sizes follow; colours and links catch up at the settle.
+      // Dots and cluster discs are sized and inked by zoom, so a zoom repaints them; a
+      // pan does not. Repainting tens of thousands of marks every frame of a zoom
+      // costs the frame on a phone, so a zoom repaints at most every PAINT_MS and once
+      // more when it settles; between repaints the camera still moves every frame.
+      // Sizes and ink change together, so the look never jumps when the zoom stops.
       const now = performance.now()
-      if (now - paintedAt.current >= PAINT_MS) { paintedAt.current = now; resize(); cosmosRef.current?.render(0, 0) }
+      if (now - paintedAt.current >= PAINT_MS) { paintedAt.current = now; paint(); cosmosRef.current?.render(0, 0) }
       zoomDirty.current = true
     }
     lastK.current = viewRef.current.k
@@ -577,6 +679,12 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     // Each step is its own task, so a settle never holds one frame for all of them;
     // a new move cancels the steps not yet run.
     const steps = [
+      // The breath layer copies frames again from the next draw on.
+      () => { breathRef.current?.release() },
+      // The level a hand pan or zoom held is decided now: clusters open, or memories close.
+      () => { if ((shownRef.current.mode === 'nodes') !== (wholeRef.current || showsNodes(viewRef.current, sizeRef.current, clusters))) refreshShown() },
+      // Zoomed in well past the drawn set: hand the canvas fewer memories.
+      () => { if (shownRef.current.mode === 'nodes' && drawsTooMuch()) { refreshShown(true); zoomDirty.current = false } },
       () => { if (zoomDirty.current) { zoomDirty.current = false; paint(); cosmosRef.current?.render(0, 0) } },
       () => placeOverlay(true),
       () => { pickLinks(true); cosmosRef.current?.render(0, 0) },
@@ -584,7 +692,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     const next = () => { const step = steps.shift(); if (!step) return; step(); settleRef.current = setTimeout(next, 0) }
     settleRef.current = setTimeout(next, SETTLE_MS)
     fetchVisible()
-  }, [applyView, clusters, fetchVisible, paint, pickLinks, placeOverlay, refreshShown, resize])
+  }, [applyView, clusters, drawsTooMuch, fetchVisible, followLabels, paint, pickLinks, placeOverlay, refreshShown])
   const viewChanged = useCallback(() => {
     if (frameRef.current !== null) return
     frameRef.current = requestAnimationFrame(() => { frameRef.current = null; syncView() })
@@ -626,8 +734,38 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       if (cosmosRef.current) { liveFns.current.refreshShown(); liveFns.current.fetchVisible() }
     })
   }, [clearSelection, refetch])
-  const liveFns = useRef({ viewChanged, flyTo, stopFlight, paint, paintLinks, relayout, refreshShown, fetchVisible, placeOverlay })
-  liveFns.current = { viewChanged, flyTo, stopFlight, paint, paintLinks, relayout, refreshShown, fetchVisible, placeOverlay }
+  /** Breathe and light reads only with motion allowed and the tab in view. */
+  const syncActivity = useCallback(() => {
+    activityRef.current?.setRunning(!reducedRef.current && document.visibilityState !== 'hidden' && onScreenRef.current)
+  }, [])
+  const liveFns = useRef({ viewChanged, flyTo, stopFlight, paint, paintLinks, relayout, refreshShown, fetchVisible, placeOverlay, syncActivity })
+  liveFns.current = { viewChanged, flyTo, stopFlight, paint, paintLinks, relayout, refreshShown, fetchVisible, placeOverlay, syncActivity }
+  useEffect(() => { syncActivity() }, [reduced, syncActivity])
+  useEffect(() => {
+    document.addEventListener('visibilitychange', syncActivity)
+    return () => document.removeEventListener('visibilitychange', syncActivity)
+  }, [syncActivity])
+  // Scrolled away or its tab hidden (display: none), the canvas stops too.
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!ready || !el || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(entries => {
+      onScreenRef.current = entries[entries.length - 1].isIntersecting
+      syncActivity()
+    })
+    observer.observe(el)
+    return () => { observer.disconnect(); onScreenRef.current = true }
+  }, [ready, syncActivity])
+  // The gateway reports each memory read on the dashboard socket (useWebSocket):
+  // only this store's light up here.
+  useEffect(() => {
+    const onRead = (e: Event) => {
+      const frame = (e as CustomEvent<ActivityFrame>).detail
+      if (frame && (frame.store || '') === store) activityRef.current?.push(frame)
+    }
+    window.addEventListener(MEMORY_ACTIVITY_EVENT, onRead)
+    return () => window.removeEventListener(MEMORY_ACTIVITY_EVENT, onRead)
+  }, [store])
   // A new overview from another build replaces what is cached, so nothing mixes the two.
   useEffect(() => {
     const was = layoutRef.current
@@ -657,9 +795,35 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     if (el.clientWidth > 0) sizeRef.current = { width: el.clientWidth, height: el.clientHeight }
     colorsRef.current = readGraphColors()
     let g: CosmosGraph
+    let layer: BreathLayer | null = null
+    /** The page background as RGB, parsed once per theme (cssRgb paints a pixel to read it). */
+    let background = { css: '', rgb: [0, 0, 0] as [number, number, number] }
+    /** The breath wave for the layer, from the runner's clock and the camera. */
+    const breath = () => {
+      const u = activity.uniforms, css = colorsRef.current?.background ?? ''
+      if (css !== background.css) background = { css, rgb: cssRgb(css, [0, 0, 0]) }
+      return { amp: activity.breathAmp, phase: u.clock[1], perUnit: u.clock[3], cx: u.centre[0], cy: u.centre[1],
+        view: breathView(viewRef.current, sizeRef.current), background: background.rgb }
+    }
+    const breathStep = { draw: () => layer?.draw(breath()) }
+    const activity = new ActivityRunner({
+      layer: () => (layer ? breathStep : null),
+      graph: () => cosmosRef.current,
+      shown: () => shownRef.current,
+      layout: () => layoutRef.current,
+      bounds: () => boundsRef.current,
+      dark: () => colorsRef.current?.dark ?? false,
+      movedAt: () => movedAt.current,
+    })
+    layer = BreathLayer.create(el)
+    breathRef.current = layer
     try {
+    // `kcActivity` is this repo's own key: only the patched shader reads it.
     g = new Graph(el, {
       enableSimulation: false,
+      // Culling draws every mark twice (a depth pass, then colour); side by side
+      // on the 23k store, both themes, it changed no pixel by more than 2 levels.
+      pointOcclusionCulling: false,
       enableZoom: false,
       enableDrag: false,
       rescalePositions: false,
@@ -676,18 +840,27 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       // A slight bow, so two links that meet at a memory read apart.
       curvedLinks: true,
       curvedLinkSegments: 9,
-      curvedLinkControlPointDistance: 0.15,
-      backgroundColor: colorsRef.current.background,
+      curvedLinkControlPointDistance: LINK_BOW,
+      // With the breath layer the marks are drawn on a clear canvas, which the layer keeps.
+      backgroundColor: layer ? [0, 0, 0, 0] : colorsRef.current.background,
       focusedPointRingColor: colorsRef.current.ring,
       hoveredPointRingColor: colorsRef.current.ring,
       renderHoveredPointRing: true,
       pixelRatio: window.devicePixelRatio || 1,
       transitionDuration: MOTION_MS,
       attribution: '',
+      // Read by the patched point shader each draw (scripts/cosmos-graph-activity.mjs).
+      kcActivity: activity.uniforms,
+      kcAfterDraw: () => {
+        if (!shownRef.current.items.length) { layer?.clear(); return }
+        const source = (g as unknown as { canvas?: HTMLCanvasElement }).canvas
+        if (layer && source) { layer.capture(source); layer.draw(breath()) }
+      },
       onPointMouseOver: (index) => {
         const item = shownRef.current.items[index]
         hoveredRef.current = index
-        if (!item) return
+        // A finger has no hover: a mark under it while panning names nothing.
+        if (!item || touchInputRef.current) return
         const at = toScreen(viewRef.current, sizeRef.current, item)
         const text = shownRef.current.mode === 'nodes' ? (item as GraphNodeRow).label : (item as GraphCluster).label ?? fmtNumber((item as GraphCluster).count)
         const size = sizeRef.current
@@ -712,18 +885,26 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
         const node = item as GraphNodeRow
         setOpened({ ref: node.ref, record: node.record })
       },
-    })
+    } as ConstructorParameters<typeof Graph>[1])
     } catch (err) {
       // No WebGL here (an old browser, a locked-down VM): say so; search and filters stay usable.
       // eslint-disable-next-line no-console -- intentional init-failure diagnostic
       console.warn('MemoryGraph: the canvas could not start', err)
+      layer?.dispose(); breathRef.current = null
       setCanvasError(err)
       return
     }
     cosmosRef.current = g
+    activityRef.current = activity
+    liveFns.current.syncActivity()
     // The WebGL device starts after the constructor returns, so a browser without
     // WebGL fails here rather than in the try above.
-    g.ready.catch(err => { if (!disposed) setCanvasError(err) })
+    g.ready.catch(err => {
+      if (disposed) return
+      activity.dispose(); activityRef.current = null
+      layer?.dispose(); layer = null; breathRef.current = null
+      setCanvasError(err)
+    })
     // cosmos.gl's world origin: the centre of its `spaceSize` square (default 4096).
     originRef.current = { ox: COSMOS_SPACE / 2, oy: COSMOS_SPACE / 2 }
     if (overview?.bounds) viewRef.current = fitBox(overview.bounds, sizeRef.current)
@@ -733,8 +914,8 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
 
     const { detach, cancel } = attachGraphGestures(el, {
       // A pan or zoom by hand stops a camera move in flight, where it is.
-      panBy: d => { liveFns.current.stopFlight(); viewRef.current = panBy(viewRef.current, d, boundsRef.current); liveFns.current.viewChanged() },
-      zoomAt: (at, f) => { liveFns.current.stopFlight(); viewRef.current = zoomAt(viewRef.current, sizeRef.current, at, f); liveFns.current.viewChanged() },
+      panBy: d => { handMovedAt.current = performance.now(); liveFns.current.stopFlight(); viewRef.current = panBy(viewRef.current, d, boundsRef.current); liveFns.current.viewChanged() },
+      zoomAt: (at, f) => { handMovedAt.current = performance.now(); liveFns.current.stopFlight(); viewRef.current = zoomAt(viewRef.current, sizeRef.current, at, f); liveFns.current.viewChanged() },
     }, {
       overNode: () => hoveredRef.current !== null,
       onBox: setBox,
@@ -759,16 +940,21 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       },
     })
     cancelGesture.current = cancel
+    const notePointer = (e: PointerEvent) => { touchInputRef.current = e.pointerType === 'touch' }
+    el.addEventListener('pointerdown', notePointer, true)
+    el.addEventListener('pointermove', notePointer, true)
     // Recolour live when the user switches light/dark (`<html data-theme>`).
     const themeObserver = new MutationObserver(() => {
       colorsRef.current = readGraphColors()
-      g.setConfigPartial({ backgroundColor: colorsRef.current.background, focusedPointRingColor: colorsRef.current.ring, hoveredPointRingColor: colorsRef.current.ring })
+      g.setConfigPartial({ backgroundColor: layer ? [0, 0, 0, 0] : colorsRef.current.background, focusedPointRingColor: colorsRef.current.ring, hoveredPointRingColor: colorsRef.current.ring })
       liveFns.current.paint(); g.render(0, 0); liveFns.current.placeOverlay()
     })
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
     teardown = () => {
+      activity.dispose(); activityRef.current = null
       detach(); cancelGesture.current = null; themeObserver.disconnect()
-      g.destroy(); cosmosRef.current = null
+      el.removeEventListener('pointerdown', notePointer, true); el.removeEventListener('pointermove', notePointer, true)
+      g.destroy(); cosmosRef.current = null; layer?.dispose(); breathRef.current = null
     }
     }).catch(err => { if (!disposed) setCanvasError(err) })
     return () => {
@@ -817,23 +1003,58 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
 
   // ---- search over every node, on the server -----------------------------------
 
-  useEffect(() => { const t = setTimeout(() => setSearch(searchInput.trim()), 300); return () => clearTimeout(t) }, [searchInput])
+  useEffect(() => { const t = setTimeout(() => setSearch(searchInput.trim()), SEARCH_DEBOUNCE_MS); return () => clearTimeout(t) }, [searchInput])
   useEffect(() => {
     if (!ready) return
-    if (!search) { setMatches(null); return }
+    if (!search) { setLit(null); return }
     let live = true
     void api.memoryGraphSearch(store, search, { kinds }).then(r => {
       if (!live) return
       if (r.layout !== layoutRef.current) { liveFns.current.relayout(); return }
-      setMatches(new Set(r.matches.map(m => m.id)))
+      setLit({ set: litFrom(r.matches), total: r.total })
+      // The camera fits what lit up, wherever in the store it is.
       if (r.matches.length) {
-        const xs = r.matches.map(m => m.x), ys = r.matches.map(m => m.y)
-        flyTo(fitBox([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], sizeRef.current, 64))
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+        for (const m of r.matches) { x0 = Math.min(x0, m.x); y0 = Math.min(y0, m.y); x1 = Math.max(x1, m.x); y1 = Math.max(y1, m.y) }
+        flyTo(fitBox([x0, y0, x1, y1], sizeRef.current, 64))
       }
-    }).catch(error => { if (live) { setMatches(null); setLiveError({ error, retry: () => setReloads(n => n + 1) }) } })
+    }).catch(error => { if (live) { setLit(null); setLiveError({ error, retry: () => setReloads(n => n + 1) }) } })
     return () => { live = false }
   }, [search, kinds, ready, store, flyTo, reloads, overview?.layout])
-  useEffect(() => { matchesRef.current = matches; if (cosmosRef.current) { paint(); cosmosRef.current.render(0, 0); placeOverlay() } }, [matches, paint, placeOverlay])
+
+  /** Fade the canvas to the new lit set (or back to none) over one camera move's
+   *  ease; at once with reduced motion. Names hide while it fades and come back
+   *  for the new set. */
+  const fadeFrame = useRef<number | null>(null)
+  useEffect(() => {
+    const next = lit?.set ?? null
+    if (fadeFrame.current !== null) { cancelAnimationFrame(fadeFrame.current); fadeFrame.current = null }
+    // shortcut: a set that lands mid-fade starts from the one it was fading to;
+    // blend from the drawn colours if that step ever shows.
+    fadeRef.current = { from: fadeRef.current.to, to: next, t: reducedRef.current || !cosmosRef.current ? 1 : 0 }
+    const draw = () => { liveFns.current.paint(); cosmosRef.current?.render(0, 0) }
+    if (fadeRef.current.t >= 1) { draw(); liveFns.current.placeOverlay(); return }
+    setLabels([])
+    const t0 = performance.now()
+    const step = (now: number) => {
+      const t = Math.min(1, (now - t0) / MOTION_MS)
+      fadeRef.current = { ...fadeRef.current, t }
+      draw()
+      if (t < 1) fadeFrame.current = requestAnimationFrame(step)
+      else { fadeFrame.current = null; liveFns.current.placeOverlay() }
+    }
+    fadeFrame.current = requestAnimationFrame(step)
+  }, [lit, setLabels])
+  useEffect(() => () => { if (fadeFrame.current !== null) cancelAnimationFrame(fadeFrame.current) }, [])
+  // A face the page loads only once a label uses it (the semibold topic names)
+  // measures as its fallback until then, which cuts those names short: measure
+  // again once it is in.
+  useEffect(() => {
+    const fonts = typeof document === 'undefined' ? undefined : document.fonts
+    const remeasure = () => { measureRef.current?.widths.clear(); liveFns.current.placeOverlay() }
+    fonts?.addEventListener?.('loadingdone', remeasure)
+    return () => fonts?.removeEventListener?.('loadingdone', remeasure)
+  }, [])
 
   // ---- zoom controls: + and − about the centre, and fit the whole store ---------
 
@@ -911,7 +1132,8 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   return <Card className="mb-0 max-w-none">
     {title}
     <div className="mb-3 flex flex-wrap items-center gap-2">
-      <input aria-label={i18nT('pages.overview.memoryGraphTab.search_memory_nodes')}
+      {/* type=search: the browser's own clear button and Escape empty it, and the graph fades back. */}
+      <input type="search" aria-label={i18nT('pages.overview.memoryGraphTab.search_memory_nodes')}
         className="bg-bg-elevated border border-border rounded-md px-3 py-1.5 text-text text-sm font-body outline-hidden transition-colors focus-ring min-w-[200px] flex-1"
         placeholder={i18nT('pages.overview.memoryGraphTab.search_nodes')} value={searchInput} onChange={e => setSearchInput(e.target.value)} />
       <KindPills wrap={!phone} kind={kind} counts={counts} marks={KIND_MARKS} onChange={k => { setKind(k); setPicked(null) }} />
@@ -927,7 +1149,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       <div ref={canvasRef} tabIndex={0} role="application" aria-roledescription={i18nT('pages.overview.memoryGraphTab.memory_graph')}
         aria-label={i18nT('pages.overview.memoryGraphTab.memory_graph')} aria-describedby="memory-graph-keys"
         onKeyDown={onKey} onBlur={() => setFocusId(null)} data-testid="memory-graph-canvas"
-        className="w-full overflow-hidden rounded-md border border-border bg-bg-elevated focus-ring" style={{ height }} />
+        className="relative w-full overflow-hidden rounded-md border border-border bg-bg-elevated focus-ring" style={{ height }} />
       {canvasError != null && <div className="absolute inset-x-3 top-3">
         <ErrorNotice askAgent testId="memory-graph-canvas-error" messagePlacement="below"
           title={i18nT('pages.overview.memoryGraphTab.canvas_unavailable')} message={errMessage(canvasError) || i18nT('pages.overview.memoryGraphTab.load_failed_unknown')} />
@@ -936,7 +1158,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       <p className="sr-only" aria-live="polite">{focusedText}</p>
       {/* inset-px: the canvas's border, so the overlay's origin is the drawing's. */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-px overflow-hidden">
-        {canvasError == null && <GraphLabels sink={labelSink} initial={labelsRef} />}
+        {canvasError == null && <GraphLabels sink={labelSink} initial={labelsRef} track={trackLabel} />}
         {hover && <GraphLabel label={hover} reduced testId="memory-graph-hover" />}
         {box && <div data-testid="memory-graph-box" className="absolute rounded-sm border border-accent bg-[color-mix(in_srgb,var(--accent)_12%,transparent)]" style={{ left: box.x, top: box.y, width: box.width, height: box.height }} />}
       </div>
@@ -951,27 +1173,33 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
         </IconButtonGroup>
       </div>}
       {opened && <MemoryGraphDetail store={store} record={opened.record} nodeRef={opened.ref} phone={phone} onClose={() => setOpened(null)} onRefresh={reload} />}
-      {picked && <div role="status" className="absolute left-3 top-3 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-[13px] text-text shadow-sm">
-        <span className="tabular-nums">{i18nT('memoryPage.graph_selected', { count: picked.count, formatted: fmtNumber(picked.count) })}</span>
-        {jump && <Btn primary className="min-h-8 whitespace-nowrap" onClick={() => jump([], undefined, picked)}>{i18nT('memoryPage.show_in_memories')}</Btn>}
-      </div>}
+      <div className="absolute left-3 top-3 flex flex-col items-start gap-2">
+        {/* How many memories are lit, said once, where the box count is. */}
+        {lit && !picked && <div role="status" data-testid="memory-graph-lit" className="rounded-lg border border-border bg-card px-3 py-1.5 text-[13px] text-text tabular-nums shadow-sm">
+          {i18nT('memoryPage.graph_found', { count: lit.total, formatted: fmtNumber(lit.total) })}
+        </div>}
+        {picked && <div role="status" className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-[13px] text-text shadow-sm">
+          <span className="tabular-nums">{i18nT('memoryPage.graph_selected', { count: picked.count, formatted: fmtNumber(picked.count) })}</span>
+          {jump && <Btn primary className="min-h-8 whitespace-nowrap" onClick={() => jump([], undefined, picked)}>{i18nT('memoryPage.show_in_memories')}</Btn>}
+        </div>}
+      </div>
     </div>
   </Card>
 }
 
 /** The names drawn over the canvas, re-rendered on their own when they move. */
-function GraphLabels({ sink, initial }: { sink: React.MutableRefObject<(labels: PlacedLabel[]) => void>; initial: React.MutableRefObject<PlacedLabel[]> }) {
+function GraphLabels({ sink, initial, track }: { sink: React.MutableRefObject<(labels: PlacedLabel[]) => void>; initial: React.MutableRefObject<PlacedLabel[]>; track: (l: PlacedLabel, el: HTMLElement | null) => void }) {
   const [labels, setLabels] = useState(initial.current)
   const reduced = useReducedMotion()
   useLayoutEffect(() => { sink.current = setLabels; return () => { sink.current = () => {} } }, [sink])
   return <div data-testid="memory-graph-labels"><AnimatePresence initial={false}>
-    {labels.map(l => <GraphLabel key={`${l.id}:${l.text}`} label={l} reduced={reduced} />)}
+    {labels.map(l => <GraphLabel key={`${l.id}:${l.text}`} label={l} reduced={reduced} track={track} />)}
   </AnimatePresence></div>
 }
 
 /** Placement and rendering use the same padded box, including hover names. */
-function GraphLabel({ label: l, reduced, testId }: { label: PlacedLabel; reduced: boolean; testId?: string }) {
-  return <motion.span data-testid={testId} initial={{ opacity: reduced ? 1 : 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+function GraphLabel({ label: l, reduced, testId, track }: { label: PlacedLabel; reduced: boolean; testId?: string; track?: (l: PlacedLabel, el: HTMLElement | null) => void }) {
+  return <motion.span ref={track && (el => track(l, el))} data-testid={testId} initial={{ opacity: reduced ? 1 : 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
     transition={{ duration: reduced ? 0 : MOTION_MS / 1000, ease: easeOut }}
     className={`absolute box-border px-1.5 text-text [text-shadow:0_0_3px_var(--bg-elevated),0_0_3px_var(--bg-elevated),0_0_6px_var(--bg-elevated)] flex flex-col justify-center whitespace-nowrap ${l.centred ? 'font-semibold items-center text-center' : 'items-start text-left'}`}
     style={{ left: l.box.x, top: l.box.y, width: l.box.width, height: l.box.height, fontSize: l.px ?? LABEL_PX, lineHeight: TOPIC_LINE_HEIGHT, color: l.color }}>

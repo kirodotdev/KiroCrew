@@ -355,6 +355,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "chain (inside URLs too) before reaching the browser.",
     ),
     (
+        "Memory graph activity frames",
+        "memory_graph_activity.py",
+        "The memory_activity frame sent to owner dashboard sockets when memories "
+        "are read: store, kind, time and up to 64 memory ids, never memory text. "
+        "Each id passes through the graph routes' own id redaction before the frame "
+        "is broadcast.",
+    ),
+    (
         "Member memory recall and copy responses",
         "dashboard/handlers/memory_member.py",
         "Selected facts, experiences, corrections, and owner-selected copy results "

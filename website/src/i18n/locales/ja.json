@@ -24058,6 +24058,7 @@
     "scroll_more": "スクロールして続きを表示",
     "graph_changed": "この枠を描いた後にグラフが変わりました。枠を描き直してください。",
     "graph_selected": "{{formatted}} 件を選択",
+    "graph_found": "{{formatted}} 件が見つかりました",
     "show_in_memories": "メモリーで表示",
     "filters_width": "フィルター欄の幅",
     "select": "選択",

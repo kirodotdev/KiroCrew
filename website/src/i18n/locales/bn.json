@@ -24658,6 +24658,7 @@
     "scroll_more": "আরও দেখতে স্ক্রোল করো",
     "graph_changed": "এই বাক্সটি আঁকার পর গ্রাফ বদলে গেছে। বাক্সটি আবার আঁকো।",
     "graph_selected": "{{formatted}}টি বেছে নেওয়া",
+    "graph_found": "{{formatted}}টি পাওয়া গেছে",
     "show_in_memories": "মেমোরিতে দেখো",
     "filters_width": "ফিল্টারের প্রস্থ",
     "select": "বাছুন",

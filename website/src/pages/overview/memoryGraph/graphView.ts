@@ -49,6 +49,13 @@ export const toLayout = (view: View, size: Size, s: Point): Point => ({
   y: view.cy - (s.y - size.height / 2) / view.k,
 })
 
+/** How far a name placed at screen point `at` under camera `from` moves to stay on
+ *  its layout point under camera `to`. The name keeps its own size. */
+export function followOffset(from: View, to: View, size: Size, at: Point): Point {
+  const s = toScreen(to, size, toLayout(from, size, at))
+  return { x: s.x - at.x, y: s.y - at.y }
+}
+
 /** The layout box the screen shows, grown by `margin` of its size on each side. */
 export function visibleBox(view: View, size: Size, margin = 0): GraphBbox {
   const w = size.width / view.k, h = size.height / view.k
@@ -104,6 +111,22 @@ export function showsNodes(view: View, size: Size, clusters: GraphCluster[]): bo
   return true
 }
 
+/** Layout kept around the view for the memories the canvas holds, as a share of
+ *  the view's size on each side: a pan or a zoom out by one step stays inside it. */
+export const DRAW_MARGIN = 1
+
+/**
+ * The memories the canvas draws for `box` (the view with DRAW_MARGIN): whole
+ * clusters whose disc touches it, and any memory whose own position lies in it.
+ * Returns `items` itself when nothing is left out, so a view of the
+ * whole store keeps every index.
+ */
+export function drawnInBox<T extends { x: number; y: number; cluster: number }>(items: T[], clusters: GraphCluster[], box: GraphBbox): T[] {
+  const touches = new Map(clusters.map(c => [c.id, c.x + c.r >= box[0] && c.x - c.r <= box[2] && c.y + c.r >= box[1] && c.y - c.r <= box[3]]))
+  const kept = items.filter(n => touches.get(n.cluster) === true || (n.x >= box[0] && n.x <= box[2] && n.y >= box[1] && n.y <= box[3]))
+  return kept.length === items.length ? items : kept
+}
+
 /** True when `inner` lies wholly inside `outer`. */
 export const contains = (outer: GraphBbox, inner: GraphBbox) => inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3]
 
@@ -114,6 +137,8 @@ export const contains = (outer: GraphBbox, inner: GraphBbox) => inner[0] >= oute
  * (the mark's size in px) puts it beside its memory's mark instead.
  */
 export type LabelCandidate = { id: string; at: Point; text: string; rank: number; px?: number; color?: string; centred?: boolean; mark?: number
+  /** Already on screen: kept wherever its grid cell is, so a settle never swaps it for a neighbour. */
+  kept?: boolean
   /** The label's lines when it wraps (a topic's name, topicLines); one line when unset. */
   lines?: string[]
  }
@@ -303,7 +328,7 @@ export function placeLabels(cands: LabelCandidate[], size: Size, max: number, wi
       // A topic's name is centred on its disc; one whose disc centre is on
       // screen but near an edge slides in just far enough to show whole.
       if (c.at.x < 0 || c.at.y < 0 || c.at.x > size.width || c.at.y > size.height) continue
-      if (grid && taken.has(cellOf(c.at))) continue
+      if (grid && !c.kept && taken.has(cellOf(c.at))) continue
       const x = Math.min(Math.max(c.at.x - width / 2, 0), size.width - width)
       const y = Math.min(Math.max(c.at.y - height / 2, 0), size.height - height)
       const b = { x, y, width, height }

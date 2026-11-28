@@ -3,8 +3,8 @@
 ``GET /api/memory/graph/overview`` -- clusters, per-kind totals and bounds, or
 ``{"status": "building"}`` while the first build runs.
 ``GET /api/memory/graph/nodes`` -- the nodes inside a box, heaviest first, paged.
-``GET /api/memory/graph/search`` -- id and position of every record the Memories
-list would list for the same words.
+``GET /api/memory/graph/search`` -- id, position, cluster and score of every
+record the Memories list's default word search finds.
 ``GET /api/memory/graph/select`` -- how many nodes a box holds, loaded or not.
 
 Each route resolves its store the way ``GET /api/memory/graph`` does, brings the
@@ -222,10 +222,8 @@ async def api_memory_graph_nodes(request: web.Request) -> web.Response:
 
 
 async def api_memory_graph_search(request: web.Request) -> web.Response:
+    """The list's word-search matches for ``q``, each with its place and cluster."""
     q = request.query.get("q", "")
-    mode = request.query.get("mode", "words")
-    if mode not in ("words", "meaning"):
-        return _bad("mode is words or meaning")
     try:
         kinds = _kinds(request)
     except ValueError as exc:
@@ -235,19 +233,30 @@ async def api_memory_graph_search(request: web.Request) -> web.Response:
         return refusal
     if status != STATUS_READY:
         return web.json_response({"status": status, "matches": [], "total": 0})
-
-    def read() -> dict:
-        ids = memory_edit.matching_ids(tier, {"q": q}, meaning=mode == "meaning")
-        pos = graph.sidecar.positions(ids, kinds)
-        matches = [{"id": i, "x": pos[i][0], "y": pos[i][1]} for i in ids if i in pos]
-        for m in matches[:SEARCH_CAP]:
-            m["id"] = _redacted(m["id"])
-        return {"status": STATUS_READY, "matches": matches[:SEARCH_CAP], "total": len(matches)}
-
     try:
-        return web.json_response(await asyncio.to_thread(_read_at_one_layout, graph, read))
+        scores, meaning = await asyncio.to_thread(memory_edit.matching_scores, tier, {"q": q})
     except memory_edit.MemoryEditError as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=exc.status)
+
+    def read() -> dict:
+        ranked = sorted(scores, key=lambda i: -scores[i])
+        at = graph.sidecar.placed(ranked, kinds)
+        matches = [
+            {"id": i, "x": at[i][0], "y": at[i][1], "cluster": at[i][2], "score": scores[i]}
+            for i in ranked
+            if i in at
+        ]
+        # Only the id is text; the numbers and the cluster index carry none.
+        for m in matches[:SEARCH_CAP]:
+            m["id"] = _redacted(m["id"])
+        return {
+            "status": STATUS_READY,
+            "matches": matches[:SEARCH_CAP],
+            "total": len(matches),
+            "meaning": meaning,
+        }
+
+    return web.json_response(await asyncio.to_thread(_read_at_one_layout, graph, read))
 
 
 async def api_memory_graph_select(request: web.Request) -> web.Response:

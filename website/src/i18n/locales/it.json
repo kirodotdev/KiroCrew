@@ -25258,6 +25258,7 @@
     "scroll_more": "Scorri per vedere altro",
     "graph_changed": "Il grafo è cambiato dopo che hai disegnato questo riquadro. Disegnalo di nuovo.",
     "graph_selected": "{{formatted}} selezionati",
+    "graph_found": "{{formatted}} trovati",
     "show_in_memories": "Mostra in Memorie",
     "filters_width": "Larghezza dei filtri",
     "select": "Seleziona",

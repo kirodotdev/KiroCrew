@@ -306,6 +306,20 @@ class TestTheTurnWritesTheReceipt:
         assert line["user_msg_id"]
 
     @pytest.mark.asyncio
+    async def test_a_session_start_tells_the_owner_graph_which_lessons_it_carried(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew import memory_graph_activity
+
+        seen: list[tuple] = []
+        monkeypatch.setattr(memory_graph_activity, "announce", lambda *args: seen.append(args[1:]))
+        written, _ = await self._turn(tmp_path, monkeypatch)
+        assert written[0]["phase"] == "session_start"
+        assert seen == [
+            ("default", "session_start", ["lesson.000000000000", "lesson.000000000001"]),
+        ]
+
+    @pytest.mark.asyncio
     async def test_a_linked_channel_session_records_the_key_it_runs_on(self, tmp_path, monkeypatch):
         written, _ = await self._turn(tmp_path, monkeypatch, linked="slack:C1:1700000000.000100")
         assert len(written) == 1

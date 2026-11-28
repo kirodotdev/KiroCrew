@@ -424,6 +424,11 @@ export function useWebSocket() {
             if (slotKey) invalidateChatPins(queryClient, slotKey)
             break
           }
+          case 'memory_activity':
+            // Owner-only frame: memory ids a recall or a session start just read,
+            // no text. An open memory graph lights them (MemoryGraphTab).
+            window.dispatchEvent(new CustomEvent('mc:memory-activity', { detail: data }))
+            break
           case 'crew_steer_unrecorded': {
             // Owner-only frame: a steer into a Crew Mode worker was delivered but
             // its background ledger record failed. Same note a receipt's

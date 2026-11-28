@@ -93,6 +93,22 @@ async def test_overview_counts_every_memory_in_the_store(env, name):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["", *STORES])
+async def test_activity_locates_ids_in_the_overview_without_reading_node_tiles(env, name):
+    from kiro_crew import memory_graph_activity
+
+    _seed(_tier(env, name), 30)
+    overview = await _ready(env, name)
+    frame = await asyncio.to_thread(
+        memory_graph_activity._located_frame, name, "recall", ["user.n0", "user.n29"]
+    )
+    assert frame["layout"] == overview["layout"]
+    assert set(frame["clusters"]) == {"user.n0", "user.n29"}
+    assert set(frame["clusters"].values()) <= {c["id"] for c in overview["clusters"]}
+    assert frame["store"] == ("" if name == "default" else name)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("name", STORES)
 async def test_search_finds_every_match_none_of_them_loaded(env, name):
     _seed(_tier(env, name), 300, every=6)
@@ -103,6 +119,40 @@ async def test_search_finds_every_match_none_of_them_loaded(env, name):
     assert body["total"] == 50
     assert {m["id"] for m in body["matches"]} == {f"user.n{i}" for i in range(0, 300, 6)}
     assert all(isinstance(m["x"], float) and isinstance(m["y"], float) for m in body["matches"])
+    # Every match names its cluster, so the page counts hits per topic unloaded.
+    overview = await _get(env, api.api_memory_graph_overview, name)
+    assert {m["cluster"] for m in body["matches"]} <= {c["id"] for c in overview["clusters"]}
+    assert all(m["score"] == 1.0 for m in body["matches"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", STORES)
+async def test_graph_search_set_and_count_equal_the_list_with_word_and_meaning_hits(env, name):
+    from kiro_crew import memory_edit as records
+
+    tier = _tier(env, name)
+    tier.embed_fn = lambda text: (
+        [1.0, 0.0] if "checkout" in text or text == "worktree" else [0.0, 1.0]
+    )
+    for key, text in (
+        ("user.word", "worktree keyword"),
+        ("user.meaning", "checkout notes"),
+        ("user.both", "worktree checkout"),
+    ):
+        assert tier.set_semantic(key, text, 0.9, "user_explicit") is None
+    await _ready(env, name)
+    semantic = await asyncio.to_thread(records.list_records, tier, {"q": "worktree"}, meaning=True)
+    assert {row["id"] for row in semantic["entries"]} == {"user.meaning", "user.both"}
+    listed = await memory_edit.api_memory_records(
+        request(env, query={"store": name, "q": "worktree"}, owner=True)
+    )
+    assert listed.status == 200
+    words = json.loads(listed.text)
+    graph = await _get(env, api.api_memory_graph_search, name, q="worktree")
+    assert {m["id"] for m in graph["matches"]} == {row["id"] for row in words["entries"]}
+    assert {m["id"] for m in graph["matches"]} == {"user.word", "user.both"}
+    assert graph["total"] == words["total"] == 2
+    assert graph["meaning"] is False
 
 
 @pytest.mark.asyncio
