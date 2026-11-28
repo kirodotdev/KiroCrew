@@ -35,8 +35,13 @@ vi.mock('../api/client', () => ({
   },
 }))
 
+vi.mock('../chat-core/transport/sendTurn', () => ({
+  sendTurn: vi.fn().mockResolvedValue({ status: 'dispatched' }),
+}))
+
 import type { RootState } from '../store'
 import { api } from '../api/client'
+import { sendTurn } from '../chat-core/transport/sendTurn'
 import { ChatHeaderMenu } from '../pages/chat/ChatHeaderMenu'
 
 const dashboardState = {
@@ -46,8 +51,8 @@ const dashboardState = {
   sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
 } as RootState['dashboard']
 
-function renderMenu() {
-  const store = createTestStore({ dashboard: { ...dashboardState, slots: [{ key: 'chat-1-100' }] } })
+function renderMenu(slot: Record<string, unknown> = { key: 'chat-1-100' }) {
+  const store = createTestStore({ dashboard: { ...dashboardState, slots: [slot] } })
   // The app client's `staleTime: Infinity` default, so a query that does not opt
   // out keeps serving its first answer here as it does in the app.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
@@ -146,5 +151,51 @@ describe('ChatHeaderMenu — MCP submenu and colour-pick close', () => {
     fireEvent.click(swatch)
     await waitFor(() => expect(screen.queryByText('MCP servers')).not.toBeInTheDocument())
     expect(api.clearSlotColor).toHaveBeenCalledWith('chat-1-100')
+  })
+
+  // A server this session reports waiting for a sign-in gets a Sign in item that
+  // sends the message naming it, the one ask that starts it on KAS.
+  describe('Sign in on a waiting server', () => {
+    const waitingSlot = {
+      key: 'chat-1-100',
+      mcp_report: { configured: [], ready: [], failed: [], awaiting_auth: ['github'], failures: {}, sign_in_by_name: true },
+    }
+    const openSubmenu = async () => {
+      const sub = await screen.findByText('MCP servers')
+      fireEvent.keyDown(sub.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+      return screen.findByTestId('mcp-session-sign-in')
+    }
+
+    it('offers Sign in as a menu item, named for its server', async () => {
+      renderMenu(waitingSlot)
+      const item = await openSubmenu()
+      // A menu item, so the menu's keyboard navigation reaches it.
+      expect(item).toHaveAttribute('role', 'menuitem')
+      expect(item).toHaveAccessibleName(/Sign in\s*github/)
+    })
+
+    it.each(['dispatched', 'queued', 'unknown', 'response-late'])(
+      'sends the sign-in message to this chat and closes the menu on a %s send',
+      async status => {
+        vi.mocked(sendTurn).mockResolvedValueOnce({ status } as Awaited<ReturnType<typeof sendTurn>>)
+        renderMenu(waitingSlot)
+        fireEvent.click(await openSubmenu())
+        await waitFor(() => expect(sendTurn).toHaveBeenCalledWith({ slot: 'chat-1-100', message: 'Sign in to github' }))
+        await waitFor(() => expect(screen.queryByText('MCP servers')).not.toBeInTheDocument())
+        expect(sendTurn).toHaveBeenCalledTimes(1)
+      },
+    )
+
+    it.each([
+      ['refused', 'busy', 'Send failed: busy'],
+      ['transport-error', undefined, "Couldn't send — check your connection and try again."],
+    ])('names a %s send in place and keeps the menu open', async (status, reason, shown) => {
+      vi.mocked(sendTurn).mockResolvedValueOnce({ status, reason } as Awaited<ReturnType<typeof sendTurn>>)
+      renderMenu(waitingSlot)
+      fireEvent.click(await openSubmenu())
+      expect(await screen.findByText(shown)).toBeInTheDocument()
+      expect(screen.getByText('MCP servers')).toBeInTheDocument()
+      expect(screen.getByTestId('mcp-session-sign-in')).toBeInTheDocument()
+    })
   })
 })

@@ -15097,6 +15097,7 @@
       "return_to_split_view": "Zur geteilten Ansicht zurückkehren",
       "scroll_to_bottom": "Nach unten scrollen",
       "send_failed": "Senden fehlgeschlagen",
+      "mcp_sign_in_message": "Bei {{name}} anmelden",
       "send_failed_connection": "Senden fehlgeschlagen — prüfe deine Verbindung und versuche es erneut.",
       "session_not_found": "Sitzung „{{name}}“ nicht gefunden",
       "no_session_named": "Keine Sitzung heißt {{name}}. Prüfe den Link oder starte einen neuen Chat.",

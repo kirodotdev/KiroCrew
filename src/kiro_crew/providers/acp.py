@@ -1145,6 +1145,12 @@ class AcpProvider(LLMProvider):
             server_name
         )
 
+    def starts_mcp_sign_in_when_named(self) -> bool:
+        return (
+            isinstance(self._client, AcpSessionProvider)
+            and self._client.starts_mcp_sign_in_when_named()
+        )
+
     @property
     def member_dispatch_mounted(self) -> bool | None:
         # Both transports answer from the composition that built THIS session's

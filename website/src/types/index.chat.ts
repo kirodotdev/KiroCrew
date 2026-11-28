@@ -140,6 +140,8 @@ export interface McpSessionReport {
   reload_pending?: string[]
   /** Advisory: remote servers Crew's credential-free probe saw ask for a sign-in (opencode). Never a reason to call a server unusable. */
   sign_in_suspected?: string[]
+  /** True when a message naming a server in `awaiting_auth` starts its sign-in (KAS). Absent elsewhere. */
+  sign_in_by_name?: boolean
   /**
    * The servers this session cannot use right now, by what is true of each.
    * Optional: a gateway or an agent backend that does not report it sends no

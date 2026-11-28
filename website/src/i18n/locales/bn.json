@@ -15097,6 +15097,7 @@
       "return_to_split_view": "স্প্লিট ভিউতে ফিরে যান",
       "scroll_to_bottom": "একদম নিচে যান",
       "send_failed": "পাঠানো যায়নি",
+      "mcp_sign_in_message": "{{name}}-এ সাইন ইন করো",
       "send_failed_connection": "পাঠানো যায়নি — আপনার সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।",
       "session_not_found": "\"{{name}}\" সেশন পাওয়া যায়নি",
       "no_session_named": "{{name}} নামে কোনো সেশন নেই। লিংকটি যাচাই করো, অথবা নতুন চ্যাট শুরু করো।",

@@ -195,6 +195,16 @@ async def _drain_session_init_oauth_requests(
         )
 
 
+def _starts_sign_in_when_named(provider: Any) -> bool:
+    """Whether a message naming a server that waits for a sign-in starts it on *provider*."""
+    starts = getattr(provider, "starts_mcp_sign_in_when_named", None)
+    try:
+        return callable(starts) and starts() is True
+    except Exception:  # noqa: BLE001 - an informational flag must never fail a publish
+        logger.debug("Failed to read whether naming a server starts its sign-in", exc_info=True)
+        return False
+
+
 def _publish_session_mcp_report(state: "DashboardState", slot: "_ChatSlot", provider: Any) -> None:
     """Store this session's MCP report on the slot and push the delta.
 
@@ -211,6 +221,10 @@ def _publish_session_mcp_report(state: "DashboardState", slot: "_ChatSlot", prov
     if report is None:
         return
     payload = report.payload()
+    if payload is not None and _starts_sign_in_when_named(provider):
+        # The chat's MCP view offers a Sign in button on each server waiting for
+        # a sign-in only where the message that button sends starts one.
+        payload["sign_in_by_name"] = True
     # A server this session reports as connected has signed in, however that
     # was learned: a mid-turn event, or a frame the init drain or a session
     # load consumed without one. Its next rejection is news, so its

@@ -15097,6 +15097,7 @@
       "return_to_split_view": "स्प्लिट व्यू में वापस जाएँ",
       "scroll_to_bottom": "नीचे तक स्क्रॉल करें",
       "send_failed": "भेजना विफल",
+      "mcp_sign_in_message": "{{name}} में साइन इन करो",
       "send_failed_connection": "भेजा नहीं जा सका — अपना कनेक्शन जांचो और फिर से कोशिश करो।",
       "session_not_found": "सत्र \"{{name}}\" नहीं मिला",
       "no_session_named": "{{name}} नाम का कोई सत्र नहीं है। लिंक जाँचें, या नई चैट शुरू करें।",

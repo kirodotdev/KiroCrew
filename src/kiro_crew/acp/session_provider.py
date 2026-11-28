@@ -608,6 +608,10 @@ class AcpSessionProvider(LLMProvider):
             self._handle.session_id, server_name
         )
 
+    def starts_mcp_sign_in_when_named(self) -> bool:
+        """See LLMProvider. The same live-host test ``begin_mcp_sign_in`` makes."""
+        return self._runtime.reattempts_mcp_servers is True
+
     async def release_runtime_lease(self) -> None:
         """Give up this provider's lease on the runtime, if it holds one.
 

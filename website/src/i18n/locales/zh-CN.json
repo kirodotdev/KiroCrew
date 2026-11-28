@@ -14731,6 +14731,7 @@
       "return_to_split_view": "返回分屏视图",
       "scroll_to_bottom": "滚动到底部",
       "send_failed": "发送失败",
+      "mcp_sign_in_message": "登录 {{name}}",
       "send_failed_connection": "发送失败——请检查网络连接后重试。",
       "session_not_found": "未找到会话“{{name}}”",
       "no_session_named": "没有名为 {{name}} 的会话。请检查链接，或开始新的聊天。",
