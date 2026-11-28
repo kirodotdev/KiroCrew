@@ -10441,7 +10441,13 @@ credential-free, so it cannot serve a private repository the operator can read.
   that point git at another repository (`GIT_DIR`, `GIT_WORK_TREE`,
   `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY` and their kin), and stdin, stdout and
   stderr are inherited so git's own error and any SSH prompt reach the operator.
-  The clone is stopped after 10 minutes.
+  The clone is stopped after 10 minutes with `kill_popen_tree`, sent again if
+  git has not exited within 10 seconds, and waited for before the clone is
+  removed. On Windows that ends the tree (`taskkill /T`), reaching the real
+  `git.exe` behind Git for Windows' `cmd\git.exe` launcher; on POSIX git shares
+  the terminal's process group, so only git is killed and a transport child
+  usually ends when its pipes close. A git that still has not exited is named,
+  with its pid, in the refusal.
 - **The app folder.** `--subdirectory`, else the repository root when it holds
   `app.json`, else the one top-level folder that does; several candidates or none
   refuse and name `--subdirectory`. A symlink is never followed, and any other
@@ -10460,7 +10466,8 @@ credential-free, so it cannot serve a private repository the operator can read.
   overlapping installs can never swap the source the other is still copying, and
   a checkout someone worked in is never removed for them. An app with an
   installed record refuses after the clone, since the install would refuse it too.
-  A failure while fetching removes only the clone that attempt made. A checkout
+  A failure while fetching removes only the clone that attempt made; when that
+  removal fails, the refusal the CLI prints names the folder left. A checkout
   whose install then fails is kept, since a gateway that timed out may still be
   copying it. Neither uninstall nor a later install removes an old checkout; the
   operator deletes one they no longer need.

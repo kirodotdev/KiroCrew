@@ -44,7 +44,7 @@ from kiro_crew.apps.registry import (
 )
 from kiro_crew.config.loader import config_dir
 from kiro_crew.owner_only_files import ensure_directory
-from kiro_crew.platform_compat import rmtree_force
+from kiro_crew.platform_compat import kill_popen_tree, rmtree_force
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.user_json import loads_user_json
 
@@ -55,6 +55,8 @@ GIT_CHECKOUTS_DIRNAME = "app-git-checkouts"
 
 #: Seconds one ``git clone`` may take before it is stopped.
 CLONE_TIMEOUT_S = 600
+#: Seconds a stopped clone may take to exit once its tree is killed.
+_CLONE_EXIT_WAIT_S = 10
 #: Seconds the ``rev-parse`` that reads the cloned commit may take.
 _REV_PARSE_TIMEOUT_S = 30
 MAX_URL_LEN = 2048
@@ -253,30 +255,62 @@ def _clone_env() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_ENV_KEYS}
 
 
+def _end_clone(proc: subprocess.Popen[bytes]) -> bool:
+    """End the clone *proc* and what it started; whether *proc* was seen to exit.
+
+    On Windows the process started is Git for Windows' ``cmd\\git.exe`` launcher,
+    and the real ``git.exe`` behind it holds the checkout's files open, so the
+    tree is ended (``taskkill /T``) while the launcher still anchors it. On POSIX
+    git shares the operator's terminal process group, so only git itself is
+    killed; a transport child it started (``ssh``) is not signalled and usually
+    ends when its pipes to git close. The kill is sent a second time when the
+    first wait expires, and only the direct child's exit is confirmed.
+    """
+    for _attempt in range(2):
+        kill_popen_tree(proc)
+        try:
+            proc.wait(timeout=_CLONE_EXIT_WAIT_S)
+            return True
+        except subprocess.TimeoutExpired:
+            continue
+    logger.warning("git clone pid %s did not exit after it was killed", proc.pid)
+    return False
+
+
 def _run_clone(url: str, dest: Path, ref: str | None) -> None:
     """Clone *url* into *dest* with the operator's terminal attached.
 
     stdin, stdout and stderr are inherited, so git's progress, its own error and
     any prompt the operator's setup raises (an SSH host key, a key passphrase)
     reach them as they would from a plain ``git clone``.
+
+    A clone stopped by the time limit (or any interruption) is ended with
+    :func:`_end_clone` and waited for before this returns, so the caller removes
+    *dest* only after git has exited; a git that did not exit is named in the
+    error instead.
     """
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             clone_argv(url, dest, ref),
             env=_clone_env(),
             cwd=str(dest.parent),
-            timeout=CLONE_TIMEOUT_S,
-            check=False,
         )
     except FileNotFoundError as exc:
         raise GitInstallError("installing from a git URL needs git, which is not on PATH") from exc
+    try:
+        returncode = proc.wait(timeout=CLONE_TIMEOUT_S)
     except subprocess.TimeoutExpired as exc:
+        exited = _end_clone(proc)
+        still_running = "" if exited else f"; git (pid {proc.pid}) is still running"
         raise GitInstallError(
-            f"git clone did not finish within {CLONE_TIMEOUT_S // 60} minutes"
+            f"git clone did not finish within {CLONE_TIMEOUT_S // 60} minutes{still_running}"
         ) from exc
-    if proc.returncode != 0:
+    except BaseException:
+        _end_clone(proc)
+        raise
+    if returncode != 0:
         raise GitInstallError(
-            f"git clone failed (exit {proc.returncode}); git's message is above. The "
+            f"git clone failed (exit {returncode}); git's message is above. The "
             "clone uses your own git setup, so check that `git clone` of this URL "
             "works in this shell"
         )
@@ -432,8 +466,15 @@ def fetch_app_from_git(
                 f"`kirocrew app update {name}`, or uninstall it first"
             )
         commit, branch = _cloned_head(checkout)
-    except BaseException:
+    except BaseException as exc:
         if checkout.exists() and not rmtree_force(checkout):
             logger.warning("could not remove the partial clone %s", checkout)
+            if isinstance(exc, GitInstallError):
+                # The CLI prints this reason, so the operator learns which folder
+                # was left, not only the log.
+                raise GitInstallError(
+                    f"{exc}; the partial clone {checkout} could not be removed, "
+                    "delete it by hand"
+                ) from exc
         raise
     return FetchedApp(name=name, checkout=checkout, app_dir=app_dir, commit=commit, branch=branch)
