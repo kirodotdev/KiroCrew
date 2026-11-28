@@ -20,12 +20,18 @@ def _forget_stub_agent_bindings():
     and ``mcp_gateway.daemon.identity._AGENT_BINDINGS`` (what the daemon serves a
     stub's declared env by) are process-wide, and tests reuse tokens, so one test's
     binding would grant an agent to, or send a frame for, the next test's stub.
+    The daemon's confined runtimes and tokens (``_CONFINED_RUNTIMES``,
+    ``_CONFINED_TOKENS``) are cleared for the same reason: one test's confining
+    claim would refuse the next test's stub.
     """
 
     def clear():
         for name, table in (
             ("kiro_crew.mcp_gateway.claim", "_BOUND_AGENTS"),
+            ("kiro_crew.mcp_gateway.claim", "_CONFINED_BINDINGS"),
             ("kiro_crew.mcp_gateway.daemon.identity", "_AGENT_BINDINGS"),
+            ("kiro_crew.mcp_gateway.daemon.identity", "_CONFINED_RUNTIMES"),
+            ("kiro_crew.mcp_gateway.daemon.identity", "_CONFINED_TOKENS"),
         ):
             module = sys.modules.get(name)
             if module is not None:

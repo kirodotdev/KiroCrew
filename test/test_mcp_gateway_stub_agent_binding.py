@@ -414,7 +414,7 @@ async def test_every_claim_sends_the_binding_again(monkeypatch) -> None:
         sent.append(("claim", args))
         return True
 
-    async def _inner(socket_path, pid, token, agents, pid_start_id):
+    async def _inner(socket_path, pid, token, agents, pid_start_id, confined=False):
         sent.append(("bind", (pid, token, agents)))
         return True
 
@@ -454,7 +454,7 @@ async def test_the_binding_is_sent_before_the_request_that_starts_the_stubs(
 
     order: list[str] = []
 
-    async def _bind(socket_path, pid, token, agents):
+    async def _bind(socket_path, pid, token, agents, **_kw):
         order.append(f"bind {pid} {sorted(agents)}")
         return True
 
@@ -804,7 +804,7 @@ async def test_launch_mounted_stubs_are_bound_from_the_launch_roster(monkeypatch
 
     sent: list[frozenset[str]] = []
 
-    async def _bind(socket_path, pid, token, agents):
+    async def _bind(socket_path, pid, token, agents, **_kw):
         sent.append(agents)
         return True
 
@@ -892,7 +892,7 @@ async def test_replay_resends_every_live_binding(monkeypatch) -> None:
     """The gateway re-sends every remembered binding to a restarted daemon."""
     sent: list[tuple[int, str, frozenset[str]]] = []
 
-    async def _inner(socket_path, pid, token, agents, pid_start_id):
+    async def _inner(socket_path, pid, token, agents, pid_start_id, confined=False):
         sent.append((pid, token, agents))
         return True
 
@@ -919,7 +919,7 @@ async def test_replay_carries_the_original_process_generation(monkeypatch) -> No
     """
     start_ids: list[Any] = []
 
-    async def _inner(socket_path, pid, token, agents, pid_start_id):
+    async def _inner(socket_path, pid, token, agents, pid_start_id, confined=False):
         start_ids.append(pid_start_id)
         return True
 
@@ -1007,7 +1007,7 @@ async def test_a_live_session_binding_survives_the_backstop_and_is_replayed(monk
     """
     sent: list[int] = []
 
-    async def _inner(socket_path, pid, token, agents, pid_start_id):
+    async def _inner(socket_path, pid, token, agents, pid_start_id, confined=False):
         sent.append(pid)
         return True
 

@@ -189,6 +189,20 @@ one such route, and after its write it names on stderr each server it lists
 with no approved launch. A launch set over the store's caps is
 refused as `launch_over_cap`.
 
+A runtime fenced tighter than any backend gatewayd starts (a sandbox tier
+stricter than `standard`, or an enforced harness under the credential mask) is
+not served by gatewayd at all, whatever its own stubs decide: the daemon socket
+is reachable from inside that runtime, so a process there could otherwise write
+Register and MCP frames itself. The owning gateway marks the runtime confined on
+its `claim` and on the `agent-binding` it awaits before the session starts any
+stub, gatewayd takes the mark only from its owner and never lets a later
+claim clear it, and every Register from under that runtime or carrying that
+session's token is refused with a fallback class, so the server runs per chat
+inside the runtime's sandbox. What it does not cover (a daemon restart before
+the next turn's re-claim, a non-owner process's sessions, a process re-parented
+out of the runtime's tree with no confined token) is listed in the
+[daemon lifecycle spec](mcp-gateway-daemon-lifecycle.md).
+
 The generated `mcp-gateway/agents/` overlays and `mcp-gateway/stubs/` sidecars
 are not sealed: gatewayd checks the command and environment they carry against
 the approved fingerprint at launch, so tampered content fails closed. The

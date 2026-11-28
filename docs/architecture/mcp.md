@@ -6351,6 +6351,15 @@ shared runtime their identity is cleared and subscriptions evicted instead.
 A claim with NO token re-targets every connection
 under the PID, which is what a stub launched from a
 hand-written config or an older overlay still needs.
+A claim for a runtime fenced tighter than any gateway backend (a stricter
+sandbox tier, or an enforced harness under the credential mask) also carries
+`"confined": true`, and so does the `agent-binding` frame sent before
+`session/new`, which reaches gatewayd before any stub of the runtime does.
+gatewayd takes that flag only from its owner, keeps it for
+the runtime and the token until the runtime is gone, and refuses every Register
+from under that runtime or carrying that token with a fallback class, so the
+stub runs the server per chat inside the runtime's own sandbox
+([daemon lifecycle](../system-specs/modules/mcp-gateway-daemon-lifecycle.md)).
 
 **The token narrows within a runtime; the runtime bounds who may present the
 token.** A claim binds the token together with the PID it named, and a register is

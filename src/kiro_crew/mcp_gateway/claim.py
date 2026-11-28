@@ -105,6 +105,8 @@ def build_claim_frame(
     session_key: str,
     channel_id: Optional[str],
     stub_session_token: str = "",
+    acp_backend: str = "",
+    sandbox_mode: str = "",
 ) -> dict:
     """Assemble the one-shot claim frame sent to gatewayd.
 
@@ -120,6 +122,14 @@ def build_claim_frame(
     session's stub connections instead of every connection under the PID. Empty
     omits the field and keeps the PID-wide behavior, which is what a runtime
     whose sessions carry no token still needs.
+
+    *acp_backend* and *sandbox_mode* describe the claimed runtime. When it is
+    fenced tighter than a gateway backend
+    (``runtime_confinement.runtime_confined``) the frame carries
+    ``"confined": true``, and gatewayd, taking it only from its owner, refuses
+    every Register from under that runtime or carrying that token. Read here,
+    in the executor this frame is built in, because the tier read can touch the
+    governance profile.
     """
     frame = {
         "type": "claim",
@@ -134,6 +144,12 @@ def build_claim_frame(
     }
     if stub_session_token:
         frame["stub_session_token"] = stub_session_token
+    if isinstance(sandbox_mode, str) and sandbox_mode:
+        from kiro_crew.mcp_gateway.runtime_confinement import runtime_confined
+
+        backend = acp_backend if isinstance(acp_backend, str) else ""
+        if runtime_confined(backend, sandbox_mode):
+            frame["confined"] = True
     return frame
 
 
@@ -143,6 +159,8 @@ async def _send_claim_inner(
     session_key: str,
     channel_id: Optional[str],
     stub_session_token: str = "",
+    acp_backend: str = "",
+    sandbox_mode: str = "",
 ) -> bool:
     """Unbounded socket round-trip; ``send_claim`` enforces the time budget."""
     # build_claim_frame resolves the runtime's start token from /proc; a
@@ -156,6 +174,8 @@ async def _send_claim_inner(
         session_key,
         channel_id,
         stub_session_token,
+        acp_backend,
+        sandbox_mode,
     )
     reader, writer = await transport.connect(socket_path)
     try:
@@ -211,8 +231,13 @@ async def send_claim(
     session_key: str,
     channel_id: Optional[str] = None,
     stub_session_token: str = "",
+    acp_backend: str = "",
+    sandbox_mode: str = "",
 ) -> bool:
     """Send one claim frame to gatewayd. Returns True when acknowledged.
+
+    *acp_backend* and *sandbox_mode* name the claimed runtime's harness and the
+    tier it was spawned under; see :func:`build_claim_frame` for what they add.
 
     gatewayd answers one of three ways. ``claimed`` means live stub connections
     were retargeted. ``claim-noop`` means the claim was accepted and the session
@@ -235,7 +260,15 @@ async def send_claim(
     """
     try:
         return await asyncio.wait_for(
-            _send_claim_inner(socket_path, pid, session_key, channel_id, stub_session_token),
+            _send_claim_inner(
+                socket_path,
+                pid,
+                session_key,
+                channel_id,
+                stub_session_token,
+                acp_backend,
+                sandbox_mode,
+            ),
             timeout=_CLAIM_TIMEOUT_SECS,
         )
     except (OSError, asyncio.TimeoutError, ValueError) as exc:
@@ -254,6 +287,8 @@ def schedule_claim(
     session_key: str,
     channel_id: Optional[str] = None,
     stub_session_token: str = "",
+    acp_backend: str = "",
+    sandbox_mode: str = "",
 ) -> None:
     """Fire-and-forget claim push. Safe to call from sync code (``rekey()``).
 
@@ -276,7 +311,15 @@ def schedule_claim(
     except RuntimeError:
         return
     task = loop.create_task(
-        _claim_and_rebind(socket_path, pid, session_key, channel_id, stub_session_token)
+        _claim_and_rebind(
+            socket_path,
+            pid,
+            session_key,
+            channel_id,
+            stub_session_token,
+            acp_backend,
+            sandbox_mode,
+        )
     )
     # Retain a reference so the task is never GC'd mid-flight; discard on done.
     _PENDING.add(task)
@@ -292,13 +335,17 @@ async def _claim_and_rebind(
     session_key: str,
     channel_id: Optional[str],
     stub_session_token: str,
+    acp_backend: str = "",
+    sandbox_mode: str = "",
 ) -> bool:
     """Send the claim, then the token's agent binding again when one was sent before.
 
     gatewayd keeps both in memory only, so the claim a turn re-pushes
     (``reclaim``) is also what restores the agents after a daemon respawn.
     """
-    claimed = await send_claim(socket_path, pid, session_key, channel_id, stub_session_token)
+    claimed = await send_claim(
+        socket_path, pid, session_key, channel_id, stub_session_token, acp_backend, sandbox_mode
+    )
     entry = _BOUND_AGENTS.get(stub_session_token) if stub_session_token else None
     if entry:
         _bound_pid, start_id, agents = entry
@@ -329,6 +376,12 @@ _UNSET_START_ID = "\x00unset"
 #: restart with the ORIGINAL process generation, never a recycled pid's.
 _BOUND_AGENTS: "OrderedDict[str, tuple[int, Optional[str], frozenset[str]]]" = OrderedDict()
 
+#: Session tokens whose runtime :func:`send_agent_binding` found confined
+#: (``runtime_confinement.runtime_confined``). A replay or a re-bind sends the
+#: binding again without the runtime's tier, so the answer is kept with the
+#: binding and leaves with it.
+_CONFINED_BINDINGS: set[str] = set()
+
 
 def forget_agent_binding(stub_session_token: str) -> None:
     """Drop a session's remembered agent binding when its session ends.
@@ -338,6 +391,7 @@ def forget_agent_binding(stub_session_token: str) -> None:
     """
     if stub_session_token:
         _BOUND_AGENTS.pop(stub_session_token, None)
+        _CONFINED_BINDINGS.discard(stub_session_token)
 
 
 def _evict_dead_bindings_over_cap() -> None:
@@ -357,6 +411,7 @@ def _evict_dead_bindings_over_cap() -> None:
             return
         if not platform_compat.pid_exists(pid):
             _BOUND_AGENTS.pop(token, None)
+            _CONFINED_BINDINGS.discard(token)
     if len(_BOUND_AGENTS) > MAX_SESSION_BINDINGS:
         logger.warning(
             "agent-binding cache holds %d live sessions, over the %d backstop; "
@@ -428,7 +483,11 @@ def stub_entry_agents(params: Any) -> frozenset[str]:
 
 
 def build_agent_binding_frame(
-    pid: int, stub_session_token: str, agents: frozenset[str], pid_start_id: Optional[str]
+    pid: int,
+    stub_session_token: str,
+    agents: frozenset[str],
+    pid_start_id: Optional[str],
+    confined: bool = False,
 ) -> dict:
     """The ``agent-binding`` frame: these *agents*' stubs run under this token in *pid*.
 
@@ -436,14 +495,24 @@ def build_agent_binding_frame(
     binding was first sent and carried unchanged through a replay, so a daemon
     that restarted re-authorizes the ORIGINAL process and not a different one
     that recycled its pid.
+
+    *confined* adds ``"confined": true``: the runtime is fenced tighter than a
+    gateway backend, and gatewayd, which takes this frame only from its owner,
+    then refuses every Register from under it, as for a claim
+    (:func:`build_claim_frame`). It rides here too because this frame is awaited
+    before the request that starts the session's stubs, which a claim is not on
+    every path.
     """
-    return {
+    frame: dict[str, Any] = {
         "type": "agent-binding",
         "pid": pid,
         "pid_start_id": pid_start_id,
         "stub_session_token": stub_session_token,
         "agents": sorted(agents),
     }
+    if confined:
+        frame["confined"] = True
+    return frame
 
 
 async def _send_agent_binding_inner(
@@ -452,8 +521,9 @@ async def _send_agent_binding_inner(
     stub_session_token: str,
     agents: frozenset[str],
     pid_start_id: Optional[str],
+    confined: bool = False,
 ) -> bool:
-    frame = build_agent_binding_frame(pid, stub_session_token, agents, pid_start_id)
+    frame = build_agent_binding_frame(pid, stub_session_token, agents, pid_start_id, confined)
     reader, writer = await transport.connect(socket_path)
     try:
         writer.write(json.dumps(frame).encode("utf-8") + b"\n")
@@ -478,6 +548,8 @@ async def send_agent_binding(
     stub_session_token: str,
     agents: frozenset[str],
     pid_start_id: Optional[str] = _UNSET_START_ID,
+    acp_backend: str = "",
+    sandbox_mode: str = "",
 ) -> bool:
     """Tell gatewayd which agents' stubs run under *stub_session_token*.
 
@@ -492,6 +564,10 @@ async def send_agent_binding(
     it is read fresh here and cached with the binding; a replay passes the
     cached value back so a recycled pid is never re-authorized as the original
     runtime.
+
+    *acp_backend* and *sandbox_mode* name the runtime's harness and spawn tier.
+    When the runtime is confined the token joins :data:`_CONFINED_BINDINGS`, and
+    every binding for it, a replay included, carries ``"confined": true``.
     """
     if (
         not socket_path
@@ -499,8 +575,21 @@ async def send_agent_binding(
         or isinstance(pid, bool)
         or pid <= 1
         or not stub_session_token
-        or not agents
     ):
+        return False
+    if isinstance(sandbox_mode, str) and sandbox_mode:
+        from kiro_crew.mcp_gateway.runtime_confinement import runtime_confined
+
+        backend = acp_backend if isinstance(acp_backend, str) else ""
+        # Off the loop: the tier read can touch the governance profile.
+        if await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), runtime_confined, backend, sandbox_mode
+        ):
+            _CONFINED_BINDINGS.add(stub_session_token)
+    confined = stub_session_token in _CONFINED_BINDINGS
+    if not agents and not confined:
+        # Nothing to bind. A confined runtime is still named with no agents,
+        # because its stubs may come from a launch file this caller cannot read.
         return False
     if pid_start_id is _UNSET_START_ID:
         # Read the runtime's start token once, off the loop (a /proc read can
@@ -516,7 +605,9 @@ async def send_agent_binding(
     _evict_dead_bindings_over_cap()
     try:
         return await asyncio.wait_for(
-            _send_agent_binding_inner(socket_path, pid, stub_session_token, agents, pid_start_id),
+            _send_agent_binding_inner(
+                socket_path, pid, stub_session_token, agents, pid_start_id, confined
+            ),
             timeout=_CLAIM_TIMEOUT_SECS,
         )
     except (OSError, asyncio.TimeoutError, ValueError) as exc:

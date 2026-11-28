@@ -28,7 +28,7 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``,
 ``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``, ``_stdin_stalled``,
 ``_unreaped_pids``, ``_windows_cleanup_receipt``, ``_windows_tree_cleanup_failed``.
 
-Instance fields read: ``_entitlement_probe_inflight``, ``_mcp_gateway_socket``,
+Instance fields read: ``_acp_backend``, ``_entitlement_probe_inflight``, ``_mcp_gateway_socket``,
 ``_native_skill_projection``, ``_sandbox_hidden_dirs``, ``_sandbox_mode``,
 ``_sandbox_wrapped_by_crew``, ``_start_time``, ``_stub_session_token``, ``_work_dir``,
 ``last_prompt_stats``, ``memory_mode``.
@@ -178,6 +178,8 @@ def rekey(
         session_key,
         channel_id,
         self._stub_session_token,
+        acp_backend=getattr(self, "_acp_backend", ""),
+        sandbox_mode=getattr(self, "_sandbox_mode", ""),
     )
     # The token deliberately SURVIVES a rekey (see __init__: a fresh one would
     # leave the live MCP children carrying a name no claim will ever mention
@@ -212,6 +214,8 @@ def reclaim(self: AcpClient) -> None:
         self._session_key or "",
         self._channel_id,
         self._stub_session_token,
+        acp_backend=getattr(self, "_acp_backend", ""),
+        sandbox_mode=getattr(self, "_sandbox_mode", ""),
     )
 
 

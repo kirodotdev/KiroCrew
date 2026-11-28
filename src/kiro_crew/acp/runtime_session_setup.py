@@ -18,7 +18,7 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
 ``_member_context``, ``_native_launch_resources``, ``_native_launch_sources``,
 ``_native_launch_view_alias``, ``_native_skill_projection``, ``_remote_workspace``,
-``_session_queues``,
+``_sandbox_mode``, ``_session_queues``,
 ``_ssh_auth_sock_forwarded``, ``_start_launch_name``, ``_tool_search_wire``,
 ``_wire_mode_id``, ``_work_dir``.
 """
@@ -1112,12 +1112,19 @@ async def _own_stub_session(
     entries = attach_stub_session_token(entries, token)
     if session_key:
         await asyncio.to_thread(publish_session_token, token, session_key)
-    if entries and self._mcp_gateway_socket and self.pid:
+    if self._mcp_gateway_socket and self.pid:
         # Before the claim and before ``session/new``, and for a session whose
         # key is not known yet too: the stubs ``session/new`` starts are served
         # their agent's declared env only when gatewayd already holds this.
+        # With no entries it sends nothing unless the runtime is confined, which
+        # gatewayd must know before any stub of it registers.
         await send_agent_binding(
-            self._mcp_gateway_socket, self.pid, token, stub_entry_agents(entries)
+            self._mcp_gateway_socket,
+            self.pid,
+            token,
+            stub_entry_agents(entries),
+            acp_backend=getattr(self, "_acp_backend", ""),
+            sandbox_mode=getattr(self, "_sandbox_mode", ""),
         )
     if entries and self._mcp_gateway_socket and session_key and self.pid:
         await send_claim(
@@ -1126,6 +1133,8 @@ async def _own_stub_session(
             session_key,
             None,
             token,
+            acp_backend=getattr(self, "_acp_backend", ""),
+            sandbox_mode=getattr(self, "_sandbox_mode", ""),
         )
     return entries, token
 

@@ -239,7 +239,8 @@ async def _bind_stub_agents(client: AcpClient, params: dict) -> None:
     so every stub entry counts, including the ones nested in a KAS session's
     custom agents and the ones a launch harness (Strands, pi, claude) mounts
     through its launch file rather than the wire array, which is left empty.
-    No-op without a token, a gateway socket, a live process or a stub entry.
+    No-op without a token, a gateway socket or a live process, and without a
+    stub entry unless the runtime is confined (``claim.send_agent_binding``).
     """
     token = getattr(client, "_stub_session_token", "")
     socket_path = getattr(client, "_mcp_gateway_socket", None)
@@ -252,8 +253,16 @@ async def _bind_stub_agents(client: AcpClient, params: dict) -> None:
     launched = getattr(client, "_launch_mcp_servers", None)
     if launched:
         agents = agents | stub_entry_agents({"mcpServers": launched})
-    if agents:
-        await send_agent_binding(socket_path, process.pid, token, agents)
+    # Sent with no agents too: ``send_agent_binding`` then names only a
+    # confined runtime, and sends nothing for any other.
+    await send_agent_binding(
+        socket_path,
+        process.pid,
+        token,
+        agents,
+        acp_backend=getattr(client, "_acp_backend", ""),
+        sandbox_mode=getattr(client, "_sandbox_mode", ""),
+    )
 
 
 async def _send_request(
