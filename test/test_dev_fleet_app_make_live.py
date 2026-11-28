@@ -257,6 +257,50 @@ async def test_make_live_missing_venv(monkeypatch, tmp_path):
     res = await mod._make_live(str(wt), dry_run=True)
     assert res["ok"] is False and res["code"] == "missing_venv"
     assert "Provision" in res["error"]
+    assert ".venv/bin/kirocrew" in res["error"]
+
+
+def _windows_target_bin(monkeypatch, wt):
+    """Make ``live_target.target_bin`` answer with the Windows venv layout.
+
+    The venv check in Make Live and the one in the pointer write must stat the
+    SAME file; pinning the helper to ``.venv/Scripts/kirocrew.exe`` makes any
+    check still hard-wired to ``.venv/bin/kirocrew`` disagree with it."""
+    exe = wt / ".venv" / "Scripts" / "kirocrew.exe"
+    monkeypatch.setattr(live_mod.live_target, "target_bin", lambda checkout: exe)
+    return exe
+
+
+@pytest.mark.asyncio
+async def test_make_live_checks_the_entry_point_live_target_validates(monkeypatch, tmp_path):
+    """A worktree whose only entry point is the one ``target_bin`` names passes.
+
+    With ``target_bin`` answering the Windows layout, the worktree carries
+    ``.venv/Scripts/kirocrew.exe`` and no ``.venv/bin`` at all. Make Live must
+    accept it (the pointer write would) and plan to exec that file."""
+    wt = _mk_make_live_wt(tmp_path, venv=False, dist=True)
+    exe = _windows_target_bin(monkeypatch, wt)
+    exe.parent.mkdir(parents=True)
+    exe.write_text("MZ\n")
+    exe.chmod(0o755)
+    _stub_make_live(monkeypatch, wt, pointer_dir=tmp_path / "ptr")
+    res = await mod._make_live(str(wt), dry_run=True)
+    assert res["ok"] is True and res["dry_run"] is True
+    assert res["plan"]["exec"] == str(exe)
+    assert not (wt / ".venv" / "bin").exists()
+
+
+@pytest.mark.asyncio
+async def test_make_live_missing_venv_names_the_platform_entry_point(monkeypatch, tmp_path):
+    """Absent entry point -> ``missing_venv`` naming the file ``target_bin`` expects."""
+    wt = _mk_make_live_wt(tmp_path, venv=False, dist=True)
+    _windows_target_bin(monkeypatch, wt)
+    _stub_make_live(monkeypatch, wt)
+    res = await mod._make_live(str(wt), dry_run=True)
+    assert res["ok"] is False and res["code"] == "missing_venv"
+    assert ".venv/Scripts/kirocrew.exe" in res["error"]
+    assert ".venv/bin/kirocrew" not in res["error"]
+    assert "Provision" in res["error"]
 
 
 @pytest.mark.asyncio
