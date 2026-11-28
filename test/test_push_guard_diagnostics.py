@@ -1120,20 +1120,23 @@ class TestPushGuardChildren:
                 getattr(spawned[-1], "_waitpid_lock")._inner.release()
 
         watchdog = threading.Thread(target=_unwedge, daemon=True)
-        previous = pg.install_termination_handlers()
-        try:
-            watchdog.start()
-            with pytest.raises(pg._Terminated):
-                pg.run_child(
-                    # flake-ok: the sleeping child is what _stop must reap; the test stops it
-                    [sys.executable, "-c", "import time; time.sleep(60)"],
-                    dict(os.environ),
-                    timeout=60,
-                )
-            wedged = not released.is_set() and not watchdog.is_alive()
-            released.set()
-        finally:
-            pg.restore_handlers(previous)
+        # The guard keeps an inherited SIGHUP ignore, as nohup expects, so under a
+        # suite started with nohup it would install no handler and nothing would raise.
+        with unblocked_signals():
+            previous = pg.install_termination_handlers()
+            try:
+                watchdog.start()
+                with pytest.raises(pg._Terminated):
+                    pg.run_child(
+                        # flake-ok: the sleeping child is what _stop must reap; the test stops it
+                        [sys.executable, "-c", "import time; time.sleep(60)"],
+                        dict(os.environ),
+                        timeout=60,
+                    )
+                wedged = not released.is_set() and not watchdog.is_alive()
+                released.set()
+            finally:
+                pg.restore_handlers(previous)
         assert fired.is_set()
         assert not wedged, "_stop blocked on the waitpid lock the signal left taken"
         assert spawned[-1].returncode is not None, "the child was not reaped"
