@@ -138,6 +138,11 @@ def _flat() -> str:
         ("keep the plain numbered list and the numbers typed back", "keeps typed numbers"),
         ("the click does not add", "does not call the click an add"),
         ("never say the click added or submitted anything", "says the click sends nothing"),
+        ("no `data-payload`", "keeps the button's payload empty"),
+        ("a number that is not in your list", "ignores a number it did not list"),
+        ('`rel="noopener noreferrer"`', "opens each link without handing over the page"),
+        ('labelled "keep selected"', "names the button"),
+        ("use only the last one", "reads only the last of several presses"),
     ],
 )
 def test_the_card_keeps_the_rule(needle: str, rule: str) -> None:
