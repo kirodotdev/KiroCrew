@@ -88,9 +88,39 @@ export function useThemeDecorBehindSlot(): HTMLElement | null {
   return useSyncExternalStore(subscribe, getBehindSnapshot, getBehindSnapshot)
 }
 
+// The chat composer dock's slot for the theme-sounds mute toggle on a phone
+// (#43431). There the dock fills the bottom edge, so a corner-pinned toggle
+// lands on its send/stop button; anchored to the dock's top edge instead, the
+// toggle rises with the dock however tall the draft or its cards grow.
+let muteSlot: HTMLElement | null = null
+
+/**
+ * The dock slot's z-index: the fixed corner toggle's z-[50], so the toggle
+ * stays tappable above a pointer-interactive overlay (OVERLAY_Z_MAX). The slot
+ * and the decor slot share the shell's stacking context, so this only holds
+ * while no ancestor of the slot between it and the shell creates a stacking
+ * context of its own (z-index, transform, filter, isolation).
+ */
+export const THEME_MUTE_SLOT_Z = 50
+
+/** Ref callback for the composer dock's mute-toggle slot. */
+export function registerThemeMuteSlot(el: HTMLElement | null): void {
+  if (muteSlot === el) return
+  muteSlot = el
+  listeners.forEach(l => l())
+}
+
+const getMuteSnapshot = () => muteSlot
+
+/** The composer dock's mute-toggle slot, or null while no dock is mounted. */
+export function useThemeMuteSlot(): HTMLElement | null {
+  return useSyncExternalStore(subscribe, getMuteSnapshot, getMuteSnapshot)
+}
+
 /** Test seam: restore the module default between cases. */
 export function __resetThemeDecorSlot(): void {
   slot = null
   behindSlot = null
+  muteSlot = null
   listeners.clear()
 }
