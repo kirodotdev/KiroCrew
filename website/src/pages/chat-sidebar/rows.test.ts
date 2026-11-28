@@ -553,7 +553,9 @@ describe('the open chat is exempt from the status chips', () => {
   })
 
   it('gets no pass from a chip that opening a chat does not change', () => {
-    expect(keys(build({ status: { active: new Set<SessionFilterKey>(['running']) } }).filteredSlots)).toEqual([])
+    const rows = build({ status: { active: new Set<SessionFilterKey>(['running']) } })
+    expect(keys(rows.filteredSlots)).toEqual([])
+    expect(rows.revealBlockingFilters[2].hides(opened)).toBe(true)
   })
 
   it('is not blamed on the status chips when the search drops it, so a reveal clears only the search', () => {
