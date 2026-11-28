@@ -1521,12 +1521,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir promotion-bundle
+          # Both selectors run inside $(...), which captures stdout, so the
+          # error and the matches go to stderr or the log shows a bare exit 1.
           one() {
             label="$1"; shift
             mapfile -t matches < <(find artifacts -type f "$@")
             if [ "${#matches[@]}" -ne 1 ]; then
-              echo "::error::expected exactly one ${label}, found ${#matches[@]}"
-              printf '%s\n' ${matches[@]+"${matches[@]}"}
+              echo "::error::expected exactly one ${label}, found ${#matches[@]}" >&2
+              printf '%s\n' ${matches[@]+"${matches[@]}"} >&2
               exit 1
             fi
             printf '%s' "${matches[0]}"
@@ -1538,8 +1540,8 @@ jobs:
             label="$1"; shift
             mapfile -t matches < <(find artifacts -type f "$@")
             if [ "${#matches[@]}" -gt 1 ]; then
-              echo "::error::expected at most one ${label}, found ${#matches[@]}"
-              printf '%s\n' ${matches[@]+"${matches[@]}"}
+              echo "::error::expected at most one ${label}, found ${#matches[@]}" >&2
+              printf '%s\n' ${matches[@]+"${matches[@]}"} >&2
               exit 1
             fi
             printf '%s' "${matches[0]:-}"
