@@ -798,6 +798,7 @@ class SessionManager:
     teardown_scope = _teardown.teardown_scope
     tearing_down = _teardown.tearing_down
     set_child_teardown_handler = _teardown.set_child_teardown_handler
+    shared_session_keys_on_pid = _teardown.shared_session_keys_on_pid
     set_recycle_callback = _teardown.set_recycle_callback
     _fire_recycle_callback = _teardown._fire_recycle_callback
     remove = _teardown.remove

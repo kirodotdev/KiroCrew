@@ -116,6 +116,20 @@ def set_child_teardown_handler(self: SessionManager, handler: Any) -> None:
     self._lifecycle_boundary().set_child_teardown_handler(handler)
 
 
+def shared_session_keys_on_pid(self: SessionManager, pid: int) -> tuple[str, ...]:
+    """The live sub-agent sessions that share the process *pid* with a session here.
+
+    Such a session holds a handle on another session's runtime and is never
+    entered in this registry, so :meth:`runtime_pids` cannot list it. The
+    registered child-teardown handler, the ``SubagentManager``, owns those
+    handles and answers. Empty when no handler is registered.
+    """
+    handler: Any = self._lifecycle_boundary()._child_teardown
+    if handler is None:
+        return ()
+    return tuple(handler.shared_session_keys_on_pid(pid))
+
+
 def set_recycle_callback(self: SessionManager, cb: _RecycleCallback | None) -> None:
     """Register the lifecycle recycle callback."""
     self._lifecycle_boundary().set_recycle_callback(cb)

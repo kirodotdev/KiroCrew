@@ -358,6 +358,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_thread": ("function", True, "ca35fd6d7149", "links"),
     "set_unbind_listener": ("staticmethod", False, "de25b1a3a879", "session"),
     "settle_turn": ("function", False, "958babeb61c8", "claims"),
+    "shared_session_keys_on_pid": ("function", False, "650046d6f0ae", "teardown"),
     "slack_link_nonce": ("function", False, "f1d40e624ae4", "links"),
     "slack_thread_owners": ("function", False, "97707b44cd84", "links"),
     "start_pool": ("function", True, "255a2f05f73c", "runtimes"),

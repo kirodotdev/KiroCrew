@@ -17,7 +17,10 @@ publish contract happens in exactly one place.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
+import threading
+from collections.abc import Callable
 from functools import partial
 from typing import Any
 
@@ -80,7 +83,81 @@ def _sessions_on_pid(sessions: Any, pid: int) -> list[str]:
     except Exception:
         logger.debug("runtime_pids snapshot unreadable", exc_info=True)
         return []
+    # A ``spawn_run`` sub-agent on its parent's runtime is never in the
+    # snapshot: it holds a handle on the parent's process and is not
+    # registered with the manager. The manager asks the run registry instead.
+    try:
+        for key in sessions.shared_session_keys_on_pid(pid):
+            if isinstance(key, str) and key and key not in keys:
+                keys.append(key)
+    except Exception:
+        logger.debug("shared sub-agent sessions unavailable", exc_info=True)
     return keys
+
+
+#: Order of tenant snapshots, across every event loop and thread. A write
+#: carries its snapshot's number and is dropped if a later snapshot of the same
+#: pid has already been written, so an older snapshot never lands last.
+_SNAPSHOT_SEQ = itertools.count(1)
+_SNAPSHOT_LOCK = threading.Lock()
+_LAST_WRITTEN_SEQ: dict[int, int] = {}
+_WRITE_LOCKS: dict[int, threading.Lock] = {}
+
+
+def _numbered_snapshot(sessions: Any, pid: int) -> tuple[int, list[str]]:
+    """*pid*'s tenant set and its number, taken together so the order holds."""
+    with _SNAPSHOT_LOCK:
+        return next(_SNAPSHOT_SEQ), _sessions_on_pid(sessions, pid)
+
+
+def _write_if_newest(pid: int, seq: int, write: Callable[[], object]) -> None:
+    """Run *write* unless a newer snapshot of *pid* was written first (worker thread)."""
+    # shortcut: one entry per pid ever published, a few bytes each; prune when
+    # a gateway lifetime can see enough distinct pids for that to matter.
+    with _WRITE_LOCKS.setdefault(pid, threading.Lock()):
+        if seq < _LAST_WRITTEN_SEQ.get(pid, 0):
+            return
+        write()
+        _LAST_WRITTEN_SEQ[pid] = seq
+
+
+async def publish_pid_tenants(sessions: Any, session_key: str) -> bool:
+    """Publish the ``session_pid_<pid>.txt`` mapping of *session_key*'s process.
+
+    The pid-mapping half of :func:`publish_turn_identity`, on its own for the
+    moments a process's tenant set changes outside any turn of *session_key*: a
+    shared sub-agent binding to its parent's runtime, and its session closing.
+    Never raises, and runs the write off-loop, like the turn publisher.
+
+    Returns False when the mapping could not be written, so a caller that must
+    not proceed on a stale mapping (a shared sub-agent's first prompt) can stop.
+    A session with no pid yet has nothing to publish and answers True.
+
+    Publications of one pid can overlap in the executor. Each is numbered when
+    its tenant snapshot is taken, and a write older than one already written is
+    dropped (:func:`_write_if_newest`), so a stalled publication cannot replace
+    a newer tenant set.
+    """
+    try:
+        pid = sessions.get_pid(session_key)
+        if isinstance(pid, int):
+            seq, co_tenants = _numbered_snapshot(sessions, pid)
+            # A pid hosting ONE session is published exactly as it is today,
+            # down to the call's own shape: same two positional arguments, same
+            # file bytes. The tenancy argument appears only for a pid that is
+            # genuinely shared, which is the only case whose record changes.
+            write = (
+                partial(publish_session_pid, pid, session_key, co_tenants=co_tenants)
+                if len(co_tenants) > 1
+                else partial(publish_session_pid, pid, session_key)
+            )
+            await asyncio.get_running_loop().run_in_executor(
+                maintenance_executor(), _write_if_newest, pid, seq, write
+            )
+    except Exception:
+        logger.debug("pid mapping publication failed for %s", session_key, exc_info=True)
+        return False
+    return True
 
 
 async def publish_turn_identity(sessions: Any, session_key: str) -> None:
@@ -107,25 +184,11 @@ async def publish_turn_identity(sessions: Any, session_key: str) -> None:
     parent's runtime, a workflow pool worker — while the mapping names one.
     Without that, a reader on such a pid resolves whichever session published
     last, and a shared subagent's tool call is attributed to its parent. The
-    count comes from the session manager's own process-identity snapshot, so it
-    is the gateway's view of the runtime rather than anything a reader infers.
+    count comes from the session manager's own process-identity snapshot and its
+    record of shared sub-agent sessions, so it is the gateway's view of the
+    runtime rather than anything a reader infers.
     """
-    try:
-        pid = sessions.get_pid(session_key)
-        if isinstance(pid, int):
-            co_tenants = _sessions_on_pid(sessions, pid)
-            # A pid hosting ONE session is published exactly as it is today,
-            # down to the call's own shape: same two positional arguments, same
-            # file bytes. The tenancy argument appears only for a pid that is
-            # genuinely shared, which is the only case whose record changes.
-            write = (
-                partial(publish_session_pid, pid, session_key, co_tenants=co_tenants)
-                if len(co_tenants) > 1
-                else partial(publish_session_pid, pid, session_key)
-            )
-            await asyncio.get_running_loop().run_in_executor(maintenance_executor(), write)
-    except Exception:
-        logger.debug("publish_turn_identity failed for %s", session_key, exc_info=True)
+    await publish_pid_tenants(sessions, session_key)
     # ONE provider lookup for both steps below. Resolving it twice puts a second
     # call on a per-turn hot path for no gain, and what a session manager does on a
     # lookup is its own business rather than something this function should invoke

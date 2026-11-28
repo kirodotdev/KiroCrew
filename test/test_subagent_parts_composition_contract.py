@@ -1009,6 +1009,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "task_memory_rows": ("method", "(self) -> 'list[dict[str, object]]'"),
     "settled_runtime_hold_gb": ("method", "(self, cost_gb: 'float') -> 'float'"),
+    "shared_session_keys_on_pid": ("method", "(self, pid: 'int') -> 'tuple[str, ...]'"),
     "update_completion_keep": ("method", "(self, mode: 'str', max_chars: 'int') -> 'None'"),
     "user_max_concurrent": ("property", ""),
     "wait_taskq_ready": ("async method", "(self) -> 'None'"),
