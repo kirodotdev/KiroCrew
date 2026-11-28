@@ -717,6 +717,12 @@ def main() -> None:
     arena_cap = platform_compat.MallocArenaCap()
     if args.command == "gateway":
         arena_cap = platform_compat.limit_malloc_arenas()
+        # Only the gateway keeps the full path-resolver pool, and before anything
+        # below can build it. A module setting, not an environment variable, so
+        # the processes the gateway starts keep the floor.
+        from kiro_crew.executors import size_path_resolver_for_gateway
+
+        size_path_resolver_for_gateway()
 
     # The mcp-* stdio servers run one per agent session, so a gateway hosts
     # dozens. If any import reaches numpy, OpenBLAS/OpenMP start one spinning
