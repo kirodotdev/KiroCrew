@@ -406,7 +406,8 @@ class TestSkillWriter:
         def boom(*_args: Any, **_kwargs: Any) -> None:
             raise OSError("locked")
 
-        monkeypatch.setattr(api.os, "replace", boom)
+        # The move-aside is the first folder publish an overwrite makes.
+        monkeypatch.setattr(onboarding_apply.platform_compat, "publish_dir_noreplace", boom)
 
         assert onboarding_apply._write_skill(
             item, tmp_path, strategy=api.STRATEGY_OVERWRITE

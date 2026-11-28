@@ -3,11 +3,13 @@
 On Windows a folder rename fails with ``PermissionError`` (WinError 5) while any
 handle is open on a file inside it, and an indexer or AV scanner opens freshly
 written files. The three folder renames of a skill import (install, move-aside,
-restore) go through ``atomic_write.replace_with_retry``, which retries that window.
+restore) go through ``platform_compat.publish_dir_noreplace``, which on Windows
+renames through ``atomic_write.rename_with_retry`` and so retries that window.
 
-This host cannot hold a Windows handle, so ``platform_compat.IS_WINDOWS`` is faked and
-``os.replace`` raises the sharing violation a set number of times for one rename.
-The retry's sleep is a recorder, so no test waits on the wall clock.
+This host cannot hold a Windows handle, so ``IS_WINDOWS`` is faked and ``os.rename``
+raises the sharing violation a set number of times for one rename. The retry's sleep
+is a recorder, so no test waits on the wall clock. The last case runs unfaked: on
+POSIX the publish never replaces a folder a racer created after the last check.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from onboarding_import_helpers import (  # noqa: F401 -- the autouse fixture reg
 )
 
 from kiro_crew import atomic_write as aw
-from kiro_crew import onboarding_import, platform_compat
+from kiro_crew import onboarding_import, onboarding_scan, platform_compat, platform_compat_files
 
 pytestmark = pytest.mark.usefixtures("isolate_mcp_host_paths")
 
@@ -51,12 +53,13 @@ def _windows_hold(
     Returns the recorded retry sleeps and the attempts made per matcher.
     """
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform_compat_files, "IS_WINDOWS", True)
     sleeps: list[float] = []
     monkeypatch.setattr(aw, "time", SimpleNamespace(sleep=sleeps.append, monotonic=time.monotonic))
-    real = os.replace
+    real = os.rename
     attempts = {match: 0 for match in holds}
 
-    def _replace(src: object, dst: object) -> None:
+    def _rename(src: object, dst: object) -> None:
         for match, count in holds.items():
             if match(Path(str(src)), Path(str(dst))):
                 attempts[match] += 1
@@ -64,7 +67,7 @@ def _windows_hold(
                     raise PermissionError(13, "Access is denied", str(src), 5)
         real(src, dst)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(os, "replace", _replace)
+    monkeypatch.setattr(os, "rename", _rename)
     return sleeps, attempts
 
 
@@ -146,3 +149,32 @@ def test_overwrite_held_past_the_budget_puts_the_original_back(
         encoding="utf-8"
     ) == "# Old\n"
     assert not any(name.startswith(".review.replaced-") for name in _leftovers(data_home))
+
+
+def test_posix_install_keeps_an_empty_folder_a_racer_created_after_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _codex_skill(tmp_path, "# New\n")
+    data_home = tmp_path / "crew"
+    destination = _skills_root(data_home) / "review"
+    real = onboarding_scan._is_link_like
+
+    def _racer_mkdirs(path: Path, *rest: object) -> bool:
+        # The last pre-publish check: staging exists, so a racer takes the name now.
+        if (
+            Path(path) == destination
+            and destination.parent.is_dir()
+            and any(p.name.startswith(".review.import-") for p in destination.parent.iterdir())
+        ):
+            destination.mkdir()
+            return False
+        return real(path, *rest)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(onboarding_scan, "_is_link_like", _racer_mkdirs)
+
+    result = _import(onboarding_import, home, data_home)
+
+    assert result["imported"]["skills"] == 0
+    assert destination.is_dir()
+    assert list(destination.iterdir()) == []
+    assert _leftovers(data_home) == []
