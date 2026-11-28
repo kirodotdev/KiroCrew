@@ -1266,6 +1266,11 @@ def _self_program_index(tokens: "list[str]", i: int, scan: "_SelfModuleScan") ->
 #: Programs that only store or print a heredoc body: no word of it runs.
 _HEREDOC_DATA_PROGRAMS = frozenset({"cat", "tee"})
 
+#: Options that leave a stdin program running as it would bare (buffering, ``.pyc``
+#: writes, bytes warnings, site dirs). Lower-cased, as the self floors read lowered
+#: text; ``-U`` is no Python 3 option; ``-I`` lowers to ``-i`` and is not here.
+_PYTHON_INERT_OPTIONS = frozenset({"-u", "-b", "-s"})
+
 
 #: The call names a ``python -`` body may invoke as a top-level statement and still
 #: be inert: ``print`` writes to stdout; a ``Path(...)`` / ``open(...)`` write stores
@@ -1473,8 +1478,9 @@ def _heredoc_data_view(text_lower: str) -> str:
     """*text_lower* with each heredoc body that no shell or program runs blanked out.
 
     A body is data when bash expands nothing in it (a quoted tag, or no ``$``,
-    backtick or backslash in it) and its command is ``cat`` / ``tee`` or a bare
-    ``python [-]`` whose every statement only stores or prints
+    backtick or backslash in it) and its command is ``cat`` / ``tee`` or a
+    ``python [-]`` (options only from :data:`_PYTHON_INERT_OPTIONS`) whose every
+    statement only stores or prints
     (:func:`_python_body_is_data`), spelled as a bare word and the only command in
     the text. Every other body is kept, so ``bash <<'EOF'``, ``perl <<'EOF'`` and
     ``python3 script.py <<'EOF'`` are read as before. Nothing is blanked when the
@@ -1516,7 +1522,10 @@ def _heredoc_data_view(text_lower: str) -> str:
         if not argv or cmd.separator.startswith("|"):
             continue
         # The raw word, never a normalised one: ``$cat`` or ``/tmp/x/cat`` may run a shell.
-        python = _PYTHON_PROGRAM_RE.match(argv[0]) is not None and argv[1:] in ([], ["-"])
+        options = argv[1:-1] if argv[-1] == "-" else argv[1:]
+        python = _PYTHON_PROGRAM_RE.match(argv[0]) is not None and all(
+            word.lower() in _PYTHON_INERT_OPTIONS for word in options
+        )
         if argv[0] not in _HEREDOC_DATA_PROGRAMS and not python:
             continue
         for doc in cmd.heredocs:

@@ -90,6 +90,20 @@ def test_body_no_program_can_run_is_data(cmd):
     assert _denied_by(cmd) is None
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "python3 -u - <<'PY'\nn = a * localhost\nPY",
+        "python3 -u -B -s - <<'EOF'\nn = a * localhost\nEOF",
+        "python3 -u <<'EOF'\nn = a * localhost\nEOF",
+    ],
+)
+def test_python_options_that_run_nothing_keep_the_body_data(cmd):
+    """``-u``, ``-B`` and ``-s`` change buffering, ``.pyc`` writes and ``sys.path``,
+    not which program reads the body, so the body is data as for a bare ``python3 -``."""
+    assert _denied_by(cmd) is None
+
+
 #: Common heredoc forms: (opener, prefix of each body line, closing line). ``<<-``
 #: strips leading tabs from the body and the closing line.
 _COMMON_FORMS = [
@@ -228,14 +242,13 @@ def test_body_a_program_can_run_stays_argv(cmd):
         "python3 -c x <<EOF\nssh -p 22 localhost id\nEOF",
         "python3 -m x <<EOF\nssh -p 22 localhost id\nEOF",
         "python3 -c x - <<'EOF'\nssh -p 22 localhost id\nEOF",
-        # Python reads stdin as its program only when the line names ``-``.
+        # A body that is not Python the view can prove inert stays argv.
         "python3 <<'EOF'\nssh -p 22 localhost id\nEOF",
-        # Main's reader keeps these: it blanks a ``python`` body only for a bare
-        # ``python [-]`` that is the only command on the line, so any option, a
-        # leading ``cd``, a second command or a stored script keeps the body.
-        "python3 -u - <<'PY'\nn = a * localhost\nPY",
-        "python3 -u -B -s - <<'EOF'\nn = a * localhost\nEOF",
-        "python3 -u <<'EOF'\nn = a * localhost\nEOF",
+        # The reader blanks a ``python`` body only for a ``python [-]`` with no
+        # option but ``-u``, ``-B`` or ``-s`` that is the only command on the line,
+        # so another option, a leading ``cd``, a second command or a stored script
+        # keeps the body, and so does a body Python cannot read as inert.
+        "python3 -u -B -s - <<'EOF'\nssh -p 22 localhost id\nEOF",
         "cd /w && python3 - <<'EOF'\nn = a * localhost\nEOF",
         "cat > s.py <<'EOF'\nn = a * localhost\nEOF\npython3 s.py",
         "cd /w && cat > s.py <<'EOF'\nn = a * localhost\nEOF\npython3 s.py",

@@ -1416,7 +1416,13 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     here-document body that no program on the line runs. When the view blanked a body
     and the blanked line reaches no ssh to this host, the line is allowed, so
     `python3 - <<'EOF'` with `n = a * localhost` in the body is not read as a glob
-    verb naming ssh and its target. The view is read on the words as written and
+    verb naming ssh and its target. The view takes a `python` body only when the
+    command has no option but `-u`, `-B` or `-s` (`python3 -u -B -s -`), matched in
+    any case (the self floors read lowered text). These options change buffering,
+    `.pyc` writes, bytes warnings and `sys.path`, not which program reads the body;
+    `-U` is a usage error in Python 3. Any other option (`-I`, read lowered as `-i`,
+    among them), a leading `cd`, a second command or a stored script keeps the body.
+    The view is read on the words as written and
     only then lowered, because bash matches a closing line case-sensitively; when
     the words as written are not at hand, the view is not taken. The view is also
     skipped, and the whole line read as before, when the text holds a `\r` (the view drops one from a tag but not from
