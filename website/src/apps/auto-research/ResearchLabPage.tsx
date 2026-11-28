@@ -136,10 +136,11 @@ function StateBadge({ status }: { status: string }) {
 
 function FindingCard({ f }: { f: Finding }) {
   const [open, setOpen] = useState(false)
+  const detailRegionId = useId()
   return (
     <div className="border border-border rounded-md p-3 mb-2 bg-card">
-      <Clickable className="flex items-start gap-2" onClick={() => setOpen(!open)}>
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      <Clickable className="flex items-start gap-2" aria-expanded={open} aria-controls={detailRegionId} onClick={() => setOpen(!open)}>
+        {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.cycle')} {f.cycle}</span>
@@ -150,7 +151,7 @@ function FindingCard({ f }: { f: Finding }) {
         </div>
       </Clickable>
       {open && (
-        <div className="mt-2 pl-5 text-sm space-y-1">
+        <div id={detailRegionId} className="mt-2 pl-5 text-sm space-y-1">
           <p className="text-muted">{f.summary}</p>
           {f.sources_checked?.length > 0 && <div><span className="text-xs font-medium text-muted">{i18nT('apps.autoResearch.researchLabPage.sources')}</span>{f.sources_checked.map((s, i) => <div key={i} className="text-xs ml-2">• {s}</div>)}</div>}
           {f.sources_empty?.length > 0 && <div><span className="text-xs font-medium text-muted">{i18nT('apps.autoResearch.researchLabPage.searched_empty')}</span>{f.sources_empty.map((s, i) => <div key={i} className="text-xs ml-2 italic">• {s}</div>)}</div>}
@@ -626,6 +627,7 @@ function ReportSections({ report }: { report: string }) {
 function SubQuestionAdder({ id, campaign }: { id: string; campaign: Campaign }) {
   const [text, setText] = useState('')
   const [open, setOpen] = useState(false)
+  const guidanceRegionId = useId()
   const qc = useQueryClient()
   const addMut = useMutation({ mutationFn: (t: string) => api.researchAddQuestion(id, t), onSuccess: () => { setText(''); qc.invalidateQueries({ queryKey: ['research-campaign', id] }) } })
   const subs: Array<{ text: string; origin?: string; status?: string }> = (() => { try { return JSON.parse(campaign.sub_questions || '[]') } catch { return [] } })()
@@ -634,10 +636,10 @@ function SubQuestionAdder({ id, campaign }: { id: string; campaign: Campaign }) 
   if (!ACTIVE_STATUSES.includes(campaign.status)) return null
   const originLabel = (o?: string) => o === 'manual' ? i18nT('apps.autoResearch.researchLabPage.your_guidance') : o === 'emergent' ? i18nT('apps.autoResearch.researchLabPage.emergent') : (o || 'grill')
   return <div className="mb-4">
-    <Clickable className="flex items-center gap-1 text-sm font-medium" onClick={() => setOpen(!open)}>
-      {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {i18nT('apps.autoResearch.researchLabPage.sub_questions_guidance_count', { count: subs.length })}
+    <Clickable className="flex items-center gap-1 text-sm font-medium" aria-expanded={open} aria-controls={guidanceRegionId} onClick={() => setOpen(!open)}>
+      {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />} {i18nT('apps.autoResearch.researchLabPage.sub_questions_guidance_count', { count: subs.length })}
     </Clickable>
-    {open && <div className="mt-2 pl-4 space-y-1">
+    {open && <div id={guidanceRegionId} className="mt-2 pl-4 space-y-1">
       {subs.map((s, i) => <div key={i} className="text-xs flex items-center gap-1.5">
         {s.status === 'answered' ? <CheckCircle size={10} className="text-ok" /> : <HelpCircle size={10} className="text-muted" />}
         <span>{s.text}</span>
@@ -684,6 +686,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen, anotherActive }: { id: str
   const [nudgeText, setNudgeText] = useState('')
   const [answerText, setAnswerText] = useState('')
   const [questionExpanded, setQuestionExpanded] = useState(false)
+  const questionRegionId = useId()
   const [showReport, setShowReport] = useState(false)
   const reportRegionId = useId()
   // In-app dialog, NOT window.confirm: the native confirm is synchronous and
@@ -744,9 +747,9 @@ function CampaignDetail({ id, onBack, onFork, onOpen, anotherActive }: { id: str
     {campaign.question && (() => {
       const isLong = campaign.question.length > 280
       return <div className="mb-4">
-        <div className={`text-sm text-muted break-words ${isLong && !questionExpanded ? 'line-clamp-3' : ''}`}>{campaign.question}</div>
-        {isLong && <button className="text-xs text-accent mt-1 inline-flex items-center gap-0.5" onClick={() => setQuestionExpanded(v => !v)}>
-          {questionExpanded ? <><ChevronDown size={12} /> {i18nT('apps.autoResearch.researchLabPage.show_less')}</> : <><ChevronRight size={12} /> {i18nT('apps.autoResearch.researchLabPage.show_more')}</>}
+        <div id={questionRegionId} className={`text-sm text-muted break-words ${isLong && !questionExpanded ? 'line-clamp-3' : ''}`}>{campaign.question}</div>
+        {isLong && <button type="button" className="text-xs text-accent mt-1 inline-flex items-center gap-0.5" aria-expanded={questionExpanded} aria-controls={questionRegionId} onClick={() => setQuestionExpanded(v => !v)}>
+          {questionExpanded ? <><ChevronDown size={12} aria-hidden="true" /> {i18nT('apps.autoResearch.researchLabPage.show_less')}</> : <><ChevronRight size={12} aria-hidden="true" /> {i18nT('apps.autoResearch.researchLabPage.show_more')}</>}
         </button>}
       </div>
     })()}
