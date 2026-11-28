@@ -169,55 +169,12 @@ def _backend_name(backend: str) -> str:
 async def _failover_backend(
     raw: str, verdict: str, available: list[str]
 ) -> tuple[str | None, tuple[str, ...]]:
-    """Walk ``agent.acp_failover``'s chain from *raw* to a member that can start.
+    """Walk ``agent.acp_failover``'s chain from *raw* to a member that can start
+    (:func:`kiro_crew.acp_failover_chain.failover_successor`, shared with the
+    run-time hop)."""
+    from kiro_crew.acp_failover_chain import failover_successor
 
-    Returns ``(backend id, ())`` on a hop, else ``(None, tried)`` where *tried* is
-    the chain members the walk tried and found unable to start, in order, so the
-    refusal names only what it checked: empty when the policy did not apply or
-    *raw* is the chain's last member. The walk advances by index, never revisits a member, and stops
-    after ``len(chain)`` hops. Chain names are config spelling, read through
-    ``backend_from_stored`` (``"kiro"`` is Kiro's ``""``). A member outside
-    *available* is never started: *available* is this spawn's fresh,
-    governance-narrowed probe, so a member a ceiling denied since the block was
-    written is not even probed. The config read is ``KiroCrewConfig.load``'s
-    fingerprint-checked cache, not a re-parse of ``config.json``.
-    """
-    from kiro_crew.acp_backends import backend_from_stored
-    from kiro_crew.acp_failover import failover_policy, next_failover_backend
-    from kiro_crew.config import KiroCrewConfig
-
-    policy = failover_policy((await asyncio.to_thread(KiroCrewConfig.load)).agent.acp_failover)
-    if not policy.enabled or raw not in policy.chain or verdict not in policy.triggers:
-        return None, ()
-    current, seen = raw, {raw}
-    tried: list[str] = []
-    for _ in range(len(policy.chain)):
-        nxt = next_failover_backend(
-            current=current, chain=policy.chain, triggers=policy.triggers, verdict=verdict
-        )
-        if nxt is None or nxt in seen:
-            break
-        seen.add(nxt)
-        candidate = backend_from_stored(nxt)
-        if isinstance(candidate, str) and candidate in available:
-            if not _lts_kiro_successor(candidate):
-                return candidate, ()
-        tried.append(nxt)
-        current = nxt
-    return None, tuple(tried)
-
-
-def _lts_kiro_successor(backend: str) -> bool:
-    """Whether *backend* is the Kiro CLI harness offered as an AUTOMATIC successor in an
-    LTS build, which never takes one (RFC D6).
-
-    The Kiro CLI harness is being retired, so an LTS build runs it only as an
-    explicit pick the policy allows, never as a failover target. ``False`` in ``oss``.
-    """
-    from kiro_crew import edition
-    from kiro_crew.acp_backends import ACP_BACKEND_KIRO
-
-    return edition.is_lts() and backend == ACP_BACKEND_KIRO
+    return await failover_successor(raw, verdict, available)
 
 
 def _chain_note(tried: tuple[str, ...]) -> str:
@@ -272,7 +229,8 @@ async def _requested_backend(
     an agent's retry picks a backend that works.
     """
     from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND, selectable_backend_values
-    from kiro_crew.agent_sdk.backend_install import MISSING, probe_backend
+    from kiro_crew.acp_failover_chain import can_start
+    from kiro_crew.agent_sdk.backend_install import probe_backend
 
     if raw is None or raw == "":
         return None, None, None
@@ -282,9 +240,7 @@ async def _requested_backend(
     states = await asyncio.to_thread(lambda: {b: probe_backend(b) for b in selectable})
     # Installed after the gateway started (``restart_required``): the gateway
     # still holds the cached absence, so a start now would fail like a missing one.
-    available = [
-        b for b in selectable if states[b].installed != MISSING and not states[b].restart_required
-    ]
+    available = [b for b in selectable if can_start(states[b])]
     names = sorted(POLICY_ID_BY_BACKEND.get(b, b) for b in available)
     backend = by_name.get(raw) if isinstance(raw, str) else None
     backend = _kiro_cli_pick(backend, available)

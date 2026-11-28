@@ -24,19 +24,17 @@ from typing import Sequence
 
 logger = logging.getLogger(__name__)
 
-#: The verdicts a failover chain may react to: the two refusal codes of the
-#: spawn-time probe in ``dashboard/messaging_api/spawn.py``. A spent allowance
-#: (``usage_limit``) or a rejected login (``auth``) surfaces only once a run's
-#: first request reaches the vendor, and nothing in this phase reads them, so
-#: accepting them here would publish a key that does nothing. They join this set
-#: in the same change that adds their consumer. Transient faults (``throttle``,
+#: The verdicts a failover chain may react to, by where they are read. The
+#: spawn-time ones are the two refusal codes of the probe in
+#: ``dashboard/messaging_api/spawn.py``. The runtime ones are the terminal
+#: verdicts a run's first request can get from the vendor: a spent allowance
+#: (``usage_limit``) and a rejected login (``auth``), read by
+#: ``acp_failover_chain.runtime_hop_verdict``. Transient faults (``throttle``,
 #: ``http_5xx``, ``connection``) never belong here: they are the same-backend
 #: retry ladder's job.
-FAILOVER_TRIGGERS: tuple[str, ...] = ("backend_not_installed", "backend_restart_required")
-
-#: Accepted spellings that are not active yet, named in the refusal so an
-#: operator reading the error learns why rather than guessing a typo.
-_NOT_YET_ACTIVE = ("auth", "usage_limit")
+SPAWN_TRIGGERS: tuple[str, ...] = ("backend_not_installed", "backend_restart_required")
+RUNTIME_TRIGGERS: tuple[str, ...] = ("usage_limit", "auth")
+FAILOVER_TRIGGERS: tuple[str, ...] = SPAWN_TRIGGERS + RUNTIME_TRIGGERS
 
 
 @dataclass(frozen=True)
@@ -102,8 +100,8 @@ class AcpFailoverConfig:
             if unknown:
                 raise ValueError(
                     f"agent.acp_failover.triggers may only contain {list(FAILOVER_TRIGGERS)};"
-                    f" rejected {unknown}. {list(_NOT_YET_ACTIVE)} are not active yet,"
-                    " and a transient fault is the same-backend retry ladder's job"
+                    f" rejected {unknown}. A transient fault is the same-backend retry"
+                    " ladder's job"
                 )
             triggers = tuple(t for t in FAILOVER_TRIGGERS if t in wanted)
 
@@ -133,7 +131,7 @@ def next_failover_backend(
     """The chain member right after *current*, when *verdict* is a configured trigger.
 
     ``None`` when there is no hop to make: *verdict* is not a configured trigger
-    (or not one this phase consumes), *current* is not in *chain*, or it is the
+    (or not one any caller consumes), *current* is not in *chain*, or it is the
     last member. One hop per call; the caller walks the chain by index, never
     revisits a member, and stops after ``len(chain)`` hops.
     """

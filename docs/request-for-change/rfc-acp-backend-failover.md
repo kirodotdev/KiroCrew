@@ -1,10 +1,10 @@
 ---
 title: ACP backend failover — an opt-in chain a sub-agent spawn falls through when its backend cannot start
-status: partial
+status: implemented
 author: severity1
 created: 2026-11-02
-last-audited: 2026-11-20
-audited-at: 0c5d8bd5f3
+last-audited: 2026-11-25
+audited-at: fef0750255
 doc-pr: 27581
 implementation-prs: [26123]
 tracking-issues: [13892]
@@ -14,10 +14,14 @@ superseded-by: []
 
 # RFC: ACP Backend Failover
 
-> **Status:** `partial`. Phase 1 is on main from
+> **Status:** `implemented`. Phase 1 is on main from
 > [#26123](https://github.com/kirodotdev/KiroCrew/pull/26123), merged
 > 2026-11-02 (`src/kiro_crew/acp_failover.py`, called from
-> `dashboard/messaging_api/spawn.py`); Phase 2 is not started. A maintainer signed
+> `dashboard/messaging_api/spawn.py`). Phase 2 is the run-time hop in
+> `src/kiro_crew/acp_failover_chain.py`, called from
+> `subagent_manager/run_lifecycle.py` and `subagent_manager/cancellation.py`,
+> for runs that named their backend; what it leaves for later is tracked in
+> [#42303](https://github.com/kirodotdev/KiroCrew/issues/42303). A maintainer signed
 > off on this design in the approving review of [#27581](https://github.com/kirodotdev/KiroCrew/pull/27581), the pull
 > request that merged this document. In #26123 maintainer bolichen97 asked for this document to land first, as its own
 > change, and recorded two decisions on that pull request
@@ -136,7 +140,8 @@ change that adds the consumer.
 
 `src/kiro_crew/acp_failover.py` holds a pure resolver,
 `next_failover_backend(*, current, chain, triggers, verdict) -> str | None`,
-with no gateway imports. `_requested_backend`
+with no gateway imports, and `src/kiro_crew/acp_failover_chain.py` holds
+the chain walk both phases share. `_requested_backend`
 (`dashboard/messaging_api/spawn.py`) calls it, through `_failover_backend`, when the chosen backend
 is unavailable with a configured trigger, and walks forward to the first chain
 member that probes available. The walk advances by index, never revisits a
