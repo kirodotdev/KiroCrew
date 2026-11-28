@@ -642,6 +642,8 @@ export function ArtifactDetailPageBody({
             anchored add for markdown/text via the selection composer above). */}
         {panel === 'comments' && (
           <CommentsSidebar
+            // Per artifact: a box left open on the last one must not post here.
+            key={slug}
             comments={durableComments}
             onDraftDirtyChange={onSidebarDraftDirtyChange}
             discardSignal={sidebarDiscardSignal}
@@ -717,6 +719,8 @@ export function ArtifactDetailPageBody({
 
       {openThread && (
         <CommentThreadPopover
+          // Per artifact too: a reply typed on the last one must not count as a draft here.
+          key={slug}
           comments={durableComments}
           rootId={openThread.rootId}
           rect={openThread.rect}

@@ -626,6 +626,8 @@ export default function RemoteArtifactDetailPage() {
 
           {sidebarOpen && (
             <CommentsSidebar
+              // Per artifact, like the toolbars above: a box left open on A must not post to B.
+              key={`${provider}/${externalId}`}
               comments={comments}
               loading={commentsQuery.isFetching}
               remoteSyncError={remoteSyncError}

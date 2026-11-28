@@ -23,6 +23,7 @@ import { anchorFromRange } from '../utils/selectionAnchor'
 import { paintAnnotationHighlight } from '../utils/annotationHighlight'
 import { useSelectionComposerAnchor } from '../hooks/useSelectionComposerAnchor'
 import { announceCommentsChanged, onCommentsChanged } from '../utils/artifactCommentsSync'
+import { usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import type { ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -286,12 +287,33 @@ export function useArtifactDetailPageComposer({
   // cost, accepted by the owner: if the create then fails, the discarded draft
   // is gone even though the page stayed.
   const sidebarDraftDirtyRef = useRef(false)
-  const onSidebarDraftDirtyChange = useCallback((dirty: boolean) => { sidebarDraftDirtyRef.current = dirty }, [])
   // The floating thread popover's reply and edit boxes count the same way; a
   // confirmed discard closes the popover, which drops its text.
   const threadDraftDirtyRef = useRef(false)
-  const onThreadDraftDirtyChange = useCallback((dirty: boolean) => { threadDraftDirtyRef.current = dirty }, [])
+  // Both refs as state, for the browser Back guard, which must know before any gesture.
+  const [sidebarDraftAtStake, setSidebarDraftAtStake] = useState(false)
+  const syncSidebarDraftStake = useCallback(() => {
+    setSidebarDraftAtStake(sidebarDraftDirtyRef.current || threadDraftDirtyRef.current)
+  }, [])
+  const onSidebarDraftDirtyChange = useCallback((dirty: boolean) => {
+    sidebarDraftDirtyRef.current = dirty
+    syncSidebarDraftStake()
+  }, [syncSidebarDraftStake])
+  const onThreadDraftDirtyChange = useCallback((dirty: boolean) => {
+    threadDraftDirtyRef.current = dirty
+    syncSidebarDraftStake()
+  }, [syncSidebarDraftStake])
   const [sidebarDiscardSignal, setSidebarDiscardSignal] = useState(0)
+  const discardSidebarDrafts = useCallback(() => {
+    if (sidebarDraftDirtyRef.current) {
+      sidebarDraftDirtyRef.current = false
+      setSidebarDiscardSignal((n) => n + 1)
+    }
+    if (threadDraftDirtyRef.current) {
+      threadDraftDirtyRef.current = false
+      setOpenThread(null)
+    }
+  }, [])
   const [composerResetNonce, setComposerResetNonce] = useState(0)
   // The remount lands on the next commit; until then the hook still reports
   // the discarded box as dirty, which must not count as a new draft.
@@ -300,17 +322,7 @@ export function useArtifactDetailPageComposer({
   const discardDraftsBeforeLeaving = useCallback((): Promise<boolean> => new Promise((resolve) => {
     const sidebar = sidebarDraftDirtyRef.current || threadDraftDirtyRef.current
     const composer = hasCommentDraft() && !composerDiscardPendingRef.current
-    const discardSidebar = () => {
-      if (!sidebar) return
-      if (sidebarDraftDirtyRef.current) {
-        sidebarDraftDirtyRef.current = false
-        setSidebarDiscardSignal((n) => n + 1)
-      }
-      if (threadDraftDirtyRef.current) {
-        threadDraftDirtyRef.current = false
-        setOpenThread(null)
-      }
-    }
+    const discardSidebar = () => { if (sidebar) discardSidebarDrafts() }
     if (composer) {
       // One prompt covers both: the hook asks and clears the composer's slot.
       let ok = false
@@ -338,7 +350,17 @@ export function useArtifactDetailPageComposer({
     } else {
       resolve(true)
     }
-  }), [confirmDiscardDraft, guardCommentDraft, hasCommentDraft, clearSelectionState])
+  }), [confirmDiscardDraft, guardCommentDraft, hasCommentDraft, clearSelectionState, discardSidebarDrafts])
+  // Leaving loses the sidebar's and the popover's unsent text, opening another
+  // artifact included (both mount fresh for it), so a shell exit asks first, as
+  // the editor's buffer does, and is repeated after a discard. The composer's
+  // draft waits under its artifact's key, so it is not asked about here.
+  useRegisterNavigationLeaveGuard(() => {
+    if (!sidebarDraftDirtyRef.current && !threadDraftDirtyRef.current) return true
+    void confirmDiscardDraft().then((ok) => { if (ok) discardSidebarDrafts() })
+    return false
+  })
+  usePublishNavigationStake(sidebarDraftAtStake)
   const guardSendToSession = useCallback((proceed: (recheck: (go: () => void) => void) => void | Promise<void>) => {
     if (popout) { void proceed((go) => go()); return }
     void (async () => {
