@@ -1083,8 +1083,15 @@ def remove_tree_pinned(
     approve: Callable[[int, PinnedTree], str | None],
     refusal: type[Exception] = PinnedPathRefusal,
     keep_until_empty: str | None = None,
+    pinned_parent: int | None = None,
 ) -> TreeRemoval:
     """Remove the directory *resolved_path* and everything in it, by descriptor throughout.
+
+    *pinned_parent* is an already-pinned descriptor for the target's parent. With it the
+    target's name (the last component of *resolved_path*) is opened relative to that
+    descriptor and no ancestor is resolved or walked again; the caller keeps ownership of
+    the descriptor and closes it. Without it the parent chain is pinned here, from
+    *resolved_path*.
 
     The whole-tree counterpart of the pieces above, for callers whose answer to "what may
     be deleted here" is "all of it" -- a directory they have already established holds
@@ -1143,7 +1150,10 @@ def remove_tree_pinned(
     target = Path(resolved_path)
     if target.parent == target:
         raise refusal(f"refusing to remove the {what}: {resolved_path!r} has no parent")
-    parent_fd = pin_parent(str(target.parent), what=what, refusal=refusal)
+    if pinned_parent is None:
+        parent_fd = pin_parent(str(target.parent), what=what, refusal=refusal)
+    else:
+        parent_fd = pinned_parent
     try:
         try:
             root_fd = os.open(target.name, dir_flags(), dir_fd=parent_fd)
@@ -1282,7 +1292,9 @@ def remove_tree_pinned(
         finally:
             close_all((root_fd,))
     finally:
-        close_all((parent_fd,))
+        # A descriptor the caller handed in stays the caller's to close.
+        if pinned_parent is None:
+            close_all((parent_fd,))
 
 
 def _remove_with_deferred_entry(

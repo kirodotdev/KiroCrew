@@ -338,6 +338,7 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
                 "--mode",
                 "replace",
                 "--force",
+                "--include-skills",
                 "--components",
                 "workspace,skills",
                 *unpinnable_argv(),
@@ -498,7 +499,15 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
 
         monkeypatch.setattr(snap, "_copytree_safe", flaky)
         rc = snap.restore_main(
-            [str(bundle), "--mode", "replace", "--force", "--components", "skills"]
+            [
+                str(bundle),
+                "--mode",
+                "replace",
+                "--force",
+                "--include-skills",
+                "--components",
+                "skills",
+            ]
         )
         assert rc == 1
         assert live_skill.is_file(), "the live skills tree was not put back"
