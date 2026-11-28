@@ -316,8 +316,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         _drop_trust_grant(name)
         # Drop any host-exec grant too, for the same name-reuse reason: a grant left
         # behind would authorize a pod for a different app later installed under this
-        # name. Best-effort and no-op unless this app runs code outside the sandbox.
-        revoke_host_exec(name)
+        # name. A no-op unless this app runs code outside the sandbox; a revoke that leaves
+        # the marker refuses the uninstall like any other step here.
+        if not revoke_host_exec(name):
+            raise OSError(f"could not revoke the host-exec grant for {name!r}")
         # And its worker auto-approve grants, so none outlives the app.
         revoke_worker_auto_approve(name)
     except Exception as exc:  # noqa: BLE001 - refuse rather than half-uninstall
