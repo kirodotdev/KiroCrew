@@ -200,11 +200,11 @@ class TestTheGate:
         assert "Regression" not in capsys.readouterr().out
 
     @pytest.mark.asyncio
-    async def test_a_scenario_that_passed_before_and_fails_at_the_same_score_exits_1(
+    async def test_a_turn_that_errors_lowers_the_score_and_is_a_regression(
         self, tmp_path: Path, replies: list[str], capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Turn one holds its assertion and turn two errors, which records no assertion
-        # result, so the score stays 1/1 = 1.00 while the scenario fails.
+        # Turn one holds its assertion and turn two errors, which fails the assertion it
+        # would have checked, so the score falls to 1/2 = 0.50 against a saved 1.00.
         doc = {
             "name": "alpha",
             "sessions": [
@@ -224,7 +224,7 @@ class TestTheGate:
                 baseline=str(_baseline(tmp_path, alpha="2/2")),
             )
         assert exc.value.code == 1
-        assert "no worse than the baseline" not in capsys.readouterr().out
+        assert "Regression: alpha: 1.00 -> 0.50 (allowed drop 0.00)" in capsys.readouterr().out
 
     @pytest.mark.asyncio
     async def test_a_failure_the_baseline_has_no_score_for_still_exits_1(
@@ -474,6 +474,81 @@ class TestMaxDrop:
         replies.append("ok")
         await _run(eval_dir=str(_scenarios(tmp_path, _doc("alpha", ["ok"]))), max_drop="0.1")
         assert capsys.readouterr().err.count("--max-drop ignored: it needs --baseline") == 1
+
+
+def _judge_only(name: str) -> dict[str, Any]:
+    """A one-turn scenario whose only assertion is a judge one."""
+    turns = [{"user": "say it", "assertions": [{"type": "judge", "value": "is kind"}]}]
+    return {"name": name, "sessions": [{"name": "only", "turns": turns}]}
+
+
+class TestNotEvaluated:
+    """A scenario whose only assertions are judge ones checks nothing without --judge."""
+
+    @pytest.mark.asyncio
+    async def test_it_is_never_a_pass_and_exits_1(
+        self, tmp_path: Path, replies: list[str], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        replies.append("ok")
+        with pytest.raises(SystemExit) as exc:
+            await _run(eval_dir=str(_scenarios(tmp_path, _judge_only("alpha"))))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "## SKIP alpha" in out and "## PASS alpha" not in out
+        assert "Overall: 0/1 scenarios passed, 1 not evaluated" in out
+        saved = json.loads(next((tmp_path / "eval_results").glob("*.json")).read_text("utf-8"))
+        row = saved["scenarios"][0]
+        assert (row["passed"], row["assertions"], row["not_run"]) == (False, "0/0", 1)
+        assert row["not_evaluated"] is True
+        assert baseline.scenario_score(row) is None
+
+    @pytest.mark.asyncio
+    async def test_against_a_baseline_that_scored_it_it_is_a_regression(
+        self, tmp_path: Path, replies: list[str], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        replies.append("ok")
+        target = tmp_path / "eval.xml"
+        with pytest.raises(SystemExit):
+            await _run(
+                eval_dir=str(_scenarios(tmp_path, _judge_only("alpha"))),
+                baseline=str(_baseline(tmp_path, alpha="1/1")),
+                junit=str(target),
+            )
+        out = capsys.readouterr().out
+        assert "Regression: alpha: 1.00 -> not evaluated" in out
+        assert "Not compared: alpha" not in out
+        text = target.read_text(encoding="utf-8")
+        assert 'failures="1"' in text and "<skipped" not in text
+        assert 'message="not evaluated; the baseline scored 1.00"' in text
+
+    @pytest.mark.asyncio
+    async def test_junit_skips_it_when_nothing_scored_it_before(
+        self, tmp_path: Path, replies: list[str]
+    ) -> None:
+        replies.extend(["ok", "ok"])
+        target = tmp_path / "eval.xml"
+        with pytest.raises(SystemExit):
+            await _run(
+                eval_dir=str(_scenarios(tmp_path, _judge_only("a"), _doc("b", ["ok"]))),
+                junit=str(target),
+            )
+        text = target.read_text(encoding="utf-8")
+        assert 'tests="2" failures="0" skipped="1"' in text
+        assert '<skipped message="1 judge assertion(s) not checked without --judge"/>' in text
+
+    @pytest.mark.asyncio
+    async def test_an_errored_one_is_a_failure_not_a_skip(
+        self, tmp_path: Path, replies: list[str]
+    ) -> None:
+        replies.append(_BROKEN_TURN)
+        target = tmp_path / "eval.xml"
+        with pytest.raises(SystemExit):
+            await _run(eval_dir=str(_scenarios(tmp_path, _judge_only("alpha"))), junit=str(target))
+        saved = json.loads(next((tmp_path / "eval_results").glob("*.json")).read_text("utf-8"))
+        row = saved["scenarios"][0]
+        assert "not_evaluated" not in row and baseline.scenario_score(row) == 0.0
+        text = target.read_text(encoding="utf-8")
+        assert 'failures="1"' in text and "<skipped" not in text
 
 
 class TestJunit:
@@ -731,6 +806,9 @@ class TestScores:
             ({"passed": False, "assertions": "x/y"}, 0.0),
             ({"passed": False, "assertions": "1" * 40 + "/3"}, 0.0),
             ({"assertions": "1/2"}, 0.5),
+            ({"passed": False, "assertions": "0/0", "not_run": 2, "not_evaluated": True}, None),
+            ({"passed": False, "assertions": "0/0", "not_run": 2}, 0.0),
+            ({"passed": False, "assertions": "1/2", "not_run": 1}, 0.5),
             ({"name": "n"}, None),
             ("text", None),
         ],
