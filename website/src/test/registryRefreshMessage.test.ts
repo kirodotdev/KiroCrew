@@ -171,6 +171,18 @@ describe('a private GitHub registry the GitHub CLI could not read', () => {
   })
 })
 
+describe('a refused sign-in', () => {
+  it('suggests restarting the gateway for a closed SSH agent socket before renewing credentials', () => {
+    for (const key of ['refresh_sign_in_refused', 'refresh_sign_in_refused_no_host']) {
+      const text = i18next.t(`components.registryManager.${key}`, { host: 'git.example.com', names: 'team' })
+      expect(text).toContain('restart the gateway')
+      expect(text).toContain('SSH agent socket')
+      expect(text).toContain('renew the git credentials')
+      expect(text).not.toContain("won't fix")
+    }
+  })
+})
+
 describe('registryRefreshFailureMessage in Japanese', () => {
   afterEach(async () => { await i18next.changeLanguage('en') })
 

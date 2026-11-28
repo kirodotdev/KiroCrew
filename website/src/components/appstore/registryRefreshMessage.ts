@@ -7,8 +7,9 @@
  * `cause` on a listing or registries-list status) and the `host` from its
  * configured URL. A cause the user can fix gets a leading sentence per remedy
  * and host: a host name that did not resolve (connect to the VPN), an SSH host
- * key this machine does not trust (known_hosts), a refused sign-in (renew the
- * credentials; restarting the gateway does nothing), a host that could not
+ * key this machine does not trust (known_hosts), a refused sign-in (restart the
+ * gateway when its SSH agent socket may have closed, else renew the
+ * credentials), a host that could not
  * be reached, and a private GitHub repository the GitHub CLI on the gateway's
  * computer could not read (`gh_missing`, `gh_signed_out`, `gh_no_access`, which
  * come with `repo` as `owner/repo`). Every failure keeps the plain line after them.
