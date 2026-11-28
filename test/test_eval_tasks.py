@@ -785,9 +785,12 @@ def test_an_interrupted_arm_is_stopped_before_the_interrupt_propagates(tmp_path,
     dirs = tasks.RunDirs(tmp_path / "r")
     dirs.repo.mkdir()
     pid_file = tmp_path / "arm.pid"
+    # Staged and renamed into place, so ``arm.pid`` only ever appears complete: the
+    # wait below keys on its existence, and a plain write can be seen empty.
     arm = (
         "import os, time\n"
-        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        f"open({str(pid_file) + '.tmp'!r}, 'w').write(str(os.getpid()))\n"
+        f"os.replace({str(pid_file) + '.tmp'!r}, {str(pid_file)!r})\n"
         "time.sleep(600)\n"
     )
 
