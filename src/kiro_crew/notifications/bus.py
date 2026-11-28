@@ -79,6 +79,11 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # write for a human decision. Default priority -- nothing is blocked, the
     # app keeps working on the version it has.
     "system.apps": _DEFAULT_PRIORITY,
+    # The gateway's own update notices (legacy kind "update"): an update that
+    # needs a step from the user, and an agent asking to update the app. Its own
+    # channel so muting them leaves system.agent alone; its settings start as a
+    # copy of system.agent's (notifications/settings.py). Default priority.
+    "system.update": _DEFAULT_PRIORITY,
     # A chat turn that DIED with an error the user must act on -- a provider
     # 5xx / throttle, a content-filter refusal, or a terminal transport death
     # ("start a new chat" / "please retry"). Without it the only trace of a
@@ -105,6 +110,9 @@ SYSTEM_CHANNELS: dict[str, str] = {
 # ``kind`` stays "agent" so the feed badge, stat cards and per-kind sound are
 # unchanged; only the mute/priority channel moves.
 MONITOR_CHANNEL = "system.monitor"
+
+# The channel legacy kind "update" maps to; named for the settings seed.
+UPDATE_CHANNEL = "system.update"
 
 # Fallback channel for legacy kinds that have no dedicated system channel
 # (defensive: nothing emits unknown kinds today, but old JSONL rows might).

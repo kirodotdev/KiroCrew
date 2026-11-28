@@ -236,6 +236,9 @@ const CHANNEL_LABELS: Record<string, () => string> = {
   // opposite of what muting it does, which is silence only the gateway's
   // "a newer version is published" notes.
   'system.apps': () => i18nT('pages.settings.notificationsPanel.channel_apps'),
+  // The bare id "update" reads as a button; this channel carries the product's
+  // own update notices, from the gateway and from an agent asking to update.
+  'system.update': () => i18nT('pages.settings.notificationsPanel.channel_update'),
   // The bare id is "turn", which reads as the "turn" sound category (conversation
   // handoffs) and is jargon besides -- this channel carries the bell entry a chat
   // raises when it STOPS with an error, so it is labelled in task language.
@@ -269,6 +272,7 @@ const CHANNEL_TIP_KEY: Record<string, string> = {
   'system.terminal': 'pages.settings.notificationsPanel.channel_tip_terminal',
   'system.member': 'pages.settings.notificationsPanel.channel_tip_member',
   'system.apps': 'pages.settings.notificationsPanel.channel_tip_apps',
+  'system.update': 'pages.settings.notificationsPanel.channel_tip_update',
   'system.turn': 'pages.settings.notificationsPanel.channel_tip_turn',
   'system.memory': 'pages.settings.notificationsPanel.channel_tip_memory',
   'system.relay': 'pages.settings.notificationsPanel.channel_tip_relay',
