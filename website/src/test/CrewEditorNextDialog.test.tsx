@@ -1066,6 +1066,19 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     expect(await within(approvals).findByTestId('next-approvals-runtime-failed')).toBeInTheDocument()
   })
 
+  it('points a saved spec that fails validation at a page reload, since the section has no reload control', async () => {
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW,
+      runtime: { status: 'failed', saved_revision: 'rev-1', sessions: [], error_code: 'materialization_pending' },
+    } as CapabilityView)
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-approvals'))
+    const approvals = await within(dialog).findByTestId('next-approvals')
+    const notice = await within(approvals).findByTestId('next-approvals-runtime-failed')
+    expect(notice).toHaveTextContent("Couldn't validate the saved configuration. Reload this page to retry.")
+    expect(notice).not.toHaveTextContent(/server/i)
+  })
+
   it('cascades: turning an MCP server off removes the server AND its auto-approved verbs', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-approvals'))

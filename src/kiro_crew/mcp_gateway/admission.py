@@ -90,6 +90,20 @@ def derive_spawn_gate_ceiling(configured_max: int, subagent_ceiling: int) -> int
     return max(configured, int(subagent_ceiling))
 
 
+def derive_resident_ceiling(configured_max: int, stubbed_servers: int) -> int:
+    """The pool's resident cap: ``mcp_gateway.max_backends``, raised to the
+    number of stubbed servers when that is higher.
+
+    Every stubbed server needs at least one pooled backend for any chat to use
+    it. With more stubbed servers than the cap (71 against the default 64 on a
+    real host), the servers past it were refused for capacity and their tools
+    were lost in every chat. Idle backends still drain after
+    ``idle_timeout_secs``, so the raised cap costs memory only while the servers
+    are in use.
+    """
+    return max(1, int(configured_max), int(stubbed_servers))
+
+
 #: How often a queued waiter's ``on_queued`` callback fires while it waits.
 #: This is the ``queued`` keepalive cadence a new stub renews its silence
 #: timer on; it must stay comfortably below the stub's 25 s silence window.
@@ -107,16 +121,16 @@ _OUTCOMES = frozenset({OUTCOME_SUCCESS, OUTCOME_FAILURE, OUTCOME_NEUTRAL})
 #: deadline and sets the done event; this only has to outlast that.
 _INIT_WATCH_GRACE_SECS = 1.0
 
-#: A successful initialize that took at least this fraction of its own
-#: deadline counts as slow: it was close to failing. Relative, so a server an
-#: operator gave a longer ``initialize_timeout_secs`` is judged against that.
-#: The deadline is the backend's effective one (``Backend.initialize_timeout_secs``,
-#: never below the cold-start floor), the same value its own reaper fires at.
+#: A successful initialize that took at least this fraction of the window its
+#: permit waited counts as slow: it nearly outran the permit. The window is the
+#: smaller of the backend's effective deadline (``Backend.initialize_timeout_secs``)
+#: and ``SPAWN_PERMIT_INIT_WINDOW_SECS``; a handshake that completes after the
+#: permit was freed is not seen by the gate at all.
 SLOW_INIT_FRACTION = 0.8
 
 #: Longest first-``initialize`` deadline a pool key gets after its spawns were
 #: reaped at the deadline (``Admission.initialize_timeout_for``).
-INIT_DEADLINE_STRETCH_CAP_SECS = 120.0
+INIT_DEADLINE_STRETCH_CAP_SECS = 240.0
 
 #: Most pool keys whose deadline reaps ``Admission`` remembers at once. A key
 #: that is reaped and never comes back ready would otherwise stay forever; past
@@ -132,6 +146,12 @@ def _reap_slot(key: Hashable) -> str:
     """
     return hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
 
+
+#: The window a spawn permit waits for the backend's first ``initialize``
+#: (``SpawnGate.watch_initialize``), shorter than the init deadline itself. The
+#: deadline is sized for a slow first ``npx`` / ``uvx`` run; a permit held for
+#: all of it would let four hung starts close the gate for minutes.
+SPAWN_PERMIT_INIT_WINDOW_SECS = 30.0
 
 #: Window over which slow inits are counted for the snapshot's ``slow_inits``,
 #: the gate's own latency evidence for the adaptive controller.
@@ -442,14 +462,19 @@ class SpawnGate:
         init_state: Callable[[], str],
         process_exited: Callable[[], Awaitable[Any]],
         timeout: float,
+        deadline: Optional[float] = None,
     ) -> asyncio.Task[None]:
         """Hold ``permit`` through the backend's first ``initialize``.
 
         ``ready`` is sent to the stub BEFORE the handshake is forwarded (the
         stub forwards kiro-cli's first frame), so the spawn path cannot await
         the handshake inline. This detached task does it: it waits ``timeout``
-        for ``init_done``; if the handshake is still in flight at that point the
-        backend's own deadline is about to fire, so it waits one more window.
+        for ``init_done``; if the handshake is still in flight at that point and
+        ``timeout`` is the backend's own deadline (``deadline`` unset or not
+        longer), that deadline is about to fire, so it waits one more window. A
+        ``timeout`` shorter than ``deadline`` is the whole hold: a handshake still
+        in flight then settles ``neutral`` and frees the slot, and the backend
+        keeps its own longer deadline.
         Outcomes: ``ready`` settles ``success``; a failed handshake settles
         ``failure`` and, because a failed backend is being reaped and may
         survive SIGKILL, holds the permit until ``process_exited`` returns or
@@ -459,7 +484,9 @@ class SpawnGate:
         included.
         """
         task = asyncio.create_task(
-            self._watch_initialize(permit, init_done, init_state, process_exited, timeout),
+            self._watch_initialize(
+                permit, init_done, init_state, process_exited, timeout, deadline
+            ),
             name=f"mcp-gateway-spawn-gate-watch-{permit.label[:24]}",
         )
         self._watchers.add(task)
@@ -478,12 +505,13 @@ class SpawnGate:
         init_state: Callable[[], str],
         process_exited: Callable[[], Awaitable[Any]],
         timeout: float,
+        deadline: Optional[float],
     ) -> None:
         # The process exiting is the other way the handshake provably never
         # arrives: a private backend is shut down the moment its stub leaves, and a
         # stub that left before ``initialize`` leaves ``init_done`` unset. The
-        # permit is freed then, not after the whole ``timeout`` (30 s at the
-        # cold-start floor), so abandoned spawns cannot hold every slot (default
+        # permit is freed then, not after the whole ``timeout`` (up to
+        # ``SPAWN_PERMIT_INIT_WINDOW_SECS``), so abandoned spawns cannot hold every slot (default
         # capacity four) while the session's real server starts queue behind them.
         exited = asyncio.ensure_future(process_exited())
         try:
@@ -491,7 +519,8 @@ class SpawnGate:
             if not done and exited.done():
                 permit.settle(OUTCOME_NEUTRAL)
                 return
-            if not done and init_state() == "in_flight":
+            window_is_deadline = deadline is None or timeout >= deadline
+            if not done and window_is_deadline and init_state() == "in_flight":
                 done = await self._wait_event(init_done, timeout + _INIT_WATCH_GRACE_SECS)
             state = init_state()
             if done and state == "ready":

@@ -377,6 +377,11 @@
     "pullRequestPanel": {
       "not_declared": "Este app não pode mostrar pull requests: suas permissões não declaram {{path}}."
     },
+    "fileTree": {
+      "not_declared": "Este app não pode mostrar os arquivos do projeto: suas permissões não declaram {{path}}.",
+      "refresh_failed": "Não foi possível atualizar a lista de arquivos; mostrando a última.",
+      "status_failed": "Não foi possível verificar quais arquivos mudaram, então os arquivos alterados não estão marcados."
+    },
     "projectPicker": {
       "not_declared": "Este app não pode mostrar o seletor de projetos: suas permissões não declaram {{path}}."
     },
@@ -25264,6 +25269,7 @@
     "sort_by_created": "Ordem: Criada · {{order}}",
     "sort_by_importance": "Ordem: Importância · {{order}}",
     "sort_by_key": "Ordem: Chave · {{order}}",
+    "sort_by_strength": "Ordem: Força · {{order}}",
     "sort_by_updated": "Ordem: Atualizada · {{order}}",
     "sort_by_value": "Ordem: {{value}}",
     "sort_hint_confidence": "Fatos, lições",
@@ -25322,7 +25328,28 @@
     "tip_source_user_explicit": "Escrito de propósito: por você nesta página ou pela ferramenta de memória do bot.",
     "tip_source_user_explicit_named": "Escrito de propósito: por você nesta página ou pela ferramenta de memória de {{bot}}.",
     "tip_source_taskrunner": "Escrito por uma tarefa em segundo plano quando terminou.",
-    "counts_failed": "Não foi possível ler as contagens"
+    "counts_failed": "Não foi possível ler as contagens",
+    "strength": "Força",
+    "strength_value": "Força {{value}}",
+    "strength_strong": "Forte",
+    "strength_fading": "Enfraquece em breve",
+    "strength_faded": "Enfraquecida",
+    "strength_tip_fading": "Em uma semana, memórias novas ficarão à frente, mesmo com correspondência exata.",
+    "strength_tip_faded": "Memórias novas ficam à frente, mesmo com correspondência exata.",
+    "strength_rate": "Enfraquece {{rate}} por dia",
+    "strength_rate_tag": "Enfraquece {{rate}} por dia, definido por #{{tag}}",
+    "strength_never": "Não enfraquece",
+    "strength_never_tag": "Não enfraquece, definido por #{{tag}}",
+    "strength_below_on": "A partir de {{date}}, memórias novas ficam à frente, mesmo com correspondência exata.",
+    "strength_keep": "Recuperações e edições não atrasam o enfraquecimento. Lições nunca enfraquecem.",
+    "save_as_lesson": "Salvar como lição",
+    "strength_curve_label": "Força {{now}} hoje, {{start}} ao salvar.",
+    "strength_default_rate": "Taxa padrão",
+    "divider_no_strength": "Fatos e lições não enfraquecem · mais recentes primeiro",
+    "strength_rate_outrank_one": "{{label}}: memórias novas passam à frente de uma de importância {{importance}} após {{days}} dia",
+    "strength_rate_outrank_many": "{{label}}: memórias novas passam à frente de uma de importância {{importance}} após {{days}} dias",
+    "strength_rate_outrank_other": "{{label}}: memórias novas passam à frente de uma de importância {{importance}} após {{days}} dias",
+    "strength_rate_steady": "{{label}}: não enfraquece"
   },
   "uiLocations": {
     "description": {
@@ -25709,7 +25736,7 @@
     "state_this_mate": "este Bot",
     "state_removed": "removido",
     "driftHint": "O arquivo de agente de {{member}} foi editado fora desta página. Clique em \"Revisar alteração\" para ver essa edição externa junto com o seu rascunho; depois \"Salvar\" grava a correção ou diz por que não pode.",
-    "sourceFailed": "Não foi possível validar a configuração salva. Recarregue-a do servidor para tentar de novo.",
+    "sourceFailed": "Não foi possível validar a configuração salva. Recarregue esta página para tentar de novo.",
     "runtime_failed": "Falha ao carregar o runtime. A versão salva permanece.",
     "server_verb_count": "{{on}} de {{total}} aprovados automaticamente",
     "server_allow_aria": "Permitir {{server}}",

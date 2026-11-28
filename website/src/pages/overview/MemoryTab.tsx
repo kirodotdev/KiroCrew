@@ -767,7 +767,7 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
         {/* With vector memory off the store has no records to list; its lessons are the card below. */}
         {!(vectorSettled && !vectorActive) && <MemoryList jump={controls.jump} store="default" storeName={globalLabel} privateMemory={false} focusKey={focusLessons ? focusLessonKey : undefined} focusLessons={focusLessons}
           selecting={controls.selecting} onSelectingChange={controls.setSelecting}
-          onDirtyChange={setRecordDirty} onRecovery={() => controls.openTab('recovery')} />}
+          onDirtyChange={setRecordDirty} onRecovery={() => controls.openTab('recovery')} onSaveAsLesson={controls.newLesson} />}
         {!vectorActive && (
           <Card id={LESSONS_CARD_ID}><CardTitle>{i18nT('pages.overview.memoryTab.lessons')} <InfoTip text={i18nT('pages.overview.memoryTab.persistent_lessons_injected_into_every_session_a')} /></CardTitle>
           <div className="flex gap-2 items-center flex-wrap mb-3">

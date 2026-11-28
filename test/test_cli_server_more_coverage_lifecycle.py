@@ -167,7 +167,9 @@ class TestStopLockHolderFallback:
         """Record every pid the command would signal, on either platform."""
         sent: list[int] = []
         monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(pid))
-        monkeypatch.setattr(platform_compat, "kill_process_tree", lambda pid, sig: sent.append(pid))
+        monkeypatch.setattr(
+            platform_compat, "kill_process_tree", lambda pid, sig, **_k: sent.append(pid)
+        )
         return sent
 
     def test_live_kirocrew_lock_holder_is_refused_and_named(
@@ -378,27 +380,71 @@ class TestStopOnWindows:
 
     def test_tree_kill_reports_terminated(self, monkeypatch, sel_rec, capsys) -> None:
         seen: list[int] = []
-        monkeypatch.setattr(platform_compat, "kill_process_tree", lambda pid, sig: seen.append(pid))
+        monkeypatch.setattr(
+            platform_compat, "kill_process_tree", lambda pid, sig, **_k: seen.append(pid)
+        )
         cli_server._stop(None)
         out = capsys.readouterr().out
         assert seen == [4242]
         assert "Terminated gateway (pid 4242)" in out
         assert sel_rec.calls[-1]["outcome"] == "allowed"
 
+    def test_tree_kill_gets_a_bound_a_big_tree_fits_in(self, monkeypatch, sel_rec) -> None:
+        """A 1,500-process tree took taskkill 11.9 s; the shared 5 s bound read it as denied."""
+        bounds: list[float] = []
+        monkeypatch.setattr(
+            platform_compat,
+            "kill_process_tree",
+            lambda pid, sig, *, timeout=5: bounds.append(timeout),
+        )
+        cli_server._stop(None)
+        assert bounds and bounds[0] >= 60
+
     def test_already_gone_pid_is_not_reported_as_stopped(
         self, monkeypatch, sel_rec, capsys
     ) -> None:
-        def gone(pid, sig):
+        def gone(pid, sig, **_k):
             raise ProcessLookupError
 
         monkeypatch.setattr(platform_compat, "kill_process_tree", gone)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: False)
         with pytest.raises(SystemExit) as exc:
             cli_server._stop(None)
         assert exc.value.code == 1
         assert "process already exited" in capsys.readouterr().out
 
+    def test_a_tree_walk_that_outlived_a_child_still_stops(self, monkeypatch, sel_rec, capsys):
+        """taskkill /T exits 128 when a child leaves during the walk; the gateway it ended
+        was alive just before, so the stop succeeded."""
+
+        def rc128(pid, sig, **_k):
+            raise ProcessLookupError("[taskkill rc=128] not found")
+
+        monkeypatch.setattr(platform_compat, "kill_process_tree", rc128)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: True)
+        cli_server._stop(None)
+        out = capsys.readouterr().out
+        assert "Terminated gateway (pid 4242)" in out
+        assert "process already exited" not in out
+        assert sel_rec.calls[-1]["outcome"] == "allowed"
+
+    def test_a_tree_walk_past_its_bound_is_not_a_permission_error(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        def slow(pid, sig, **_k):
+            raise TimeoutError("taskkill /T did not finish")
+
+        monkeypatch.setattr(platform_compat, "kill_process_tree", slow)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: True)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "did not finish within" in out
+        assert "No permission" not in out
+
     def test_permission_error_asks_for_sudo_and_exits(self, monkeypatch, sel_rec, capsys) -> None:
-        def denied(pid, sig):
+        def denied(pid, sig, **_k):
             raise PermissionError
 
         monkeypatch.setattr(platform_compat, "kill_process_tree", denied)
@@ -413,7 +459,7 @@ class TestStopOnWindows:
     ) -> None:
         """Windows has no sudo: taskkill is denied across an elevation boundary."""
 
-        def denied(pid, sig):
+        def denied(pid, sig, **_k):
             raise PermissionError
 
         monkeypatch.setattr(platform_compat, "kill_process_tree", denied)
@@ -426,7 +472,7 @@ class TestStopOnWindows:
     def test_permission_error_on_posix_keeps_the_sudo_line(self, monkeypatch, capsys) -> None:
         """Only the Windows text changes; POSIX prints main's line byte for byte."""
 
-        def denied(pid, sig):
+        def denied(pid, sig, **_k):
             raise PermissionError
 
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
@@ -458,7 +504,7 @@ class TestStopOnWindows:
     def test_generic_taskkill_failure_rechecks_liveness(self, monkeypatch, capsys) -> None:
         """An OSError from taskkill is only "denied" if the pid is still alive."""
 
-        def oserr(pid, sig):
+        def oserr(pid, sig, **_k):
             raise OSError("taskkill exit 1")
 
         monkeypatch.setattr(platform_compat, "kill_process_tree", oserr)
@@ -469,7 +515,7 @@ class TestStopOnWindows:
         assert "No permission to stop pid 4242" in capsys.readouterr().out
 
     def test_generic_taskkill_failure_on_dead_pid_is_not_denied(self, monkeypatch, capsys) -> None:
-        def oserr(pid, sig):
+        def oserr(pid, sig, **_k):
             raise OSError("taskkill exit 1")
 
         monkeypatch.setattr(platform_compat, "kill_process_tree", oserr)

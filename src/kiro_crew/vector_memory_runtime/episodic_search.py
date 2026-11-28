@@ -292,11 +292,11 @@ def search_episodic(
                     continue
                 if tag_filter and not store._matches_tags(mem, tag_filter):
                     continue
-                created = vm.datetime.fromisoformat(mem["created_at"])
-                days_old = max(0, (now - created).days)
-                decay_rate = store._decay_rate_for(mem.get("tags"))
-                score = (
-                    cosine_sim * (0.7 + 0.3 * mem["importance"]) * math.exp(-decay_rate * days_old)
+                score = recall_score(
+                    cosine_sim,
+                    mem["importance"],
+                    store._decay_rate_for(mem.get("tags")),
+                    episode_age_days(mem["created_at"], now),
                 )
                 candidates.append(
                     {**mem, "score": round(score, 4), "cosine_sim": round(cosine_sim, 4)}
@@ -764,7 +764,7 @@ def rank_from_scoring_set(
     # stamped in the future.
     days_old = vm.np.maximum(0.0, vm.np.floor((now.timestamp() - scoring.created_ts) / 86400.0))
     scores = vm.np.round(
-        sims * (0.7 + 0.3 * scoring.importance) * vm.np.exp(-scoring.decay_rates * days_old),
+        recall_score(sims, scoring.importance, scoring.decay_rates, days_old, exp=vm.np.exp),
         4,
     )
 
@@ -797,12 +797,12 @@ def episodic_candidate(
     candidate shape cannot silently diverge between numpy-installed and
     stdlib-only installs.
     """
-    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
-
-    created = vm.datetime.fromisoformat(r["created_at"])
-    days_old = max(0, (now - created).days)
-    decay_rate = store._decay_rate_for(r["tags"])
-    score = cosine_sim * (0.7 + 0.3 * r["importance"]) * math.exp(-decay_rate * days_old)
+    score = recall_score(
+        cosine_sim,
+        r["importance"],
+        store._decay_rate_for(r["tags"]),
+        episode_age_days(r["created_at"], now),
+    )
     return {
         "id": r["id"],
         "conversation_id": r["conversation_id"],
@@ -887,7 +887,14 @@ def matches_tags(mem: dict, tag_filter: list[str]) -> bool:
 
 
 def decay_rate_for(store: VectorMemoryStore, raw_tags: str | list[str] | None) -> float:
-    """Resolve the per-day recency decay rate for an episodic row.
+    """Resolve the per-day recency decay rate for an episodic row (see :func:`decay_rule_for`)."""
+    return decay_rule_for(store, raw_tags)[0]
+
+
+def decay_rule_for(
+    store: VectorMemoryStore, raw_tags: str | list[str] | None
+) -> tuple[float, str | None]:
+    """The per-day recency decay rate for an episodic row, and the tag that set it.
 
     Rates come from the ``memory.decay_rates`` config mapping, keyed by tag
     (case-insensitive, same as :meth:`_matches_tags`); the reserved
@@ -895,17 +902,68 @@ def decay_rate_for(store: VectorMemoryStore, raw_tags: str | list[str] | None) -
     matching no configured tag. A row carrying several configured tags uses
     the SLOWEST decay — the smallest rate, i.e. maximum retention — so a
     memory tagged both a long-retention tag (rate 0.0) and a general tag
-    (rate 0.03) never ages out because of the broader tag.
+    (rate 0.03) never ages out because of the broader tag. The tag is ``None``
+    when the default rate applies.
     """
     if not store._decay_by_tag:
-        return store._decay_default
+        return store._decay_default, None
     entry_tags = json.loads(raw_tags) if isinstance(raw_tags, str) else (raw_tags or [])
     matched = [
-        store._decay_by_tag[t.lower()]
+        (store._decay_by_tag[t.lower()], t)
         for t in entry_tags
         if isinstance(t, str) and t.lower() in store._decay_by_tag
     ]
-    return min(matched) if matched else store._decay_default
+    return min(matched, key=lambda pair: pair[0]) if matched else (store._decay_default, None)
+
+
+def recall_score(cosine, importance, decay_rate, days_old, *, exp=math.exp):
+    """An experience's recall score: its *cosine* to the query, raised by its
+    importance and faded by its age at the row's decay rate.
+
+    The one place the formula lives; every scoring branch calls it. Works on
+    floats, or on numpy arrays with ``exp=np.exp``.
+    """
+    return cosine * (0.7 + 0.3 * importance) * exp(-decay_rate * days_old)
+
+
+def episode_age_days(created_at: str, now: datetime) -> int:
+    """Whole days since *created_at*, never negative for a row stamped in the future."""
+    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+
+    return max(0, (now - vm.datetime.fromisoformat(created_at)).days)
+
+
+def row_age_days(row, now: datetime) -> int:
+    """Whole days since the experience *row* was written, as :func:`recall_weight`
+    reads it: a stamp with no zone is UTC, and an unreadable one is today."""
+    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+
+    try:
+        # Recall's own reader, so every row recall can score has the same age here.
+        return episode_age_days(row["created_at"], now)
+    except (TypeError, ValueError):
+        pass
+    # A stamp recall cannot read (it would raise there): no zone is UTC, unreadable is today.
+    try:
+        created = vm.datetime.fromisoformat(row["created_at"]).replace(tzinfo=timezone.utc)
+        return max(0, (now - created).days)
+    except (TypeError, ValueError):
+        return 0
+
+
+def row_importance(row) -> float:
+    """The experience *row*'s importance; a missing one counts as 0.5."""
+    return row["importance"] if row["importance"] is not None else 0.5
+
+
+def recall_weight(store: VectorMemoryStore, row, now: datetime) -> float:
+    """What recall would score the experience *row* at a perfect match: the
+    part of its score the query does not decide. The memory page shows it as
+    the row's strength.
+    """
+    return recall_score(
+        1.0, row_importance(row), store._decay_rate_for(row["tags"]), row_age_days(row, now)
+    )
 
 
 def get_episodic_batch(store: VectorMemoryStore, mem_ids: list[str]) -> dict[str, dict]:

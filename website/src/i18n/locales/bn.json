@@ -360,6 +360,11 @@
     "pullRequestPanel": {
       "not_declared": "এই অ্যাপ পুল রিকোয়েস্ট দেখাতে পারে না: এর অনুমতিতে {{path}} ঘোষণা করা নেই।"
     },
+    "fileTree": {
+      "not_declared": "এই অ্যাপ প্রকল্পের ফাইল দেখাতে পারে না: এর অনুমতিতে {{path}} ঘোষণা করা নেই।",
+      "refresh_failed": "ফাইলের তালিকা রিফ্রেশ করা যায়নি; শেষ তালিকাটি দেখানো হচ্ছে।",
+      "status_failed": "কোন ফাইল বদলেছে তা দেখা যায়নি, তাই বদলানো ফাইলগুলো চিহ্নিত করা নেই।"
+    },
     "projectPicker": {
       "not_declared": "এই অ্যাপ প্রজেক্ট পিকার দেখাতে পারে না: এর অনুমতিতে {{path}} ঘোষণা করা নেই।"
     },
@@ -24664,6 +24669,7 @@
     "sort_by_created": "ক্রম: তৈরি · {{order}}",
     "sort_by_importance": "ক্রম: গুরুত্ব · {{order}}",
     "sort_by_key": "ক্রম: কী · {{order}}",
+    "sort_by_strength": "ক্রম: শক্তি · {{order}}",
     "sort_by_updated": "ক্রম: হালনাগাদ · {{order}}",
     "sort_by_value": "ক্রম: {{value}}",
     "sort_hint_confidence": "তথ্য, শিক্ষা",
@@ -24722,7 +24728,27 @@
     "tip_source_user_explicit": "ইচ্ছে করে লেখা: এই পেজে তুমি লিখেছ, বা বটের মেমোরি টুল লিখেছে।",
     "tip_source_user_explicit_named": "ইচ্ছে করে লেখা: এই পেজে তুমি লিখেছ, বা {{bot}}-এর মেমোরি টুল লিখেছে।",
     "tip_source_taskrunner": "একটি ব্যাকগ্রাউন্ড কাজ শেষ হওয়ার সময় লিখেছে।",
-    "counts_failed": "গণনা পড়া যায়নি"
+    "counts_failed": "গণনা পড়া যায়নি",
+    "strength": "শক্তি",
+    "strength_value": "শক্তি {{value}}",
+    "strength_strong": "শক্তিশালী",
+    "strength_fading": "শীঘ্রই দুর্বল",
+    "strength_faded": "দুর্বল",
+    "strength_tip_fading": "এক সপ্তাহের মধ্যে নতুন স্মৃতি এর উপরে আসবে, পুরো মিল থাকলেও।",
+    "strength_tip_faded": "নতুন স্মৃতি এর উপরে আসে, পুরো মিল থাকলেও।",
+    "strength_rate": "প্রতিদিন {{rate}} কমে",
+    "strength_rate_tag": "প্রতিদিন {{rate}} কমে, #{{tag}} দিয়ে ঠিক করা",
+    "strength_never": "কমে না",
+    "strength_never_tag": "কমে না, #{{tag}} দিয়ে ঠিক করা",
+    "strength_below_on": "{{date}} থেকে নতুন স্মৃতি এর উপরে আসে, পুরো মিল থাকলেও।",
+    "strength_keep": "মনে করা বা সম্পাদনায় কমা ধীর হয় না। শিক্ষা কখনো কমে না।",
+    "save_as_lesson": "শিক্ষা হিসেবে সংরক্ষণ করো",
+    "strength_curve_label": "আজ শক্তি {{now}}, সংরক্ষণের সময় {{start}}।",
+    "strength_default_rate": "ডিফল্ট হার",
+    "divider_no_strength": "তথ্য ও শিক্ষা কমে না · নতুনগুলো আগে",
+    "strength_rate_outrank_one": "{{label}}: {{days}} দিন পরে নতুন স্মৃতি {{importance}} গুরুত্বের স্মৃতির উপরে আসে",
+    "strength_rate_outrank_other": "{{label}}: {{days}} দিন পরে নতুন স্মৃতি {{importance}} গুরুত্বের স্মৃতির উপরে আসে",
+    "strength_rate_steady": "{{label}}: কমে না"
   },
   "uiLocations": {
     "description": {
@@ -25107,7 +25133,7 @@
     "state_this_mate": "এই Bot",
     "state_removed": "সরানো",
     "driftHint": "{{member}}-এর এজেন্ট ফাইল এই পৃষ্ঠার বাইরে সম্পাদনা করা হয়েছে। “পরিবর্তন দেখো” চাপো, তাহলে সেই বাইরের সম্পাদনা তোমার নিজের খসড়ার সঙ্গে দেখা যাবে; এরপর “সংরক্ষণ” সংশোধনটি লেখে বা কেন পারে না তা জানায়।",
-    "sourceFailed": "সংরক্ষিত কনফিগারেশন যাচাই করা গেল না। আবার চেষ্টা করতে সার্ভার থেকে নতুন করে লোড করো।",
+    "sourceFailed": "সংরক্ষিত কনফিগারেশন যাচাই করা গেল না। আবার চেষ্টা করতে এই পৃষ্ঠাটি রিলোড করো।",
     "runtime_failed": "রানটাইম লোড করা ব্যর্থ হয়েছে। সংরক্ষিত সংস্করণটি থেকে যায়।",
     "server_verb_count": "{{total}}টির মধ্যে {{on}}টি স্বয়ংক্রিয়ভাবে অনুমোদিত",
     "server_allow_aria": "{{server}} অনুমতি দাও",

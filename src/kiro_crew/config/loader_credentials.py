@@ -972,8 +972,10 @@ def read_env_file_credential(
     if definitive is not None:
         definitive.append(True)
     # The shared parser, so this per-key read sees the file exactly as the boot
-    # load and the live watcher do (last occurrence of a key wins).
-    return parse_env_lines(text).get(key, "")
+    # load and the live watcher do (last occurrence of a key wins), looked up by
+    # ``os.environ`` entry: on Windows a ``jira_api_token`` line is the value boot
+    # seeded into ``JIRA_API_TOKEN``, so it answers for that key here too.
+    return _effective_entry_values(parse_env_lines(text)).get(_env_name_key(key), "")
 
 
 # Key -> the reason last logged by :func:`resolve_env_credentials`, so a

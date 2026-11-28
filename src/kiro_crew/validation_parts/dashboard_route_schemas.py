@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 
+from kiro_crew.platform_compat_links import names_a_verbatim_only_file
 from kiro_crew.validation_parts.field_engine import FieldSpec, ToolSchema, ValidationError
 from kiro_crew.validation_parts.input_bounds import ALLOWED_HOOK_EVENTS
 
@@ -175,13 +176,34 @@ HOOK_UPDATE_SCHEMA = ToolSchema(
 #: because nothing downstream interprets the string: every subprocess in the
 #: file handlers is ``exec``-form argv with no shell, and the required absolute
 #: prefix means the path can never be read as a leading-dash option.
-_FS_PATH_PATTERN = re.compile(r"^(?:[~/]|[A-Za-z]:[\\/]|\\\\)[^\x00-\x1f\x7f-\x9f:]+$")
+#:
+#: The extended-length drive form (``\\?\C:\x``) is its own prefix, so its drive
+#: colon is not read as a stream colon in the body; ``realpath`` returns that
+#: spelling for long paths, and the screen downstream folds it to ``C:\x``.
+_FS_PATH_PATTERN = re.compile(
+    r"^(?:[~/]|\\\\\?\\[A-Za-z]:\\|[A-Za-z]:[\\/]|\\\\)[^\x00-\x1f\x7f-\x9f:]+$"
+)
+
+
+def _refuse_verbatim_only_path(args: dict) -> None:
+    r"""Refuse a ``\\?\`` path whose plain spelling names a different file.
+
+    The screen behind this gate folds ``\\?\`` off before it reads, so a name
+    only the verbatim spelling reaches (``x.``, ``x ``, ``CON``) would be read
+    or written as its sibling instead. It reads the RAW ``path``: the field pass
+    trims a trailing space, and the handler acts on the untrimmed value.
+    """
+    path = args.get("path")
+    if isinstance(path, str) and names_a_verbatim_only_file(path):
+        raise ValidationError("path", "names a file only its \\\\?\\ spelling reaches")
+
 
 FILE_READ_SCHEMA = ToolSchema(
     tool_name="file_read",
     fields=[
         FieldSpec("path", str, required=True, max_len=4096, pattern=_FS_PATH_PATTERN),
     ],
+    raw_validator=_refuse_verbatim_only_path,
 )
 
 FILE_WRITE_SCHEMA = ToolSchema(
@@ -190,4 +212,5 @@ FILE_WRITE_SCHEMA = ToolSchema(
         FieldSpec("path", str, required=True, max_len=4096, pattern=_FS_PATH_PATTERN),
         FieldSpec("content", str, required=True, max_len=512000),
     ],
+    raw_validator=_refuse_verbatim_only_path,
 )

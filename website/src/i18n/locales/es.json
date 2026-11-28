@@ -377,6 +377,11 @@
     "pullRequestPanel": {
       "not_declared": "Esta app no puede mostrar pull requests: sus permisos no declaran {{path}}."
     },
+    "fileTree": {
+      "not_declared": "Esta app no puede mostrar los archivos del proyecto: sus permisos no declaran {{path}}.",
+      "refresh_failed": "No se pudo actualizar la lista de archivos; se muestra la última.",
+      "status_failed": "No se pudo comprobar qué archivos cambiaron, así que los archivos cambiados no están marcados."
+    },
     "projectPicker": {
       "not_declared": "Esta app no puede mostrar el selector de proyectos: sus permisos no declaran {{path}}."
     },
@@ -25264,6 +25269,7 @@
     "sort_by_created": "Orden: Creado · {{order}}",
     "sort_by_importance": "Orden: Importancia · {{order}}",
     "sort_by_key": "Orden: Clave · {{order}}",
+    "sort_by_strength": "Orden: Fuerza · {{order}}",
     "sort_by_updated": "Orden: Actualizado · {{order}}",
     "sort_by_value": "Orden: {{value}}",
     "sort_hint_confidence": "Hechos, lecciones",
@@ -25322,7 +25328,28 @@
     "tip_source_user_explicit": "Escrito a propósito: por ti en esta página o por la herramienta de memoria del bot.",
     "tip_source_user_explicit_named": "Escrito a propósito: por ti en esta página o por la herramienta de memoria de {{bot}}.",
     "tip_source_taskrunner": "Lo escribió una tarea en segundo plano al terminar.",
-    "counts_failed": "No se pudieron leer los recuentos"
+    "counts_failed": "No se pudieron leer los recuentos",
+    "strength": "Fuerza",
+    "strength_value": "Fuerza {{value}}",
+    "strength_strong": "Fuerte",
+    "strength_fading": "Se desvanece pronto",
+    "strength_faded": "Desvanecido",
+    "strength_tip_fading": "En una semana, los recuerdos nuevos quedarán por delante, incluso con una coincidencia exacta.",
+    "strength_tip_faded": "Los recuerdos nuevos quedan por delante, incluso con una coincidencia exacta.",
+    "strength_rate": "Se desvanece un {{rate}} al día",
+    "strength_rate_tag": "Se desvanece un {{rate}} al día, fijado por #{{tag}}",
+    "strength_never": "No se desvanece",
+    "strength_never_tag": "No se desvanece, fijado por #{{tag}}",
+    "strength_below_on": "Desde el {{date}}, los recuerdos nuevos quedan por delante, incluso con una coincidencia exacta.",
+    "strength_keep": "Las recuperaciones y las ediciones no frenan el desvanecimiento. Las lecciones nunca se desvanecen.",
+    "save_as_lesson": "Guardar como lección",
+    "strength_curve_label": "Fuerza {{now}} hoy, {{start}} al guardarlo.",
+    "strength_default_rate": "Ritmo predeterminado",
+    "divider_no_strength": "Los hechos y las lecciones no se desvanecen · más recientes primero",
+    "strength_rate_outrank_one": "{{label}}: los recuerdos nuevos superan a uno de importancia {{importance}} después de {{days}} día",
+    "strength_rate_outrank_many": "{{label}}: los recuerdos nuevos superan a uno de importancia {{importance}} después de {{days}} días",
+    "strength_rate_outrank_other": "{{label}}: los recuerdos nuevos superan a uno de importancia {{importance}} después de {{days}} días",
+    "strength_rate_steady": "{{label}}: no se desvanece"
   },
   "uiLocations": {
     "description": {
@@ -25709,7 +25736,7 @@
     "state_this_mate": "este Bot",
     "state_removed": "eliminado",
     "driftHint": "El archivo de agente de {{member}} se editó fuera de esta página. Pulsa «Revisar cambio» para ver esa edición externa junto con tu propio borrador; luego «Guardar» aplica la corrección o indica por qué no puede.",
-    "sourceFailed": "No se pudo validar la configuración guardada. Vuelve a cargarla desde el servidor para reintentar.",
+    "sourceFailed": "No se pudo validar la configuración guardada. Recarga esta página para reintentar.",
     "runtime_failed": "Error al cargar el entorno de ejecución. La versión guardada permanece.",
     "server_verb_count": "{{on}} de {{total}} aprobados automáticamente",
     "server_allow_aria": "Permitir {{server}}",

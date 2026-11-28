@@ -96,6 +96,7 @@ from kiro_crew.mcp_gateway.admission import (
     DEFAULT_FLOOR,
     OUTCOME_FAILURE,
     OUTCOME_NEUTRAL,
+    SPAWN_PERMIT_INIT_WINDOW_SECS,
     Admission,
     OnQueued,
     Permit,
@@ -161,10 +162,14 @@ from kiro_crew.mcp_gateway.daemon.cli import (  # noqa: F401
     _default_cli_socket_path,
 )
 from kiro_crew.mcp_gateway.daemon.connection import (  # noqa: F401
+    _ERA_PROBE_METHOD,
+    _JSONRPC_METHOD_NOT_FOUND,
     REGISTERED_CAPABILITIES,
     _await_declaring_agent,
     _declaring_agent,
     _handle_connection,
+    _is_era_probe,
+    _method_not_found,
     _teardown_connection,
     _warn_no_declared_env,
 )
@@ -1345,7 +1350,8 @@ async def _acquire_backend(
                     init_done=backend._init_done_event,
                     init_state=lambda: backend._init_state,
                     process_exited=backend.process.wait,
-                    timeout=backend.initialize_timeout_secs,
+                    timeout=min(backend.initialize_timeout_secs, SPAWN_PERMIT_INIT_WINDOW_SECS),
+                    deadline=backend.initialize_timeout_secs,
                 )
         return backend
 

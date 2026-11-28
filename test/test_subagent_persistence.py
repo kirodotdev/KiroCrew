@@ -418,6 +418,75 @@ class TestWriteFinishedResult:
         assert write_finished_result("gone1", "the answer", update_state) is False
         assert not (agent_root / "gone1").exists()
 
+    @staticmethod
+    def _held_state_writer(monkeypatch, refusals):
+        """An ``update_state`` refused *refusals* times, as a Windows reader holding
+        ``state.json`` refuses its rename, on a fake clock each refusal advances; and
+        the ``clock``/``sleep`` keywords that read that clock."""
+        from kiro_crew import platform_compat
+
+        clock = {"now": 0.0}
+
+        def _sleep(seconds):
+            clock["now"] += seconds
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        timing = {"clock": lambda: clock["now"], "sleep": _sleep}
+        calls = []
+
+        def _writer(agent_id, **fields):
+            calls.append(fields)
+            if len(calls) <= refusals:
+                clock["now"] += 0.6
+                raise PermissionError(13, "Access is denied")
+            return update_state(agent_id, **fields)
+
+        return _writer, calls, timing
+
+    def test_a_held_state_json_flag_write_lands_after_the_hold(self, agent_root, monkeypatch):
+        """A reader holding ``state.json`` for about 2 s outlasts ``update_state``'s
+        count retry; the flag still lands, so a restart reads the answer as whole."""
+        from kiro_crew.subagent_manager.monitoring import tombstone_recovery_action
+        from kiro_crew.subagent_persistence import write_finished_result
+
+        create_agent_folder("held1", task="t")
+        write_result_chunk("held1", "a streamed fragment")
+        writer, calls, timing = self._held_state_writer(monkeypatch, refusals=3)
+
+        assert write_finished_result("held1", "the whole answer", writer, **timing) is True
+        assert len(calls) == 4
+        state = read_state("held1") or {}
+        assert state.get("result_complete") is True
+        assert tombstone_recovery_action("held1", state) == "result_available"
+
+    def test_a_hold_past_the_budget_leaves_the_flag_unrecorded(
+        self, agent_root, monkeypatch, caplog
+    ):
+        from kiro_crew.subagent_manager.monitoring import tombstone_recovery_action
+        from kiro_crew.subagent_persistence import write_finished_result
+
+        create_agent_folder("held2", task="t")
+        writer, calls, timing = self._held_state_writer(monkeypatch, refusals=1_000)
+
+        with caplog.at_level("WARNING"):
+            assert write_finished_result("held2", "the whole answer", writer, **timing) is False
+        assert 1 < len(calls) < 1_000
+        state = read_state("held2") or {}
+        assert not state.get("result_complete")
+        assert tombstone_recovery_action("held2", state) == "partial_result"
+        assert str(agent_root / "held2") in caplog.text
+
+    def test_a_refused_flag_write_off_windows_is_not_retried(self, agent_root, monkeypatch):
+        from kiro_crew import platform_compat
+        from kiro_crew.subagent_persistence import write_finished_result
+
+        create_agent_folder("held3", task="t")
+        writer, calls, timing = self._held_state_writer(monkeypatch, refusals=1_000)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+
+        assert write_finished_result("held3", "the whole answer", writer, **timing) is False
+        assert len(calls) == 1
+
 
 # ── write_tombstone ──────────────────────────────────────────────────
 

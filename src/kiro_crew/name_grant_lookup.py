@@ -488,12 +488,18 @@ def _identity(real: str) -> tuple | None:
 
 
 def _is_trusted_system_file(name: str, real: str) -> bool:
-    """Whether *real* IS the trusted system program called *name*."""
+    r"""Whether *real* IS the trusted system program called *name*.
+
+    Both sides lose Windows' extended-length prefix first, lexically, so
+    ``\\?\C:\Windows\System32\cmd.exe`` is the system ``cmd.exe``; a path only
+    that spelling reaches is never it.
+    """
 
     system = platform_compat.trusted_system_bin(name)
-    if system is None:
+    if system is None or platform_compat.names_a_verbatim_only_file(real):
         return False
+    fold = platform_compat.strip_extended_length_prefix
     try:
-        return _model_normcase(os.path.realpath(system)) == _model_normcase(real)
+        return _model_normcase(fold(os.path.realpath(system))) == _model_normcase(fold(real))
     except (OSError, ValueError):
         return False

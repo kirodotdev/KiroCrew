@@ -10,7 +10,7 @@
  * pins the mount and the right edge; the drag itself is checked on the app.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, act } from '@testing-library/react'
+import { screen, fireEvent, act, cleanup } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { __resetFocusMode } from '../hooks/useFocusMode'
 import { WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
@@ -74,6 +74,8 @@ describe('Windows header drag strips', () => {
   })
   afterEach(() => {
     vi.useRealTimers()
+    // Unmount first, so dropping the reserve re-renders nothing outside act().
+    cleanup()
     document.documentElement.style.removeProperty('--mc-win-drag-reserve')
   })
 
@@ -103,8 +105,10 @@ describe('Windows header drag strips', () => {
     await act(async () => {})
     act(() => { vi.advanceTimersToNextFrame() })
     expect(parseFloat(screen.getByTestId('header-drag-strip').style.width)).toBe(1400 - WIN_CAPTION_OVERLAY_WIDTH)
-    document.documentElement.style.setProperty('--mc-win-drag-reserve', '173px')
-    await Promise.resolve() // deliver the mutation record
+    await act(async () => {
+      document.documentElement.style.setProperty('--mc-win-drag-reserve', '173px')
+      await Promise.resolve() // deliver the mutation record
+    })
     act(() => { vi.advanceTimersToNextFrame() })
     const strips = screen.getAllByTestId('header-drag-strip')
     expect(strips).toHaveLength(1)

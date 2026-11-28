@@ -343,6 +343,11 @@
     "pullRequestPanel": {
       "not_declared": "이 앱은 풀 리퀘스트를 표시할 수 없습니다. 권한에 {{path}}이(가) 선언되어 있지 않습니다."
     },
+    "fileTree": {
+      "not_declared": "이 앱은 프로젝트 파일을 표시할 수 없습니다. 권한에 {{path}}이(가) 선언되어 있지 않습니다.",
+      "refresh_failed": "파일 목록을 새로 고칠 수 없습니다. 마지막 목록을 표시합니다.",
+      "status_failed": "변경된 파일을 확인할 수 없어 변경된 파일에 변경 표시가 나타나지 않습니다."
+    },
     "projectPicker": {
       "not_declared": "이 앱은 프로젝트 선택기를 표시할 수 없습니다. 권한에 {{path}}이(가) 선언되어 있지 않습니다."
     },
@@ -24064,6 +24069,7 @@
     "sort_by_created": "정렬: 생성 · {{order}}",
     "sort_by_importance": "정렬: 중요도 · {{order}}",
     "sort_by_key": "정렬: 키 · {{order}}",
+    "sort_by_strength": "정렬: 강도 · {{order}}",
     "sort_by_updated": "정렬: 업데이트 · {{order}}",
     "sort_by_value": "정렬: {{value}}",
     "sort_hint_confidence": "사실, 학습 내용",
@@ -24122,7 +24128,26 @@
     "tip_source_user_explicit": "일부러 쓴 것입니다. 이 페이지에서 내가 썼거나 봇의 메모리 도구가 썼습니다.",
     "tip_source_user_explicit_named": "일부러 쓴 것입니다. 이 페이지에서 내가 썼거나 {{bot}}의 메모리 도구가 썼습니다.",
     "tip_source_taskrunner": "백그라운드 작업이 끝날 때 쓴 것입니다.",
-    "counts_failed": "개수를 읽을 수 없습니다"
+    "counts_failed": "개수를 읽을 수 없습니다",
+    "strength": "강도",
+    "strength_value": "강도 {{value}}",
+    "strength_strong": "강함",
+    "strength_fading": "곧 약해짐",
+    "strength_faded": "약해짐",
+    "strength_tip_fading": "일주일 안에 정확히 일치해도 새 기억이 더 위에 표시돼요.",
+    "strength_tip_faded": "정확히 일치해도 새 기억이 더 위에 표시돼요.",
+    "strength_rate": "하루 {{rate}}씩 감소",
+    "strength_rate_tag": "하루 {{rate}}씩 감소, #{{tag}}에서 설정",
+    "strength_never": "감소하지 않음",
+    "strength_never_tag": "감소하지 않음, #{{tag}}에서 설정",
+    "strength_below_on": "{{date}}부터 정확히 일치해도 새 기억이 더 위에 표시돼요.",
+    "strength_keep": "회상이나 편집으로는 감소가 늦춰지지 않아요. 학습 내용은 감소하지 않아요.",
+    "save_as_lesson": "학습 내용으로 저장",
+    "strength_curve_label": "오늘 강도 {{now}}, 저장할 때 {{start}}",
+    "strength_default_rate": "기본 비율",
+    "divider_no_strength": "사실과 학습 내용은 감소하지 않음 · 최신순",
+    "strength_rate_outrank_other": "{{label}}: 중요도 {{importance}}인 기억은 {{days}}일 후 새 기억보다 아래에 표시돼요",
+    "strength_rate_steady": "{{label}}: 감소하지 않음"
   },
   "uiLocations": {
     "description": {
@@ -24505,7 +24530,7 @@
     "state_this_mate": "해당 Bot",
     "state_removed": "제거됨",
     "driftHint": "{{member}}의 에이전트 파일이 이 페이지 밖에서 편집되었습니다. '변경 검토'를 누르면 그 외부 편집을 내 초안과 함께 볼 수 있고, 이후 '저장'이 수정을 기록하거나 할 수 없는 이유를 알려줍니다.",
-    "sourceFailed": "저장된 구성을 검증할 수 없습니다. 서버에서 다시 불러와 재시도하세요.",
+    "sourceFailed": "저장된 구성을 검증할 수 없습니다. 이 페이지를 새로 고쳐 재시도하세요.",
     "runtime_failed": "런타임 로딩에 실패했습니다. 저장된 버전은 유지됩니다.",
     "server_verb_count": "{{total}}개 중 {{on}}개 자동 승인",
     "server_allow_aria": "{{server}} 허용",

@@ -45,7 +45,7 @@ V1 recall scores an experience as
 (`episodic_search.recall_score`). Only importance, the tag rate and age move it.
 An experience that comes back in every session fades at the same speed as one
 that never came back. At the default rate an importance-0.5 experience falls
-under the fade line on day 27 (`memory_decay.days_to_line`), even if it was
+under the fade line on day 40 (`memory_decay.days_to_line`), even if it was
 used yesterday. The Memory page now says so ("Recalls and edits don't slow
 fading"), which is true and is also the wrong behaviour for a memory.
 
@@ -84,13 +84,13 @@ Worked example of `strength(t)` (before the cap) at the default rate (`S₀` = 3
 days, so `S_MAX` = 133.3 days), importance 0.5. It says how long a memory keeps
 its tie-breaking edge; the recall score's lift is never more than `MARGIN`:
 
-| Recalls | S (days) | Day `strength` falls under 0.385 after its last recall |
+| Recalls | S (days) | Day `strength` falls under 0.2625 after its last recall |
 |---|---|---|
-| 0 | 33.3 | 27 |
-| 1 | 50.0 | 40 |
-| 2 | 75.0 | 60 |
-| 3 | 112.5 | 90 |
-| 4 or more | 133.3 (cap) | 106 |
+| 0 | 33.3 | 40 |
+| 1 | 50.0 | 59 |
+| 2 | 75.0 | 89 |
+| 3 | 112.5 | 133 |
+| 4 or more | 133.3 (cap) | 157 |
 
 `G`, `S_MAX` and `MARGIN` are module constants, measured and tuned in the build
 PR with the recall-ranking harness and the section 7 experiment, never config

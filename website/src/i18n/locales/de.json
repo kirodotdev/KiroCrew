@@ -360,6 +360,11 @@
     "pullRequestPanel": {
       "not_declared": "Diese App kann keine Pull Requests anzeigen – ihre Berechtigungen deklarieren {{path}} nicht."
     },
+    "fileTree": {
+      "not_declared": "Diese App kann die Projektdateien nicht anzeigen – ihre Berechtigungen deklarieren {{path}} nicht.",
+      "refresh_failed": "Die Dateiliste konnte nicht aktualisiert werden; die letzte wird angezeigt.",
+      "status_failed": "Es ließ sich nicht prüfen, welche Dateien geändert wurden, daher sind geänderte Dateien nicht markiert."
+    },
     "projectPicker": {
       "not_declared": "Diese App kann die Projektauswahl nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht."
     },
@@ -24664,6 +24669,7 @@
     "sort_by_created": "Sortierung: Erstellt · {{order}}",
     "sort_by_importance": "Sortierung: Wichtigkeit · {{order}}",
     "sort_by_key": "Sortierung: Schlüssel · {{order}}",
+    "sort_by_strength": "Sortierung: Stärke · {{order}}",
     "sort_by_updated": "Sortierung: Aktualisiert · {{order}}",
     "sort_by_value": "Sortierung: {{value}}",
     "sort_hint_confidence": "Fakten, Lektionen",
@@ -24722,7 +24728,27 @@
     "tip_source_user_explicit": "Bewusst geschrieben: von dir auf dieser Seite oder vom Gedächtniswerkzeug des Bots.",
     "tip_source_user_explicit_named": "Bewusst geschrieben: von dir auf dieser Seite oder vom Gedächtniswerkzeug von {{bot}}.",
     "tip_source_taskrunner": "Von einer Hintergrundaufgabe geschrieben, als sie fertig war.",
-    "counts_failed": "Die Anzahlen konnten nicht gelesen werden"
+    "counts_failed": "Die Anzahlen konnten nicht gelesen werden",
+    "strength": "Stärke",
+    "strength_value": "Stärke {{value}}",
+    "strength_strong": "Stark",
+    "strength_fading": "Verblasst bald",
+    "strength_faded": "Verblasst",
+    "strength_tip_fading": "Innerhalb einer Woche stehen neue Erinnerungen davor, selbst bei exaktem Treffer.",
+    "strength_tip_faded": "Neue Erinnerungen stehen davor, selbst bei exaktem Treffer.",
+    "strength_rate": "Verblasst um {{rate}} pro Tag",
+    "strength_rate_tag": "Verblasst um {{rate}} pro Tag, festgelegt durch #{{tag}}",
+    "strength_never": "Verblasst nicht",
+    "strength_never_tag": "Verblasst nicht, festgelegt durch #{{tag}}",
+    "strength_below_on": "Ab {{date}} stehen neue Erinnerungen davor, selbst bei exaktem Treffer.",
+    "strength_keep": "Abrufe und Bearbeitungen bremsen das Verblassen nicht. Lektionen verblassen nie.",
+    "save_as_lesson": "Als Lektion speichern",
+    "strength_curve_label": "Stärke heute {{now}}, beim Speichern {{start}}.",
+    "strength_default_rate": "Standardrate",
+    "divider_no_strength": "Fakten und Lektionen verblassen nicht · neueste zuerst",
+    "strength_rate_outrank_one": "{{label}}: Neue Erinnerungen überholen eine mit Wichtigkeit {{importance}} nach {{days}} Tag",
+    "strength_rate_outrank_other": "{{label}}: Neue Erinnerungen überholen eine mit Wichtigkeit {{importance}} nach {{days}} Tagen",
+    "strength_rate_steady": "{{label}}: verblasst nicht"
   },
   "uiLocations": {
     "description": {
@@ -25107,7 +25133,7 @@
     "state_this_mate": "dieser Bot",
     "state_removed": "entfernt",
     "driftHint": "Die Agent-Datei von {{member}} wurde außerhalb dieser Seite bearbeitet. Klicke auf „Änderung prüfen“, um die externe Bearbeitung zusammen mit deinem eigenen Entwurf zu sehen; „Speichern“ schreibt dann die Korrektur oder erklärt, warum es nicht möglich ist.",
-    "sourceFailed": "Die gespeicherte Konfiguration konnte nicht validiert werden. Lade sie zum erneuten Versuch vom Server neu.",
+    "sourceFailed": "Die gespeicherte Konfiguration konnte nicht validiert werden. Lade diese Seite neu, um es erneut zu versuchen.",
     "runtime_failed": "Laufzeit-Laden fehlgeschlagen. Die gespeicherte Version bleibt erhalten.",
     "server_verb_count": "{{on}} von {{total}} automatisch genehmigt",
     "server_allow_aria": "{{server}} zulassen",

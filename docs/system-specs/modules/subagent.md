@@ -5159,7 +5159,11 @@ them. The alternation placeholder the model repeats at the start of a prompt aft
 one that ended on a tool result never reaches the text, the streamed file or the
 live partial: every prompt of the run streams through `alternation_echo.drop_echo`
 ([messaging](messaging.md)). A failed write records `result_complete=False` and
-falls back to capping the streamed file in place. Every other ending -- the
+falls back to capping the streamed file in place. A flag write that a Windows
+reader holding `state.json` refuses (`PermissionError`) is retried off the loop
+for up to 5 s, since `update_state`'s rename retries
+only by count; past that it returns False and logs a WARNING naming the run
+folder, so the flag lands late or not at all. Every other ending -- the
 tail's, the turn-limit and escalation bails, the deadline, a cancel, a raised
 error, a reap -- caps the streamed file in place (`cap_result_file`) and records
 `result_complete=False` in the same worker, once, from `_run`'s `finally` before

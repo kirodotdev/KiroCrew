@@ -9,6 +9,7 @@ const {
   windowsListenPids,
   windowsProcessCommand,
   windowsTaskkill,
+  windowsTaskkillTree,
 } = require("../windows-port");
 const {
   classifyPortOwner,
@@ -504,4 +505,19 @@ test("Windows process tools reject invalid numeric identifiers", async () => {
   assert.throws(() => parseNetstatListenPids("", 0), /port must be a positive integer/);
   await assert.rejects(windowsProcessCommand("4; Stop-Process", {}), /pid must be a positive integer/);
   await assert.rejects(windowsTaskkill(-1, {}), /pid must be a positive integer/);
+  await assert.rejects(windowsTaskkillTree(-1, {}), /pid must be a positive integer/);
+});
+
+test("windowsTaskkillTree tree-kills the pid without an identity read", async () => {
+  const invocations = [];
+  const execFileFn = (command, args, options, callback) => {
+    invocations.push({ command, args, options });
+    callback(null, "SUCCESS");
+  };
+  await windowsTaskkillTree(4242, { execFileFn, timeoutMs: 2345, tools: TEST_TOOLS });
+  assert.deepStrictEqual(invocations, [{
+    command: TEST_TOOLS.taskkill,
+    args: ["/T", "/F", "/PID", "4242"],
+    options: { timeout: 2345, windowsHide: true },
+  }]);
 });

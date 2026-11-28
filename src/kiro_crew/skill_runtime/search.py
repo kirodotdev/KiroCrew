@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("kiro_crew.skills")
 
+#: Wall-clock seconds one search may spend indexing changed bodies, and again on
+#: direct reads; bodies left over are reported as an incomplete answer.
+_BODY_WORK_BUDGET_SECS = 0.25
+
 
 class SkillSearchReport(NamedTuple):
     """One search's answer, and whether that answer may be missing matches.
@@ -102,7 +106,7 @@ def _body_matches(
         # A scoped query cannot evict the other agents' persistent entries.
         outcome = loader._search_index.sync(
             rows,
-            budget_seconds=0.25,
+            budget_seconds=_BODY_WORK_BUDGET_SECS,
             canonical_roots={
                 str(s.get("path", "")): str(s["mapping_root"])
                 for s in unconfined
@@ -128,7 +132,7 @@ def _body_matches(
         fallback += unconfined
     else:
         hits.update(indexed)
-    deadline = time.monotonic() + 0.25
+    deadline = time.monotonic() + _BODY_WORK_BUDGET_SECS
     for skill in fallback:
         if time.monotonic() >= deadline:
             incomplete = True

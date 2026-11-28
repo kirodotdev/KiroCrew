@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp import runtime as runtime_mod
+from kiro_crew.acp import runtime_process_tree
 from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
 from kiro_crew.acp.harness import antigravity as antigravity_mod
 from kiro_crew.acp.harness import claude as claude_mod
@@ -329,6 +330,17 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(AcpClient, "_resolve_session_mcp_servers", return_value=[]),
             patch.object(client_mod, "inject_xdist_auto_cap", return_value=None),
             patch.object(client_mod, "_get_child_pids", return_value=[]),
+            # The stand-in child's pid is a number the HOST may hold: on macOS a
+            # low pid like 4242 is a live process, often one in the worker's own
+            # session. ``_spawn`` runs on past the factory with that number, so
+            # the descendant walk (``pgrep -P`` there) and a failed spawn's
+            # cleanup kill (``killpg`` of that process's group) would reach a
+            # real process -- the worker itself, when they share a group. Neither
+            # is a launch answer, so the walk is skipped and the kill is inert.
+            patch.object(
+                runtime_process_tree, "wait_for_descendants", new=AsyncMock(return_value=False)
+            ),
+            patch.object(AcpClient, "_kill_process", new=AsyncMock(return_value=None)),
             # A per-process temp root the sandbox masks, so every harness that does
             # not need one is captured without it. The DeepSeek arm DOES need one:
             # its gate's load marker is written by the child into this private
