@@ -949,6 +949,23 @@ still need the manual retirement in `pod/README.md`.
 Native tests exercise owner-only access, descendant containment,
 nested resource jobs and breakaway refusal; injected failures run on all hosts.
 
+## Windows program lookup
+
+On Windows, `shutil.which` searches the current directory before PATH unless
+`NoDefaultCurrentDirectoryInExePath` is set. `ensure_utf8_console()`, the
+first call of every entry point (`cli.py`, `__main__.py`, `mcp_entry.py`,
+`frontend.py`), sets it to `1`, so every `shutil.which` lookup in that process
+and in children that inherit its environment resolves from PATH only. The
+child-env helpers `scrub_env`, `scrub_agent_subprocess_env` and
+`without_python_env` keep the variable. Pinned by
+`test/test_platform_compat.py::TestUtf8Console`.
+
+Accepted residual: `CreateProcess` ignores the variable, so a bare program
+name passed straight to `subprocess` (for example `subprocess.run(["git", ...])`
+in `kirocrew update`) still runs a same-named program from the current
+directory ahead of PATH; resolving each bare name to an absolute PATH entry
+before the launch is a tracked follow-up.
+
 ## Verifying a change
 
 `rename_noreplace` uses the Linux libc wrapper when available. On older glibc

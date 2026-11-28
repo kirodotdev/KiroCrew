@@ -529,12 +529,25 @@ def ensure_utf8_console() -> None:
     with backslashreplace so a stray un-encodable char degrades to an escape
     instead of crashing. On POSIX, an ASCII-only stream (``LANG=C`` with UTF-8
     mode off) keeps its encoding but replaces un-encodable glyphs with ``?``.
-    Idempotent and safe to call once at startup.
+    On Windows it also sets ``NoDefaultCurrentDirectoryInExePath`` so a
+    ``shutil.which`` lookup resolves from PATH, not from the current directory.
+    It does NOT change a bare program name handed straight to ``subprocess``:
+    ``CreateProcess`` ignores the variable and still searches the current
+    directory first (see platform-compat.md, "Windows program lookup"). Every
+    entry point calls this first, which is why it lives here. Idempotent and
+    safe to call once at startup.
     """
     _ensure_utf8_process_environment()
     if not IS_WINDOWS:
         _soften_non_unicode_posix_streams()
         return
+    # shutil.which on Windows searches the current directory before PATH unless
+    # this variable is present. This process and every child that inherits its
+    # environment get it.
+    # shortcut: CreateProcess ignores the variable, so subprocess.run(["git", ...])
+    # still finds a git.exe in the current directory; upgrade by resolving each
+    # bare name to an absolute PATH entry before the launch.
+    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
     # Repair the current streams below, and separately make the invariant
     # inheritable by MCP/session children and any later re-exec.  Environment
     # variables affect the next interpreter at construction time; setting them
