@@ -188,6 +188,28 @@ class TestTheApply:
         provider.reclaim.assert_called_once_with()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
+    async def test_the_chats_consent_hook_follows_the_reloaded_handle(self) -> None:
+        """The evict drops the session's consent hook with its registration, so the
+        load installs the chat's hook again, testing the new handle for a turn."""
+        runtime = _runtime()
+        installed: list[tuple[str, Any]] = []
+        runtime.set_mcp_consent_hook = lambda sid, hook: installed.append((sid, hook))
+        provider = _provider(runtime, _handle(is_turn_active=True))
+        shown: list[dict[str, str]] = []
+        provider.set_mcp_consent_hook(lambda request: shown.append(request) or True)
+        provider.mark_mcp_config_changed()
+
+        await provider.apply_pending_mcp_reinjection()
+
+        assert [sid for sid, _hook in installed] == [_SID, _SID]
+        request = {"serverName": "remote", "oauthUrl": "https://auth.example.com/a"}
+        runtime.new_handle.is_turn_active = False
+        runtime.new_handle._accept_oauth_request = lambda frame: request
+        assert installed[0][1](object()) is False
+        assert installed[-1][1](object()) is True
+        assert shown == [request]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("mode", "expected_tools"),
         [("read_only", ["fs_read", "memory"]), ("disabled", ["fs_read"])],
