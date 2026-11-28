@@ -214,6 +214,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
     "script_hooks": ("_script_hook_enabled_from",),
     "tool_identity": ("ToolCall",),
     "hook_dispatch": ("hook_tool_input",),
+    "windows_paths": ("unc_root_refused",),
 }
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every moved name,

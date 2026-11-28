@@ -313,6 +313,50 @@ class TestSetProjectAbsolutePathShapes:
         with pytest.raises(ValidationError, match="invalid format"):
             mcp_core._call_tool_inner("set_project", {"path": path})
 
+    @pytest.mark.parametrize("path", ["//server/share/proj", "/\\server\\share\\proj"])
+    def test_share_root_refused_on_windows(self, path, monkeypatch):
+        from kiro_crew.validation import ValidationError
+
+        # On a POSIX host a patched os.name makes pathlib use Windows rules, which
+        # cannot resolve the gateway's own trusted roots; no share is trusted here.
+        monkeypatch.setattr("kiro_crew.hooks.unc_probe_allowed", lambda raw: False)
+        monkeypatch.setattr(os, "name", "nt")
+        with pytest.raises(ValidationError, match="network share"):
+            mcp_core._call_tool_inner("set_project", {"path": path})
+
+    @pytest.mark.parametrize(
+        "raw, refused",
+        [
+            ("\\\\wsl.localhost\\Ubuntu\\p", False),
+            ("\\\\WSL$\\Ubuntu", False),
+            ("//wsl$/Ubuntu/p", False),
+            # No distro, or a host that only starts with the WSL name.
+            ("\\\\wsl.localhost\\", True),
+            ("\\\\wsl$\\..\\x", True),
+            ("\\\\wsl.localhost.example\\Ubuntu", True),
+            ("\\\\server\\share", True),
+        ],
+    )
+    def test_only_a_wsl_distro_root_is_kept(self, raw, refused, monkeypatch):
+        from kiro_crew import hooks
+
+        monkeypatch.setattr("kiro_crew.hooks.unc_probe_allowed", lambda raw: False)
+        monkeypatch.setattr(os, "name", "nt")
+        assert hooks.unc_root_refused(raw) is refused
+
+    def test_wsl_root_admitted_on_windows(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.hooks.unc_probe_allowed", lambda raw: False)
+        monkeypatch.setattr(os, "name", "nt")
+        root = "//wsl.localhost/Ubuntu/p"
+        result = mcp_core._call_tool_inner("set_project", {"path": root})
+        assert session_directive.decode(result, "set_project")["project"] == root
+
+    @pytest.mark.parametrize("path", ["//tmp/x", "/\\tmp\\x"])
+    def test_doubled_slash_root_admitted_on_posix(self, path, monkeypatch):
+        monkeypatch.setattr(os, "name", "posix")
+        result = mcp_core._call_tool_inner("set_project", {"path": path})
+        assert session_directive.decode(result, "set_project")["project"] == path
+
     def test_project_line_shape_round_trips(self):
         """A path shaped like the one a session's own ``[PROJECT]`` line carries."""
         reported = r"C:\Work"
@@ -353,6 +397,46 @@ class _FakeState:
 
     def push_slots_update(self) -> None:
         self.pushes += 1
+
+
+#: Every share spelling a Windows host would contact: both separator styles,
+#: mixed, and the device / extended-length namespaces.
+_SHARE_ROOTS = [
+    "//server/share/proj",
+    "/\\server\\share\\proj",
+    "\\\\server\\share\\proj",
+    "\\/server/share/proj",
+    "\\\\.\\pipe\\x",
+    "\\\\?\\UNC\\server\\share",
+]
+
+
+def _share_touches(touched: list[str]) -> list[str]:
+    """The recorded resolves that name a share: the fixture's own home resolves are not."""
+    return [
+        p for p in touched if "server" in p or "pipe" in p or p[:2] in ("//", "\\\\", "/\\", "\\/")
+    ]
+
+
+def _pin_home(monkeypatch, home) -> None:
+    """``~`` expands to a drive-local test dir on every host, Windows included."""
+    drive, tail = os.path.splitdrive(str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOMEDRIVE", drive)
+    monkeypatch.setenv("HOMEPATH", tail)
+
+
+def _record_fs(monkeypatch) -> list[str]:
+    """Replace ``realpath`` with a recorder that answers its input unchanged."""
+    touched: list[str] = []
+
+    def _record(p, *a, **k):
+        touched.append(str(p))
+        return str(p)
+
+    monkeypatch.setattr(os.path, "realpath", _record)
+    return touched
 
 
 class TestSetProjectApplier:
@@ -444,6 +528,89 @@ class TestSetProjectApplier:
         assert "voice runtime" in result
         # Load-bearing: the slot was NOT repointed to the overlapping path.
         assert slot.project == "/existing/project"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("project", _SHARE_ROOTS)
+    async def test_share_root_refused_on_windows_before_any_resolve(
+        self, project, monkeypatch, sel_spy
+    ):
+        """On Windows every share spelling is refused on the text alone: nothing
+        resolves or stats it, the slot keeps its project, and it audits denied."""
+        touched = _record_fs(monkeypatch)
+        # On a POSIX host a patched os.name makes pathlib use Windows rules, which
+        # cannot resolve the gateway's own trusted roots; no share is trusted here.
+        monkeypatch.setattr("kiro_crew.hooks.unc_probe_allowed", lambda raw: False)
+        monkeypatch.setattr(os, "name", "nt")
+        slot = _FakeSlot(project="/existing/project")
+        result = await apply_session_directive(
+            _FakeState(),
+            slot,
+            slot.key,
+            "set_project",
+            {"project": project, "clear": False},
+            producer_is_user_facing=True,
+        )
+        assert result == "Error: the project must be a local directory, not a network share."
+        assert _share_touches(touched) == []
+        assert slot.project == "/existing/project"
+        assert [c["outcome"] for c in sel_spy.calls] == ["denied"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "project",
+        [
+            "C:\\Work\\proj",
+            "C:/Work/proj",
+            "~/proj",
+            "\\\\wsl.localhost\\Ubuntu\\home\\u\\p",
+            "\\\\wsl$\\Ubuntu\\p",
+        ],
+    )
+    async def test_local_root_still_applies_on_windows(self, project, monkeypatch, tmp_path):
+        """A drive root, a ``~`` root and a WSL distro root reach the resolver and
+        apply as before."""
+        _pin_home(monkeypatch, tmp_path)
+        monkeypatch.setattr("kiro_crew.hooks.unc_probe_allowed", lambda raw: False)
+        touched = _record_fs(monkeypatch)
+        monkeypatch.setattr(os.path, "isdir", lambda p: True)
+        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: None)
+        monkeypatch.setattr("kiro_crew.sandbox.voice_runtime_workspace_conflict", lambda *a: None)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._save_recent_project", lambda rp: None
+        )
+        expanded = os.path.expanduser(project)
+        monkeypatch.setattr(os, "name", "nt")
+        slot = _FakeSlot(project="")
+        result = await apply_session_directive(
+            _FakeState(),
+            slot,
+            slot.key,
+            "set_project",
+            {"project": project, "clear": False},
+            producer_is_user_facing=True,
+        )
+        assert "Project set to" in result
+        assert slot.project == expanded
+        assert expanded in touched
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name == "nt", reason="a doubled leading slash is a share on Windows")
+    async def test_doubled_slash_is_a_local_path_on_posix(self, monkeypatch):
+        """POSIX reads ``//tmp/x`` as a local path, so the share rule leaves it alone."""
+        touched = _record_fs(monkeypatch)
+        monkeypatch.setattr(os, "name", "posix")
+        monkeypatch.setattr(os.path, "isdir", lambda p: False)
+        slot = _FakeSlot(project="/existing/project")
+        result = await apply_session_directive(
+            _FakeState(),
+            slot,
+            slot.key,
+            "set_project",
+            {"project": "//tmp/x", "clear": False},
+            producer_is_user_facing=True,
+        )
+        assert "network share" not in result
+        assert "//tmp/x" in touched
 
     @pytest.mark.asyncio
     async def test_clear_empties_project(self, tmp_path):

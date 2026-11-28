@@ -34,6 +34,7 @@ logger = logging.getLogger("kiro_crew.dashboard.session_directive_apply")
 async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.dashboard.transcript_binding import arm_project_reset
+    from kiro_crew.hooks import unc_root_refused
     from kiro_crew.sandbox import voice_runtime_workspace_conflict
     from kiro_crew.security import is_unverifiable_path_refusal, sensitive_path_refusal
 
@@ -65,6 +66,10 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."
     expanded = os.path.expanduser(project)
+    # Lexical, before anything resolves the text: on Windows, resolving a
+    # share spelling (any two leading separators) contacts the named host.
+    if await asyncio.to_thread(unc_root_refused, expanded):
+        raise _DirectiveDenied("Error: the project must be a local directory, not a network share.")
 
     def _validate() -> tuple[str, str | None, bool]:
         """Resolve + classify the path on a worker thread.

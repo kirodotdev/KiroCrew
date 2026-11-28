@@ -742,6 +742,23 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     if project:
+        from kiro_crew.hooks import unc_root_refused
+
+        # Lexical, before probe_project_dir resolves it: on Windows, resolving
+        # a share spelling contacts the named host. A NUL makes expanduser
+        # raise; probe_project_dir refuses that text below.
+        try:
+            expanded = os.path.expanduser(project)
+        except ValueError:
+            expanded = project
+        if await asyncio.to_thread(unc_root_refused, expanded):
+            return web.json_response(
+                {
+                    "error": "Project must be a local directory, not a network share",
+                    "code": "unc_path_refused",
+                },
+                status=400,
+            )
         probed = await asyncio.to_thread(probe_project_dir, project)
         if probed is None:
             return web.json_response(

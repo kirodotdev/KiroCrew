@@ -266,6 +266,7 @@ from kiro_crew.hook_runtime.windows_paths import (  # noqa: F401
     _normalize_windows_link_target,
     is_unc_shape,
     unc_probe_allowed,
+    unc_root_refused,
 )
 
 # Canonical home of the descriptor-path primitive (Windows fail-closed branch

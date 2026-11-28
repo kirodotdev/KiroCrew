@@ -43,6 +43,15 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     return state
 
 
+def _pin_home(monkeypatch, home) -> None:
+    """``~`` expands to a drive-local test dir on every host, Windows included."""
+    drive, tail = os.path.splitdrive(str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOMEDRIVE", drive)
+    monkeypatch.setenv("HOMEPATH", tail)
+
+
 class TestChatSlotProject:
     @pytest.mark.asyncio
     async def test_set_project(self, tmp_path):
@@ -149,6 +158,57 @@ class TestChatSlotProject:
                 json={"project": "/nonexistent_xyz_123"},
             )
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "project, os_name, refused",
+        [
+            ("//server/share/proj", "nt", True),
+            ("/\\server\\share\\proj", "nt", True),
+            ("\\\\server\\share\\proj", "nt", True),
+            ("C:\\Work\\proj", "nt", False),
+            ("C:/Work/proj", "nt", False),
+            ("~/proj", "nt", False),
+            # A WSL distro is served by this machine, not a remote host.
+            ("\\\\wsl.localhost\\Ubuntu\\home\\u\\p", "nt", False),
+            ("\\\\wsl$\\Ubuntu\\p", "nt", False),
+            # POSIX reads a doubled leading slash as a local path.
+            ("//tmp/proj", "posix", False),
+        ],
+    )
+    async def test_share_root_refused_before_any_resolve(
+        self, project, os_name, refused, monkeypatch, tmp_path
+    ):
+        """On Windows a share spelling is refused before anything resolves it;
+        a local root still reaches the resolver."""
+        touched: list[str] = []
+
+        def _record(p, *a, **k):
+            touched.append(str(p))
+            return "/nonexistent_xyz_123"
+
+        # On a POSIX host a patched os.name makes pathlib use Windows rules, which
+        # cannot resolve the gateway's own trusted roots; no share is trusted here.
+        monkeypatch.setattr("kiro_crew.hooks.unc_probe_allowed", lambda raw: False)
+        _pin_home(monkeypatch, tmp_path)
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            with monkeypatch.context() as mp:
+                mp.setattr(os.path, "realpath", _record)
+                mp.setattr(os, "name", os_name)
+                resp = await client.post("/api/chat/slots/test/project", json={"project": project})
+            data = await resp.json()
+        assert resp.status == 400
+        if refused:
+            assert data["error"] == "Project must be a local directory, not a network share"
+            assert data["code"] == "unc_path_refused"
+            # Only share resolves count: the fixture's own home may resolve too.
+            assert [p for p in touched if "server" in p] == []
+        else:
+            assert data["error"] == "Not a directory"
+            assert os.path.expanduser(project) in touched
+        assert slot.project == ""
 
     @pytest.mark.asyncio
     async def test_sensitive_path_returns_403(self):
