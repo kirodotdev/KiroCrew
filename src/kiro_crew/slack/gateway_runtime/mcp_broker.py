@@ -262,18 +262,25 @@ async def _init_mcp_gateway(
         except Exception:
             logger.debug("mcp launch approvals: SEL write failed", exc_info=True)
 
-    from kiro_crew.mcp_gateway.admission import derive_spawn_gate_ceiling
+    from kiro_crew.mcp_gateway.admission import derive_resident_ceiling, derive_spawn_gate_ceiling
     from kiro_crew.subagent import subagent_count_ceiling
 
     # From config alone, not the subagent manager: this runs on the boot path
     # before _init_subagents builds the manager, and it must not probe host
     # memory there. The gate needs only the upper bound the cap can reach.
     subagent_ceiling = subagent_count_ceiling(self._cfg)
+    max_backends = derive_resident_ceiling(cfg_gw.max_backends, len(stubs))
+    if max_backends > cfg_gw.max_backends:
+        logger.info(
+            "mcp gateway: max_backends %d raised to %d, one backend per stubbed server",
+            cfg_gw.max_backends,
+            max_backends,
+        )
     manager = GatewayManager(
         GatewaySpec(
             socket_path=socket_path,
             idle_timeout_secs=cfg_gw.idle_timeout_secs,
-            max_backends=cfg_gw.max_backends,
+            max_backends=max_backends,
             mcp_target_env=target_env,
             # The exact work dir this rewrite wrote into every stub, so the
             # daemon spawns backends there without resolving it a second time.

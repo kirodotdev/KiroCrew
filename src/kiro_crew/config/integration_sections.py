@@ -638,7 +638,9 @@ class McpGatewayConfig:
         metadata=_meta(
             "Max Backends",
             "Max concurrent pooled MCP backends before the pool refuses a new one. "
-            "Must be >= the number of distinct (agent x server) backends that can be "
+            "The broker raises it to the number of stub_servers when that is higher, "
+            "so every stubbed server can hold one backend; a lower value does not cap "
+            "the pool below that. Must be >= the number of distinct (agent x server) backends that can be "
             "live at once: each agent keeps its own backend per server, so N concurrent "
             "agents with ~S servers each need N*S slots. Bounded by design: idle "
             "backends drain after idle_timeout_secs, so steady-state RAM tracks real "
@@ -708,12 +710,13 @@ class McpGatewayConfig:
             "Initialize Timeout",
             "Seconds a freshly spawned backend has to answer its first MCP "
             "initialize once the session sends it. A backend that stays silent is "
-            "failed and reaped so its slot frees; the broker holds the spawn "
-            "permit for this same window. Raise it for servers whose startup is "
-            "legitimately slow (large runtimes, remote resolution). The "
-            "effective deadline is floored at 30 seconds (a cold-start "
-            "floor): a configured value below it is lifted, a value above "
-            "it is used as is.",
+            "failed and reaped so its slot frees; the broker waits at most 30 "
+            "seconds of it on the spawn permit, and a backend whose handshake "
+            "fails keeps the permit up to 30 more while it exits. Raise it for servers whose "
+            "startup is legitimately slow (large runtimes, remote resolution). "
+            "The effective deadline is floored at 90 seconds (a cold-start "
+            "floor, the time a chat waits for a starting server): a configured "
+            "value below it is lifted, a value above it is used as is.",
             restart=True,
         ),
     )
