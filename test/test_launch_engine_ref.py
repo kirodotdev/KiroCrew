@@ -241,16 +241,23 @@ class TestReleaseTagExists:
         assert seen["agent"]
 
     @pytest.mark.parametrize(
-        "exc",
+        "exc, answer",
         [
-            urllib.error.HTTPError("u", 404, "Not Found", {}, io.BytesIO(b"")),  # type: ignore[arg-type]
-            urllib.error.HTTPError("u", 403, "rate limited", {}, io.BytesIO(b"")),  # type: ignore[arg-type]
-            urllib.error.URLError("no network"),
-            TimeoutError("timed out"),
-            http.client.BadStatusLine("garbled"),
+            (urllib.error.HTTPError("u", 404, "Not Found", {}, io.BytesIO(b"")), False),  # type: ignore[arg-type]
+            (urllib.error.HTTPError("u", 403, "rate limited", {}, io.BytesIO(b"")), None),  # type: ignore[arg-type]
+            (urllib.error.URLError("no network"), None),
+            (
+                urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"),
+                None,
+            ),
+            (TimeoutError("timed out"), None),
+            (http.client.BadStatusLine("garbled"), None),
         ],
     )
-    def test_https_probe_failure_is_a_miss(self, monkeypatch, exc, caplog) -> None:
+    def test_https_probe_failure_is_a_miss_or_undecided(
+        self, monkeypatch, exc, answer, caplog
+    ) -> None:
+        """Only a 404 says the tag is absent; any other failure could not tell."""
         monkeypatch.setattr(ec2.platform_compat, "trusted_git_bin", lambda: None)
 
         def raiser(request, timeout):
@@ -258,7 +265,7 @@ class TestReleaseTagExists:
 
         monkeypatch.setattr(urllib.request, "urlopen", raiser)
         with caplog.at_level("WARNING"):
-            assert ec2.release_tag_exists("v0.7.0") is False
+            assert ec2.release_tag_exists("v0.7.0") is answer
         assert "v0.7.0" in caplog.text
 
     def test_explicit_repo_is_the_remote_probed(self, monkeypatch, trusted_git) -> None:
@@ -272,16 +279,18 @@ class TestReleaseTagExists:
         assert ec2.release_tag_exists("v0.7.0", "https://example.com/fork.git") is True
         assert seen["argv"][-2] == "https://example.com/fork.git"
 
-    @pytest.mark.parametrize("returncode", [2, 128])
-    def test_non_zero_exit_is_a_miss(self, monkeypatch, trusted_git, returncode, caplog) -> None:
-        """2 = no such ref; 128 = the remote could not be reached. Both: no tag."""
+    @pytest.mark.parametrize("returncode, answer", [(2, False), (128, None)])
+    def test_non_zero_exit_is_a_miss_or_undecided(
+        self, monkeypatch, trusted_git, returncode, answer, caplog
+    ) -> None:
+        """2 = no such ref; 128 = the remote could not be reached, so no answer."""
         monkeypatch.setattr(
             subprocess,
             "run",
             lambda argv, **kw: subprocess.CompletedProcess(argv, returncode, "", "fatal"),
         )
         with caplog.at_level("WARNING", logger="kiro_crew.cloud.ec2"):
-            assert ec2.release_tag_exists("v0.7.0") is False
+            assert ec2.release_tag_exists("v0.7.0") is answer
         assert "v0.7.0" in caplog.text
 
     @pytest.mark.parametrize(
@@ -292,13 +301,13 @@ class TestReleaseTagExists:
             PermissionError("git"),
         ],
     )
-    def test_spawn_failure_is_a_miss(self, monkeypatch, trusted_git, exc, caplog) -> None:
+    def test_spawn_failure_is_undecided(self, monkeypatch, trusted_git, exc, caplog) -> None:
         def raiser(argv, **kw):
             raise exc
 
         monkeypatch.setattr(subprocess, "run", raiser)
         with caplog.at_level("WARNING", logger="kiro_crew.cloud.ec2"):
-            assert ec2.release_tag_exists("v0.7.0") is False
+            assert ec2.release_tag_exists("v0.7.0") is None
         assert "could not probe" in caplog.text
 
 
@@ -355,6 +364,38 @@ class TestResolvePublicRef:
         assert "could not confirm release tag v0.7.0" in text
         assert "development build from main" in text and "refuse to pair" in text
 
+    def test_undecided_probe_stops_the_launch_naming_the_fix(self, monkeypatch) -> None:
+        """A refused certificate must not quietly become an install of main."""
+        monkeypatch.setattr(ec2, "__version__", "0.7.0rc5")
+        monkeypatch.setattr(ec2.release_channel, "__version__", "0.7.0rc5")
+        answers = {"v0.7.0-insider.5": False, "v0.7.0-rc.5": None}
+        monkeypatch.setattr(ec2, "release_tag_exists", lambda ref, repo="": answers[ref])
+        with pytest.raises(aws.AWSError) as err:
+            ec2.resolve_public_ref()
+        text = str(err.value)
+        assert "v0.7.0-insider.5 / v0.7.0-rc.5" in text
+        assert "stopped before creating anything" in text
+        assert "certificate store" in text and "HTTPS_PROXY" in text
+        # The dashboard's launch job shows the first 400 characters.
+        assert len(text) <= 400
+
+    def test_undecided_then_confirmed_pins_the_tag(self, monkeypatch) -> None:
+        monkeypatch.setattr(ec2.release_channel, "__version__", "0.7.0rc5")
+        answers = {"v0.7.0-insider.5": None, "v0.7.0-rc.5": True}
+        monkeypatch.setattr(ec2, "release_tag_exists", lambda ref, repo="": answers[ref])
+        assert ec2.resolve_public_ref() == "v0.7.0-rc.5"
+
+    def test_no_trusted_git_and_a_refused_certificate_stops(self, monkeypatch) -> None:
+        monkeypatch.setattr(ec2.release_channel, "__version__", "0.7.0")
+        monkeypatch.setattr(ec2.platform_compat, "trusted_git_bin", lambda: None)
+
+        def refused(request, timeout):
+            raise urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED]")
+
+        monkeypatch.setattr(urllib.request, "urlopen", refused)
+        with pytest.raises(aws.AWSError, match="api.github.com"):
+            ec2.resolve_public_ref()
+
     def test_no_trusted_git_still_pins_this_builds_tag(self, monkeypatch) -> None:
         monkeypatch.setattr(ec2, "__version__", "0.7.0")
         monkeypatch.setattr(ec2.release_channel, "__version__", "0.7.0")
@@ -406,6 +447,22 @@ class TestDeployPinsTheRef:
         ec2.deploy(tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1")
 
         assert "KirocrewRef" not in _overrides(captured["argv"])
+
+    def test_undecided_probe_creates_nothing(self, monkeypatch) -> None:
+        captured: dict = {}
+        _real_deploy(monkeypatch, captured)
+        monkeypatch.setattr(ec2.release_channel, "__version__", "0.7.0")
+        monkeypatch.setattr(ec2, "release_tag_exists", lambda ref, repo="": None)
+        monkeypatch.setattr(
+            source_mod,
+            "ensure_instance_boundary",
+            lambda *a, **k: pytest.fail("nothing may be created"),
+        )
+
+        with pytest.raises(aws.AWSError):
+            ec2.deploy(tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1")
+
+        assert "argv" not in captured
 
     def test_explicit_ref_wins_over_the_release_tag(self, monkeypatch) -> None:
         captured: dict = {}
