@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.kiro_cli_bundle import powershell_single_quoted
 
 logger = logging.getLogger(__name__)
@@ -304,7 +305,7 @@ def app_channel_preference() -> str:
         return "stable"
     try:
         with open(path, "rb") as fh:
-            raw = fh.read(_APP_SETTINGS_MAX_BYTES + 1)
+            raw = bounded_read(fh, _APP_SETTINGS_MAX_BYTES + 1)
         settings = json.loads(raw) if len(raw) <= _APP_SETTINGS_MAX_BYTES else None
     except (OSError, ValueError, RecursionError):
         return "stable"
