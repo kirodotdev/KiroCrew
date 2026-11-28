@@ -39,7 +39,7 @@ def test_a_utf8_bom_file_loads_and_survives_the_next_update(path):
     settings = ChannelSettings()
     assert settings.get("a.one") == {"muted": True}
     settings.update("c.three", muted=True)
-    assert set(_channels(path)) == {"a.one", "b.two", "c.three", MONITOR_CHANNEL}
+    assert set(_channels(path)) == {"a.one", "b.two", "c.three", MONITOR_CHANNEL, "system.update"}
     assert _asides(path) == []
 
 
@@ -59,7 +59,7 @@ def test_a_read_error_only_at_boot_keeps_every_stored_mute(path, monkeypatch):
 
     settings.update("c.three", muted=True)
 
-    assert set(_channels(path)) == {"a.one", "b.two", "c.three", MONITOR_CHANNEL}
+    assert set(_channels(path)) == {"a.one", "b.two", "c.three", MONITOR_CHANNEL, "system.update"}
     assert settings.get("a.one") == {"muted": True}
     assert _asides(path) == []
 
@@ -74,7 +74,7 @@ def test_an_unparseable_file_is_kept_aside_and_the_update_still_lands(path, capl
         entry = settings.update("c.three", muted=True)
 
     assert entry == {"muted": True}
-    assert set(_channels(path)) == {"c.three", MONITOR_CHANNEL}
+    assert set(_channels(path)) == {"c.three", MONITOR_CHANNEL, "system.update"}
     asides = _asides(path)
     assert len(asides) == 1
     assert asides[0].read_bytes() == raw
@@ -88,5 +88,5 @@ def test_a_missing_file_boots_with_defaults_and_the_first_update_creates_it(path
     settings = ChannelSettings()
     assert not path.exists()
     settings.update("c.three", muted=True)
-    assert set(_channels(path)) == {"c.three", MONITOR_CHANNEL}
+    assert set(_channels(path)) == {"c.three", MONITOR_CHANNEL, "system.update"}
     assert _asides(path) == []

@@ -5,12 +5,14 @@ the notification bridge's route. Stored in ``~/.kiro/crew/notification_settings.
 
     {"channel_settings": {"system.heartbeat": {"muted": true},
                           "system.monitor": {},
+                          "system.update": {},
                           "oncall-radar.ticket-update": {"priority": "critical"},
                           "system.approval": {"deliver_to": ["slack"],
                                               "deliver_min_priority": "critical"}}}
 
-Every file this build writes contains a ``system.monitor`` entry, possibly an
-empty one, which records that the one-time seed from ``system.agent`` is done.
+Every file this build writes contains a ``system.monitor`` and a ``system.update``
+entry, possibly empty ones, each recording that its one-time seed from
+``system.agent`` is done.
 Empty entries stay out of :meth:`ChannelSettings.all_settings`.
 
 Semantics (applied at the delivery sink, keeping the bus pure):
@@ -47,7 +49,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import config_dir
 from kiro_crew.notifications.bridge import BRIDGE_TRANSPORTS, DELIVER_MIN_PRIORITIES
-from kiro_crew.notifications.bus import MONITOR_CHANNEL, PRIORITIES
+from kiro_crew.notifications.bus import MONITOR_CHANNEL, PRIORITIES, UPDATE_CHANNEL
 from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
@@ -57,11 +59,13 @@ logger = logging.getLogger(__name__)
 PROTECTED_CHANNELS = frozenset({"system.approval"})
 
 _SETTINGS_FILENAME = "notification_settings.json"
-# One-time seed: when a stored settings mapping has no ``system.monitor`` key,
-# its ``system.agent`` entry is copied to ``system.monitor`` in memory. Every
-# subsequent write retains a ``system.monitor`` key, including an empty entry
-# for an unmuted channel, so its presence records that the seed is complete.
+# One-time seed: when a stored settings mapping has no key for one of these
+# channels, its ``system.agent`` entry is copied to that channel in memory: each
+# carries notices that would otherwise land on ``system.agent``. Every subsequent
+# write retains a key for each, including an empty entry for an unmuted channel,
+# so its presence records that that channel's seed is complete.
 _SEED_SOURCE_CHANNEL = "system.agent"
+_SEEDED_CHANNELS = (MONITOR_CHANNEL, UPDATE_CHANNEL)
 _lock = threading.Lock()
 
 
@@ -212,13 +216,12 @@ def _move_unreadable_aside() -> None:
 
 
 def _seeded(settings: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """*settings* with the one-time ``system.agent`` -> ``system.monitor`` seed applied."""
-    if MONITOR_CHANNEL in settings:
-        return settings
+    """*settings* with the one-time ``system.agent`` seed of each seeded channel applied."""
     source = settings.get(_SEED_SOURCE_CHANNEL)
     if source is None:
         return settings
-    return {**settings, MONITOR_CHANNEL: dict(source)}
+    missing = [channel for channel in _SEEDED_CHANNELS if channel not in settings]
+    return {**settings, **{channel: dict(source) for channel in missing}}
 
 
 def parse_imported_settings(text: str) -> tuple[dict[str, dict[str, Any]], int]:
@@ -235,9 +238,10 @@ def parse_imported_settings(text: str) -> tuple[dict[str, dict[str, Any]], int]:
     known transports, and a ``deliver_min_priority`` that is not a floor or has no
     route beside it, are dropped the same way. A channel whose every field was
     refused is dropped whole rather than kept as ``{}``: an empty row would still
-    land on the install (replace writes it out, and a planted ``system.monitor``
-    key would mark the one-time seed complete). The archive is untrusted input, so
-    it gets :meth:`ChannelSettings.update`'s rules, never a looser set.
+    land on the install (replace writes it out, and a planted ``system.monitor`` or
+    ``system.update`` key would mark that one-time seed complete). The archive is
+    untrusted input, so it gets :meth:`ChannelSettings.update`'s rules, never a
+    looser set.
     """
     try:
         doc = json.loads(text)
@@ -341,12 +345,13 @@ class ChannelSettings:
         self._loaded = True
 
     def _seed_monitor_from_agent(self) -> None:
-        """Copy a stored ``system.agent`` entry to ``system.monitor`` once.
+        """Copy a stored ``system.agent`` entry to each seeded channel once.
 
-        A stored ``system.monitor`` key, including an empty entry, records that
-        the seed is complete. Otherwise the copy happens only in memory, so a
-        boot never writes the file. Until an update persists the entry, every
-        load derives the same seed from the same file.
+        The seeded channels are ``system.monitor`` and ``system.update``. A stored
+        key for one of them, including an empty entry, records that its seed is
+        complete. Otherwise the copy happens only in memory, so a boot never
+        writes the file. Until an update persists the entry, every load derives
+        the same seed from the same file.
         """
         self._settings = _seeded(self._settings)
 
@@ -470,9 +475,10 @@ class ChannelSettings:
                 candidate[channel] = entry
             else:
                 candidate.pop(channel, None)
-            # Every write keeps a system.monitor key ({} when unset) as the
-            # record that _seed_monitor_from_agent ran; see that docstring.
-            candidate.setdefault(MONITOR_CHANNEL, {})
+            # Every write keeps a key for each seeded channel ({} when unset) as
+            # the record that _seed_monitor_from_agent ran; see that docstring.
+            for seeded in _SEEDED_CHANNELS:
+                candidate.setdefault(seeded, {})
             payload = self._payload(candidate)
             atomic_write(_settings_path(), payload)
             self._settings = candidate
@@ -495,9 +501,10 @@ class ChannelSettings:
             if os.path.lexists(path):
                 return False
             candidate = {channel: dict(entry) for channel, entry in incoming.items()}
-            # Every write keeps a system.monitor key ({} when unset), as update()
-            # does: the record that _seed_monitor_from_agent ran.
-            candidate.setdefault(MONITOR_CHANNEL, {})
+            # Every write keeps a key for each seeded channel ({} when unset), as
+            # update() does: the record that _seed_monitor_from_agent ran.
+            for seeded in _SEEDED_CHANNELS:
+                candidate.setdefault(seeded, {})
             atomic_write(path, self._payload(candidate))
             self._settings = candidate
             self._loaded = True
