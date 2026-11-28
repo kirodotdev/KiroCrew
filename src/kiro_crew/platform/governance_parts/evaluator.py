@@ -254,6 +254,18 @@ def resolve(
     return Decision(True, "permitted", rule="rule2-intersect", layer=layer)
 
 
+def _mcp_title_restates_ref(tool_title: str, mcp_ref: str) -> bool:
+    """Whether *tool_title* is ``mcp__<server>__<tool>`` for ``mcp_ref`` ``@<server>/<tool>``.
+
+    Neither segment of a canonical reference contains ``/``, so the first ``/``
+    separates them.
+    """
+    if not (tool_title.startswith("mcp__") and mcp_ref.startswith("@")):
+        return False
+    server, sep, tool = mcp_ref[1:].partition("/")
+    return bool(sep and server and tool) and tool_title == f"mcp__{server}__{tool}"
+
+
 def gate_decision(
     ceiling: Optional[GovernanceCeiling],
     profile: Optional[Profile],
@@ -369,8 +381,15 @@ def gate_decision(
         return kept
 
     _grouped = {s for group in alias_groups for s in group if s}
+    # A title that is only the ``mcp__`` spelling of ``mcp_ref`` names the same call,
+    # and reading it back splits at its last ``__``: a tool named ``a__b`` would be
+    # asked as server ``<server>__a``, which an allow list naming the server refuses.
+    # ``mcp_ref`` is asked below with the split intact.
+    title_restates_ref = _mcp_title_restates_ref(tool_title, mcp_ref)
     pairs = (
-        _own(classify_tool_title(tool_title), identity=False) if tool_title not in _grouped else []
+        _own(classify_tool_title(tool_title), identity=False)
+        if tool_title not in _grouped and not title_restates_ref
+        else []
     )
     # Additional NON-model-authored titles the caller holds for the same call --
     # e.g. the trusted ``_meta.kiro.toolName`` beside an LLM-authored display

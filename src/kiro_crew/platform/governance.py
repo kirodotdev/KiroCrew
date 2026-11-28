@@ -1454,6 +1454,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PERMIT_NOT_GOVERNED,
         _anchored_read_target,
         _every_operation_names_a_path,
+        _mcp_title_restates_ref,
         _policy_level,
         _query_level,
         command_chain_refusal,
