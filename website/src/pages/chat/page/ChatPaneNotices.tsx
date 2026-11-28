@@ -102,6 +102,7 @@ function paneCopy(_languageGeneration: number, facts: {
   const { sidMatches, switchSlotGone, unresumableResume, undeletableHistory } = facts
   return {
     dismiss: i18nT('app.dismiss'),
+    retry: i18nT('components.chatPane.retry'),
     resumeChat: i18nT('components.notifications.notificationDetailPanel.resume_chat'),
     sidAlsoNames: sidMatches
       ? i18nT('pages.chatPage.short_name_also_names', {
@@ -115,7 +116,10 @@ function paneCopy(_languageGeneration: number, facts: {
       : [],
     effortUnavailable: facts.effortUnavailable ? i18nT('pages.chatPage.effort_options_unavailable') : '',
     configFailed: facts.configFailed ? i18nT('pages.settings.chatPanel.failed_to_load_config') : '',
-    switchSlotGone: switchSlotGone ? switchSlotNoticeCopy(switchSlotGone.kind, switchSlotGone.name) : '',
+    // A failed open says why under its sentence: the failure's own message.
+    switchSlotGone: switchSlotGone
+      ? [switchSlotNoticeCopy(switchSlotGone.kind, switchSlotGone.name), switchSlotGone.reason].filter(Boolean).join('\n')
+      : '',
     unresumable: unresumableResume ? unresumableNoticeMessage(unresumableResume) : '',
     undeletable: undeletableHistory ? historyDeleteRefusalMessage(undeletableHistory) : '',
   }
@@ -143,6 +147,8 @@ interface ChatPaneNoticesProps {
   actionError: { title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport } | null
   setActionError: Dispatch<SetStateAction<{ title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport } | null>>
   switchSlotGone: RootState['chat']['switchSlotGone']
+  /** Reopens the chat a failed open names, as the user's own open of it. */
+  retryOpen: (key: string) => void
   setVoiceRecoverySlot: (slot: string | null) => void
   pinError: string | null
   pinStatus: string | null
@@ -176,6 +182,7 @@ export default function ChatPaneNotices({
   actionError,
   setActionError,
   switchSlotGone,
+  retryOpen,
   setVoiceRecoverySlot,
   pinError,
   pinStatus,
@@ -185,11 +192,15 @@ export default function ChatPaneNotices({
   dispatch,
 }: ChatPaneNoticesProps) {
   const languageGeneration = useLanguageGeneration()
+  // A failed open is about one chat: over any other chat it would name the
+  // wrong one, so it shows only while the chat it names is open.
+  const failedKey = switchSlotGone?.kind === 'failed' ? switchSlotGone.key : undefined
+  const slotNotice = failedKey !== undefined && failedKey !== activeSlot ? null : switchSlotGone
   const copy = paneCopy(languageGeneration, {
     sidMatches,
     effortUnavailable: !!(activeSlot && provider.capabilities.reasoningEffort && selectionCapabilitiesFailed(selectionCapabilitiesQ)),
     configFailed: !!(activeSlot && chipDefault.failed),
-    switchSlotGone,
+    switchSlotGone: slotNotice,
     unresumableResume,
     undeletableHistory,
   })
@@ -266,8 +277,11 @@ export default function ChatPaneNotices({
           the NAME; the sentence resolves here so a locale switch re-renders it. */}
       <ErrorNotice
         message={copy.switchSlotGone}
-        report={switchSlotGone?.report}
+        report={slotNotice?.report}
         onDismiss={() => dispatch(clearSwitchSlotGone())}
+        footer={failedKey !== undefined && slotNotice
+          ? <Btn type="button" onClick={() => retryOpen(failedKey)}>{copy.retry}</Btn>
+          : undefined}
         askAgent
         className="mx-4 mt-2 mb-0 animate-rise"
         testId="switch-slot-gone"

@@ -580,9 +580,9 @@ describe('ChatPage ?sid= URL parameter', () => {
         await Promise.resolve()
       })
       expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
-      expect(screen.getByText(
-        i18nT('store.chatSlice.session_open_error_named', { name: 'Late Session' }),
-      )).toBeTruthy()
+      expect(screen.getByTestId('switch-slot-gone')).toHaveTextContent(
+        `${i18nT('store.chatSlice.session_open_error_named', { name: 'Late Session' })} detail load failed`,
+      )
       expect(screen.getAllByRole('alert')).toHaveLength(1)
       expect(store.getState().chat.switchSlotGone?.report).toMatchObject({
         endpoint: '/api/chat/slots/chat-9-900',

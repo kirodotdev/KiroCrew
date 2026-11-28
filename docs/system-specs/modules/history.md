@@ -613,6 +613,15 @@ arrived during the fetch, and the page already answers the prompt that reply bel
 to (`pageAnswersLocalPrompt`): re-attached, that frozen partial would sit under the
 finished reply.
 
+**A failed open keeps what the pane showed.** When `switchSlot`'s read fails with
+anything but a 404, the chat stays selected (`slotOpenFailed`) and the rows already
+on screen, from the tab's cache and any live frame since, stay with the cache's
+paging cursor; only a pane with nothing on it stays empty. A 404 still clears the
+pane or restores the previous chat, because the chat is gone. An announced open
+that failed raises the pane's `failed` notice keyed to that chat: it shows, with a
+Retry that repeats the announced open, only while that chat is the active one, and
+a `switchSlot` or `refreshSlot` load of that chat clears it.
+
 In a dev build `refreshSlot` and `warmSlotCache` count, per slot, each read and
 each walk that fetched older pages (with the pages and the reason), readable in
 devtools as `window.__kcSlotReads()` (`website/src/dev/slotReadCounts.ts`); a

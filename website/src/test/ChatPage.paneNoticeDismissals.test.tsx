@@ -38,6 +38,7 @@ function allUp(over: Partial<Props> = {}): Props {
     actionError: { title: 'Could not rename', message: 'server said no' },
     setActionError: vi.fn(),
     switchSlotGone: { name: 'Old chat', kind: 'gone' },
+    retryOpen: vi.fn(),
     setVoiceRecoverySlot: vi.fn(),
     pinError: 'Pin failed',
     pinStatus: 'Pin pending',
@@ -128,6 +129,21 @@ describe('ChatPaneNotices dismissals', () => {
     expect(screen.queryByText(i18nT('pages.settings.chatPanel.failed_to_load_config'))).toBeNull()
     renderNotices(allUp())
     expect(screen.queryByText(i18nT('pages.settings.chatPanel.failed_to_load_config'))).toBeNull()
+  })
+
+  it('a failed open shows with a Retry only over the chat it names', () => {
+    const failed = { name: 'Team Offsite Ideas List', kind: 'failed' as const, key: 'slot-a', reason: 'history could not be read' }
+    const p = allUp({ switchSlotGone: failed })
+    const { unmount } = renderNotices(p)
+    const notice = screen.getByTestId('switch-slot-gone')
+    expect(notice).toHaveTextContent(i18nT('store.chatSlice.session_open_error_named', { name: failed.name }))
+    expect(notice).toHaveTextContent(failed.reason)
+    fireEvent.click(within(notice).getByRole('button', { name: i18nT('components.chatPane.retry') }))
+    expect(p.retryOpen).toHaveBeenCalledWith('slot-a')
+    unmount()
+    renderNotices(allUp({ switchSlotGone: failed, activeSlot: 'slot-b' }))
+    expect(screen.queryByText(i18nT('store.chatSlice.session_open_error_named', { name: failed.name }))).toBeNull()
+    expect(screen.queryByRole('button', { name: i18nT('components.chatPane.retry') })).toBeNull()
   })
 
   it('names a failed resume without guessing its surface, and a refused delete by its title', () => {

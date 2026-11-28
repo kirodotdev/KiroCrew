@@ -191,7 +191,7 @@ export function switchSlotNoticeCopy(kind: 'gone' | 'failed' | 'closed', name: s
 /** See `switchSlotGone` on ChatState. Set by `switchSlot`'s catch for an
  *  `announceOnMissing` caller whose target 404ed, and by the chat page's
  *  Back/Forward reader for a session this tab saw closed. */
-export const setSwitchSlotGone = createAction<{ name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport }>('chat/setSwitchSlotGone')
+export const setSwitchSlotGone = createAction<{ name: string; kind: 'gone' | 'failed' | 'closed'; key?: string; reason?: string; report?: ErrorReport }>('chat/setSwitchSlotGone')
 export const clearSwitchSlotGone = createAction('chat/clearSwitchSlotGone')
 
 /** The name a switch-failure notice gives a session: the one its Sessions row shows. */
@@ -404,6 +404,8 @@ export const switchSlot = createAsyncThunk<
             dispatch(setSwitchSlotGone({
               name: name ?? '',
               kind: 'failed',
+              key,
+              reason: redactSecrets(errMessage(e)).trim(),
               ...switchSlotFailureReport(e, key, { kind: 'failed', name: name ?? '' }),
             }))
           }
@@ -421,6 +423,8 @@ export const switchSlot = createAsyncThunk<
         dispatch(setSwitchSlotGone({
           name: name ?? '',
           kind: 'failed',
+          key,
+          reason: redactSecrets(errMessage(e)).trim(),
           ...switchSlotFailureReport(e, key, { kind: 'failed', name: name ?? '' }),
         }))
       }
@@ -568,6 +572,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
       if (state.slotOpenFailed === key) state.slotOpenFailed = null
+      if (state.switchSlotGone?.kind === 'failed' && state.switchSlotGone.key === key) state.switchSlotGone = null
       // The user's open of this session has landed (see `ChatState.userOpen`):
       // only its own gesture load, never a plain switch that superseded it.
       const openArg = action.meta?.arg
@@ -951,10 +956,20 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       }
       // The run mirrors stay as they are: they describe the selected chat's
       // run, which `pending` seeded and live frames keep current, so a turn
-      // still running there keeps its Stop.
+      // still running there keeps its Stop. The transcript `pending` restored
+      // from this tab's cache, and any live row that reached it since, stays
+      // on screen with that cache's cursor: a failed read is no evidence those
+      // rows are wrong, and emptying the pane showed a whole chat as blank
+      // until a retry landed. A 404 still clears it: that chat is gone.
       state.slotOpenFailed = target
-      state.messages = []
-      setPagingCursor(state, false, 0)
+      if (state.messages.length > 0 && !isUnsafeKey(target) && !isMissingSlotError(action.payload ?? action.error)) {
+        const k = safeKey(target)
+        const cached = state.slotMessages?.[k] !== undefined
+        setPagingCursor(state, cached && (state.slotPaneHasMore?.[k] ?? false), cached ? (state.slotPaneNextBefore?.[k] ?? 0) : 0)
+      } else {
+        state.messages = []
+        setPagingCursor(state, false, 0)
+      }
       state.slotLoading = false
     })
 }

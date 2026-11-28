@@ -342,8 +342,13 @@ export interface ChatState {
    *  the API endpoint, status, and backend code available to Ask the agent
    *  while the displayed sentence stays localized. `closed` is a Back/Forward
    *  onto a session this tab saw closed (#14762). Cleared by the next
-   *  `switchSlot.pending` or the notice's dismiss. */
-  switchSlotGone: { name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport } | null
+   *  announced (user-gesture) `switchSlot.pending` or the notice's dismiss;
+   *  a programmatic switch leaves it. A `failed` record carries the `key` it
+   *  is about: the pane shows it, with a Retry, only while that chat is the
+   *  active one, and a load of that chat (`switchSlot` or `refreshSlot`)
+   *  clears it. Its `reason` is the failure's own message (the host's `error`
+   *  text, or the client's status line), shown under the sentence. */
+  switchSlotGone: { name: string; kind: 'gone' | 'failed' | 'closed'; key?: string; reason?: string; report?: ErrorReport } | null
   /** The key whose last open failed transiently and stayed selected with an
    *  empty pane (`switchSlot.rejected`), until a load of it lands. Unlike
    *  `switchSlotGone` a notice dismiss does not clear it: the sidebar row reads

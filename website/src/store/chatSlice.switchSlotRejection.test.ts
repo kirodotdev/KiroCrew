@@ -175,6 +175,32 @@ describe('switchSlot.rejected — a gone target restores the pre-switch selectio
     expect(s.slotLoading).toBe(false)
   })
 
+  it('a transient failure reopening a cached chat keeps its transcript and cursor on screen', async () => {
+    const store = await primedStore()
+    await store.dispatch(switchSlot('C'))
+    detail.mockImplementation(() => Promise.reject(apiError(503, 'history busy')))
+    await store.dispatch(switchSlot('A'))
+    const s = store.getState().chat
+    expect(s.activeSlot).toBe('A')
+    expect(s.slotOpenFailed).toBe('A')
+    expect(s.messages.map(m => [m.role, m.content])).toEqual([['user', 'hello'], ['assistant', 'hi']])
+    expect([s.slotCursorKey, s.slotHasMore, s.slotOldestIndex]).toEqual(['A', true, 7])
+    expect(s.slotLoading).toBe(false)
+  })
+
+  it('a retry over a kept transcript lands the server page once, not doubled', async () => {
+    const store = await primedStore()
+    await store.dispatch(switchSlot('C'))
+    detail.mockImplementation(() => Promise.reject(apiError(503, 'history busy')))
+    await store.dispatch(switchSlot('A'))
+    const longer = { ...PAGES.A, messages: [...PAGES.A.messages, msg('user', 'more', 2), msg('assistant', 'done', 3)], total: 44 }
+    detail.mockImplementation(() => Promise.resolve(longer))
+    await store.dispatch(switchSlot({ key: 'A', announceOnMissing: true }))
+    const s = store.getState().chat
+    expect(s.messages.map(m => [m.role, m.content])).toEqual([['user', 'hello'], ['assistant', 'hi'], ['user', 'more'], ['assistant', 'done']])
+    expect(s.slotOpenFailed).toBeNull()
+  })
+
   it('a transient failure is not a loaded page until a retry loads it', async () => {
     // The pane it leaves is empty, so taken for the loaded page it would make
     // the retry's whole history read as new rows.
@@ -776,8 +802,21 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     expect(e).toEqual({ status: 500, message: 'gateway hiccup' })
     const n = goneNotices(actions)
     expect(n).toHaveLength(1)
-    expect(n[0].payload).toMatchObject({ name: 'Alive session', kind: 'failed' })
+    expect(n[0].payload).toMatchObject({ name: 'Alive session', kind: 'failed', key: 'alive', reason: 'gateway hiccup' })
     expect(evictions(actions)).toHaveLength(0)
+  })
+
+  it('a failure notice names its chat and clears once that chat loads, even by a programmatic switch', async () => {
+    detail.mockRejectedValue(apiError(503, 'history busy'))
+    const { store } = makeRecordingStore([{ key: 'alive', title: 'Alive session' }, { key: 'other', title: 'Other' }])
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'alive', announceOnMissing: true })).unwrap())
+    expect(store.getState().chat.switchSlotGone).toMatchObject({ kind: 'failed', key: 'alive' })
+    detail.mockResolvedValue(OK_PAGE)
+    // Another chat loading leaves the notice for the chat it names.
+    await store.dispatch(switchSlot('other'))
+    expect(store.getState().chat.switchSlotGone).toMatchObject({ kind: 'failed', key: 'alive' })
+    await store.dispatch(switchSlot('alive'))
+    expect(store.getState().chat.switchSlotGone).toBeNull()
   })
 
   it('names an untitled session the way its Sessions row does, not the backend placeholder (Bug Bash row 59)', async () => {
