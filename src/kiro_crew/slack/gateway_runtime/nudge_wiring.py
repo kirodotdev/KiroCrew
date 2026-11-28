@@ -1026,6 +1026,15 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
                 "goal may still be unmet. Reopen the goal popover to raise "
                 "the cap or restart it."
             )
+        # Several loops can stop in one stretch, so the notice names the pull
+        # request this one watched, as a structured monitor's notice names its target.
+        from kiro_crew import autonudge_judge as _judge
+
+        watched = _judge.watched_pr_subject(loop)
+        if watched:
+            body = f"{body}\n\n{watched}"
+            body, _ = redact_exfiltration_urls(body)
+            body, _ = redact_credentials(body)
         _emit(title, body, merged=merged)
         return True
     except Exception:
