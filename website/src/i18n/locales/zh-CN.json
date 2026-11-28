@@ -11739,6 +11739,8 @@
   },
   "hooks": {
     "mic": {
+      "browser_muted_the_microphone": "浏览器将麦克风静音了。重新加载页面以再次授权。",
+      "microphone_disconnected_by_browser": "浏览器断开了麦克风。",
       "could_not_start_the_microphone": "无法启动麦克风。",
       "microphone_is_unavailable_another_app_may_be_usi": "麦克风不可用 — 可能有其他应用正在使用。",
       "microphone_permission_denied_allow_mic_access_in": "未获得麦克风权限。在操作系统和浏览器设置中允许麦克风访问。",
@@ -11899,6 +11901,7 @@
       "stt_error": "语音转文字错误"
     },
     "useVoiceInput": {
+      "microphone_start_timed_out": "麦克风没有启动。再按一次；如果一直这样，重新加载页面。",
       "transcription_failed": "转写失败：{{error}}",
       "transcription_request_failed": "转写请求失败。",
       "polish_failed": "AI 润色未执行，转写文本保持原样。"

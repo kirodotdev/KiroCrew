@@ -15,6 +15,7 @@ vi.mock('../hooks/mic', () => ({
   createLevelMeter: () => () => {},
   setPreferredMicId: () => {},
   activeDeviceId: (s: { id?: string } | null) => s?.id ?? 'dev-1',
+  watchTrackHealth: () => () => {},
 }))
 
 type Track = { stop: ReturnType<typeof vi.fn>; enabled: boolean; readyState: string; label: string; getSettings: () => { deviceId: string } }

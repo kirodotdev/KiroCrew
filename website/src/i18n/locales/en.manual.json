@@ -5434,6 +5434,8 @@
   },
   "hooks": {
     "mic": {
+      "browser_muted_the_microphone": "The browser muted the microphone. Reload the page to grant it again.",
+      "microphone_disconnected_by_browser": "The microphone was disconnected by the browser.",
       "could_not_start_the_microphone": "Could not start the microphone.",
       "microphone_is_unavailable_another_app_may_be_usi": "Microphone is unavailable — another app may be using it.",
       "microphone_permission_denied_allow_mic_access_in": "Microphone permission denied. Allow mic access in your OS and browser settings.",
@@ -5558,6 +5560,7 @@
       "stt_error": "stt error"
     },
     "useVoiceInput": {
+      "microphone_start_timed_out": "The microphone did not start. Press again, or reload the page if it keeps happening.",
       "transcription_failed": "Transcription failed: {{error}}",
       "transcription_request_failed": "Transcription request failed.",
       "polish_failed": "AI cleanup didn't run. Your transcript is unchanged."

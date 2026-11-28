@@ -12285,6 +12285,8 @@
   },
   "hooks": {
     "mic": {
+      "browser_muted_the_microphone": "El navegador silenció el micrófono. Recarga la página para volver a concederle acceso.",
+      "microphone_disconnected_by_browser": "El navegador desconectó el micrófono.",
       "could_not_start_the_microphone": "No se pudo iniciar el micrófono.",
       "microphone_is_unavailable_another_app_may_be_usi": "El micrófono no está disponible — puede que otra aplicación lo esté usando.",
       "microphone_permission_denied_allow_mic_access_in": "Permiso del micrófono denegado. Permite el acceso al micrófono en la configuración de tu sistema operativo y de tu navegador.",
@@ -12447,6 +12449,7 @@
       "stt_error": "error de stt"
     },
     "useVoiceInput": {
+      "microphone_start_timed_out": "El micrófono no se inició. Vuelve a pulsar o recarga la página si sigue pasando.",
       "transcription_failed": "Falló la transcripción: {{error}}",
       "transcription_request_failed": "Falló la solicitud de transcripción.",
       "polish_failed": "La limpieza con IA no se ejecutó. Tu transcripción no ha cambiado."

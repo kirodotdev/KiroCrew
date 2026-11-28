@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { acquireMicStream, humanizeMicError, createLevelMeter, setPreferredMicId, activeDeviceId } from './mic'
+import { acquireMicStream, humanizeMicError, createLevelMeter, setPreferredMicId, activeDeviceId, watchTrackHealth } from './mic'
 import type { AudioSample } from './mic'
 import { streamErrorMessage } from '../lib/sttProviders'
 import type { SttModelProgress } from '../lib/sttProviders'
@@ -112,6 +112,8 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
   // Claim-check for concurrent device switches — see switchDevice.
   const switchGenRef = useRef(0)
   const levelStopRef = useRef<(() => void) | null>(null)
+  // Detaches the live track's health watch (see watchTrackHealth).
+  const unwatchTrackRef = useRef<(() => void) | null>(null)
   const finalsRef = useRef<string[]>([])
   // Per-start() cancel flag. cancel() flips the CURRENT session's flag; the
   // socket's onclose (which closes over its own session object) reads it to
@@ -178,6 +180,8 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     setMutedState(false)
     try { levelStopRef.current?.() } catch { /* ignore */ }
     levelStopRef.current = null
+    unwatchTrackRef.current?.()
+    unwatchTrackRef.current = null
     // Clear the download line on every teardown, including a cancel and the
     // force-cleanup path: a progress figure left on screen after the session it
     // described is gone reads as a transfer that is still running.
@@ -274,8 +278,32 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     }
   }, [cleanup, endCaptureOnce, armPreReadyWait])
 
+  /**
+   * Stop a capture whose track the browser ended or kept muted, with the reason,
+   * so the hold bar cannot read "holding" over a stream that delivers nothing.
+   * Through `stop()`, so whatever was captured before still drains.
+   */
+  const watchTrack = useCallback((stream: MediaStream) => {
+    unwatchTrackRef.current?.()
+    unwatchTrackRef.current = watchTrackHealth(stream, message => {
+      unwatchTrackRef.current = null
+      if (captureStoppedRef.current) return
+      dispatchMcNotification(DICTATION_STOPPED_KIND)
+      onErrorRef.current?.(message)
+      stop()
+    })
+  }, [stop])
+
   const start = useCallback(async () => {
-    if (!streamingSupported || wsRef.current) return false
+    if (!streamingSupported) return false
+    // A previous session's socket is still set. Callers refuse a start while
+    // one is draining, so this one is left over: end it like cancel() does and
+    // start fresh, rather than returning false with nothing on screen.
+    if (wsRef.current) {
+      if (sessionRef.current) sessionRef.current.cancelled = true
+      wsRef.current.onmessage = null
+      cleanup(false)
+    }
     finalsRef.current = []
     finalTimeoutRef.current = DEFAULT_FINAL_TIMEOUT_MS
     prepareAnnouncedRef.current = false
@@ -305,6 +333,7 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
       return false
     }
     streamRef.current = stream
+    watchTrack(stream)
     onDeviceRef.current?.(stream.getAudioTracks()[0]?.label || '', activeDeviceId(stream))
     levelStopRef.current = createLevelMeter(stream, v => onLevelRef.current?.(v), sampleRef)
 
@@ -495,7 +524,8 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     try {
       if (ctx.state === 'suspended') await ctx.resume()
     } catch {
-      if (sessionRef.current === session) {
+      // A cancel closes the context, which rejects a resume still pending.
+      if (sessionRef.current === session && !session.cancelled) {
         onErrorRef.current?.(i18nT('hooks.useStreamingStt.audio_start_failed'))
         cleanup()
       }
@@ -581,7 +611,7 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
       }
     }).catch(() => { /* onclose delivers the transcript and owns teardown */ })
     return true
-  }, [cleanup, commitStop, sampleRef, stop, armPreReadyWait])
+  }, [cleanup, commitStop, sampleRef, stop, armPreReadyWait, watchTrack])
 
 
   /**
@@ -658,6 +688,7 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     source.connect(worklet)
     sourceRef.current = source
     streamRef.current = next
+    watchTrack(next)
     // Report the ACTUAL device off the live track. With `exact` acquisition a
     // success genuinely IS the requested device, but the session-start fallback
     // path can still land elsewhere, so the track stays the single source of
@@ -670,7 +701,7 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     // Stop the old tracks LAST: releasing them before the replacement is live
     // would surrender the mic and can drop the device's hardware clock.
     prevStream.getTracks().forEach(t => t.stop())
-  }, [sampleRef])
+  }, [sampleRef, watchTrack])
 
   // Immediate discard (Esc). Unlike stop(), does NOT drain: tears down the
   // socket, mic tracks and AudioContext right away so capture ends the instant

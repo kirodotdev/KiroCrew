@@ -11739,6 +11739,8 @@
   },
   "hooks": {
     "mic": {
+      "browser_muted_the_microphone": "브라우저가 마이크를 음소거했습니다. 다시 허용하려면 페이지를 새로 고치세요.",
+      "microphone_disconnected_by_browser": "브라우저가 마이크 연결을 끊었습니다.",
       "could_not_start_the_microphone": "마이크를 시작할 수 없습니다.",
       "microphone_is_unavailable_another_app_may_be_usi": "마이크를 사용할 수 없습니다 — 다른 앱이 사용 중일 수 있습니다.",
       "microphone_permission_denied_allow_mic_access_in": "마이크 권한이 거부되었습니다. OS와 브라우저 설정에서 마이크 액세스를 허용하세요.",
@@ -11899,6 +11901,7 @@
       "stt_error": "stt 오류"
     },
     "useVoiceInput": {
+      "microphone_start_timed_out": "마이크가 시작되지 않았습니다. 다시 누르거나 계속되면 페이지를 새로 고치세요.",
       "transcription_failed": "받아쓰기에 실패했습니다: {{error}}",
       "transcription_request_failed": "받아쓰기 요청에 실패했습니다.",
       "polish_failed": "AI 정리가 실행되지 않았습니다. 기록된 텍스트는 그대로입니다."

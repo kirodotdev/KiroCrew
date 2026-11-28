@@ -12012,6 +12012,8 @@
   },
   "hooks": {
     "mic": {
+      "browser_muted_the_microphone": "ब्राउज़र ने माइक्रोफ़ोन म्यूट कर दिया। दोबारा अनुमति देने के लिए पेज रीलोड करो।",
+      "microphone_disconnected_by_browser": "ब्राउज़र ने माइक्रोफ़ोन डिस्कनेक्ट कर दिया।",
       "could_not_start_the_microphone": "माइक्रोफ़ोन शुरू नहीं हो सका।",
       "microphone_is_unavailable_another_app_may_be_usi": "माइक्रोफ़ोन अनुपलब्ध है — कोई दूसरा ऐप इसका उपयोग कर रहा हो सकता है।",
       "microphone_permission_denied_allow_mic_access_in": "माइक्रोफ़ोन की अनुमति नहीं मिली। अपनी OS और ब्राउज़र सेटिंग में माइक एक्सेस की अनुमति दें।",
@@ -12173,6 +12175,7 @@
       "stt_error": "stt त्रुटि"
     },
     "useVoiceInput": {
+      "microphone_start_timed_out": "माइक्रोफ़ोन शुरू नहीं हुआ। फिर से दबाओ, या बार-बार ऐसा हो तो पेज रीलोड करो।",
       "transcription_failed": "वाक्-लेखन विफल: {{error}}",
       "transcription_request_failed": "ट्रांसक्रिप्शन अनुरोध विफल रहा।",
       "polish_failed": "AI सफ़ाई नहीं चली। तुम्हारा ट्रांसक्रिप्ट अपरिवर्तित है।"

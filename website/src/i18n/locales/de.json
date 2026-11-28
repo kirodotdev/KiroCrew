@@ -12012,6 +12012,8 @@
   },
   "hooks": {
     "mic": {
+      "browser_muted_the_microphone": "Der Browser hat das Mikrofon stummgeschaltet. Lade die Seite neu, um den Zugriff erneut zu erlauben.",
+      "microphone_disconnected_by_browser": "Der Browser hat die Verbindung zum Mikrofon getrennt.",
       "could_not_start_the_microphone": "Das Mikrofon konnte nicht gestartet werden.",
       "microphone_is_unavailable_another_app_may_be_usi": "Mikrofon nicht verfügbar — eine andere App verwendet es möglicherweise.",
       "microphone_permission_denied_allow_mic_access_in": "Mikrofonberechtigung verweigert. Erlaube den Mikrofonzugriff in den Einstellungen deines Betriebssystems und Browsers.",
@@ -12173,6 +12175,7 @@
       "stt_error": "STT-Fehler"
     },
     "useVoiceInput": {
+      "microphone_start_timed_out": "Das Mikrofon ist nicht gestartet. Drück noch einmal oder lade die Seite neu, wenn es weiterhin passiert.",
       "transcription_failed": "Transkription fehlgeschlagen: {{error}}",
       "transcription_request_failed": "Transkriptionsanfrage fehlgeschlagen.",
       "polish_failed": "KI-Bereinigung wurde nicht ausgeführt. Ihre Transkription ist unverändert."

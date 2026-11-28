@@ -25,6 +25,7 @@ vi.mock('../hooks/mic', () => ({
   createLevelMeter: () => () => {},
   setPreferredMicId: () => {},
   activeDeviceId: () => 'dev-1',
+  watchTrackHealth: () => () => {},
 }))
 
 const trackStops: ReturnType<typeof vi.fn>[] = []
