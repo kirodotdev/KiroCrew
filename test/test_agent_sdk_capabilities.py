@@ -95,6 +95,7 @@ CAPABILITY_FIELDS = (
     "crew_sends_persona_prompt",
     "loads_steering_natively",
     "keeps_prompt_on_unlanded_turn",
+    "keeps_history_on_cancel",
     "ends_turn_on_permission_reject",
     "names_crew_tools_by_fused_name",
     "model_auto_switches_in_place",
