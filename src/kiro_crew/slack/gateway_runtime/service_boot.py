@@ -626,7 +626,11 @@ def _init_task_runner(self: GatewayOrchestrator) -> None:
         # Send approval-related notifications to Slack DM so user knows even when away.
         # Match on specific title patterns from task_executor, not broad keywords
         # (avoids false positives like "Investigating gateway error").
-        if "requires approval" in title.lower() or "denied" in title.lower():
+        if (
+            "requires approval" in title.lower()
+            or "denied" in title.lower()
+            or title.rstrip().lower().endswith("needs input")
+        ):
             try:
                 safe_t = redact_credentials(redact_exfiltration_urls(title)[0])[0]
                 safe_b = redact_credentials(redact_exfiltration_urls(body)[0])[0]

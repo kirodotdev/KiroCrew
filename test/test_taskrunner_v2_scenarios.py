@@ -169,7 +169,7 @@ class TestBug3DoubleCommitOnReviewRetry:
             r.commit_hashes.append(f"sha_{len(commit_calls)}")
             return f"sha_{len(commit_calls)}"
 
-        async def _mock_revert(r):
+        async def _mock_revert(r, sha=""):
             revert_calls.append("revert")
             if r.commit_hashes:
                 r.commit_hashes.pop()
@@ -1158,7 +1158,7 @@ class TestBug5ReviewFailRevertBeforeRetry:
             r.commit_hashes.append(f"sha_{len(commit_calls)}")
             return f"sha_{len(commit_calls)}"
 
-        async def _mock_revert(r):
+        async def _mock_revert(r, sha=""):
             revert_calls.append("revert")
             if r.commit_hashes:
                 r.commit_hashes.pop()

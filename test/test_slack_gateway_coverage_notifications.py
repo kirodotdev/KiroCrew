@@ -240,6 +240,20 @@ class TestTaskNotify:
         orch.slack.post_message.assert_awaited_once_with("D1", "*Task 3 denied*\nnope")
 
     @pytest.mark.asyncio
+    async def test_needs_input_title_also_dms_the_owner(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D1")
+        orch.slack.post_message = AsyncMock()
+        notify = self._capture(orch)
+
+        await notify("Task 3 needs input", "grant access?")
+        orch.slack.post_message.assert_awaited_once_with(
+            "D1", "*Task 3 needs input*\ngrant access?"
+        )
+
+    @pytest.mark.asyncio
     async def test_ordinary_title_does_not_dm(self):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()

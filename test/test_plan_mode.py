@@ -793,6 +793,23 @@ class TestCrossGroupDependencyNormalization:
         )
         assert steps[4].depends_on == [3, 4]
 
+    def test_expansion_never_adds_a_later_step(self, tmp_path: Path) -> None:
+        """A wave member indexed at or after the step is unrelated work, not a dep."""
+        runner = _make_runner(tmp_path)
+        steps = runner._parse_tasks(
+            json.dumps(
+                [
+                    {"title": "A", "depends_on": []},
+                    {"title": "B", "depends_on": [1]},
+                    {"title": "C", "depends_on": [1]},
+                    {"title": "D", "depends_on": [2]},  # wave {2, 3, 5}
+                    {"title": "E", "depends_on": [1]},
+                ]
+            )
+        )
+        assert steps[3].depends_on == [2, 3]
+        assert all(d < s.index for s in steps for d in s.depends_on)
+
     @pytest.mark.asyncio
     async def test_update_plan_preserves_user_deps(self, tmp_path: Path) -> None:
         """update_plan respects user's explicit dependency edits (no normalization)."""

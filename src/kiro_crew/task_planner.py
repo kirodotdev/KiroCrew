@@ -126,7 +126,10 @@ def group_parallel_tasks(
 
 def normalize_cross_group_deps(tasks: list[Task]) -> list[Task]:
     """Ensure cross-group deps are complete: if a task depends on any task
-    in a prior group, it must depend on ALL tasks in that group.
+    in a prior group, it must depend on ALL tasks in that group that come
+    before it. A group member with an index at or above the task's own is not
+    added: it is unrelated work the wave only happens to share, and the parser's
+    ``0 < d < i`` rule forbids it.
 
     Only used for LLM-generated plans. User edits via update_plan_tasks
     bypass this to respect explicit dependency choices."""
@@ -163,8 +166,8 @@ def normalize_cross_group_deps(tasks: list[Task]) -> list[Task]:
                 dep_groups.add(idx_to_group[d])
         full_deps: set[int] = set()
         for gi in dep_groups:
-            full_deps.update(groups[gi])
-        task.depends_on = sorted(full_deps)
+            full_deps.update(d for d in groups[gi] if d < task.index)
+        task.depends_on = sorted(full_deps | set(task.depends_on))
 
     return tasks
 

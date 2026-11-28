@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ctypes
 import logging
 import os
@@ -10,7 +11,7 @@ import stat
 import uuid
 from ctypes import wintypes
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, AsyncIterator
 
 try:  # Windows-only module; absent on POSIX.
     import msvcrt
@@ -128,6 +129,42 @@ async def commit_step(run: Project, step: Task) -> str:
     """
     if not _git_runs_in_own_worktree(run):
         return ""
+    async with _worktree_lock(run):
+        return await _commit_step(run, step)
+
+
+# Parallel steps share one worktree: a commit and a revert in it never interleave.
+_WORKTREE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _worktree_lock(run: Project) -> asyncio.Lock:
+    return _WORKTREE_LOCKS.setdefault(os.path.normpath(run.work_dir), asyncio.Lock())
+
+
+# The parallel steps running in each worktree. Their agents write files there
+# outside git, so while more than one runs no step's commit is reverted.
+_ACTIVE_STEPS: dict[str, set[int]] = {}
+
+
+@contextlib.asynccontextmanager
+async def step_running(run: Project, index: int) -> AsyncIterator[None]:
+    """Register parallel step *index* as writing in *run*'s worktree.
+
+    Registration waits for a revert in progress, so no step starts during one.
+    """
+    key = os.path.normpath(run.work_dir)
+    async with _worktree_lock(run):
+        _ACTIVE_STEPS.setdefault(key, set()).add(index)
+    try:
+        yield
+    finally:
+        active = _ACTIVE_STEPS.get(key, set())
+        active.discard(index)
+        if not active:
+            _ACTIVE_STEPS.pop(key, None)
+
+
+async def _commit_step(run: Project, step: Task) -> str:
     await _git(run.work_dir, "add", "-A")
     head_tree = (await _git(run.work_dir, "rev-parse", "HEAD^{tree}")).strip()
     idx_tree = (await _git(run.work_dir, "write-tree")).strip()
@@ -182,8 +219,11 @@ def _is_sharing_violation(exc: Exception) -> bool:
     return any(sign in text for sign in _SHARING_VIOLATION_SIGNS)
 
 
-async def revert_step(run: Project) -> None:
+async def revert_step(run: Project, sha: str = "") -> None:
     """Revert the last commit (failed step). No-op if git-disabled or nothing to revert.
+
+    With *sha*, only that commit is reverted, without a reset: see
+    :func:`_revert_own_commit`.
 
     ``commit_hashes.pop()`` runs ONLY after the reset actually succeeds, so the
     recorded history never diverges from the worktree. A reset blocked by a
@@ -194,6 +234,10 @@ async def revert_step(run: Project) -> None:
     from "revert refused" instead of silently proceeding on an un-reverted tree.
     """
     if not run.commit_hashes or not _git_runs_in_own_worktree(run):
+        return
+    if sha:
+        async with _worktree_lock(run):
+            await _revert_own_commit(run, sha)
         return
     for attempt in range(_REVERT_MAX_ATTEMPTS):
         try:
@@ -221,6 +265,49 @@ async def revert_step(run: Project) -> None:
                 exc_info=True,
             )
             return
+
+
+async def _revert_own_commit(run: Project, sha: str) -> None:
+    """Revert *sha*, a rejected step's commit, while other steps share the worktree.
+
+    It is reverted only while no other step runs in the worktree (see
+    :func:`step_running`), since a restore would overwrite what a sibling's agent
+    is writing, and only while it is still HEAD, checked by a compare-and-swap
+    ``update-ref``. Kept, the retry runs on top of it. No ``reset --hard``
+    follows: only the paths *sha* changed are restored. A failed restore swaps
+    the branch back, so ``commit_hashes`` keeps matching it.
+    """
+    wd = run.work_dir
+    if len(_ACTIVE_STEPS.get(os.path.normpath(wd), ())) > 1:
+        logger.warning("not reverting %s: another step is running in %s", sha, wd)
+        return
+    if run.commit_hashes[-1] != sha:
+        logger.warning("not reverting %s: a later commit is on top of it", sha)
+        return
+    try:
+        parent = (await _git(wd, "rev-parse", f"{sha}~1")).strip()
+        changed = await _git(wd, "diff", "--name-only", "--no-renames", "-z", parent, sha)
+        await _git(wd, "update-ref", "HEAD", parent, sha)
+    except Exception:
+        logger.warning("not reverting %s: it is no longer HEAD", sha, exc_info=True)
+        return
+    paths = [p for p in changed.split("\0") if p]
+    try:
+        if paths:
+            restore = ("--literal-pathspecs", "restore", f"--source={parent}")
+            await _git(wd, *restore, "--staged", "--worktree", "--", *paths)
+    except Exception:
+        logger.warning("restoring the files of %s failed; keeping it", sha, exc_info=True)
+        try:
+            await _git(wd, "update-ref", "HEAD", sha, parent)
+            return
+        except Exception:
+            # A sibling committed on the parent meanwhile: the branch does not
+            # hold *sha*, so neither does the record.
+            logger.warning("could not put %s back on the branch", sha, exc_info=True)
+    # Remove *sha* itself: a sibling may have appended its commit meanwhile.
+    if sha in run.commit_hashes:
+        run.commit_hashes.remove(sha)
 
 
 async def get_state_summary(run: Project) -> str:
