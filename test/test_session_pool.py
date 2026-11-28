@@ -799,8 +799,9 @@ class TestModelMatchesPoolDefault:
         assert factory.call_args.kwargs.get("model_override") == "openai/gpt-4.1"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("pool_model", ["auto", ""], ids=["auto", "pool-has-no-model"])
     async def test_the_cold_start_after_a_launch_pin_is_counted_once_as_its_own_decision(
-        self,
+        self, pool_model
     ):
         from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
         from kiro_crew.providers.acp import AcpProvider
@@ -816,7 +817,7 @@ class TestModelMatchesPoolDefault:
         mgr._dispatch_hard_kill = MagicMock()
         mgr._record_pool_decision = MagicMock()
 
-        with patch.object(type(mgr), "_resolve_agent_model", return_value="auto"):
+        with patch.object(type(mgr), "_resolve_agent_model", return_value=pool_model):
             await mgr.get_or_create("test-key", agent="kirocrew", model="openai/gpt-4.1")
 
         assert [c.args[0] for c in mgr._record_pool_decision.call_args_list] == [
@@ -851,8 +852,8 @@ class TestModelMatchesPoolDefault:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("pool_model", "applies"),
-        [("openai/gpt-4.1", True), ("auto", False), ("", True)],
-        ids=["same-as-pool", "another-harness-pin", "pool-has-no-model"],
+        [("openai/gpt-4.1", True), ("auto", False)],
+        ids=["same-as-pool", "another-harness-pin"],
     )
     async def test_a_pin_the_claim_would_not_switch_keeps_the_pooled_process(
         self, pool_model, applies
@@ -1085,9 +1086,9 @@ class TestModelMatchesPoolDefault:
             await mgr.get_or_create("test-key", agent=None, model="claude-opus-4.6")
 
         mock_resolve.assert_called_once_with("kirocrew")
-        # The template pins no model → pool_model is "" → skip set_model (the
-        # pool process already has whatever model kiro-cli defaults to).
-        pooled.client.set_model.assert_not_awaited()
+        # The template pins no model, so the pool process runs the backend
+        # default and the requested model is switched onto it.
+        pooled.client.set_model.assert_awaited_once_with("claude-opus-4.6")
 
     @pytest.mark.asyncio
     async def test_unusable_model_is_withheld_not_raised_on_claim(self):
