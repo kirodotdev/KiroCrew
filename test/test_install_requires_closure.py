@@ -104,5 +104,6 @@ def test_main_refuses_a_missing_install_requires(tmp_path: Path) -> None:
 def test_the_repo_setup_cfg_parses() -> None:
     entries = closure.install_requires((ROOT / "setup.cfg").read_text(encoding="utf-8"))
     assert entries
+    assert not any(entry.startswith("usearch") for entry in entries)
     for machine in ("x86_64", "aarch64"):
         assert closure.requirements_for(entries, machine)

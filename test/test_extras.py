@@ -25,7 +25,7 @@ LOCALES = _REPO_ROOT / "website" / "src" / "i18n" / "locales"
 
 #: Extras a running gateway advises installing. ``dev`` is test tooling, which
 #: no user-facing surface ever offers.
-USER_FACING = ("otlp", "perf", "teams", "whatsapp", "feishu", "voice-aws", "voice")
+USER_FACING = ("otlp", "perf", "memory-index", "teams", "whatsapp", "feishu", "voice-aws", "voice")
 
 #: Where a user copies a ``pip install`` line from: the guides and skills the
 #: package ships, and the repository docs.

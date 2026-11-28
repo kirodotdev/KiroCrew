@@ -80,6 +80,14 @@ def cosine_floor(text: str, *, instructed: bool = False) -> float:
     return LONG_COSINE_FLOOR if len(text) > LONG_TEXT_CHARS else SHORT_COSINE_FLOOR
 
 
+def lowest_cosine_floor(*, instructed: bool = False) -> float:
+    """The lowest cosine any row is admitted on for a query embedded this way,
+    over every text length: what a candidate search must reach."""
+    if instructed:
+        return min(INSTRUCTED_SHORT_COSINE_FLOOR, INSTRUCTED_LONG_COSINE_FLOOR)
+    return min(SHORT_COSINE_FLOOR, LONG_COSINE_FLOOR)
+
+
 def relevance_evidence(
     query_terms: Iterable[str], text: str, cosine: float | None, *, instructed: bool = False
 ) -> dict:

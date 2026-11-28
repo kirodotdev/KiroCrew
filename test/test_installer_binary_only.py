@@ -103,6 +103,9 @@ cp "$FAKE_CDN_ROOT/$rel" "$out"
 _FAKE_PIPX = """#!/bin/sh
 set -eu
 case "$1" in
+  runpip)
+    printf '%s\\n' "$@" > "$FAKE_ARGV_FILE.memory-index"
+    exit "${FAKE_MEMORY_INDEX_EXIT:-0}" ;;
   install)
     printf '%s\\n' "$@" > "$FAKE_ARGV_FILE"
     if [ -n "${FAKE_PIPX_STARTED:-}" ]; then
@@ -145,6 +148,13 @@ set -eu
 # The best-effort `pip install --upgrade pip` refresh is not the install step.
 case " $* " in
   *" --upgrade pip "*) exit 0 ;;
+esac
+# Nor is the best-effort memory-index extra cli.sh adds after it; it is
+# recorded apart so the install step's argv stays the one the tests read.
+case "$*" in
+  *"[memory-index]")
+    printf '%s\\n' "$@" > "$FAKE_ARGV_FILE.memory-index"
+    exit "${FAKE_MEMORY_INDEX_EXIT:-0}" ;;
 esac
 printf '%s\\n' "$@" > "$FAKE_ARGV_FILE"
 if [ -n "${FAKE_PIP_FAIL_WITH:-}" ]; then cat "$FAKE_PIP_FAIL_WITH" >&2; exit 1; fi
@@ -389,6 +399,33 @@ def test_venv_branch_passes_binary_only_before_the_wheel(
     # `$PIP_BINARY_ONLY` is expanded unquoted so that an empty value vanishes;
     # the non-empty value must still arrive as exactly one word.
     assert argv.count(ONLY_BINARY) == 1
+
+
+@pytest.mark.parametrize("with_pipx", [True, False], ids=["pipx", "venv"])
+@pytest.mark.parametrize("extra_exit", ["0", "1"], ids=["wheel", "no-wheel"])
+def test_both_branches_add_the_memory_index_extra_best_effort(
+    tmp_path: Path, signing_key: SigningKey, with_pipx: bool, extra_exit: str
+) -> None:
+    """The extra goes in from wheels only after the install, and a host with no
+    usearch wheel still finishes the install with a note."""
+    case = tmp_path / "case"
+    result, _ = _run_installer(
+        case,
+        signing_key,
+        with_pipx=with_pipx,
+        extra_env={"FAKE_MEMORY_INDEX_EXIT": extra_exit},
+    )
+
+    assert result.returncode == 0, result.stderr
+    extra = (case / "run" / "install-argv.memory-index").read_text(encoding="utf-8").split()
+    assert extra[-1].endswith(f"{WHEEL_NAME}[memory-index]"), extra
+    assert ONLY_BINARY in extra, extra
+    if with_pipx:
+        assert extra[:3] == ["runpip", "kirocrew", "install"], extra
+    if extra_exit == "0":
+        assert "Installed the memory index" in result.stdout
+    else:
+        assert "no memory-index wheel for this host" in result.stderr
 
 
 @pytest.mark.parametrize("with_pipx", [True, False], ids=["pipx", "venv"])
@@ -985,8 +1022,12 @@ def test_pipx_lock_wait_is_the_kernel_lock_not_a_directory() -> None:
     check = body.index('[ -f "$_PIPX_VENV/pyvenv.cfg" ] && [ ! -L "$_PIPX_VENV" ]')
     release = body.index("exec 9>&-")
     drop = body.index(
-        'rm -rf "$_PIPX_VENV_BACKUP" 2>/dev/null || true\n  fi\n  # The transaction is complete'
+        'rm -rf "$_PIPX_VENV_BACKUP" 2>/dev/null || true\n  fi\n  # `pipx install --force` rebuilt'
     )
+    # The best-effort extra writes into the new venv, so it also runs under the lock.
+    # Into the venv this channel installed (`kirocrew` or `kirocrew-lts`).
+    extra = body.index('_add_memory_index_extra pipx runpip "$_PIPX_PKG"')
+    assert drop < extra < release
     assert take < check < drop < release
     # No mkdir-style lock directory: that shape needs stale-lock reclaim.
     assert "install.lock.d" not in body and 'mkdir "$_PIPX_LOCK"' not in body

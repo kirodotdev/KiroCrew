@@ -555,6 +555,16 @@ build_backend() {
       "$ROOT[voice-codex]"; then
     log "Codex dictation media packages did not install for ${OS}/${want_arch:-$HOST_ARCH}; this bundle ships without Codex dictation."
   fi
+  # The memory index's usearch ships macOS wheels for both arches; a sealed bundle
+  # cannot add it later, so it goes in now, and a target without a wheel ships
+  # without it (recall then reads every memory).
+  if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+      "$out/bin/python3.12" -m pip install --prefer-binary \
+      --only-binary usearch,numkong \
+      --no-warn-script-location --disable-pip-version-check \
+      "$ROOT[memory-index]"; then
+    log "No memory-index wheel for ${OS}/${want_arch:-$HOST_ARCH}; this bundle ships without the memory index."
+  fi
   if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
       "$out/bin/python3.12" -m pip install --prefer-binary \
       --only-binary pywhispercpp \
@@ -754,6 +764,16 @@ build_backend_windows() {
     --only-binary pywhispercpp \
     --no-warn-script-location --disable-pip-version-check \
     "kirocrew[voice] @ $root_uri"
+  # The memory index's usearch ships Windows wheels; a sealed bundle cannot add
+  # it later, so it goes in now, and a target without a wheel ships without it
+  # (recall then reads every memory).
+  if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+      "$out/python.exe" -m pip install --prefer-binary \
+      --only-binary usearch,numkong \
+      --no-warn-script-location --disable-pip-version-check \
+      "kirocrew[memory-index] @ $root_uri"; then
+    log "No memory-index wheel for ${OS}/${want_arch:-$HOST_ARCH}; this bundle ships without the memory index."
+  fi
   # The Feishu channel SDK is installed on first use, as in build_backend.
 
   sp="$out/Lib/site-packages"

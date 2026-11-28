@@ -1003,7 +1003,8 @@ class TestBuildUmask:
 
         wheel_engine.build_shadow_venv(tmp_path / "w.whl", tmp_path / "crew-venv-1.0.0")
 
-        assert [kwargs.get("umask") for _argv, kwargs in seen] == [0o077, 0o077, 0o077]
+        # venv, pip refresh, the wheel, and the memory-index extra added after it.
+        assert [kwargs.get("umask") for _argv, kwargs in seen] == [0o077] * 4
 
     def test_build_creates_owner_only_root(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1075,9 +1076,15 @@ class TestBinaryOnlyDependencies:
         # The flag governs THIS resolution, so it sits on the install command,
         # right before the wheel it constrains.
         assert argv[-2:] == ["--only-binary=:all:", str(wheel)], argv
+        # The memory-index extra added after it resolves under the same policy.
+        added = [argv for argv in seen if f"{wheel}[memory-index]" in argv]
+        assert len(added) == 1 and added[0][-2:] == [
+            "--only-binary=:all:",
+            f"{wheel}[memory-index]",
+        ]
         # The pip self-upgrade is a separate command; the policy is not smeared
         # onto it (a pip wheel always exists, and its failure is already ignored).
-        others = [argv for argv in seen if str(wheel) not in argv]
+        others = [argv for argv in seen if str(wheel) not in argv and argv not in added]
         assert others and all("--only-binary=:all:" not in argv for argv in others), seen
 
     def test_carried_extras_ride_on_the_one_binary_only_install(

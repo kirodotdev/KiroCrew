@@ -62,6 +62,7 @@ from kiro_crew.kiro_cli_bundle import powershell_single_quoted
 REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "otlp": ("opentelemetry-exporter-otlp-proto-http==1.44.0",),
     "perf": ("py-spy>=0.3,<1",),
+    "memory-index": ("usearch>=2.26.6,<3",),
     "teams": ("PyJWT[crypto]==2.15.0",),
     "whatsapp": ("neonize==0.4.3.post0",),
     "feishu": ("lark-oapi>=1.4,<2",),

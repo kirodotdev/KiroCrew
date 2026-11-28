@@ -74,6 +74,62 @@ MEMORY_PROVIDER_TIMEOUT_DEFAULT_SECS = 3.0
 MEMORY_PROVIDER_TIMEOUT_MAX_SECS = 10.0
 
 
+#: ``memory.index.mode`` values; :mod:`kiro_crew.memory_index.store_index` says what each does.
+MEMORY_INDEX_MODES = ("off", "shadow", "on")
+MEMORY_INDEX_EXACT_ROWS_DEFAULT = 20_000
+
+
+@dataclass
+class MemoryIndexConfig:
+    """The memory index recall reads candidates from (``memory_index/``)."""
+
+    mode: str = field(
+        default="off",
+        metadata=_meta(
+            "Memory Index Mode",
+            "'off' reads every memory on each recall, as before. 'shadow' builds an "
+            "index beside each store and checks its answers against that full read "
+            "without changing them. 'on' answers recall from the index once it is "
+            "built, and falls back to the full read while it builds.",
+            enum=list(MEMORY_INDEX_MODES),
+        ),
+    )
+    backend: str = field(
+        default="local",
+        metadata=_meta(
+            "Memory Index Backend",
+            "Which index backend serves the stores. 'local' keeps the index in files "
+            "beside each store; 'exact' is the reference scan.",
+        ),
+    )
+    exact_rows: int = field(
+        default=MEMORY_INDEX_EXACT_ROWS_DEFAULT,
+        metadata=_meta(
+            "Memory Index Exact Rows",
+            "Below this many stored vectors a store's vector search compares every "
+            "vector instead of an approximate graph.",
+        ),
+    )
+
+    @classmethod
+    def from_raw(cls, section: object) -> MemoryIndexConfig:
+        """Normalize: anything unreadable is the default (off)."""
+        if not isinstance(section, dict):
+            return cls()
+        mode, backend, exact_rows = (
+            section.get("mode"),
+            section.get("backend"),
+            section.get("exact_rows"),
+        )
+        if isinstance(exact_rows, bool) or not isinstance(exact_rows, int) or exact_rows < 0:
+            exact_rows = MEMORY_INDEX_EXACT_ROWS_DEFAULT
+        return cls(
+            mode=mode if mode in MEMORY_INDEX_MODES else "off",
+            backend=backend.strip() if isinstance(backend, str) and backend.strip() else "local",
+            exact_rows=exact_rows,
+        )
+
+
 @dataclass
 class MemoryProviderConfig:
     """Which memory provider answers. Written only by ``PUT /api/memory/provider``."""
@@ -730,6 +786,14 @@ class MemoryConfig:
             "Memory Provider",
             "Which memory answers: Crew's own (default) or a provider an installed app "
             "serves. See memory.provider.mode.",
+        ),
+    )
+    index: MemoryIndexConfig = field(
+        default_factory=MemoryIndexConfig,
+        metadata=_meta(
+            "Memory Index",
+            "Whether recall reads candidates from an index instead of every memory. "
+            "See memory.index.mode.",
         ),
     )
 

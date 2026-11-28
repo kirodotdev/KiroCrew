@@ -1071,6 +1071,7 @@ def _doctor(
 
     # ── Vector Memory (in-process embeddings) ──
     features._doctor_vector_memory(issues)
+    features._doctor_memory_index(cfg)
 
     # ── Speech-to-Text (optional) ──
     features._doctor_speech_to_text(cfg, issues)

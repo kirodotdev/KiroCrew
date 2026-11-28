@@ -722,6 +722,17 @@ else
     die "pip install failed. Check: $_venv/bin/pip --version"
 fi
 rm -f "$_pip_log"
+# The memory index (memory.index.mode) needs the memory-index extra, whose
+# usearch wheels need glibc 2.28+ on Linux, so it is never a core dependency.
+# Add it from wheels only where this host has them; with none the install goes
+# on and recall keeps reading every memory.
+# shellcheck disable=SC2086
+if (cd "$KIROCREW_APP_DIR" && KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install --quiet \
+        $_pip_binary_only -e ".[memory-index]" >/dev/null 2>&1); then
+    ok "Memory index installed (memory-index extra)"
+else
+    warn "No memory-index wheel for this host; recall keeps reading every memory"
+fi
 # Venv fully built and born non-group-writable; restore the caller's umask.
 umask "$_KC_PREV_UMASK"
 

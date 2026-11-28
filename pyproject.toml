@@ -71,6 +71,13 @@ dev = [
     # runtime concern for the desktop bundle, NOT a core install_requires. Pinned to
     # the exact version the desktop matrix ships (packaging/build-desktop.sh).
     "imageio-ffmpeg==0.6.0",
+    # Same shape as PyJWT above. usearch ships in the optional `memory-index`
+    # extra, which CI never installs, so the memory index tests'
+    # `pytest.importorskip("usearch")` would skip the local backend, the change
+    # log and V2 recall through the index. Declared here so they run; the
+    # runtime dependency stays optional (no manylinux_2_17 wheel). Pinned to the
+    # extra's floor so CI tests the oldest release users can get.
+    "usearch==2.26.6",
     # Python vulnerability audit, pinned like every other tool here and installed
     # by the SAME `--group dev` step, which is what makes the audit reproducible:
     # the step this replaces ran `pip install pip-audit` with no version, so two

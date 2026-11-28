@@ -68,6 +68,9 @@ EXECUTION_LOGS_DIR_NAME = ".execution-logs"
 #: A NAMED V1 store's rolling backups sit inside its own directory (``memory_backup``
 #: aliases this); a V2 member's sit under :data:`MEMBER_BACKUPS_DIR_NAME` instead.
 STORE_BACKUP_DIR_NAME = "backups"
+#: The memory index beside a named store's ``memory.db`` (``memory_index/``):
+#: derived, rebuilt from the store, so it never rides in a bundle.
+STORE_INDEX_DIR_NAME = "memory.db.index"
 _HOST_LOCAL_ROOT_ENTRIES: frozenset[str] = frozenset(
     {
         MEMBER_API_KEY_FILE,
@@ -453,7 +456,8 @@ def is_host_local_store_state(rel_parts: Sequence[str]) -> bool:
     by the snapshot's staging walk, its extraction filter and the dashboard export, so
     the three cannot disagree about what "the memory" is. True for the direct children
     listed at :data:`MEMBER_API_KEY_FILE` and its siblings, and for a named store's own
-    :data:`STORE_BACKUP_DIR_NAME`. Everything else under the tree -- the markdown, the
+    :data:`STORE_BACKUP_DIR_NAME` and :data:`STORE_INDEX_DIR_NAME` (derived, rebuilt
+    from the store). Everything else under the tree -- the markdown, the
     vector file, the index, ``lessons.jsonl``, the ownership manifest -- IS the memory
     and rides.
 
@@ -465,7 +469,8 @@ def is_host_local_store_state(rel_parts: Sequence[str]) -> bool:
         return False
     if rel_parts[1] in _HOST_LOCAL_ROOT_ENTRIES:
         return True
-    return len(rel_parts) >= 3 and rel_parts[2] == STORE_BACKUP_DIR_NAME
+    # The memory index directory is derived from the store and rebuilt from it.
+    return len(rel_parts) >= 3 and rel_parts[2] in (STORE_BACKUP_DIR_NAME, STORE_INDEX_DIR_NAME)
 
 
 def named_store_product_file(rel_parts: Sequence[str]) -> str:
