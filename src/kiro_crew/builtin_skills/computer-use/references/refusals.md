@@ -14,7 +14,10 @@ Moved verbatim from the computer-use `SKILL.md` core.
 | `refusing to type this text into 'X': …` | the text looked like a sensitive command or credential | do not rephrase to get around it; explain and stop |
 | `refusing to send input to a secure (password) field …` | the target is a password field | ask the user to type it themselves |
 | `computer use is disabled …` | the primary switch is off | tell the user to enable it in Settings → Computer Use; do not retry |
-| `computer use is not supported on this platform (…)` | no driver for this OS (e.g. Linux) | say so once |
+| `computer use is not supported on this platform (…)` | no usable driver here: not installed, a session with no desktop (Windows Session 0, Wayland with no XWayland), or an OS with no driver | say so once; installing the driver is the user's step in Settings |
+| `this desktop cannot deliver the … in the background (…)` | the background route is unavailable for this action here | use an element action if there is one; for a coordinate click or drag, name `click_method: "global"` (tell the user first); a key press or scroll has no foreground path you can name, so report it |
+| `… could not confirm its effect; re-read the state …` | the action was sent but not confirmed | read the refreshed tree for the change before repeating |
+| `the open-source driver … restarted; whether the action happened is unknown` | the driver stopped mid-action and was restarted | call `computer_get_state` and check before acting again; never assume it did or did not happen |
 | `click_method 'app_post' is macOS-only …` / `'sky_click' is macOS-only …` | a macOS-only click method on Windows | use an `element_index` (no pointer moves), or name `click_method: "global"` to accept the cursor move |
 | `click_method 'sky_click' supports only the left mouse button (…)` | `sky_click` is a left-button-only recipe | use `left`, or switch to `app_post` for a right/middle click — the refusal names it |
 | `click_method 'auto' with coordinates cannot be served on Windows` | `auto` + x/y, where the only coordinate route moves the real cursor | pass an `element_index`, or name `global` explicitly — `auto` never takes the pointer on its own |

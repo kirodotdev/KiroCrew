@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
+import { useLocation } from 'react-router-dom'
 import type { ComputerUseConfigData } from '../../api/client'
 
 /* ── api client mock ───────────────────────────────────────────────────────
@@ -11,16 +12,14 @@ vi.mock('../../api/client', () => ({
   api: {
     getComputerUseConfig: vi.fn(),
     saveComputerUseConfig: vi.fn(),
+    getComputerUseSetup: vi.fn(),
+    runComputerUseSetupAction: vi.fn(),
   },
 }))
 
 import { api } from '../../api/client'
-import {
-  ComputerUsePanel,
-  commitNumericDraft,
-  openSystemSettings,
-  permissionPollInterval,
-} from './ComputerUsePanel'
+import { ComputerUsePanel, commitNumericDraft, permissionPollInterval } from './ComputerUsePanel'
+import { setupDoc } from '../../test/computerUseSetupFixtures'
 
 const ENABLE_LABEL = /enable computer use/i
 
@@ -45,13 +44,22 @@ function snapshot(overrides: Partial<ComputerUseConfigData> = {}): ComputerUseCo
 }
 
 /** Render with the config query pre-resolved and hydrated. */
-async function renderPanel(data: ComputerUseConfigData = snapshot()) {
+async function renderPanel(data: ComputerUseConfigData = snapshot(), route = '/settings/computer-use') {
   ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(data)
   ;(api.saveComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(data)
-  const utils = renderWithProviders(<ComputerUsePanel />)
-  await screen.findByText('Computer Use')
+  ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(setupDoc('disabled'))
+  const utils = renderWithProviders(<ComputerUsePanel />, { route })
+  await screen.findAllByText('Computer Use')
   return utils
 }
+
+async function openMore() {
+  fireEvent.click(await screen.findByRole('button', { name: 'More' }))
+}
+
+// The setup dialog sits behind ComputerUsePanel's React.lazy import, then waits for the
+// setup query: that chain can outlast the default 1 s find on a loaded coverage worker.
+const LAZY_DIALOG = { timeout: 5000 }
 
 describe('ComputerUsePanel', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -93,6 +101,37 @@ describe('ComputerUsePanel', () => {
     expect(note).not.toHaveTextContent(/organization's policy/i)
   })
 
+  it('offers no setup button when the edition locks the page', async () => {
+    // Every setup step is refused under the lock, so a Set up button would only
+    // open an intro whose Turn on Computer Use is disabled.
+    await renderPanel(snapshot({ locked_by_policy: true, locked_by_edition: true }))
+    const card = await screen.findByTestId('cu-setup-status')
+    expect(card).toHaveAttribute('data-state', 'disabled')
+    expect(screen.queryByTestId('cu-open-setup')).not.toBeInTheDocument()
+  })
+
+  it('reads the macOS grant rows from the config payload', async () => {
+    // The setup document carries no grants: the rows, the shortcut and the hint
+    // come from the config route's out-of-process probe.
+    ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({
+        enabled: true,
+        permissions: { accessibility: 'missing', screen_recording: 'granted', responsible_hint: 'Grant them to Terminal.' },
+      }),
+    )
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(
+      setupDoc('ready', { platform: 'macos', session: { kind: 'aqua' }, driver: { kind: 'native', version: '' } }),
+    )
+    renderWithProviders(<ComputerUsePanel />, { route: '/settings/computer-use' })
+    expect(await screen.findByText('Needs permission')).toBeInTheDocument()
+    await openMore()
+    expect(await screen.findByTestId('cu-status-accessibility')).toHaveTextContent('Not allowed')
+    expect(screen.getByTestId('cu-status-screen-recording')).toHaveTextContent('Allowed')
+    expect(screen.getByTestId('cu-status-open-accessibility')).toBeInTheDocument()
+    expect(screen.queryByTestId('cu-status-open-screen_recording')).not.toBeInTheDocument()
+    expect(screen.getByTestId('cu-status-responsible-hint')).toHaveTextContent('Grant them to Terminal.')
+  })
+
   it('shows no lock note when nothing is locked', async () => {
     await renderPanel()
     expect(await screen.findByRole('switch', { name: ENABLE_LABEL })).not.toHaveAttribute('aria-disabled', 'true')
@@ -106,6 +145,18 @@ describe('ComputerUsePanel', () => {
     )
     fireEvent.click(await screen.findByRole('switch', { name: ENABLE_LABEL }))
     const notice = await screen.findByTestId('agent-spec-not-rewritten')
+    // No hand-off here: it would navigate away from the panel's unsaved drafts.
+    expect(within(notice).queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('shows a setup problem on the card without a hand-off beside the limit drafts', async () => {
+    ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot({ enabled: true, platform: 'windows' }))
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(
+      setupDoc('error', { problem: { code: 'verify_failed', message: 'no on-screen window was found to read', recoverable: true } }),
+    )
+    renderWithProviders(<ComputerUsePanel />, { route: '/settings/computer-use' })
+    const notice = await screen.findByTestId('cu-status-problem')
+    expect(notice).toHaveTextContent('no on-screen window was found to read')
     // No hand-off here: it would navigate away from the panel's unsaved drafts.
     expect(within(notice).queryByRole('button')).not.toBeInTheDocument()
   })
@@ -161,86 +212,51 @@ describe('ComputerUsePanel', () => {
     )
   })
 
-  it('shows a warn badge and a grant shortcut when Accessibility is missing', async () => {
-    await renderPanel(
-      snapshot({
-        permissions: {
-          accessibility: 'missing',
-          screen_recording: 'granted',
-          responsible_hint: 'Grant them to Terminal',
-        },
-      }),
-    )
-    // The badge shows the HUMAN label, not the backend's wire token: `missing`
-    // reads as jargon in a status chip, and an operator seeing it cannot tell
-    // whether something is broken or simply not granted yet.
-    expect(await screen.findByText('Not detected')).toBeInTheDocument()
-    expect(screen.queryByText('missing')).not.toBeInTheDocument()
-    expect(
-      screen.getByRole('button', { name: /open system settings for accessibility/i }),
-    ).toBeInTheDocument()
-    expect(screen.getByText('Grant them to Terminal')).toBeInTheDocument()
+  it('reads the setup card again after the enable switch changes', async () => {
+    await renderPanel()
+    const card = await screen.findByTestId('cu-setup-status')
+    expect(card).toHaveAttribute('data-state', 'disabled')
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(setupDoc('not_configured'))
+    fireEvent.click(await screen.findByRole('switch', { name: ENABLE_LABEL }))
+    await waitFor(() => expect(screen.getByTestId('cu-setup-status')).toHaveAttribute('data-state', 'not_configured'))
   })
 
-  /* ── the grant shortcut's delivery mechanism ──────────────────────────────
-   * Pinned deliberately, because the failure is invisible in a browser tab: the
-   * dashboard renders inside an instance <iframe>, where a FRAME navigation is
-   * governed by CSP `frame-src` (a loopback/cloudfront allowlist that names no
-   * custom scheme), so
-   * `window.location.href = 'x-apple.systempreferences:…'` is refused with
-   * ERR_BLOCKED_BY_CSP and the button does nothing in the packaged desktop app.
-   * `window.open` is a new top-level request, which the OS/Electron main process
-   * handles. A regression back to `location.href` must fail here rather than
-   * ship as a dead button. */
-  it('hands the grant shortcut to the OS via window.open, never a frame navigation', async () => {
-    const open = vi.spyOn(window, 'open').mockReturnValue(null)
-    try {
-      await renderPanel(
-        snapshot({
-          permissions: {
-            accessibility: 'missing',
-            screen_recording: 'missing',
-            responsible_hint: '',
-          },
-        }),
-      )
-      fireEvent.click(
-        await screen.findByRole('button', { name: /open system settings for accessibility/i }),
-      )
-      expect(open).toHaveBeenCalledWith(
-        'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
-        '_blank',
-        expect.stringContaining('noopener'),
-      )
+  it('shows the setup status card from the setup document', async () => {
+    await renderPanel()
+    const card = await screen.findByTestId('cu-setup-status')
+    expect(card).toHaveAttribute('data-state', 'disabled')
+    expect(within(card).getByText('Off')).toBeInTheDocument()
+    // The old advisory permission rows are gone; the setup card owns them now.
+    expect(screen.queryByRole('button', { name: /open system settings for/i })).not.toBeInTheDocument()
+  })
 
-      fireEvent.click(
-        screen.getByRole('button', { name: /open system settings for screen recording/i }),
-      )
-      expect(open).toHaveBeenLastCalledWith(
-        'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
-        '_blank',
-        expect.stringContaining('noopener'),
-      )
+  it('opens the setup dialog from the status card', async () => {
+    await renderPanel()
+    fireEvent.click(await screen.findByTestId('cu-open-setup'))
+    expect(await screen.findByTestId('cu-setup-dialog', {}, LAZY_DIALOG)).toHaveAttribute('data-view', 'intro')
+  })
 
-    } finally {
-      open.mockRestore()
+  it('opens the setup dialog once when arriving with ?setup=1', async () => {
+    ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(setupDoc('disabled'))
+    function Search() {
+      return <span data-testid="route-search">{useLocation().search}</span>
     }
-  })
-
-  describe('openSystemSettings', () => {
-    it('opens the pane in a new top-level context with noopener', () => {
-      const open = vi.spyOn(window, 'open').mockReturnValue(null)
-      try {
-        openSystemSettings('x-apple.systempreferences:com.apple.preference.sound')
-        expect(open).toHaveBeenCalledWith(
-          'x-apple.systempreferences:com.apple.preference.sound',
-          '_blank',
-          'noopener,noreferrer',
-        )
-      } finally {
-        open.mockRestore()
-      }
-    })
+    const tree = (
+      <>
+        <ComputerUsePanel />
+        <Search />
+      </>
+    )
+    const { rerender } = renderWithProviders(tree, { route: '/settings/computer-use?setup=1' })
+    expect(await screen.findByTestId('cu-setup-dialog', {}, LAZY_DIALOG)).toBeInTheDocument()
+    // The parameter is consumed as the dialog opens.
+    await waitFor(() => expect(screen.getByTestId('route-search')).toHaveTextContent(''))
+    fireEvent.click(await screen.findByRole('button', { name: /not now/i }))
+    await waitFor(() => expect(screen.queryByTestId('cu-setup-dialog')).not.toBeInTheDocument())
+    // An explicit re-render with the parameter gone does not pop it open again.
+    rerender(tree)
+    expect(screen.queryByTestId('cu-setup-dialog')).not.toBeInTheDocument()
   })
 
   it('tags the section macOS only on a macOS host', async () => {
@@ -282,6 +298,7 @@ describe('ComputerUsePanel', () => {
     // Windows — "leave your pointer alone" is the per-process case macOS has and
     // Windows does not — so the sentence is platform-gated rather than reworded.
     await renderPanel(snapshot({ supported: true, enabled: true, platform: 'windows' }))
+    await openMore()
     expect(await screen.findByText(/keystrokes take your keyboard focus/i)).toBeInTheDocument()
   })
 
@@ -293,6 +310,63 @@ describe('ComputerUsePanel', () => {
     expect(screen.queryByText(/keystrokes take your keyboard focus/i)).not.toBeInTheDocument()
   })
 
+  it('keeps the way back to the built-in driver on a Mac where the open-source driver was chosen', async () => {
+    ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({ supported: false, platform: 'macos', reason: 'the open-source desktop driver is not offered on macOS yet' }),
+    )
+    const macUpstream = setupDoc('unsupported', {
+      platform: 'macos',
+      session: { kind: 'aqua' },
+      driver: { kind: 'upstream', version: '', installed: false, healthy: false },
+      problem: { code: 'unsupported_platform', message: 'not offered on macOS', recoverable: false },
+      steps: [{ id: 'verify', status: 'failed' }, { id: 'ready', status: 'pending' }],
+    })
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(macUpstream)
+    ;(api.runComputerUseSetupAction as ReturnType<typeof vi.fn>).mockResolvedValue(macUpstream)
+    renderWithProviders(<ComputerUsePanel />, { route: '/settings/computer-use' })
+    expect(await screen.findByText('the open-source desktop driver is not offered on macOS yet')).toBeInTheDocument()
+    fireEvent.click(await screen.findByTestId('cu-open-setup'))
+    await screen.findByTestId('cu-setup-dialog', {}, LAZY_DIALOG)
+    fireEvent.click(await screen.findByTestId('cu-use-builtin'))
+    await waitFor(() => expect(api.runComputerUseSetupAction).toHaveBeenCalledWith('use_builtin_driver'))
+  })
+
+  it('shows a failed setup read on an unsupported Mac with Check again', async () => {
+    ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({ supported: false, platform: 'macos', reason: 'the open-source desktop driver is not offered on macOS yet' }),
+    )
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('connection reset'))
+    renderWithProviders(<ComputerUsePanel />, { route: '/settings/computer-use' })
+    await screen.findByText('the open-source desktop driver is not offered on macOS yet')
+    await waitFor(() => expect(api.getComputerUseSetup).toHaveBeenCalled())
+    expect(await screen.findByTestId('cu-mac-recovery-error')).toBeInTheDocument()
+    // One read, not a refetch loop.
+    expect(api.getComputerUseSetup).toHaveBeenCalledTimes(1)
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(
+      setupDoc('unsupported', {
+        platform: 'macos',
+        session: { kind: 'aqua' },
+        driver: { kind: 'upstream', version: '', installed: false, healthy: false },
+        problem: { code: 'unsupported_platform', message: 'not offered on macOS', recoverable: false },
+      }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: /check again/i }))
+    expect(await screen.findByTestId('cu-open-setup')).toBeInTheDocument()
+  })
+
+  it('offers no setup entry on an unsupported Mac whose cause is not the driver choice', async () => {
+    ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({ supported: false, platform: 'macos', reason: 'ApplicationServices could not be loaded' }),
+    )
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(
+      setupDoc('ready', { platform: 'macos', session: { kind: 'aqua' }, driver: { kind: 'native' } }),
+    )
+    renderWithProviders(<ComputerUsePanel />, { route: '/settings/computer-use' })
+    expect(await screen.findByText('ApplicationServices could not be loaded')).toBeInTheDocument()
+    await waitFor(() => expect(api.getComputerUseSetup).toHaveBeenCalled())
+    expect(screen.queryByTestId('cu-open-setup')).not.toBeInTheDocument()
+  })
+
   it('renders only the reason and no toggle when the platform is unsupported', async () => {
     await renderPanel(
       snapshot({
@@ -302,9 +376,8 @@ describe('ComputerUsePanel', () => {
       }),
     )
     expect(
-      await screen.findByText("Computer Use isn't available on Linux in this release."),
+      await screen.findByText('the Linux AT-SPI driver is not implemented yet'),
     ).toBeInTheDocument()
-    expect(screen.queryByText(/AT-SPI/)).not.toBeInTheDocument()
     expect(screen.queryByRole('switch', { name: ENABLE_LABEL })).not.toBeInTheDocument()
     // **No badge on an unsupported host**, and specifically not "macOS only": on
     // Linux that is a claim about a different platform sitting beside a reason that
@@ -357,23 +430,6 @@ describe('ComputerUsePanel', () => {
     })
   })
 
-  it('does not save when a numeric field is emptied and blurred', async () => {
-    // The end-to-end shape of the same rule. Asserted after a real edit has been
-    // committed, so the absence of a SECOND call is a settled fact rather than a
-    // race with a mutation that may not have fired yet.
-    await renderPanel()
-    const input = await screen.findByLabelText('Max tree nodes')
-    fireEvent.change(input, { target: { value: '' } })
-    fireEvent.blur(input)
-    // Now make an edit that MUST save; once it lands, any empty-field save would
-    // already have been recorded before it.
-    fireEvent.change(input, { target: { value: '900' } })
-    fireEvent.blur(input)
-    await waitFor(() => expect(api.saveComputerUseConfig).toHaveBeenCalled())
-    expect(api.saveComputerUseConfig).toHaveBeenCalledTimes(1)
-    expect(api.saveComputerUseConfig).toHaveBeenCalledWith({ max_tree_nodes: 900 })
-  })
-
   /* ── permission poll bound ──────────────────────────────────────────────── */
 
   describe('permissionPollInterval', () => {
@@ -408,7 +464,24 @@ describe('ComputerUsePanel', () => {
       expect(permissionPollInterval('missing', 0, t0)).toBe(5000)
     })
   })
-  /* ── a malformed keystone ────────────────────────────────────────────────── */
+
+  it('does not save when a numeric field is emptied and blurred', async () => {
+    // The end-to-end shape of the same rule. Asserted after a real edit has been
+    // committed, so the absence of a SECOND call is a settled fact rather than a
+    // race with a mutation that may not have fired yet.
+    await renderPanel()
+    await openMore()
+    const input = await screen.findByLabelText('Max tree nodes')
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    // Now make an edit that MUST save; once it lands, any empty-field save would
+    // already have been recorded before it.
+    fireEvent.change(input, { target: { value: '900' } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(api.saveComputerUseConfig).toHaveBeenCalled())
+    expect(api.saveComputerUseConfig).toHaveBeenCalledTimes(1)
+    expect(api.saveComputerUseConfig).toHaveBeenCalledWith({ max_tree_nodes: 900 })
+  })
 
   it('warns when the keystone app lists could not be read', async () => {
     // The backend deliberately still returns 200 for a hand-edited keystone: a 500
@@ -425,5 +498,27 @@ describe('ComputerUsePanel', () => {
     // Inverse guard: every healthy install would otherwise carry a scary banner.
     await renderPanel()
     expect(screen.queryByText(/could not be read/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('ComputerUsePanel layout (one card, like Settings > Browser)', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('shows one card and one main control; everything else is under a collapsed More', async () => {
+    await renderPanel(snapshot({ supported: true, enabled: true, platform: 'macos', cursor_motion_supported: true }))
+    const card = await screen.findByTestId('cu-main-card')
+    expect(within(card).getByRole('switch', { name: ENABLE_LABEL })).toBeInTheDocument()
+    expect(await within(card).findByTestId('cu-setup-status')).toHaveAttribute('data-part', 'summary')
+    expect(screen.getByRole('switch', { name: /attach screenshots/i })).toBeInTheDocument()
+    expect(screen.getByTestId('cu-privacy-footer')).toBeInTheDocument()
+    // Collapsed by default: no limit field, cursor toggle or driver rows yet.
+    expect(screen.queryByLabelText('Max tree nodes')).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: /cursor motion/i })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('cu-status-driver')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('switch')).toHaveLength(2)
+    await openMore()
+    expect(await screen.findByLabelText('Max tree nodes')).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: /cursor motion/i })).toBeInTheDocument()
+    expect(await screen.findByTestId('cu-status-driver')).toBeInTheDocument()
   })
 })

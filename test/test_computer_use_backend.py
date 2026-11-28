@@ -13,6 +13,7 @@ so no test anywhere can capture a real window or touch a real application.
 
 from __future__ import annotations
 
+import json
 import threading
 
 import pytest
@@ -45,6 +46,7 @@ from kiro_crew.computer_use.types import (
     ElementRec,
     SnapshotRequest,
 )
+from kiro_crew.config import loader as config_loader
 from kiro_crew.testing.fake_computer_use import FAKE_FILES_APP, FakeComputerUseBackend
 
 # Every abstract method a driver must implement, as (name, args) pairs the
@@ -319,11 +321,84 @@ class TestPlatformSelection:
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_WINDOWS
 
-    def test_linux_degradation_on_any_runner(self, monkeypatch):
+    def test_linux_native_choice_degrades_on_any_runner(self, monkeypatch):
         self._pin(monkeypatch, linux=True)
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: "native")
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_LINUX
         assert driver.status().reason == LINUX_REASON
+
+    def test_windows_auto_never_selects_the_upstream_driver(self, monkeypatch):
+        # Only ``driver: upstream`` reaches it on Windows; an install does not.
+        from kiro_crew.computer_use.driver_runtime import install as install_mod
+        from kiro_crew.computer_use.driver_runtime.backend import CuaBackend
+
+        self._pin(monkeypatch, windows=True)
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: "auto")
+        monkeypatch.setattr(
+            install_mod,
+            "install_state",
+            lambda _h, **_k: install_mod.InstallState(installed=True, version="0.47.8"),
+        )
+        assert not isinstance(select_default_backend(), CuaBackend)
+
+    @pytest.mark.parametrize("choice", ["auto", "upstream"])
+    def test_linux_selects_the_upstream_driver(self, monkeypatch, choice):
+        from kiro_crew.computer_use.driver_runtime.backend import CuaBackend
+
+        self._pin(monkeypatch, linux=True)
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: choice)
+        driver = select_default_backend()
+        assert isinstance(driver, CuaBackend)
+        assert driver.platform_id == PLATFORM_LINUX
+
+    def test_a_changed_driver_choice_reaches_the_shared_backend(
+        self, monkeypatch, tmp_path, restore_registry
+    ):
+        """A hand edit of the keystone's ``driver`` applies on the next call, no restart."""
+        from kiro_crew.computer_use.driver_runtime.backend import CuaBackend
+
+        keystone = tmp_path / "computer_use.json"
+        monkeypatch.setattr(config_loader, "computer_use_state_path", lambda: keystone)
+        self._pin(monkeypatch, linux=True)
+        register_computer_use_backend(None)
+        reset_shared_backend()
+        keystone.write_text(json.dumps({"driver": "native"}), encoding="utf-8")
+        assert get_shared_backend().status().reason == LINUX_REASON
+        keystone.write_text(json.dumps({"driver": "upstream"}), encoding="utf-8")
+        upstream = get_shared_backend()
+        assert isinstance(upstream, CuaBackend)
+        # A keystone that cannot be read keeps the backend already built.
+        keystone.write_text("{", encoding="utf-8")
+        assert get_shared_backend() is upstream
+
+    @pytest.mark.parametrize(
+        "flag, choice, upstream",
+        [
+            ("windows", "auto", False),
+            ("windows", "native", False),
+            ("windows", "upstream", True),
+            ("macos", "auto", False),
+            ("macos", "native", False),
+            # The upstream driver is not offered on macOS: refused, never built.
+            ("macos", "upstream", False),
+        ],
+    )
+    def test_driver_choice_per_platform(self, monkeypatch, flag, choice, upstream):
+        from kiro_crew.computer_use.driver_runtime.backend import CuaBackend
+
+        self._pin(monkeypatch, **{flag: True})
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: choice)
+        assert isinstance(select_default_backend(), CuaBackend) is upstream
+
+    def test_macos_upstream_is_refused_with_a_plain_reason(self, monkeypatch):
+        self._pin(monkeypatch, macos=True)
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: "upstream")
+        driver = select_default_backend()
+        assert isinstance(driver, UnsupportedBackend)
+        assert driver.platform_id == PLATFORM_MACOS
+        assert driver.status().reason == backend_mod.MACOS_UPSTREAM_REASON
+        assert "not offered on macOS" in driver.status().reason
 
     def test_unknown_platform_degrades(self, monkeypatch):
         self._pin(monkeypatch)

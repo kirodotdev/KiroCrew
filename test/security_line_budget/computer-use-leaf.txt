@@ -1,0 +1,4 @@
++5
+The computer-use leaf joins _CREW_SECRET_LEAVES in paths_lists.py: the desktop driver
+runtime the gateway executes, its install record and the setup progress file must not be
+written by the agent's file tools, like browser-harness. One leaf and its four-line reason.

@@ -56,7 +56,7 @@ from dataclasses import replace
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.computer_use import screencast, windows_ffi
+from kiro_crew.computer_use import floors, windows_ffi
 from kiro_crew.computer_use.capture_macos import shots_dir, trim_shots_dir
 from kiro_crew.computer_use.types import (
     DEFAULT_SCREENSHOT_JPEG_QUALITY,
@@ -785,11 +785,9 @@ def capture_snapshot_image(
     Never raises. The tree is the primary channel, so a capture failure degrades
     the result rather than failing the observation.
     """
-    if snap.has_secure:
-        return snap
-    if snap.truncated or snap.depth_truncated:
-        return snap
-    if not snap.app.window_id:
+    # The shared always-on floor (``floors.screenshot_permitted``); applied again by
+    # ``service.snapshot`` to every backend's result.
+    if not floors.screenshot_permitted(snap):
         return snap
     try:
         if windows_ffi.window_is_minimized(snap.app.window_id):
@@ -845,21 +843,8 @@ def capture_snapshot_image(
         image_width=out_w,
         image_height=out_h,
     )
-    # Mirror to the dashboard live view, as ``capture_macos`` does — without this the
-    # panel is permanently blank on Windows. The RELAY owns all three suppressions (no
-    # published surface scope, a secure window, a withheld screenshot channel), so
-    # nothing is re-derived here, and it relays these exact already-downscaled bytes
-    # rather than capturing again. It does not block: the POST runs on a daemon thread,
-    # so a dead gateway cannot slow the observation the model asked for.
-    #
-    # Wrapped anyway, even though the relay is itself contracted never to raise: THIS
-    # function's contract is "never raises", and a decorative mirror must not be able
-    # to turn a successful observation into a failed tool call if that inner contract
-    # is ever broken.
-    try:
-        screencast.emit_snapshot_frame(attached)
-    except Exception:
-        logger.debug("computer-use live-view relay failed", exc_info=True)
+    # The live-view mirror is offered by ``service.snapshot`` once the frame is
+    # spooled, from one place for every backend; nothing is relayed from here.
     return attached
 
 
