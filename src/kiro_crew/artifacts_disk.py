@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 from typing import List as _List
 
-from kiro_crew import hooks, pinned_fs, platform_compat
+from kiro_crew import atomic_write, hooks, pinned_fs, platform_compat
 from kiro_crew.artifact_store import records as _records
 from kiro_crew.artifact_store.model import (
     Artifact,
@@ -68,6 +68,15 @@ MAX_VERSIONS = 50
 #: ``constants.ARTIFACT_MAX_CONTENT_BYTES`` so ``validation.ARTIFACT_CONTENT_MAX``
 #: (the MCP tool-arg cap) reads the same value without importing this module.
 MAX_CONTENT_BYTES = ARTIFACT_MAX_CONTENT_BYTES
+
+
+class ArtifactFileHeldError(ArtifactError, PermissionError):
+    """A store write whose rename another program's handle kept refusing.
+
+    Still a :class:`PermissionError`, so a caller that falls back on an ``OSError``
+    from a store write (serving an artifact without a content token) keeps doing so.
+    """
+
 
 #: Retention cap for auto-registered widget artifacts (see
 #: :mod:`kiro_crew.widget_artifacts`). Every chat-emitted ``<mcwidget>`` becomes an
@@ -269,6 +278,11 @@ def _write_tmp_then_publish(
     refused that where the platform has it, which Windows does not. An exclusive
     create never opens an existing entry, link or reparse point included, so it
     holds on every platform; a planted name fails the write instead.
+
+    The by-name rename goes through :func:`atomic_write.replace_with_retry`, so a
+    scanner, indexer or reader briefly holding the destination on Windows is waited
+    out rather than losing the save; a refusal that outlasts the retry is an
+    :class:`ArtifactFileHeldError`, both an ``ArtifactError`` and a ``PermissionError``.
     """
     opener = open_kwargs.pop("opener", None)
     exclusive = os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -297,7 +311,13 @@ def _write_tmp_then_publish(
                 ) as fh:
                     write_body(fh)
                     _sync_before_publish(fh)
-                tmp.replace(resolved)
+                try:
+                    atomic_write.replace_with_retry(tmp, resolved)
+                except PermissionError as exc:
+                    raise ArtifactFileHeldError(
+                        f"could not save {resolved.name}: the file is in use by another "
+                        "program or access was denied; close it and save again"
+                    ) from exc
                 legacy = resolved.parent / legacy_tmp
                 _drop_legacy_tmp(legacy.lstat, legacy.unlink)
             except FileExistsError:

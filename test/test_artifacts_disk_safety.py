@@ -13,6 +13,7 @@ observable rather than asserted.
 from __future__ import annotations
 
 import errno
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,111 @@ class TestATornWriteIsNotObservable:
         assert rename.call_args.kwargs["src_dir_fd"] == rename.call_args.kwargs["dst_dir_fd"]
         assert not list(tmp_path.glob(".*.tmp"))
         assert destination.read_text() == "previous"
+
+
+class TestAWindowsHoldOnTheDestinationIsRetried:
+    """The by-name branch rides out a sharing violation instead of losing the save.
+
+    Windows refuses a rename onto a file another handle has open; a scanner or a
+    reader holding ``current.html`` for a moment must not end the write.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _windows_rename(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        from kiro_crew import atomic_write, pinned_fs
+
+        _floor_monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+        _floor_monkeypatch.setattr(
+            atomic_write, "platform_compat", SimpleNamespace(IS_WINDOWS=True)
+        )
+        _floor_monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+
+    def _held_for(self, monkeypatch: pytest.MonkeyPatch, refusals: int) -> Mock:
+        """Refuse the first *refusals* renames ``atomic_write`` makes, and count them.
+
+        Bound on ``atomic_write``'s own ``os`` name only, so no other caller in
+        the worker meets the refusal or adds to the count.
+        """
+        from kiro_crew import atomic_write
+
+        calls = Mock()
+
+        class _HeldOs:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(os, name)
+
+            def replace(self, src: Any, dst: Any, **kw: Any) -> None:
+                calls(src, dst)
+                if calls.call_count <= refusals:
+                    raise PermissionError(errno.EACCES, "Access is denied")
+                os.replace(src, dst, **kw)
+
+        monkeypatch.setattr(atomic_write, "os", _HeldOs())
+        return calls
+
+    @pytest.mark.parametrize(
+        ("mode", "body", "kwargs"),
+        [("w", "new", {"encoding": "utf-8"}), ("wb", b"new", {})],
+        ids=["text", "bytes"],
+    )
+    def test_a_brief_hold_publishes_the_new_content(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mode: str,
+        body: Any,
+        kwargs: dict[str, Any],
+    ) -> None:
+        from kiro_crew import artifacts_disk
+
+        destination = tmp_path / "current.html"
+        destination.write_text("previous", encoding="utf-8")
+        calls = self._held_for(monkeypatch, refusals=3)
+        artifacts_disk._write_tmp_then_publish(
+            destination, lambda fh: fh.write(body), mode, **kwargs
+        )
+        assert calls.call_count == 4
+        assert destination.read_text(encoding="utf-8") == "new"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["current.html"]
+
+    def test_a_store_update_survives_a_brief_hold(
+        self, store: ArtifactStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        art = store.create(name="Report", kind="widget", content="<p>old</p>")
+        self._held_for(monkeypatch, refusals=2)
+        store.update(art.slug, content="<p>new</p>")
+        assert store.get(art.slug).content == "<p>new</p>"
+
+    def test_a_lasting_hold_on_meta_still_opens_an_untokened_artifact(
+        self, store: ArtifactStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        art = store.create(name="Report", kind="widget", content="<p>old</p>")
+        meta_path = store._artifact_dir(art.slug) / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta.pop("content_token", None)
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        calls = self._held_for(monkeypatch, refusals=1000)
+        read = store.get(art.slug, assign_token=True)
+        assert calls.call_count > 0
+        assert read.content == "<p>old</p>"
+        assert read.content_token is None
+
+    def test_a_hold_past_the_retry_is_an_artifact_error_and_leaves_no_staging_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import artifacts_disk
+
+        destination = tmp_path / "meta.json"
+        destination.write_text("previous", encoding="utf-8")
+        self._held_for(monkeypatch, refusals=1000)
+        with pytest.raises(ArtifactError, match="in use by another program"):
+            artifacts_disk._write_tmp_then_publish(
+                destination, lambda fh: fh.write("new"), "w", encoding="utf-8"
+            )
+        assert destination.read_text(encoding="utf-8") == "previous"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["meta.json"]
 
 
 @pytest.mark.parametrize("failed_call", ["lstat", "unlink"])
