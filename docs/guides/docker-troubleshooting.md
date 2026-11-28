@@ -385,8 +385,9 @@ agent execution is disabled by design. See [section 4](#4-sandbox-related-errors
 
 The image ships `git`, `curl`, `ripgrep` and `unzip` alongside Python and
 `kiro-cli`. It carries no second language runtime and no compiler toolchain,
-so `node`, `gcc` and `npm` are not available by default (`pip` and `apt` are
-there, being Python's and Debian's own).
+so `node`, `gcc` and `npm` are not available by default (`pip` and `dnf` are
+there, being Python's and Amazon Linux 2023's own; the image is based on
+`public.ecr.aws/amazonlinux/amazonlinux:2023`).
 
 **Options:**
 
@@ -395,7 +396,7 @@ there, being Python's and Debian's own).
    ```dockerfile
    FROM ghcr.io/kirodotdev/kirocrew:stable
    USER root
-   RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
+   RUN dnf install -y nodejs npm && dnf clean all
    USER kirocrew
    ```
 
