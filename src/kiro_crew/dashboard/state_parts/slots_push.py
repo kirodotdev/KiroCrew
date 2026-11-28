@@ -157,6 +157,9 @@ def suspend_slots_push(self: DashboardState) -> "Iterator[Callable[[str], None]]
         if self._slots_push_suspend == 0 and self._slots_push_pending:
             self._slots_push_pending = False
             unwinding_over = sys.exc_info()[1]
+            # A flag, not a `return`: a return inside `finally` is a SyntaxWarning
+            # from Python 3.14 (PEP 765).
+            deferred = False
             if deferred_operation is not None and unwinding_over is None and not overlapped:
                 loop = self.serving_loop
                 if loop is not None and loop is self._running_loop():
@@ -173,16 +176,19 @@ def suspend_slots_push(self: DashboardState) -> "Iterator[Callable[[str], None]]
                                 if self._slots_broadcast_timer is not None:
                                     self._slots_broadcast_timer.cancel()
                                     self._slots_broadcast_timer = None
-                        return
+                        deferred = True
                     except RuntimeError:
                         # A loop closing between lookup and scheduling cannot
                         # drop the announcement. Fall back to the immediate
                         # flush below.
                         pass
-            try:
-                self.push_slots_update()
-            except Exception:
-                logger.error("Slots broadcast failed at the suspend block's exit", exc_info=True)
+            if not deferred:
+                try:
+                    self.push_slots_update()
+                except Exception:
+                    logger.error(
+                        "Slots broadcast failed at the suspend block's exit", exc_info=True
+                    )
 
 
 def _deferred_slots_flush(self: DashboardState, operation: str, retries_remaining: int) -> None:

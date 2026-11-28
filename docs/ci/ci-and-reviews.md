@@ -78,6 +78,7 @@ pull_request
   |-- dependency-review.yml            license allowlist (its own job: it needs a write token)
   |-- docker-smoke.yml                 container contract (paths-filtered)
   |-- crew-image-build.yml             crew image recipes build (paths-filtered)
+  |-- python-next.yml   "Python 3.14 (advisory)"  install/compile/import sweep; suite on a label
   |-- claude-review.yml "Opus 5.5 Review"     line-level, code-only, blocking
   |-- codex-review.yml  "GPT 6.1 Review"    line-level + PR intent, blocking
   |-- design-review.yml "Design Review"     design shape
@@ -3346,6 +3347,29 @@ only cp314 x86_64 wheel of `pysqlite3-binary` is `0.5.4.post2`, which
 (#40371, fixed by #40354). Use the version the lane that built the wheel uses
 (`build-wheel.yml`, `build-platform-wheels.yml`: `3.12`). A stdlib-only step that
 installs nothing may still use the image's `python3`.
+
+### Python 3.14 runs in its own advisory lane
+
+Every lane above runs on the `requires-python` floor, 3.12. `python-next.yml`
+runs the same backend on 3.14 before anything ships on it, so a break shows up
+as one change rather than a migration. It is a separate workflow for the same
+reason as `macos-on-demand.yml`: a job inside `ci.yml` holds that workflow's
+completion even with `continue-on-error`, and readiness waits on it. It is absent
+from both of `pr-readiness.yml`'s lists, so a red run here holds no merge;
+`test/test_ci_python_next_import_sweep.py` pins that absence.
+
+| Job | When | What |
+|---|---|---|
+| `sweep` | every non-draft pull request, `workflow_dispatch` | installs `.[voice,desktop,otlp]` and the `dev` group on 3.14 (a dependency with no 3.14 wheel fails here), then `scripts/ci/python_next_import_sweep.py`: every `.py` compiles with no `SyntaxWarning` (PEP 765's `return`/`break`/`continue` in `finally`), and every module in a regular `kiro_crew` package imports |
+| `tests` | `workflow_dispatch`, and a pull request that carries `ci:py314` or changes `python-next.yml` or the sweep script | the backend suite in eight file shards, four at a time, `--no-cov`, on `kirocrew-linux-4-core`. The label is read at the next push |
+
+The suite is not scheduled yet: it still has known 3.14 failures (#43307), and a
+nightly that is red every night reports nothing new. The schedule, and a row in
+`scheduled-failure-watch.yml`, come once the suite is green on 3.14. A 3.14 change
+that has to keep working on 3.12 is written for both. The lane does
+not run free-threaded 3.14t: that needs a cp314t wheel of every compiled
+dependency first. When the shipped interpreter moves, the guard for it belongs in
+`ci.yml`'s matrix and this lane moves on to the next version.
 
 ### A change to a nightly-only or release-only workflow says how it was verified
 

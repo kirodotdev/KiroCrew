@@ -1,0 +1,171 @@
+name: Python 3.14 (advisory)
+
+# The backend on the next CPython, before anything ships on it. Every other lane
+# runs on the floor in requires-python (3.12); this one runs the same code on
+# 3.14 so a break shows up while it is still one change, not a migration.
+#
+# ADVISORY BY CONSTRUCTION. It is its own workflow, absent from both of
+# pr-readiness.yml's lists (`on.workflow_run.workflows` and the lane specs), so a
+# red run here never reaches `PR Readiness` and never holds a merge. A job inside
+# ci.yml would not be advisory even with `continue-on-error`: ci.yml's completion
+# is what readiness waits on (macos-on-demand.yml's header has the measurement).
+# It is advisory because nothing ships on 3.14 yet; when an interpreter change
+# ships, the lane that guards it belongs in ci.yml's matrix instead.
+#
+# TWO JOBS, priced differently.
+#   sweep -- every pull request: install the dependencies on
+#            3.14 (a dependency with no 3.14 wheel fails here), compile every
+#            .py with SyntaxWarning as a failure (PEP 765), and import every
+#            kiro_crew module (scripts/ci/python_next_import_sweep.py). A few
+#            minutes on one runner.
+#   tests -- the backend suite on 3.14, in eight file shards, without coverage.
+#            On demand (`workflow_dispatch`), and on a pull request that
+#            carries the `ci:py314` label or changes this lane (this workflow,
+#            the sweep script). A label is read at the next push, like ci.yml's
+#            label switches. Not scheduled yet: the suite still has known 3.14
+#            failures (#43307), and a nightly that is red every night reports
+#            nothing new. Add the schedule once the suite is green on 3.14.
+#
+# Free-threaded 3.14t is NOT run here: it needs every compiled dependency to
+# ship a cp314t wheel first.
+
+on:
+  pull_request:
+    branches: [main]
+    # `ready_for_review`: both jobs skip a draft, so leaving draft must start
+    # a run on the same head.
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-next-${{ github.event.pull_request.number || github.ref }}
+  # A newer push supersedes a pull request's run; one manual dispatch does
+  # not cancel another.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_NEXT: "3.14"
+
+jobs:
+  sweep:
+    name: Python 3.14 install, compile and import sweep
+    if: github.event.pull_request.draft != true
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    outputs:
+      tests: ${{ steps.decide.outputs.tests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The merge commit and its first parent (the base tip), which is all
+          # the path switch below diffs.
+          fetch-depth: 2
+
+      - name: Decide whether the 3.14 test suite runs
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:py314') }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "tests=true" >> "$GITHUB_OUTPUT"; echo "tests run: $EVENT"; exit 0
+          fi
+          if [ "$LABELED" = "true" ]; then
+            echo "tests=true" >> "$GITHUB_OUTPUT"; echo "tests run: ci:py314 label"; exit 0
+          fi
+          # Read the whole list before matching: `grep -q` stops at the first hit,
+          # and under pipefail the SIGPIPE it leaves git diff with reads as no match.
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          if printf '%s\n' "$changed" | grep -xE '\.github/workflows/python-next\.yml|scripts/ci/python_next_import_sweep\.py' >/dev/null; then
+            echo "tests=true" >> "$GITHUB_OUTPUT"; echo "tests run: the diff changes this lane"; exit 0
+          fi
+          echo "tests=false" >> "$GITHUB_OUTPUT"
+          echo "tests skipped: no ci:py314 label and the diff does not change this lane"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_NEXT }}
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          # No uv.lock in this repository; key the cache on the dependency files.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      # The same install the Backend Tests shards run, on 3.14.
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
+
+      - name: Compile and import sweep
+        # A throwaway home, so a module that touches its data home at import
+        # writes nothing outside the job.
+        run: |
+          export HOME="$RUNNER_TEMP/py314-user" KIROCREW_HOME="$RUNNER_TEMP/py314-user/crew"
+          mkdir -p "$KIROCREW_HOME"
+          python scripts/ci/python_next_import_sweep.py src test scripts packaging conftest.py setup.py xdist_budget.py
+
+  tests:
+    name: Python 3.14 Backend Tests (shard ${{ matrix.group }}/8)
+    needs: [sweep]
+    if: ${{ !cancelled() && needs.sweep.outputs.tests == 'true' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    # One eighth of the suite on a 4-core runner takes about an hour (ci.yml's
+    # backend-test budget for the same runner is 70 minutes).
+    timeout-minutes: 90
+    strategy:
+      # Advisory: keep this lane's share of the shared pool small.
+      max-parallel: 4
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
+    env:
+      KIROCREW_TMP_RESIDUE_STRICT: "1"
+      KIROCREW_CREW_LOG_READ_BUDGET: raise
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # test_flake_pattern_ratchet.py compares a change with its parent.
+          fetch-depth: 2
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_NEXT }}
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
+
+      # Tests run unprivileged, as in ci.yml's Backend Tests.
+      - uses: ./.github/actions/run-as-runner
+
+      - name: Run tests (shard ${{ matrix.group }}/8)
+        shell: /usr/local/bin/ci-shell {0}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        # Same selection and worker sizing as ci.yml's Backend Tests, without
+        # coverage: one worker per 2 GiB after 2 GiB for the host, capped at the
+        # core count.
+        run: |
+          mem_mib=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
+          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
+          [ "$WORKERS" -ge 1 ] || WORKERS=1
+          echo "pytest workers: $WORKERS"
+          echo "::remove-matcher owner=python::"
+          python -m pytest -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 --no-cov \
+            -m "not ipv6_required and not real_venv" \
+            --file-shards 8 --file-shard ${{ matrix.group }}

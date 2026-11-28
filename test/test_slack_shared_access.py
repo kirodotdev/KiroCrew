@@ -26,6 +26,7 @@ from kiro_crew.config.sections_slack import SlackConfig, is_slack_user_id, share
 from kiro_crew.messaging import session_trust
 from kiro_crew.slack import handler, interactions, shared_access, thread_trust
 from kiro_crew.slack.handler import _pending_approvals, _PendingApproval, handle_interaction
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 OWNER = "UOWNER0001"
 FRIEND = "UFRIEND001"
@@ -749,12 +750,19 @@ async def test_a_linked_prompt_answered_during_the_trust_check_grants_nothing(
 
     def answered_while_checked(slot_key: str, thread_ts: str, **_who: str) -> bool:
         if not slot_key:
-            # Queue the dashboard's answer on the loop before to_thread completes.
-            # The turn and card stay registered while only the prompt is settled.
-            if outcome == "cancelled":
-                loop.call_soon_threadsafe(fut.cancel)
-            else:
-                loop.call_soon_threadsafe(fut.set_result, outcome)
+            # Settle the prompt on the loop, as the dashboard's answer would, and
+            # wait for it, so it lands before to_thread completes. A bare
+            # call_soon_threadsafe is not enough: from Python 3.14, wrap_future
+            # sets an already-finished result inline, so the await can resume
+            # before a callback queued here runs. The turn and card stay
+            # registered while only the prompt is settled.
+            async def _answer() -> None:
+                if outcome == "cancelled":
+                    fut.cancel()
+                else:
+                    fut.set_result(outcome)
+
+            asyncio.run_coroutine_threadsafe(_answer(), loop).result(timeout=FALLBACK_TIMEOUT_SECS)
         return False
 
     _floor_monkeypatch.setattr(
