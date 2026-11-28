@@ -369,6 +369,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         grant_mate_platform_once,
         mark_guide_platform_granted,
         mark_mate_platform_granted,
+        record_fork_edition_baseline,
     )
     from kiro_crew.agent_materialization.kiro_hooks import (  # noqa: F401
         _CREW_ONLY_HOOK_EVENTS,
@@ -1196,6 +1197,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "grant_mate_platform_once",
         "mark_guide_platform_granted",
         "mark_mate_platform_granted",
+        "record_fork_edition_baseline",
     ),
     "kiro_crew.agent_materialization.first_crewmate": (
         "create_first_crewmate_once",

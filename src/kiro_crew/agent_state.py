@@ -18,6 +18,9 @@ rather than the kiro spec:
 - ``forked_from`` / ``private_to`` (str): recorded on a template that is one
   crew's private copy of another template (blueprint semantics — editing a
   crew's definition forks a copy instead of mutating the shared file).
+- ``edition_refs_offered`` (list of str): on such a copy, the edition servers
+  whose ``@name`` ref it was already offered once, so a ref the user removes
+  stays removed.
 - ``managed_digest`` (str): the SHA-256 of the exact spec bytes the installer
   last wrote at an OWNED filename whose stem was a user-creatable name before it
   became owned (today only ``kirocrew-dashboard-author``). It is the installer's
@@ -69,6 +72,8 @@ _MIRRORED_FROM = "mirrored_from"
 _MIRRORED_STAT = "mirrored_stat"
 _FORKED_FROM = "forked_from"
 _PRIVATE_TO = "private_to"
+# Edition servers whose ``@name`` ref a private copy was already offered once.
+_EDITION_REFS_OFFERED = "edition_refs_offered"
 # Installer-recorded ownership for a spec at an owned filename that was a
 # user-creatable name before it became owned (today: kirocrew-dashboard-author).
 # Holds the SHA-256 of the exact spec bytes the installer last wrote there, so
@@ -708,6 +713,33 @@ def set_fork_info(name: str, forked_from: str, private_to: str) -> None:
             entry = {}
         entry[_FORKED_FROM] = str(forked_from)
         entry[_PRIVATE_TO] = str(private_to)
+        data[name] = entry
+        _write(data)
+
+
+def get_edition_refs_offered(name: str, *, strict: bool = False) -> frozenset[str]:
+    """The edition servers already offered to the private copy *name*.
+
+    Read by the fork refresh (``guide_platform.grant_fork_edition_refs_once``),
+    whose answer feeds a write, so it reads ``strict``.
+    """
+    with _lock:
+        value = _entry(_read(strict=strict), name).get(_EDITION_REFS_OFFERED)
+    if not isinstance(value, list):
+        return frozenset()
+    return frozenset(n for n in value if isinstance(n, str))
+
+
+def add_edition_refs_offered(name: str, servers: "set[str] | list[str]") -> None:
+    """Record that each of *servers* was offered to the private copy *name*."""
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        old = entry.get(_EDITION_REFS_OFFERED)
+        known = {n for n in old if isinstance(n, str)} if isinstance(old, list) else set()
+        entry[_EDITION_REFS_OFFERED] = sorted(known | set(servers))
         data[name] = entry
         _write(data)
 

@@ -21,7 +21,7 @@ from typing import Literal
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state, platform_compat, user_json
 from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
-from kiro_crew.agent_materialization import auto_approve
+from kiro_crew.agent_materialization import auto_approve, guide_platform
 from kiro_crew.agent_spec_format import is_markdown_spec
 
 #: The dashboard-author origin stem, digest-gated in :func:`fork_origin_is_owned`
@@ -375,6 +375,12 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
 
     agents_dir = agent_mod.kiro_agents_dir_path()
     failures: set[str] = set()
+    # Read once per pass. A rebuild writes ``kirocrew.json`` before it refreshes
+    # the forks (``spec_rebuild``), so this is the default spec it just granted;
+    # pinned by ``test_fork_edition_refs``.
+    from kiro_crew.agent_materialization import worker_agent
+
+    default_tools = (worker_agent._installed_default_spec() or {}).get("tools")
 
     for fork_name in sorted(forks):
         # Owned specs have their own writer; this path must never touch them -- EXCEPT an
@@ -455,9 +461,15 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
                 # Read before any pass touches it, so the report below covers a
                 # flip by the plumbing refresh as well as by the governed tail.
                 merge_was_on = config.get("includeMcpJson") is not False
+                edition_pending: list[str] = []
                 if plumb:
                     try:
                         agent_mod._refresh_dynamic_fields(config, gated_off=gated_off, fork=True)
+                        # The refresh mounts every edition server; the copy's
+                        # ``tools`` gains each ref the default spec got, once.
+                        edition_pending = guide_platform.grant_fork_edition_refs_once(
+                            config, fork_name, default_tools
+                        )
                     except Exception:
                         # Plumbing rot is recoverable; the governance passes
                         # below still run and write, so a plumbing bug never
@@ -482,6 +494,17 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
                 auto_approve.write_governed_spec(
                     spec_path, config, source=f"fork-refresh:{fork_name}", kas_policy="seed"
                 )
+                if edition_pending:
+                    try:
+                        agent_state.add_edition_refs_offered(fork_name, edition_pending)
+                    except Exception:
+                        # The refs are written; unrecorded, the next pass finds
+                        # them held and records them then.
+                        agent_mod.logger.warning(
+                            "fork refresh: could not record the edition refs offered to %r",
+                            fork_name,
+                            exc_info=True,
+                        )
                 if merge_was_on:
                     _report_mcp_json_merge_pinned_off(fork_name, spec_path)
         except Exception:
