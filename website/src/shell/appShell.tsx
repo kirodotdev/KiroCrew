@@ -950,7 +950,7 @@ export function useAppShell() {
     }
   }, [connected, refreshAppNav])
 
-  const { appBadges, discoverBadges, railAppBadges, railAppRunStates } = useRailBadges(approvalCount)
+  const { appBadges, discoverBadges, railAppBadges, railAppRunStates, railAppStatus } = useRailBadges(approvalCount)
   // Settings > Display > View > "Show Discover in the sidebar": off puts
   // Discover's nav id in this browser's sidebar hidden set. While it is off the
   // rails draw no Discover row and its updates badge rides the Library row.
@@ -1148,7 +1148,7 @@ export function useAppShell() {
     shellEntered, setShellEntered, mobileNavMounted, mobileNavX, mobileNavPanelRef, mobileNavScrimRef, shellRef,
     mobileNavScrim, closeMobileNavDrawer, setMembersBar, advertisedNavItems, sortedAppGroup, activeAppDragId,
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
-    toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, discoverInRail, railAppBadges, railAppRunStates, shortcutsOpen,
+    toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, discoverInRail, railAppBadges, railAppRunStates, railAppStatus, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,

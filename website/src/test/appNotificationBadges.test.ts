@@ -4,6 +4,7 @@ import {
   APP_NAV_ID_PREFIX,
   APP_SOURCE_PREFIX,
   MAX_APP_BADGE_COUNT,
+  appAttentionNoteTimestamps,
   appNotificationBadges,
   isAppNavId,
   mergeAppBadges,
@@ -286,5 +287,23 @@ describe('isAppNavId agrees with the id appNav actually builds', () => {
 
     expect(target).not.toBeNull()
     expect(isAppNavId(target!.id)).toBe(false)
+  })
+})
+
+describe('appAttentionNoteTimestamps', () => {
+  it('returns exactly the notes behind the app\'s derived count, and no other app\'s', () => {
+    const notes = [
+      { ts: '1', source: `${APP_SOURCE_PREFIX}alpha` },
+      { ts: '2', source: `${APP_SOURCE_PREFIX}alpha`, acked: true },
+      { ts: '3', source: `${APP_SOURCE_PREFIX}alpha`, priority: 'passive' },
+      { ts: '4', source: `${APP_SOURCE_PREFIX}alpha`, silenced: true },
+      { ts: '5', source: `${APP_SOURCE_PREFIX}alphabet` },
+      { ts: '6', source: `${APP_SOURCE_PREFIX}beta` },
+      { ts: '7', source: `${APP_SOURCE_PREFIX}alpha` },
+      { ts: '8' },
+    ]
+
+    expect(appAttentionNoteTimestamps(notes, 'alpha')).toEqual(['1', '7'])
+    expect(appAttentionNoteTimestamps(notes, 'alpha')).toHaveLength(appNotificationBadges(notes).alpha)
   })
 })
