@@ -394,6 +394,9 @@ from conftest_resets_computer_use import (  # noqa: E402,F401 -- bound for pytes
 from conftest_resets_connected_computers import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_connected_computers_state,
 )
+from conftest_resets_crew_mode import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_crew_mode_conductor,
+)
 from conftest_resets_crewmate import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_crewmate_worker_slots,
 )
