@@ -79,6 +79,19 @@ def test_every_header_the_api_proxy_strips_is_dropped_here_too() -> None:
     assert _PROXY_STRIP_HEADERS <= awo._drop_request_headers()
 
 
+def test_every_hop_by_hop_header_the_api_proxy_drops_is_dropped_from_responses() -> None:
+    """One hop-by-hop list: a name the API proxy learns to drop is dropped here too."""
+    from kiro_crew.apps.routes import _PROXY_HOP_HEADERS
+
+    assert _PROXY_HOP_HEADERS <= awo._drop_response_headers()
+    headers = awo.hardened_response_headers(
+        [(name.title(), "x") for name in sorted(_PROXY_HOP_HEADERS)]
+        + [("Proxy-Connection", "keep-alive"), ("Trailer", "Expires")],
+        "'self'",
+    )
+    assert [k for k in headers if k.lower() != "content-security-policy"] == []
+
+
 def test_dashboard_cookies_are_not_forwarded() -> None:
     raw = "mc_token_5476=dash; app=1; mc_refresh_5476=r; mc_token=legacy; other=a=b"
     assert awo.forwarded_cookie(raw) == "app=1; other=a=b"
