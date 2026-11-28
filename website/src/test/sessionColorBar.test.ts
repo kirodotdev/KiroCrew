@@ -67,3 +67,52 @@ describe('session row — colour bar geometry', () => {
     for (const v of matches) expect(v).toMatch(/^\d+(\.\d+)?(px|rem)$/)
   })
 })
+
+describe('session row — Row Fill mode', () => {
+  const css = readIndexCss()
+  const base = '.session-row.session-colored.session-row-fill:not(.session-loop-stalled):not(.session-crew-parent)'
+  const active = '.session-row.session-colored.session-row-fill.session-active:not(.session-loop-stalled):not(.session-crew-parent)'
+
+  it('drops the left bar, so the row fill is the only colour cue', () => {
+    expect(declarationsFor(css, `${base}::before`)).toContain('content:none')
+  })
+
+  it.each([
+    [base, '--session-fill-pct'],
+    [`${base}:hover`, '--session-fill-hover-pct'],
+    [active, '--session-fill-active-pct'],
+  ])('fills %s with a translucent mix of the session colour', (sel, pctVar) => {
+    const decls = declarationsFor(css, sel)
+    expect(decls).toContain(`color-mix(insrgb,var(--_sc)var(${pctVar}`)
+    expect(decls).toContain('transparent)')
+  })
+
+  it('reads --text for the secondary line where the wash is stronger than the muted colour was adapted to', () => {
+    expect(declarationsFor(css, `${base}:hover`)).toContain('--muted:var(--text)')
+    expect(declarationsFor(css, active)).toContain('--muted:var(--text)')
+    expect(declarationsFor(css, base)).not.toContain('--muted')
+  })
+
+  it("leaves the outline to the reveal flash and the focus ring", () => {
+    const decls = declarationsFor(css, `${active}:not(.session-reveal-flash):not(:focus-visible)`)
+    expect(decls).toContain('outline:1pxsolid')
+    expect(declarationsFor(css, active)).not.toContain('outline')
+  })
+
+  it('declares no transition, so the row keeps its own transition-all', () => {
+    const bare = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    for (const [, sel, body] of bare.matchAll(/([^{}]*session-row-fill[^{}]*)\{([^{}]*)\}/g)) {
+      expect(body, sel).not.toMatch(/transition/)
+    }
+  })
+
+  it('keeps the bar and its own fill on a stalled-loop row and a crew-parent row', () => {
+    const bare = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    const rules = [...bare.matchAll(/([^{}]*session-row-fill[^{}]*)\{([^{}]*)\}/g)]
+    expect(rules.length).toBeGreaterThan(0)
+    for (const [, sel] of rules) {
+      expect(sel).toContain(':not(.session-loop-stalled)')
+      expect(sel).toContain(':not(.session-crew-parent)')
+    }
+  })
+})

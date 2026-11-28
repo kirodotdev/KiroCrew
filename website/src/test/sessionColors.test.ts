@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   generatePalette, generateContrastRamp, generateHarmony,
   parseColor, computePaletteBoost, resolveDefaultColor, colorName,
-  resolveSessionColor, headerBandStyle, CATEGORICAL_HUES, paletteSize,
+  resolveSessionColor, headerBandStyle, rowFillStyle, CATEGORICAL_HUES, paletteSize,
   PALETTE_NAMES, PALETTE_SIZE, INTENSITY_NAMES, INTENSITY_THRESHOLDS,
 } from '../utils/sessionColors'
 
@@ -331,5 +331,47 @@ describe('headerBandStyle', () => {
   it('leaves the band to the CSS default when no boost is available', () => {
     expect(headerBandStyle({ hex: '#abcdef', index: null }, boost, () => ({ idlePct: [], activePct: [], hoverPct: [], mutedColors: [] })))
       .toEqual({ '--session-color': '#abcdef' })
+  })
+})
+
+describe('rowFillStyle', () => {
+  const boost = { idlePct: [5, 6], activePct: [25, 26], hoverPct: [12, 13], mutedColors: ['#999', '#888'] }
+  const boostFor = () => ({ idlePct: [9], activePct: [29], hoverPct: [16], mutedColors: ['#777'] })
+
+  it('takes the resting, hover and selected strengths of an indexed colour', () => {
+    expect(rowFillStyle({ hex: '#222222', index: 1 }, boost, boostFor)).toEqual({
+      '--session-fill-pct': '6%', '--session-fill-hover-pct': '13%', '--session-fill-active-pct': '26%',
+    })
+  })
+
+  it('measures a frozen hex on its own', () => {
+    expect(rowFillStyle({ hex: '#abcdef', index: null }, boost, boostFor)).toEqual({
+      '--session-fill-pct': '9%', '--session-fill-hover-pct': '16%', '--session-fill-active-pct': '29%',
+    })
+  })
+
+  it('caps a strong intensity so the wash never buries the row text', () => {
+    const strong = () => ({ idlePct: [60], activePct: [80], hoverPct: [67], mutedColors: ['#777'] })
+    expect(rowFillStyle({ hex: '#abcdef', index: null }, boost, strong)).toEqual({
+      '--session-fill-pct': '16%', '--session-fill-hover-pct': '22%', '--session-fill-active-pct': '30%',
+    })
+  })
+
+  it('returns nothing when the boost has no entry for the colour', () => {
+    expect(rowFillStyle({ hex: '#222222', index: 5 }, boost, boostFor)).toEqual({})
+  })
+
+  it('weakens a white wash on Solarized Dark so the selected title stays readable', () => {
+    // Solarized Dark sidebar #0a3f4c with --text #93a1a1: a 30% white wash took the
+    // title from 4.3:1 to 1.8:1.
+    const solarized = (hex: string) => computePaletteBoost([hex], '#0a3f4c', '#586e75', '#93a1a1', true)
+    const white = rowFillStyle({ hex: '#ffffff', index: null }, boost, solarized)
+    const active = parseInt(white['--session-fill-active-pct'], 10)
+    expect(active).toBeGreaterThan(0)
+    expect(active).toBeLessThan(16)
+    expect(white['--session-fill-hover-pct']).toBe(white['--session-fill-active-pct'])
+    // A mid-tone palette colour on the usual dark surface keeps its full selected wash.
+    const dark = (hex: string) => computePaletteBoost([hex], DARK_BG, '#71717a', '#e4e4e7', true)
+    expect(rowFillStyle({ hex: '#3b82f6', index: null }, boost, dark)['--session-fill-active-pct']).toBe('30%')
   })
 })
