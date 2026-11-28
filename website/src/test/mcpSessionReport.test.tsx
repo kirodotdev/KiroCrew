@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { configureStore } from '@reduxjs/toolkit'
 import dashboardReducer, { sseMcpReportUpdate, sseSlots } from '../store/dashboardSlice'
 import McpToolsPanel, { DOT_CLASS, SESSION_DOT_CLASS } from '../pages/chat/McpToolsPanel'
@@ -9,6 +9,7 @@ import {
   mcpSessionGaveNoTools,
   mcpSessionHasReport,
   mcpSessionServerState,
+  mcpUnusableServers,
 } from '../lib/mcpSessionReport'
 import type { McpSessionReport } from '../types'
 
@@ -78,6 +79,67 @@ describe('mcpSessionExtraServers', () => {
   it('deduplicates and returns empty without a report', () => {
     expect(mcpSessionExtraServers([], report({ ready: ['a', 'a'] }))).toEqual(['a'])
     expect(mcpSessionExtraServers(['a'], null)).toEqual([])
+  })
+})
+
+describe('mcpUnusableServers', () => {
+  it('names each server a report cannot use, and how', () => {
+    const r = report({
+      failed: ['slack', 'jira', 'edited'],
+      restart_to_load: ['slack', 'edited'],
+      reload_pending: ['edited'],
+      awaiting_auth: ['notion'],
+      no_tools: ['clash'],
+      ready: ['ok', 'clash'],
+    })
+    expect(mcpUnusableServers([r])).toEqual([
+      { name: 'slack', how: 'signed_out' },
+      { name: 'jira', how: 'failed' },
+      { name: 'edited', how: 'failed' },
+      { name: 'notion', how: 'awaiting_auth' },
+      { name: 'clash', how: 'no_tools' },
+    ])
+  })
+
+  it('names a server once across reports, first report first, and skips missing ones', () => {
+    expect(
+      mcpUnusableServers([null, report({ awaiting_auth: ['slack'] }), undefined, report({ failed: ['slack'] })]),
+    ).toEqual([{ name: 'slack', how: 'awaiting_auth' }])
+    expect(mcpUnusableServers([])).toEqual([])
+  })
+})
+
+describe('McpToolsPanel worker servers', () => {
+  it('lists the servers the workers could not use, and nothing when there are none', () => {
+    const { rerender } = render(
+      <McpToolsPanel
+        servers={[]}
+        toolsByServer={{}}
+        loaded={new Set()}
+        toolSearchOn
+        loading={false}
+        workerUnusable={[
+          { name: 'slack', how: 'signed_out' },
+          { name: 'jira', how: 'failed' },
+          { name: 'notion', how: 'awaiting_auth' },
+          { name: 'clash', how: 'no_tools' },
+        ]}
+      />,
+    )
+    expect(screen.getByTestId('mcp-worker-unusable')).toHaveTextContent(
+      "This Bot's workers could not use these MCP servers: slack (sign-in missing or expired), jira (failed to start), clash (started with no tools)",
+    )
+    // Outside a menu the notice carries its own hand-off.
+    expect(within(screen.getByTestId('mcp-worker-unusable')).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+    // Waiting for authorization has not failed: a status line, not the error.
+    const waiting = screen.getByTestId('mcp-worker-waiting')
+    expect(waiting).toHaveAttribute('role', 'status')
+    expect(waiting).toHaveTextContent(
+      "This Bot's workers could not use these MCP servers: notion (waiting for authorization)",
+    )
+    rerender(<McpToolsPanel servers={[]} toolsByServer={{}} loaded={new Set()} toolSearchOn loading={false} />)
+    expect(screen.queryByTestId('mcp-worker-unusable')).toBeNull()
+    expect(screen.queryByTestId('mcp-worker-waiting')).toBeNull()
   })
 })
 

@@ -19,6 +19,7 @@ import {
 } from '../../components/ui/dropdown-menu'
 import { i18nT } from '../../i18n/t'
 import { deriveLoadedMcpTools } from '../../lib/mcpLoadedTools'
+import { mcpUnusableServers } from '../../lib/mcpSessionReport'
 import { useAppSelector } from '../../store'
 import type { McpServer } from '../../types'
 import InitialPromptSubmenu from './InitialPromptSubmenu'
@@ -121,6 +122,14 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   const sessionReport = useAppSelector(
     s => (activeSlot ? s.dashboard.slots?.find(sl => sl.key === activeSlot)?.mcp_report : null) ?? null,
   )
+  // A Bot chat's own servers start only in the worker sessions it created, so
+  // what those reported is read off them, the slots `created_by` links here.
+  const slots = useAppSelector(s => s.dashboard.slots)
+  const workerUnusable = useMemo(() => {
+    const own = activeSlot ? slots?.find(sl => sl.key === activeSlot) : undefined
+    if (!own || own.mode !== 'member') return []
+    return mcpUnusableServers((slots ?? []).filter(sl => sl.created_by === own.key).map(sl => sl.mcp_report))
+  }, [slots, activeSlot])
 
   return (
     <DropdownMenu open={open} onOpenChange={onMenuOpenChange}>
@@ -194,6 +203,8 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
                   toolSearchOn={toolSearchOn}
                   loading={serversQ.isPending}
                   sessionReport={sessionReport}
+                  workerUnusable={workerUnusable}
+                  menuItem={DropdownMenuItem}
                 />
                 {/* An answer with no servers says so, in McpInfoButton's words,
                     rather than leaving the heading over nothing. */}

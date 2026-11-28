@@ -5358,7 +5358,13 @@ whole), and the lines are built again when a report changed during the link
 read. Each
 server is named once per Bot thread (`_mate_sign_in_told`, in memory), across
 reports in one wake and across later wakes, until a worker report of that Bot
-lists it as `ready`, which makes a later sign-in news again. A worker turn that ends
+lists it as `ready`, which makes a later sign-in news again. The user sees the
+same servers in the Bot chat's own MCP servers panel (`ChatHeaderMenu` →
+`McpToolsPanel`): for a slot whose `mode` is `member`, it reads the `mcp_report`
+of every live slot whose `created_by` is that thread (`mcpUnusableServers`, the
+same buckets and sign-in reading as `session_unusable`), names each server once,
+first worker first, with how, in one `partial` `ErrorNotice`. Any other chat shows
+only its own session's report. A worker turn that ends
 through an applied `nothing_to_do` and
 wrote no reply text (a quiet loop cycle; the turn's `_terminal_directive_applied`
 with an empty `_turn_full_reply_text`, carried as `_TurnOutcome.quiet_end`)

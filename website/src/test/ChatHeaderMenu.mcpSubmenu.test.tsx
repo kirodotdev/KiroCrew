@@ -46,8 +46,8 @@ const dashboardState = {
   sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
 } as RootState['dashboard']
 
-function renderMenu() {
-  const store = createTestStore({ dashboard: { ...dashboardState, slots: [{ key: 'chat-1-100' }] } })
+function renderMenu(slots: RootState['dashboard']['slots'] = [{ key: 'chat-1-100' }]) {
+  const store = createTestStore({ dashboard: { ...dashboardState, slots } })
   // The app client's `staleTime: Infinity` default, so a query that does not opt
   // out keeps serving its first answer here as it does in the app.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
@@ -138,6 +138,47 @@ describe('ChatHeaderMenu — MCP submenu and colour-pick close', () => {
     fireEvent.keyDown(again.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
     expect(await screen.findByText("Couldn't load the MCP servers")).toBeInTheDocument()
     expect(screen.queryByText('github')).not.toBeInTheDocument()
+  })
+
+  it("names the servers a Bot chat's workers could not use", async () => {
+    const workerReport = {
+      configured: ['slack'], ready: [], failed: ['slack'], awaiting_auth: [],
+      failures: { slack: 'Authentication expired' }, restart_to_load: ['slack'],
+    }
+    renderMenu([
+      { key: 'chat-1-100', mode: 'member' },
+      { key: 'worker-1', created_by: 'chat-1-100', mcp_report: workerReport },
+      // Not this thread's worker: its failure is not named here.
+      { key: 'worker-2', created_by: 'other', mcp_report: { ...workerReport, failed: ['jira'], restart_to_load: [] } },
+    ] as RootState['dashboard']['slots'])
+    const sub = await screen.findByText('MCP servers')
+    fireEvent.keyDown(sub.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+    const notice = await screen.findByTestId('mcp-worker-unusable')
+    expect(notice).toHaveTextContent(
+      "This Bot's workers could not use these MCP servers: slack (sign-in missing or expired)",
+    )
+    // The hand-off is a real menu item described by the passive notice.
+    const handoffs = screen.getAllByRole('menuitem', { name: /Ask the agent/ })
+    expect(
+      handoffs.some(h => {
+        const described = document.getElementById(h.getAttribute('aria-describedby') ?? '')
+        return described !== null && notice.contains(described)
+      }),
+    ).toBe(true)
+  })
+
+  it('names no worker servers outside a Bot chat', async () => {
+    renderMenu([
+      { key: 'chat-1-100' },
+      {
+        key: 'worker-1', created_by: 'chat-1-100',
+        mcp_report: { configured: [], ready: [], failed: ['slack'], awaiting_auth: [], failures: {} },
+      },
+    ] as RootState['dashboard']['slots'])
+    const sub = await screen.findByText('MCP servers')
+    fireEvent.keyDown(sub.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+    expect(await screen.findByText('github')).toBeInTheDocument()
+    expect(screen.queryByTestId('mcp-worker-unusable')).not.toBeInTheDocument()
   })
 
   it('closes the menu after a swatch pick', async () => {
