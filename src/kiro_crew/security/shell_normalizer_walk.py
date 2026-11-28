@@ -1174,6 +1174,23 @@ def _resolved_word_view(word: str) -> str:
     return _debracket(_EMPTY_SUBST_RE.sub("", _resolve_param_defaults(word)))
 
 
+def _split_brace_alternatives(body: str) -> "list[str]":
+    """Split a brace body on its TOP-LEVEL commas (``a,{b,c},d`` -> 3 parts)."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for j, ch in enumerate(body):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(body[start:j])
+            start = j + 1
+    parts.append(body[start:])
+    return parts
+
+
 def _cut_at_operator(token: str) -> str:
     """*token* up to the first GLUED shell operator, with leading ones removed.
 
