@@ -27,22 +27,21 @@ if TYPE_CHECKING:
 
 def _refuse_unverified_antigravity_version(self: AcpClient) -> None:
     """Refuse an Antigravity ACP runtime below ``ANTIGRAVITY_MIN_VERSION`` or unreadable."""
-    if self.backend != ACP_BACKEND_ANTIGRAVITY:
-        return
-    raw = self.agent_version
-    version = raw.strip() if isinstance(raw, str) else ""
-    if _adapter_version_at_least(version, ANTIGRAVITY_MIN_VERSION):
-        return
-    floor = ".".join(str(part) for part in ANTIGRAVITY_MIN_VERSION)
-    what = (
-        f"Google Antigravity ACP {version} is older than the minimum version {floor}, "
-        "so Kiro Crew refused this chat."
-        if _adapter_version_at_least(version, (0, 0, 0))
-        else "Google Antigravity ACP did not report a version Kiro Crew can read, so "
-        f"Kiro Crew could not confirm it is {floor} or newer and refused this chat."
-    )
-    raise AcpToolGateUnroutable(
-        f"{what} {ANTIGRAVITY_INSTALL_HINT} Then start a new chat.",
-        transient=False,
-        user_worded=True,
-    )
+    if self.backend == ACP_BACKEND_ANTIGRAVITY:
+        raw = self.agent_version
+        version = raw.strip() if isinstance(raw, str) else ""
+        if _adapter_version_at_least(version, ANTIGRAVITY_MIN_VERSION):
+            return
+        floor = ".".join(str(part) for part in ANTIGRAVITY_MIN_VERSION)
+        what = (
+            f"Google Antigravity ACP {version} is older than the minimum version {floor}, "
+            "so Kiro Crew refused this chat."
+            if _adapter_version_at_least(version, (0, 0, 0))
+            else "Google Antigravity ACP did not report a version Kiro Crew can read, so "
+            f"Kiro Crew could not confirm it is {floor} or newer and refused this chat."
+        )
+        raise AcpToolGateUnroutable(
+            f"{what} {ANTIGRAVITY_INSTALL_HINT} Then start a new chat.",
+            transient=False,
+            user_worded=True,
+        )
