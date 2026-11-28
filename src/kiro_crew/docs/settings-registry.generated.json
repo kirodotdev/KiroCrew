@@ -1551,6 +1551,14 @@
       "configKey": "agent.session_control"
     },
     {
+      "id": "developer.link-peeks",
+      "label": "Link peeks",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.link-peeks",
+      "description": "Rest on a file link in chat to see the lines it points at.",
+      "hint": "A chat link to a local file with a line reference shows about a dozen lines around that line when the pointer rests on it, with the full path beneath. Each first hover reads those lines on the gateway host, so this is off by default."
+    },
+    {
       "id": "developer.mark-out-of-date-dashboard-fields",
       "label": "Mark out-of-date Dashboard fields",
       "tab": "developer",

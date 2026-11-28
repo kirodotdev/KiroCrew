@@ -13,11 +13,16 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from kiro_crew.dashboard.handlers.files import (
         _CRED_RUN_REVERSED_RE,
         _FILE_BUSY_ERROR,
         _FILE_DIFF_MAX_BYTES,
         _FILE_READ_CAP,
+        _FILE_READ_LINE_PARAM_RE,
+        _FILE_READ_WINDOW_MAX_CHARS,
+        _FILE_READ_WINDOW_MAX_LINES,
         _MAX_UPLOAD_BYTES,
         _READ_PATH_EXTRA_MAGIC,
         _STREAM_HOLDBACK_JWT_MAX,
@@ -70,8 +75,88 @@ def _read_safe_end(text: str, cap: int) -> int:
     return len(text) - _STREAM_HOLDBACK_MAX
 
 
+def _parse_line_window(query: Mapping[str, str]) -> tuple[int, int] | None | str:
+    """The ``start`` / ``end`` window a file-read asks for, or why it cannot have one.
+
+    ``None`` when neither parameter is present: the read is the whole capped
+    body, as before. ``(start, end)`` when the parameters are well-formed: both
+    1-based and inclusive, ``start`` defaulting to 1 and ``end`` to the last
+    line the window cap can hold from ``start``. The string ``"invalid"`` for
+    anything else -- a non-number, a zero, a sign, an ``end`` before ``start``.
+    """
+    raw_start = query.get("start")
+    raw_end = query.get("end")
+    if raw_start is None and raw_end is None:
+        return None
+    for raw in (raw_start, raw_end):
+        if raw is not None and not _FILE_READ_LINE_PARAM_RE.match(raw):
+            return "invalid"
+    start = int(raw_start) if raw_start is not None else 1
+    end = int(raw_end) if raw_end is not None else start + _FILE_READ_WINDOW_MAX_LINES - 1
+    if end < start:
+        return "invalid"
+    return start, end
+
+
+def _line_window(text: str, start: int, end: int) -> tuple[str, int, int, int, bool]:
+    """Lines ``start``..``end`` of *text* (1-based, inclusive), under the window cap.
+
+    Returns ``(body, first, last, total, cut)``: *body* is an exact substring of
+    *text* -- the lines it holds, with the newline that ended each one in *text*
+    -- *first* and *last* are the lines it actually holds, *total* is how many
+    lines *text* has, and *cut* says the body holds fewer lines than the request
+    named and the text has. A request starting past the last line gets an empty
+    body with *first* and *last* both 0.
+
+    Lines are split on ``\\n`` only, so a ``\\r`` stays on its line and a CRLF
+    file comes back as written. The window is clamped to the text, then to
+    ``_FILE_READ_WINDOW_MAX_LINES`` lines, then to ``_FILE_READ_WINDOW_MAX_CHARS``
+    characters: lines are kept whole until one would cross the character bound,
+    except that the first line alone is cut at it rather than leave the window
+    empty, so a minified file still peeks. Clamping to the text is not a cut:
+    the client got every line that exists in the range it named.
+    """
+    lines = text.split("\n")
+    total = 0 if text == "" else len(lines) - (1 if text.endswith("\n") else 0)
+    start = max(1, start)
+    if start > total:
+        return "", 0, 0, total, False
+    wanted_last = min(end, total)
+    last = min(wanted_last, start + _FILE_READ_WINDOW_MAX_LINES - 1)
+    pieces: list[str] = []
+    used = 0
+    kept = 0
+    for index in range(start - 1, last):
+        # The newline belongs to the line it ends; the last line of a text that
+        # does not end in one has none, which is what keeps the body a substring.
+        piece = lines[index] + ("\n" if index + 1 < len(lines) else "")
+        if used + len(piece) > _FILE_READ_WINDOW_MAX_CHARS:
+            break
+        pieces.append(piece)
+        used += len(piece)
+        kept += 1
+    if kept == 0:
+        return lines[start - 1][:_FILE_READ_WINDOW_MAX_CHARS], start, start, total, True
+    last = start + kept - 1
+    return "".join(pieces), start, last, total, last < wanted_last
+
+
 async def api_file_read(request: web.Request) -> web.Response:
-    """GET /api/file-read?path=... — read file content for the markdown panel."""
+    """GET /api/file-read?path=... — read file content for the markdown panel.
+
+    With ``start`` and/or ``end`` (1-based, inclusive line numbers) the body is a
+    window of that content instead of all of it: see :func:`_line_window` for the
+    cap and the clamping, and the ``X-Line-*`` headers below for what came back
+    (``X-Line-Start`` / ``X-Line-End`` the lines the body holds, ``X-Line-Total``
+    the line count of the body the window was cut from). Everything before the
+    body -- the owner gate, the path validation, the sensitive-path refusal, the
+    read cap, the credential pass and the audit row -- is the same read; the
+    window is cut from the body that read would have served, after the pass, so
+    it never shows a line the full read would not. The server does the same work
+    as a full read (the capped read and the pass, then the slice); what the window
+    saves is the wire and the client's memory. A malformed window is refused as a
+    malformed path is, for HEAD too; a well-formed one HEAD ignores.
+    """
     owner_denied = await require_owner_dashboard_request(request, "file_read")
     if owner_denied is not None:
         return owner_denied
@@ -82,10 +167,16 @@ async def api_file_read(request: web.Request) -> web.Response:
     )
 
     raw_path = request.query.get("path", "")
+    # The window is parsed first, before anything touches the disk -- the
+    # resolve probe below included, which a malformed window skips -- so a
+    # malformed request costs no read. It is refused as a malformed path is:
+    # the one status, body and denied row, from the one site after the schema
+    # check. HEAD takes the same refusal; a well-formed window it ignores.
+    window = _parse_line_window(request.query)
     # Resolve relative paths against project dir when resolve=1. Off-loop: the
     # resolution is a pair of realpath calls, and the schema check below needs
     # the resolved string, so it cannot be folded into the probe.
-    if request.query.get("resolve") == "1":
+    if request.query.get("resolve") == "1" and not isinstance(window, str):
         try:
             raw_path, _resolve_err = await _run_path_probe(
                 _resolve_project_relative,
@@ -107,7 +198,10 @@ async def api_file_read(request: web.Request) -> web.Response:
 
     try:
         validate_tool_args({"path": raw_path}, FILE_READ_SCHEMA)
+        path_valid = True
     except ValidationError:
+        path_valid = False
+    if not path_valid or isinstance(window, str):
         _sel().log_tool_invocation(
             session_key="dashboard",
             tool_name="file_read",
@@ -223,9 +317,6 @@ async def api_file_read(request: web.Request) -> web.Response:
             if len(whole) >= read_cap + _STREAM_HOLDBACK_JWT_MAX:
                 whole = whole[: _read_safe_end(whole, read_cap)]
             content = os.path.commonprefix([content, redact_fn(whole)])
-        _sel().log_tool_invocation(
-            session_key="dashboard", tool_name="file_read", outcome="success", resources=path
-        )
         # All three headers say the same thing to the viewer: this body is not
         # the file as written. The panel keeps the last copy of a file deleted
         # outside the dashboard and offers to download it; a capped, redacted
@@ -240,6 +331,33 @@ async def api_file_read(request: web.Request) -> web.Response:
             headers["X-Redacted"] = "true"
         if outcome.lossy:
             headers["X-Lossy-Decode"] = "true"
+        if window is not None:
+            # The window is cut from the body the full read serves, AFTER the
+            # credential pass, so a slice can never hold a line the pass would
+            # have rewritten, and a multi-line secret cut by the window's edge is
+            # already one tag before the edge is drawn. The three verdict headers
+            # keep describing that body: a redacted or capped body numbers its
+            # lines differently from the file as written, and the client that
+            # mapped a reference onto a line number needs to know that. The
+            # window's own verdict is separate: ``X-Window-Truncated`` says the
+            # window cap, not the read cap, dropped lines the request named.
+            content, first, last, total, cut = _line_window(content, *window)
+            headers["X-Line-Start"] = str(first)
+            headers["X-Line-End"] = str(last)
+            headers["X-Line-Total"] = str(total)
+            if cut:
+                headers["X-Window-Truncated"] = "true"
+            _sel().log_tool_invocation(
+                session_key="dashboard",
+                tool_name="file_read",
+                outcome="success",
+                resources=path,
+                metadata={"line_start": first, "line_end": last, "line_total": total},
+            )
+        else:
+            _sel().log_tool_invocation(
+                session_key="dashboard", tool_name="file_read", outcome="success", resources=path
+            )
         # Pick a sensible content_type per file extension so browsers and
         # debuggers (DevTools "Response" preview, curl) interpret the body
         # correctly. JSON files in particular benefit from application/json

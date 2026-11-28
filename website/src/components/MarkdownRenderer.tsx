@@ -8,7 +8,7 @@
  * live under `./markdown/`, and this module re-exports their public surface
  * unchanged. The owner map is in website/docs/frontend-conventions.md.
  */
-import React, { createContext, useSyncExternalStore, useContext, memo, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useState } from 'react'
+import React, { createContext, useSyncExternalStore, useContext, memo, useEffect, useId, useLayoutEffect, useMemo, useCallback, useRef, useState } from 'react'
 import { capWhitespaceRuns, rehypeBoundRawDepth } from '../utils/markdownDepthBound'
 import { REMARK_BASE_PLUGINS } from './markdown/remarkBase'
 import { canonicalChatHref, chatHrefSid, namesASession, rosterKeyFrom } from '../utils/sessionKeys'
@@ -96,6 +96,7 @@ import { activatePath, isFileLinkDest, isPathCandidate, splitLineRef, usePathRes
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
 import { wearsRefusedLinkCue } from './markdown/refusedLinkCue'
 import { linkAddress, useLinkAddressTip } from './markdown/linkAddressTip'
+import { useFilePeek } from './markdown/filePeek'
 import { MD_FLOW_ROOT_CLS, MD_PARAGRAPH_CLS } from './markdown/typography'
 import { InlineCode } from './markdown/InlineCode'
 import { MarkdownTable } from './markdown/MarkdownTable'
@@ -416,6 +417,21 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   const addressTip = useLinkAddressTip(
     href && !sessionHrefNamesSession ? linkAddress(href) : undefined,
   )
+  // The file peek (`markdown/filePeek.tsx`): a link the probe confirmed as a
+  // local FILE, carrying a line reference, shows the lines around that line
+  // when the pointer rests on it or keyboard focus lands on it, behind the
+  // `link_peeks` feature preview. A path has no address for the bubble to
+  // show, so the two never meet on one link; the peek's handlers replace the
+  // bubble's below all the same, so one link has one pop-up. The click is
+  // `onPathClick`, unchanged.
+  const peekId = useId()
+  const peekFile = useMemo(
+    () => (pathResolution.candidate && pathResolution.kind === 'file' && pathResolution.line != null
+      ? { path: pathResolution.path, line: pathResolution.line, endLine: pathResolution.endLine }
+      : null),
+    [pathResolution.candidate, pathResolution.kind, pathResolution.path, pathResolution.line, pathResolution.endLine],
+  )
+  const filePeek = useFilePeek(peekFile, `${peekId}-file-peek`)
   // The inert label carries the refused-link cue: a muted dotted underline and
   // a generic reason, as the hover title and as visually-hidden generated
   // content for touch, keyboard and screen-reader users. The reason lives in a
@@ -588,7 +604,13 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       // link, so neither pair overrides the other.
       onPointerDown={pathMenuKind ? leaveToNestedMenu : undefined}
       onContextMenu={pathMenuKind ? leaveToNestedMenu : undefined}
-      {...addressTip.handlers}
+      // One pop-up per link: the file peek's handlers when it has one, else the
+      // address bubble's. The peek's pointer-down runs after the nested-menu
+      // guard above, so neither shadows the other on a path link.
+      ref={filePeek.ref}
+      {...(filePeek.active
+        ? { ...filePeek.handlers, onPointerDown: (e: React.PointerEvent<HTMLAnchorElement>) => { if (pathMenuKind) leaveToNestedMenu(e); filePeek.handlers.onPointerDown?.(e) } }
+        : addressTip.handlers)}
     >
       <InsideLinkCtx.Provider value={linkKind}>{children}</InsideLinkCtx.Provider>
       {/* The not-open explanation reaches touch / keyboard / AT users as a
@@ -606,6 +628,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       )}
     </a>)}
     {addressTip.bubble}
+    {filePeek.panel}
     {/* The sentence's own punctuation, before the notice: "See the old run."
         keeps its full stop beside the link, and the notice follows the
         sentence instead of splitting it. */}

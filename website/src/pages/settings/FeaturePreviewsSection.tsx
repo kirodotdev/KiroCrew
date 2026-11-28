@@ -13,7 +13,7 @@ import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
 import { useSharedCrewCapabilities } from '../../hooks/sharedCrew/useSharedCrew'
-import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BOT_CHAT_APP_TOOLS, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_CLIENT, PREVIEW_CREW_OAUTH, PREVIEW_CREW_REPLY_STATUS, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_KAS_SUBAGENTS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WIDGETS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BOT_CHAT_APP_TOOLS, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_CLIENT, PREVIEW_CREW_OAUTH, PREVIEW_CREW_REPLY_STATUS, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_KAS_SUBAGENTS, PREVIEW_LINK_PEEKS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WIDGETS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { DecisionsCard } from './DecisionsCard'
 import { RemoteDispatchCard } from './RemoteDispatchCard'
@@ -145,6 +145,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_SESSION_HARNESS: return i18nT('pages.developer.featurePreviewsTab.session_harness')
     case PREVIEW_CONNECTED_COMPUTERS: return i18nT('connectedComputers.preview.label')
     case PREVIEW_VISUAL_REFRESH: return i18nT('pages.developer.featurePreviewsTab.visual_refresh')
+    case PREVIEW_LINK_PEEKS: return i18nT('pages.developer.featurePreviewsTab.link_peeks')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
   }
 }
@@ -221,6 +222,7 @@ export function FeaturePreviewsSection() {
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const crewOauth = usePreviewFlag(PREVIEW_CREW_OAUTH)
   const visualRefresh = usePreviewFlag(PREVIEW_VISUAL_REFRESH)
+  const linkPeeks = usePreviewFlag(PREVIEW_LINK_PEEKS)
   const writeError = usePreviewFlagWriteError()
   // An LTS build ships no Feature Preview (RFC D12): the flag rows, their "See what
   // it looks like" intros and the edition rows go; every other row here stays.
@@ -521,6 +523,17 @@ export function FeaturePreviewsSection() {
             hint={i18nT('pages.developer.featurePreviewsTab.visual_refresh_desc')}
             checked={visualRefresh}
             onChange={v => setPreviewFlag(PREVIEW_VISUAL_REFRESH, v)}
+          />
+        )}
+        {/* Link peeks (`markdown/filePeek.tsx`). NO ingress button: it changes
+            what a chat link already on screen does on hover. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.link_peeks')}
+            description={i18nT('pages.developer.featurePreviewsTab.link_peeks_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.link_peeks_desc')}
+            checked={linkPeeks}
+            onChange={v => setPreviewFlag(PREVIEW_LINK_PEEKS, v)}
           />
         )}
       </PreviewGroup>

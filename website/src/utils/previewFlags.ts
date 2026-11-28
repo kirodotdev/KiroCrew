@@ -293,6 +293,14 @@ export const PREVIEW_CREW_CLIENT = `${PREVIEW_FLAG_PREFIX}crew-client`
 export const PREVIEW_CREW_REPLY_STATUS = `${PREVIEW_FLAG_PREFIX}crew-reply-status`
 
 /**
+ * Link peeks: a chat link to a local file with a line reference shows the
+ * lines around that line when the pointer rests on it (`markdown/filePeek.tsx`).
+ * Default OFF: a resting pointer then costs a read the reader never clicked
+ * for, so the owner turns that on knowingly.
+ */
+export const PREVIEW_LINK_PEEKS = `${PREVIEW_FLAG_PREFIX}link-peeks`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -322,6 +330,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_WIDGETS,
   PREVIEW_CREW_CLIENT,
   PREVIEW_CREW_REPLY_STATUS,
+  PREVIEW_LINK_PEEKS,
 ]
 
 /**

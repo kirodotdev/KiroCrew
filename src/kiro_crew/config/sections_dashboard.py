@@ -80,6 +80,9 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     # Has server behavior: kiro_crew.acp.kas_engine_subagents.kas_subagents_preview_on
     # mounts the engine's sub-agent tool on a KAS chat's default agent.
     "kas_subagents",
+    # Browser-only: a chat link to a local file peeks at the lines around its
+    # line reference on hover (website/src/components/markdown/filePeek.tsx).
+    "link_peeks",
     "remote_crew_chat",
     "session_environments",
     "session_harness",

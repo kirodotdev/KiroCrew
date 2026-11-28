@@ -147,6 +147,8 @@ from kiro_crew.dashboard.file_api.desktop import (  # noqa: F401
     api_upload,
 )
 from kiro_crew.dashboard.file_api.editor import (  # noqa: F401
+    _line_window,
+    _parse_line_window,
     _read_safe_end,
     _resolve_diff_path,
     api_file_diff,
@@ -962,6 +964,20 @@ _FILE_KINDS_MAX_PATHS = 100
 #: because the decode is a text wrapper over a byte descriptor and a byte count
 #: here would mis-set ``X-Truncated`` on multi-byte content.
 _FILE_READ_CAP = 512_000
+
+#: The most a ``/api/file-read`` LINE WINDOW (``start`` / ``end``) returns: whole
+#: lines up to this many, and at most this many CHARACTERS of them, whichever
+#: bound is met first. Two bounds because the window's unit is the line and a
+#: single minified line can be as long as the whole read cap; a window of
+#: ordinary source fits both. The cap is fixed, not a parameter: the client that
+#: asks for a window is showing a few lines around a reference, and a body it
+#: could grow back to the full read would defeat the reason the window exists.
+_FILE_READ_WINDOW_MAX_LINES = 40
+_FILE_READ_WINDOW_MAX_CHARS = 4096
+
+#: A line number as the window parameters spell it: 1-based, decimal, unsigned.
+#: The length bound keeps ``int()`` off an input built to be slow to convert.
+_FILE_READ_LINE_PARAM_RE = re.compile(r"[1-9][0-9]{0,8}\Z")
 
 #: One credential-class character (the streaming redactor's ``_CRED_CLASS``).
 #: Matched against the REVERSED read, so finding the trailing run is linear.
