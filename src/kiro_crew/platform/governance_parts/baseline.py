@@ -78,6 +78,7 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.computer_use": _CAPABILITY_OFF,
     "capabilities.mobile_connect": _CAPABILITY_OFF,
     "capabilities.social_share": _CAPABILITY_OFF,
+    "capabilities.bot_share": _CAPABILITY_OFF,
     "capabilities.feature_videos_download": _CAPABILITY_OFF,
     # On, with the non-Jev decision models only (RFC D13). Hosted
     # Jev and hand-written endpoints are refused in code whatever a tier says
