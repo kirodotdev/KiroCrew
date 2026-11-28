@@ -584,6 +584,25 @@ alone, and that `Run` is the verb. If a short or ambiguous string has no entry, 
 one to `en.context.json` rather than guessing twice. `split` warns and emits no
 context files when the sidecar is missing.
 
+The sidecar's `entries` stay in key order: add a new entry where its key sorts,
+never at the end. Each addition then changes its own lines, so two branches that
+each add one merge without a conflict unless their keys sort next to each other.
+`npm run i18n:context:sort` puts the entries in order, and `contextSidecar.test.ts`
+fails on an entry out of order.
+
+A branch that appended its entries at the end conflicts with the key order once.
+Take main's side of the file and replay the branch's own entry changes onto it.
+During `git rebase origin/main`, from the repository root:
+
+```bash
+git checkout --ours website/src/i18n/en.context.json
+npm --prefix website run i18n:context:sort -- --replay REBASE_HEAD
+git add website/src/i18n/en.context.json
+```
+
+During a merge of main, main's side is `--theirs`, and the replay takes the
+branch's range: `--replay "$(git merge-base HEAD MERGE_HEAD)..HEAD"`.
+
 **Reassemble with `node scripts/i18n-translate.mjs merge <baseDir>`, never with
 `i18n-shard.mjs join`.** `join` rewrites the catalog from shards keyed off the
 **English** corpus, so any form the locale has and English does not is silently
