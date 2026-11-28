@@ -36,7 +36,7 @@ pyyaml==6.0.3
 regex==2026.9.29
 rich==15.0.0
 safetensors==0.8.0
-setuptools==84.0.0
+setuptools==84.1.0
 shellingham==1.5.4
 starlette==1.7.0
 strands-decider @ https://github.com/strands-labs/strands-decider/archive/fe39fad9ec8ec355993f76b977348d915ec9cb65.tar.gz
