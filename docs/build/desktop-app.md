@@ -1720,6 +1720,14 @@ it), and `user-restart.js` (Settings → About's Restart gateway).
   `kirocrew gateway` command gets SIGTERM, then SIGKILL after a grace window.
   Identity is re-read before each signal, so a recycled pid or a `kirocrew mcp-*`
   child is never signalled.
+- The liveness monitor's wedge kill (`killGatewayProcessTree` in
+  `runtime/gateway/shutdown.js`) runs `taskkill /T /F` on Windows on the
+  gateway child this app spawned without reading its command line first: the
+  child is still alive and the app holds its handle, so its pid cannot have
+  been reused, and a read that times out on a busy machine must not shrink the
+  tree kill to the parent alone. Every other Windows kill (a port holder, an
+  adopted gateway, the graceful stop's bounded tree kill) still goes through
+  `windowsTaskkill`, which refuses unless the command line is trusted.
 - When the other release family's app (Kiro Crew vs Kiro Crew Nightly) holds the
   port, macOS
   offers **Quit <other> & Continue**. When the holder is that family's macOS

@@ -419,6 +419,25 @@ async function windowsTaskkill(
   // The Python half of the product already settled this: cli_server.py's stop
   // path uses platform_compat.kill_process_tree ("a single-PID kill_pid would
   // orphan them"). Same invariant, same reason, both sides.
+  await windowsTaskkillTree(safePid, { execFileFn, timeoutMs, tools });
+}
+
+/**
+ * Tree-kill a pid WITHOUT the command-line identity check. Only for a process
+ * this app spawned and still holds a live ChildProcess handle to: Windows does
+ * not reuse a pid while a handle to it is open, so the pid is provably that
+ * child, and a slow identity read must not turn the tree kill into a parent-only
+ * kill. Any other pid goes through windowsTaskkill.
+ */
+async function windowsTaskkillTree(
+  pid,
+  {
+    execFileFn = execFile,
+    timeoutMs = 10000,
+    tools = WINDOWS_SYSTEM_TOOLS,
+  } = {}
+) {
+  const safePid = positiveInteger(pid, "pid");
   await execFileText(
     execFileFn,
     tools.taskkill,
@@ -437,4 +456,5 @@ module.exports = {
   windowsListenPidsRetrying,
   windowsProcessCommand,
   windowsTaskkill,
+  windowsTaskkillTree,
 };
