@@ -834,6 +834,10 @@ def _load_user_project(path: str) -> tuple[Any, list[tuple[Agent, tuple, dict]]]
     original_create_harness = strands_harness.create_harness
 
     def capture_create_harness(*args: Any, **options: Any) -> Agent:
+        # Without a session option the CLI's worker serves this agent itself and
+        # never calls create_agent; create_agent replaces the session anyway.
+        if not isinstance(options.get("session", True), dict):
+            options["session"] = _session_option(None)
         agent = original_create_harness(*args, **options)
         captured.append((agent, args, options))
         return agent

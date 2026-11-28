@@ -908,7 +908,9 @@ def _recording_harness(monkeypatch: pytest.MonkeyPatch, agent_cls: type) -> list
     return calls
 
 
-def test_the_import_time_agent_carries_a_session_so_the_cli_calls_create_agent(gated, monkeypatch) -> None:
+def test_the_import_time_agent_carries_a_session_so_the_cli_calls_create_agent(
+    gated, monkeypatch
+) -> None:
     calls = _recording_harness(monkeypatch, gated)
     gate = _load_gate()
     assert calls[-1]["session"] == {"dir": gate.STATE_DIR}
@@ -930,7 +932,24 @@ def test_the_cli_session_is_stored_under_crews_state_dir(gated, monkeypatch, tmp
     ]
 
 
-def test_a_project_factory_gets_the_session_under_crews_state_dir(gated, monkeypatch, tmp_path) -> None:
+def test_a_project_without_a_session_option_still_reaches_create_agent(
+    gated, tmp_path, monkeypatch, isolated_import
+) -> None:
+    entry = _user_project(tmp_path / "proj")
+    entry.write_text(
+        "import strands_harness\nagent = strands_harness.create_harness(session=False)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gated.gate, "PROJECT_SHA256", gated.gate._project_fingerprint(entry)[0])
+    monkeypatch.setattr(gated.gate, "STATE_DIR", str(tmp_path / "state"))
+    calls = _recording_harness(monkeypatch, gated)
+    gated.gate._load_user_project(str(entry))
+    assert calls == [{"session": {"dir": str(tmp_path / "state")}}]
+
+
+def test_a_project_factory_gets_the_session_under_crews_state_dir(
+    gated, monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(gated.gate, "STATE_DIR", str(tmp_path / "state"))
     seen: list[dict] = []
 
@@ -938,7 +957,9 @@ def test_a_project_factory_gets_the_session_under_crews_state_dir(gated, monkeyp
         seen.append(overrides)
         return gated()
 
-    monkeypatch.setattr(gated.gate, "_user_module", types.SimpleNamespace(create_agent=create_agent))
+    monkeypatch.setattr(
+        gated.gate, "_user_module", types.SimpleNamespace(create_agent=create_agent)
+    )
     gated.gate.create_agent(session={"id": "s-1", "dir": str(tmp_path / "cwd")})
     assert seen == [{"session": {"id": "s-1", "dir": str(tmp_path / "state")}}]
 
