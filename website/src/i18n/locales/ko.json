@@ -8446,7 +8446,11 @@
         "relay_crew_added_title": "{{name}}에 추가되었습니다",
         "relay_crew_added_body": "크루 전환 메뉴의 원격 Crew에서 열 수 있습니다.",
         "relay_crews_available_title_other": "공유 Crew {{count}}개에 접근할 수 있습니다",
-        "relay_crews_available_body": "크루 전환 메뉴의 원격 Crew에서 열 수 있습니다."
+        "relay_crews_available_body": "크루 전환 메뉴의 원격 Crew에서 열 수 있습니다.",
+        "crew_mode_chats_not_moved_title": "옮겨지지 않은 Conductor mode 채팅이 있습니다",
+        "crew_mode_chats_not_moved_body": "다음 채팅은 {{target}} 대신 각자의 에이전트를 계속 사용합니다: {{names}}. {{productName}}이(가) 다음 설정 변경이나 재시작 후 다시 시도합니다.",
+        "crew_mode_agent_unusable_title": "Conductor mode 에이전트가 변경되지 않았습니다",
+        "crew_mode_agent_unusable_body": "agent.crew_mode_agent가 지정한 {{configured}}은(는) 에이전트 템플릿이 아닙니다({{why}}). 설치되거나 설정이 바뀔 때까지 Conductor mode 채팅은 {{fallback}}을(를) 계속 사용합니다."
       },
       "notificationBanner": {
         "dismiss_notification": "알림 닫기",

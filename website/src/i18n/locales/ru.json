@@ -9085,7 +9085,11 @@
         "relay_crews_available_title_few": "У тебя есть доступ к {{count}} общим Crew",
         "relay_crews_available_title_many": "У тебя есть доступ к {{count}} общим Crew",
         "relay_crews_available_title_other": "У тебя есть доступ к {{count}} общим Crew",
-        "relay_crews_available_body": "Открой их в разделе «Удалённые Crew» в переключателе команд."
+        "relay_crews_available_body": "Открой их в разделе «Удалённые Crew» в переключателе команд.",
+        "crew_mode_chats_not_moved_title": "Чат в режиме Conductor mode не переключён",
+        "crew_mode_chats_not_moved_body": "Эти чаты остаются на своём агенте вместо {{target}}: {{names}}. {{productName}} попробует снова после следующего изменения конфигурации или перезапуска.",
+        "crew_mode_agent_unusable_title": "Агент Conductor mode не изменён",
+        "crew_mode_agent_unusable_body": "agent.crew_mode_agent указывает {{configured}}, но это не шаблон агента ({{why}}). Чаты в режиме Conductor mode остаются на {{fallback}}, пока его не установят или не изменят настройку."
       },
       "notificationBanner": {
         "dismiss_notification": "Скрыть уведомление",

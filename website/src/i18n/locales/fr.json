@@ -8872,7 +8872,11 @@
         "relay_crews_available_title_one": "Tu as accès à {{count}} Crew partagée",
         "relay_crews_available_title_many": "Tu as accès à {{count}} Crews partagées",
         "relay_crews_available_title_other": "Tu as accès à {{count}} Crews partagées",
-        "relay_crews_available_body": "Ouvre-les depuis Crews distantes, dans le sélecteur de crew."
+        "relay_crews_available_body": "Ouvre-les depuis Crews distantes, dans le sélecteur de crew.",
+        "crew_mode_chats_not_moved_title": "Un chat en Conductor mode n'a pas été basculé",
+        "crew_mode_chats_not_moved_body": "Ces chats restent sur leur propre agent au lieu de {{target}} : {{names}}. {{productName}} réessaie après la prochaine modification de la configuration ou le prochain redémarrage.",
+        "crew_mode_agent_unusable_title": "Agent du Conductor mode inchangé",
+        "crew_mode_agent_unusable_body": "agent.crew_mode_agent désigne {{configured}}, qui n'est pas un modèle d'agent ({{why}}). Les chats en Conductor mode restent sur {{fallback}} jusqu'à son installation ou jusqu'à ce que le réglage change."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignorer la notification",

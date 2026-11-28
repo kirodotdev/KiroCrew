@@ -8872,7 +8872,11 @@
         "relay_crews_available_title_one": "Tienes acceso a {{count}} Crew compartida",
         "relay_crews_available_title_many": "Tienes acceso a {{count}} Crews compartidas",
         "relay_crews_available_title_other": "Tienes acceso a {{count}} Crews compartidas",
-        "relay_crews_available_body": "Ábrelas desde Crews remotas en el selector de crew."
+        "relay_crews_available_body": "Ábrelas desde Crews remotas en el selector de crew.",
+        "crew_mode_chats_not_moved_title": "Un chat en Conductor mode no se cambió",
+        "crew_mode_chats_not_moved_body": "Estos chats siguen con su propio agente en lugar de {{target}}: {{names}}. {{productName}} lo vuelve a intentar tras el próximo cambio de configuración o reinicio.",
+        "crew_mode_agent_unusable_title": "No se cambió el agente de Conductor mode",
+        "crew_mode_agent_unusable_body": "agent.crew_mode_agent indica {{configured}}, que no es una plantilla de agente ({{why}}). Los chats en Conductor mode siguen con {{fallback}} hasta que se instale o cambie el ajuste."
       },
       "notificationBanner": {
         "dismiss_notification": "Descartar notificación",

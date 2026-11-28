@@ -8659,7 +8659,11 @@
         "relay_crew_added_body": "इसे क्रू स्विचर में रिमोट Crew से खोलो।",
         "relay_crews_available_title_one": "तुम्हारे पास {{count}} साझा Crew की पहुंच है",
         "relay_crews_available_title_other": "तुम्हारे पास {{count}} साझा Crew की पहुंच है",
-        "relay_crews_available_body": "इन्हें क्रू स्विचर में रिमोट Crew से खोलो।"
+        "relay_crews_available_body": "इन्हें क्रू स्विचर में रिमोट Crew से खोलो।",
+        "crew_mode_chats_not_moved_title": "Conductor mode की एक चैट नहीं बदली",
+        "crew_mode_chats_not_moved_body": "ये चैट {{target}} की जगह अपने ही एजेंट पर रहती हैं: {{names}}। {{productName}} अगले कॉन्फ़िग बदलाव या रीस्टार्ट के बाद फिर कोशिश करता है।",
+        "crew_mode_agent_unusable_title": "Conductor mode का एजेंट नहीं बदला",
+        "crew_mode_agent_unusable_body": "agent.crew_mode_agent में {{configured}} लिखा है, जो एजेंट टेम्पलेट नहीं है ({{why}})। जब तक इसे इंस्टॉल नहीं किया जाता या सेटिंग नहीं बदलती, Conductor mode की चैट {{fallback}} पर रहती हैं।"
       },
       "notificationBanner": {
         "dismiss_notification": "सूचना हटाओ",

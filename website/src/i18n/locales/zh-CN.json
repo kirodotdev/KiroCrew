@@ -8446,7 +8446,11 @@
         "relay_crew_added_title": "你已被添加到 {{name}}",
         "relay_crew_added_body": "可在 Crew 切换器的“远程 Crew”中打开。",
         "relay_crews_available_title_other": "你可以访问 {{count}} 个共享 Crew",
-        "relay_crews_available_body": "可在 Crew 切换器的“远程 Crew”中打开。"
+        "relay_crews_available_body": "可在 Crew 切换器的“远程 Crew”中打开。",
+        "crew_mode_chats_not_moved_title": "有 Conductor mode 对话未能切换",
+        "crew_mode_chats_not_moved_body": "这些对话仍使用各自的智能体，而不是 {{target}}：{{names}}。{{productName}} 会在下次配置更改或重启后再试。",
+        "crew_mode_agent_unusable_title": "Conductor mode 智能体未更改",
+        "crew_mode_agent_unusable_body": "agent.crew_mode_agent 指定的 {{configured}} 不是智能体模板（{{why}}）。在安装它或更改此设置之前，Conductor mode 对话仍使用 {{fallback}}。"
       },
       "notificationBanner": {
         "dismiss_notification": "关闭通知",

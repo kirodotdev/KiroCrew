@@ -64,6 +64,7 @@ class _State:
     def __init__(self, *slots: Any) -> None:
         self._slots = {s.key: s for s in slots}
         self.notices: list[tuple[str, str, str]] = []
+        self.copies: list[Any] = []
         self.conversation_log = None
         self._background_tasks: set[Any] = set()
         # The dashboard's start-up restore ran and finished.
@@ -73,8 +74,9 @@ class _State:
     def push_slots_update(self) -> None:
         pass
 
-    def notify(self, category: str, title: str, body: str) -> None:
+    def notify(self, category: str, title: str, body: str, *, i18n: Any = None) -> None:
         self.notices.append((category, title, body))
+        self.copies.append(i18n)
 
 
 def _answer(code: str | None, status: int = 409):
@@ -160,6 +162,13 @@ async def test_E1_a_permanent_refusal_never_advances_the_name_and_tells_the_pers
     assert switch.mig._failed == {"bad": "agent_choice_unavailable"}
     assert switch.mig.read_applied() == "kirocrew-conductor"
     assert len(state.notices) == 1 and "bad (agent_choice_unavailable)" in state.notices[0][2]
+    # The bell renders the note in the dashboard's language from its copy id.
+    assert state.copies == [
+        {
+            "id": "crew_mode_chats_not_moved",
+            "params": {"target": "better-conductor", "names": "bad (agent_choice_unavailable)"},
+        }
+    ]
     # The idle loop does not hammer a permanent refusal, nor repeat the notice.
     n = len(switch.calls)
     await switch.mig.reconcile(state, retry_failed=False)
@@ -347,6 +356,16 @@ async def test_F3_a_template_installed_later_heals_without_a_config_edit(switch,
     state = _State(root)
     assert await switch.mig.reconcile(state) is None
     assert "until it is installed" in state.notices[0][2]
+    assert state.copies == [
+        {
+            "id": "crew_mode_agent_unusable",
+            "params": {
+                "configured": "new-conductor",
+                "why": "agent_not_found",
+                "fallback": "kirocrew-conductor",
+            },
+        }
+    ]
     # Installed now; the next idle tick checks the name again and moves the root.
     verdict["why"] = ""
     await switch.mig.reconcile(state, retry_failed=False)
@@ -378,6 +397,22 @@ def test_E6_usable_asks_the_template_namespace_and_refuses_an_unknown_template(m
     assert mig._usable("kirocrew-conductor") == ""
     assert asked and set(asked) == {"template"}
     assert mig._usable("../x") == "invalid_agent_name"
+
+
+@pytest.mark.parametrize("copy_id", sorted(_mig.NOTE_COPY))
+def test_the_stored_english_is_the_catalog_english(copy_id):
+    """The bell renders the copy id; the OS banner and the feed read the stored text."""
+    import json
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "website" / "src" / "i18n" / "locales"
+    copy = json.loads((root / "en.manual.json").read_text(encoding="utf-8"))
+    note = copy["components"]["notifications"]["systemNote"]
+    title, body = _mig.NOTE_COPY[copy_id]
+    assert note[f"{copy_id}_title"] == title
+    catalog = re.sub(r"\{\{(\w+)\}\}", r"{\1}", note[f"{copy_id}_body"])
+    assert catalog.replace("{productName}", "Kiro Crew") == body
 
 
 def test_E10_a_migration_switch_counts_no_turned_on():

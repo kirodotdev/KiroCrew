@@ -8446,7 +8446,11 @@
         "relay_crew_added_title": "{{name}} に追加されました",
         "relay_crew_added_body": "クルーの切り替えメニューの「リモート Crew」から開けます。",
         "relay_crews_available_title_other": "{{count}} 個の共有 Crew にアクセスできます",
-        "relay_crews_available_body": "クルーの切り替えメニューの「リモート Crew」から開けます。"
+        "relay_crews_available_body": "クルーの切り替えメニューの「リモート Crew」から開けます。",
+        "crew_mode_chats_not_moved_title": "切り替わらなかった Conductor mode のチャットがあります",
+        "crew_mode_chats_not_moved_body": "次のチャットは {{target}} ではなく、それぞれのエージェントのままです: {{names}}。{{productName}} は次回の設定変更または再起動の後にもう一度試します。",
+        "crew_mode_agent_unusable_title": "Conductor mode のエージェントは変更されていません",
+        "crew_mode_agent_unusable_body": "agent.crew_mode_agent が指定している {{configured}} はエージェントテンプレートではありません（{{why}}）。インストールされるか設定が変わるまで、Conductor mode のチャットは {{fallback}} のままです。"
       },
       "notificationBanner": {
         "dismiss_notification": "通知を閉じる",

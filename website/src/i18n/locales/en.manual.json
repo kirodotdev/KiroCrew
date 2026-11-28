@@ -3412,7 +3412,11 @@
         "relay_crew_added_body": "Open it from Remote Crews in the Crew switcher.",
         "relay_crews_available_title_one": "You have access to {{count}} Shared Crew",
         "relay_crews_available_title_other": "You have access to {{count}} Shared Crews",
-        "relay_crews_available_body": "Open them from Remote Crews in the Crew switcher."
+        "relay_crews_available_body": "Open them from Remote Crews in the Crew switcher.",
+        "crew_mode_chats_not_moved_title": "A conductor mode chat did not move",
+        "crew_mode_chats_not_moved_body": "These chats stay on their own agent instead of {{target}}: {{names}}. {{productName}} tries again after the next config change or restart.",
+        "crew_mode_agent_unusable_title": "Conductor mode agent not changed",
+        "crew_mode_agent_unusable_body": "agent.crew_mode_agent names {{configured}}, which is not an agent template ({{why}}). Conductor mode chats stay on {{fallback}} until it is installed or the setting changes."
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",
