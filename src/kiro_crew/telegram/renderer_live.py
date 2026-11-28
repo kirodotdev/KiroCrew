@@ -22,9 +22,8 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew.constants import strip_control_comments
+from kiro_crew.messaging.steer_ack import find_steering_acks
 from kiro_crew.telegram.renderer_display import (
-    _STEER_MARKER_RE,
-    _STEER_SUMMARY_RE,
     _extract_options,
     _neutralize_md,
     _strip_hr,
@@ -75,14 +74,15 @@ async def _rotate_at_markers(self: TelegramRenderer) -> None:
     while True:
         self._materialize_chip()
         raw = "".join(self._buf)
-        marker = _STEER_MARKER_RE.search(raw)
-        if marker is None:
+        # Balanced frames only: a rotation is for good, and an earlier "]" may
+        # close a link whose frame is still arriving.
+        acks = find_steering_acks(raw, unbalanced=False)
+        if not acks:
             return
-        self._buf = [raw[: marker.start()]]
-        summary_match = _STEER_SUMMARY_RE.match(raw, marker.start())
-        summary = _neutralize_md(summary_match.group(1)) if summary_match else ""
-        await self.on_steer_consumed(summary)
-        self._buf = [raw[marker.end() :]]
+        marker = acks[0]
+        self._buf = [raw[: marker.start]]
+        await self.on_steer_consumed(_neutralize_md(marker.summary))
+        self._buf = [raw[marker.end :]]
 
 
 def _open_new_message(self: TelegramRenderer) -> None:

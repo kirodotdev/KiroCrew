@@ -89,6 +89,9 @@ from kiro_crew.messaging.renderer import (
     trusted_mcp_identity,
 )
 from kiro_crew.messaging.script_hooks import ScriptHookTurn, with_hook_context
+from kiro_crew.messaging.steer_ack import STEER_MARKER_RE as _STEER_MARKER_RE
+from kiro_crew.messaging.steer_ack import STEER_PREFIX as _STEER_PREFIX
+from kiro_crew.messaging.steer_ack import balanced_close, strip_steering_acks
 from kiro_crew.messaging.tool_hooks import ChannelTurnHooks
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
@@ -270,16 +273,9 @@ def empty_turn_notice(
     return EMPTY_TURN_NOTICE_AFTER_WORK if productive else EMPTY_TURN_NOTICE
 
 
-# kiro-cli embeds this protocol frame in ordinary agent_message_chunk text when
-# it folds a mid-turn steer. It is transport metadata, not assistant speech.
-_STEER_PREFIX = "[STEERING"
-# No ``\s*`` after the colon: the lazy group already admits that whitespace, and
-# two quantifiers that can both take it make a failed match quadratic. The one
-# reader of the group strips it.
-_STEER_MARKER_RE = re.compile(
-    r"^\[STEERING\s+steer-[0-9a-f-]+(?:\s*:(.*?))?\]$",
-    re.IGNORECASE | re.DOTALL,
-)
+# kiro-cli embeds the ``[STEERING steer-<id>: …]`` frame (``messaging.steer_ack``)
+# in ordinary agent_message_chunk text when it folds a mid-turn steer. It is
+# transport metadata, not assistant speech.
 _MAX_STEER_MARKER_CHARS = 16_384
 #: Prefix closure of the same grammar :data:`_STEER_MARKER_RE` completes, reused
 #: from ``constants`` rather than respelled: it answers "could this unterminated
@@ -450,6 +446,20 @@ class _SteeringMarkerFilter:
                     self._buffer = ""
                 break
 
+            balanced = balanced_close(self._buffer, 0)
+            if balanced >= 0:
+                close = balanced
+            elif (
+                not final
+                and len(self._buffer) <= _MAX_STEER_MARKER_CHARS
+                and _STEER_TAIL_PREFIX_RE.match(self._buffer) is not None
+            ):
+                # The first "]" can close a link inside the summary while the
+                # frame's own "]" is still to come. Hold, as for an unclosed
+                # frame. A frame that never balances ends at that first "]" at
+                # flush or past the bound, as strip_steering_markers ends it.
+                break
+
             candidate = self._buffer[: close + 1]
             match = _STEER_MARKER_RE.match(candidate)
             if match is None:
@@ -470,30 +480,13 @@ class _SteeringMarkerFilter:
         return 0
 
 
-_STEER_PREFIX_SEARCH = re.compile(re.escape(_STEER_PREFIX), re.IGNORECASE)
-
-
 def strip_steering_markers(text: str) -> str:
     """Remove every complete ``[STEERING steer-…]`` frame from a finished text.
 
     Unlike the stream filter, the text is whole: an unclosed ``[STEER…`` tail is
     never a frame cut by a later chunk, so it is the answer's own text and stays.
     """
-    out: list[str] = []
-    pos = 0
-    # A search, not ``text.upper().find``: upper-casing can change the length
-    # (``ß`` -> ``SS``), which would shift every index after it.
-    while (hit := _STEER_PREFIX_SEARCH.search(text, pos)) is not None:
-        start = hit.start()
-        close = text.find("]", start)
-        if close >= 0 and _STEER_MARKER_RE.match(text[start : close + 1]):
-            out.append(text[pos:start])
-            pos = close + 1
-        else:
-            out.append(text[pos : start + 1])
-            pos = start + 1
-    out.append(text[pos:])
-    return "".join(out)
+    return strip_steering_acks(text)
 
 
 def sanitize_channel_replay_text(text: str) -> str:

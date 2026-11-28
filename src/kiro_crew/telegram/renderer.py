@@ -1559,8 +1559,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.telegram.renderer_display import (  # noqa: F401
         _MARKUP_HINT_RE,
         _SHRINK_STEP,
-        _STEER_MARKER_RE,
-        _STEER_SUMMARY_RE,
         _strip_hr,
         _strip_steering,
         _utf16_chunks,

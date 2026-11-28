@@ -20,6 +20,7 @@ import unicodedata
 from typing import Callable
 
 from kiro_crew.constants import OPTIONS_RE_LINE, md_link_destination, strip_control_comments
+from kiro_crew.messaging.steer_ack import strip_steering_acks
 
 # Fenced code blocks — ```lang ... ``` or a line-anchored ~~~lang ... ~~~ (or
 # unterminated, running to the end of the message). Replaced with a short
@@ -63,10 +64,6 @@ _LINK_RE = re.compile(rf"\[([^\[\]]+)\]\({_LINK_DESTINATION_UNIT}*\)")
 # ReDoS-hardened, line-anchored parser (constants.OPTIONS_RE_LINE) so this strip
 # can't drift from the dashboard/Slack copies and handles `]` inside a label.
 _OPTIONS_RE = OPTIONS_RE_LINE
-# kiro-cli's inline steer ack ``[STEERING steer-<id>: <summary>]``, drawn as a
-# "Steered" chip in chat. The summary stops at ``[`` as well as ``]`` to keep the
-# scan linear; a summary containing ``[`` is left visible.
-_STEER_ACK_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\[\]]*)?\]", re.IGNORECASE)
 _HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 # Line-anchored markers: leading whitespace is HORIZONTAL only (``[^\S\n]``,
 # i.e. ``\s`` minus newline). A MULTILINE ``^\s*`` lets the quantifier run
@@ -250,7 +247,8 @@ def strip_markdown_preview(text: str) -> str:
     # The quick-reply line goes before code is protected: a backtick-wrapped
     # ``[OPTIONS: ...]`` line still renders as buttons, not as text.
     t = _OPTIONS_RE.sub("", t)
-    t = _STEER_ACK_RE.sub("", t)
+    # kiro-cli's inline steer ack, drawn as a "Steered" chip in chat.
+    t = strip_steering_acks(t)
     spans: list[str] = []
     t = _protect_inline_code(t, spans)
     t = _IMAGE_RE.sub(lambda m: m.group(1) or "(image)", t)
