@@ -6,8 +6,9 @@
  *   node scripts/capture-capabilities-drift-repair.mjs http://127.0.0.1:6842 <outdir>
  *
  * Three frames per theme: the drifted Approvals section (notice names Review
- * change, button enabled with no edit), the save-failed notice after Review + Save
- * when the drift sits in a setting the page cannot show, and the chat error row
+ * change, button enabled with no edit), the refusal after Review + Save when the
+ * drift sits in a setting the page cannot show (names the file and says to undo
+ * the outside edit, then reload), and the chat error row
  * that is this path's entry point (the `capabilities_changed` prose with its Open
  * Customize button). Each frame asserts the copy it photographs, so a stale string
  * cannot pass as evidence.
@@ -46,7 +47,13 @@ for (const theme of ['light', 'dark']) {
     const refusal = page.getByTestId('next-approvals-op-error')
     await refusal.waitFor({ timeout: 10000 })
     const text = await refusal.innerText()
-    if (!text.includes('That change couldn’t be saved.')) throw new Error(`refusal does not say the save failed: ${text}`)
+    for (const needle of [
+      "atlas-writer's agent file crew-3f9a1c2e7b4d.json was edited outside this page in a setting this page cannot show",
+      'Undo that outside edit in crew-3f9a1c2e7b4d.json, then reload this page.',
+    ]) {
+      if (!text.includes(needle)) throw new Error(`refusal does not say ${needle}: ${text}`)
+    }
+    if (text.includes('Try again')) throw new Error(`refusal offers a retry that meets the same refusal: ${text}`)
     await root.screenshot({ path: `${OUT}/02-refused-${theme}.png` })
     if (errors.length) throw new Error(`page errors: ${errors.join(' | ')}`)
 

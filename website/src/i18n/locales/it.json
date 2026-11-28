@@ -25736,6 +25736,7 @@
     "state_this_mate": "questo Bot",
     "state_removed": "rimosso",
     "driftHint": "Il file dell'agente di {{member}} è stato modificato fuori da questa pagina. Premi «Rivedi modifica» per vedere quella modifica esterna insieme alla tua bozza; «Salva» applica poi la correzione o spiega perché non può.",
+    "unreviewableDrift": "Il file dell’agente {{file}} di {{member}} è stato modificato fuori da questa pagina in un’impostazione che questa pagina non può mostrare, quindi «Salva» non può applicare la correzione. Annulla quella modifica esterna in {{file}}, poi ricarica questa pagina.",
     "sourceFailed": "Impossibile convalidare la configurazione salvata. Ricarica questa pagina per riprovare.",
     "runtime_failed": "Caricamento del runtime non riuscito. La versione salvata rimane.",
     "server_verb_count": "{{on}} di {{total}} approvati automaticamente",

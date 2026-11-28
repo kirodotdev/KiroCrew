@@ -1079,6 +1079,40 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     expect(notice).not.toHaveTextContent(/server/i)
   })
 
+  it('names the drifted agent file and says to reload when Save refuses the drift', async () => {
+    // A second Save meets the same refusal until the file is put back, so the
+    // notice carries the refusal's file instead of the generic "Try again".
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW,
+      runtime: { status: 'failed', saved_revision: 'rev-1', sessions: [], error_code: 'materialization_changed' },
+    } as CapabilityView)
+    mockCaps.save.mockRejectedValueOnce(new ApiError(409, 'unreviewable_drift', '{"error":"unreviewable_drift","code":"unreviewable_drift","file":"crew-3f9a1c2e7b4d.json"}'))
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-approvals'))
+    const approvals = await within(dialog).findByTestId('next-approvals')
+    fireEvent.click(await within(approvals).findByTestId('next-approvals-save'))
+    await within(approvals).findByRole('button', { name: 'Save approvals' })
+    fireEvent.click(within(approvals).getByTestId('next-approvals-save'))
+    const refusal = await within(approvals).findByTestId('next-approvals-op-error')
+    expect(refusal).toHaveTextContent("oncall's agent file crew-3f9a1c2e7b4d.json was edited outside this page in a setting this page cannot show, so Save cannot write the fix.")
+    expect(refusal).toHaveTextContent('Undo that outside edit in crew-3f9a1c2e7b4d.json, then reload this page.')
+    // The agents folder depends on KIRO_HOME, a pod, or the file's scope, and the 409 names only the file.
+    expect(refusal).not.toHaveTextContent('~/.kiro')
+    expect(refusal).not.toHaveTextContent('Try again')
+  })
+
+  it('keeps the generic save failure for a refusal that names no drifted file', async () => {
+    mockCaps.save.mockRejectedValueOnce(new ApiError(409, 'stale_preview', '{"error":"stale_preview","code":"stale_preview"}'))
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-approvals'))
+    const approvals = await within(dialog).findByTestId('next-approvals')
+    fireEvent.click(within(approvals).getByTestId('next-approval-toggle-fs_read'))
+    fireEvent.click(await within(approvals).findByTestId('next-approvals-save'))
+    await within(approvals).findByRole('button', { name: 'Save approvals' })
+    fireEvent.click(within(approvals).getByTestId('next-approvals-save'))
+    expect(await within(approvals).findByTestId('next-approvals-op-error')).toHaveTextContent('That change couldn’t be saved. Try again.')
+  })
+
   it('cascades: turning an MCP server off removes the server AND its auto-approved verbs', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-approvals'))

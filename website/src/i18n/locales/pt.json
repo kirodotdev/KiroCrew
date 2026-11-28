@@ -25736,6 +25736,7 @@
     "state_this_mate": "este Bot",
     "state_removed": "removido",
     "driftHint": "O arquivo de agente de {{member}} foi editado fora desta página. Clique em \"Revisar alteração\" para ver essa edição externa junto com o seu rascunho; depois \"Salvar\" grava a correção ou diz por que não pode.",
+    "unreviewableDrift": "O arquivo de agente {{file}} de {{member}} foi editado fora desta página em uma configuração que esta página não consegue mostrar, então \"Salvar\" não consegue gravar a correção. Desfaça essa edição externa em {{file}} e depois recarregue esta página.",
     "sourceFailed": "Não foi possível validar a configuração salva. Recarregue esta página para tentar de novo.",
     "runtime_failed": "Falha ao carregar o runtime. A versão salva permanece.",
     "server_verb_count": "{{on}} de {{total}} aprovados automaticamente",
