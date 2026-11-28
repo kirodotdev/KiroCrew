@@ -1655,6 +1655,23 @@ notifications, and whether the queued frame surfaces before or after the next
 prompt is written, has not been established by a live run (see "Native harness
 notifications relied on" below).
 
+A bind may name one `volatile` span of its envelope, which is then acknowledged
+apart from the rest: while the rest is acknowledged in this conversation, a send
+whose only change is that span carries the span alone. A member's essentials
+name their `[CURRENT ASSIGNMENT]` section, the part `save_notes` rewrites. A
+span that does not occur exactly once in the envelope and in its native form is
+ignored, and the bind digests the whole envelope as before.
+
+A cancel voids every receipt, before the cancel is sent and again when the turn
+ends without a real `end_turn`, except on a harness whose
+`SessionCapabilities.keeps_history_on_cancel` is set (KAS): there a turn the
+engine ends `cancelled` leaves the earlier acknowledgments standing, because the
+conversation they describe is still there, and what the cancelled message
+carried itself stays unacknowledged. KAS evidence: in a 41-hour Bot conductor
+session (601 turns, 30 cancels) no cancel was followed by a history revert,
+while both `checkpoint_revert` tombstones in the same log followed `error`
+turns, which therefore keep voiding every receipt on every harness.
+
 A delivery holds one envelope per slot, each with its own acknowledgment. A turn
 that carries member essentials binds those (`ESSENTIALS_SLOT`, the default). Any
 turn that carries the `[REPLY FORMAT RULES]` block, on a provider that reports its
@@ -1891,7 +1908,13 @@ it, so it would surface only as an unadvertised mode or as the built-in running
 under the Bot's name. The projection and every Crew-side record keep the
 Bot's id (`crew-mode.md`, "Template names the harness cannot activate"). This repository does not establish a universal native model or
 resource truncation limit; real harness versions still need that integration check.
-Resume and replacement snapshots retain complete text. Frameworks without native steering receive a
+A warm turn's snapshot, after a compaction too, takes the same native form from
+the live session's launch record (`native_context_documents`): the engine
+loads those sources on every request and keeps them across its own compaction
+(KAS reports the same `steering` size on every turn of a session, including the
+first after each compaction), and a body that changed since launch is sent
+whole. A harness that records nothing (Claude Code and the rest) keeps every
+body. Resume and replacement snapshots retain complete text. Frameworks without native steering receive a
 conditional discovery index: the agent reads a guide only after its explicit
 manual, file-pattern or description-relevance condition holds, never as an
 always-on body.

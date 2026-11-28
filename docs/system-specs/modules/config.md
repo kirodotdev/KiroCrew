@@ -3920,7 +3920,7 @@ class MemoryConfig:
     dream: str = "off"               # off | propose: Dreaming, an offline pass over stored lesson and project.* rows while no chat turn runs; off schedules and reads nothing, propose writes an approval list and run receipts to memory_meta and applies nothing; L1 (user_explicit) and L2 (user_quote) rows are never proposed for change; unknown values read as off (memory_dream.py)
     inject_memory: bool = True       # inject the stored memory block (preferences, activity index, recent-session snippets) into new-session context
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
-    inject_lessons_per_turn: bool = False  # on follow-up messages, add up to 3 matching lessons the session was not shown; requires inject_lessons
+    inject_lessons_per_turn: str = "off"  # off | shadow | enforce; enforce: on follow-up messages, add up to 3 matching lessons the session was not shown; shadow: add none, record them in the injection receipt; a stored true/false reads as enforce/off; requires inject_lessons
     inject_activity: bool = True     # inject the budgeted [Memory activity] block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes); requires inject_memory
     startup_recall_timeout_secs: float = 1.0  # how long a session-start build waits for a first-message embedding already running (the dashboard starts it early); past it, task facts, episodes and lessons rank by keyword. Any other build keeps context._PROMPT_BUILD_EMBED_TIMEOUT_SECS (5.0); 0 turns the early embedding off, and the early session-start memory reads with it; clamped to [0, 10]
 

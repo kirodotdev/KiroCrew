@@ -485,7 +485,7 @@ class TestRenderForSlackOrdering:
     def test_tables_convert_when_the_message_is_whole(self) -> None:
         table = "| a | b |\n| - | - |\n| 1 | 2 |"
         body = "\n".join(render_for_slack(table, redactor=_fake_redactor))
-        assert "*a:*" in body, "a single-block message should get the mobile rendering"
+        assert "• *1:* 2" in body, "a single-block message should get the mobile rendering"
 
     def test_tables_stay_raw_when_a_split_occurred(self) -> None:
         """A block starting mid-table would adopt a DATA row as its header."""
@@ -767,6 +767,48 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
         )
 
 
+class TestATableTheRedactorWouldChangeKeepsEveryCellLabelled:
+    """The header beside a cell is what a named-credential pattern matches on.
+
+    So only a table clean in that form gets the header-once form.
+    """
+
+    _KEY_TABLE = f"| Profile | SecretAccessKey |\n|---|---|\n| prod | {SAMPLE_AWS_SECRET} |"
+    _PLAIN_TABLE = "| Region | Zone |\n|---|---|\n| eu-west-1 | a |"
+
+    def test_the_choice_is_made_for_each_table(self) -> None:
+        rendered = render_one_for_slack(
+            f"{self._KEY_TABLE}\n\nand\n\n{self._PLAIN_TABLE}",
+            redactor=lambda text: redact_credentials(text)[0],
+        )
+        assert rendered.redacted is True
+        assert SAMPLE_AWS_SECRET not in rendered.text
+        assert rendered.text == (
+            "• *Profile:* prod | *SecretAccessKey:* [REDACTED: credential]\n\n"
+            "and\n\n"
+            "*Region | Zone*\n• *eu-west-1:* a"
+        )
+
+    def test_the_redactor_given_to_the_render_is_the_one_asked(self) -> None:
+        table = "| Name | Pin |\n|---|---|\n| door | 4321 |"
+
+        def _pin_redactor(text: str) -> str:
+            return text.replace("*Pin:* 4321", "*Pin:* [REDACTED]")
+
+        assert render_for_slack(table, redactor=_pin_redactor) == [
+            "• *Name:* door | *Pin:* [REDACTED]"
+        ]
+        assert render_for_slack(table, redactor=lambda text: text) == [
+            "*Name | Pin*\n• *door:* 4321"
+        ]
+
+    def test_a_caption_sits_above_the_header_line(self) -> None:
+        parts = render_for_slack(
+            self._PLAIN_TABLE, header="⏰ *Cron: nightly*\n\n", redactor=_fake_redactor
+        )
+        assert parts == ["⏰ *Cron: nightly*\n\n*Region | Zone*\n• *eu-west-1:* a"]
+
+
 class TestHeaderCaptionsAreRedactedAtTheSeam:
     """A caption skips conversion, so it needs its own redaction pass.
 
@@ -913,7 +955,8 @@ class TestRenderOneForSlackOrdering:
             in render_one_for_slack(table, keep_tables=True, redactor=_fake_redactor).text
         )
         assert (
-            "*a:*" in render_one_for_slack(table, keep_tables=False, redactor=_fake_redactor).text
+            "• *1:* 2"
+            in render_one_for_slack(table, keep_tables=False, redactor=_fake_redactor).text
         )
 
     def test_keep_tables_can_only_add_rawness_never_remove_it(self) -> None:

@@ -5203,6 +5203,14 @@ so absence clears it.
   the app token. Because the mark only removes, it needs no switch and no
   proof of its writer; a body without the key takes exactly the path it always
   did.
+- **A script cron's send is not a person's either.** `ctx.send_to_session` posts
+  under the internal secret with no app claim; `chat_send` reads its attested
+  `cron:<job id>` key (`cron_slot_creator`) before it computes `_person_send` and
+  folds it in, so the send takes the same no-person path as an agent-origin one
+  (no `HUMAN_TURN_META_KEY` on its row, `_directive_user_origin` False) under the
+  `cron` actor. Its text is not redacted again: `ScriptContext` redacts it before
+  it is sent. A caller that only asserts a `cron:` header gets no such reading
+  (`test/test_cron_send_is_not_a_human_turn.py`).
 - **Provenance does NOT survive the restart, and that is a security property.**
   `_directive_user_origin` / `_directive_channel_origin` record that an entry's
   words came from an authenticated human, and the drain reduces the consumed

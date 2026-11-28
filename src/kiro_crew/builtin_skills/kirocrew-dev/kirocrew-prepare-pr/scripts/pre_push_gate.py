@@ -510,7 +510,12 @@ def _selftest() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Optional, advisory pre-push gate runner.")
-    parser.add_argument("--base", default="", help="Base branch name (default: origin/HEAD).")
+    parser.add_argument(
+        "--base",
+        default="",
+        help="Base branch name (default: origin/HEAD); a leading origin/ or "
+        "refs/remotes/origin/ is dropped.",
+    )
     parser.add_argument(
         "--skip",
         action="append",
@@ -527,6 +532,12 @@ def main(argv: list[str]) -> int:
         args = parser.parse_args(argv[1:])
     except SystemExit as exc:
         return EXIT_ENV if exc.code else 0
+    # The skill passes --base origin/<base> to its scripts, so accept that form
+    # rather than looking for a merge base with origin/origin/<base>.
+    for remote_prefix in ("refs/remotes/origin/", "origin/"):
+        if args.base.startswith(remote_prefix):
+            args.base = args.base[len(remote_prefix) :]
+            break
     if args.test:
         return _selftest()
     try:

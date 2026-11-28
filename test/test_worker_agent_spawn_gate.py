@@ -22,6 +22,7 @@ from worker_agent_helpers import _DEFAULT_SPEC_ON_DISK, _package_sources
 
 from kiro_crew import agent
 from kiro_crew.agent_files import AGENT_FILENAME, WORKER_AGENT_FILENAME
+from kiro_crew.testing.links import make_dir_link
 
 # One xdist worker for the whole module: the three enumeration gates below each stream
 # src/ (~1,700 files) through ``test/source_corpus.py``, which memoises only the file
@@ -1036,6 +1037,41 @@ def test_a_spec_one_directory_up_is_not_a_shadow(tmp_path, monkeypatch):
     nested = parent / "packages" / "thing"
     nested.mkdir(parents=True)
     agent.require_fresh_derived_spec("kirocrew-worker", str(nested))
+
+
+@pytest.mark.parametrize("spelling", ["home", "alias"])
+def test_the_installed_agents_dir_is_not_a_shadow_of_itself(tmp_path, monkeypatch, spelling):
+    """A session whose project is the home directory has `<project>/.kiro/agents` equal
+    to the installed agents directory, so the worker spec Kiro Crew itself derived read
+    as a checkout's shadow of itself and every dispatch was refused. The two spellings
+    of one directory (an aliased home, `/home/u` for `/local/home/u`) answer alike."""
+    home = tmp_path / "home"
+    (home / ".kiro" / "agents").mkdir(parents=True)
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: home / ".kiro" / "agents")
+    (home / ".kiro" / "agents" / AGENT_FILENAME).write_text(
+        json.dumps(_DEFAULT_SPEC_ON_DISK), encoding="utf-8"
+    )
+    agent._install_worker_agent()
+    assert (home / ".kiro" / "agents" / WORKER_AGENT_FILENAME).is_file()
+
+    if spelling == "alias":
+        work = tmp_path / "alias"
+        make_dir_link(work, home)
+    else:
+        work = home
+
+    assert agent._project_shadow_of("kirocrew-worker", work) is None
+    agent.require_fresh_derived_spec("kirocrew-worker", str(work))
+
+    # A REAL checkout shadow stays refused: the exemption is for the one directory,
+    # not for the worker's name.
+    checkout = tmp_path / "checkout"
+    (checkout / ".kiro" / "agents").mkdir(parents=True)
+    (checkout / ".kiro" / "agents" / WORKER_AGENT_FILENAME).write_text(
+        json.dumps({"name": "kirocrew-worker"}), encoding="utf-8"
+    )
+    with pytest.raises(agent.DerivedSpecStale):
+        agent.require_fresh_derived_spec("kirocrew-worker", str(checkout))
 
 
 def test_the_shadow_check_runs_before_the_freshness_checks(tmp_path, monkeypatch):

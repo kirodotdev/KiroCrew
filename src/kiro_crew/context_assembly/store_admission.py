@@ -107,12 +107,20 @@ def turn_lessons_block(
     `_ShownLessons` for its bounds). Each lesson line is scrubbed by
     `_scrub_turn_lesson`. The JSONL fallback store is not read. A store that
     cannot be read skips the block, never the turn.
+
+    In ``shadow`` mode the same choice is made against the mode's own shown-lesson
+    record (``_lessons_shadow_shown``), recorded there and in the turn's injection
+    receipt (ids, the block's size and each lesson's tier, source and creation
+    time, never its text), and ``""`` is returned: the prompt is what ``off``
+    builds, and the real record is never touched.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     cfg = ctx.KiroCrewConfig.load()
-    if not cfg.memory.inject_lessons_per_turn:
+    mode = cfg.memory.inject_lessons_per_turn
+    if mode == "off":
         return ""
+    shadow = mode == "shadow"
     if not _inclusion._group_included(
         ctx._config_scoped_groups(context_groups, cfg), _inclusion.CONTEXT_GROUP_LESSONS
     ):
@@ -134,7 +142,8 @@ def turn_lessons_block(
         if store is None:
             return ""
     with builder._lessons_shown_lock:
-        snapshot = builder._live_shown_lessons(session_key).copy()
+        snapshot = builder._live_shown_lessons(session_key, shadow=shadow).copy()
+    facts: dict[str, dict[str, str]] = {}
     if route.replaces:
         chosen = _memory_provider.turn_rules(
             route,
@@ -155,24 +164,41 @@ def turn_lessons_block(
                 max_rows=_TURN_LESSONS_MAX,
                 max_chars=_TURN_LESSONS_CHARS,
                 render_lesson=_markers._scrub_turn_lesson,
+                facts=facts if shadow else None,
             )
         except (OSError, ValueError, RuntimeError, ctx.sqlite3.Error):
             logger.warning("Per-message lessons skipped: the lesson store could not be read")
             return ""
-    if not chosen:
-        return ""
-    with builder._lessons_shown_lock:
-        # Other sessions' builds, or a compaction, can drop or replace this
-        # record while the store is read, so the choice is checked against,
-        # and recorded in, the record in place now.
-        record = builder._live_shown_lessons(session_key)
-        chosen = [entry for entry in chosen if not record.shown(entry[1])]
-        record.add(lesson for _, lesson in chosen)
-    if not chosen:
-        return ""
+    if chosen:
+        with builder._lessons_shown_lock:
+            # Other sessions' builds, or a compaction, can drop or replace this
+            # record while the store is read, so the choice is checked against,
+            # and recorded in, the record in place now.
+            record = builder._live_shown_lessons(session_key, shadow=shadow)
+            chosen = [entry for entry in chosen if not record.shown(entry[1])]
+            record.add(lesson for _, lesson in chosen)
     from kiro_crew import injection_receipts
 
+    # A shadow turn records even when nothing matches, so the report can count
+    # the follow-up turns checked as well as the lessons chosen.
+    if shadow:
+        injection_receipts.record_stage(
+            injection_receipts.INJECT_LESSONS_PER_TURN,
+            mode="shadow",
+            policy=injection_receipts.INJECT_LESSONS_PER_TURN_POLICY,
+            would_add=[key for key, _ in chosen],
+            chars=len(_turn_lessons_text(chosen)) if chosen else 0,
+            lessons=[{"key": key, **facts.get(key, {})} for key, _ in chosen],
+        )
+        return ""
+    if not chosen:
+        return ""
     injection_receipts.record(injection_receipts.TURN_LESSONS, [{"key": key} for key, _ in chosen])
+    return _turn_lessons_text(chosen)
+
+
+def _turn_lessons_text(chosen: list[tuple[str, str]]) -> str:
+    """The per-message lessons block for the ``(key, text)`` lessons *chosen*."""
     lines = "\n".join(f"- {_markers._scrub_turn_lesson(lesson)}" for _, lesson in chosen)
     return (
         "[Learned corrections — relevant to this message, not shown earlier in this "

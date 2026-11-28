@@ -1007,7 +1007,12 @@ VERDICT_LINE_RE = re.compile(r"^[A-Za-z-]+-Verdict:\s*(PASS|BLOCK)\b", re.MULTIL
 DESIGN_ITEM_SECTIONS = ("Blockers",)
 # A per-item trailing line naming what would retire the item. Optional: it is
 # absent from every lane's older output, so parsing must not depend on it.
-CLEARS_WHEN_RE = re.compile(r"clears\s+when\s*:\s*(.+?)\s*$", re.IGNORECASE)
+#
+# The text starts and ends on a non-space, so each whitespace run has exactly one
+# quantifier that can take it: a lazy ``.+?`` beside ``\s*`` on both sides made a
+# long run cost at least quadratic time. A whitespace-only tail does not match,
+# and the reader stores an empty string for it either way.
+CLEARS_WHEN_RE = re.compile(r"clears\s+when\s*:\s*(\S(?:[^\n]*\S)?)\s*$", re.IGNORECASE)
 # One synthetic path for every whole-design item. Their findings are about the
 # change's shape, so no single file owns them, and a real path here would read
 # as a line-level finding.

@@ -563,6 +563,26 @@ def test_sandboxed_scan_produces_flags(tmp_path: Path, monkeypatch) -> None:
     assert "hook.pwn.enabled=false" in args
 
 
+def test_sandboxed_scan_resolves_a_relative_cwd_once(tmp_path: Path, monkeypatch) -> None:
+    """A relative cwd is the scan's working directory AND its `-C` target. Resolving it in
+    both places would scan `<cwd>/<cwd>`: a nested repository there with another hook shows
+    a scan of the wrong repository, not only a failed one."""
+    outer = tmp_path / "site"
+    outer.mkdir()
+    _git(outer, "init", "-q", "-b", "main")
+    _git(outer, "config", "hook.right.command", "true")
+    nested = outer / "site"
+    nested.mkdir()
+    _git(nested, "init", "-q", "-b", "main")
+    _git(nested, "config", "hook.wrong.command", "true")
+    monkeypatch.chdir(tmp_path)
+    args = gch.config_hook_disable_args_sandboxed(
+        "site", spawn_argv=_passthrough_spawn, mode="strict"
+    )
+    assert "hook.right.enabled=false" in args
+    assert "hook.wrong.enabled=false" not in args
+
+
 def test_sandboxed_scan_fails_closed_when_the_sandbox_is_unavailable(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -997,8 +997,13 @@ class TestAdfToMarkdown:
         if not renderer.is_file():
             pytest.skip("frontend renderer is not part of this checkout")
         # The renderer's leading parse plugins live in a shared list it spreads
-        # in (the rich-text copy uses the same list), so the stack is the union.
-        sources = [renderer, components / "markdown" / "remarkBase.ts"]
+        # in (the rich-text copy uses the same list), and rehype-katex loads on
+        # demand from its own module, so the stack is the union.
+        sources = [
+            renderer,
+            components / "markdown" / "remarkBase.ts",
+            components / "markdown" / "katexPlugin.ts",
+        ]
         imported = set()
         for path in sources:
             imported |= set(

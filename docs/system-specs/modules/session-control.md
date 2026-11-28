@@ -3238,7 +3238,9 @@ the slot is minted with `origin` `CRON` and `_created_by` set to that
 `cron:<job id>` key. It is not counted as a user-created session, the
 `slots:user` scope does not expose it, and the owner sees it in the sidebar as
 any cron tab. The seeded first message is still queued as a user-role turn, a
-trade-off the PR that added these methods records. A slot that already exists
+trade-off the PR that added these methods records, but it is not a person's
+turn: `chat_send` reads the same attested key into `_person_send` (session.md,
+"A script cron's send is not a person's either"). A slot that already exists
 under the name a cron sends is never re-labelled.
 
 `agent.member_dispatch` (bool, default **true**). The operator ceiling on the

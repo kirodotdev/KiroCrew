@@ -62,6 +62,7 @@ from kiro_crew.platform.update_capability import (
     EXTERNALLY_MANAGED_MESSAGES,
     MANAGED_BY_COMMAND,
     MANAGED_BY_CONTAINER,
+    MANAGED_BY_ELECTRON,
     MANAGED_BY_GIT,
     MODE_NONE,
     MODE_NOTIFY,
@@ -507,6 +508,10 @@ async def _run_update_check() -> None:
                 )
             elif capability.managed_by == MANAGED_BY_GIT:
                 await _check_git_checkout(proj, capability)
+            elif capability.managed_by == MANAGED_BY_ELECTRON:
+                # Only the headless Windows desktop install reaches here: every
+                # other desktop shape defers above.
+                await _check_desktop_feed(capability)
             else:
                 await _check_release_feed(capability)
     except Exception:
@@ -1062,6 +1067,57 @@ def note_installed_beside(version: str) -> None:
         )
         return
     update_restart_ready.mark(update_restart_ready.REASON_STAGED, version=version)
+
+
+async def _check_desktop_feed(capability: UpdateCapability) -> None:
+    """Compare a headless Windows desktop install against the app's own release feed.
+
+    The feed (``feed/<channel>/latest.yml``) is the one the desktop app's updater
+    reads, and it is validated here exactly as the apply validates it, so the
+    version offered is the version an Update can install. The offer is display
+    metadata until a person arms it; the installer is checked against the feed's
+    sha512 and the pinned signer before anything runs
+    (:mod:`kiro_crew.platform.desktop_installer_update`).
+    """
+    from kiro_crew.platform import desktop_installer_update as desktop
+
+    channel = await asyncio.to_thread(desktop.desktop_channel, _local_version)
+    base: dict[str, object] = {
+        **_capability_fields(capability),
+        "channel": channel or "",
+        "can_arm": False,
+    }
+    refusal = await asyncio.to_thread(desktop.source_refusal)
+    if channel is None or refusal:
+        if refusal:
+            logger.warning("Desktop update check refused: %s", refusal)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_UNREACHABLE)
+        return
+    try:
+        release = await desktop.fetch_feed(channel)
+    except desktop.DesktopUpdateError as exc:
+        logger.warning("Desktop release feed unusable: %s", exc)
+        code = (
+            ERR_FEED_UNREACHABLE if exc.code == desktop.ERR_FEED_UNREACHABLE else ERR_FEED_MALFORMED
+        )
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=code)
+        return
+    available = desktop.is_newer(release.version, _local_version)
+    if available is None:
+        _set_update_info(
+            **base,
+            latest_version=release.version,
+            check_status=CHECK_FAILED,
+            error_code=ERR_VERSION_UNPARSEABLE,
+        )
+        return
+    _set_update_info(
+        **base,
+        update_available=available,
+        latest_version=release.version,
+        version_newer=available,
+        check_status=CHECK_SUCCEEDED,
+    )
 
 
 async def _check_release_feed(capability: UpdateCapability) -> None:

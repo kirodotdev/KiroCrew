@@ -722,7 +722,22 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
             # which is worse than a payload carrying two independent facts: an
             # update is mandated (a LOCAL determination against the policy pin,
             # which does not need the feed) and the feed check did not complete.
-            if _remediation_command(info):
+            from kiro_crew.platform.update_capability import MANAGED_BY_ELECTRON
+
+            if info.get("managed_by") == MANAGED_BY_ELECTRON and _remediation_command(info):
+                # Only the headless Windows desktop install carries a remediation
+                # here, and only its signed installer replaces the tree: a pip or
+                # wheel hint aimed at the bundled interpreter would desync it.
+                logger.warning(
+                    "Version compliance: running %s is below the policy minimum %s, but "
+                    "this desktop install cannot apply it unattended (%s) — choose Update "
+                    "in the dashboard, or run `kirocrew update` on the host",
+                    _running_version,
+                    min_version(),
+                    effect.reason,
+                )
+                _badge = True
+            elif _remediation_command(info):
                 # A plain `pip install` into an environment the user manages
                 # (not pipx, not the installer's managed venv) must not be
                 # told to "run `kirocrew update`": that command re-runs the

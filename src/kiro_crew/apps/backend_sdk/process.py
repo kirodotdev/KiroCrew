@@ -31,6 +31,18 @@ async def kill_and_reap(proc: Process, *, timeout: float | None = None) -> None:
     await platform_compat.kill_and_reap(proc, timeout=timeout)
 
 
+def address_covers_loopback(address: str) -> bool:
+    """Whether a listener bound to *address* answers a connect to ``127.0.0.1`` (level 18).
+
+    ``kiro_crew.platform_compat.address_covers_loopback``, looked up at call time: a
+    predicate over the bind address string the caller holds (``127.0.0.1``, its
+    IPv4-mapped spelling and the wildcards ``0.0.0.0``, ``*`` and ``::`` answer
+    ``True``; ``::1`` does not, since a v6-only loopback listener never answers a v4
+    connect). It enumerates nothing and opens nothing.
+    """
+    return bool(platform_compat.address_covers_loopback(address))
+
+
 def is_link_or_junction(path: str | os.PathLike[str]) -> bool:
     """Whether *path* itself is a symlink, or a junction on Windows."""
     return bool(platform_compat.is_link_or_junction(path))
@@ -79,6 +91,7 @@ __all__ = [
     "IS_MACOS",
     "IS_POSIX",
     "IS_WINDOWS",
+    "address_covers_loopback",
     "file_lock",
     "first_linked_ancestor",
     "is_link_or_junction",

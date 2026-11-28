@@ -95,7 +95,9 @@ def _provider(
     return provider
 
 
-async def _passthrough(message, send, _incarnation, *, requests_model=True):
+async def _passthrough(
+    message, send, _incarnation, *, requests_model=True, cancel_keeps_history=False
+):
     """An essential delivery that hands the message straight to the send."""
     async for event in send(message):
         yield event

@@ -659,6 +659,9 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
         for token in sorted(declared - named):
             detail = "is declared in this doc's docs-lint comment but no code span names it"
             findings.facts.append(FactFinding(CHECK_DEAD_IDENTIFIER, rel_doc, token, detail))
+        # One finding per name per doc: the baseline keys on that triple, and a doc
+        # naming one stale symbol eight times has one thing to fix, not eight.
+        reported: set[str] = set()
         for span in spans:
             for pattern in (_IDENT_SNAKE_RE, _IDENT_CAMEL_RE):
                 for token in pattern.findall(span):
@@ -668,8 +671,9 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
                         continue
                     if token.startswith(_IDENT_PLACEHOLDER_PREFIXES):
                         continue
-                    if token in live or token in declared:
+                    if token in live or token in declared or token in reported:
                         continue
+                    reported.add(token)
                     findings.advisories.append(FactFinding(CHECK_DEAD_IDENTIFIER, rel_doc, token))
 
 

@@ -3190,7 +3190,7 @@
         "dream": "off",
         "inject_memory": true,
         "inject_lessons": true,
-        "inject_lessons_per_turn": false,
+        "inject_lessons_per_turn": "off",
         "inject_activity": true,
         "startup_recall_timeout_secs": 1.0,
         "migrated": false,
@@ -3975,16 +3975,20 @@
     {
       "path": "memory.inject_lessons_per_turn",
       "kind": "core",
-      "type": "boolean",
+      "type": "string",
       "required": false,
       "deprecated": false,
       "sensitive": false,
       "tags": [],
       "label": "Lessons Per Message",
-      "help": "On each follow-up message, add up to three stored lessons that match it and have not been shown in the session yet. The session-start block holds only what fits its budget; this adds the rest as the topic reaches them. Requires inject_lessons.",
+      "help": "On each follow-up message, add up to three stored lessons that match it and have not been shown in the session yet. The session-start block holds only what fits its budget; this adds the rest as the topic reaches them. 'off' (default) adds nothing. 'shadow' adds nothing either and records, in the local injection receipts, which lessons 'enforce' would add. 'enforce' adds them. A stored true reads as 'enforce' and false as 'off'. Requires inject_lessons.",
       "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
     },
     {
       "path": "memory.inject_activity",

@@ -42,6 +42,25 @@ describe('extractSteeringAcks', () => {
     expect(acks).toEqual([])
   })
 
+  it('keeps a markdown link inside the summary, so none of it leaks into the prose', () => {
+    const input = 'Done. [STEERING steer-ab12: opened [PR #7](https://github.com/o/r/pull/7) for it]'
+    const { cleaned, acks } = extractSteeringAcks(input)
+    expect(acks).toEqual(['opened [PR #7](https://github.com/o/r/pull/7) for it'])
+    expect(cleaned).toBe('Done.')
+  })
+
+  it('still ends a summary at the first "]" when its brackets never balance', () => {
+    const input = 'a [STEERING steer-1: typed [ by mistake] b'
+    const { cleaned, acks } = extractSteeringAcks(input)
+    expect(acks).toEqual(['typed [ by mistake'])
+    expect(cleaned).toBe('a  b')
+  })
+
+  it('leaves an unclosed marker as prose', () => {
+    const input = 'a [STEERING steer-1: still streaming'
+    expect(extractSteeringAcks(input)).toEqual({ cleaned: input, acks: [] })
+  })
+
   it('matches the real kiro-cli marker shape', () => {
     const input =
       '[STEERING steer-fc22b5295fd641fbaa2bc669cdee1249: Stopped executing remaining commands (phases 5 and 6) and provided a summary of the 4 completed phases as requested.]'

@@ -224,6 +224,7 @@ def build_message(
 
         steering_off = steering_off_for(session_key)
     native_documents: dict[str, str] = {}
+    provider_native_documents: dict[str, str] | None = None
     native_launch_sources: Collection[str] = ()
     # None = no session evidence; build_session_context then falls back to
     # the configured member backend's capability.
@@ -321,7 +322,18 @@ def build_message(
     if execution_context is not None:
         _private_template = execution_context.template_id
     _native_envelopes: list[str] = []
+    _briefing: list[str] = []
     _essentials = ""
+    # What the engine already holds, for the essentials' native form. A warm
+    # turn, after a compaction too, reads the launch record: the engine loads
+    # those sources on every request. A resume keeps complete text.
+    essentials_native = native_documents
+    if _private_owner and not is_new_session and delivery and context_provider:
+        essentials_native = (
+            provider_native_documents
+            if provider_native_documents is not None
+            else context_provider.native_context_documents
+        )
     if _private_owner:
         if hook_result.action == ctx.HOOK_MODIFY:
             _trigger_text = hook_result.text
@@ -338,7 +350,7 @@ def build_message(
             workspace=workspace,
             blocks_reads=blocks_reads,
             context_groups=store_groups,
-            native_documents=native_documents,
+            native_documents=essentials_native,
             native_envelope_out=_native_envelopes,
             execution_template=agent or "kirocrew",
             member_template=_private_template,
@@ -350,6 +362,7 @@ def build_message(
             desk_withheld=ctx._desk_withheld(execution_context, desk_member),
             provider_type=provider_type,
             dispatch_mounted=member_dispatch_mounted,
+            briefing_out=_briefing,
         )
     if _essentials and not is_new_session:
         parts.append(_essentials)
@@ -1272,8 +1285,11 @@ def build_message(
             force=lifecycle is not ctx.MemberLifecycle.WARM,
             incarnation=context_provider.context_incarnation,
             native_envelope=(
-                _native_envelopes[0].translate(ctx._MULTIBYTE_TABLE) if native_documents else None
+                _native_envelopes[0].translate(ctx._MULTIBYTE_TABLE) if essentials_native else None
             ),
+            # The briefing changes far more often than the rest; acknowledged
+            # apart, an edit re-sends it alone.
+            volatile=_briefing[0].translate(ctx._MULTIBYTE_TABLE) if _briefing else "",
         )
     _bound_slots: set[str] = set()
     if (

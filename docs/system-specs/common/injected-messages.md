@@ -149,7 +149,7 @@ single completion path that serves every terminal outcome:
 ```
 [Subagent completion event]
 Agent `<id>` (<agent name>) <status>
-Task: <first 100 chars of the task>
+Task: <task preview>
 
 Usage: <credits> credits · <elapsed>
 
@@ -159,6 +159,14 @@ Usage: <credits> credits · <elapsed>
 - `SUBAGENT_COMPLETION_PREFIX = '[Subagent completion event]'` is defined in
   `constants.py` and included in `injected_turns.py`'s `SUBAGENT_COMPLETION_PREFIXES`
   aggregate.
+- The task preview is the redacted task cut to 100 characters by
+  `preview_text.clip_preview` (80 on a wave digest line), and it ends in ` …` when
+  cut. The cut never splits a link, so it cannot shorten one into a link that
+  names another target (`.../pull/43162` into `.../pull/4316`): it ends between
+  words, and a single word longer than the limit is cut in place unless it is a
+  link, which is dropped. The space before `…` keeps a link the cut kept whole
+  ending where it did. The injection-failure and restart-orphan notices quote
+  it the same way.
 - `<status>` leads with an outcome word: `completed`, `failed`, `stopped by user`,
   or `failed: reaped`. A note after the word follows a colon. The agent-name
   parenthetical is present only when the sub-agent ran under a named agent.
@@ -241,7 +249,7 @@ reached through `SubagentManager.notify_injection_failed`:
 ```
 [Subagent completion event]
 Agent `<id>` failed: <reason>
-Task: <first 100 chars of the task>
+Task: <task preview, as in the completion event>
 Usage: <credits> credits · <elapsed>
 <outcome line>
 Result saved at: <path> (<n> bytes)

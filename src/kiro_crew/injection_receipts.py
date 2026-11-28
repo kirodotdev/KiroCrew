@@ -32,7 +32,8 @@ kept in ``stage-log.json`` beside the shards:
   ``SAMPLES_TOTAL`` lines and ``SAMPLE_BYTES_CAP`` bytes in all, and only for
   ``SHADOW_SAMPLE_WINDOW_SECS`` after the stage first wrote one; a new policy
   version restarts the window and the sample budget. Past a cap the line is
-  written without the field and only the counters move.
+  written without the field and only the counters move; a line that then
+  carries nothing at all is not written.
 
 A stage field also names its control sample (``control``): a hashed few of the
 block's ids the stage keeps (:func:`kiro_crew.memory_shadow_trace.control_keys`).
@@ -72,11 +73,17 @@ TURN_LESSONS: Final = "turn_lessons"
 RULE_AUTHORITY_ORDER: Final = "rule_authority_order"
 #: ``memory.lesson_fold``: the rule-block ids it would fold, as ``[leader, folded]`` pairs.
 LESSON_FOLD: Final = "lesson_fold"
+#: ``memory.inject_lessons_per_turn`` under ``shadow``: the per-message lessons
+#: ``enforce`` would add to a follow-up (``would_add``), the block's ``chars`` and
+#: each lesson's ``tier``, ``source`` and ``created_at`` (``lessons``).
+INJECT_LESSONS_PER_TURN: Final = "inject_lessons_per_turn"
+#: Bump when what an :data:`INJECT_LESSONS_PER_TURN` field means changes.
+INJECT_LESSONS_PER_TURN_POLICY: Final = 1
 
 #: The blocks a line always names, recorded with :func:`record`.
 _BLOCK_KINDS: Final[tuple[str, ...]] = (LESSONS, FINDINGS, TURN_LESSONS)
 #: Stage fields, recorded with :func:`record_stage` and named only when recorded.
-STAGE_KINDS: Final[tuple[str, ...]] = (RULE_AUTHORITY_ORDER, LESSON_FOLD)
+STAGE_KINDS: Final[tuple[str, ...]] = (RULE_AUTHORITY_ORDER, LESSON_FOLD, INJECT_LESSONS_PER_TURN)
 
 #: Every name a record is keyed by.
 KINDS: Final[tuple[str, ...]] = _BLOCK_KINDS + STAGE_KINDS
@@ -88,11 +95,16 @@ LEARN_ADD: Final = "learn_add"
 OUTCOME_KINDS: Final[tuple[str, ...]] = (RECALL, LEARN_ADD)
 #: Fields under the stage-log caps.
 _CAPPED_KINDS: Final[tuple[str, ...]] = STAGE_KINDS + OUTCOME_KINDS
-#: The block each render stage draws its control sample from.
+#: The block each render stage draws its control sample from. A stage that adds
+#: rather than drops (:data:`INJECT_LESSONS_PER_TURN`) has none on its own line.
 _CONTROL_BLOCK: Final[dict[str, str]] = {
     RULE_AUTHORITY_ORDER: LESSONS,
     LESSON_FOLD: LESSONS,
 }
+
+#: Stage fields whose day counter also counts lines by memory store, for a report
+#: that reads its days from the counters rather than from the capped samples.
+_STORE_COUNTED_KINDS: Final[tuple[str, ...]] = (INJECT_LESSONS_PER_TURN,)
 
 #: The budgeted tiers, whose line also states how many rows the budget cut.
 _COUNTED_KINDS: Final[tuple[str, ...]] = (LESSONS, FINDINGS)
@@ -135,13 +147,7 @@ def replay(records: dict[str, dict[str, Any]]) -> None:
         if kind == RECALLED_LESSONS and isinstance(entry, dict):
             sink[kind] = {"ids": _str_list(entry.get("ids"))}
         elif kind in STAGE_KINDS and isinstance(entry, dict):
-            sink[kind] = _stage_entry(
-                entry.get("mode"),
-                entry.get("policy"),
-                _str_list(entry.get("would_add")),
-                _str_list(entry.get("would_drop")),
-                _pair_list(entry.get("pairs")) if "pairs" in entry else None,
-            )
+            sink[kind] = _stage_from(entry)
         elif kind in KINDS and isinstance(entry, dict):
             ids = entry.get("ids")
             omitted = entry.get("omitted")
@@ -214,12 +220,57 @@ def _pair_list(raw: object) -> list[list[str]]:
     ]
 
 
+#: Longest ``tier``, ``source`` or ``created_at`` a lesson entry keeps.
+_FACT_CHARS: Final = 64
+_FACT_FIELDS: Final = ("key", "tier", "source", "created_at")
+
+
+def _lesson_list(raw: object) -> list[dict[str, str]]:
+    """Lesson entries with only :data:`_FACT_FIELDS`, each cut short, never any text."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("key"), str) or not item["key"]:
+            continue
+        out.append(
+            {
+                name: item[name][:_FACT_CHARS] if name != "key" else item[name]
+                for name in _FACT_FIELDS
+                if isinstance(item.get(name), str)
+            }
+        )
+        if len(out) >= _trace.CONTROL_PER_ENTRY:
+            break
+    return out
+
+
+def _count_field(raw: object) -> int:
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+
+
+def _stage_from(stage: dict[str, Any]) -> dict[str, Any]:
+    """A stored or replayed stage field, rebuilt from only the fields it may carry."""
+    return _stage_entry(
+        stage.get("mode"),
+        stage.get("policy"),
+        _str_list(stage.get("would_add")),
+        _str_list(stage.get("would_drop")),
+        _pair_list(stage.get("pairs")) if "pairs" in stage else None,
+        chars=_count_field(stage.get("chars")) if "chars" in stage else None,
+        lessons=_lesson_list(stage.get("lessons")) if "lessons" in stage else None,
+    )
+
+
 def _stage_entry(
     mode: object,
     policy: object,
     add: list[str],
     drop: list[str],
     pairs: list[list[str]] | None = None,
+    *,
+    chars: int | None = None,
+    lessons: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "mode": mode if isinstance(mode, str) else "",
@@ -231,6 +282,11 @@ def _stage_entry(
     # its four keys.
     if pairs is not None:
         entry["pairs"] = pairs
+    # Likewise only the per-message lessons stage states a size and its lessons.
+    if chars is not None:
+        entry["chars"] = chars
+    if lessons is not None:
+        entry["lessons"] = lessons
     return entry
 
 
@@ -242,12 +298,16 @@ def record_stage(
     would_add: Iterable[object] = (),
     would_drop: Iterable[object] = (),
     pairs: Iterable[tuple[str, str]] | None = None,
+    chars: int | None = None,
+    lessons: Iterable[dict[str, str]] | None = None,
 ) -> None:
     """Record what stage *kind*'s new policy would change in this composition.
 
     *would_add* and *would_drop* are rows (or their keys) the new policy would put
     into or take out of the block the prompt carries. *pairs*, for a stage that
-    groups rows, are ``(kept key, folded key)`` pairs. Like :func:`record`, a later
+    groups rows, are ``(kept key, folded key)`` pairs. *chars* and *lessons*, for a
+    stage that would add a block, are its size and each added lesson's
+    ``key``, ``tier``, ``source`` and ``created_at``. Like :func:`record`, a later
     record replaces an earlier one and a call outside a collection is a no-op.
     """
     if kind not in STAGE_KINDS:
@@ -266,6 +326,8 @@ def record_stage(
         keys(would_add),
         keys(would_drop),
         _pair_list(list(pairs)) if pairs is not None else None,
+        chars=_count_field(chars) if chars is not None else None,
+        lessons=_lesson_list(list(lessons)) if lessons is not None else None,
     )
 
 
@@ -312,18 +374,13 @@ def build_line(
     for kind in STAGE_KINDS:
         stage = receipts.get(kind)
         if isinstance(stage, dict):
-            entry = _stage_entry(
-                stage.get("mode"),
-                stage.get("policy"),
-                _str_list(stage.get("would_add")),
-                _str_list(stage.get("would_drop")),
-                _pair_list(stage.get("pairs")) if "pairs" in stage else None,
-            )
-            dropped = set(entry["would_drop"]) | {p[1] for p in entry.get("pairs", ())}
-            kept = [k for k in line[_CONTROL_BLOCK[kind]] if k not in dropped]
-            control = _trace.control_keys(session_key, kept)
-            if control:
-                entry["control"] = control
+            entry = _stage_from(stage)
+            if kind in _CONTROL_BLOCK:
+                dropped = set(entry["would_drop"]) | {p[1] for p in entry.get("pairs", ())}
+                kept = [k for k in line[_CONTROL_BLOCK[kind]] if k not in dropped]
+                control = _trace.control_keys(session_key, kept)
+                if control:
+                    entry["control"] = control
             line[kind] = entry
     return line
 
@@ -436,6 +493,17 @@ def _cap_stage_fields(line: dict[str, Any], now: datetime) -> dict[str, Any]:
         lists = ("ids",) if kind in OUTCOME_KINDS else ("would_add", "would_drop")
         for name, n in (("lines", 1), *((k, len(entry.get(k) or ())) for k in lists)):
             tally[name] = _caps._count(tally.get(name)) + n
+        if kind in _STORE_COUNTED_KINDS:
+            # Per store too, so a store's report counts only its own days and
+            # keeps counting them after the sample window closes.
+            stores = _as_dict(tally.get("stores"))
+            store = _as_dict(stores.get(str(line.get("memory_store") or "default")))
+            store["lines"] = _caps._count(store.get("lines")) + 1
+            store["would_add"] = _caps._count(store.get("would_add")) + len(
+                entry.get("would_add") or ()
+            )
+            stores[str(line.get("memory_store") or "default")] = store
+            tally["stores"] = stores
         by_mode[str(entry.get("mode"))] = tally
         by_kind[kind] = by_mode
         counts[day] = by_kind
@@ -492,6 +560,7 @@ def write_line(line: dict[str, Any]) -> None:
     try:
         stamp = datetime.fromisoformat(str(line["ts"]).replace("Z", "+00:00"))
         path = _receipt_dir() / f"{stamp.astimezone().strftime('%Y-%m-%d')}.jsonl"
+        staged = any(kind in line for kind in STAGE_KINDS)
         with _STAGE_LOG_LOCK:
             try:
                 line = _cap_stage_fields(line, stamp.astimezone(timezone.utc))
@@ -504,6 +573,8 @@ def write_line(line: dict[str, Any]) -> None:
                 line = {k: v for k, v in line.items() if k not in _CAPPED_KINDS}
         if line.get("phase") in OUTCOME_KINDS and line["phase"] not in line:
             return
+        if staged and _empty_after_caps(line):
+            return
         if not path.parent.exists():
             mkdirs_owner_only(path.parent)
         text = json.dumps(line, ensure_ascii=False, separators=(",", ":"))
@@ -515,6 +586,20 @@ def write_line(line: dict[str, Any]) -> None:
             line.get("phase") or "receipt",
             exc_info=True,
         )
+
+
+def _empty_after_caps(line: dict[str, Any]) -> bool:
+    """Whether a line that carried stage fields now carries nothing at all.
+
+    :func:`build_line` writes no line for a turn that recorded nothing, so a
+    follow-up turn kept only by stage fields the caps removed is not written
+    either.
+    """
+    if any(kind in line for kind in STAGE_KINDS):
+        return False
+    return not any(line.get(kind) for kind in _BLOCK_KINDS) and not any(
+        line.get(f"{kind}_omitted") for kind in _COUNTED_KINDS
+    )
 
 
 def schedule_write(line: dict[str, Any] | None) -> None:

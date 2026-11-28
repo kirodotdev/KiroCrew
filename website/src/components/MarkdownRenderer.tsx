@@ -22,7 +22,7 @@ import remarkMath from 'remark-math'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
 import rehypeRaw from 'rehype-raw'
-import rehypeKatex from 'rehype-katex'
+import { rehypeKatexLazy, subscribeKatex, katexGeneration, mayHoldMath } from './markdown/lazyKatex'
 import type { PluggableList } from 'unified'
 import type { Element as HastElement } from 'hast'
 import '../utils/hljs'
@@ -841,7 +841,7 @@ const REMARK_PLUGINS: PluggableList = [
 // hast conversion can overflow on it.
 // `rehypeSessionRefPunctuation` runs after the sanitizer so the marker it
 // stamps is the only one a session reference can carry into `MdAnchor` / `InlineCode`.
-const REHYPE_PLUGINS: PluggableList = [rehypeBoundRawDepth, [rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeSessionRefPunctuation, rehypeKatex]
+const REHYPE_PLUGINS: PluggableList = [rehypeBoundRawDepth, [rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeSessionRefPunctuation, rehypeKatexLazy]
 
 // User-message variant: base remark chain plus soft-break → hard-break.
 const REMARK_PLUGINS_WITH_BREAKS: PluggableList = [...REMARK_PLUGINS, remarkSoftBreaks]
@@ -860,7 +860,7 @@ const REMARK_PLUGINS_WITH_BREAKS_TEXT_PREVIEWS = withTextPreviews(REMARK_PLUGINS
  *  block of the message after the message itself has re-armed its scan budget. */
 const TextPreviewsCtx = createContext(0)
 
-const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [rehypeBoundRawDepth, [rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeSessionRefPunctuation, rehypeKatex, rehypeSourcepos]
+const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [rehypeBoundRawDepth, [rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeSessionRefPunctuation, rehypeKatexLazy, rehypeSourcepos]
 // NOTE: remark plugin config is shared via REMARK_PLUGINS above (singleDollarTextMath:
 // false). The sourcepos variant only differs in the rehype chain.
 
@@ -1016,6 +1016,8 @@ const STREAMING_LINK_HOLD: RedactionMarkers = Object.freeze({
  */
 const ParsedMarkdown = memo(function ParsedMarkdown({ text, sourcePos, glow, smooth, softBreaks, markers }: { text: string; sourcePos?: boolean; glow?: boolean; smooth?: boolean; softBreaks?: boolean; markers?: RedactionMarkers }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // Parse again once KaTeX lands, only where the text may hold math.
+  useSyncExternalStore(mayHoldMath(text) ? subscribeKatex : noSubscribe, katexGeneration, katexGeneration)
   // A change to an app's text patterns moves this context, which re-parses.
   const textPreviews = useContext(TextPreviewsCtx) > 0 && !sourcePos
   const baseRehype = sourcePos ? REHYPE_PLUGINS_WITH_SOURCEPOS : REHYPE_PLUGINS

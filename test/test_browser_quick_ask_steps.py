@@ -34,6 +34,7 @@ from kiro_crew.browser_harness import live_hub as lh
 from kiro_crew.browser_harness import quick_ask as qa
 from kiro_crew.dashboard.handlers import browser_ask
 from kiro_crew.mcp_tools import browser as tool
+from kiro_crew.testing.clock import ManualClock
 
 pytestmark = pytest.mark.asyncio
 
@@ -220,8 +221,11 @@ async def test_a_same_site_reload_between_screens_is_still_the_bound_site() -> N
 
 
 async def test_next_is_clicked_once_when_enter_does_not_move_the_screen_on(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, manual_clock: ManualClock
 ) -> None:
+    # The walk's clock stands still, so a slow page read cannot reach the step
+    # deadline before the nudge and the password screen it brings.
+    manual_clock.install(monkeypatch, qa)
     monkeypatch.setattr(qa, "STEP_NUDGE_S", 0.0)
     page = LoginPage()
     user, password = _two_step(page)

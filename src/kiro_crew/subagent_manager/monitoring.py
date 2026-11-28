@@ -831,7 +831,10 @@ class OrphanStallMonitor(ManagerComponent):
         ``tombstone_recovery_action`` and the task queue's boot probe read, so
         the three cannot disagree.
         """
-        task_preview = (state.get("task", "") or "")[:100]
+        # Imported here: an ``_impl`` runs on the subagent module's globals.
+        from kiro_crew.preview_text import clip_preview
+
+        task_preview = clip_preview(_redact(state.get("task", "") or ""), 100)
         parent_session = state.get("parent_session", "")
         # Off the loop: the display path resolves the run directory (a realpath).
         run_dir = await asyncio.to_thread(agent_dir_for_display, agent_id)

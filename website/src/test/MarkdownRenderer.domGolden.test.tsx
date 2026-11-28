@@ -1,9 +1,13 @@
 import React from 'react'
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { beforeAll, describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, waitFor, cleanup } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import { loadKatex } from '../components/markdown/lazyKatex'
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { stubPathKinds } from './pathKindStub'
+
+// KaTeX loads on demand (lazyKatex.ts); these assertions expect it rendered.
+beforeAll(() => loadKatex())
 
 /**
  * Golden DOM for the markdown pipeline as a whole.

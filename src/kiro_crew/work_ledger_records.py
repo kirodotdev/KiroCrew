@@ -77,7 +77,10 @@ ACCEPTANCE_PLACEHOLDERS: frozenset[str] = frozenset({"tbd", ""})
 #: one of these makes a bar unevaluable for :func:`is_acceptance_concrete`. ``cmd``
 #: reads nothing because the script always REFUSES it, and that refusal must still
 #: reach the conductor, so such an item stays in the batch. A test derives this map's
-#: keys from the script's own dispatch and fails on drift.
+#: keys from the script's own dispatch and fails on drift. The optional pins
+#: (``pr_merged`` ``head``; ``file`` ``min_bytes``, ``newer_than``) are
+#: left out: their type rules already refuse a placeholder, and every field here is
+#: also quoted in ``ACCEPTANCE_SHAPES``, a tool description every conductor carries.
 ACCEPTANCE_READ_FIELDS: dict[str, tuple[str, ...]] = {
     "pr_checks": ("pr", "repo"),
     "pr_merged": ("pr", "repo"),
@@ -104,7 +107,6 @@ ACCEPTANCE_CHECK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 #: there too.
 ACCEPTANCE_GIT_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 ACCEPTANCE_GIT_BASE = re.compile(r"[0-9a-f]{7,64}")
-
 #: The ``kind`` values that script dispatches on at all. Anything else is an error-only
 #: spec (its closing ``return ("error", f"unknown accept kind ...")``), so it is not
 #: concrete. Derived from the map above rather than spelled twice.

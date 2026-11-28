@@ -1405,6 +1405,12 @@ def _declared_enum_value(key: str, value: object) -> object:
     entry = _declared_entry(key)
     if entry is None or not entry.enum_values:
         return value
+    if key == "memory.inject_lessons_per_turn" and isinstance(value, bool):
+        # Was a boolean before it had a shadow mode: `true` / `false` still
+        # write its mode, as a stored bool reads.
+        from kiro_crew.config.memory_sections import inject_lessons_per_turn_mode_from
+
+        return inject_lessons_per_turn_mode_from(value)
     if value in entry.enum_values:
         return value
     if key == "stt.provider" and isinstance(value, str):

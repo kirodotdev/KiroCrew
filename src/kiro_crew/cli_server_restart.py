@@ -513,6 +513,9 @@ _READY_OK = "ready"
 
 _READY_DIED = "died"
 
+#: The replacement handed a verified desktop update to the installer helper.
+_READY_HANDED_OFF = "handed_off"
+
 
 _READY_TIMEOUT = "timeout"
 
@@ -654,6 +657,8 @@ def _wait_gateway_ready(
     )
     if outcome == _POLL_EXITED:
         return _READY_DIED, exit_status
+    if outcome == _POLL_HANDED_OFF:
+        return _READY_HANDED_OFF, None
     if outcome == _POLL_SERVED:
         return _READY_OK, None
     return (_READY_UNCONFIRMED if answered else _READY_TIMEOUT), None
@@ -662,6 +667,8 @@ def _wait_gateway_ready(
 #: Outcomes of :func:`_poll_until_serving`.
 _POLL_SERVED = "served"
 _POLL_EXITED = "exited"
+#: The replacement verified an update and handed its install to a helper.
+_POLL_HANDED_OFF = "handed_off"
 _POLL_EXPIRED = "expired"
 
 
@@ -691,6 +698,7 @@ def _poll_until_serving(
     waiters.
     """
     start = time.monotonic()
+    started_wall = update_next_start.wall_clock()
     deadline = start + budget
     checkpoint = start + _RESTART_READY_SOFT_CHECKPOINT
     checkpoint_printed = False
@@ -699,6 +707,12 @@ def _poll_until_serving(
         if exited is not None:
             status = exited()
             if status is not None:
+                if update_next_start.handed_off(apply_pid(), since=started_wall):
+                    # A Windows desktop install: the replacement handed the
+                    # installer to a helper and exited. The helper waits for
+                    # every process running from the install, this one included,
+                    # so this waiter must end rather than wait for the port.
+                    return _POLL_HANDED_OFF, None, 0
                 return _POLL_EXITED, status, 0
         if serving():
             return _POLL_SERVED, None, 0
@@ -710,9 +724,15 @@ def _poll_until_serving(
             if exited is not None:
                 status = exited()
                 if status is not None:
+                    if update_next_start.handed_off(apply_pid(), since=started_wall):
+                        return _POLL_HANDED_OFF, None, 0
                     return _POLL_EXITED, status, 0
             pid = apply_pid()
+            # By pid, or by a record written since this wait began: a replacement
+            # started through a launcher shim has a pid of its own.
             applying = update_next_start.applying_started(pid) if pid is not None else None
+            if applying is None:
+                applying = update_next_start.applying_started(None, since=started_wall)
             if applying is not None:
                 left = max(0.0, update_next_start.APPLY_BOUND_SECS - (time.time() - applying))
                 extended = now + left + extension
@@ -726,6 +746,13 @@ def _poll_until_serving(
             # The seconds waited: a slow last pass ends the wait past the deadline.
             return _POLL_EXPIRED, None, int(now - start)
         time.sleep(_RESTART_READY_POLL_INTERVAL)
+
+
+def _desktop_update_log() -> str:
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.platform.desktop_installer_update import HELPER_LOG
+
+    return str(data_home() / HELPER_LOG)
 
 
 def _died_replacement_message(pid: int, exit_status: int | None, port: int) -> str:
@@ -1371,6 +1398,21 @@ def _restart(cli_port: int | None = None) -> None:
     # Report success only once the NEW gateway answers, and audit what happened.
     ready_timeout = _resolve_restart_ready_timeout()
     verdict, exit_status = _wait_gateway_ready(proc, port, prior_marker_pid, ready_timeout)
+    if verdict == _READY_HANDED_OFF:
+        sel().log_api_access(
+            caller="cli",
+            operation="gateway_restart",
+            outcome="allowed",
+            source="cli",
+            resources=f"port={port} via=fork pid={pid} handed_off=desktop_update",
+        )
+        print(
+            "⏳ The new gateway verified the armed update and handed it to the installer.\n"
+            f"   The gateway starts again on port {port} once the install finishes "
+            "(a few minutes).\n"
+            f"   Installer log: {_desktop_update_log()}"
+        )
+        return
     if verdict != _READY_OK:
         if verdict == _READY_DIED:
             reason = f"replacement_died exit={exit_status}"

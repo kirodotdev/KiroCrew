@@ -67,6 +67,16 @@ class EssentialReceipt:
     native_envelope: str
     incarnation: object
     epoch: int
+    #: The one span of *envelope* that may change on its own, and its digest;
+    #: ``digest`` then covers the rest of the envelope only.
+    volatile: str = ""
+    volatile_digest: str = ""
+
+
+def _digest(scope: tuple[object, ...], text: str) -> str:
+    return hashlib.sha256(
+        json.dumps([scope, text], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _tool_call_ended(event: object) -> bool:
@@ -89,6 +99,10 @@ class EssentialDelivery:
     bind drops only its own slot's acknowledgment; anything that can drop what
     the conversation holds drops every slot's.
 
+    A bind may name one *volatile* span of its envelope (a member's briefing).
+    While the rest is acknowledged, a send that changed only that span carries
+    the span alone, so a briefing edit does not re-send the whole snapshot.
+
     It also records :attr:`request_floor`, the latest monotonic moment of the
     last stream that made a model request, known to be no later than the start of
     that stream's last request. The stream's own start sets it once the stream
@@ -103,7 +117,7 @@ class EssentialDelivery:
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._lock = threading.Lock()
         self._pending: dict[str, EssentialReceipt] = {}
-        self._acknowledged: dict[str, tuple[object, str, int]] = {}
+        self._acknowledged: dict[str, tuple[object, str, int, str]] = {}
         self._epoch = 0
         self._clock = clock
         #: ``None`` until the first stream starts.
@@ -128,22 +142,33 @@ class EssentialDelivery:
         force: bool = False,
         native_envelope: str | None = None,
         slot: str = ESSENTIALS_SLOT,
+        volatile: str = "",
     ) -> None:
         """Stage trusted builder output in *slot*; retain complete text until wire dispatch.
 
         *force* drops *slot*'s acknowledgment, so the next send carries it.
+        *volatile* names a span of *envelope* acknowledged on its own; it is
+        ignored unless it occurs in *envelope*, and in *native_envelope*, once.
         Callers must serialize builds/sends with their existing session lease.
         Previews omit the delivery object and cannot change live receipts.
         """
-        digest = hashlib.sha256(
-            json.dumps([scope, envelope], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        native = native_envelope or envelope
+        if not volatile or envelope.count(volatile) != 1 or native.count(volatile) != 1:
+            volatile = ""
+        stable = envelope.replace(volatile, "\0", 1) if volatile else envelope
+        receipt = EssentialReceipt(
+            envelope,
+            _digest(scope, stable),
+            native,
+            incarnation,
+            self._epoch,
+            volatile,
+            _digest(scope, volatile) if volatile else "",
+        )
         with self._lock:
             if force:
                 self._acknowledged.pop(slot, None)
-            self._pending[slot] = EssentialReceipt(
-                envelope, digest, native_envelope or envelope, incarnation, self._epoch
-            )
+            self._pending[slot] = receipt
 
     def withdraw(self, *slots: str) -> None:
         """Take back *slots*' candidates, so a message built without binding them goes out whole.
@@ -185,16 +210,25 @@ class EssentialDelivery:
         incarnation: Callable[[], object],
         *,
         requests_model: bool = True,
+        cancel_keeps_history: Callable[[], bool] | None = None,
     ) -> AsyncGenerator[EventT, None]:
         """Deduplicate only trusted, byte-matched builder content on the wire.
 
         *requests_model* is False when the transport makes no model request at
         all, as kiro's native ``_kiro.dev/commands/execute`` does: its output is
         the command's own result, so it never moves :attr:`request_floor`.
+
+        *cancel_keeps_history* answers whether the harness keeps the
+        conversation it already holds across a cancelled turn
+        (``SessionCapabilities.keeps_history_on_cancel``); it is asked only
+        once the engine has ended the turn ``cancelled``, and a True answer
+        leaves the earlier acknowledgments standing.
+        What the cancelled message carried itself is still not acknowledged.
         """
         from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPLETED as EVENT_COMPLETE
         from kiro_crew.agent_sdk import CONTEXT_EVENT_TEXT as EVENT_TEXT_CHUNK
         from kiro_crew.agent_sdk import CONTEXT_EVENT_TOOL as EVENT_TOOL_CALL
+        from kiro_crew.agent_sdk import TURN_STOP_REASON_CANCELLED as STOP_REASON_CANCELLED
         from kiro_crew.agent_sdk import TURN_STOP_REASON_END_TURN as STOP_REASON_END_TURN
 
         identity = incarnation()
@@ -210,8 +244,10 @@ class EssentialDelivery:
         for slot, candidate in pending:
             if candidate.envelope not in message:
                 continue
-            if acknowledged.get(slot) == (identity, candidate.digest, epoch):
-                replacement = ""
+            ack = acknowledged.get(slot)
+            if ack is not None and ack[:3] == (identity, candidate.digest, epoch):
+                # The rest is held; only a changed volatile span goes out.
+                replacement = "" if ack[3] == candidate.volatile_digest else candidate.volatile
             elif candidate.incarnation == identity and candidate.epoch == epoch:
                 replacement = candidate.native_envelope
             else:
@@ -223,6 +259,7 @@ class EssentialDelivery:
             report[1](message)
         productive = False
         completed = False
+        cancelled = False
         # Before the send, so the stream's first request starts no earlier. Held
         # until model output arrives: a slash command such as ``/context`` makes
         # no model request, and must not move the floor past the last one that did.
@@ -254,6 +291,10 @@ class EssentialDelivery:
                             and not event.synthetic_completion
                             and not event.refusal
                         )
+                        cancelled = (
+                            event.stop_reason == STOP_REASON_CANCELLED
+                            and not event.synthetic_completion
+                        )
                         if attempt and completed and productive and incarnation() == identity:
                             with self._lock:
                                 if self._epoch == epoch:
@@ -266,6 +307,7 @@ class EssentialDelivery:
                                                 identity,
                                                 candidate.digest,
                                                 epoch,
+                                                candidate.volatile_digest,
                                             )
                     yield event
         except GeneratorExit:
@@ -275,5 +317,6 @@ class EssentialDelivery:
             self._invalidate_attempt(attempt, epoch)
             raise
         finally:
-            if not (completed and productive):
+            kept = cancelled and cancel_keeps_history is not None and cancel_keeps_history()
+            if not (completed and productive) and not kept:
                 self._invalidate_attempt(attempt, epoch)
