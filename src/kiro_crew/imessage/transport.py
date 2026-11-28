@@ -89,13 +89,18 @@ IMESSAGE_CAPABILITIES = TransportCapabilities(
 def allowed_handles_from_config(entries: object) -> list[str] | None:
     """Normalize ``imessage.allowed_handles`` to the handles to admit.
 
-    The ONE reading of that field's shape, shared by the boot factory and the
-    live reconfigure path so the two can never disagree about who is on the
-    roster. Every entry runs through :func:`normalize_handle` (the same
-    normalization inbound handles get, so a differently-formatted phone number
-    still matches) and anything that normalizes to nothing is dropped. Returns
-    ``None`` when the whole value is not a list -- the caller decides what a
-    malformed roster means (boot: nobody; reload: keep the old set).
+    The live reload path's reading of that field's shape, used by
+    ``IMessageTransport.reconfigure``. Every entry runs through
+    :func:`normalize_handle` (the same normalization inbound handles get, so a
+    differently-formatted phone number still matches) and anything that
+    normalizes to nothing is dropped. Returns ``None`` when the whole value is
+    not a list, and ``reconfigure`` then keeps the roster it already holds.
+
+    Boot does not come through here: ``maybe_start_imessage`` in
+    ``imessage/gateway.py`` passes the parsed config's list to the
+    ``IMessageTransport`` constructor, which runs the same
+    :func:`normalize_handle` pass itself. Config load already reads a non-list
+    roster as empty, so at boot a malformed roster admits nobody.
     """
     if not isinstance(entries, list):
         return None
@@ -136,9 +141,9 @@ class IMessageTransport(MessagingTransport):
         under ``imessage``, so an allow-list edit from the dashboard, the CLI or
         ``$EDITOR`` takes effect on the next message instead of the next
         restart. The roster is rebuilt with the same :func:`normalize_handle`
-        pass the boot factory uses, and the frozenset is REPLACED wholesale
-        (never mutated) so an in-flight ``authorize`` keeps reading one
-        consistent set.
+        pass the constructor applies at boot, and the frozenset is REPLACED
+        wholesale (never mutated) so an in-flight ``authorize`` keeps reading
+        one consistent set.
 
         An EMPTY list is adopted, because an empty roster denies everyone here
         and adopting it is the fail-closed direction -- it is how an operator
