@@ -418,7 +418,7 @@ class TestScanHistory:
 
         huge = "chmod 777 /srv/app " + "x" * 100_000
         _write_rows(tmp_path / "s.jsonl", [_shell_row(huge)])
-        rows = memory_audit._transcript_tail_rows(tmp_path / "s.jsonl", 100, 0.0)
+        rows, _ = memory_audit._transcript_tail_rows(tmp_path / "s.jsonl", 100, 0.0)
         assert len(rows) == 1 and rows[0][1]
         assert all(len(str(part)) <= 200 for part in rows[0][1:])
 

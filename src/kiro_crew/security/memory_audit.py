@@ -73,7 +73,7 @@ _NON_SHELL_TOOL_KINDS = frozenset(
 )
 
 
-def _transcript_tail_rows(path: Path, max_rows: int, mtime: float) -> list[tuple]:
+def _transcript_tail_rows(path: Path, max_rows: int, mtime: float) -> tuple[list[tuple], bool]:
     """The newest *max_rows* calls or messages of *path* as ``(epoch, warning, snippet)``.
 
     One tool call is up to three ``role="tool"`` rows sharing a ``tool_call_id``,
@@ -88,15 +88,23 @@ def _transcript_tail_rows(path: Path, max_rows: int, mtime: float) -> list[tuple
 
     # Insertion-ordered: the first key is the least recently seen entry.
     rows: dict[object, list] = {}
+    depth_limit_hit = False
     with open(path, "rb") as handle:
         for position, line in enumerate(bounded_records(handle, path, label="security-audit")):
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            except RecursionError:
+                depth_limit_hit = True
+                continue
             if not isinstance(entry, dict) or entry.get("_type") == "metadata":
                 continue
-            command = _row_shell_command(entry)
+            try:
+                command = _row_shell_command(entry)
+            except RecursionError:
+                depth_limit_hit = True
+                continue
             warning = audit_bash_command(command) if command else None
             snippet = command[:_HISTORY_SNIPPET_CHARS] if command and warning else ""
             key: object = _row_call_key(entry) or position
@@ -106,7 +114,7 @@ def _transcript_tail_rows(path: Path, max_rows: int, mtime: float) -> list[tuple
             rows[key] = [_row_epoch(entry, mtime), warning, snippet]
             if len(rows) > max_rows:
                 del rows[next(iter(rows))]
-    return [(epoch, warning, snippet) for epoch, warning, snippet in rows.values()]
+    return [(epoch, warning, snippet) for epoch, warning, snippet in rows.values()], depth_limit_hit
 
 
 def _row_call_key(entry: dict) -> str:
@@ -187,12 +195,20 @@ def scan_history(sessions_dir: Path, last_n: int = 100) -> tuple[list[dict], int
     kept: list[tuple] = []
     for file_order, (mtime, path) in enumerate(stamped):
         try:
-            rows = _transcript_tail_rows(path, last_n, mtime)
+            rows, depth_limit_hit = _transcript_tail_rows(path, last_n, mtime)
         except FileNotFoundError:
             continue
         except (OSError, ValueError, RecursionError) as exc:  # parser limits too
             findings.append(_unreadable_transcript_finding(path, exc))
             continue
+        if depth_limit_hit:
+            findings.append(
+                {
+                    "file": path.name,
+                    "warning": "Some transcript rows exceeded the JSON nesting limit and were not audited.",
+                    "snippet": "",
+                }
+            )
         kept.extend(
             (epoch, file_order, row_order, path.name, warning, snippet)
             for row_order, (epoch, warning, snippet) in enumerate(rows)
