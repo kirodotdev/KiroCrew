@@ -79,13 +79,34 @@ export function useThrottleView(): { view: ThrottleView | undefined; error: unkn
   return { view: reported != null ? undefined : data?.throttle, error: reported }
 }
 
+/** The execution sentence's keys: no counts, with the running count, and with
+ *  the running and queued counts. */
+const EXEC_REDUCED_KEYS = {
+  bare: 'components.concurrencyCutChip.exec_reduced',
+  running: 'components.concurrencyCutChip.exec_reduced_running',
+  queued: 'components.concurrencyCutChip.exec_reduced_queued',
+} as const
+const EXEC_LOWERED_KEYS = {
+  bare: 'components.concurrencyCutChip.exec_lowered',
+  running: 'components.concurrencyCutChip.exec_lowered_running',
+  queued: 'components.concurrencyCutChip.exec_lowered_queued',
+} as const
+
 /**
  * Which sentence the chip says for a cut, with its values, or null when there
  * is none to show. Each sentence is one catalog key whose `<0>` part names the
  * outcome ("Under load:") and whose `<1>` part names the reduced cap, so a
  * translation can reorder them. The execution cap comes first because it is
  * the one queued work waits on; a gate-only cut names new agents starting,
- * waiting or reduced. `withQueue: false` leaves the queued count out.
+ * waiting or reduced. `withQueue: false` leaves the moving counts (running and
+ * queued) out.
+ *
+ * The execution sentence names the cap as a limit ("up to 2 at once, down from
+ * 8") beside the running count, so the cap never reads as occupancy. Once the
+ * last pressure cut is outside the gateway's window (`recent_cut: false`) a cap still below
+ * its start leads with "Lowered limit" instead of "Under load": the controller
+ * regrows it only on demand at the cap or on idle, so it can stay lowered long
+ * after the pressure is gone.
  *
  * The values are already formatted in the active locale's numerals, the same
  * way {@link throttleShortCap} formats the narrow "2/8", so the sentence and
@@ -100,9 +121,19 @@ export function throttleChipKey(
   const exec = view.exec
   if (exec?.cut && exec.cap != null && exec.configured != null) {
     const pair = { cap: fmtNumber(exec.cap), configured: fmtNumber(exec.configured) }
+    const keys = view.recent_cut === false ? EXEC_LOWERED_KEYS : EXEC_REDUCED_KEYS
+    const running = view.running
+    if (typeof running !== 'number' || !Number.isFinite(running)) {
+      // An older gateway sends the queue but no running count (and no recency).
+      return queued > 0
+        ? { key: 'components.concurrencyCutChip.exec_reduced_queue_only', values: { ...pair, queued: fmtNumber(queued) } }
+        : { key: keys.bare, values: pair }
+    }
+    if (!withQueue) return { key: keys.bare, values: pair }
+    const counted = { ...pair, running: fmtNumber(Math.max(0, Math.floor(running))) }
     return queued > 0
-      ? { key: 'components.concurrencyCutChip.exec_reduced_queued', values: { ...pair, queued: fmtNumber(queued) } }
-      : { key: 'components.concurrencyCutChip.exec_reduced', values: pair }
+      ? { key: keys.queued, values: { ...counted, queued: fmtNumber(queued) } }
+      : { key: keys.running, values: counted }
   }
   const gate = view.gate
   if (gate?.paused) return { key: 'components.concurrencyCutChip.gate_paused', values: {} }
@@ -165,7 +196,9 @@ export default function ConcurrencyCutChip({ crowded = false }: { crowded?: bool
   const chosen = throttleChipKey(view)
   const shortCap = throttleShortCap(view)
   const label = throttleChipLabel(view)
-  const hint = i18nT('components.concurrencyCutChip.hint')
+  // A lowered limit names no current load, so its hint does not either.
+  const lowered = chosen != null && (Object.values(EXEC_LOWERED_KEYS) as string[]).includes(chosen.key)
+  const hint = i18nT(lowered ? 'components.concurrencyCutChip.hint_lowered' : 'components.concurrencyCutChip.hint')
   const tier = widthTiers[crowded ? 'crowded' : 'roomy']
   const lead = chosen ? /<0>(.*?)<\/0>/.exec(i18nT(chosen.key, chosen.values))?.[1] ?? '' : ''
   return (

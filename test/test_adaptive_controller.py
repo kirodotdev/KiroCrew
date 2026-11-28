@@ -1063,6 +1063,7 @@ class TestVisibilityAndConfig:
         # Loop lag alone cuts nothing on the exec track.
         await ctl.tick(loop_lag_ms=400.0)
         assert mgr.effective == 9
+        assert ctl.state()["exec_pressure_age_secs"] is None
         # Starts timing out on two MCP servers cut it: 9 -> 5.
         clock.advance(31.0)
         for key in ("srv-a", "srv-b"):
@@ -1073,6 +1074,8 @@ class TestVisibilityAndConfig:
         await ctl.tick()
         state = ctl.state()
         assert state["last_cut"]["age_secs"] == 10.0
+        assert 0.0 <= state["exec_pressure_age_secs"] <= 10.0
+        assert "last_exec_pressure_t" not in state
         joined = "\n".join(rs.adaptive_summary_lines(state))
         assert "Execution cap: 5/9" in joined
         assert "Last pressure cut: decrease 10s ago (corroborated pressure: " in joined

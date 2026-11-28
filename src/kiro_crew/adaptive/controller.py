@@ -993,6 +993,14 @@ class AdaptiveController:
                 cut["age_secs"] = round(max(0.0, now - float(cut["t"])), 1)
             except (KeyError, TypeError, ValueError):
                 pass
+        # Pressure at the floor or inside the cooldown cuts nothing, so the cut's
+        # age alone would read sustained pressure as past.
+        pressure_t = snapshot.pop("last_exec_pressure_t", None)
+        snapshot["exec_pressure_age_secs"] = (
+            round(max(0.0, now - float(pressure_t)), 1)
+            if isinstance(pressure_t, (int, float))
+            else None
+        )
         health = None
         thresholds = HealthThresholds.for_cadence(self._sample_secs)
         if last is not None:

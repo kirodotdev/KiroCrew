@@ -65,6 +65,47 @@ def test_exec_cap_below_its_start_is_a_cut_with_the_queue_it_holds() -> None:
     assert view["queued"] == 5
 
 
+def test_running_count_rides_beside_the_cap_so_the_cap_is_not_read_as_occupancy() -> None:
+    state = _state(effective_exec_cap=30, last_sample={"queued": 0, "running": 8})
+    view = throttle_view(state, exec_start=32, gate_start=4)
+    assert view["exec"] == {"cap": 30, "configured": 32, "cut": True}
+    assert view["running"] == 8
+    assert throttle_view(_state(last_sample={"running": -1}), exec_start=8)["running"] == 0
+
+
+def test_a_cut_is_recent_only_within_the_window() -> None:
+    def view(cut: object) -> dict:
+        return throttle_view(_state(effective_exec_cap=30, last_cut=cut), exec_start=32)
+
+    window = spawn_resume.RECENT_CUT_SECS
+    assert view({"action": "decrease", "age_secs": 12.0})["recent_cut"] is True
+    assert view({"action": "decrease", "age_secs": window})["recent_cut"] is True
+    stale = view({"action": "decrease", "age_secs": 9976.0})
+    assert stale["recent_cut"] is False
+    # Still a cut: the cap and its verdict do not change, only what the chip says.
+    assert stale["cut"] is True
+    # An age the snapshot does not carry keeps naming the load.
+    assert view(None)["recent_cut"] is True
+    assert view({"action": "decrease"})["recent_cut"] is True
+    assert view({"age_secs": True})["recent_cut"] is True
+    assert view({"age_secs": float("nan")})["recent_cut"] is True
+
+
+def test_pressure_that_cuts_nothing_keeps_an_old_cut_recent() -> None:
+    def view(pressure_age: object) -> dict:
+        state = _state(
+            effective_exec_cap=1,
+            last_cut={"action": "decrease", "age_secs": 9976.0},
+            exec_pressure_age_secs=pressure_age,
+        )
+        return throttle_view(state, exec_start=32)
+
+    assert view(5.0)["recent_cut"] is True
+    assert view(9000.0)["recent_cut"] is False
+    assert view(None)["recent_cut"] is False
+    assert view(float("inf"))["recent_cut"] is False
+
+
 def test_exec_ceiling_stands_in_when_no_start_is_known() -> None:
     view = throttle_view(_state(effective_exec_cap=3))
     assert view["exec"] == {"cap": 3, "configured": 8, "cut": True}
@@ -145,6 +186,8 @@ async def test_route_carries_the_snapshot_and_its_throttle_reading() -> None:
         "exec": {"cap": 2, "configured": 8, "cut": True},
         "gate": {"cap": 1, "configured": 4, "cut": True, "paused": False},
         "queued": 3,
+        "running": 0,
+        "recent_cut": True,
     }
 
 

@@ -57,11 +57,13 @@ const EXEC_CUT = {
   exec: { cap: 2, configured: 8, cut: true },
   gate: { cap: 4, configured: 4, cut: false, paused: false },
   queued: 5,
+  running: 2,
+  recent_cut: true,
 }
-const FULL = 'Under load: 2 of 8 agents at once · 5 queued'
+const FULL = 'Under load: up to 2 agents at once per lane, down from 8 · 2 running in all · 5 queued'
 const SCENES = [
   { id: '01-exec-cut-queued', throttle: EXEC_CUT, sessionQueued: 3, chip: FULL, marker: 'This session: 3 queued' },
-  { id: '02-exec-cut', throttle: { ...EXEC_CUT, queued: 0 }, sessionQueued: 0, chip: 'Under load: 2 of 8 agents at once', marker: null },
+  { id: '02-exec-cut', throttle: { ...EXEC_CUT, queued: 0 }, sessionQueued: 0, chip: 'Under load: up to 2 agents at once per lane, down from 8 · 2 running in all', marker: null },
   { id: '03-gate-paused', throttle: { cut: true, exec: { cap: 8, configured: 8, cut: false }, gate: { cap: 1, configured: 4, cut: true, paused: true }, queued: 0 },
     sessionQueued: 3, chip: 'Under load: new agents wait to start', marker: null },
   { id: '04-no-cut', throttle: { cut: false }, sessionQueued: 0, chip: null, marker: null },
