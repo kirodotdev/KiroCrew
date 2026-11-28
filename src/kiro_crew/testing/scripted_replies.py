@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kiro_crew.terminal_safe import safe_terminal_line
+from kiro_crew.user_json import loads_user_json
 
 SCRIPT_ENV = "KIROCREW_FAKE_ACP_SCRIPT"
 STOP_REASONS = ("end_turn", "max_tokens", "refusal")
@@ -166,7 +167,7 @@ def parse_script(text: str, name: str) -> Script:
     """Build a :class:`Script` from the file's *text*; *name* labels warnings."""
     script = Script()
     try:
-        data = json.loads(text)
+        data = loads_user_json(text)
     except ValueError:
         script.warnings.append(f"{name}: ignored, not valid JSON")
         return script

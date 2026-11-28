@@ -187,6 +187,7 @@ def test_a_refused_read_names_only_the_file_and_the_refusal_class(tmp_path, monk
     "body, warning",
     [
         ("not json", "replies.json: ignored, not valid JSON"),
+        ("\ufeffnot json", "replies.json: ignored, not valid JSON"),
         ('{"turns": []}', "replies.json: ignored, expected an object with a 'replies' list"),
     ],
 )
@@ -196,6 +197,17 @@ def test_a_script_of_the_wrong_shape_is_ignored(tmp_path, monkeypatch, capsys, b
     assert _texts(msgs) == [fake.REPLY_TEXT]
     assert msgs[-1]["result"] == {"stopReason": "end_turn"}
     assert capsys.readouterr().err == f"fake ACP backend script: {warning}\n"
+
+
+def test_a_script_saved_with_a_utf8_byte_order_mark_loads_its_replies(
+    tmp_path, monkeypatch, capsys
+):
+    path = _script(
+        tmp_path, monkeypatch, "\ufeff" + json.dumps({"replies": [{"text": "scripted"}]})
+    )
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert _texts(_turn(monkeypatch, "hello")) == ["scripted"]
+    assert capsys.readouterr().err == ""
 
 
 def test_a_file_nested_past_the_recursion_limit_keeps_the_canned_reply(
