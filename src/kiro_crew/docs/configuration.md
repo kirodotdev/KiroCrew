@@ -1286,7 +1286,7 @@ See [Discord](discord-integration.md).
 |-----|-------------|---------|
 | `discord.enabled` | Enable the Discord channel (Gateway WebSocket, DMs plus optional allow-listed server threads). Requires DISCORD_BOT_TOKEN (env/.env) or discord.bot_token. | false |
 | `discord.allowed_thread_ids` | Discord server thread IDs where approved users may run the agent. Empty = DMs only. A server channel is denied unless it is listed in allowed_channel_ids, and a turn there still runs in a thread. | empty |
-| `discord.allowed_channel_ids` | Discord server channels where approved users may start a new agent thread. Requires auto_thread=true: with auto_thread off, messages in these channels are ignored. | empty |
+| `discord.allowed_channel_ids` | Discord server channels where approved users may start a new agent thread. A forum or media channel listed here answers each post an approved user opens in it, in that post. Requires auto_thread=true: with auto_thread off, messages in these channels are ignored. | empty |
 | `discord.soft_threshold_pct` | Prompt the user to !compact or !new when context passes this percentage. | 80 |
 | `discord.reactions_enabled` | Show phase-aware emoji reactions on Discord messages during processing. | true |
 | `discord.show_thinking` | Post the model's thinking/reasoning as a subtext note in Discord. Off by default to keep responses concise. | false |

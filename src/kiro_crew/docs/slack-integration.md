@@ -114,9 +114,9 @@ When Kiro Crew needs to run a tool (file write, bash command, etc.):
    `kirocrew gateway --approval interactive`, then restart the gateway): posts
    Approve / Trust session / Reject buttons
 3. In interactive mode, a prompt nobody clicks is auto-rejected after
-   `agent.tool_approval_timeout_secs` (default 600 seconds). The other five
-   channels that prompt at all wait five minutes, and four channels do not
-   prompt. See [Channel capabilities](channel-capabilities.md).
+   `agent.tool_approval_timeout_secs` (default 600 seconds). Discord reads the
+   same setting; the other four channels that prompt at all wait five minutes,
+   and four channels do not prompt. See [Channel capabilities](channel-capabilities.md).
 4. In interactive mode, "Trust session" approves all remaining tools for that session
 
 ### Trust one thread

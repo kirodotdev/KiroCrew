@@ -3113,7 +3113,8 @@ defensive raw-marker parser only for callers that bypass `TurnDriver`.
 `!incognito` (reads allowed, writes blocked, ephemeral log discarded on close)
 were Slack-only machinery in `slack/handler.py`. The channel-neutral core lives
 here so a second channel inherits the trackers, the durable flag and the audit
-rather than a second copy of them; `slack/handler.py` keeps every public symbol
+rather than a second copy of them (Telegram, then Discord, through
+`discord/transport_dispatch_commands.py::_apply_privacy_mode`); `slack/handler.py` keeps every public symbol
 (`is_thread_temporary`, `is_thread_incognito`, `_is_slack_restricted`,
 `maybe_apply_privacy_modifiers`) as a thin wrapper, with `_thread_temporary` /
 `_thread_incognito` as **aliases of the shared objects**, not copies. The
@@ -3134,7 +3135,10 @@ and composed onto it.
   for every flag, which would mark every session both temporary and incognito —
   failing closed, but wrongly and silently.
 - **`hydrate_inbound(sessions, session_key)`** (async) is the restore the async
-  inbound gates run -- the Slack and Telegram inbound paths and the upload gate.
+  inbound gates run -- the Slack and Telegram inbound paths and the upload gate,
+  whose `session_is_restricted` / `session_blocks_reads` are Discord's
+  `restricted` and `blocks_reads` adapters, so a Discord mode survives a restart
+  through the same restore.
   It runs `hydrate` and also reads the transcript header's `memory_mode` on a
   worker thread, then marks that mode too, so the stricter of the two records
   stands; a mark only adds a restriction. A thread whose row the map does not
@@ -3253,8 +3257,9 @@ and composed onto it.
   write that survives its failure is exactly what a restart loses, under a notice
   that says the mode is on. The caller must not run the turn: the Slack applier
   answers `only_modifier=True` (the contract both Slack callers already honour
-  by returning), the Telegram command and turn paths return, and the Telegram
-  steer path RESERVES before it steers. Refusing is the fail-closed answer;
+  by returning), the Telegram command and turn paths return, the Telegram
+  steer path RESERVES before it steers, and Discord's `_apply_privacy_mode`
+  answers `None`, on which `handle_message` returns. Refusing is the fail-closed answer;
   running the message with the mode silently dropped would be the leak the
   modifier exists to prevent, and evicting a retained row to make room would run
   THAT thread as persistent after a restart. While the row is landing the key is
@@ -3427,19 +3432,23 @@ run under different keys: a STEERED message folds into the turn already running 
 the current key, so its mark lands there immediately (and only once the steer is
 known to have landed, so a refused steer that falls through to the queue does not
 leave the session restricted); a QUEUED message is marked later, where its own key
-is known.
+is known. Discord carries no mid-turn request: `handle_message` refuses a modifier
+while the conversation is busy (`_PRIVACY_BUSY_REFUSAL`, checked again after the
+route resolves), and one that follows `!queue` / `!steer`
+(`_PRIVACY_PREFIXED_REFUSAL`), so a modifier never reaches its queue.
 
 **Every durable write is covered, not just the transcript.** `set_title` reaches
 `ConversationLog.update_metadata`, which CREATES the session file — so a
 `/title` on a restricted conversation persisted user-authored content for a mode
 that had just promised not to. Telegram's `_handle_title` now gates on
 `is_restricted` and says so in its reply, matching `_persist_turn` and Slack's own
-`/title`. The predicate is the channel's in-process tracker and NOT the transcript's
+`/title`. Discord's one title write, the first turn's in `_persist_turn`, sits
+after the same `is_restricted` return. The predicate is the channel's in-process tracker and NOT the transcript's
 `memory_mode` header alone. Both dashboard and channel Incognito/Temporary
 sessions suppress Crew transcript/body persistence; the canonical execution
 carrier supplies privacy to child work before dispatch. `test_telegram_parity_privacy.py`
 enumerates the title writes in every dispatcher that reaches `privacy_mode` and
-requires each to consult the predicate — scoped that way because the eight channels
+requires each to consult the predicate — scoped that way because the seven channels
 that do not offer the modes have no session that can BE restricted.
 
 **Enforcing temporary takes TWO gates, and they are not the same predicate.** The
@@ -3449,7 +3458,8 @@ transcript, memory and artifact write. The read half is one kwarg —
 lesson blocks — and it defaults False, so a channel that omits it injects yesterday's
 memories into the prompt of a thread `NOTICE_TEMPORARY` told the user reads nothing.
 Every dispatch path passes it: Slack's native `handle_message`, Slack's default
-`transport_dispatch`, and Telegram's. The predicate there is **`is_temporary`, never
+`transport_dispatch`, Telegram's, and Discord's (`ChannelTurns`' `blocks_reads`
+adapter, `_blocks_memory_reads`). The predicate there is **`is_temporary`, never
 `is_restricted`** — incognito is documented as reading memory and refusing only to
 write, so the combined predicate would take memory away from a mode meant to keep
 it, and it would do so silently.
