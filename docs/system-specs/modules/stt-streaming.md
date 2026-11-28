@@ -135,6 +135,12 @@ New work goes to the owner of its responsibility:
 | `transcribe_aws` | the `transcribe` provider: its client-library availability, the profile credential resolver, the streaming transcription and the custom-vocabulary listing |
 | `transcribe_local` | the on-device providers: the `local` recogniser's WAV read, transcode and language, and the `apple` lane |
 
+The `local` recogniser's WAV read (`transcribe_local._pcm_from_wav`) folds a
+multichannel 16 kHz int16 file to mono in slices of `_WAV_SLICE_BYTES` (8 MiB) of
+raw int16. The frames per slice shrink as the channel count grows, so one slice's
+memory stays bounded whatever the channel count. Tests patch that constant down to
+kilobytes to cross a slice boundary without holding tens of MiB on an xdist worker.
+
 Legacy provider values and the loader behavior for persisted values are in
 [Legacy provider values](#legacy-provider-values).
 
