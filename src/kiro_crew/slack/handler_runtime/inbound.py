@@ -1252,11 +1252,11 @@ async def _route_linked_thread(
     # Conductor mode "Pause all" holds this session: the message queues as it does
     # behind a running turn, and Resume all (or its own Continue) runs it.
     _starts = not _linked_slot.running and not crew_pause.holds_slot(_linked_slot)
+    _seated: dict[str, Any] | None = None
     if turn_context:
         from kiro_crew.context import _neutralize_structural_markers
 
         _safe_context = _neutralize_structural_markers(turn_context)
-        _seated: dict[str, Any] | None = None
         if _starts and hasattr(_linked_slot, "append_pending_context"):
             try:
                 from kiro_crew.dashboard.chat_handlers import _build_pending_context_entry
@@ -1279,6 +1279,13 @@ async def _route_linked_thread(
                 logger.debug("action context not queued as pending context", exc_info=True)
         if _seated is None:
             _queued_text = f"{text}\n\n{_safe_context}"
+    elif _starts and interpret_commands and not _unmentioned.startswith("/"):
+        # A typed reply that starts a turn the model answers: the thread's opener, if
+        # one was left unanswered, rides that turn. A queued reply and a ``/`` command
+        # leave it for the next reply.
+        from kiro_crew.slack.thread_opener import seat_opener
+
+        _seated = seat_opener(_linked_slot, channel, reply_ts, user_id)
     if _starts:
         from kiro_crew.dashboard.chat import _run_chat
 
@@ -1311,7 +1318,7 @@ async def _route_linked_thread(
             note_turn_requester(_chat_task, user_id)
         _dashboard_state._background_tasks.add(_chat_task)  # type: ignore[attr-defined]
         _chat_task.add_done_callback(_dashboard_state._background_tasks.discard)  # type: ignore[attr-defined]
-        if turn_context and _seated is not None:
+        if _seated is not None:
             # The context belongs to THIS turn: one that ends before taking it
             # (a Stop during admission, a command label, a refusal) must not
             # leave it for whichever turn runs next.

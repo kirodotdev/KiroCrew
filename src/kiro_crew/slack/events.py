@@ -174,6 +174,7 @@ from kiro_crew.slack.shared_access import prime_shared_user
 # module's patch surface for the Socket Mode client.
 from kiro_crew.slack.socket_mode_proxy import ProxySelectingSocketModeClient as WSSocketModeClient
 from kiro_crew.slack.stream_window import note_thread_message
+from kiro_crew.slack.thread_opener import leave_unanswered
 from kiro_crew.slack.transport_dispatch import flat_dm_session_key, handle_message_transport
 from kiro_crew.start_priority import person_priority
 from kiro_crew.stats import Stats
@@ -1043,6 +1044,9 @@ async def _route_message(
     # Dedup AFTER activation check — prevents the plain `message` event
     # from poisoning the cache before the `app_mention` event arrives.
     if seen.check_and_add(msg_ts):
+        return
+    # A top-level message ending with the thread icon only opens a thread: no turn, no reply.
+    if not thread_ts and leave_unanswered(channel, msg_ts, sender_id, _gate_text):
         return
     if thread_ts:
         # A turn running in this thread draws its next step below this message.
