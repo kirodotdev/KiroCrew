@@ -14,6 +14,8 @@ are pinned here.
   export nothing, so a pull-request run measures as a push does; unset, or any
   other value, changes nothing. Every measuring step hands the variable to the
   script.
+  No test reads the switch or the event from the job that runs it: the backend
+  step passes the variable to pytest, and these tests pass with it set to ``off``.
 * The workflow. Every job whose data Coverage Combine downloads makes the same
   ``exports`` call, pipes its measured pytest through ``tee`` under ``pipefail``
   and runs the check on that log; no ``env:`` block sets either variable. Each
@@ -159,6 +161,18 @@ def _env_blocks(node: object):
     elif isinstance(node, list):
         for item in node:
             yield from _env_blocks(item)
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with no event and no kill switch from the job that runs it.
+
+    The backend step passes the repository variable to pytest, and the runner sets
+    the event. A test here says which event and which switch value it means; one
+    that read them from the job would change its verdict with the job's settings.
+    """
+    monkeypatch.delenv(coverage_core.SWITCH_VARIABLE, raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
 
 
 def _option(monkeypatch: pytest.MonkeyPatch, environ: dict[str, str], name: str):
@@ -321,6 +335,7 @@ def test_the_command_line_prints_the_line_and_exits_by_the_verdict(
     event, core, tmp_path, monkeypatch, capsys
 ):
     monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+    monkeypatch.delenv(coverage_core.SWITCH_VARIABLE, raising=False)
     for name in SWITCHED:
         monkeypatch.delenv(name, raising=False)
     flag = _flag(core).split()
