@@ -189,6 +189,30 @@ def _drift(change: str) -> dict:
     return block
 
 
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0, reason="a mode-0 directory is readable here"
+)
+def test_a_masked_member_records_directory_keeps_the_adopted_tools(adopted, monkeypatch):
+    """The ``kirocrew-core`` child of a crew session lists the adopted tools.
+
+    The sandbox masks ``member-records`` and the MCP entry point drops the sandbox
+    marker, so a stat there fails with a permission error. The listing reads no record
+    there, so the mask must not take the tools away; the records stay unreadable.
+    """
+    from kiro_crew import member_records
+
+    monkeypatch.delenv(member_records._IN_SANDBOX_MARKER, raising=False)
+    root = member_records.records_root()
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0)
+    try:
+        assert _listed() == [TOOL, "fixture_former_done"]
+        with pytest.raises(PermissionError):
+            os.stat(root / member_records.MIGRATION_MARKER)
+    finally:
+        root.chmod(0o700)
+
+
 @pytest.mark.parametrize("change", ["description", "schema", "title", "result-cap"])
 def test_a_tool_whose_declaration_drifted_from_the_wheel_copy_is_not_listed(
     tmp_path, monkeypatch, change
