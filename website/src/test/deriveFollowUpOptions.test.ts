@@ -10,6 +10,9 @@ const compactionLive = (content = '✅ Conversation compacted: summary'): ChatMe
 // History-reload path only carries `meta.kind` (append persists meta, not a top-level kind).
 const compactionReload = (content = '✅ Conversation compacted: summary'): ChatMessage =>
   ({ role: 'assistant', content, cls: 'msg msg-a', meta: { kind: 'compaction' } })
+
+const recapNotice = (content = 'Recap: Goal X. Next: Y.'): ChatMessage =>
+  ({ role: 'assistant', content, cls: 'msg msg-a', meta: { kind: 'recap' } })
 // A dashboard note: POST /api/chat/slots/{slot}/note writes role="inject", cls="reconcile-note".
 const note = (content: string): ChatMessage => ({ role: 'inject', content, cls: 'reconcile-note' })
 // The SAME note after a restart: history persists `cls` only for role="system", so a
@@ -664,4 +667,13 @@ describe('deriveFollowUpOptions across a say-nothing reply', () => {
     const rows = [assistant(OPTIONS_MSG), user('Beta'), silent()]
     expect(deriveFollowUpOptions(rows, false).followUpOptions).toEqual([])
   })
+})
+
+it('skips a trailing recap notice, like compaction (shared systemNotice set)', () => {
+  const msgs: ChatMessage[] = [
+    { role: 'user', content: 'q', cls: 'msg msg-u' },
+    { role: 'assistant', content: 'answer [OPTIONS: a | b]', cls: 'msg msg-a' },
+    recapNotice(),
+  ]
+  expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['a', 'b'])
 })

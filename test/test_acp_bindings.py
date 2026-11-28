@@ -55,7 +55,8 @@ SHARED_BINDINGS_CHECKS = (
 #: where the member lives now. A ratchet: a member removed from the class drops its entry,
 #: a member added to the class gets none.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "2012aef81e70", "acp"),
+    # Takes ``session_recap``: the KAS recap opt-in (``agent.session_recap``).
+    "__init__": ("function", False, "becf6b5c3854", "acp"),
     "_abc_impl": ("data", False, "", ""),
     "_advertised_effort_levels": ("function", False, "93b23ca4342b", "acp_model_effort"),
     "_apply_effort_overlay": ("function", False, "66550c0d40fa", "acp_cli_overlay"),
@@ -213,6 +214,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "supports_refusal_steer": ("property", False, "a6632a57e602", "acp"),
     "supports_steer": ("property", False, "a6632a57e602", "acp"),
     "take_batch_refusal": ("function", False, "85a6851f62f8", "acp"),
+    "take_session_recap": ("function", False, "f21e39ec5ffb", "acp"),
     "tested_version_notice": ("property", False, "bb418bb7ece8", "acp"),
     "tool_search_settings": ("property", False, "da838953900b", "acp"),
     "telemetry_unconfirmed_notice": ("property", False, "bb418bb7ece8", "acp"),

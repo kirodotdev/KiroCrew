@@ -205,6 +205,14 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   /** What the title-refresh readout shows for 0, the built-in schedule. */
   const titleRefreshDefault = i18nT('pages.settings.chatPanel.title_refresh_default')
 
+  // ── Session recap (server-side; KAS makes one more model call per turn) ──
+  const recapEnabled = mcCfg?.agent?.session_recap ?? false
+  const recapMut = useMutation({
+    mutationFn: (v: boolean) => api.patchConfig('agent.session_recap', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_session_recap')),
+  })
+
   // "Other" reveals a free-text role. Typed locally and committed on blur /
   // Enter so a PATCH does not fire per keystroke; seeded from the server once
   // the config query resolves, and re-seeded whenever the server value changes
@@ -1246,6 +1254,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             disabled={!mcQ.isSuccess || warmTaskBriefMut.isPending}
             configKey="dashboard.warm_task_brief"
           />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.session_recap')} description={i18nT('pages.settings.chatPanel.session_recap_desc')} hint={i18nT('pages.settings.chatPanel.session_recap_hint')} checked={recapEnabled} onChange={v => recapMut.mutate(v)} disabled={!mcQ.isSuccess || recapMut.isPending} configKey="agent.session_recap" />
           {/* 0 is the built-in schedule and reads as "Default", so + leaves it
               for the minimum cadence, − at the minimum returns to it, and − at
               Default is disabled: there is nothing below it. A plain +/− stepper
