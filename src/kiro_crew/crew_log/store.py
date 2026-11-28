@@ -211,8 +211,10 @@ from kiro_crew.crew_log.store_tail_repair import (  # noqa: F401
 from kiro_crew.crew_log.store_units import (  # noqa: F401
     _PROVED_ROWS,
     _RACY_WINDOW_NS,
+    _SLOT_INDEX_BUILD,
     _SLOT_INDEX_TRUST,
     _any_now_provable,
+    _list_slot_index,
     _monotonic_ns,
     _next_trust,
     _proved_header,

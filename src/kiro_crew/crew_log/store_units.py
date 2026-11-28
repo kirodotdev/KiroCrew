@@ -13,6 +13,7 @@ be proved is refused.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from collections.abc import Collection
 from pathlib import Path
@@ -130,8 +131,8 @@ def unprovable_session_units() -> int:
 
 #: The cached slot map, the root identity it was built from, and the children that
 #: scan could NOT prove. Replaced WHOLE, so a reader loads one reference and sees
-#: either the old triple or the new one; two threads racing rebuild it twice, which
-#: costs a scan and cannot produce a wrong answer. ``None`` means nothing is cached.
+#: either the old triple or the new one. Rebuilds take ``_SLOT_INDEX_BUILD`` one at a
+#: time, so callers that miss together share one scan. ``None`` means nothing is cached.
 _slot_index: "tuple[tuple[Any, ...], dict[str, tuple[str, ...]], tuple[str, ...]] | None" = None
 
 #: ``[0]`` is ``(stat, triple, first_listed_ns, verified)`` for the ``_slot_index``
@@ -166,6 +167,10 @@ _RACY_WINDOW_NS = 2_000_000_000
 _PROVED_ROWS: (
     "list[tuple[tuple[Any, ...], dict[str, tuple[str, str, int] | None], object] | None]"
 ) = [None]
+
+#: Held while :func:`session_units_by_slot` lists the root and reads headers, so callers
+#: that miss the cache together share one listing. The O(1) cache hit never takes it.
+_SLOT_INDEX_BUILD = threading.Lock()
 
 
 def _monotonic_ns() -> int:
@@ -284,7 +289,6 @@ def session_units_by_slot(*, strict: bool = False) -> "dict[str, tuple[str, ...]
     holding entries, are both refused instead of being answered with a listing that
     is quietly short.
     """
-    global _slot_index
     try:
         root = _checked_crew_log_root(KIND_SESSION)
     except (CrewLogError, OSError):
@@ -312,6 +316,19 @@ def session_units_by_slot(*, strict: bool = False) -> "dict[str, tuple[str, ...]
         if strict:
             _refuse_unprovable_unit(root, cached[2])
         return cached[1]
+    # One listing at a time. A caller that arrives while another is listing waits for
+    # it and then finds that listing's map by fingerprint, instead of reading every
+    # header again beside it: at startup many pool threads ask at once, and N parallel
+    # full scans cost each of them about N times one scan, all of it holding the GIL.
+    with _SLOT_INDEX_BUILD:
+        return _list_slot_index(root, stat_key, now_ns, strict=strict)
+
+
+def _list_slot_index(
+    root: Path, stat_key: "tuple[Any, ...] | None", now_ns: int, *, strict: bool
+) -> "dict[str, tuple[str, ...]]":
+    """The listing half of :func:`session_units_by_slot`, run under ``_SLOT_INDEX_BUILD``."""
+    global _slot_index
     try:
         names = sorted(os.listdir(root))
         listed_ns = _monotonic_ns()
