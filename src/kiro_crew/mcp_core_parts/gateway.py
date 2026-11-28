@@ -460,6 +460,22 @@ def _session_token_header() -> dict[str, str]:
     return session_token_header(ctx.session_token if ctx is not None and ctx.from_gateway else "")
 
 
+def session_identity_headers(session_key: str) -> dict[str, str]:
+    """``X-Session-Key`` plus this caller's ``X-Session-Token``, for a direct sender.
+
+    For an in-sandbox sender that builds its own request rather than going
+    through :func:`_send`: it names the session the request acts for the same
+    way the verbs here do, so the gateway attributes it to that session and not
+    to the person. *session_key* is one the caller already resolved strictly.
+
+    Empty when there is no key, or the key cannot travel in a header, so such a
+    caller sends exactly the request it always sent.
+    """
+    if not session_key or _session_key_header_error(session_key):
+        return {}
+    return {"X-Session-Key": session_key, **_session_token_header()}
+
+
 def _transport_failure(message: str, mark: bool) -> dict:
     """Error payload for a request whose outcome is unknown.
 

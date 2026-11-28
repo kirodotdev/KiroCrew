@@ -16,7 +16,7 @@ import re
 import time
 import urllib.request
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.cron import (
@@ -194,7 +194,9 @@ def _fold_runs(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _fetch_history_stats(job_ids: list[str]) -> tuple[dict[str, dict[str, Any]], str]:
+def _fetch_history_stats(
+    job_ids: list[str], identity_headers: Mapping[str, str] | None = None
+) -> tuple[dict[str, dict[str, Any]], str]:
     """Ask the gateway to fold each job's run history into counts.
 
     Returns ``(stats_by_job_id, unavailable_reason)``. An empty reason means every
@@ -205,6 +207,7 @@ def _fetch_history_stats(job_ids: list[str]) -> tuple[dict[str, dict[str, Any]],
     Loopback plus ``X-Internal-Secret``, the same path ``cron_trigger`` uses, with
     the same port and credential resolvers -- the serving port rather than the
     configured one, and the per-listener secret ahead of the home-wide fallback.
+    *identity_headers* names the session the read acts for.
     """
     if not job_ids:
         return {}, ""
@@ -216,13 +219,14 @@ def _fetch_history_stats(job_ids: list[str]) -> tuple[dict[str, dict[str, Any]],
     if not secret:
         return {}, "no gateway credential on this host, so run history cannot be read"
 
+    headers = {**(identity_headers or {}), "X-Internal-Secret": secret}
     stats: dict[str, dict[str, Any]] = {}
     started = time.time()
     for jid in job_ids:
         if time.time() - started > _JSON_HISTORY_BUDGET_SECS:
             return stats, "the run-history fetch ran out of time before every job was read"
         url = f"http://127.0.0.1:{port}/api/crons/{jid}/history?limit={_JSON_HISTORY_LIMIT}"
-        req = urllib.request.Request(url, method="GET", headers={"X-Internal-Secret": secret})
+        req = urllib.request.Request(url, method="GET", headers=headers)
         try:
             with loopback_urlopen(req, timeout=_JSON_HISTORY_TIMEOUT_SECS) as resp:
                 body = json.loads(resp.read())
@@ -234,7 +238,9 @@ def _fetch_history_stats(job_ids: list[str]) -> tuple[dict[str, dict[str, Any]],
     return stats, ""
 
 
-def _render_cron_list_json(jobs: list[Any]) -> str:
+def _render_cron_list_json(
+    jobs: list[Any], identity_headers: Mapping[str, str] | None = None
+) -> str:
     """Ownership-scoped job records plus folded run-history counts, as JSON.
 
     Every free-text field is sanitized BEFORE it is truncated. The other order
@@ -245,7 +251,7 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
     hand a consumer a blind tail slice of a JSON document, which does not parse.
     """
     kept = jobs[:_JSON_MAX_JOBS]
-    stats, unavailable = _fetch_history_stats([j.id for j in kept])
+    stats, unavailable = _fetch_history_stats([j.id for j in kept], identity_headers)
     # Read once, read-only: the dashboard owns cron_folders.json.
     folder_names = {f["id"]: f["name"] for f in load_cron_folders()}
 

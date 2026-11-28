@@ -7,6 +7,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -43,29 +44,42 @@ def _not_found_message(job_id: str, err: urllib.error.HTTPError) -> str:
     return f"Job not found: {job_id} (it already ran at {when} and was removed)"
 
 
-def trigger_cron_job(job_id: str, port: int, secret_path: Path) -> tuple[bool, str]:
+def trigger_cron_job(
+    job_id: str,
+    port: int,
+    secret_path: Path,
+    identity_headers: Mapping[str, str] | None = None,
+) -> tuple[bool, str]:
     """POST to the gateway dashboard to trigger a cron job immediately.
 
     Returns (success, message) tuple.
     """
-    ok, message, _status = trigger_cron_job_status(job_id, port, secret_path)
+    ok, message, _status = trigger_cron_job_status(
+        job_id, port, secret_path, identity_headers=identity_headers
+    )
     return ok, message
 
 
 def trigger_cron_job_status(
-    job_id: str, port: int, secret_path: Path
+    job_id: str,
+    port: int,
+    secret_path: Path,
+    identity_headers: Mapping[str, str] | None = None,
 ) -> tuple[bool, str, int | None]:
     """:func:`trigger_cron_job` plus the HTTP status of a refused trigger.
 
     The status is ``None`` on success and when no HTTP answer arrived, so a caller
     can tell "already running" (:data:`ALREADY_RUNNING_STATUS`) from a failure
     without reading the message text.
+
+    *identity_headers* names the session the trigger acts for (the cron MCP
+    server passes its own key and token); the CLI passes none.
     """
     if not _JOB_ID_RE.fullmatch(job_id):
         return False, f"Invalid job ID format: {job_id}", None
 
     url = f"http://127.0.0.1:{port}/api/crons/{job_id}/run"
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = dict(identity_headers or {})
     # Credential for the LISTENER first: the shared file has one slot per data
     # home and a second gateway generation replaces it, so reading a home-wide
     # file while another generation owns *port* is a guaranteed 403.

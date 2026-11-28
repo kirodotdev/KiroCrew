@@ -698,6 +698,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _invalidate_api_base,
         _resolve_api_port,
         _socket_path_for,
+        session_identity_headers,
     )
     from kiro_crew.mcp_core_parts.governance import (  # noqa: F401
         _audit_governance_deny,
