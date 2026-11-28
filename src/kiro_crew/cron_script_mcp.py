@@ -10,7 +10,8 @@ under the launch rules the session and gateway paths apply: a muted or registry
 entry is refused, so is a remote entry the bridge cannot call as configured
 (:func:`_refuse_uncallable_remote`), and ``${VAR}`` in a local server's ``env`` and
 a remote server's ``headers`` is resolved as kiro-cli resolves it.
-``KeptMcpServers.call_tool`` refuses a tool the user switched off.
+``KeptMcpServers.call_tool`` refuses a tool the user switched off, and a call the
+tool gate denies.
 
 Part of :mod:`kiro_crew.cron_script`, the import path callers, tests and docs use: it
 reaches every name here, and a patch through it reaches this module too
@@ -512,9 +513,10 @@ class KeptMcpServers:
     server of its own, and once both finish only one is kept. :meth:`close`
     stops every kept server and keeps none afterwards.
 
-    A call to a tool the user switched off (:func:`_switched_off_tools`) raises
+    A call to a tool the user switched off (:func:`_switched_off_tools`), or one
+    the tool gate refuses (:func:`_tool_gate_refusal`), raises
     :class:`McpToolError` before any server is taken or started. Which tools are
-    off is read once per server name for the run.
+    off is read once per server name for the run; the gate is asked on every call.
     """
 
     def __init__(self, session_key: str = ""):
@@ -527,6 +529,9 @@ class KeptMcpServers:
     def call_tool(self, server: str, tool: str, args: dict) -> str:
         if _tool_is_switched_off(tool, self._tools_switched_off(server)):
             raise McpToolError(f"tool '{tool}' on MCP server '{server}' is switched off")
+        refusal = _tool_gate_refusal(server, tool, args, self._session_key)
+        if refusal:
+            raise McpToolError(f"tool '{tool}' on MCP server '{server}' is refused: {refusal}")
         client = self._take_kept_client(server)
         kept = False
         try:
@@ -646,6 +651,49 @@ def _tool_is_switched_off(tool: str, entries: frozenset[str]) -> bool:
     from kiro_crew.connected_computers.mcp_filter import tool_is_turned_off
 
     return tool_is_turned_off(tool, entries)
+
+
+class _ScriptToolCall(NamedTuple):
+    """A script's ``call_tool`` request, in the fields the tool gate reads off an event.
+
+    The server and tool are the ones this process is about to call, not prose a
+    model wrote about the call, so the identity is trusted.
+    """
+
+    title: str
+    mcp_server_name: str
+    tool_name: str
+    raw_tool_params: dict
+    mcp_identity_trusted: bool = True
+
+
+def _tool_gate_refusal(server: str, tool: str, args: dict, session_key: str) -> str | None:
+    """Why the tool gate refuses this call, or ``None``; the deny verdicts a chat call gets.
+
+    :func:`kiro_crew.permission_floor.refusal_for` with the run's identity, so the
+    deny rules, the operator's ``auto_deny_tools`` and the governance ceiling and
+    cron profile all apply. Only a deny refuses: a script has no approver, so a
+    call no tier decides runs, as before. Fails closed: a gate that cannot be
+    consulted refuses.
+    """
+    # deferred for the reason given in _switched_off_tools
+    from kiro_crew.hooks import unattended_turn
+    from kiro_crew.permission_floor import refusal_for
+
+    # The title kiro-cli gives a chat MCP call, so governance classifies it as an MCP
+    # call. An ``@server/tool`` title reads as a command or a built-in tool there,
+    # which an allow-mode ``tools`` list refuses. The deny tiers read the trusted
+    # server and tool fields as well.
+    # shortcut: the title splits at its last ``__``, so a tool name containing
+    # ``__`` is judged under a different server by an allow-mode ``mcp`` ceiling,
+    # as the same chat call is; upgrade when governance reads the trusted identity
+    # in place of the title.
+    request = _ScriptToolCall(f"mcp__{server}__{tool}", server, tool, args)
+    # A cron run has nobody watching, so a governance evaluation that fails refuses
+    # the call, as on every other unattended surface. ``kirocrew cron preview`` runs
+    # with no cron key, in a terminal a person is at.
+    with unattended_turn(session_key.startswith("cron:")):
+        return refusal_for(request, session_key=session_key, security_only=False)
 
 
 def _refuse_unlaunchable(name: str, spec: dict[str, Any]) -> None:
