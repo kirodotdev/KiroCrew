@@ -23,7 +23,7 @@ lowest code wins.
 
 ### Snapshot, not changelog
 
-Rewrite the body from `git diff origin/<base>...HEAD` every round, then compare
+Rewrite the body from `git diff refs/remotes/origin/<base>...HEAD` every round, then compare
 it with the published body and remove unsupported claims. Copy the frozen goal
 verbatim every round. Describe current code, never one round's fix; history
 belongs in disposition comments. No history words: `also`, `additionally`,

@@ -1003,12 +1003,7 @@ def _parse_args(argv=None):
         "mode but --check-index, paths you vouch for that this script did not commit.",
     )
     args = parser.parse_args(argv)
-    # The sibling scripts take the remote-qualified form, so accept it here too
-    # rather than fetching refs/heads/origin/<base>, which never exists.
-    for remote_prefix in (_remote_ref(""), "origin/"):
-        if args.base.startswith(remote_prefix):
-            args.base = args.base[len(remote_prefix) :]
-            break
+    args.base = _base_ref.base_branch(args.base)
     if args.paths_from_file is not None:
         try:
             with open(args.paths_from_file, "rb") as handle:
@@ -1213,6 +1208,8 @@ def _load_owner(stem):
 
 # The absolute-PATH lookup and the cmd.exe metacharacter set, defined in _tool_argv.py.
 _tool_argv = _load_owner("_tool_argv")
+# How --base is read, the same in every prepare-pr script.
+_base_ref = _load_owner("_base_ref")
 _which = _tool_argv.which
 _CMD_META = _tool_argv.CMD_META
 

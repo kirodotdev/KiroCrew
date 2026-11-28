@@ -488,9 +488,7 @@ def test_a_branch_name_base_reads_its_origin_copy(tmp_path: Path) -> None:
     assert result["reason"] == "the change adds or edits no test file", result
 
 
-@pytest.mark.parametrize(
-    "spelling", ["HEAD", "HEAD~1", "main~1", "origin/main", "refs/heads/main", "commit-id"]
-)
+@pytest.mark.parametrize("spelling", ["HEAD", "HEAD~1", "main~1", "refs/heads/main", "commit-id"])
 def test_only_an_exact_branch_name_is_read_from_origin(tmp_path: Path, spelling: str) -> None:
     """Every other ``--base`` spelling reaches ``merge-base`` as given.
 

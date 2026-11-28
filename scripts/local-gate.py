@@ -59,7 +59,7 @@ Contract
 
 Usage
 -----
-    scripts/local-gate.py                  # diff against merge-base with origin/main
+    scripts/local-gate.py                  # diff against merge-base with refs/remotes/origin/main
     scripts/local-gate.py --base REF       # explicit base ref
     scripts/local-gate.py --dry-run        # print the plan, run nothing
     scripts/local-gate.py --full           # both surfaces' FULL suites (human-requested)
@@ -86,6 +86,7 @@ import argparse
 import contextlib
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import os
 import shlex
@@ -116,6 +117,28 @@ from run_scoped_tests import (  # noqa: E402  (path set immediately above)
     related_targets,
     tree_scan_targets,
 )
+
+
+def _load_base_ref():
+    """The kirocrew-prepare-pr scripts' shared reading of a base, loaded by path and
+    without writing bytecode, as those scripts load it."""
+    path = _REPO_ROOT.joinpath(
+        "src", "kiro_crew", "builtin_skills", "kirocrew-dev", "kirocrew-prepare-pr", "scripts",
+        "_base_ref.py",
+    )
+    spec = importlib.util.spec_from_file_location("_prepare_pr_base_ref", path)
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise ImportError(f"cannot import {path}")
+    module = importlib.util.module_from_spec(spec)
+    writes_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = writes_bytecode
+    return module
+
+
+_base_ref = _load_base_ref()
 
 # Bucket rules -- MUST mirror ci.yml's `changes` job filters. test_local_gate.py
 # pins this against the workflow file so drift fails a test instead of shipping.
@@ -159,6 +182,12 @@ def classify(paths: list[str]) -> tuple[bool, bool, bool]:
         else:
             backend = True
     return frontend, meta, backend
+
+
+def base_revision(base: str) -> str:
+    """The revision ``--base`` names, read as every kirocrew-prepare-pr script reads it:
+    ``main``, ``origin/main`` and ``refs/remotes/origin/main`` are all origin's main."""
+    return _base_ref.base_revision(base, lambda args: 0 if _git(*args) is not None else 1)
 
 
 def changed_files(base: str) -> list[str] | None:
@@ -525,8 +554,9 @@ def build_plan(args: argparse.Namespace) -> Plan:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", default="origin/main",
-                        help="base ref for the diff (default: origin/main)")
+    parser.add_argument("--base", default="refs/remotes/origin/main",
+                        help="base ref for the diff; a branch name means its origin copy "
+                             "(default: refs/remotes/origin/main)")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the plan without running anything")
     parser.add_argument("--full", action="store_true",
@@ -541,6 +571,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fail-fast", action="store_true",
                         help="stop at the first failing command instead of running the rest")
     args = parser.parse_args(argv)
+    args.base = base_revision(args.base)
 
     try:
         plan = build_plan(args)

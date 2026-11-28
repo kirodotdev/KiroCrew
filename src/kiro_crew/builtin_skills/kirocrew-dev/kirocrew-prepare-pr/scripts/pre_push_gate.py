@@ -56,19 +56,25 @@ GATE_TIMEOUT_S = 1800
 # Lines of a failed gate's output kept in the report.
 _TAIL_LINES = 25
 
-# argv[0] resolution and the batch-launcher guard ``git_argv`` applies, from
-# _tool_argv.py beside this script, by path and without writing bytecode.
-_SPEC = importlib.util.spec_from_file_location(
-    "_prepare_pr_gate_tool_argv", os.path.join(HERE, "_tool_argv.py")
-)
-if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
-    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
-_tool_argv = importlib.util.module_from_spec(_SPEC)
-_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-try:
-    _SPEC.loader.exec_module(_tool_argv)
-finally:
-    sys.dont_write_bytecode = _WRITES_BYTECODE
+
+def _sibling(filename: str, name: str) -> Any:
+    """``filename`` beside this script, loaded by path and without writing bytecode."""
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise ImportError("cannot import kirocrew-prepare-pr sibling " + filename)
+    module = importlib.util.module_from_spec(spec)
+    writes_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = writes_bytecode
+    return module
+
+
+# argv[0] resolution and the batch-launcher guard ``git_argv`` applies.
+_tool_argv = _sibling("_tool_argv.py", "_prepare_pr_gate_tool_argv")
+# How --base is read, the same in every prepare-pr script.
+_base_ref = _sibling("_base_ref.py", "_prepare_pr_gate_base_ref")
 
 SKIP_CODE = re.compile(
     r"^(?:tool-missing:[\w.+-]+|no-network|unsupported-os|red-on-base:[0-9a-f]{7,40}"
@@ -359,10 +365,12 @@ def _check_skips(values: list[str], known: set[str]) -> dict[str, str]:
 def _base_sha(base: str) -> str:
     top = toplevel()
     if not base:
-        symbolic = git_argv(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], top)
-        sym = run(symbolic, env=clean_environ())[1]
-        base = sym.strip()[len("origin/") :] if sym.strip().startswith("origin/") else "main"
-    merge_base = git_argv(["merge-base", "HEAD", "origin/" + base], top)
+        # The full target: ``--short`` prints ``remotes/origin/<base>`` once
+        # another ref named ``origin/<base>`` makes the short name ambiguous.
+        symbolic = git_argv(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], top)
+        sym = run(symbolic, env=clean_environ())[1].strip()
+        base = _base_ref.base_branch(sym) if sym.startswith(_base_ref.ORIGIN_REFS) else "main"
+    merge_base = git_argv(["merge-base", "HEAD", _base_ref.ORIGIN_REFS + base], top)
     return run(merge_base, env=clean_environ())[1].strip()  # no merge base: ""
 
 
@@ -520,12 +528,7 @@ def main(argv: list[str]) -> int:
         args = parser.parse_args(argv[1:])
     except SystemExit as exc:
         return EXIT_ENV if exc.code else 0
-    # The skill passes --base origin/<base> to its scripts, so accept that form
-    # rather than looking for a merge base with origin/origin/<base>.
-    for remote_prefix in ("refs/remotes/origin/", "origin/"):
-        if args.base.startswith(remote_prefix):
-            args.base = args.base[len(remote_prefix) :]
-            break
+    args.base = _base_ref.base_branch(args.base)
     if args.test:
         return _selftest()
     try:

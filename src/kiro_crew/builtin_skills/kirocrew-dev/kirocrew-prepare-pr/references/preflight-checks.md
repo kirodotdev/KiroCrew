@@ -4,7 +4,7 @@ Moved verbatim from the kirocrew-prepare-pr `SKILL.md` core.
 
 - **Issue and tier.** The PR's issue exists and has a tier (see *Issue first*).
   A `tier:T3`/`tier:T4` issue waits for `triaged` before you build. A user-visible
-  feature, or a whole-PR diff (`origin/<base>...HEAD`) over ~1k lines, also needs
+  feature, or a whole-PR diff (`refs/remotes/origin/<base>...HEAD`) over ~1k lines, also needs
   the maintainer's sign-off on the design **and the UI placement** first: an
   *unreviewed* large change is what turns into a twenty-round loop.
 - **File overlap.** Check each file you touch against every open PR, paged, never capped (`references/ci.md`). If another open PR deletes or rewrites (>50% line delta) one of your files, STOP and ask which PR hosts the work.

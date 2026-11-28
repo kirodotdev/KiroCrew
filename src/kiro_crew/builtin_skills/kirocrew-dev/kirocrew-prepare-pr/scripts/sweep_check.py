@@ -734,12 +734,8 @@ def main(argv=None):
         else:
             print("usage: sweep_check.py --base BASE [--git-dir DIR]", file=sys.stderr)
             return 64
-    # The skill passes --base origin/<base> to its scripts, so accept that form
-    # rather than reading refs/remotes/origin/origin/<base>.
-    for remote_prefix in ("refs/remotes/origin/", "origin/"):
-        if base and base.startswith(remote_prefix):
-            base = base[len(remote_prefix) :]
-            break
+    if base:
+        base = _sibling("_base_ref.py").base_branch(base)
     if not base:
         print("usage: sweep_check.py --base BASE [--git-dir DIR]", file=sys.stderr)
         return 64

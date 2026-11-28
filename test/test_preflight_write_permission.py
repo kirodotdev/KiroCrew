@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,7 @@ from pathlib import Path
 import pytest
 from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG, git_maintenance_off_entries
 from git_repo_templates import copy_repo
+from skill_script_helpers import load_skill_script
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
 
@@ -1055,3 +1057,181 @@ class TestRegressionGuard:
         assert "BLOCKER: gh not authenticated" in stdout
         # The write-access line is not printed when gh is unauthenticated.
         assert "write access:" not in stdout
+
+
+class TestShadowedBase:
+    """Any other ref named ``origin/<base>`` stands in for the remote base wherever a
+    gate or recipe spells it short, so preflight refuses the clone and prints the
+    command that removes each one. The script runs in this process with gh
+    answering "not logged in", so the only children are git's."""
+
+    @classmethod
+    def _main_in(cls, monkeypatch, cwd: str, git_answer=None) -> int:
+        return cls._preflight_in(monkeypatch, cwd, git_answer)._main()
+
+    @staticmethod
+    def _preflight_in(monkeypatch, cwd: str, git_answer=None):
+        """preflight loaded to run from ``cwd`` in the fixture's git environment.
+        ``git_answer(args)`` may return an (rc, out, err) for a git call in place
+        of running it; None runs the real git."""
+        mod = _preflight_module()
+        real_run = mod.run
+
+        def no_gh(args, extra_env=None, timeout=None, stall=None):
+            if args[:1] == ["gh"]:
+                return 1, "", "not logged in"
+            answer = git_answer(args) if git_answer else None
+            if answer is not None:
+                return answer
+            return real_run(args, extra_env=extra_env, timeout=timeout, stall=stall)
+
+        monkeypatch.setattr(mod, "run", no_gh)
+        for name in _GIT_LOCATION_VARS:
+            monkeypatch.delenv(name, raising=False)
+        for name, value in _fixture_git_env().items():
+            if os.environ.get(name) != value:
+                monkeypatch.setenv(name, value)
+        monkeypatch.chdir(cwd)
+        return mod
+
+    @pytest.mark.parametrize(
+        ("make_namesake", "namesake", "remedy"),
+        [
+            (
+                ("branch", "origin/main", "main"),
+                "refs/heads/origin/main",
+                "git branch -m origin/main <new-name>",
+            ),
+            (
+                ("tag", "origin/main", "main"),
+                "refs/tags/origin/main",
+                "git update-ref -d refs/tags/origin/main",
+            ),
+            (
+                ("update-ref", "refs/origin/main", "main"),
+                "refs/origin/main",
+                "git update-ref -d refs/origin/main",
+            ),
+        ],
+        ids=["branch", "tag", "other-ref"],
+    )
+    def test_a_namesake_under_refs_blocks_until_its_printed_remedy_runs(
+        self, feature_clone, monkeypatch, capsys, make_namesake, namesake, remedy
+    ) -> None:
+        _git(feature_clone, *make_namesake)
+
+        assert self._main_in(monkeypatch, feature_clone) == 30
+        out = capsys.readouterr().out
+        assert "BLOCKER: origin/main does not name refs/remotes/origin/main" in out
+        assert "  {}: {}\n".format(namesake, remedy) in out
+
+        _git(feature_clone, *remedy.replace("<new-name>", "renamed").split()[1:])
+        self._main_in(monkeypatch, feature_clone)
+        assert "does not name refs/remotes/origin/main" not in capsys.readouterr().out
+
+    def test_a_namesake_outside_refs_names_the_file_to_delete(
+        self, feature_clone, monkeypatch, capsys
+    ) -> None:
+        # git writes this name as a file in the git dir and refuses to delete it by name.
+        _git(feature_clone, "update-ref", "origin/main", "main")
+
+        assert self._main_in(monkeypatch, feature_clone) == 30
+        out = capsys.readouterr().out
+        printed = re.search(r"^  origin/main: delete the file (.+) \(git refuses", out, re.M)
+        assert printed is not None, out
+        ref_file = printed.group(1)
+        assert os.path.samefile(ref_file, os.path.join(feature_clone, ".git", "origin", "main"))
+
+        os.remove(ref_file)
+        self._main_in(monkeypatch, feature_clone)
+        assert "does not name refs/remotes/origin/main" not in capsys.readouterr().out
+
+    def test_a_clone_without_a_namesake_raises_no_such_blocker(
+        self, feature_clone, monkeypatch, capsys
+    ) -> None:
+        self._main_in(monkeypatch, feature_clone)
+
+        out = capsys.readouterr().out
+        assert "fetch origin:    ok" in out
+        assert "does not name refs/remotes/origin/main" not in out
+
+    def test_a_batch_launcher_git_still_lists_the_namesakes(
+        self, feature_clone, monkeypatch, capsys
+    ) -> None:
+        # A git.cmd or git.bat launcher makes run() refuse any argument holding a
+        # cmd.exe metacharacter, as run_child does, so the listing must carry none.
+        metacharacters = load_skill_script(
+            "preflight_tool_argv_under_test", Path(PREFLIGHT).parent / "_tool_argv.py"
+        ).CMD_META
+
+        def batch_launcher(args):
+            if any(ch in arg for arg in args for ch in metacharacters):
+                return 126, "", "git: refusing a cmd.exe metacharacter"
+            return None
+
+        _git(feature_clone, "branch", "origin/main", "main")
+
+        assert self._main_in(monkeypatch, feature_clone, git_answer=batch_launcher) == 30
+        assert "  refs/heads/origin/main: git branch -m origin/main <new-name>\n" in (
+            capsys.readouterr().out
+        )
+
+    def test_a_listing_git_cannot_run_is_not_reported_as_no_namesake(
+        self, feature_clone, monkeypatch, capsys
+    ) -> None:
+        def no_listing(args):
+            return (1, "", "for-each-ref failed") if "for-each-ref" in args else None
+
+        _git(feature_clone, "branch", "origin/main", "main")
+
+        assert self._main_in(monkeypatch, feature_clone, git_answer=no_listing) == 30
+        out = capsys.readouterr().out
+        assert "  git could not list them; see gitrevisions(7)" in out
+        assert "none found" not in out
+
+    def test_a_working_tree_path_named_like_the_base_is_not_a_namesake(
+        self, feature_clone, monkeypatch, capsys
+    ) -> None:
+        # With no remote ref of that name (the fetch fails), rev-parse would echo a
+        # working-tree path origin/main back as if it named a ref.
+        _git(feature_clone, "update-ref", "-d", "refs/remotes/origin/main")
+        _git(feature_clone, "remote", "set-url", "origin", os.path.join(feature_clone, "gone"))
+        os.makedirs(os.path.join(feature_clone, "origin"))
+        with open(os.path.join(feature_clone, "origin", "main"), "w", encoding="utf-8") as fh:
+            fh.write("a file, not a ref\n")
+
+        assert self._main_in(monkeypatch, feature_clone) == 30
+        out = capsys.readouterr().out
+        assert "BLOCKER: git fetch origin main failed" in out
+        assert "does not name refs/remotes/origin/main" not in out
+
+    def test_a_name_with_shell_characters_is_not_printed_as_a_command(
+        self, feature_clone, monkeypatch
+    ) -> None:
+        # A git-valid name can hold $( ); a remedy pasted into a shell would run it.
+        _git(feature_clone, "branch", "origin/x$(id)", "main")
+        mod = self._preflight_in(monkeypatch, feature_clone)
+
+        assert mod.base_namesakes("x$(id)") == [
+            (
+                "refs/heads/origin/x$(id)",
+                "rename or delete it by hand; its name holds shell characters",
+            )
+        ]
+
+    def test_a_namesake_a_linked_worktree_writes_is_the_common_dirs_file(
+        self, feature_clone, monkeypatch, capsys, tmp_path
+    ) -> None:
+        # git keeps a lower-case name outside refs/ in the COMMON git dir even when a
+        # linked worktree writes it, and never reads the worktree's own git dir for it.
+        linked = str(tmp_path / "linked")
+        _git(feature_clone, "worktree", "add", "-q", linked, "-b", "linked-branch")
+        _git(linked, "update-ref", "origin/main", "main")
+
+        assert self._main_in(monkeypatch, linked) == 30
+        out = capsys.readouterr().out
+        printed = re.search(r"^  origin/main: delete the file (.+) \(git refuses", out, re.M)
+        assert printed is not None, out
+        assert os.path.samefile(
+            printed.group(1), os.path.join(feature_clone, ".git", "origin", "main")
+        )

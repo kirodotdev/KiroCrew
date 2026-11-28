@@ -178,6 +178,23 @@ def test_same_file_edited_on_both_sides_is_stale(mod, monkeypatch, pair, capsys)
     ]
 
 
+def test_a_local_branch_named_like_the_remote_base_does_not_hide_its_move(
+    mod, monkeypatch, pair, capsys
+) -> None:
+    """The base is read as ``refs/remotes/origin/main``. A short ``origin/main``
+    resolves a local branch of that name first, and one left at the old base would
+    read the base as unmoved and call this stale head fresh."""
+    pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
+    _git(pair.work, "branch", "origin/main", "main")
+    pair.base_gains({"src/kiro_crew/ledger/store.py": "VALUE = 3\n"})
+
+    code = _run_main(mod, monkeypatch, pair)
+    payload = _summary(mod)
+
+    assert code == mod.EXIT_STALE
+    assert payload["commits"] == 1
+
+
 def test_a_non_ascii_sibling_is_stale_and_named_by_its_real_name(
     mod, monkeypatch, pair, capsys
 ) -> None:
