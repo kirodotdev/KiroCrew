@@ -292,6 +292,79 @@ def _kill_pid_tree(pid: int, *, expected_start: str | None = None) -> tuple[int,
     return killed, root_killed
 
 
+#: Entries whose dead-root retention this process has already logged, so the periodic
+#: sweep warns once per entry rather than on every tick.
+_DEAD_ROOT_RETAIN_WARNED: set[str] = set()
+
+
+def _may_be_dead_root_child(pid: int, root_token: str | None) -> bool:
+    """Whether a process the parent map lists under a dead root may be its child.
+
+    Only a creation time provably EARLIER than the root's recorded token rules it out:
+    that process was born under a previous holder of the root's number. Every unknown
+    (no recorded token, an unreadable or non-numeric one, an equal creation time)
+    answers True.
+    """
+    if root_token is None:
+        return True
+    child_token = platform_compat.process_start_time(pid)
+    if not child_token:
+        return True
+    try:
+        return int(child_token) >= int(root_token)
+    except ValueError:
+        return True
+
+
+def _windows_dead_root_retained(entry: str, root_pid: int, root_token: str | None) -> bool:
+    """Whether a Windows entry whose root reads DEAD must be kept rather than pruned.
+
+    On Windows a tree is reached only through its root's ``taskkill /T``, and an exited
+    root cannot be handed to it, so the entry is the only record naming any child still
+    running. It is kept, with one warning, while a live process lists the root as its
+    parent and may postdate it, or while the process table cannot be read. Nothing is
+    signalled: a parent link plus a creation time cannot prove a process belongs to the
+    tree once the root's number can be reused. POSIX answers False and prunes as before.
+
+    The snapshot is ``platform_compat._windows_process_parent_map``, the facade-exported
+    primitive that raises on a failed enumeration rather than answering empty, which is
+    what lets an unreadable table keep the entry.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return False
+    try:
+        parent_map = platform_compat._windows_process_parent_map()
+    except Exception:
+        reason = "the process table could not be read"
+    else:
+        suspects = sorted(
+            pid
+            for pid, parent in parent_map.items()
+            if parent == root_pid and pid != root_pid and _may_be_dead_root_child(pid, root_token)
+        )
+        if not suspects:
+            # A grandchild under an exited intermediate names that intermediate as its
+            # parent, so no snapshot links it to this root; the prune is logged instead.
+            _DEAD_ROOT_RETAIN_WARNED.discard(entry)
+            logger.warning(
+                "Session root PID %d has exited and no possible direct child of it was "
+                "found; pruning its tracking entry (a descendant under an exited "
+                "intermediate cannot be linked to it)",
+                root_pid,
+            )
+            return False
+        reason = "PIDs %s may belong to its tree" % ", ".join(str(p) for p in suspects)
+    if entry not in _DEAD_ROOT_RETAIN_WARNED:
+        _DEAD_ROOT_RETAIN_WARNED.add(entry)
+        logger.warning(
+            "Session root PID %d has exited but %s; keeping its tracking entry "
+            "and ending none of them",
+            root_pid,
+            reason,
+        )
+    return True
+
+
 class _DeadRootPruneLog:
     """One INFO line per tracked row a sweep prunes because its root already exited.
 
@@ -413,8 +486,9 @@ def _sweep_pid_entries(
             # fall through to the managed-process check below.
             liveness = platform_compat.pid_liveness(pid)
             if liveness == platform_compat.PID_DEAD:
-                killed_or_dead.add(stripped)
-                dead_root_log.pruned(pid, owner_pid)
+                if not _windows_dead_root_retained(stripped, pid, recorded_token):
+                    killed_or_dead.add(stripped)
+                    dead_root_log.pruned(pid, owner_pid)
                 continue
             if liveness == platform_compat.PID_UNSIGNALABLE:
                 logger.debug("No permission to signal PID %s — skipping", pid)
@@ -958,9 +1032,10 @@ def cleanup_orphaned_session_roots() -> int:
         # Check if the child PID is still alive.
         child_liveness = platform_compat.pid_liveness(child_pid)
         if child_liveness == platform_compat.PID_DEAD:
-            # Already dead — just prune the entry
-            entries_to_remove.add(stripped)
-            dead_root_log.pruned(child_pid, gw_pid)
+            # Already dead — prune the entry, unless a Windows tree may outlive it
+            if not _windows_dead_root_retained(stripped, child_pid, recorded_token):
+                entries_to_remove.add(stripped)
+                dead_root_log.pruned(child_pid, gw_pid)
             continue
         if child_liveness == platform_compat.PID_UNSIGNALABLE:
             continue  # can't signal — skip
