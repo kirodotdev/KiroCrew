@@ -2117,7 +2117,7 @@ jobs:
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
             --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
-            --cov-report= --cov-append "${FILES[@]}" 2>&1 | tee "$COVERAGE_LOG"
+            --cov-report= --cov-append ${FILES[@]+"${FILES[@]}"} 2>&1 | tee "$COVERAGE_LOG"
           python scripts/ci/coverage_core.py check --core ctrace "$COVERAGE_LOG"
 
       - name: Stage shard coverage data
