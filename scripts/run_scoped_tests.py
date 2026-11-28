@@ -292,15 +292,35 @@ def _rel_posix(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-@functools.lru_cache(maxsize=None)
 def _tree_files(root: Path, rel_roots: tuple[str, ...], name_re: re.Pattern[str]) -> tuple[str, ...]:
     """Every collectable test file under ``rel_roots``, relative to ``root``.
 
-    Cached because one ``related_targets`` call asks the same question for
-    several token sets and the self-test asks it dozens of times; neither the set
-    of files nor their contents change inside one process, so the walk is paid
-    once rather than approximated.
+    Only the checkout's walk is kept (:func:`_checkout_tree_files`); any other root
+    is walked on every call. Such a root is a fixture tree under a test's
+    ``tmp_path``, and that path does not name one tree: pytest removes a passing
+    test's ``tmp_path`` (``tmp_path_retention_policy = failed``) and hands the same
+    path to a later test whose name shares its first 30 characters, so a walk kept
+    by path would give that test the files of the one before it.
     """
+    if root == REPO_ROOT:
+        return _checkout_tree_files(rel_roots, name_re)
+    return _walk_tree_files(root, rel_roots, name_re)
+
+
+@functools.lru_cache(maxsize=None)
+def _checkout_tree_files(rel_roots: tuple[str, ...], name_re: re.Pattern[str]) -> tuple[str, ...]:
+    """The checkout's :func:`_walk_tree_files`, paid once per process.
+
+    A gate run asks for it from ``related_targets`` and ``tree_scan_targets``, and
+    the self-test dozens of times. The checkout's files do not change while one
+    process selects from them, so the kept walk is exact rather than approximated.
+    """
+    return _walk_tree_files(REPO_ROOT, rel_roots, name_re)
+
+
+def _walk_tree_files(
+    root: Path, rel_roots: tuple[str, ...], name_re: re.Pattern[str]
+) -> tuple[str, ...]:
     out: list[str] = []
     for base in rel_roots:
         start = root / base
@@ -317,7 +337,7 @@ def _tree_files(root: Path, rel_roots: tuple[str, ...], name_re: re.Pattern[str]
 def _read_text(root: Path, rel: str) -> str:
     """One test file's text, read for the scan that asked and then dropped.
 
-    Deliberately NOT memoised, unlike `_tree_files` above. `_referencing_tests`
+    Deliberately NOT memoised, unlike the checkout walk above. `_referencing_tests`
     reads each file exactly once per `related_targets` call, so a cache buys the
     gate nothing; what it cost was the whole test tree resident for the life of
     the process -- ~3,200 files, ~100 MB of `str` -- for a 0.4 s re-read. In the

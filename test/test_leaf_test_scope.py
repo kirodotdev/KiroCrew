@@ -200,7 +200,7 @@ def test_the_mention_scan_leaves_a_clean_leaf_alone(clean_leaf: str) -> None:
 def _release_the_scripts_corpus_after_module():
     """Drop ``leaf_test_scope``'s tree index once this module is done with it.
 
-    ``_index_tree_cached`` is an unbounded ``lru_cache`` keyed on the scan root.
+    ``_checkout_index`` is an unbounded ``lru_cache`` of the checkout's index.
     It holds only the names the script asks about (which module each file imports,
     which quoted tokens it carries) -- under 20 MiB -- never the files' text: the
     earlier design cached every ``.py`` under ``src/``, ``test/`` and ``scripts/``
@@ -211,7 +211,7 @@ def _release_the_scripts_corpus_after_module():
     here still share it with each other.
     """
     yield
-    mod._index_tree_cached.cache_clear()
+    mod._checkout_index.cache_clear()
 
 
 @pytest.fixture(scope="module")
@@ -405,6 +405,26 @@ def test_a_reader_runs_only_for_a_diff_that_touches_a_file_it_names(tmp_path: Pa
         "test/test_rooted.py",
     ]
     assert gates_for("test/test_other.py") == ["test/test_gate.py"]
+
+
+def test_a_second_tree_at_the_same_path_is_indexed_afresh(tmp_path: Path) -> None:
+    """pytest hands a passing test's removed ``tmp_path`` to a later test whose name
+    shares its first 30 characters, so one path holds two trees in one worker. Every
+    reader of the tree index must answer the second tree from its own files."""
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+    test_dir.joinpath("test_target.py").write_text("", encoding="utf-8")
+    reader_text = 'import test_target\nNAME = "test_target"\nFILE = "test_target.py"\n'
+    first = test_dir / "test_reader_one.py"
+    first.write_text(reader_text, encoding="utf-8")
+    assert mod.readers_of({"test_target"}, tmp_path) == ["test/test_reader_one.py"]
+
+    first.unlink()
+    test_dir.joinpath("test_reader_two.py").write_text(reader_text, encoding="utf-8")
+    second = "test/test_reader_two.py"
+    assert mod.importers_of({"test_target"}, tmp_path) == {"test_target": second}
+    assert mod.mentions_of({"test_target"}, tmp_path) == {"test_target": second}
+    assert mod.readers_of({"test_target"}, tmp_path) == [second]
 
 
 # ── the accepted case ─────────────────────────────────────────────────────────
