@@ -11,19 +11,20 @@
 import { describe, it, expect, vi } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 
+import { api } from '../api/client'
 import { createTestStore, renderWithProviders } from './helpers'
 import type { RootState, StatusData } from '../types'
 
 vi.mock('../api/client', () => ({
   api: {
-    system: () => Promise.resolve({
+    system: vi.fn(() => Promise.resolve({
       hostname: 'test', os: 'linux', arch: 'x86_64', cpu_count: 8,
       load_1m: 0, load_5m: 0, load_15m: 0,
       ip: '127.0.0.1', net_rx_mb: 0, net_tx_mb: 0, net_rx_kbs: 0, net_tx_kbs: 0,
       python: '3.12', pid: 42, cwd: '/tmp',
       proc_mem_mb: 200, proc_cpu_pct: 1, child_processes: 0, thread_count: 10,
       mcp_total: 0,
-    }),
+    })),
     // The MCP gateway card self-hides when disabled, which keeps this file
     // scoped to the channel rows.
     mcpGatewayStatus: () => Promise.resolve({ enabled: false, running: false, ping_ok: false }),
@@ -116,6 +117,35 @@ describe('ServicesTab channel rows', () => {
     expect(rowText('Slack')).toContain('Connected')
     for (const name of ['Telegram', 'Discord', 'Webex', 'WeCom', 'Microsoft Teams', 'WeChat', 'iMessage']) {
       expect(screen.queryByText(name), `${name} row should be hidden`).toBeNull()
+    }
+  })
+
+  it('names the kiro-cli process count kiro, never the adapter id', async () => {
+    // The backend counts command lines containing `kiro-cli` whatever the
+    // active backend is; the count's label must say what was counted.
+    const system = vi.mocked(api.system)
+    const original = system.getMockImplementation()!
+    system.mockImplementation(() =>
+      Promise.resolve({
+        hostname: 'test', os: 'linux', arch: 'x86_64', cpu_count: 8,
+        load_1m: 0, load_5m: 0, load_15m: 0,
+        ip: '127.0.0.1', net_rx_mb: 0, net_tx_mb: 0, net_rx_kbs: 0, net_tx_kbs: 0,
+        python: '3.12', pid: 42, cwd: '/tmp',
+        proc_mem_mb: 200, proc_cpu_pct: 1, child_processes: 0, thread_count: 10,
+        mcp_total: 36,
+        mcp_processes: { sandbox: 0, kiro_cli: 36, builder_mcp: 0 },
+      }),
+    )
+    try {
+      renderWithStatus({ slack_connected: true })
+      await waitFor(() =>
+        expect(screen.getByText('MCP Processes').parentElement?.textContent ?? '').toContain('36 ('),
+      )
+      const row = screen.getByText('MCP Processes').parentElement?.textContent ?? ''
+      expect(row).toContain('36 (0 sandbox · 36 kiro · 0 mcp)')
+      expect(row).not.toContain('acp_cli')
+    } finally {
+      system.mockImplementation(original)
     }
   })
 
