@@ -211,6 +211,11 @@ through xdist's own knob keeps those and adds the gate's cap on top. A human who
 wants the machine saturated runs a bare `python -m pytest` and gets the budget's
 default.
 `scripts/local-gate.py` is the same selection for both surfaces in one command.
+Its `--tree-scans` flag adds a pre-push tier: when the diff touches `src/`, every
+backend test that scans the whole source tree (a ratchet or import-boundary guard,
+found by `run_scoped_tests.tree_scan_targets` from how the test reads the tree) runs
+too, because such a guard fails on files it never names. It costs a few minutes,
+so run it before a push rather than on every inner-loop pass.
 `scripts/leaf_test_scope.py` is unchanged in contract: CI consumes its verdict to
 skip the matrix, so it must stay SOUND and its escalations still mean "CI runs
 the full suite" — which is exactly where the full suite belongs.
