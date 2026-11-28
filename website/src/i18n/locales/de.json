@@ -5973,7 +5973,11 @@
       "resume": "Vorlesen fortsetzen",
       "stop": "Vorlesen stoppen",
       "restart": "Erneut vorlesen",
-      "restartFromStart": "Von vorn erneut vorlesen"
+      "restartFromStart": "Von vorn erneut vorlesen",
+      "speedAppliesNext": "Gilt für das, was als Nächstes vorgelesen wird. Wähle „Erneut vorlesen“, um die ganze Antwort in dieser Geschwindigkeit zu hören.",
+      "speedLoadFailed": "Deine Vorlesegeschwindigkeit konnte nicht geladen werden.",
+      "speedSaveFailed": "Die Geschwindigkeit konnte nicht gespeichert werden. Deine vorherige Geschwindigkeit bleibt erhalten.",
+      "speedUnavailablePollyNeural": "Die Geschwindigkeit ist mit der neuronalen Polly-Engine nicht verfügbar."
     },
     "avatarBuilder": {
       "apply": "Übernehmen",

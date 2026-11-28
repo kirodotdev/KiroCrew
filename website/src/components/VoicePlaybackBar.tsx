@@ -6,8 +6,9 @@ import { focusComposer } from '../pages/chat/composerFocus'
 import { useAppSelector } from '../store'
 import { Glass } from './Glass'
 import { Btn } from './ui'
+import VoiceSpeedControl from './VoiceSpeedControl'
 
-/** Shows above the composer while a reply is being prepared or read aloud, with Pause / Resume and Stop on the first row and Read again on a second row. */
+/** Shows above the composer while a reply is being prepared or read aloud, with Pause / Resume and Stop on the first row and the speed choice and Read again on a second row. */
 export default function VoicePlaybackBar() {
   const playing = useAppSelector(s => s.chat.voicePlaying)
   const preparing = useAppSelector(s => s.chat.voicePreparing)
@@ -61,18 +62,20 @@ function Bar({ playing, paused }: { playing: boolean; paused: boolean }) {
             <span className="@max-[680px]:sr-only">{i18nT('components.voicePlaybackBar.stop')}</span>
           </Btn>
         </div>
-        <div className="flex items-center justify-end border-t border-border px-3 py-1">
-          <Btn
-            type="button"
-            onClick={() => window.dispatchEvent(new Event('voice-restart'))}
-            aria-label={i18nT('components.voicePlaybackBar.restartFromStart')}
-            title={i18nT('components.voicePlaybackBar.restartFromStart')}
-            className="shrink-0 bg-bg px-2 py-0.5 [@media(hover:none)]:min-h-10"
-            data-testid="voice-playback-restart"
-          >
-            <RotateCcw className="lucide-inline shrink-0" aria-hidden="true" />
-            <span className="max-[360px]:sr-only">{i18nT('components.voicePlaybackBar.restart')}</span>
-          </Btn>
+        <div className="border-t border-border px-3 py-1">
+          <VoiceSpeedControl>
+            <Btn
+              type="button"
+              onClick={() => window.dispatchEvent(new Event('voice-restart'))}
+              aria-label={i18nT('components.voicePlaybackBar.restartFromStart')}
+              title={i18nT('components.voicePlaybackBar.restartFromStart')}
+              className="shrink-0 bg-bg px-2 py-0.5 [@media(hover:none)]:min-h-10"
+              data-testid="voice-playback-restart"
+            >
+              <RotateCcw className="lucide-inline shrink-0" aria-hidden="true" />
+              {i18nT('components.voicePlaybackBar.restart')}
+            </Btn>
+          </VoiceSpeedControl>
         </div>
       </Glass>
     </div>
