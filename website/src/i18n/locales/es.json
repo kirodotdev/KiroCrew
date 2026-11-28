@@ -11868,6 +11868,24 @@
       "run_unanswered": "El terminal no respondió, así que cópialo en la aplicación Terminal de tu ordenador.",
       "title": "Ejecútalo tú"
     },
+    "appWidget": {
+      "frame_label": "{{title}}, de {{app}}",
+      "from_app": "De {{app}}",
+      "reason_bad_use": "El agente nombró mal este widget, así que no se puede mostrar.",
+      "reason_not_installed": "Este widget necesita la app {{app}}, que no está instalada.",
+      "reason_app_off": "Este widget necesita la app {{app}}, que está desactivada.",
+      "reason_not_approved": "Todavía no aprobaste este widget de la app {{app}}.",
+      "reason_no_widget": "La app {{app}} no tiene ningún widget llamado «{{widget}}».",
+      "reason_too_large": "Los datos de este widget son demasiado grandes para mostrarlos.",
+      "reason_not_object": "Los datos de este widget no son válidos, así que no se puede mostrar.",
+      "reason_apps_unavailable": "No se pudieron cargar las apps, así que este widget no se puede mostrar.",
+      "reason_failed": "La app {{app}} no pudo mostrar este widget.",
+      "open_to_install": "Ir a la página de {{app}} para instalarla",
+      "open_to_turn_on": "Ir a la página de {{app}} para activarla",
+      "open_to_approve": "Ir a la página de {{app}} para aprobarlo",
+      "show_data": "Mostrar los datos sin procesar",
+      "retry": "Reintentar"
+    },
     "messageActions": {
       "popover_label": "{{app}}: {{title}}",
       "item_label": "{{title}}, de {{app}}",
@@ -12822,6 +12840,7 @@
         "installed_needs_newer_host": "La versión instalada de {{name}} necesita un {{productName}} más reciente. Actualiza {{productName}}; tus datos no cambian."
       },
       "grants_reconsent_composer_actions": "Botones del editor: permite que la app añada estos botones al menú + del editor. Un clic inserta el texto de la app en tu borrador; la app no puede ver el borrador ni enviarlo.",
+      "grants_reconsent_widgets": "Widgets del chat: permite que la app muestre estos widgets en las respuestas del chat. Cada uno recibe los datos que el agente escribe para él, que pueden incluir texto de tu conversación, y la app puede enviar esos datos a otros sitios.",
       "grants_reconsent_selection_actions": "Acciones sobre texto seleccionado: permite que los elementos de la app reciban el texto que seleccionas en las respuestas del chat y ofrezcan un resultado para Copiar o Abrir.",
       "browser_sites_list_title": "Sitios de navegación",
       "browser_sites_list_hint": "Las páginas por las que puede navegar el agente propio de esta aplicación. Un sitio quitado deja de valer en el siguiente paso del agente.",

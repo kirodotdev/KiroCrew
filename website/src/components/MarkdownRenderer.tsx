@@ -66,6 +66,7 @@ import WidgetFrame from './WidgetFrame'
 import MarkdownWidget from './MarkdownWidget'
 import WidgetPlaceholder from './WidgetPlaceholder'
 import { i18nT } from '../i18n/t'
+import AppWidget from '../appWidgets/AppWidget'
 import { toDate } from '../i18n/format'
 import {
   CompactImagesCtx,
@@ -1332,6 +1333,9 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
     case 'widget':
       if (quoted) return null
       if (!block.complete) return <WidgetPlaceholder title={block.language} />
+      // `use="<app>:<id>"`: an installed app's widget, drawn by the app's own module
+      // in the sandboxed app frame from the JSON body (`contributes.widgets`).
+      if (block.use) return <AppWidget use={block.use} body={block.content} title={block.language} blockedLinks={markers?.links} linksPending={markers?.pending} />
       // A widget whose body holds no HTML element is markdown an agent wrapped in
       // the widget tag (a "Task board" table, say). Drawn in the frame it reads as
       // raw `**` and `|` text, so it is rendered as the markdown it is, under its title.

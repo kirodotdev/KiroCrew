@@ -6,12 +6,13 @@ message) stores what the owner approved as its own entry families in the app's
 ``approved-grants.json``, held back on a widening update exactly like a new API
 path (``manager_records``). Each point registers here:
 
-``register_point_grants(families, entries)``
+``register_point_grants(families, entries, *, explicit_only=False)``
     ``families`` are the family names the point stores, in order; ``entries`` maps
     a manifest's ``contributes`` (a parsed ``Contributes`` or a raw dict) to
     ``{family: [entry, ...]}`` for those families. An entry is a string; a
     widening must produce an entry the older manifest did not, and a narrowing
-    must only drop entries.
+    must only drop entries. ``explicit_only`` is as for
+    ``register_permission_grants`` below.
 
 :func:`grant_source` is the one reader every install, update and approval path
 uses: ``api``, ``events`` and every registered family a manifest declares.
@@ -59,10 +60,14 @@ def _refuse_clash(families: tuple[str, ...]) -> None:
         raise ValueError(f"grant families already registered: {clash}")
 
 
-def register_point_grants(families: tuple[str, ...], entries: EntriesFn) -> None:
+def register_point_grants(
+    families: tuple[str, ...], entries: EntriesFn, *, explicit_only: bool = False
+) -> None:
     """Register one point's grant families and how a manifest declares them."""
     _refuse_clash(families)
     _REGISTRY.append((tuple(families), entries))
+    if explicit_only:
+        _EXPLICIT_ONLY.extend(families)
 
 
 def register_permission_grants(
@@ -178,6 +183,19 @@ from kiro_crew.apps.selection_action_grants import (  # noqa: E402
 )
 
 register_point_grants(SELECTION_ACTION_GRANT_FAMILIES, selection_action_grant_entries)
+
+
+def _widget_grant_entries(contributes: Any) -> dict[str, list[str]]:
+    # Deferred, like ``frame_sources`` below: off the MCP server's pre-list budget.
+    from kiro_crew.apps.widget_grants import widget_grant_entries  # noqa: PLC0415
+
+    return widget_grant_entries(contributes)
+
+
+#: ``widget_grants.WIDGET_GRANT_FAMILY`` (``contributes.widgets``), named here so
+#: registering it imports nothing. Explicit-only: an older host installed an app
+#: without reading the key, so no owner saw its widgets in a prompt.
+register_point_grants(("widgets",), _widget_grant_entries, explicit_only=True)
 
 from kiro_crew.apps.worker_auto_approve import (  # noqa: E402
     WORKER_AUTO_APPROVE_GRANT_FAMILIES,

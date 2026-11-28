@@ -36,6 +36,13 @@ export interface LinkOpenGrantRow {
   stagedFullUrl?: boolean
 }
 
+/** An app row's `widgetGrant` (`apps/widget_grants.py`): the widget ids the owner
+ *  approved, and the ids an update added that wait. Absent when no widget is declared. */
+export interface WidgetGrantRow {
+  approved?: string[]
+  staged?: string[]
+}
+
 /** An app row's `selectionActionGrant`: item ids the owner approved, and changed entries that wait. */
 export interface SelectionActionGrantRow {
   approved?: string[]
@@ -173,6 +180,8 @@ export type InstalledApp = {
   composerActionGrant?: ComposerActionGrantRow
   /** Approved selection-action items, and the changed ones an update holds back. */
   selectionActionGrant?: SelectionActionGrantRow
+  /** Approved app widgets, and the ids an update holds back. */
+  widgetGrant?: WidgetGrantRow
   /** Whether the owner approved `permissions.workerAutoApprove`; absent when undeclared. */
   workerAutoApproveGrant?: { approved: boolean; staged: boolean }
   /** `permissions.reachableByUserSessions` verbs the owner approved, and the ones an update holds back; absent when undeclared. */

@@ -848,6 +848,10 @@ export interface ContentBlock {
    * this to render the bookmark filled, link the title to /artifacts/<slug>,
    * and treat clicks as un-save rather than save. */
   slug?: string
+  /** An app widget (widget blocks only): the `use="<app>:<id>"` attribute naming a
+   *  widget an installed app declares in `contributes.widgets`. The block's content
+   *  is then the JSON payload the app's frame draws, not HTML. */
+  use?: string
   /** This markdown block is one paragraph-bounded piece of the trailing
    * markdown block. `from` is that block's startLine and `part` this piece's
    * index, so a piece keeps its React key while lines above it are

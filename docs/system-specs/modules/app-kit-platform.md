@@ -1640,8 +1640,8 @@ Every manifest resource path (`agents`/`skills`/`sops`, `ui.entry`,
 `ui.pages[].entryPoint`, `backend.entryPoint`, `contributes.panelTabs[].entry`,
 `contributes.linkPreviews[].entry`, the `entry` of `desktop.windows[]`,
 `contributes.messageActions[]`, `contributes.linkOpen[]`,
-`contributes.composerActions[]` and `contributes.selectionActions[]`, session-control
-`entryPoint`) is joined onto the app root, so
+`contributes.composerActions[]`, `contributes.selectionActions[]` and
+`contributes.widgets[]`, session-control `entryPoint`) is joined onto the app root, so
 `manifest._app_path_refusal` refuses any path that could relocate that join.
 It applies three checks, and the two lexical ones run **first and unconditionally**
 — before, and independent of, whether `app_root` is known:
@@ -5712,8 +5712,9 @@ owner each:
   text the host shows from a frame. The link-preview point keeps its own
   show/card messages (§18a) and does not use the contract.
 - **Grant families from one registry** (`apps/point_grants.py`).
-  `register_point_grants(families, entries)` adds a point's families and the
-  function that derives them from a manifest's `contributes`; `grant_source` is the
+  `register_point_grants(families, entries, *, explicit_only=False)` adds a point's
+  families and the function that derives them from a manifest's `contributes`, and
+  `explicit_only` is as for a permission family; `grant_source` is the
   one reader every install, update and approval path uses, and
   `STAGED_GRANT_FAMILIES` and the enable route's consent read
   `point_grant_families()`. A family name already taken, or `api` / `events`, is
@@ -6678,6 +6679,86 @@ Writers: `website/src/app-sdk/FileTree.tsx`, `website/src/pierre/workspaceTreeCl
 `website/src/app-sdk/index.ts`, `website/public/vendor/kirocrew-app-sdk.mjs`,
 `website/src/app-sdk/sdkLevel.ts`, `apps/app_sdk_level.py`.
 
+## 18o. An app widget gets one payload, in an offline frame
+
+`contributes.widgets[]` (at most 16 per app: `id` matching the frame point id
+rule, `title` of at most 40 UTF-16 units, optional `description` of at most 200,
+`entry` of at most 512 characters and contained in the app root; a field with the
+wrong type or an unknown field is refused, never coerced) declares views any chat
+draws inline with `<mcwidget use="<app>:<id>">{json}</mcwidget>`. The block is
+serialized, so it is covered by the signing payload, and `widgets` is in
+`startup_modules.BROWSER_ONLY_CONTRIBUTIONS`. The parser lives in
+`apps/manifest_widgets.py`. The design is the draft RFC in pull request #42676.
+
+- **Tag.** Both widget parsers read `use` beside `title` and `slug`
+  (`parseWidgetAttrs` in `useBlockAssembler.ts`, `_parse_attrs` in
+  `widget_parse.py`), so a complete block carries `use` and its body is the JSON
+  payload. `register_widgets` skips a `use` widget: its body is data, not a page.
+- **Point.** `widgets`, registered at the bottom of `apps/app_frame.py` with
+  `widget_frame.resolve_widget` and `WIDGET_SCRIPT`, and `offline=True`. The
+  resolver answers only for an enabled app's declared widget whose grant the owner
+  approved. An offline point's mint returns `capability: null`, and its frame
+  policy, served and srcdoc, is `img-src 'self' data: blob:`: the payload is agent
+  output, and a network image URL built from it would carry it off the host.
+- **Grant.** Offline does not stop the module from navigating its own frame to
+  another host with the payload in the address. No frame policy a browser enforces
+  refuses that, and `onNavigatedAway` closes the frame only after the new document
+  loads. So a widget is gated by the owner, as every point handed
+  conversation-derived text is. One staged family, `widgets`, entry `<id>:render`
+  (`apps/widget_grants.py`), registered explicit-only in `apps/point_grants.py`
+  without importing the module. An install approves the declared widgets. A set
+  stored before this host read `contributes.widgets` approves none, because no owner
+  saw them in a prompt, so each one waits as a held-back id does. A new id on update is held
+  back until the owner approves it on the App Detail page, which lists it under
+  "Chat widgets" and sends `widgets: ['<id>:render']`. A title, description or
+  entry change keeps the approval. The app row carries
+  `widgetGrant { approved, staged }`.
+- **What the frame gets.** `init` with no capability, then one
+  `widget.render { props, theme, widgetId }`. The script hands the module
+  `render(props, view)` once, with a frozen `view` (`widgetId`, `theme`,
+  `resize`); `ctx` is `{ appName, point, theme }` with no `fetch`. Not the
+  transcript, the message around the tag, the session or the agent.
+- **Host** (`website/src/appWidgets/AppWidget.tsx`). The renderer's `widget` case
+  hands a block with `use` to `AppWidget`, which resolves `use` against the app
+  list (`appWidgetRegistry.resolveAppWidget`) and parses the body
+  (`parseWidgetProps`: one JSON object, at most 16,384 UTF-8 bytes). The frame
+  mounts when the block comes near the viewport, must say `ready` within 10 s,
+  and reports its height with `widget.resize`, clamped to 40 to 800 pixels. A
+  theme change on the root element posts `theme`. A message over 4 KB or past the
+  burst allowance is dropped; `capabilityExpired` is not answered.
+- **Links.** The frame opens a link only through `useFrameLinkBridge`, with the
+  refusal `WidgetFrame` uses: the renderer passes the reply's blocked-link records
+  and pending flag, so a link the reply draws as a Blocked link chip opens nothing,
+  and no web link opens while the records are pending. A link to another host
+  opens nothing (`leavesDashboard`). The server finds blocked links in the text
+  as written, and the browser can read an address in the payload differently
+  (an escape such as `https:\/\/`, a full-width host it folds to ASCII, userinfo
+  before the host), so no such address was reliably judged. Only a page of this
+  dashboard opens from an app widget.
+- **Loading.** While the app list loads, the block shows its heading and a
+  placeholder 120 pixels high, with `aria-busy`, so it reads as loading and not as
+  an empty card.
+- **Fallback.** A bad `use`, an app that is not installed, an app that is turned
+  off, a widget the owner has not approved, no such widget, a body that is not one
+  JSON object within the cap, an app list that does not load, a refused mint, a
+  frame that fails, navigates away or is not ready in time: each draws
+  `AppWidgetFallback`, which names the reason and keeps the payload in a closed
+  `<details>` block. `resolveAppWidget` reads `widgetGrant.approved`, and a row
+  without it approves nothing. The not-installed, turned-off and not-approved
+  cards link to `/apps/detail/<app>`, through the page-leave check. The link label
+  names the app's page ("Go to the {{app}} page to install it"), because nothing
+  is installed, turned on or approved from the card. Every other card renders its
+  reason through `ErrorNotice` with the agent hand-off, so each card offers a next
+  step. The app-list card also offers "Try again", which refetches the `['apps']`
+  query. The no-widget card names the widget by its id, the part of `use` after the
+  colon. The bad-use card says the agent named the widget wrongly and does not
+  quote `use`, because the reader cannot fix the tag and the agent hand-off can.
+
+Writers: `apps/manifest_widgets.py`, `apps/widget_frame.py`, `apps/widget_grants.py`,
+`apps/point_grants.py`, `apps/app_frame.py`, `widget_parse.py`, `widget_artifacts.py`,
+`website/src/appWidgets/*`, `website/src/pages/AppDetailPage.tsx`,
+`website/src/hooks/useBlockAssembler.ts`, `website/src/components/MarkdownRenderer.tsx`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -7386,6 +7467,7 @@ This section records which module owns which part, so a change lands in its owne
 | `manifest_agent_tools.py` | The `agentTools` block: the MCP tools an app serves from its own process, their namespace, route, argument-schema subset and `strictSession` rules (§30.1) |
 | `manifest_memory_providers.py` | The `contributes.memoryProviders` block: the memory providers an app's backend serves, their id, route and display caps |
 | `manifest_session_create.py` | The `contributes.sessionCreateItems` block: Sessions New menu rows, their id, label, icon and endpoint, and the per-app cap (§18m) |
+| `manifest_widgets.py` | The `contributes.widgets` block (§18o): the widgets an app ships for any chat to draw, their id grammar, entry path and title, description and count caps |
 | `manifest_contributes.py` | The `contributes` block: session controls, Command Bar commands and their argument, side-panel tabs, file-menu rows, `Contributes`, and the caps and grammars the dashboard mirrors for them |
 | `job_sdk.py` | The facade, plus `JobSDK`, the per-app `JobStore`, the process-wide SDK registry, the interruption message `reconcile` composes (`_interrupt_error`), the process identity (`_ORIGIN`) and the tunables only they read |
 | `job_sdk_records.py` | The run record (`JobRun`), its lifecycle states and interruption causes, the params bounds and the ingest redaction (`_validated_params`, `_redact`), the `JobHandle` a runner holds, and the Job SDK exceptions |
@@ -7394,9 +7476,10 @@ This section records which module owns which part, so a change lands in its owne
 
 Imports only point down. `manifest_sections` imports `KEBAB_RE` from `manifest_names`
 and `manifest_contributes` imports `MemoryProvidersConfig` from
-`manifest_memory_providers` and `SessionCreateItemsConfig` from
-`manifest_session_create`; `manifest_containment`, `manifest_agent_tools`,
-`manifest_memory_providers`, `manifest_session_create`, `job_sdk_records`, `job_sdk_returns` and
+`manifest_memory_providers`, `SessionCreateItemsConfig` from
+`manifest_session_create` and `WidgetsConfig` from `manifest_widgets`;
+`manifest_containment`, `manifest_agent_tools`, `manifest_memory_providers`,
+`manifest_session_create`, `manifest_widgets`, `job_sdk_records`, `job_sdk_returns` and
 `job_sdk_retention` import no owner, and no owner imports its facade, even for type checking. Each facade
 imports every name its owners define
 at its own import, private names included, so every `from kiro_crew.apps.manifest
@@ -7428,7 +7511,7 @@ fails. `test_setup_hooks_contract.py` excludes `manifest_sections.py`, where eve
 
 Writers: `apps/manifest.py`, `apps/manifest_names.py`, `apps/manifest_containment.py`,
 `apps/manifest_sections.py`, `apps/manifest_contributes.py`, `apps/manifest_agent_tools.py`,
-`apps/manifest_memory_providers.py`, `apps/job_sdk.py`,
+`apps/manifest_memory_providers.py`, `apps/manifest_widgets.py`, `apps/job_sdk.py`,
 `apps/job_sdk_records.py`, `apps/job_sdk_returns.py`, `apps/job_sdk_retention.py`.
 
 ### 26.1 Retention is a per-kind count cap, opt-in

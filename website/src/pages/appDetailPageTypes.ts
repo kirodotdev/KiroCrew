@@ -17,6 +17,7 @@ import type {
   MessageActionGrantRow,
   RegistryApp,
   SelectionActionGrantRow,
+  WidgetGrantRow,
 } from '../components/appstore/types'
 
 type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
@@ -76,6 +77,7 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   linkOpenGrant?: LinkOpenGrantRow
   composerActionGrant?: ComposerActionGrantRow
   selectionActionGrant?: SelectionActionGrantRow
+  widgetGrant?: WidgetGrantRow
   /** Whether the owner approved `permissions.workerAutoApprove`; absent when undeclared. */
   workerAutoApproveGrant?: { approved: boolean; staged: boolean }
   /** `permissions.reachableByUserSessions` verbs the owner approved, and the ones an update holds back; absent when undeclared. */

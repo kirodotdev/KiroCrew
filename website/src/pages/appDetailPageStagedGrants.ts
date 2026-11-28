@@ -30,6 +30,8 @@ export function stagedGrantsOf(app: AppInfo | null) {
   const stagedOpenFullUrl = app?.linkOpenGrant?.stagedFullUrl === true
   // A composer button an update added waits the same way.
   const stagedComposerActions = app?.composerActionGrant?.staged || []
+  // So does an app widget, which is handed the agent's payload of its tag.
+  const stagedWidgets = app?.widgetGrant?.staged || []
   // Selection actions an update added or changed (a new source, more text, a new effect).
   const stagedSelection = app?.selectionActionGrant?.staged || []
   const declaredSelectionActions = (app?.manifest as { contributes?: { selectionActions?: unknown } } | undefined)?.contributes?.selectionActions
@@ -46,16 +48,16 @@ export function stagedGrantsOf(app: AppInfo | null) {
   const stagedBrowserRecipes = app?.browserRecipesGrant?.staged || []
   // `permissions.browser` verbs: an install never approves them either.
   const stagedBrowser = knownBrowserVerbs(app?.browserGrant?.staged)
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length + stagedKiroOperations.length + stagedBrowserRecipes.length + stagedBrowser.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedWidgets.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length + stagedKiroOperations.length + stagedBrowserRecipes.length + stagedBrowser.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
   // Only Kiro operations wait, and none was ever approved: this is the first approval
   // (an install approves none), not an update asking for more.
   const firstKiroApproval = stagedKiroOperations.length > 0 && !(app?.kiroOperationsGrant?.approved || []).length
-    && stagedKiroOperations.length === stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length + stagedKiroOperations.length + stagedBrowserRecipes.length + stagedBrowser.length
+    && stagedKiroOperations.length === stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedWidgets.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length + stagedKiroOperations.length + stagedBrowserRecipes.length + stagedBrowser.length
     && !stagedFullUrl && !stagedOpenFullUrl && !stagedWorkerAutoApprove
   return {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
-    stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
+    stagedComposerActions, stagedWidgets, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
     stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowserRecipes, stagedBrowser, hasStagedGrants, firstKiroApproval,
   }
 }

@@ -75,16 +75,19 @@ const WIDGET_OPEN_LINE_RE = /<mcwidget((?:\s+\w+="[^"]*")*)\s*>/
 const WIDGET_ATTR_RE = /(\w+)="([^"]*)"/g
 const WIDGET_CLOSE_LINE_RE = /<\/mcwidget>/
 
-/** Extract title/slug attributes from the attribute string captured by
- * WIDGET_OPEN_LINE_RE. Returns plain object, never throws. */
-function parseWidgetAttrs(attrStr: string): { title?: string; slug?: string } {
-  const out: { title?: string; slug?: string } = {}
+/** Extract title/slug/use attributes from the attribute string captured by
+ * WIDGET_OPEN_LINE_RE. Returns plain object, never throws. `use` names an app
+ * widget (`<app>:<id>`, `contributes.widgets`); `_parse_attrs` in
+ * `widget_parse.py` reads the same three. */
+function parseWidgetAttrs(attrStr: string): { title?: string; slug?: string; use?: string } {
+  const out: { title?: string; slug?: string; use?: string } = {}
   if (!attrStr) return out
   WIDGET_ATTR_RE.lastIndex = 0
   let m: RegExpExecArray | null
   while ((m = WIDGET_ATTR_RE.exec(attrStr)) !== null) {
     if (m[1] === 'title') out.title = m[2]
     else if (m[1] === 'slug') out.slug = m[2]
+    else if (m[1] === 'use') out.use = m[2]
   }
   return out
 }
@@ -196,6 +199,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
   let fenceNestable = false  // true when outer lang is markup/doc (nested fences expected)
   let widgetTitle = ''
   let widgetSlug = ''
+  let widgetUse = ''
   let widgetFenceTick = ''
   let widgetFenceLen = 0  // raw backtick count of the widget's inner fence
   let mdStart = 1
@@ -242,10 +246,12 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
       complete,
       startLine: widgetStart,
       slug: widgetSlug || undefined,
+      ...(widgetUse ? { use: widgetUse } : {}),
     })
     widgetBuf = []
     widgetTitle = ''
     widgetSlug = ''
+    widgetUse = ''
     widgetFenceTick = ''
     widgetFenceLen = 0
   }
@@ -275,6 +281,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
           const attrs = parseWidgetAttrs(wOpen[1] || '')
           widgetTitle = attrs.title || ''
           widgetSlug = attrs.slug || ''
+          widgetUse = attrs.use || ''
           widgetStart = i + 1
           const afterTag = line.slice(wOpen.index + wOpen[0].length)
           // Close tag on the same line as the open tag: single-line widget.

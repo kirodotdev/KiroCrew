@@ -1815,6 +1815,112 @@ click. A link clicked inside the frame goes nowhere; use `offerOpen`.
 64 KB or past its burst allowance, or navigates itself away is removed, and the
 popover says the app did not respond.
 
+### `contributes.widgets` — Views Any Chat Can Draw
+
+A widget is a view your app draws from a JSON payload. Once the app is installed
+and enabled, an agent in any chat can draw it inline in an answer with the
+existing widget tag, naming the widget with `use` and putting the payload in the
+body:
+
+```html
+<mcwidget use="issue-radar:issue-card" title="Issue #40452">
+{"number": 40452, "title": "Render chart fences", "state": "open"}
+</mcwidget>
+```
+
+```json
+{
+  "contributes": {
+    "widgets": [
+      {
+        "id": "issue-card",
+        "title": "Issue card",
+        "description": "One GitHub issue: number, title, state and labels.",
+        "entry": "widgets/issue-card.mjs"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | `[a-z][a-z0-9_-]{0,63}`, unique within the app. The second half of `use` |
+| `title` | string | 1-40 characters. The widget's default heading |
+| `description` | string | Optional, at most 200 characters. What the payload holds, for the agent that fills it |
+| `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
+
+At most **16** widgets per app. A field with the wrong JSON type, or an unknown
+field, is refused, never coerced. The block is signed. A widget starts no process,
+so it keeps a browser-only app eligible for a startup module.
+
+**The owner approves each widget.** A widget is handed what an agent wrote, so
+each one is a grant, `<id>:render`, in the `widgets` family of the app's approved
+permissions. Installing the app approves the widgets it declares. An app that a
+host from before widgets installed has none approved, because its owner never saw
+them in a prompt, so each one waits on the app's page. An update that
+adds a widget id holds that widget back until the owner approves it under
+**Approve new permissions** on the app's page. Until then the chat shows a card
+that links there. Changing a widget's title, description or entry keeps its
+approval.
+
+**The tag.** `use` is `<app name>:<widget id>`. The body is one JSON object of at
+most 16,384 bytes. The payload lives in the body because a tag attribute cannot
+hold a `"`. While the answer streams, the widget shows the usual placeholder. A
+`use` widget is not saved as an artifact: its body is data, not a page.
+
+**Where the module runs.** On the shared app frame, at
+`/app-frame/<app>/widgets/<id>/…`: an iframe that is `sandbox="allow-scripts"`
+with no `allow-same-origin`, `credentialless`, loading the gateway's frame
+document under its own CSP. The point is **offline**. The mint gives the frame no
+capability, so `ctx` has no `fetch` and the module reaches no backend, and the
+frame's policy is `img-src 'self' data: blob:`, so it loads no image from the
+network. The payload is agent output, so an image URL built from it could
+otherwise carry conversation text to another host. Bundle the images the view
+needs, or use `data:` URLs. Offline does not stop a module from navigating its own
+frame, which is why each widget needs the owner's approval. A frame that navigates
+away is closed and draws the fallback card. The frame mounts when the widget comes near the
+viewport. `ctx` is `{ appName, point: 'widgets', theme() }`. The module exports
+`activate(ctx)` and returns a handler:
+
+```js
+export function activate(ctx) {
+  return {
+    render(props, view) {
+      // props: the parsed payload. view: { widgetId, theme, resize({ height }) }
+      const h = document.createElement('h3')
+      h.textContent = `#${props.number} ${props.title}`  // textContent, never innerHTML
+      document.body.append(h)
+      view.resize({ height: document.body.scrollHeight })
+    },
+    theme(next) {},   // 'light' or 'dark', when the dashboard theme changes
+    dispose() {},
+  }
+}
+globalThis.kirocrew?.register(activate)  // for the inline path behind a proxy
+```
+
+The host sends `render` once, after the module is ready. Treat `props` as
+untrusted: an agent wrote it, and it can hold text from a tool result. The
+height is clamped to 40-800 pixels. A link the user clicks in the frame opens
+through the host's link bridge, as for every app frame, but only when it goes to
+a page of this dashboard. A link to another host opens nothing, so show such an
+address as text. The server judges a reply's blocked links in its text, and the
+browser can read an address in a JSON payload differently from that text.
+
+**When it cannot be drawn.** The host draws a card that names the reason and
+keeps the payload readable under **Show the raw data** when: no enabled app
+has that name, the owner has not approved the widget, the app declares no such
+widget, `use` is not `<app>:<id>`, the
+body is not one JSON object within the cap, the mint is refused, or the module
+does not say it is ready within 10 seconds, reports a failure or navigates the
+frame away.
+
+**Telling agents about it.** An agent learns your widgets from your app's skill.
+Name each widget, its `use` value and its payload fields there. The `widgets`
+skill tells agents to read the app's skill before they draw one. A complete
+example is `docs/app-kit/examples/widget-app`.
+
 ### `contributes.memoryProviders` — Memory Your Backend Serves
 
 An app can offer Crew a memory provider: its backend serves a fixed JSON contract, and

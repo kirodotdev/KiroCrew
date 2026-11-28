@@ -11868,6 +11868,24 @@
       "run_unanswered": "Le terminal n'a pas répondu, alors copie-la dans l'application Terminal de ton ordinateur.",
       "title": "À lancer toi-même"
     },
+    "appWidget": {
+      "frame_label": "{{title}}, de {{app}}",
+      "from_app": "De {{app}}",
+      "reason_bad_use": "L’agent a mal nommé ce widget, il ne peut donc pas être affiché.",
+      "reason_not_installed": "Ce widget a besoin de l’app {{app}}, qui n’est pas installée.",
+      "reason_app_off": "Ce widget a besoin de l’app {{app}}, qui est désactivée.",
+      "reason_not_approved": "Tu n’as pas encore approuvé ce widget de l’app {{app}}.",
+      "reason_no_widget": "L’app {{app}} n’a aucun widget nommé « {{widget}} ».",
+      "reason_too_large": "Les données de ce widget sont trop volumineuses pour être affichées.",
+      "reason_not_object": "Les données de ce widget ne sont pas valides, il ne peut donc pas être affiché.",
+      "reason_apps_unavailable": "Impossible de charger les apps, ce widget ne peut donc pas être affiché.",
+      "reason_failed": "L’app {{app}} n’a pas pu afficher ce widget.",
+      "open_to_install": "Aller à la page de {{app}} pour l’installer",
+      "open_to_turn_on": "Aller à la page de {{app}} pour l’activer",
+      "open_to_approve": "Aller à la page de {{app}} pour l’approuver",
+      "show_data": "Afficher les données brutes",
+      "retry": "Réessayer"
+    },
     "messageActions": {
       "popover_label": "{{app}} : {{title}}",
       "item_label": "{{title}}, de {{app}}",
@@ -12822,6 +12840,7 @@
         "installed_needs_newer_host": "La version installée de {{name}} nécessite une version plus récente de {{productName}}. Mets à jour {{productName}} ; tes données restent inchangées."
       },
       "grants_reconsent_composer_actions": "Boutons de l'éditeur : permet à l'app d'ajouter ces boutons au menu + de l'éditeur. Un clic insère le texte de l'app dans ton brouillon ; l'app ne peut ni voir le brouillon ni l'envoyer.",
+      "grants_reconsent_widgets": "Widgets de chat : permet à l'app d'afficher ces widgets dans les réponses du chat. Chacun reçoit les données que l'agent écrit pour lui, qui peuvent contenir du texte de ta conversation, et l'app peut envoyer ces données à d'autres sites.",
       "grants_reconsent_selection_actions": "Actions sur le texte sélectionné : permet aux éléments de l’app de recevoir le texte que tu sélectionnes dans les réponses du chat et de proposer un résultat à Copier ou Ouvrir.",
       "browser_sites_list_title": "Sites de navigation",
       "browser_sites_list_hint": "Les pages sur lesquelles l'agent de cette application peut naviguer. Un site retiré cesse de valoir à la prochaine étape de l'agent.",
