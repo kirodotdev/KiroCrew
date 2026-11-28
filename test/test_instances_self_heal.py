@@ -143,6 +143,28 @@ class TestReconfigureAtomicity:
 
         asyncio.run(scenario())
 
+    def test_a_refresh_task_finished_on_an_earlier_loop_does_not_block_reconfigure(self, tmp_path):
+        """A refresh task left behind by a closed loop is already done.
+
+        ``asyncio.run`` cancels the task when its loop ends, so a later
+        reconfigure on a new loop finds a finished task from another loop.
+        Waiting on it must not raise: CPython 3.14's ``gather`` refuses a
+        future of a different loop even once it is done.
+        """
+        mgr, _reg = self._manager(tmp_path)
+        applied: list[str] = []
+
+        async def park_refresh():
+            mgr._refresh_tasks["cd-1"] = asyncio.create_task(asyncio.Event().wait())
+
+        asyncio.run(park_refresh())
+        assert mgr._refresh_tasks["cd-1"].done()
+
+        asyncio.run(mgr.reconfigure("cd-1", lambda: applied.append("persisted")))
+
+        assert applied == ["persisted"]
+        assert "cd-1" not in mgr._refresh_tasks
+
     def test_a_recovery_scheduled_mid_reconfigure_is_refused(self, tmp_path):
         """Cancelling the recoveries in flight is not enough on its own.
 
