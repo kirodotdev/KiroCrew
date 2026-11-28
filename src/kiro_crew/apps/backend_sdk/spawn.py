@@ -28,7 +28,7 @@ import os
 import subprocess
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from kiro_crew import platform_compat, sandbox
 from kiro_crew.apps.registry_pipeline import subprocess_env
@@ -226,7 +226,11 @@ async def _hidden_dirs_off_loop(
     return hidden
 
 
-def _hidden_option(hidden: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+class _HiddenOption(TypedDict, total=False):
+    extra_hidden_dirs: tuple[str, ...]
+
+
+def _hidden_option(hidden: tuple[str, ...]) -> _HiddenOption:
     return {"extra_hidden_dirs": hidden} if hidden else {}
 
 
