@@ -196,6 +196,15 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             ),
             source="local fallback",
         )
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_ANTIGRAVITY
+
+    if backend == ACP_BACKEND_ANTIGRAVITY:
+        # What this session advertised for its model, so a later empty draft on it can
+        # show the control before any message. Read from the session's own option, not
+        # from ``levels``, which can be the local fallback menu.
+        from kiro_crew.dashboard.handlers.agents_harness_effort import remember_reported_effort
+
+        remember_reported_effort(provider, backend, provider.served_model)
     ultracode = provider.ultracode_enabled()
     fast = provider.fast_mode_enabled()
     # Asked only of a switch that reads off: the harness names no blocker for one on.

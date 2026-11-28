@@ -801,7 +801,12 @@ its own once the cache refreshes with a list that carries it.
   levels: that is the other session's model speaking (goose does this per model).
   A pair-id harness with the option reports `effort_supported: null` and keeps
   those levels, so each picker judges its current model. With no live session on that harness `null` means unknown,
-  and the current model supplies the provisional answer. On `false` the effort
+  and the current model supplies the provisional answer. Antigravity is the exception for the exact model a draft
+  would serve: Crew keeps the levels a session of that model reported (`kiro_crew/advertised_effort_cache.py`,
+  in memory, loaded once, written off the event loop with `atomic_write`, as the advertised-model cache is) and a
+  draft answers `true` with those levels. Only a session that has advertised its effort option records, so a
+  session that has not reported yet changes nothing; the live session's own option replaces the record
+  each time it reports. On `false` the effort
   control is absent and the shortcut says the session takes no effort.
   `resolved-model` gives the crew editor that build answer for a pair-id harness
   (Codex) only, because it holds for any model the editor picks; on every other
