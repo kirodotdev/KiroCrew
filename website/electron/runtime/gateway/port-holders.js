@@ -99,7 +99,8 @@ function descendantPids(rootPid, psTable) {
  *        bind check for an empty netstat answer on Windows, and for an lsof
  *        probe that could not run on macOS and Linux.
  * @param {(ms:number) => Promise<void>} [deps.sleep]  the wait between bind
- *        checks while that answer stays refused.
+ *        checks while that answer stays refused, and between the Windows
+ *        snapshot's netstat attempts.
  */
 function createPortHolders({
   fs,
@@ -153,11 +154,19 @@ function createPortHolders({
 
   // Capture the listener while the socket is still bound. Once it clears,
   // neither lsof nor netstat can name the process still holding gateway.lock.
+  // Its callers refuse on a failed probe, so on Windows one slow or failed
+  // netstat run gets a second bounded attempt before it reads as unknown.
   function snapshotGatewayPortPids(probePort) {
     return snapshotPortPids({
       port: probePort,
       isWindows: IS_WIN,
-      getWindowsPids: winListenPids,
+      getWindowsPids: (p) => windowsListenPidsRetrying(p, {
+        execFileFn: execFile,
+        attempts: 2,
+        timeoutMs: 5000,
+        sleep,
+        log: glog,
+      }),
       getPosixPids: lsofListenPids,
     });
   }

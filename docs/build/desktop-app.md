@@ -1664,6 +1664,17 @@ graceful, pre-update and tree-kill stops), `reconnect.js` (the liveness
 recoveries that reconnect to an external or adopted gateway instead of killing
 it), and `user-restart.js` (Settings → About's Restart gateway).
 
+The incumbent snapshot (`snapshotGatewayPortPids`) names the port's listener
+pids, or `null` when it cannot. Its callers refuse on `null`, among them the
+proven Windows home-gateway check in `holder-decision.js` and the manual-quit
+takeover in `family-takeover.js`. On Windows it therefore runs `netstat -ano`
+through `windowsListenPidsRetrying` with two attempts of 5 s each, so one slow
+or failed run does not decide; a run that names no listener is not retried, and
+two failed runs still give `null`. The local-token mint in `token-sources.js`
+reads the port through `mintPortPids`: on Windows that is its own two attempts
+of 5 s, which reject with how the last one failed, and on macOS and Linux it is
+this snapshot.
+
 - Ensures `KIROCREW_HOME` (default `~/.kiro/crew`, overridable via the
   `KIROCREW_HOME` env var) exists, then spawns the backend with
   `["gateway", "--no-open"]`. If a real pre-move `~/.kirocrew` directory exists,
