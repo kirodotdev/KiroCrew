@@ -1,0 +1,6 @@
++13
+The three ``pipe-to-shell`` rows end the shell's name on a word boundary, so a
+download piped into ``sha256sum`` no longer reads as a pipe into ``sh``; ``shasum``,
+``shuf`` and ``shellcheck`` stop matching too. The lines are the comment that says
+why and the legacy alias that keeps a governance pin in each row's prior spelling
+resolving. A false positive leaves; every genuine pipe into a shell still matches.
