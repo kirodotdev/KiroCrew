@@ -24530,7 +24530,7 @@
     "state_this_mate": "此 Bot",
     "state_removed": "已移除",
     "driftHint": "{{member}} 的智能体文件在此页面之外被编辑过。点击“查看更改”即可将该外部编辑与你自己的草稿一起查看；随后“保存”会写入修复，或说明为何无法保存。",
-    "sourceFailed": "无法验证已保存的配置。请从服务器重新加载后重试。",
+    "sourceFailed": "无法验证已保存的配置。请重新加载此页面后重试。",
     "runtime_failed": "运行时加载失败。已保存的版本仍保留。",
     "server_verb_count": "{{total}} 项中已自动批准 {{on}} 项",
     "server_allow_aria": "允许 {{server}}",

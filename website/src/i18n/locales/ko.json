@@ -24530,7 +24530,7 @@
     "state_this_mate": "해당 Bot",
     "state_removed": "제거됨",
     "driftHint": "{{member}}의 에이전트 파일이 이 페이지 밖에서 편집되었습니다. '변경 검토'를 누르면 그 외부 편집을 내 초안과 함께 볼 수 있고, 이후 '저장'이 수정을 기록하거나 할 수 없는 이유를 알려줍니다.",
-    "sourceFailed": "저장된 구성을 검증할 수 없습니다. 서버에서 다시 불러와 재시도하세요.",
+    "sourceFailed": "저장된 구성을 검증할 수 없습니다. 이 페이지를 새로 고쳐 재시도하세요.",
     "runtime_failed": "런타임 로딩에 실패했습니다. 저장된 버전은 유지됩니다.",
     "server_verb_count": "{{total}}개 중 {{on}}개 자동 승인",
     "server_allow_aria": "{{server}} 허용",

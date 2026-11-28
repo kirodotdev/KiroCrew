@@ -13023,7 +13023,7 @@
     "state_this_mate": "this bot",
     "state_removed": "removed",
     "driftHint": "{{member}}'s agent file was edited outside this page. Press Review change to see that outside edit with any draft of your own, then Save writes the fix or says why it cannot.",
-    "sourceFailed": "Couldn't validate the saved configuration. Reload from the server to retry.",
+    "sourceFailed": "Couldn't validate the saved configuration. Reload this page to retry.",
     "runtime_failed": "Runtime loading failed. The saved version remains.",
     "server_verb_count": "{{on}} of {{total}} auto-approved",
     "server_allow_aria": "Allow {{server}}",
