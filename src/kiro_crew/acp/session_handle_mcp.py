@@ -427,8 +427,8 @@ async def wait_mcp_ready(
     :data:`GOVERNANCE_API_FAILURE_REASON` says the host turned MCP off after
     its governance read failed. Undeclared, it arms a checkpoint
     :data:`GOVERNED_SETTLE_SECS` later: if by then the host has named none of
-    the required servers for this session, the start fails naming the transient
-    read. Any status entry or tag for a required server before then (the host re-read
+    the required servers for this session, the start fails, in words a person
+    can act on. Any status entry or tag for a required server before then (the host re-read
     and mounted them) keeps the ordinary wait, so a start that would have
     succeeded still does. Governed, the registry checkpoint decides as before.
     """
@@ -464,6 +464,7 @@ async def wait_mcp_ready(
             # Frames already queued are read first: one may name a server, or
             # be the runtime-death marker.
             if not readiness.seen:
+                logger.info("Session %s: MCP off on a failed governance read", self._session_id)
                 raise KasGovernanceOffError(_governance_off_message())
             governance_due = False
         remaining = (checkpoint if checkpoint is not None else wait.deadline) - now
@@ -559,10 +560,10 @@ class KasGovernanceOffError(AcpRuntimeError):
 
 def _governance_off_message() -> str:
     return (
-        "KAS managed MCP initialization failed: the host turned MCP off for this "
-        f"session after its governance read failed ({GOVERNANCE_API_FAILURE_REASON}) "
-        f"and reported none of the managed servers within {GOVERNED_SETTLE_SECS:g}s. "
-        "The read is transient: send the message again to start a new session."
+        "This chat could not start: Kiro could not read your organization's MCP "
+        "settings for the sign-in on this machine, so the tools this chat needs were "
+        "turned off. If sending again fails the same way, sign out of Kiro and sign in "
+        "again, or ask your organization's admin to check its MCP settings."
     )
 
 
