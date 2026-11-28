@@ -170,6 +170,16 @@ describe('chat sidebar — flat view (explode chats out of folders)', () => {
     expect(getByText('Beta')).toBeTruthy()
   })
 
+  it('leaves the pointer on the titled button, not on its animated icon, in every lane', () => {
+    const { getByTestId } = renderSidebar()
+    const toggle = getByTestId('flat-view-toggle')
+    for (let press = 0; press < 2; press++) {
+      expect(toggle.getAttribute('title')).toBeTruthy()
+      expect(getByTestId('flat-view-toggle-icon').className).toContain('pointer-events-none')
+      fireEvent.click(toggle)
+    }
+  })
+
   it('toggling on shows one lane with ALL sessions (foldered + unfoldered) in the tree\'s sort order', () => {
     const { getByTestId } = renderSidebar()
     fireEvent.click(getByTestId('flat-view-toggle'))
