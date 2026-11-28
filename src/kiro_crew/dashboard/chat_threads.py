@@ -30,6 +30,7 @@ from aiohttp import web
 from kiro_crew import name_grant, redaction_seams
 from kiro_crew.acp_backends import (
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_SIDE_READONLY,
 )
@@ -161,6 +162,18 @@ THREAD_BOUNDARY_PROMPT_FILE_READS = (
     "the user asks for them. Never claim that a tool is unconfigured or suggest "
     "enabling it. If the user wants a change made, tell them to ask in the main "
     "chat."
+)
+
+#: The read-only boundary for a thread session that reads and searches files by an
+#: absolute path but has no shell, and whose web tools are refused (MiMo Code).
+THREAD_BOUNDARY_PROMPT_NO_WEB = (
+    "This thread is read-only: lookups work here, but changes don't. Reading "
+    "files and searching the codebase by an absolute path run without asking, so "
+    "use them when a reply needs them. There is no shell here. Writing "
+    "or editing files, running commands, fetching pages, and MCP tools are refused "
+    "here, even when the user asks for them. Never claim that a tool is "
+    "unconfigured or suggest enabling it. If the user wants a change made, tell "
+    "them to ask in the main chat."
 )
 
 THREAD_BOUNDARY_PROMPT_NO_TOOLS = (
@@ -401,6 +414,7 @@ def build_thread_message(
     shell_available: bool = True,
     file_reads_available: bool = True,
     searches_available: bool = True,
+    web_available: bool = True,
 ) -> str:
     """The whole envelope, every time: a thread turn always cold-starts its
     session, so nothing carries over between replies."""
@@ -440,6 +454,8 @@ def build_thread_message(
             parts.append(THREAD_BOUNDARY_PROMPT)
         elif file_reads_available and not searches_available:
             parts.append(THREAD_BOUNDARY_PROMPT_FILE_READS)
+        elif file_reads_available and not web_available:
+            parts.append(THREAD_BOUNDARY_PROMPT_NO_WEB)
         elif file_reads_available:
             parts.append(THREAD_BOUNDARY_PROMPT_NO_SHELL)
         else:
@@ -1132,8 +1148,8 @@ async def _thread_turn_body(
             )
         tools_available = backend is not None and backend in ACP_BACKENDS_SIDE_READONLY
         # The same confinement per harness as a Side Chat turn
-        # (dashboard/handlers/side.py): claude, goose and Strands through the
-        # session shape their client starts for ``side_read_only``, kiro-cli
+        # (dashboard/handlers/side.py): claude, goose, Strands and MiMo Code through
+        # the session shape their client starts for ``side_read_only``, kiro-cli
         # through the derived spec.
         claude_thread = tools_available and is_claude_backend_name(backend)
         if claude_thread and not await asyncio.to_thread(claude_adapter_honours_session_options):
@@ -1142,8 +1158,9 @@ async def _thread_turn_body(
             tools_available = False
         goose_thread = tools_available and backend == ACP_BACKEND_GOOSE
         strands_thread = tools_available and backend == ACP_BACKEND_STRANDS
+        mimocode_thread = tools_available and backend == ACP_BACKEND_MIMOCODE
         session_kwargs: dict[str, Any] = {}
-        if claude_thread or goose_thread or strands_thread:
+        if claude_thread or goose_thread or strands_thread or mimocode_thread:
             agent: str | None = kiro_agent or slot_agent
             approval_policy = ToolApprovalPolicy.READ_ONLY
             session_kwargs["side_read_only"] = True
@@ -1179,7 +1196,7 @@ async def _thread_turn_body(
         # BASH_ENV, an ambiguous PATH) each one is declined and a thread has no
         # card to fall back to, so the boundary names no shell. The check stats
         # files, so it runs off the loop.
-        shell_available = not (claude_thread or goose_thread or strands_thread)
+        shell_available = not (claude_thread or goose_thread or strands_thread or mimocode_thread)
         if tools_available and shell_available:
             shell_available = await asyncio.to_thread(name_grant.environment_refusal) is None
         message = build_thread_message(
@@ -1191,6 +1208,7 @@ async def _thread_turn_body(
             shell_available=shell_available,
             file_reads_available=not goose_thread,
             searches_available=not strands_thread,
+            web_available=not mimocode_thread,
         )
         try:
             # The main chat's credential pass: the text is ``redact(raw)`` byte for

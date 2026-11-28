@@ -82,6 +82,16 @@ from kiro_crew.agent_sdk.backends import (
 # (``internal_secret_missing``). Fail closed until a host-side control-plane transport
 # exists; letting the child read the credential widens the mask, which this set does
 # not decide.
+#
+# mimocode is a member on the codex footing: its array is the one its mirror composes in
+# ``AcpClient`` from the projection's own parse, recorded as ``_session_agent_spec`` and
+# confirmed against the saved intent like claude's, and an enforced harness's
+# ``kirocrew-core`` reaches the gateway through the agent-socket pickup
+# (``acp/ipc_pickup.py``) rather than the masked credential. Captured live on 0.1.15
+# (``test/fixtures/acp_frames/mimocode/saved-spec-projection-live.jsonl``): the element
+# ``mimocode_projection`` projected out of a saved spec, with ``consumed_spec_matches``
+# true, answered the model's call with the server's own result after one permission
+# request.
 ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -90,6 +100,7 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
         ACP_BACKEND_CODEX,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -214,21 +225,32 @@ ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS = ACP_BACKENDS_MATE_WORKER_TOOL_LIMI
 # the worker's ``kirocrew-core`` would run inside the sandbox with the gateway
 # credential hidden by the enforced mask, so its control plane would be refused. A
 # worker allocated on strands is refused before spawn (``capability_harness_unsupported``).
+# mimocode is captured live on 0.1.15:
+# ``test/fixtures/acp_frames/mimocode/worker-kit-live.jsonl``. A worker session's array,
+# built by ``mimocode_projection`` with the worker's session key, carried the server its
+# crewmate's file adds (the bare base carries none), and the worker called it as the
+# crewmate's prompt, carried in its context block, told it to.
 ACP_BACKENDS_MATE_WORKER_KIT = frozenset(
-    {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_MIMOCODE,
+    }
 )
 
 # Backends of the set above whose worker gets its prompt only from the
 # ``[AGENT SYSTEM PROMPT]`` context block: their mirrors project no spec prompt
 # (``Concern.PROMPT`` is ``WITHHELD``), so the block carries the worker's own
 # principles and its crewmate's prompt (``context_assembly.agent_spec
-# ._crewmate_worker_prompt``). claude and codex are both here, and so is pi, which
-# has no mirror and reads no Crew spec prompt at all
+# ._crewmate_worker_prompt``). claude, codex and mimocode are here, and so is pi,
+# which has no mirror and reads no Crew spec prompt at all
 # (``test/fixtures/acp_frames/pi/worker-kit-live.jsonl``: the crewmate's sentence
 # reached the model in the block). KAS is not: its wire spec already carries both,
 # so its block stays the base.
 ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI}
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI, ACP_BACKEND_MIMOCODE}
 )
 
 # Backends that can mount a DIFFERENT MCP tool set on one session than the

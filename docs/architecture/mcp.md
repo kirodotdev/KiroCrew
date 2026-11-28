@@ -1655,7 +1655,7 @@ chat at its next message, conversation kept. A kiro-cli session picks the file
 change up itself; a session that does neither keeps the servers it started with
 until it is restarted, because these routes reset nothing.
 
-Strands satisfies the gate by a THIRD mechanism, its own membership
+Strands and MiMo Code satisfy the gate by a THIRD mechanism, their own membership
 (`ACP_BACKENDS_MCP_RELAUNCH_RELOAD`, declared as
 `LLMProvider.mcp_config_relaunch_reload` by `AcpProvider` for its direct
 `AcpClient`). The Strands CLI reads its servers once, from the `--mcp-config`

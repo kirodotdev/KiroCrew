@@ -24,6 +24,7 @@ from kiro_crew.acp import relaunch_reload
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_KNOWN,
@@ -86,9 +87,10 @@ class TestCapturedEvidence:
 
 
 class TestMembership:
-    def test_strands_is_the_only_member(self) -> None:
-        assert ACP_BACKENDS_MCP_RELAUNCH_RELOAD == frozenset({ACP_BACKEND_STRANDS})
-        for backend in ACP_BACKENDS_KNOWN - {ACP_BACKEND_STRANDS}:
+    def test_strands_and_mimocode_are_the_only_members(self) -> None:
+        members = {ACP_BACKEND_STRANDS, ACP_BACKEND_MIMOCODE}
+        assert ACP_BACKENDS_MCP_RELAUNCH_RELOAD == frozenset(members)
+        for backend in ACP_BACKENDS_KNOWN - members:
             assert backend not in ACP_BACKENDS_MCP_RELAUNCH_RELOAD
 
     def test_disjoint_from_the_other_two_mechanisms(self) -> None:
