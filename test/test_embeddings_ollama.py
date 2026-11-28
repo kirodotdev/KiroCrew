@@ -6,12 +6,15 @@ and readiness probes run through an injected starter instead of a thread.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
+import re
 import threading
 import urllib.error
 import urllib.request
+from http.client import HTTPMessage
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -25,7 +28,9 @@ from kiro_crew.embeddings_ollama import (
     OllamaHttpEmbedder,
     OllamaSettings,
     _build_opener,
+    _host_header,
     _RefuseRedirects,
+    _SigV4Signer,
     resolve_ollama_settings,
 )
 from kiro_crew.embeddings_settings import _MAX_EMBED_CHARS, EmbeddingWork, embedding_work
@@ -56,11 +61,14 @@ class _FakeOpener:
         self.embed = embed or (lambda body: {"embeddings": [[0.5] * _DIM for _ in body["input"]]})
         self.error = error
         self.requests: list[tuple[str, dict | None, float]] = []
+        #: Each request's headers, names lower-cased.
+        self.headers: list[dict[str, str]] = []
 
     def open(self, request: urllib.request.Request, timeout: float) -> _FakeResponse:
         url = request.full_url
         body = json.loads(request.data) if request.data else None
         self.requests.append((url, body, timeout))
+        self.headers.append({k.lower(): v for k, v in request.header_items()})
         if self.error is not None:
             raise self.error
         if url.endswith("/api/tags"):
@@ -88,15 +96,25 @@ class _CapturedProbes:
             self.pending.pop(0)()
 
 
-def _settings(**overrides: Any) -> OllamaSettings:
-    return resolve_ollama_settings({"ollama_model": _MODEL, "embedding_dim": _DIM, **overrides})
+def _settings(environ: "dict[str, str] | None" = None, **overrides: Any) -> OllamaSettings:
+    return resolve_ollama_settings(
+        {"ollama_model": _MODEL, "embedding_dim": _DIM, **overrides},
+        {} if environ is None else environ,
+    )
 
 
 def _embedder(
-    opener: _FakeOpener, probes: "_CapturedProbes | None" = None, **overrides: Any
+    opener: _FakeOpener,
+    probes: "_CapturedProbes | None" = None,
+    *,
+    signer: "_SigV4Signer | None" = None,
+    **overrides: Any,
 ) -> OllamaHttpEmbedder:
     return OllamaHttpEmbedder(
-        _settings(**overrides), opener=opener, start_probe=probes or _CapturedProbes()
+        _settings(**overrides),
+        opener=opener,
+        start_probe=probes or _CapturedProbes(),
+        signer=signer,
     )
 
 
@@ -181,6 +199,20 @@ class TestConfig:
         assert cfg.ollama_url == "http://127.0.0.1:9000"
         assert cfg.ollama_model == _MODEL
         assert cfg.ollama_allow_remote is False
+
+    def test_the_loader_reads_the_signing_keys(self) -> None:
+        assert _build_memory_config({}).ollama_auth == "none"
+        assert _build_memory_config({}).ollama_aws_service == "execute-api"
+        cfg = _build_memory_config(
+            {
+                "ollama_auth": "aws_sigv4",
+                "ollama_aws_region": "us-west-2",
+                "ollama_aws_service": "lambda",
+                "ollama_aws_profile": "embed",
+            }
+        )
+        assert (cfg.ollama_auth, cfg.ollama_aws_region) == ("aws_sigv4", "us-west-2")
+        assert (cfg.ollama_aws_service, cfg.ollama_aws_profile) == ("lambda", "embed")
 
     @pytest.mark.parametrize(
         ("raw", "expected"),
@@ -407,6 +439,260 @@ class TestTransport:
             for h in remote.handlers
             if isinstance(h, urllib.request.ProxyHandler)
         )
+
+
+# -- SigV4 --------------------------------------------------------------------
+
+_HOST = "abc123.execute-api.us-west-2.amazonaws.com"
+_GATEWAY = f"https://{_HOST}/ollama"
+#: The same endpoint with the default port spelled out, valid and unusual.
+_GATEWAY_443 = f"https://{_HOST}:443/ollama"
+
+
+def _sigv4(**overrides: Any) -> dict[str, Any]:
+    return {
+        "ollama_url": _GATEWAY,
+        "ollama_allow_remote": True,
+        "ollama_auth": "aws_sigv4",
+        "ollama_aws_region": "us-west-2",
+        **overrides,
+    }
+
+
+def _static_signer(token: "str | None" = None) -> _SigV4Signer:
+    credentials = pytest.importorskip("botocore.credentials")
+    creds = credentials.Credentials("AKIDEXAMPLE", "not-a-real-secret", token)
+    return _SigV4Signer("us-west-2", "execute-api", load_credentials=lambda: creds)
+
+
+class TestAuthSettings:
+    def test_no_auth_is_the_default(self) -> None:
+        settings = _settings()
+        assert (settings.auth, settings.error) == ("none", "")
+
+    @pytest.mark.parametrize("auth", ["aws_sigv5", "AWS_SIGV4", "iam"])
+    def test_an_unknown_scheme_stops_the_backend(self, auth: str) -> None:
+        assert "must be one of: none, aws_sigv4" in _settings(ollama_auth=auth).error
+
+    def test_the_region_comes_from_config_first(self) -> None:
+        settings = _settings(environ={"AWS_REGION": "eu-west-1"}, **_sigv4())
+        assert (settings.aws_region, settings.error) == ("us-west-2", "")
+
+    @pytest.mark.parametrize(
+        ("environ", "region"),
+        [
+            ({"AWS_REGION": "eu-west-1", "AWS_DEFAULT_REGION": "eu-central-1"}, "eu-west-1"),
+            ({"AWS_DEFAULT_REGION": "eu-central-1"}, "eu-central-1"),
+        ],
+    )
+    def test_the_region_falls_back_to_the_environment(
+        self, environ: dict[str, str], region: str
+    ) -> None:
+        settings = _settings(environ=environ, **_sigv4(ollama_aws_region=""))
+        assert (settings.aws_region, settings.error) == (region, "")
+
+    def test_no_region_stops_the_backend(self) -> None:
+        assert "AWS_REGION" in _settings(environ={}, **_sigv4(ollama_aws_region="")).error
+
+    def test_the_service_defaults_to_api_gateway(self) -> None:
+        assert _settings(**_sigv4()).aws_service == "execute-api"
+        assert _settings(**_sigv4(ollama_aws_service="lambda")).aws_service == "lambda"
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("ollama_aws_region", "us/west"),
+            ("ollama_aws_service", "execute api"),
+            ("ollama_aws_profile", "dev\nprofile"),
+        ],
+    )
+    def test_a_malformed_name_stops_the_backend(self, key: str, value: str) -> None:
+        assert "not a valid" in _settings(**_sigv4(**{key: value})).error
+
+    def test_an_identity_center_profile_name_is_accepted(self) -> None:
+        settings = _settings(**_sigv4(ollama_aws_profile="123456789012+Admin"))
+        assert (settings.aws_profile, settings.error) == ("123456789012+Admin", "")
+
+    def test_missing_botocore_stops_the_backend(self, monkeypatch) -> None:
+        real_find_spec = embeddings_ollama.importlib.util.find_spec
+
+        def find_spec(name: str, *args: Any) -> Any:
+            return None if name == "botocore" else real_find_spec(name, *args)
+
+        monkeypatch.setattr(embeddings_ollama.importlib.util, "find_spec", find_spec)
+        assert "botocore" in _settings(**_sigv4()).error
+
+    def test_an_auth_error_never_sends_text(self) -> None:
+        opener = _FakeOpener()
+        assert _embedder(opener, **_sigv4(ollama_auth="iam")).embed("secret") is None
+        assert opener.requests == []
+
+    def test_a_signer_is_built_only_for_aws_sigv4(self) -> None:
+        assert OllamaHttpEmbedder(_settings())._signer is None
+        assert isinstance(OllamaHttpEmbedder(_settings(**_sigv4()))._signer, _SigV4Signer)
+
+
+class TestSigV4:
+    def test_an_embed_request_is_signed_for_the_region_and_service(self) -> None:
+        opener = _FakeOpener()
+        vector = _embedder(opener, signer=_static_signer(), **_sigv4()).embed("hello")
+        assert vector == [0.5] * _DIM
+        headers = opener.headers[0]
+        auth = headers["authorization"]
+        assert auth.startswith("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+        assert "/us-west-2/execute-api/aws4_request" in auth
+        assert "SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date" in auth
+        # A Lambda function URL refuses a signed POST without the payload hash.
+        assert re.fullmatch("[0-9a-f]{64}", headers["x-amz-content-sha256"])
+        assert headers["x-amz-content-sha256"] != hashlib.sha256(b"").hexdigest()
+        assert headers["x-amz-date"]
+        assert "x-amz-security-token" not in headers
+        assert opener.requests[0][0] == f"{_GATEWAY}/api/embed"
+
+    def test_a_session_token_is_sent_and_signed(self) -> None:
+        opener = _FakeOpener()
+        _embedder(opener, signer=_static_signer(token="session-token"), **_sigv4()).embed("x")
+        headers = opener.headers[0]
+        assert headers["x-amz-security-token"] == "session-token"
+        assert "x-amz-security-token" in headers["authorization"]
+
+    def test_the_readiness_probe_is_signed_too(self) -> None:
+        opener, probes = _FakeOpener(), _CapturedProbes()
+        embedder = _embedder(opener, probes, signer=_static_signer(), **_sigv4())
+        embedder.prefetch()
+        probes.run_all()
+        assert embedder.is_ready() is True
+        assert opener.requests[0][0] == f"{_GATEWAY}/api/tags"
+        assert "SignedHeaders=host;x-amz-date" in opener.headers[0]["authorization"]
+
+    def test_a_signature_matches_botocore_for_the_same_request(self) -> None:
+        auth = pytest.importorskip("botocore.auth")
+        awsrequest = pytest.importorskip("botocore.awsrequest")
+        credentials = pytest.importorskip("botocore.credentials")
+        body = b'{"model": "m"}'
+        signed = _static_signer().headers(
+            "POST", f"{_GATEWAY}/api/embed", body, {"Content-Type": "x"}
+        )
+        expected = awsrequest.AWSRequest(
+            method="POST",
+            url=f"{_GATEWAY}/api/embed",
+            data=body,
+            headers={
+                "Content-Type": "x",
+                "X-Amz-Content-Sha256": hashlib.sha256(body).hexdigest(),
+                "X-Amz-Date": signed["X-Amz-Date"],
+            },
+        )
+        assert signed["X-Amz-Content-Sha256"] == hashlib.sha256(body).hexdigest()
+        # botocore derives the same host for a request that carries none, so the
+        # explicit header changes nothing here; the :443 case below is where it matters.
+        assert signed["Host"] == "abc123.execute-api.us-west-2.amazonaws.com"
+        sig = auth.SigV4Auth(
+            credentials.Credentials("AKIDEXAMPLE", "not-a-real-secret"), "execute-api", "us-west-2"
+        )
+        # add_auth re-stamps X-Amz-Date from the clock; sign the canonical request
+        # at the signer's own timestamp instead.
+        expected.context["timestamp"] = signed["X-Amz-Date"]
+        string_to_sign = sig.string_to_sign(expected, sig.canonical_request(expected))
+        assert signed["Authorization"].endswith(
+            f"Signature={sig.signature(string_to_sign, expected)}"
+        )
+
+    @pytest.mark.parametrize(
+        ("url", "host"),
+        [
+            # The default port is dropped: botocore signs without it, so the wire
+            # must carry the same, where urllib alone would send "h:443".
+            ("https://abc123.execute-api.us-west-2.amazonaws.com:443/ollama", _HOST),
+            ("http://gpu.example:80/ollama", "gpu.example"),
+            ("https://gpu.example:8443", "gpu.example:8443"),
+            ("https://GPU.Example/Ollama", "gpu.example"),
+            ("http://127.0.0.1:11434", "127.0.0.1:11434"),
+            ("http://[::1]:11434/api", "[::1]:11434"),
+            ("http://[::1]:80", "[::1]"),
+        ],
+    )
+    def test_the_host_header_is_the_one_sigv4_canonicalizes(self, url: str, host: str) -> None:
+        assert _host_header(url) == host
+
+    def test_a_url_spelling_out_the_default_port_sends_the_host_it_signed(self) -> None:
+        opener = _FakeOpener()
+        embedder = _embedder(
+            opener, signer=_static_signer(), **_sigv4(ollama_url=f"{_GATEWAY_443}")
+        )
+        assert embedder.embed("hello") == [0.5] * _DIM
+        headers = opener.headers[0]
+        assert headers["host"] == _HOST
+        assert "SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date" in (
+            headers["authorization"]
+        )
+        # urllib adds its own Host (the netloc as written, "h:443") only when the
+        # request carries none, so the signed value is the one that goes out.
+        request = urllib.request.Request(f"{_GATEWAY_443}/api/embed", headers=headers)
+        assert request.has_header("Host")
+        assert request.get_header("Host") == _HOST
+        assert request.host == f"{_HOST}:443"
+
+    def test_the_signed_host_matches_botocore_for_a_default_port_url(self) -> None:
+        auth = pytest.importorskip("botocore.auth")
+        awsrequest = pytest.importorskip("botocore.awsrequest")
+        credentials = pytest.importorskip("botocore.credentials")
+        url = f"{_GATEWAY_443}/api/tags"
+        signed = _static_signer().headers("GET", url, None, {})
+        # botocore's own derivation for a request carrying no Host header.
+        expected = awsrequest.AWSRequest(method="GET", url=url, headers={})
+        sig = auth.SigV4Auth(
+            credentials.Credentials("AKIDEXAMPLE", "not-a-real-secret"), "execute-api", "us-west-2"
+        )
+        assert sig.headers_to_sign(expected)["host"] == signed["Host"] == _HOST
+
+    def test_no_credentials_means_nothing_is_sent(self, caplog) -> None:
+        opener = _FakeOpener()
+        signer = _SigV4Signer("us-west-2", "execute-api", load_credentials=lambda: None)
+        embedder = _embedder(opener, signer=signer, **_sigv4())
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.embeddings"):
+            assert embedder.embed("secret") is None
+        assert opener.requests == []
+        assert any("no AWS credentials" in r.getMessage() for r in caplog.records)
+
+    def test_a_signing_error_means_nothing_is_sent(self) -> None:
+        def broken() -> Any:
+            raise RuntimeError("The config profile (missing) could not be found")
+
+        opener = _FakeOpener()
+        signer = _SigV4Signer("us-west-2", "execute-api", load_credentials=broken)
+        assert _embedder(opener, signer=signer, **_sigv4()).embed("secret") is None
+        assert opener.requests == []
+
+    def test_the_session_is_reused_across_requests(self, monkeypatch) -> None:
+        session_mod = pytest.importorskip("botocore.session")
+        credentials = pytest.importorskip("botocore.credentials")
+        built: list[str | None] = []
+
+        class _Session:
+            def __init__(self, profile: "str | None" = None) -> None:
+                built.append(profile)
+
+            def get_credentials(self) -> Any:
+                return credentials.Credentials("AKIDEXAMPLE", "not-a-real-secret")
+
+        monkeypatch.setattr(session_mod, "Session", _Session)
+        signer = _SigV4Signer("us-west-2", "execute-api", "embed")
+        for _ in range(3):
+            signer.headers("GET", f"{_GATEWAY}/api/tags", None, {})
+        assert built == ["embed"]
+
+    @pytest.mark.parametrize(("code", "resets"), [(401, True), (403, True), (500, False)])
+    def test_a_rejected_signature_rereads_the_credentials(
+        self, monkeypatch, code: int, resets: bool
+    ) -> None:
+        signer = _static_signer()
+        resets_seen: list[bool] = []
+        monkeypatch.setattr(signer, "reset", lambda: resets_seen.append(True))
+        error = urllib.error.HTTPError(f"{_GATEWAY}/api/embed", code, "no", HTTPMessage(), None)
+        embedder = _embedder(_FakeOpener(error=error), signer=signer, **_sigv4())
+        assert embedder.embed("x") is None
+        assert resets_seen == ([True] if resets else [])
 
 
 # -- selection ----------------------------------------------------------------
