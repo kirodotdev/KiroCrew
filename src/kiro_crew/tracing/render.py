@@ -8,9 +8,11 @@ gateway and no OpenTelemetry SDK, and prints only the span name, its timing and 
 never hold prompt or tool content, and every name still passes
 ``safe_terminal_line`` because the file is data, not our own output.
 
-Reads are bounded: a shard over :data:`MAX_SHARD_BYTES` is skipped with a warning, a
-line over :data:`MAX_LINE_CHARS` or one that is not a span counts toward ONE warning
-per shard, and :data:`MAX_SPANS` spans (newest shards first) are kept in all.
+Reads are bounded: a shard over :data:`MAX_SHARD_BYTES` is a hard error, so a
+lookup never reports "nothing matched" for data it could not read (the sink
+rotates at the same cap), a line over :data:`MAX_LINE_CHARS` or one that is not a
+span counts toward ONE warning per shard, and :data:`MAX_SPANS` spans (newest
+shards first) are kept in all.
 """
 
 from __future__ import annotations
@@ -22,8 +24,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew.terminal_safe import safe_terminal_line
+from kiro_crew.tracing.shard_cap import MAX_SPAN_SHARD_BYTES
 
-MAX_SHARD_BYTES = 50 * 1024 * 1024
+MAX_SHARD_BYTES = MAX_SPAN_SHARD_BYTES
 MAX_LINE_CHARS = 256 * 1024
 MAX_SPANS = 100_000
 MAX_ROWS = 500
@@ -104,8 +107,9 @@ def _warn(text: str) -> None:
 def read_spans(directory: Path) -> list[Span]:
     """Every span in the shards under *directory*, newest shards first, bounded.
 
-    A missing directory is no spans. An unreadable shard stops the run, so a
-    lookup never answers "nothing matched" for data it could not read.
+    A missing directory is no spans. An unreadable shard (including one past
+    ``MAX_SHARD_BYTES``) stops the run, so a lookup never answers "nothing
+    matched" for data it could not read.
     """
     from kiro_crew.hooks import safe_read_file
     from kiro_crew.metrics.local_exporter import shard_name_re
@@ -116,7 +120,10 @@ def read_spans(directory: Path) -> list[Span]:
     except FileNotFoundError:
         return []
     except OSError as exc:
-        print(f"Error: cannot read the traces folder: {type(exc).__name__}", file=sys.stderr)
+        print(
+            f"Error: cannot read the traces folder: {type(exc).__name__}",
+            file=sys.stderr,
+        )
         raise SystemExit(1) from None
     spans: list[Span] = []
     for path in names:
@@ -124,8 +131,12 @@ def read_spans(directory: Path) -> list[Span]:
             continue
         try:
             if path.stat().st_size > MAX_SHARD_BYTES:
-                _warn(f"skipped {path.name}: larger than {MAX_SHARD_BYTES // 2**20} MB")
-                continue
+                print(
+                    f"Error: cannot read {safe_terminal_line(path.name)}: "
+                    f"larger than {MAX_SHARD_BYTES // 2**20} MB",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from None
             text = safe_read_file(str(path))
         except FileNotFoundError:
             continue  # pruned between the listing and the read
@@ -141,7 +152,10 @@ def read_spans(directory: Path) -> list[Span]:
                 continue
             try:
                 span = parse_span(json.loads(line)) if len(line) <= MAX_LINE_CHARS else None
-            except (ValueError, RecursionError):  # not JSON, or nested past the parser's limit
+            except (
+                ValueError,
+                RecursionError,
+            ):  # not JSON, or nested past the parser's limit
                 span = None
             if span is None:
                 bad += 1
