@@ -1370,6 +1370,103 @@ class TestWindowsRespellings:
     def test_ordinary_commands_stay_allowed(self, cmd):
         assert is_denied(cmd) is None, cmd
 
+    _WINDOWS_ROOT_WIPES = (
+        r"Remove-Item -Recurse -Force C:\ ",
+        r"Remove-Item -Path C:\ -Recurse -Force",
+        r"Remove-Item -Path:D:/ -Recurse",
+        r"remove-item -r -fo c:",
+        r"ri -Recurse -Force C:\* ",
+        r"Remove-Item -Recurse -Force D:\work,C:\ ",
+        r"Remove-Item -Recurse -Force ~",
+        r'Remove-Item -Recurse -Force "~"',
+        r"Remove-Item -Recurse '~/'",
+        r"Remove-Item -LiteralPath C:\ -Recurse",
+        r"Remove-Item -Recurse -Exclude *.log C:\ ",
+        r"Remove-Item -Recurse C:\ -WhatIf:$false",
+        r'Remove-Item -Recurse -Force "-old",C:\ ',  # a two-path array, not a parameter
+        r"Remove-Item -Recurse -Force ~\*",
+        r"Remove-Item -Recurse -Force $HOME\*",
+        r"Remove-Item -Recurse ~\ -Force",
+        r"rm -Recurse -Force C:\ ",  # PowerShell's rm alias with both switches bound
+        r"rm -Recurse -Force ~",
+        r"RM -rec -FO D:/",
+        r"rm -rf C:/ -WhatIf:$false",
+        r"rm -rf -- ~ -WhatIf",  # after -- a -WhatIf is a file name, not a preview
+        r"rm.exe -rf -- C:/ -wi",
+        r"bash -c 'rm.exe -r -f -- -WhatIf ~'",
+        r"Remove-Item -Recurse -Force C:/ -- -WhatIf",  # PowerShell binds it as a path
+        r"Remove-Item -Recurse -Force ./build -- -Exclude ~",
+        r"rm -Recurse -Force ~ -- -WhatIf",
+        r"rmdir /s /q C:\ ",
+        r"rd /S/Q C:\ ",
+        r"del /s /q C:\* ",
+        r"rm -rf C:/",
+        r"rm -rf 'C:\'",
+        r"rm -r -fo ~ -WhatIf:($false)",  # an expression may be false: no preview
+        r"rm -r -fo ~ -WhatIf:",
+        r"Remove-Item -Recurse -Force ~ -WhatIf:($false)",
+        r"Remove-Item -Recurse -Force C:\ -wi:",
+        "bash -c 'rm -r -f ~'",
+        "rm -r -f ~",
+    )
+    #: Windows only: on Linux and macOS the GNU reading takes the ``f`` in ``-WhatIf``
+    #: as force, as on main.
+    _WINDOWS_PREVIEWS = (
+        r"rm -r -fo ~ -WhatIf",
+        r"rm -r -fo ~ -WHATIF",
+        r"rm -r -fo ~ -WhatIf:$True",
+        r"Remove-Item -Recurse -Force C:\ -WhatIf:1",
+        r"Remove-Item -Recurse -Force ~ -wi:$true",
+    )
+    _WINDOWS_ORDINARY_DELETES = (
+        r"Remove-Item -Recurse -Force D:\work\repo\build",
+        r"Remove-Item -Recurse -Force .\build",
+        r"Remove-Item -Force C:\ ",
+        r"Get-ChildItem -Recurse C:\ ",
+        r"rd /s /q D:\work\repo\build",
+        r"rd /q C:\ ",
+        r"del /s /q C:\temp\*.log",
+        r"rm -rf C:/Users/me/work/build",
+        r"echo rd /s /q C:\ ",
+        r"Remove-Item -Recurse -Force C:\ -WhatIf",
+        r"Remove-Item -Recurse -Force .\build -Exclude ~",
+        r"Remove-Item -Recurse -Force ./build -Include C:\ ",
+        r"Remove-Item -Recurse:$false C:\ ",
+        r"Remove-Item -Recurse -Force .\build -ea C:\ ",
+        r"Remove-Item -Recurse -Force ~\work\build",
+        r"Remove-Item -Recurse -Force $HOME\.cache\pip",
+        r"rd /s /q ~",  # cmd never expands ~: this is a folder named ~
+        r'rd /s /q "~"',
+        r"rm -r ~",  # PowerShell's rm alias is left to the rm reading: partial flags pass
+        r"rm -r C:\ ",
+        r"rm -Recurse ~",  # rm with only one of the two switches stays allowed
+        r"rm -Force C:\ ",
+        r"rm -Recurse -Force C:/ -WhatIf",  # a preview; the f in -WhatIf is not GNU force
+        "bash -c 'rm -fr \\\n/tmp/x'",  # a line continuation is not a path separator
+        "bash -c 'rm -r -f ~\\\n/.cache'",  # bash folds it into ~/.cache, not home
+        "bash -c 'rm -r -f C:\\\n/build'",
+        "cat <<EOF\n\\$(x=$((1<<2))\nrm -r -f ~\n)\nEOF",  # an escape in heredoc body data
+    )
+
+    def test_windows_drive_root_and_home_wipes_are_refused_only_on_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """PowerShell and cmd deletes, and rm against a drive root, reach the rm floor."""
+        from kiro_crew import platform_compat
+        from kiro_crew.security import rm_floor
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        posix = {cmd: is_denied(cmd.rstrip()) for cmd in self._WINDOWS_ORDINARY_DELETES}
+        assert all(verdict is None for verdict in posix.values()), posix
+        assert is_denied("rd /s /q C:\\") is None  # not a root on Linux or macOS
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        for cmd in self._WINDOWS_ROOT_WIPES:
+            assert is_denied(cmd.rstrip()) is not None, cmd
+        for cmd in self._WINDOWS_ORDINARY_DELETES + self._WINDOWS_PREVIEWS:
+            assert is_denied(cmd.rstrip()) is None, cmd
+        # the floor keeps reading a quoted ``~`` as a literal name for rm (the row is separate)
+        assert rm_floor._rm_wipe_targets('rm -rf "~"') == set()
+
     def test_suffixed_download_matches_the_plain_verdict(self):
         # The s3 download reader is POSIX-only, so compare with ``aws`` on this host.
         cmd = "s3 cp --recursive s3://bucket/x ./local"
