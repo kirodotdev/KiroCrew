@@ -471,6 +471,21 @@ class TestANoteIsMarkedReadOnceTheUpdateIsInstalled:
         assert self._unread(state) == ["demo 1.2.0 available"]
 
     @pytest.mark.asyncio
+    async def test_installing_the_version_leaves_the_automatic_updated_note_unread(self, state):
+        from kiro_crew.apps import auto_update
+
+        self._deliver(state, row("demo", version="1.2.0", installed_version="1.0.0"))
+        candidate = auto_update.Candidate("demo", "1.0.0", "1.2.0")
+        auto_update.deliver(state, auto_update.updated_note(candidate, "1.2.0"))
+        assert self._unread(state) == ["demo 1.2.0 available", "demo updated to 1.2.0"]
+
+        installed = row("demo", version="1.2.0", installed_version="1.2.0", update_available=False)
+        assert await update_notify.resolve_app_update_notes(state, [installed]) == 1
+
+        # The announcement is caught up; the report of the update is the owner's to read.
+        assert self._unread(state) == ["demo updated to 1.2.0"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("announced", "installed", "retired"),
         [

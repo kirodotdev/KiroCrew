@@ -26,7 +26,10 @@ from kiro_crew.config import sections as _sections
 from kiro_crew.config import windows_exec_adoption
 from kiro_crew.config.fields import _coerce_bool, _safe_str
 from kiro_crew.config.integration_sections import (
+    APP_AUTO_UPDATE_OVERRIDES,
+    APP_UPDATE_MODES,
     AppSettingsConfig,
+    AppUpdatesConfig,
     AwsConfig,
     TemplateSettingsConfig,
 )
@@ -823,9 +826,13 @@ def _parse_app_settings(raw: Any) -> dict[str, AppSettingsConfig]:
             continue
         reader = _sections.SectionReader(AppSettingsConfig, entry)
         model = reader.get("model")
+        auto_update = reader.get("auto_update")
         apps[name] = AppSettingsConfig(
             model=model if isinstance(model, str) else "",
             mute_sessions=reader.get("mute_sessions") is True,
+            # An unknown spelling follows the global setting: it can neither pin
+            # an app nor opt it into an update the owner did not choose.
+            auto_update=auto_update if auto_update in APP_AUTO_UPDATE_OVERRIDES else "",
         )
     return apps
 
@@ -850,6 +857,17 @@ def _parse_template_settings(raw: Any) -> dict[str, TemplateSettingsConfig]:
         model = _sections.SectionReader(TemplateSettingsConfig, entry).get("model")
         templates[name] = TemplateSettingsConfig(model=model if isinstance(model, str) else "")
     return templates
+
+
+def _parse_app_updates(raw: dict[str, Any]) -> AppUpdatesConfig:
+    """The ``app_updates`` section. An unreadable ``mode`` reads as ``off``.
+
+    ``off`` is the safe direction for the same reason ``auto_update`` falls back
+    to off: an update not applied is a note, one applied against the owner's
+    wish replaces code they did not ask to replace.
+    """
+    mode = _sections.SectionReader(AppUpdatesConfig, raw).get("mode")
+    return AppUpdatesConfig(mode=mode if mode in APP_UPDATE_MODES else "off")
 
 
 def build_config(
@@ -1219,6 +1237,7 @@ def build_config(
 
     apps = _parse_app_settings(data.get("apps", {}))
     templates = _parse_template_settings(data.get("templates", {}))
+    app_updates = _parse_app_updates(_coerced_section(data, "app_updates", _degraded))
 
     # The top-level keys read against KiroCrewConfig's own fields, and the slack
     # keys that land on top-level fields under the same names. Against the base
@@ -1333,6 +1352,7 @@ def build_config(
             else _coerce_bool(data.get("auto_update"), False)
         ),
         connections_ui=top.read("connections_ui", _safe_bool),
+        app_updates=app_updates,
         _degraded_sections=frozenset(_degraded | _OBSERVED_DEGRADED_SECTIONS),
         timezone=top.get("timezone"),
         snapshot_dir=top.get("snapshot_dir"),

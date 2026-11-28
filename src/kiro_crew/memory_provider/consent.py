@@ -95,6 +95,31 @@ def has_egress_consent(provider: Any) -> bool:
     )
 
 
+def update_would_end_consent(app_name: str) -> bool:
+    """Whether updating app *app_name* would end a memory consent the owner gave it.
+
+    A grant holds only for the app version it names (:func:`has_egress_consent`), so
+    while one names the version of *app_name* installed now, any update ends it and
+    the owner is asked again. The automatic app updater leaves such an app for the
+    owner to update. Fails soft like every read here: an unreadable record holds no
+    consent to end.
+    """
+    from kiro_crew.memory_provider.app_client import ID_PREFIX, _installed_at, _manifest
+
+    prefix = f"{ID_PREFIX}{app_name}/"
+    grants = [
+        g for g in read_grants() if g["provider_id"].startswith(prefix) and g.get("egress") is True
+    ]
+    if not grants:
+        return False
+    manifest = _manifest(app_name)
+    if manifest is None:
+        return False
+    version = str(manifest.version)
+    installed_at = _installed_at(app_name)
+    return any(g["app_version"] == version and _same_install(g, installed_at) for g in grants)
+
+
 def _same_install(grant: dict[str, Any], installed_at: str) -> bool:
     """Whether *grant* was given to the install stamped *installed_at*.
 

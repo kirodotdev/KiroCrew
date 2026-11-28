@@ -205,6 +205,11 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, an agent that mounts the kirocrew-dashboard server may open, read,
     # message, stop and close the person's other sessions.
     "agent.session_control": (False, True),
+    # ``on`` installs new versions of installed apps without a click. Only from
+    # the repository each app is already trusted for and never with an added
+    # permission, but it is still code that starts running unasked, so a card
+    # moving toward ``on`` says it widens.
+    "app_updates.mode": ("off", "on"),
     "dashboard.tailscale.enabled": (False, True),
     "dashboard.tailscale.trust_identity": (False, True),
     "dashboard.tailscale.bind_refresh_chains": (True, False),

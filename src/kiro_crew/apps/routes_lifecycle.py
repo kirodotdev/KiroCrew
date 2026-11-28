@@ -104,7 +104,15 @@ def _announce_app_ui_changed(request: web.Request, name: str) -> None:
     page reload. Best effort: the files are already in place, and a gateway with no
     dashboard socket has no tab to tell.
     """
-    state = request.app.get("state")
+    _announce_app_ui_changed_to(request.app.get("state"), name)
+
+
+def _announce_app_ui_changed_to(state: Any, name: str) -> None:
+    """:func:`_announce_app_ui_changed` for a caller that holds the gateway state.
+
+    The automatic app updater (:mod:`kiro_crew.apps.auto_update`) replaces an
+    app's files with no request in hand, and an open tab needs the same frame.
+    """
     broadcast = getattr(state, "broadcast_ws", None) if state is not None else None
     if broadcast is None:
         return
@@ -312,6 +320,7 @@ async def _reinstall_from_registry(
     log_lines: list[str] | None = None,
     *,
     after_failure: Callable[[bool], Awaitable[None]] | None = None,
+    still_idle: Callable[[], Awaitable[str]] | None = None,
 ) -> dict[str, Any]:
     """Re-install installed *name* from the registry, taking it down only to replace it.
 
@@ -332,8 +341,18 @@ async def _reinstall_from_registry(
     taken down, before anything starts the old app again. The update route puts a
     switched trust grant back there, so the restored local code starts under the
     grant that covers it.
+
+    *still_idle*, when given, is awaited as the take-down starts, after the clone and
+    build. A non-empty answer stops the install there, before anything is taken
+    down, and returns the retryable ``app_busy`` refusal: the automatic updater's
+    second look, made at the moment its update would cut work off.
     """
     taken_down = False
+    busy = ""
+
+    class _UpdatePutOff(Exception):
+        """Raised by the take-down to stop ``install_from_registry`` before the copy."""
+
     loop = asyncio.get_running_loop()
 
     async def _is_self_managed() -> bool:
@@ -342,7 +361,13 @@ async def _reinstall_from_registry(
     was_self_managed = await _is_self_managed()
 
     async def _take_down() -> None:
-        nonlocal taken_down
+        nonlocal taken_down, busy
+        if still_idle is not None:
+            busy = await still_idle()
+            if busy:
+                # install_from_registry answers this as a failed install and its
+                # ``finally`` restores any checkout it moved aside.
+                raise _UpdatePutOff(busy)
         taken_down = True
         await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
         await _deregister_app_off_loop(name, keep_agents=True)
@@ -352,6 +377,15 @@ async def _reinstall_from_registry(
     )
     if not result.get("ok") and after_failure is not None:
         await after_failure(taken_down)
+    if busy:
+        return {
+            "ok": False,
+            "name": name,
+            "error": f"cannot update {name!r} now: {busy}",
+            "code": "app_busy",
+            "retryable": True,
+            "app": name,
+        }
     if not taken_down:
         if not was_self_managed and await _is_self_managed():
             await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
@@ -494,6 +528,17 @@ async def _rerun_on_enable_after_update(request: web.Request, name: str) -> dict
     and the next enable or update runs the script again. A client-install app's
     failure stays advisory, as on Enable, and reports nothing.
     """
+    return await _rerun_on_enable_after_update_to(request.app.get("state"), name)
+
+
+async def _rerun_on_enable_after_update_to(state: Any, name: str) -> dict[str, Any]:
+    """:func:`_rerun_on_enable_after_update` for a caller that holds the gateway state.
+
+    ``routes_install.apply_app_update`` runs the update sequence for the Update
+    route and for the automatic app updater (:mod:`kiro_crew.apps.auto_update`),
+    which has no request in hand, and an update nobody pressed drops
+    ``node_modules`` and ``.venv`` just the same.
+    """
     record = await _read_app_record(name) or {}
     block, failed = await _run_on_enable_script(name, record.get("manifest") or {})
     if block is None:
@@ -504,7 +549,7 @@ async def _rerun_on_enable_after_update(request: web.Request, name: str) -> dict
     logger.warning(
         "%s's setup.onEnable failed after its update; it stays enabled: %s", name, reason
     )
-    _note_on_enable_failed_after_update(request, name, reason)
+    _note_on_enable_failed_after_update_to(state, name, reason)
     return {"onEnable": block, "onEnableFailed": reason}
 
 
@@ -519,7 +564,11 @@ def _note_on_enable_failed_after_update(request: web.Request, name: str, reason:
     Total: the update has landed, so a note that cannot be sent is logged and never
     fails the route.
     """
-    state = request.app.get("state")
+    _note_on_enable_failed_after_update_to(request.app.get("state"), name, reason)
+
+
+def _note_on_enable_failed_after_update_to(state: Any, name: str, reason: str) -> None:
+    """:func:`_note_on_enable_failed_after_update` for a caller that holds the gateway state."""
     if state is None:
         return
     # Local import keeps these names out of the ones the routes facade serves.

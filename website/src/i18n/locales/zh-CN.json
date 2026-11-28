@@ -12279,7 +12279,15 @@
       "browser_sites_add_back_title": "把这个浏览网站加回来吗？",
       "browser_sites_restore_risk": "之后应用自带智能体会用你的登录身份，在你浏览器里打开、阅读这些页面，并在上面输入和点击，不再每次询问。只允许可信网站。",
       "bots_scope_tools": "让你为此应用勾选的 Bot 在聊天里使用该应用的工具。其他 Bot 不受影响。",
-      "bots_scope_tools_preview_off": "在功能预览里打开<preview>Bot 聊天里的应用工具</preview>之前，勾选的 Bot 拿不到此 app 工具。"
+      "bots_scope_tools_preview_off": "在功能预览里打开<preview>Bot 聊天里的应用工具</preview>之前，勾选的 Bot 拿不到此 app 工具。",
+      "auto_update_title": "更新",
+      "auto_update_label": "自动更新",
+      "auto_update_hint": "始终：不经询问安装此应用的新版本。从不：保持当前版本。需要新权限的更新始终等待你确认。",
+      "auto_update_follow_on": "与“已安装应用的更新”相同（开启）",
+      "auto_update_follow_off": "与“已安装应用的更新”相同（关闭）",
+      "auto_update_always": "始终",
+      "auto_update_never": "从不",
+      "auto_update_save_failed": "无法保存此应用的更新设置。"
     },
     "appPage": {
       "loading_app": "加载应用…",
@@ -22306,6 +22314,13 @@
         "row_label": "静音 {{app}} 打开的会话",
         "failed_to_save": "无法保存 {{app}} 的静音设置。",
         "config_load_failed": "无法加载你已保存的应用静音设置。加载完成前，这些开关不可用。"
+      },
+      "appUpdates": {
+        "title": "已安装应用的更新",
+        "mode_label": "自动更新应用",
+        "mode_hint": "每 6 小时检查一次，并在应用空闲时安装新版本。需要新权限的更新会等待你确认。",
+        "save_failed": "无法保存应用更新设置。",
+        "load_failed": "无法加载应用更新设置。"
       }
     },
     "settingsPage": {

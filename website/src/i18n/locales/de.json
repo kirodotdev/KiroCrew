@@ -12557,7 +12557,15 @@
       "browser_sites_add_back_title": "Diese Website wieder hinzufügen?",
       "browser_sites_restore_risk": "Danach kann der eigene Agent der App diese Seiten in deinem Browser, mit deiner Anmeldung, öffnen, lesen, darauf tippen und klicken, ohne jedes Mal zu fragen. Erlaube nur eine Website, der du vertraust.",
       "bots_scope_tools": "Ermöglicht einem Bot, den du für diese App anhakst, ihre Tools in seinem eigenen Chat zu nutzen. Andere Bots bleiben unverändert.",
-      "bots_scope_tools_preview_off": "Bevor du <preview>App-Tools in Bot-Chats</preview> in den Funktionsvorschauen einschaltest, erhalten die markierten Bots keine Tools dieser App."
+      "bots_scope_tools_preview_off": "Bevor du <preview>App-Tools in Bot-Chats</preview> in den Funktionsvorschauen einschaltest, erhalten die markierten Bots keine Tools dieser App.",
+      "auto_update_title": "Updates",
+      "auto_update_label": "Automatisch aktualisieren",
+      "auto_update_hint": "Immer installiert neue Versionen dieser App ohne Rückfrage. Nie belässt sie bei dieser Version. Ein Update, das neue Berechtigungen verlangt, wartet immer auf dich.",
+      "auto_update_follow_on": "Wie Updates installierter Apps (ein)",
+      "auto_update_follow_off": "Wie Updates installierter Apps (aus)",
+      "auto_update_always": "Immer",
+      "auto_update_never": "Nie",
+      "auto_update_save_failed": "Die Update-Einstellung dieser App konnte nicht gespeichert werden."
     },
     "appPage": {
       "loading_app": "App wird geladen…",
@@ -22875,6 +22883,13 @@
         "row_label": "Von {{app}} geöffnete Sitzungen stummschalten",
         "failed_to_save": "Die Stummschaltung für {{app}} konnte nicht gespeichert werden.",
         "config_load_failed": "Deine gespeicherten Stummschaltungen für Apps konnten nicht geladen werden. Die Schalter sind erst verfügbar, wenn sie geladen sind."
+      },
+      "appUpdates": {
+        "title": "Updates installierter Apps",
+        "mode_label": "Apps automatisch aktualisieren",
+        "mode_hint": "Prüft alle 6 Stunden und installiert neue Versionen, sobald die App untätig ist. Updates, die neue Berechtigungen verlangen, warten auf dich.",
+        "save_failed": "Die App-Update-Einstellung konnte nicht gespeichert werden.",
+        "load_failed": "Die App-Update-Einstellungen konnten nicht geladen werden."
       }
     },
     "settingsPage": {

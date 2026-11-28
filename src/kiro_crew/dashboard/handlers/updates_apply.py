@@ -151,6 +151,7 @@ async def _restart_gateway(
     state._gateway_restart_in_progress = True
     admitted = admission_held
     committed = False
+    held_app_updates: Any = None
     try:
         state.push_update_progress("restarting", "Restarting server…")
         launcher, exe, refusal = await _resolve_restart_target(resolver)
@@ -171,6 +172,18 @@ async def _restart_gateway(
                 state.push_update_progress("error", admission.detail())
                 return False
             admitted = getattr(admission, "admitted", None) is True
+        # The exec below skips the gateway shutdown's app-update drain. An
+        # unattended app update between stopping its app and putting it back
+        # gets the same wait shutdown gives it, and the loop starts no other.
+        # Only a loaded loop can be applying, hence ``sys.modules``.
+        app_updates = sys.modules.get("kiro_crew.apps.auto_update")
+        if app_updates is not None:
+            from kiro_crew.gateway_shutdown_budget import UPDATE_INSTALLER_STOP_SECS
+
+            # Held from here until the exec, or the release below if it returns.
+            held_app_updates = app_updates
+            if not await app_updates.settle_for_restart(UPDATE_INSTALLER_STOP_SECS):
+                logger.warning("Restarting while an app update is still applying")
         # circular import: kiro_crew.dashboard.chat imports from
         # kiro_crew.dashboard.handlers (which re-exports the updates facade), so this
         # must stay inline to avoid an import cycle at module load.
@@ -297,6 +310,8 @@ async def _restart_gateway(
             # keeps serving, so the pause the admission took must not outlive it.
             await _release_admission(state)
         state._gateway_restart_in_progress = False
+        if held_app_updates is not None:
+            held_app_updates.release_restart_hold()
 
 
 async def _release_admission(state: DashboardState) -> None:

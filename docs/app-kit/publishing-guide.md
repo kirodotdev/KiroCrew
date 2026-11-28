@@ -672,6 +672,15 @@ installed one.
   request from a terminal through a running gateway; it is not available on
   native Windows, which has no dashboard Unix socket, so use the Update button
   there.
+- A user can let installed apps update themselves (Settings → About → Installed
+  app updates, or per app on its page). The gateway checks every 6 hours. An
+  automatic update takes the same steps once your app is idle: no session it
+  owns is mid-turn, none of its cron jobs or Job SDK runs is running, and its
+  startup hook has finished. A version that declares a permission the installed
+  one does not (a new `permissions.api` or `events` entry, a grant such as
+  `network` turned on, `memory` widened) is never installed automatically, and
+  neither is one while the user's memory consent names the installed version;
+  the user gets a note asking them to update instead.
 
 ## 14. Review checklist
 

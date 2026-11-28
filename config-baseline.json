@@ -14738,6 +14738,24 @@
       "defaultValue": false
     },
     {
+      "path": "apps.*.auto_update",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Update automatically",
+      "help": "Overrides 'Update apps automatically' for this app. Empty follows the global setting, 'always' updates this app automatically whatever the global setting says, and 'never' keeps it at its installed version.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "always",
+        "never"
+      ],
+      "defaultValue": ""
+    },
+    {
       "path": "templates",
       "kind": "core",
       "type": "object",
@@ -14778,6 +14796,39 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "app_updates",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Installed app updates",
+      "help": "Whether installed apps update themselves when a newer version is published.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "mode": "off"
+      }
+    },
+    {
+      "path": "app_updates.mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Update apps automatically",
+      "help": "'off' tells you once when a new version of an installed app is published. 'on' checks every 6 hours and installs it once the app is idle, through the same steps as the Update button. An update that asks for new permissions always waits for you.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "on"
+      ],
+      "defaultValue": "off"
     },
     {
       "path": "auto_update",

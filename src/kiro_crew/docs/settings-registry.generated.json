@@ -15,6 +15,14 @@
       "route": "/settings/about?release=notes&highlight=about.release-notes"
     },
     {
+      "id": "about.update-apps-automatically",
+      "label": "Update apps automatically",
+      "tab": "about",
+      "route": "/settings/about?highlight=key%3Aapp_updates.mode",
+      "description": "Checks every 6 hours and installs new versions once the app is idle. Updates that ask for new permissions wait for you.",
+      "configKey": "app_updates.mode"
+    },
+    {
       "id": "about.update-channel",
       "label": "Update channel",
       "tab": "about",

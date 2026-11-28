@@ -58,6 +58,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
+from kiro_crew.apps.auto_update import effective_mode, eligible_names
 from kiro_crew.apps.registry_pipeline.catalog import _version_newer
 from kiro_crew.apps.update_status import publishable_version
 from kiro_crew.atomic_write import atomic_write
@@ -140,18 +141,33 @@ def _updatable(row: dict[str, Any]) -> bool:
     )
 
 
-def _pending(rows: list[Any]) -> dict[str, tuple[str, str]]:
+def _pending(rows: list[Any], config: Any = None) -> dict[str, tuple[str, str]]:
     """``name -> (published version, installed version)`` for updatable rows.
+
+    An app whose effective update mode (:func:`auto_update.effective_mode`) is
+    ``on`` AND that the automatic updater can update (``auto_update.eligible_names``,
+    a ``registry:`` source) is left out: the updater installs it and posts its own
+    note for the outcome, so announcing it here as well would say the same
+    release twice. An ``on`` app the updater cannot touch, such as one installed
+    from a local folder, is still announced here. ``never`` is announced like ``off``: the pin stops the install, not
+    the news that a newer version exists.
 
     Both versions go through ``publishable_version``: they end up in a note the
     gateway speaks, and the published one is text a registry author controls. A
     row whose published version fails the check is not announced at all.
     """
     pending: dict[str, tuple[str, str]] = {}
+    automatic: set[str] | None = None
     for row in rows:
         if not isinstance(row, dict) or not _updatable(row):
             continue
         name = row.get("name")
+        if config is not None and isinstance(name, str) and effective_mode(config, name) == "on":
+            # Read lazily: most listings have no ``on`` app and pay nothing.
+            if automatic is None:
+                automatic = eligible_names()
+            if name in automatic:
+                continue
         published = publishable_version(row.get("version"))
         if not isinstance(name, str) or not name or not published:
             continue
@@ -211,7 +227,7 @@ def _note(name: str, published: str, installed: str) -> dict[str, Any]:
     }
 
 
-def prepare_app_update_notes(rows: list[Any]) -> list[dict[str, Any]]:
+def prepare_app_update_notes(rows: list[Any], config: Any = None) -> list[dict[str, Any]]:
     """Update the ledger from *rows* and return the notes that are now due.
 
     Blocking (ledger I/O): run off the loop. Hand the result to
@@ -225,7 +241,11 @@ def prepare_app_update_notes(rows: list[Any]) -> list[dict[str, Any]]:
     not be worked out is a worse outcome than a missing note.
     """
     try:
-        pending = _pending(rows)
+        if config is None:
+            from kiro_crew.config import KiroCrewConfig
+
+            config = KiroCrewConfig.load()
+        pending = _pending(rows, config)
         lock_path = _ledger_lock_path()
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open_lock_file(lock_path) as fd, file_lock(fd, exclusive=True, required=True):
@@ -296,7 +316,9 @@ def _caught_up(installed: dict[str, str]) -> Callable[[dict[str, Any]], bool]:
     Only this module's own notes: the gateway's channel, ``source`` ``system``,
     and a ``latestVersion`` (the bus merges ``meta`` into the stored note). The
     "setup script failed" note on the same channel carries no version and is
-    never matched, because an update does not fix it.
+    never matched, because an update does not fix it. Nor is the automatic
+    "updated to" note, which names the version it installed under no
+    ``latestVersion`` so that installing it does not mark it read.
 
     Caught up means the same version or one positively newer. Two pre-releases
     of one release are not ordered (``_version_newer`` is False both ways), so
