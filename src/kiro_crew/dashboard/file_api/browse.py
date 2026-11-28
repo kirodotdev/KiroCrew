@@ -176,6 +176,8 @@ def _create_browse_dir_sync(parent: str, name: str) -> tuple[str, str]:
     On Windows a trailing dot or space is dropped from *name* first, as Windows
     itself drops it, so the path answered is the folder that exists (``taken.``
     is the existing ``taken``: ``exists``). POSIX makes *name* exactly as sent.
+    A Windows ``mkdir`` that returns with no folder at the path (the ``NUL``
+    device) is ``invalid_name``: the result is judged, not the name.
     """
     try:
         base = os.path.realpath(os.path.expanduser(parent))
@@ -203,6 +205,9 @@ def _create_browse_dir_sync(parent: str, name: str) -> tuple[str, str]:
             ):
                 return "parent_changed", target
             os.mkdir(target)
+            if not os.path.isdir(target):
+                # A device name (``NUL``) returns from mkdir having made nothing.
+                return "invalid_name", target
         else:
             # Neither pin exists here (unreachable on Linux, macOS and Windows):
             # a by-name mkdir would be the unguarded swap window, so refuse.
