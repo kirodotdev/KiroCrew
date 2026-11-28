@@ -19938,7 +19938,7 @@
       "late_save_failed": "La pianificazione «{{job}}» non è stata salvata.",
       "late_save_unconfirmed": "La pianificazione «{{job}}» potrebbe essere stata salvata oppure no — il server non l'ha confermato.",
       "waiting_starts_by": "In attesa, avvio entro le {{time}}",
-      "waiting_to_start_hint": "Questa esecuzione non è ancora iniziata. Un job ricorrente parte in un momento casuale dopo l'orario pianificato, così i job non partono tutti insieme.",
+      "waiting_to_start_hint": "Questa esecuzione non è ancora iniziata. Un job ricorrente parte in un momento casuale dopo l’orario pianificato, così i job non partono tutti insieme.",
       "cancel_waiting_run": "Annulla questa esecuzione prima che inizi",
       "waiting_to_start": "In attesa",
       "starts_by": "Avvio entro le {{time}}"
