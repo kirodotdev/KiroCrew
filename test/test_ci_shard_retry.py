@@ -283,6 +283,12 @@ def run_scenario(
 Runs = dict[str, tuple[subprocess.CompletedProcess[str], list[dict[str, Any]], Path]]
 
 
+def outcomes(record: list[dict[str, Any]]) -> dict[str, str]:
+    """``{node id: outcome}`` of a record: every retried test, and how its retry ended."""
+    assert len({row["nodeid"] for row in record}) == len(record)
+    return {row["nodeid"]: row["outcome"] for row in record}
+
+
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory: pytest.TempPathFactory) -> Runs:
     """Every scenario's inner session, record and tree, run one after another."""
@@ -299,20 +305,30 @@ def runs(tmp_path_factory: pytest.TempPathFactory) -> Runs:
 
 def test_a_test_that_fails_twice_stays_red_and_is_not_recorded(runs: Runs) -> None:
     done, record, _ = runs["broken"]
+    # Retried, failed again: in the record with that outcome, never as a flaky pass.
+    assert record == [
+        {
+            "nodeid": "test_a.py::test_broken",
+            "first_failure": "ValueError: always",
+            "outcome": RETRY.FAILED_AGAIN,
+            "shard": None,
+            "head_sha": None,
+        }
+    ]
+    assert "0 flaky test(s) passed on retry, 1 failed again, recorded in " in done.stdout
     assert done.returncode == 1, done.stdout
     assert "retrying 1 failed test(s) once" in done.stdout
-    assert "0 flaky test(s) passed on retry" in done.stdout
-    assert record == []
 
 
 def test_a_flaky_pass_turns_green_and_is_recorded(runs: Runs) -> None:
     done, record, _ = runs["flaky"]
     assert done.returncode == 0, done.stdout
-    assert "1 flaky test(s) passed on retry, recorded in " in done.stdout
+    assert "1 flaky test(s) passed on retry, 0 failed again, recorded in " in done.stdout
     assert record == [
         {
             "nodeid": "test_a.py::test_flaky",
             "first_failure": "AssertionError: first try only",
+            "outcome": RETRY.PASSED_ON_RETRY,
             "shard": "3",
             "head_sha": SHA,
         }
@@ -324,7 +340,11 @@ def test_one_flaky_and_one_broken_test_keep_the_job_red_and_record_the_flaky(
 ) -> None:
     done, record, _ = runs["flaky_and_broken"]
     assert done.returncode == 1, done.stdout
-    assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
+    assert outcomes(record) == {
+        "test_a.py::test_flaky": RETRY.PASSED_ON_RETRY,
+        "test_a.py::test_broken": RETRY.FAILED_AGAIN,
+    }
+    assert "1 flaky test(s) passed on retry, 1 failed again, recorded in " in done.stdout
 
 
 def test_more_than_five_failures_retry_nothing(runs: Runs) -> None:
@@ -346,29 +366,30 @@ def test_no_opt_in_or_another_event_retries_nothing(runs: Runs, name: str) -> No
 def test_an_xdist_shard_retries_a_grouped_test_by_its_plain_id(runs: Runs) -> None:
     done, record, _ = runs["xdist"]
     assert done.returncode == 0, done.stdout
-    assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
+    assert outcomes(record) == {"test_a.py::test_flaky": RETRY.PASSED_ON_RETRY}
 
 
 def test_any_xdist_group_name_is_retried(runs: Runs) -> None:
     done, record, _ = runs["xdist_odd_groups"]
     assert done.returncode == 0, done.stdout
-    assert sorted(row["nodeid"] for row in record) == [
-        f"test_{name}.py::test_flaky" for name in "abc"
-    ]
+    assert outcomes(record) == {
+        f"test_{name}.py::test_flaky": RETRY.PASSED_ON_RETRY for name in "abc"
+    }
 
 
 def test_a_grouped_failure_retries_itself_not_a_shorter_id(runs: Runs) -> None:
     done, record, _ = runs["xdist_prefix_ids"]
     assert done.returncode == 1, done.stdout
     assert "retrying 1 failed test(s) once" in done.stdout
-    assert record == []
+    # It failed again, and is recorded under the plain id the serial pass ran.
+    assert outcomes(record) == {"test_a.py::test_x[a]@b]": RETRY.FAILED_AGAIN}
 
 
 @pytest.mark.parametrize("name", ["ini_positional", "env_positional"])
 def test_a_selection_in_addopts_retries_only_the_failed_test(runs: Runs, name: str) -> None:
     done, record, root = runs[name]
     assert done.returncode == 0, done.stdout
-    assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
+    assert outcomes(record) == {"test_a.py::test_flaky": RETRY.PASSED_ON_RETRY}
     # test_counted passed in the first session: the retry pass deselected it.
     assert (root / "runs-test_b").read_text(encoding="utf-8") == "x"
 
@@ -380,7 +401,7 @@ def test_a_flaky_pass_turns_green_however_the_shard_was_invoked(runs: Runs, name
     done, record, _ = runs[name]
     assert done.returncode == 0, done.stdout
     assert "shard-retry: retrying 1 failed test(s) once." in done.stdout
-    assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
+    assert outcomes(record) == {"test_a.py::test_flaky": RETRY.PASSED_ON_RETRY}
 
 
 def test_a_setup_error_is_retried(runs: Runs) -> None:
@@ -402,22 +423,26 @@ def test_a_retry_pass_that_exits_non_zero_keeps_the_job_red(runs: Runs) -> None:
     done, record, _ = runs["retry_exits_nonzero"]
     assert done.returncode == 1, done.stdout
     assert "the retry pass did not exit 0; job stays red" in done.stdout
-    assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
+    assert outcomes(record) == {"test_a.py::test_flaky": RETRY.PASSED_ON_RETRY}
 
 
 def test_a_guard_that_fails_a_clean_run_still_fails_it_after_a_green_retry(runs: Runs) -> None:
     done, record, _ = runs["guard_after_retry"]
     assert done.returncode == 1, done.stdout
-    assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
+    assert outcomes(record) == {"test_a.py::test_flaky": RETRY.PASSED_ON_RETRY}
 
 
 def test_a_failure_the_retry_pass_did_not_rerun_keeps_the_job_red(runs: Runs) -> None:
     # Two tests failed; the retry pass collected one, ran it green and exited 0.
     done, record, _ = runs["not_rerun"]
     assert "shard-retry: retrying 2 failed test(s) once." in done.stdout
-    assert "1 flaky test(s) passed on retry" in done.stdout
+    assert "1 flaky test(s) passed on retry, 1 failed again, recorded in " in done.stdout
     assert done.returncode == 1, done.stdout
-    assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
+    # The one the pass never ran did not pass a retry: it is recorded as failed again.
+    assert outcomes(record) == {
+        "test_a.py::test_flaky": RETRY.PASSED_ON_RETRY,
+        "test_a.py::test_only_first": RETRY.FAILED_AGAIN,
+    }
 
 
 def test_a_crashed_worker_retries_nothing(runs: Runs) -> None:
@@ -432,7 +457,7 @@ def test_a_test_whose_teardown_fails_on_the_retry_is_not_a_flaky_pass(runs: Runs
     done, record, _ = runs["teardown_fails_on_retry"]
     assert "shard-retry: retrying 1 failed test(s) once." in done.stdout
     assert done.returncode == 1, done.stdout
-    assert record == []
+    assert outcomes(record) == {"test_a.py::test_flaky": RETRY.FAILED_AGAIN}
 
 
 def test_the_root_conftest_guard_reads_the_status_a_green_retry_left(tmp_path: Path) -> None:
@@ -452,6 +477,68 @@ def test_the_root_conftest_guard_reads_the_status_a_green_retry_left(tmp_path: P
     )
     assert done.returncode == 0, done.stderr
     assert done.stdout.split() == ["1", "1", "2"]
+
+
+@pytest.mark.parametrize("how", ["timeout", "no results file", "results of another shape"])
+def test_a_retry_pass_that_fails_to_report_passes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], how: str
+) -> None:
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if how == "timeout":
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        if how == "results of another shape":
+            Path(kwargs["env"][RETRY.ENV_RESULTS]).write_text('{"passed": ["x"]}', "utf-8")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(RETRY.subprocess, "run", run)
+    manager = SimpleNamespace(hasplugin=lambda name: False, get_plugin=lambda name: None)
+    config = SimpleNamespace(
+        invocation_params=SimpleNamespace(args=("-q",), dir=tmp_path),
+        pluginmanager=manager,
+        getini=lambda name: [],
+    )
+    retry = RETRY._Retry(config)
+    assert retry._run_retry(SimpleNamespace(config=config), ["t.py::test_x"]) == ({}, {}, False)
+    said = "the retry pass failed to report" in capsys.readouterr().out
+    assert said == (how != "results of another shape")
+
+
+def test_a_retry_pass_that_did_not_report_records_each_test_as_failed_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = tmp_path / "record.jsonl"
+    monkeypatch.setenv(RETRY.ENV_RECORD, str(record))
+    monkeypatch.setenv(RETRY.ENV_SHARD, "7")
+    monkeypatch.delenv(RETRY.ENV_HEAD_SHA, raising=False)
+    manager = SimpleNamespace(get_plugin=lambda name: None)
+    session = SimpleNamespace(
+        config=SimpleNamespace(pluginmanager=manager),
+        exitstatus=1,
+        shouldfail=False,
+        shouldstop=False,
+        testsfailed=2,
+    )
+    retry = RETRY._Retry(session.config)
+    retry.failures = {"t.py::test_a@g": "E: a", "t.py::test_b": "E: b"}
+    retry.failed_reports = 2
+    # The pass ran `test_a` under its plain id and reported no pass; it never ran `test_b`.
+    monkeypatch.setattr(
+        retry,
+        "_run_retry",
+        lambda session, nodeids: ({}, {"t.py::test_a@g": "t.py::test_a"}, False),
+    )
+    retry.pytest_sessionfinish(session, 1)
+    assert session.exitstatus == 1
+    assert RETRY.read_record(record) == [
+        {
+            "nodeid": nodeid,
+            "first_failure": failure,
+            "outcome": RETRY.FAILED_AGAIN,
+            "shard": "7",
+            "head_sha": None,
+        }
+        for nodeid, failure in (("t.py::test_a", "E: a"), ("t.py::test_b", "E: b"))
+    ]
 
 
 def test_a_failed_report_is_counted_the_way_pytest_counts_it() -> None:
@@ -526,7 +613,8 @@ def test_no_environment_text_reaches_the_retry_command_line(
     def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append((argv, kwargs))
         results = Path(kwargs["env"][RETRY.ENV_RESULTS])
-        results.write_text(json.dumps({"passed": {"t.py::test_x": "t.py::test_x"}}), "utf-8")
+        ids = {"t.py::test_x": "t.py::test_x"}
+        results.write_text(json.dumps({"passed": ids, "ran": ids}), "utf-8")
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(RETRY.subprocess, "run", run)
@@ -536,8 +624,9 @@ def test_no_environment_text_reaches_the_retry_command_line(
         pluginmanager=manager,
         getini=lambda name: ["--strict-markers"],
     )
-    passed, ok = RETRY._Retry(config)._run_retry(SimpleNamespace(config=config), ["t.py::test_x"])
-    assert ok and passed == {"t.py::test_x": "t.py::test_x"}
+    retry = RETRY._Retry(config)
+    passed, ran, ok = retry._run_retry(SimpleNamespace(config=config), ["t.py::test_x"])
+    assert ok and passed == ran == {"t.py::test_x": "t.py::test_x"}
     (argv, kwargs), *more = calls
     assert not more
     # The command line is the session's own arguments and the ini options, nothing else.
@@ -616,7 +705,7 @@ def test_a_collection_error_retries_nothing(runs: Runs) -> None:
 def test_the_retry_pass_leaves_the_first_sessions_report_whole(runs: Runs, name: str) -> None:
     done, record, root = runs[name]
     assert done.returncode == 0, done.stdout
-    assert [row["nodeid"] for row in record] == ["test_a.py::test_flaky"]
+    assert outcomes(record) == {"test_a.py::test_flaky": RETRY.PASSED_ON_RETRY}
     report = (root / "report.xml").read_text(encoding="utf-8")
     # The retry pass ran test_flaky alone: a report it rewrote would lack test_fine.
     assert 'name="test_fine"' in report and 'name="test_flaky"' in report
@@ -653,26 +742,60 @@ def test_enabled_needs_the_opt_in_and_a_pull_request_event() -> None:
 # -- summary -----------------------------------------------------------------
 
 
-def test_summary_writes_one_line_per_flaky_test(
+def test_summary_counts_both_outcomes_and_writes_one_line_per_retried_test(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "record.jsonl"
     rows = [
-        {"nodeid": "test/test_a.py::test_x@g", "first_failure": "AssertionError: `x`"},
+        {
+            "nodeid": "test/test_a.py::test_x@g",
+            "first_failure": "AssertionError: `x`",
+            "outcome": RETRY.PASSED_ON_RETRY,
+        },
+        {
+            "nodeid": "test/test_c.py::test_z",
+            "first_failure": "ValueError: always",
+            "outcome": RETRY.FAILED_AGAIN,
+        },
+        # A row written before the record had outcomes: every row then was a flaky pass.
         {"nodeid": "test/test_b.py::test_y", "first_failure": "OSError: gone"},
+        # An outcome this reader does not know is not shown as either.
+        {"nodeid": "test/test_d.py::test_w", "first_failure": "x", "outcome": "skipped"},
+        {"nodeid": "test/test_e.py::test_v", "first_failure": "x", "outcome": None},
     ]
     path.write_text(
         "".join(json.dumps(row) + "\n" for row in rows) + "not json\n[1]\n", encoding="utf-8"
     )
+    assert [row["nodeid"] for row in RETRY.read_record(path)] == [
+        "test/test_a.py::test_x@g",
+        "test/test_c.py::test_z",
+        "test/test_b.py::test_y",
+    ]
+    assert RETRY.count_outcomes(RETRY.read_record(path)) == (2, 1)
     summary = tmp_path / "summary"
     env = {RETRY.ENV_RECORD: str(path), "GITHUB_STEP_SUMMARY": str(summary)}
     assert RETRY.cmd_summary(env) == 0
     expected = (
+        "Shard retry: 2 test(s) passed on retry (flaky), 1 failed again.\n"
         "- Flaky, passed on retry: `test/test_a.py::test_x@g` (first failure: AssertionError: 'x')\n"
+        "- Failed again on retry: `test/test_c.py::test_z` (first failure: ValueError: always)\n"
         "- Flaky, passed on retry: `test/test_b.py::test_y` (first failure: OSError: gone)\n"
     )
     assert summary.read_text(encoding="utf-8") == expected
     assert capsys.readouterr().out == expected
+
+
+def test_summary_counts_a_record_of_failed_retries_alone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "record.jsonl"
+    row = {"nodeid": "t.py::test_a", "first_failure": "E: x", "outcome": RETRY.FAILED_AGAIN}
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    assert RETRY.cmd_summary({RETRY.ENV_RECORD: str(path)}) == 0
+    assert capsys.readouterr().out == (
+        "Shard retry: 0 test(s) passed on retry (flaky), 1 failed again.\n"
+        "- Failed again on retry: `t.py::test_a` (first failure: E: x)\n"
+    )
 
 
 @pytest.mark.parametrize("content", [None, ""], ids=["missing", "empty"])
@@ -686,4 +809,4 @@ def test_summary_on_no_record_writes_nothing(
     env = {RETRY.ENV_RECORD: str(path), "GITHUB_STEP_SUMMARY": str(summary)}
     assert RETRY.cmd_summary(env) == 0
     assert not summary.exists()
-    assert capsys.readouterr().out == "Shard retry: no flaky retries.\n"
+    assert capsys.readouterr().out == "Shard retry: no test was retried.\n"
