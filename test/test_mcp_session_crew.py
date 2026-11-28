@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from session_once_helpers import without_once_fields
 
 from kiro_crew import mcp_session_crew as tools
 from kiro_crew import remote_dispatch
@@ -30,8 +31,12 @@ class _Client:
             raise DashboardError(self.refuse)
         return self.reply
 
-    def post(self, path: str, body: dict, *, session_key: str = "") -> dict[str, Any]:
-        self.calls.append(("POST", path, body))
+    def post(
+        self, path: str, body: dict, *, session_key: str = "", timeout: float | None = None
+    ) -> dict[str, Any]:
+        # Create and send post once per call; the rest of their body is pinned here.
+        once = "request_id" in body
+        self.calls.append(("POST", path, without_once_fields(body) if once else body))
         return self._answer()
 
     def get(self, path: str, *, session_key: str = "") -> dict[str, Any]:

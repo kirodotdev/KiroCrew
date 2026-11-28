@@ -59,6 +59,7 @@ from kiro_crew.dashboard.handlers_instances_peer import (
     _redact_peer_payload,
 )
 from kiro_crew.dashboard.peer_redaction import redact_peer_text
+from kiro_crew.dashboard.session_control_replay import ATTEMPT_FIELD, REQUEST_ID_FIELD
 from kiro_crew.instances.constants import PROXY_REDACT_BUFFER_MAX_BYTES
 from kiro_crew.instances.crew_ref import clean_crew_ref
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
@@ -86,6 +87,10 @@ CREW_VERBS = ("create", "send", "read", "stop", "close")
 _CREATE_FIELDS = frozenset(
     {"crew", "title", "agent", "agent_kind", "model", "work_item", "requires"}
 )
+
+#: The fields ``session_control_replay.once`` reads on this hub before the create
+#: runs. Taken here, never sent to the peer: the create body below names its fields.
+_REPLAY_FIELDS = frozenset({REQUEST_ID_FIELD, ATTEMPT_FIELD})
 
 #: A peer slot key this hub will put in a path: one plain segment. A peer is
 #: untrusted, and its create reply names the key every later path is built from,
@@ -695,7 +700,7 @@ async def _create(
     *,
     board: str = "",
 ) -> dict[str, Any]:
-    extra = sorted(k for k in body if k not in _CREATE_FIELDS)
+    extra = sorted(k for k in body if k not in _CREATE_FIELDS and k not in _REPLAY_FIELDS)
     if extra:
         raise CrewCallError(
             400,

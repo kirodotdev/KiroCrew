@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from session_once_helpers import without_once_fields
 
 from kiro_crew.context_assembly.markers import neutralize_background_context_frame
 from kiro_crew.dashboard import chat_runner
@@ -413,6 +414,6 @@ def test_the_tool_sends_the_verified_key_and_reports_the_outcome(resp, expected)
     out, (sent,) = _tool_call(resp)
 
     assert sent.path == "/api/session-control/set-note"
-    assert sent.body == {"target": "chat-2", "note": "The build is green."}
+    assert without_once_fields(sent.body) == {"target": "chat-2", "note": "The build is green."}
     assert sent.session_key == _VERIFIED
     assert expected in out

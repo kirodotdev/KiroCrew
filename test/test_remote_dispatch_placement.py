@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import work_ledger_projection_helpers as helpers
+from session_once_helpers import without_once_fields
 from work_ledger_projection_helpers import _SLOTS, ACCEPTANCE, CONDUCTOR, _record
 
 import kiro_crew
@@ -180,7 +181,10 @@ def test_the_tool_places_only_with_the_switch_on(monkeypatch, enabled):
         ctx.client.post.assert_not_called()
         return
     path, payload = ctx.client.post.call_args.args
-    assert (path, payload) == ("/api/session-control/create", {"work_item": "it_0000abcd"})
+    assert (path, without_once_fields(payload)) == (
+        "/api/session-control/create",
+        {"work_item": "it_0000abcd"},
+    )
     assert "on crew `lab`" in out and "picked this crew by headroom" in out
     # Two crews may both be named lab; only the id reaches the one chosen.
     assert "crew=`lab-2`" in out
@@ -752,7 +756,10 @@ def test_the_tool_forwards_requires_and_refuses_it_on_a_local_create(monkeypatch
     ctx.client.post.return_value = {"target": "c", "crew": "lab", "placed": True}
     _run_session_create({"work_item": "it_0000abcd", "requires": {"tags": ["gpu"]}}, ctx)
     _, payload = ctx.client.post.call_args.args
-    assert payload == {"work_item": "it_0000abcd", "requires": {"tags": ["gpu"]}}
+    assert without_once_fields(payload) == {
+        "work_item": "it_0000abcd",
+        "requires": {"tags": ["gpu"]},
+    }
     ctx.client.post.reset_mock()
     out = _run_session_create({"requires": {"tags": ["gpu"]}}, ctx)
     assert out == "Error: requires is taken only with crew or work_item."

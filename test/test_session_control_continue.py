@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from session_once_helpers import without_once_fields
 
 from kiro_crew.dashboard import chat_handlers as ch
 from kiro_crew.dashboard import session_control as sc
@@ -356,7 +357,10 @@ def _call_tool(reply: dict):
 )
 def test_tool_carries_the_verified_key_and_reports_the_body(body, phrase):
     out, (post,) = _call_tool({"ok": True, "target": "chat-2", "body": body})
-    assert (post.path, post.body) == ("/api/session-control/continue", {"target": "chat-2"})
+    assert (post.path, without_once_fields(post.body)) == (
+        "/api/session-control/continue",
+        {"target": "chat-2"},
+    )
     assert post.session_key == _VERIFIED
     assert f"Continue sent to `chat-2` ({body})" in out
     assert phrase in out

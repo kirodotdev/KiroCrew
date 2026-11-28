@@ -533,13 +533,20 @@ def _run_session_fork(args: dict[str, Any], ctx: ToolContext) -> str:
     if fld_id:
         payload["folder_id"] = fld_id
     try:
-        resp = ctx.client.post(
-            "/api/session-control/fork",
-            payload,
-            session_key=ctx.caller_key,
-        )
+        forked = _post_once(ctx, "/api/session-control/fork", payload)
     except DashboardError as refused:
+        if refused.body.get("transport_error"):
+            lost = lost_reply_error(
+                "fork",
+                "forked session may still have been opened",
+                "look for it with session_status",
+                refused,
+            )
+            return redact(lost + made_note)
         return redact(f"Error: could not fork the session: {refused.error}{made_note}")
+    resp = forked.resp
+    if forked.resent_unprotected:
+        made_note += f" Warning: {possible_double('a second fork may have been opened')}; check session_status."
     filed = f" filed in `{folder_label}`" if folder_label else ""
     return redact(
         f"\U0001f500 Forked `{resp.get('source')}` into `{resp.get('target')}` "
@@ -614,22 +621,31 @@ def _run_session_retry(args: dict[str, Any], ctx: ToolContext) -> str:
 
 def _run_session_continue(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
-        resp = ctx.client.post(
-            "/api/session-control/continue",
-            {"target": args["target"]},
-            session_key=ctx.caller_key,
-        )
+        continued = _post_once(ctx, "/api/session-control/continue", {"target": args["target"]})
     except DashboardError as refused:
+        if refused.body.get("transport_error"):
+            return lost_reply_error(
+                "continue",
+                "continuation may still have been queued",
+                "read the target with session_read_message",
+                refused,
+            )
         return f"Error: could not continue that session: {refused.error}"
+    resp = continued.resp
     target = resp.get("target", args["target"])
     body = resp.get("body", "continued")
     if body == "resumed":
         how = "its last turn was interrupted, so it was told to pick that turn up"
     else:
         how = "its last turn had ended, so it was told to carry on"
+    twice = (
+        f" Warning: {possible_double('it may have been told to continue twice')}."
+        if continued.resent_unprotected
+        else ""
+    )
     return redact(
         f"\u25b6\ufe0f Continue sent to `{target}` ({body}): {how}. "
-        "Read the result with session_read_message."
+        f"Read the result with session_read_message.{twice}"
     )
 
 
@@ -747,13 +763,20 @@ def _run_session_set_color(args: dict[str, Any], ctx: ToolContext) -> str:
 
 def _run_session_set_note(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
-        resp = ctx.client.post(
-            "/api/session-control/set-note",
-            {"target": args["target"], "note": args["note"]},
-            session_key=ctx.caller_key,
+        noted = _post_once(
+            ctx, "/api/session-control/set-note", {"target": args["target"], "note": args["note"]}
         )
     except DashboardError as refused:
+        if refused.body.get("transport_error"):
+            return lost_reply_error(
+                "note",
+                "note may still have been left",
+                "read the target with session_read_message",
+                refused,
+                again="leave",
+            )
         return f"Error: could not leave that note: {refused.error}"
+    resp = noted.resp
     target = args["target"]
     if resp.get("visibleDeferred"):
         reply = (
@@ -772,6 +795,8 @@ def _run_session_set_note(args: dict[str, Any], ctx: ToolContext) -> str:
         if resp.get("deliveryConditional"):
             reply += ", unless the session is first bound to another conversation"
         reply += "."
+    if noted.resent_unprotected:
+        reply += f" Warning: {possible_double('the note may have been left twice')}."
     return redact(reply)
 
 
@@ -968,7 +993,8 @@ def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
     if args.get("all") is True:
         payload["all"] = True
     try:
-        resp = ctx.client.post(
+        sent = _post_once(
+            ctx,
             "/api/session-control/broadcast",
             payload,
             # The backend delivers SEQUENTIALLY, so one request covers up to
@@ -987,10 +1013,22 @@ def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
                 MAX_BROADCAST_TARGETS * BROADCAST_TARGET_ALLOWANCE_SECS
                 + BROADCAST_RESPONSE_MARGIN_SECS
             ),
-            session_key=ctx.caller_key,
         )
     except DashboardError as refused:
+        if refused.body.get("transport_error"):
+            return lost_reply_error(
+                "broadcast",
+                "message may still have reached some or all of its sessions",
+                "read each target with session_read_message",
+                refused,
+            )
         return f"Error: could not broadcast: {refused.error}"
+    resp = sent.resp
+    twice = (
+        f"Warning: {possible_double('the message may have been delivered twice')}."
+        if sent.resent_unprotected
+        else ""
+    )
     rows = resp.get("results") or []
     requested = int(resp.get("requested", len(rows)) or 0)
     delivered = int(resp.get("delivered", 0) or 0)
@@ -1001,7 +1039,7 @@ def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
         return (
             "\U0001f4e3 Nothing to broadcast to — you have not created any "
             "session that is still open. Name `targets` to reach a session you "
-            "did not create, or open one with session_create."
+            "did not create, or open one with session_create." + (f"\n{twice}" if twice else "")
         )
     verb = "Steered" if mode == "steer" else "Queued for"
     lines = [f"\U0001f4e3 {verb} {delivered}/{requested} session(s):"]
@@ -1044,6 +1082,8 @@ def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
             "Some targets were not reached — the rows above say which and why. "
             "Nothing retries them for you."
         )
+    if twice:
+        lines.append(twice)
     return redact("\n".join(lines))
 
 

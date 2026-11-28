@@ -626,10 +626,18 @@ async def _add_worker_capabilities(
 
 @_counted("fork")
 async def api_session_control_fork(request: web.Request) -> web.Response:
-    """POST /api/session-control/fork — open a session carrying another's transcript."""
+    """POST /api/session-control/fork — open a session carrying another's transcript.
+
+    A resend of the same ``request_id`` gets the first fork's reply rather than a
+    second fork (``session_control_replay``).
+    """
     refused = await _require_internal(request)
     if refused is not None:
         return refused
+    return await session_control_replay.once(request, "fork", lambda: _fork(request))
+
+
+async def _fork(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
@@ -715,10 +723,18 @@ async def api_session_control_retry(request: web.Request) -> web.Response:
 
 @_counted("continue")
 async def api_session_control_continue(request: web.Request) -> web.Response:
-    """POST /api/session-control/continue — pick up or carry on another session's thread."""
+    """POST /api/session-control/continue — pick up or carry on another session's thread.
+
+    A resend of the same ``request_id`` gets the first continue's reply rather than a
+    second continuation (``session_control_replay``).
+    """
     refused = await _require_internal(request)
     if refused is not None:
         return refused
+    return await session_control_replay.once(request, "continue", lambda: _continue(request))
+
+
+async def _continue(request: web.Request) -> web.Response:
     # No prewarm here, for the reason `api_session_control_stop` gives.
     state: DashboardState = request.app["state"]
     try:
@@ -890,13 +906,19 @@ async def api_session_control_set_note(request: web.Request) -> web.Response:
     """POST /api/session-control/set-note — leave a note on a session the caller created.
 
     Written by ``POST /api/chat/slots/{slot}/note``'s own code, so its limits,
-    redaction, hold during a running turn and reply are that route's.
+    redaction, hold during a running turn and reply are that route's. A resend of the
+    same ``request_id`` gets the first note's reply rather than a second note
+    (``session_control_replay``).
     """
-    from kiro_crew.dashboard import chat_handlers  # circular: it imports this package
-
     refused = await _require_internal(request)
     if refused is not None:
         return refused
+    return await session_control_replay.once(request, "set_note", lambda: _set_note(request))
+
+
+async def _set_note(request: web.Request) -> web.Response:
+    from kiro_crew.dashboard import chat_handlers  # circular: it imports this package
+
     # No prewarm here, for the reason `api_session_control_stop` gives.
     state: DashboardState = request.app["state"]
     try:
@@ -1122,10 +1144,18 @@ async def _send(request: web.Request) -> web.Response:
 
 @_counted("broadcast")
 async def api_session_control_broadcast(request: web.Request) -> web.Response:
-    """POST /api/session-control/broadcast — deliver one message to several sessions."""
+    """POST /api/session-control/broadcast — deliver one message to several sessions.
+
+    A resend of the same ``request_id`` gets the first broadcast's reply rather than
+    a second delivery to every target (``session_control_replay``).
+    """
     refused = await _require_internal(request)
     if refused is not None:
         return refused
+    return await session_control_replay.once(request, "broadcast", lambda: _broadcast(request))
+
+
+async def _broadcast(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
