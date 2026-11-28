@@ -314,8 +314,8 @@ class TestBackfillFormatting:
 
         posted = await _drain(state, slot)
         body = "\n".join(posted)
-        assert "*name:*" in body, "small table lost its vertical-list conversion"
-        assert "alpha" in body and "beta" in body
+        assert "*name | value*" in body, "small table lost its vertical-list conversion"
+        assert "• *alpha:* 1" in body and "• *beta:* 2" in body
 
     @pytest.mark.asyncio
     async def test_message_past_the_mrkdwn_limit_keeps_its_tail(self, tmp_path):
