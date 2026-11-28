@@ -441,6 +441,27 @@ describe("first-download installer design contract", () => {
     assert.equal(pkg.build.nsis.runAfterFinish, true);
   });
 
+  it("keeps the version branding text above the bottom divider line on every faded page", () => {
+    assert.match(installer, /!define KIRO_MUI_LINE_STANDARD 1035\b/);
+    assert.match(installer, /!define KIRO_MUI_LINE_FULLWINDOW 1045\b/);
+    const keep = installer.match(/Function KiroKeepBrandingAboveLine[\s\S]*?FunctionEnd/);
+    assert.ok(keep, "KiroKeepBrandingAboveLine is defined");
+    assert.match(keep[0], /IntOp \$1 \$1 \| \$\{KIRO_WS_CLIPSIBLINGS\}/);
+    assert.match(keep[0], /SetWindowLongW\(p r0, i \$\{KIRO_GWL_STYLE\}, i r1\)/);
+    assert.match(keep[0], /SetWindowPos\(p r0, p \$\{KIRO_HWND_BOTTOM\},/);
+    const fadeIn = installer.match(/Function KiroFadeInPage[\s\S]*?FunctionEnd/)[0];
+    const silentReturn = fadeIn.indexOf("Return");
+    const noAnimationBranch = fadeIn.indexOf("$KiroAnimationsEnabled == 0");
+    for (const line of ["KIRO_MUI_LINE_STANDARD", "KIRO_MUI_LINE_FULLWINDOW"]) {
+      const call = fadeIn.indexOf(`Push \${${line}}\n  Call KiroKeepBrandingAboveLine`);
+      assert.ok(call > silentReturn && call < noAnimationBranch, `${line} is reordered on every shown page`);
+    }
+    assert.match(
+      fadeIn,
+      /AnimateWindow[\s\S]*?RedrawWindow\(p \$HWNDPARENT, p 0, p 0, i \$\{KIRO_RDW_REPAINT\}\)[\s\S]*?StrCpy \$KiroWindowVisible 1/
+    );
+  });
+
   it("cross-fades native pages without stalling extraction and enforces an install-time ceiling", () => {
     const assistedInstallerTemplate = fs.readFileSync(ASSISTED_INSTALLER_TEMPLATE, "utf8");
     assert.doesNotMatch(installer, /Page custom/);
