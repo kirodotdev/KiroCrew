@@ -47,6 +47,21 @@ const REORDER_SPRING = { type: 'spring', stiffness: 700, damping: 45 } as const
 const INSTANT = { duration: 0 } as const
 const NO_PINS: readonly string[] = []
 
+/**
+ * A finger's tap target for the tab's 11px close and pin glyphs: on a coarse
+ * pointer each button pads out to 24px (WCAG 2.5.8) and takes the same amount
+ * back as negative margin, so the tab looks and lays out as before.
+ *
+ * Not `mc-touch-hit`, even with the tab's clip lifted: its 44px areas would
+ * overlap, the close's covering most of the pin glyph 8px away and reaching
+ * past the tab onto its neighbour. A 24px box fits inside the tab's 8px end
+ * padding and its height. The pin gives back 1.5px less at its end, which
+ * widens the gap before the close from 8px to 13px, so the two targets meet
+ * without overlapping.
+ */
+const CLOSE_TOUCH_TARGET_CLS = '[@media(pointer:coarse)]:p-[6.5px] [@media(pointer:coarse)]:-m-[6.5px]'
+const PIN_TOUCH_TARGET_CLS = '[@media(pointer:coarse)]:p-[6.5px] [@media(pointer:coarse)]:-my-[6.5px] [@media(pointer:coarse)]:-ml-[6.5px] [@media(pointer:coarse)]:-mr-[1.5px]'
+
 interface SessionTabProps {
   value: string
   tabRef: (el: HTMLDivElement | null) => void
@@ -462,7 +477,7 @@ export default function SessionTabStrip({ tabs, pinned = NO_PINS, activeKey, cue
             aria-pressed={isPinned}
             title={isPinned ? i18nT('components.sessionTabStrip.unpin_tab_hint') : i18nT('components.sessionTabStrip.pin_tab_hint')}
             onClick={e => { e.stopPropagation(); onTogglePin(key) }}
-            className={`shrink-0 bg-transparent border-none p-0 leading-none cursor-pointer transition-opacity ${
+            className={`shrink-0 bg-transparent border-none p-0 leading-none cursor-pointer transition-opacity ${PIN_TOUCH_TARGET_CLS} ${
               isPinned
                 ? 'opacity-60 hover:opacity-100 hover:text-text'
                 : 'opacity-0 group-hover/tab:opacity-60 [@media(hover:none)]:opacity-60 group-focus-within/tab:opacity-60 hover:!opacity-100 hover:text-text'
@@ -487,7 +502,7 @@ export default function SessionTabStrip({ tabs, pinned = NO_PINS, activeKey, cue
             // focused button: a keyboard close, which must not freeze.
             if (e.detail === 0) { setFreeze(null); onClose(key) } else closeByPointer(key)
           }}
-          className={`shrink-0 bg-transparent border-none p-0 leading-none cursor-pointer transition-opacity ${isPinned ? 'invisible' : ''} ${
+          className={`shrink-0 bg-transparent border-none p-0 leading-none cursor-pointer transition-opacity ${CLOSE_TOUCH_TARGET_CLS} ${isPinned ? 'invisible' : ''} ${
             active
               ? 'opacity-60 hover:opacity-100 hover:text-text'
               : 'opacity-0 group-hover/tab:opacity-60 [@media(hover:none)]:opacity-60 group-focus-within/tab:opacity-60 hover:!opacity-100 hover:text-text'
