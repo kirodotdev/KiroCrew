@@ -1,5 +1,7 @@
 # Subagent Module
 
+<!-- docs-lint: wrong-on-purpose auto_approve_spawn -->
+
 ## Overview
 
 The subagent module (`kiro_crew/subagent.py`) spawns isolated background agents for parallel task execution. Each subagent gets its own LLM session via `SessionManager`, runs a focused task, and announces the result via callback.

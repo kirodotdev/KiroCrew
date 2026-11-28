@@ -2376,7 +2376,7 @@ First-use protocol, entirely under that lock:
    atomic replacement, owner-only access, file fsync and parent-directory fsync.
 3. Only after the initial counter is durable, write byte `1` to the permanent
    lock and fsync it and the directory chain. Only then may an ID be allocated.
-4. Select `max(high_water, recovered_floor) + 1`,
+4. Select `max(high_water, floor) + 1`,
    atomically persist the selected number and sync its parent before returning.
 
 A crash before witness publication leaves either no counter or a valid initial

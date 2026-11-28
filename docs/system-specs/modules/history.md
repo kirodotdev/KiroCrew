@@ -1,5 +1,7 @@
 # Conversation History Module
 
+<!-- docs-lint: wrong-on-purpose slot_not_persistent -->
+
 ## Overview
 
 Persistent conversation history with provenance tracking and LLM-driven consolidation. Conversations survive session expiry and gateway restarts.

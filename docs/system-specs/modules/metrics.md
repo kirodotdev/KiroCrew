@@ -1,5 +1,7 @@
 # Metrics Telemetry Module
 
+<!-- docs-lint: defines bytes_saved -->
+
 ## Overview
 
 Local-first metrics telemetry built on the OpenTelemetry SDK (Apache-2.0 / CNCF).

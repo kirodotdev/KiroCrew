@@ -311,3 +311,15 @@ supportedModels
 
 # mimo fork permission routing (harness-onboarding.md)
 decideAskRouting
+
+# KAS session-level turn profiling declaration, `_meta.kiro` (metrics.md)
+automaticTurnProfiling
+
+# AWS CloudWatch API (ops-mission-control.md)
+DescribeAlarmHistory
+
+# The external Crew Tunnel app's package name (dashboard-token-auth.md)
+PdebieKiroCrewTunnelDist
+
+# Control-plane enterprise policy capability Kiro Crew does not read (governance.md)
+embedding_model_use
