@@ -430,19 +430,31 @@ class TestTelegramDeliveryHook:
         # rotation between spawn and press bumps the generation, so the recomputed
         # key does not match the armed one: the press resolves nothing and the
         # prompt deny-by-defaults at the timeout. Pin that coupling here.
+        #
+        # The window runs on THIS loop's own clock, which the test moves by hand
+        # once the press has landed. A real-clock window would expire whenever the
+        # runner paused longer than it before the test first looked, and the
+        # prompt would be gone before the press it is meant to ignore.
         import kiro_crew.telegram.renderer as renderer_mod
 
-        monkeypatch.setattr(renderer_mod, "_APPROVAL_TIMEOUT_S", 0.2)
+        window_s = renderer_mod._APPROVAL_TIMEOUT_S
         d, cli, _sess = _dispatcher({7})
         route = ("direct", "7")
         session_key = d._session_key(route)  # gen0
 
-        async def _go() -> bool:
+        async def _go() -> object:
+            loop = asyncio.get_running_loop()
+            real_loop_time = loop.time
+            skipped_s = 0.0
+            monkeypatch.setattr(loop, "time", lambda: real_loop_time() + skipped_s)
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
             key = TelegramApprovalDecider.key(session_key, "spawn:abc")
-            await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
+            # The wait owns the key from the step that arms its timer, so the
+            # window is running once the key is awaited.
+            await async_wait_until(lambda: key in TelegramApprovalDecider._AWAITED)
+            armed = TelegramApprovalDecider._REGISTRY[key]
             nonce = TelegramApprovalDecider._NONCES[key]
             # Rotate the parent conversation's generation AFTER arming.
             d._conv.bump_gen(route)
@@ -460,9 +472,14 @@ class TestTelegramDeliveryHook:
             )
             await d.on_callback(cb)
             # The armed prompt is still pending — the press landed on a different
-            # key — so it deny-by-defaults when the (shortened) timeout elapses,
-            # and nobody pressed it, so the deny is the host's.
-            return await task
+            # key — so it deny-by-defaults when the timeout elapses, and nobody
+            # pressed it, so the deny is the host's.
+            assert not armed.done(), "the rotated press resolved the gen0 prompt"
+            assert not task.done(), "the prompt ended before its window elapsed"
+            skipped_s = window_s + 1.0
+            finished, _pending = await asyncio.wait({task}, timeout=60.0)
+            assert finished, "the prompt outlived its window on the loop clock"
+            return task.result()
 
         assert asyncio.run(_go()) == HostSpawnDecision(False, DENY_CAUSE_APPROVAL_TIMEOUT)
 
