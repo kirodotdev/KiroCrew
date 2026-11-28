@@ -14,6 +14,7 @@ characters that cannot be part of a token, and each piece is tested with
 from __future__ import annotations
 
 import json
+import unicodedata
 from typing import Any
 
 __all__ = [
@@ -237,6 +238,18 @@ def _is_two_digits(text: str) -> bool:
     return len(text) == 2 and set(text) <= _DIGITS
 
 
+def _is_digit_or_colon(char: str) -> bool:
+    """Whether *char* is a digit or a colon as the reader sees it.
+
+    Compatibility forms -- Arabic-Indic and fullwidth digits, a fullwidth
+    colon -- fold to their ASCII kin under NFKC. A time glued to one of those
+    is as much part of a longer value as one glued to the ASCII spelling, so
+    it cannot stand alone as proof (`times_of`).
+    """
+    folded = unicodedata.normalize("NFKC", char)
+    return folded.isdigit() or folded == ":"
+
+
 def times_of(text: Any) -> set[str]:
     """The to-the-second clock times in *text* (its first :data:`MAX_SCANNED_TEXT_CHARS`):
     ``07:30:45``, from ``07:30:45Z`` or ``07:30:45.120Z``, not glued to another
@@ -256,11 +269,8 @@ def times_of(text: Any) -> set[str]:
             and _is_two_digits(candidate[0:2])
             and _is_two_digits(candidate[3:5])
             and _is_two_digits(candidate[6:8])
-            and (start == 0 or text[start - 1] not in _DIGITS and text[start - 1] != ":")
-            and (
-                start + 8 == len(text)
-                or (text[start + 8] not in _DIGITS and text[start + 8] != ":")
-            )
+            and (start == 0 or not _is_digit_or_colon(text[start - 1]))
+            and (start + 8 == len(text) or not _is_digit_or_colon(text[start + 8]))
         ):
             out.add(candidate)
         colon = text.find(":", colon + 1)
