@@ -6,7 +6,7 @@
  * The server does every filter, sort, search and count and sends one page at a
  * time; the next page loads as the end of the list scrolls near.
  */
-import { cloneElement, forwardRef, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type MutableRefObject, type ReactElement, type ReactNode, type Ref } from 'react'
+import { cloneElement, forwardRef, isValidElement, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type MutableRefObject, type ReactElement, type ReactNode, type Ref } from 'react'
 import { Virtuoso, type Components, type ContextProp, type ItemProps, type ListProps, type VirtuosoHandle } from 'react-virtuoso'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
@@ -456,7 +456,10 @@ function ListBody({ list, storeName, privateMemory, emptyActions, onRecovery, on
   onClearSearch: () => void; onClearFilters: () => void; onWords: () => void
 } & RecordListProps) {
   const { t } = useTranslation()
-  const answer = useListStore(list, state => state.answer)
+  // A new answer lays out its rows at transition priority, in slices between
+  // frames, so one landing mid-drag does not hold the slider's frame. The first
+  // render takes the answer as it is, so a cached list still shows in the first frame.
+  const answer = useDeferredValue(useListStore(list, state => state.answer))
   const view = useListStore(list, state => state.view)
   const { rows, total, weaker, searching, narrowing, recordsError, hasNextPage, isFetchingNextPage } = answer
   const meaningUnavailable = byMeaning(view) && (recordsError as { status?: number } | null)?.status === 409

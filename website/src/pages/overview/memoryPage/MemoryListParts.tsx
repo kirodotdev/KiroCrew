@@ -399,13 +399,30 @@ export function RecordMeta({ row, sort, chip, meaning = false, end }: { row: Mem
 /** The attributes a windowed list (react-virtuoso) sets on each item it lays out. */
 export type VirtualItemAttrs = { 'data-index'?: number; 'data-item-index'?: number; 'data-known-size'?: number; 'aria-setsize'?: number; 'aria-posinset'?: number }
 
-/** One record in the list: text, chips, key, and its actions menu. Memoized, and
- *  each handler takes the row, so stable handlers let an unchanged row skip a render. */
-export const RecordRow = memo(function RecordRow({ row, sort, meaning = false, selecting, selected, selectDisabled, open, focus, saved = false, chip, onSelect: select, onOpen: openRow, onEdit: editRow, onForget: forgetRow, focusRef, ...item }: {
+type RecordRowProps = {
   row: MemoryRecord; sort: MemoryRecordSort; meaning?: boolean; selecting: boolean; selected: boolean; selectDisabled: boolean; open: boolean; focus?: boolean; saved?: boolean; chip?: ChipFilter
   onSelect: (row: MemoryRecord) => void; onOpen: (row: MemoryRecord) => void; onEdit: (row: MemoryRecord) => void; onForget: (row: MemoryRecord) => void
+}
+
+/** One record in the list: text, chips, key, and its actions menu. Memoized, and
+ *  each handler takes the row, so stable handlers let an unchanged row skip a render.
+ *  The windowed list's place attributes change for every row below one that
+ *  comes or goes; they sit on the `<li>` alone, so the row's content skips that render. */
+export const RecordRow = memo(function RecordRow({ focusRef, row, sort, meaning, selecting, selected, selectDisabled, open, focus, saved, chip, onSelect, onOpen, onEdit, onForget, ...item }: RecordRowProps & {
   focusRef?: React.Ref<HTMLLIElement>
 } & VirtualItemAttrs) {
+  useLanguageGeneration()
+  const phone = useIsMobile()
+  // The first and last rows take the list's inner corner radius (16 px less its
+  // 1 px border), so the saved and open tints follow the rounded corners. An
+  // off-screen row is neither laid out nor painted (`content-visibility`), so a
+  // list scrolled thousands of rows deep stays as quick as its first page.
+  return <li ref={focusRef} {...item} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b [contain:layout_style] [contain-intrinsic-size:auto_112px] [content-visibility:auto] border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${focus ? ROW_SAVED : open || selected ? ROW_PICKED : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr)${phone ? '' : ' auto'}` }}>
+    <RecordRowContent row={row} sort={sort} meaning={meaning} selecting={selecting} selected={selected} selectDisabled={selectDisabled} open={open} focus={focus} saved={saved} chip={chip} onSelect={onSelect} onOpen={onOpen} onEdit={onEdit} onForget={onForget} />
+  </li>
+})
+
+const RecordRowContent = memo(function RecordRowContent({ row, sort, meaning = false, selecting, selected, selectDisabled, open, focus, saved = false, chip, onSelect: select, onOpen: openRow, onEdit: editRow, onForget: forgetRow }: RecordRowProps) {
   useLanguageGeneration()
   const { t } = useTranslation()
   const onSelect = () => select(row)
@@ -426,11 +443,7 @@ export const RecordRow = memo(function RecordRow({ row, sort, meaning = false, s
       <DropdownMenuItem disabled={!row.revision} onSelect={onForget}>{t('memoryV2.forget')}</DropdownMenuItem>
     </DropdownMenuContent>
   </DropdownMenu>
-  // The first and last rows take the list's inner corner radius (16 px less its
-  // 1 px border), so the saved and open tints follow the rounded corners. An
-  // off-screen row is neither laid out nor painted (`content-visibility`), so a
-  // list scrolled thousands of rows deep stays as quick as its first page.
-  return <li ref={focusRef} {...item} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b [contain:layout_style] [contain-intrinsic-size:auto_112px] [content-visibility:auto] border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${focus ? ROW_SAVED : open || selected ? ROW_PICKED : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr)${phone ? '' : ' auto'}` }}>
+  return <>
     {selecting && <span className="pt-1"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_record', { text: body })} checked={selected} disabled={selectDisabled} onChange={onSelect} /></span>}
     <div className="min-w-0 space-y-1.5">
         {focus && saved && <p data-testid="memory-just-saved" className="flex items-center gap-1 text-[12px] font-medium text-ok-text"><Check className="lucide-inline" aria-hidden="true" />{t('memoryPage.just_saved')}</p>}
@@ -444,7 +457,7 @@ export const RecordRow = memo(function RecordRow({ row, sort, meaning = false, s
       {pending > 0 && <Btn className="mt-1 min-h-11" onClick={onOpen}><History className="lucide-inline" />{t('memoryEditing.review_proposals', { count: fmtNumber(pending) })}</Btn>}
     </div>
     {!phone && menu}
-  </li>
+  </>
 })
 
 
