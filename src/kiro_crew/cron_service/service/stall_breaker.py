@@ -27,6 +27,7 @@ from kiro_crew.cron_service.store import CronStoreUnreadable
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronService
+    from kiro_crew.cron_service.model import CronJob
 
 #: The cron service's logger: operators filter, and tests ``caplog``, on ``kiro_crew.cron``.
 logger = logging.getLogger("kiro_crew.cron")
@@ -130,6 +131,59 @@ def _loop_stall_breaker_verdict(self: CronService) -> str | None:
     return paused
 
 
+def _save_auto_pause(
+    service: CronService,
+    job: "CronJob",
+    *,
+    last_run_ts: float,
+    last_error: str,
+    audit_outcome: str,
+    failure_message: str,
+    restore_on_failure: bool,
+) -> bool:
+    """Persist one auto-pause transition under the caller's store lock.
+
+    A loop-stall verdict restores the old in-memory fields when persistence
+    fails, because that run is still due and the next boot must retry the
+    verdict. A cut one-shot stays paused in memory after the same failure, so
+    this boot cannot run an uncertain payload before the retained marker lets
+    the next boot retry.
+    """
+    before = (
+        job.enabled,
+        job.auto_paused,
+        job.last_status,
+        job.last_run_ts,
+        job.last_error,
+        job.last_error_kind,
+    )
+    job.enabled = False
+    job.auto_paused = True
+    job.last_status = "error"
+    job.last_run_ts = last_run_ts
+    job.last_error = last_error
+    job.last_error_kind = ""
+    try:
+        service._save()
+    except (OSError, CronStoreUnreadable) as exc:
+        # These are exactly the store-write failures `_save` exposes. Do not
+        # fold a serialization bug or BaseException into an unwritable store.
+        if restore_on_failure:
+            (
+                job.enabled,
+                job.auto_paused,
+                job.last_status,
+                job.last_run_ts,
+                job.last_error,
+                job.last_error_kind,
+            ) = before
+        logger.warning("%s: %s", failure_message, exc)
+        return False
+    if not before[1]:
+        job._audit_pause_change(audit_outcome)
+    return True
+
+
 def _pause_for_loop_stall(
     self: CronService, attribution: "stall_attribution.StallAttribution"
 ) -> tuple[bool, str | None]:
@@ -157,56 +211,22 @@ def _pause_for_loop_stall(
             # recorded in the store itself, so a lost claim file cannot
             # turn a resume into a second pause.
             return (True, None)
-        before = (
-            job.enabled,
-            job.auto_paused,
-            job.last_status,
-            job.last_run_ts,
-            job.last_error,
-            job.last_error_kind,
-        )
-        job.enabled = False
-        job.auto_paused = True
-        job.last_status = "error"
-        job.last_run_ts = marker.started_at
-        job.last_error = (
+        last_error = (
             "Paused: the gateway was terminated by the loop-stall watchdog while this "
             f"job was running (crash dump {attribution.dump.name}). Inspect the command "
             "the run was about to execute, then resume with "
             f"`kirocrew cron resume {job.id}`."
         )
-        job.last_error_kind = ""
-        try:
-            self._save()
-        except (OSError, CronStoreUnreadable) as exc:
-            # The two faults ``_save`` raises for a store it could not WRITE:
-            # ``CronStoreUnreadable`` (a ``ValueError`` subclass) when the store
-            # went unreadable, and a bare ``OSError`` (ENOSPC/EROFS/EIO out of
-            # ``atomic_write``) when the write itself failed. The original
-            # ``except CronStoreUnreadable`` missed the OSError: the in-memory
-            # pause fields stayed mutated while disk kept the job enabled, and
-            # the breaker went on to claim the dump and sweep the markers, so
-            # the next boot (seeing the claim) would skip the job the pause
-            # never persisted for. Caught as exactly this pair rather than a
-            # bare ``ValueError`` so an unrelated ``ValueError`` (a serialization
-            # bug in ``encode_store``, say) is NOT reported as an unwritable
-            # store, and rather than ``BaseException`` so a
-            # ``KeyboardInterrupt``/``SystemExit``/``CancelledError`` propagates
-            # (the re-raising sibling cores let it through too). The in-memory
-            # job must match the store it could not write: still enabled, still
-            # due, so this session schedules it as the disk says and the next
-            # boot retries the pause (not settled).
-            (
-                job.enabled,
-                job.auto_paused,
-                job.last_status,
-                job.last_run_ts,
-                job.last_error,
-                job.last_error_kind,
-            ) = before
-            logger.warning("loop-stall auto-pause not persisted: %s", exc)
+        if not _save_auto_pause(
+            self,
+            job,
+            last_run_ts=marker.started_at,
+            last_error=last_error,
+            audit_outcome="auto_paused_loop_stall",
+            failure_message="loop-stall auto-pause not persisted",
+            restore_on_failure=True,
+        ):
             return (False, None)
-        job._audit_pause_change("auto_paused_loop_stall")
     logger.error(
         "Cron job '%s' (%s) auto-paused: the previous gateway was hard-exited by the "
         "loop-stall watchdog while running it (%s). Resume with `kirocrew cron resume %s` "
@@ -224,18 +244,24 @@ def _file_cut_run(self: CronService, marker: cron_inflight.RunningMarker) -> boo
 
     As ``stop()`` files a run it cut (``close_run``): an ``every`` job's
     ``last_run_ts`` moves forward to the run's start, so it waits for its next
-    slot, then a ``cancelled`` history row with the interruption note, which
-    says the run never started when it was cut in its jitter wait, and the
-    interrupt notice, which honours ``silent``. The gateway died at a time
-    nothing recorded, so the row ends where it began. The row carries the
-    marker's run token, as every row a run writes does, so a run that
-    already has its row is never filed twice. True once the marker can go;
-    False keeps it as the evidence for the next boot: the store that would
-    name the job is unreadable or was moved aside on this boot, the job's
-    history is unreadable or cannot be written, or the stamp or the row was
-    not written.
+    slot, then a ``cancelled`` history row and the interrupt notice, which
+    honours ``silent``. The gateway died at a time nothing recorded, so the
+    row ends where it began. The row carries the marker's run token, as every
+    row a run writes does, so a run that already has its row is never filed
+    twice. True once the marker can go; False keeps it as evidence for the
+    next boot when the store or history cannot be read or written.
+
+    A non-jitter ``delete_after_run`` one-shot is parked before history is
+    read or written. A running marker proves only that dispatch began, not
+    that a queued command or script reached its worker, so deleting would
+    lose a run that may never have started. The persisted pause prevents an
+    automatic retry while preserving the job for inspection and an explicit
+    resume. If the save fails, the marker stays and the in-memory pause keeps
+    this boot from firing it; the next boot retries from disk. A jitter-phase
+    marker ran nothing, so that one-shot stays enabled and due.
     """
     run = marker.run_token
+    note = interruption_note(dispatched=marker.phase != cron_inflight.JITTER_PHASE)
     with self._file_lock():
         self._sync()
         # A store moved aside on this boot reloads empty: its jobs only look removed.
@@ -245,6 +271,36 @@ def _file_cut_run(self: CronService, marker: cron_inflight.RunningMarker) -> boo
         if job is None:
             # Nothing to file into: a removed job's history went with it.
             return True
+        parks_one_shot = (
+            job.schedule.kind == "at"
+            and job.delete_after_run
+            and marker.phase != cron_inflight.JITTER_PHASE
+        )
+        if parks_one_shot:
+            note = (
+                "Interrupted: a hard exit left this one-shot's outcome unknown. "
+                "The job was paused instead of running automatically; resume with "
+                f"`kirocrew cron resume {job.id}`."
+            )
+            # One park per run: a park stamps the run's start as ``last_run_ts``
+            # with ``last_status`` "error" and a resume keeps both, so a boot
+            # that retries a kept marker leaves an operator's resume standing.
+            # A later run's marker starts later, so its cut is parked again.
+            parked_for_run = job.last_status == "error" and job.last_run_ts == marker.started_at
+            if (
+                not parked_for_run
+                and (not job.auto_paused or job.enabled)
+                and not _save_auto_pause(
+                    self,
+                    job,
+                    last_run_ts=marker.started_at,
+                    last_error=note,
+                    audit_outcome="auto_paused_cut_run",
+                    failure_message="cut cron one-shot not parked",
+                    restore_on_failure=False,
+                )
+            ):
+                return False
         if run is not None:
             try:
                 if self._history.has_run_sync(job.id, run):
@@ -263,7 +319,6 @@ def _file_cut_run(self: CronService, marker: cron_inflight.RunningMarker) -> boo
                 job.last_run_ts = previous
                 logger.warning("cut cron run not filed: %s", exc)
                 return False
-    note = interruption_note(dispatched=marker.phase != cron_inflight.JITTER_PHASE)
     record = CronRunRecord(
         job_id=job.id,
         started_at=marker.started_at,
