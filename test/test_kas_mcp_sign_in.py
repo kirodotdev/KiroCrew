@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock
 import pytest
 from session_handle_helpers import bare_session_handle
 
+from kiro_crew.acp import session_handle_dispatch
 from kiro_crew.acp.mcp_session_report import STATUS_CAP
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.session_handle import BUCKET_CAP, AcpRuntimeDead, AcpSessionHandle
@@ -1169,6 +1170,25 @@ def test_another_sessions_status_is_ignored():
 
 # ── session handle: the turn boundary ─────────────────────────────────────────
 
+_PROMPT_ID = 9
+
+
+@pytest.fixture(autouse=True)
+def _turn_deadline_on_a_manual_clock(manual_clock, _floor_monkeypatch):
+    """Freeze the turn deadline, so only the prompt's own answer ends a turn.
+
+    The dispatch loop reads the queue only while its deadline lies ahead. On
+    real time a runner pause past the deadline ended the turn before the frames
+    the test had queued were read.
+    """
+    manual_clock.install(_floor_monkeypatch, session_handle_dispatch)
+
+
+def _prompt_answer() -> JsonRpcMessage:
+    return JsonRpcMessage.from_dict(
+        {"jsonrpc": "2.0", "id": _PROMPT_ID, "result": {"stopReason": "end_turn"}}
+    )
+
 
 def _turn_handle(begun: list, accept: bool = True) -> tuple[AcpSessionHandle, asyncio.Queue]:
     """A real handle on a KAS runtime whose sign-in start is recorded."""
@@ -1176,7 +1196,13 @@ def _turn_handle(begun: list, accept: bool = True) -> tuple[AcpSessionHandle, as
     runtime._initialized = True
     queue: asyncio.Queue = asyncio.Queue()
     runtime._session_queues["s1"] = queue
-    runtime.send_request = AsyncMock(return_value=9)
+
+    async def answer_the_prompt(method, params):
+        if method == METHOD_PROMPT:
+            queue.put_nowait(_prompt_answer())
+        return _PROMPT_ID
+
+    runtime.send_request = AsyncMock(side_effect=answer_the_prompt)
 
     def begin(session_id, name):
         begun.append((session_id, name))
@@ -1187,13 +1213,9 @@ def _turn_handle(begun: list, accept: bool = True) -> tuple[AcpSessionHandle, as
 
 
 async def _first_event(handle: AcpSessionHandle) -> AcpEvent | None:
-    """Start one turn; the first event its dispatch loop yields, if any."""
-    gen = handle.prompt("hi", timeout=0.2)
-    event = None
-    with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError):
-        event = await finished(gen.__anext__(), "the turn's first event")
-    await gen.aclose()
-    return event
+    """Run one turn to its answer; the first event its dispatch loop yields, if any."""
+    events = await _events(handle)
+    return events[0] if events else None
 
 
 @pytest.mark.asyncio
@@ -1583,7 +1605,7 @@ async def _events(
     """Start one turn; every event its dispatch loop yields, up to ``limit``."""
     gen = handle.prompt("hi", timeout=0.2, sign_in_ask=sign_in_ask)
     events: list[AcpEvent] = []
-    with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError):
+    with contextlib.suppress(StopAsyncIteration):
         while len(events) < limit:
             events.append(await finished(gen.__anext__(), "the turn's next event"))
     await gen.aclose()
@@ -1602,7 +1624,8 @@ def _arrives_mid_turn(handle: AcpSessionHandle, queue: asyncio.Queue, *frames) -
     async def send_request(method, params):
         for frame in frames:
             queue.put_nowait(frame)
-        return 9
+        queue.put_nowait(_prompt_answer())
+        return _PROMPT_ID
 
     handle._runtime.send_request = send_request
 

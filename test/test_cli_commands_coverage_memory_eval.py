@@ -1283,8 +1283,19 @@ def _scenario_result(passed: bool = True, *, turn: Any | None = None) -> Any:
     turns = [turn] if turn is not None else []
     return SimpleNamespace(
         passed=passed,
+        status="PASS" if passed else "FAIL",
         sessions=[SimpleNamespace(turns=turns)],
         summary=lambda: {"passed": passed},
+    )
+
+
+def _turn(assertion: Any, ok: bool) -> Any:
+    """A turn that ran without an error and holds *assertion* at *ok*."""
+    return SimpleNamespace(
+        assertion_results=[(assertion, ok)],
+        user_message="hi",
+        agent_response="hello",
+        error="",
     )
 
 
@@ -1538,11 +1549,7 @@ print("wrote=" + report_path.name + "," + json_path.name)
     ) -> None:
         monkeypatch.chdir(tmp_path)
         assertion = SimpleNamespace(type=AssertionType.JUDGE, value="was it helpful")
-        turn = SimpleNamespace(
-            assertion_results=[(assertion, False)],
-            user_message="hi",
-            agent_response="hello",
-        )
+        turn = _turn(assertion, False)
         with (
             _EvalHarness([_scenario_result(True, turn=turn)]) as h,
             patch("kiro_crew.cli_commands.load_scenario", return_value=_scenario()),
@@ -1560,11 +1567,7 @@ print("wrote=" + report_path.name + "," + json_path.name)
     ) -> None:
         monkeypatch.chdir(tmp_path)
         assertion = SimpleNamespace(type=AssertionType.JUDGE, value=None)
-        turn = SimpleNamespace(
-            assertion_results=[(assertion, True)],
-            user_message="hi",
-            agent_response="hello",
-        )
+        turn = _turn(assertion, True)
         with (
             _EvalHarness([_scenario_result(True, turn=turn)]) as h,
             patch(
@@ -1584,11 +1587,7 @@ print("wrote=" + report_path.name + "," + json_path.name)
     ) -> None:
         monkeypatch.chdir(tmp_path)
         assertion = SimpleNamespace(type=AssertionType.CONTAINS, value="x")
-        turn = SimpleNamespace(
-            assertion_results=[(assertion, False)],
-            user_message="hi",
-            agent_response="hello",
-        )
+        turn = _turn(assertion, False)
         with (
             _EvalHarness([_scenario_result(True, turn=turn)]) as h,
             patch("kiro_crew.cli_commands.load_scenario", return_value=_scenario()),

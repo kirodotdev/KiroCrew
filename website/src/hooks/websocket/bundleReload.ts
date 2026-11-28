@@ -47,6 +47,13 @@ export function consumeUpdateRestartLatch(now: number = Date.now()): boolean {
 /** An `update_progress` frame: arm or clear the latch, then show the step. */
 export function handleUpdateProgress(dispatch: AppDispatch, data: FrameData): void {
   const prog = data as { step: string; detail: string }
+  // `cleared`: an apply ended with no terminal frame of its own (deferred,
+  // stopped, incompatible), and the gateway dropped its progress. Nothing is
+  // installing, so the store holds none, as the status read for a new tab does.
+  if (prog.step === 'cleared') {
+    dispatch(setUpdateProgress(null))
+    return
+  }
   // `restarting` is the last event before the gateway execs itself
   // and this socket dies — latch it so the reconnect handler knows
   // the next successful connect is a post-update gateway and this

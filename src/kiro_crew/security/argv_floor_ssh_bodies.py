@@ -28,7 +28,9 @@ from .argv_floor_ssh import (
     _splice_static_substitutions,
 )
 from .shell_commands import (
+    _double_quoted_substitution_spans,
     _heredoc_body_substitutions,
+    _is_message_line,
     _without_quoted_heredoc_text,
     read_commands,
 )
@@ -153,9 +155,10 @@ def _substitution_reaches_self(text_lower: str, raw_text: "str | None" = None) -
             fresh = [p for p in nested if (p, None, False) not in seen]
             seen.update((p, None, False) for p in fresh)
             work += [(p, None, False, p not in joined_here) for p in fresh]
+        message = bool(subs) and _is_message_line(text, [(s, e) for s, e, _b in subs])
         for (_start, _end, body), (_s, _e, cased_body) in zip(subs, written):
-            body = _without_quoted_heredoc_text(body)
-            kept = None if cased is None else _without_quoted_heredoc_text(cased_body)
+            body = _without_quoted_heredoc_text(body, message)
+            kept = None if cased is None else _without_quoted_heredoc_text(cased_body, message)
             if (body, kept, True) not in seen:
                 seen.add((body, kept, True))
                 work.append((body, kept, True, True))
@@ -267,9 +270,19 @@ def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bo
             and not any("<<" in ln and ln.endswith("\\") for ln in text_lower.split("\n"))
         ):
             view = _heredoc_data_view(cased).lower()
+        # Body bounds are found on the words as written (bash closes a heredoc only on its
+        # tag with case); a message line's body is read to its ``)`` when the flag cuts text.
+        same = cased if cased is not None and len(cased) == len(text_lower) else None
+        spans = _double_quoted_substitution_spans(same) if same else []
+        message = bool(spans) and _is_message_line(text_lower, [(a, e) for a, e, _p in spans])
+        bounds = {a + 2: e - p for a, e, p in spans if message}
         for source in _shell_payload_sources(view):
             if source == view or "\n" not in source:
                 continue
+            at = len(text_lower) - len(source)
+            body = text_lower[at : bounds.get(at, at)] if text_lower.endswith(source) else ""
+            if _without_quoted_heredoc_text(body, True) != _without_quoted_heredoc_text(body):
+                source = body
             payload_cased = _cased_payload(cased, text_lower, source)
             if payload_cased is not None:
                 payload_cased = _without_quoted_heredoc_text(payload_cased)

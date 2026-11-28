@@ -145,6 +145,18 @@ describe('main window tab title', () => {
   })
 
   it('switches to a session in another project without rendering the whole shell again', async () => {
+    // The 600ms entrance backstop in appShell renders the shell once more even
+    // after shellSettled's `animationend` has retired the class, so on a runner
+    // slower than 600ms that render lands inside the counted switch. Hold it
+    // from mount and fire it before the snapshot.
+    const realSetTimeout = window.setTimeout.bind(window)
+    const backstop: Array<() => void> = []
+    const spy = vi.spyOn(window, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...args: unknown[]) => {
+      if (ms !== 600) return realSetTimeout(fn, ms, ...args)
+      backstop.push(fn)
+      return 0
+    }) as typeof window.setTimeout)
+    onTestFinished(() => spy.mockRestore())
     const store = renderAt('/chat')
     const inProject = (key: string, title: string, project: string) => ({ key, title, agent: 'kirocrew', project }) as unknown as ChatSlot
     act(() => {
@@ -154,6 +166,8 @@ describe('main window tab title', () => {
     })
     await waitFor(() => expect(document.title).toBe('Fix the login page — Chat — Kiro Crew'))
     await shellSettled()
+    expect(backstop).toHaveLength(1)
+    act(() => { backstop.splice(0).forEach(fire => fire()) })
     const before = shellRenders.count
     act(() => { store.dispatch(setActiveSlot('p2')) })
     await waitFor(() => expect(document.title).toBe('Other work — Chat — Kiro Crew'))

@@ -386,12 +386,14 @@ Three structural facts explain most of the rest:
   session stopped by `-x` / `--maxfail`, or a failure a plugin counted beside the
   tests (a `--cov-fail-under` miss) retries nothing. Report-writing options
   (`--junitxml`, `--report-log`, `--cov*`, `--json-report*`) are dropped from the
-  retry so the first session's reports stay whole. Each test that passed only on
-  retry is one JSON line (`nodeid`, `first_failure`, `shard`, `head_sha`) in
+  retry so the first session's reports stay whole. Each retried test is one JSON
+  line (`nodeid`, `first_failure`, `outcome`, `shard`, `head_sha`) in
   `CI_SHARD_RETRY_RECORD`, default `ci-shard-retry.jsonl` under `$RUNNER_TEMP`;
-  `CI_SHARD_RETRY_SHARD` and `CI_SHARD_RETRY_HEAD_SHA` fill the last two.
-  `python scripts/ci_shard_retry.py summary` writes one job summary line per
-  flaky test. `test/test_ci_shard_retry.py` pins each case.
+  `outcome` is `passed` for a test that passed only on retry and `failed` for one
+  that did not pass it, and `CI_SHARD_RETRY_SHARD` and `CI_SHARD_RETRY_HEAD_SHA`
+  fill the last two. `python scripts/ci_shard_retry.py summary` writes both
+  counts and one job summary line per retried test.
+  `test/test_ci_shard_retry.py` pins each case.
 - **Do not merge a feature PR past a non-green `PR Readiness`.** The ruleset's
   bypass actors can, and a `pending` readiness is not a judgement about a red
   lane: it skips lanes that have not reported yet. #11947 merged 14 s after its

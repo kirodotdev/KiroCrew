@@ -169,8 +169,25 @@ describe('changelog modal apply affordance', () => {
     expect(screen.getByTestId('in-app-update-action')).toBe(action)
     expect(action).toHaveTextContent(/copy command/i)
     expect(screen.getByTestId('in-app-update-armed')).toHaveTextContent(/gateway host/i)
-    expect(screen.getByTestId('arm-countdown')).toBeInTheDocument()
+    // One line, the command and Copy: no countdown.
+    expect(screen.queryByTestId('arm-countdown')).not.toBeInTheDocument()
     expect(screen.queryByText(COMMAND)).not.toBeInTheDocument()
+  })
+
+  it('ends on one "Restart to use vX" button once the update is installed', async () => {
+    renderWithProviders(<App />, {
+      route: '/chat',
+      preloadedState: wheelState({
+        update_can_arm: true, update_latest_version: '9.9.9',
+        update_restart_ready: true, update_restart_ready_version: '9.9.9', update_restart_ready_reason: 'staged',
+      }),
+    })
+
+    const dialog = await whatsNew()
+    const installed = await within(dialog).findByTestId('in-app-update-installed')
+    expect(installed.querySelector('p')).toBeNull()
+    expect(within(dialog).getByTestId('gateway-restart-installed')).toHaveTextContent('Restart to use v9.9.9')
+    expect(within(dialog).queryByTestId('in-app-update-action')).toBeNull()
   })
 
   it('renders an arm failure through ErrorNotice with agent hand-off', async () => {

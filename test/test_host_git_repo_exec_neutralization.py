@@ -28,6 +28,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from cloud_staging_walk_helpers import (  # noqa: F401 -- the fixture registers by import
+    host_directories_out_of_the_staging_walk,
+)
 from git_maintenance_helpers import git_maintenance_off_entries
 
 pytestmark = [
@@ -437,6 +440,7 @@ class TestBuildSourceFingerprint:
 # ---------------------------------------------------------------- cloud source tarball
 
 
+@pytest.mark.usefixtures("host_directories_out_of_the_staging_walk")
 class TestCloudSourceTarball:
     def test_fixed_key_programs_do_not_run(self, tmp_path):
         from kiro_crew.cloud import source

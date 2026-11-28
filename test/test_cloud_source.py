@@ -12,8 +12,13 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from cloud_staging_walk_helpers import (  # noqa: F401 -- the fixture registers by import
+    host_directories_out_of_the_staging_walk,
+)
 
 from kiro_crew.cloud import aws, source
+
+pytestmark = pytest.mark.usefixtures("host_directories_out_of_the_staging_walk")
 
 
 @pytest.fixture(autouse=True)

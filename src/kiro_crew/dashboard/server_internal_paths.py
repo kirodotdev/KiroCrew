@@ -324,9 +324,10 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # X-Internal-Secret. EXACT path — a sibling of the STRICT
         # `/api/update/approve`, never its prefix: token_auth matches `p` or
         # `p + "/"`, so `/api/update` here would turn a host-only approval into
-        # a cookie-reachable one. Arming grants nothing (the record carries no
-        # nonce and no endpoint installs from it), so a mixed admission widens
-        # nothing.
+        # a cookie-reachable one. An X-Internal-Secret arm grants nothing (the
+        # record carries no nonce and no endpoint installs from it), so a mixed
+        # admission widens nothing: only the dashboard owner's own session gets
+        # the one-click install (`updates_step_up._one_click_hold`).
         "/api/update/arm",
         "/api/chat",
         "/api/lessons",

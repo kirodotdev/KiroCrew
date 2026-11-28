@@ -4,7 +4,11 @@
 summary (the ``eval_<timestamp>.json`` the command already writes) and names every
 scenario whose score fell by more than the allowed amount. A scenario's score is its
 share of passed assertions (``assertions`` is ``"passed/total"`` in the summary), or
-1 or 0 from ``passed`` when it has no assertions.
+1 or 0 from ``passed`` when it has no assertions. A turn that errored counts every
+assertion it would have checked as failed. A scenario that checked nothing because
+its assertions were left out (judge assertions without ``--judge``, the row's
+``not_evaluated``) has no score, and against a baseline that scored it, that is named
+as a failure too.
 
 Nothing here refuses a run. A baseline that cannot be used, or a bad ``--max-drop``,
 is dropped with one warning and the command goes on as it would without them.
@@ -12,9 +16,7 @@ is dropped with one warning and the command goes on as it would without them.
 The gate only adds to the exit code, never takes from it: every failed scenario
 still fails the run, as it does without a baseline, and a score that fell past the
 allowance is named a regression and fails the run too. The baseline cannot excuse a
-failure, because a score alone cannot tell a known failure from a new one (a turn
-that errors records no assertion result, so its scenario can fail at an unchanged
-score).
+failure, because a score alone cannot tell a known failure from a new one.
 """
 
 from __future__ import annotations
@@ -57,11 +59,13 @@ class BaselineGate:
 class Comparison:
     """What differs between a run and its baseline.
 
-    ``regressions`` holds ``(name, was, now)``; ``reasons`` maps each of them to the
-    line its JUnit failure carries.
+    ``regressions`` holds ``(name, was, now)``; ``not_evaluated`` holds ``(name, was)``
+    for a scenario this run ran but could not score; ``reasons`` maps each of them to
+    the line its JUnit failure carries.
     """
 
     regressions: list[tuple[str, float, float]]
+    not_evaluated: list[tuple[str, float]]
     reasons: dict[str, str]
     not_in_baseline: list[str]
     not_in_run: list[str]
@@ -82,6 +86,9 @@ def scenario_score(entry: object) -> float | None:
         if sep and all(d.isascii() and d.isdecimal() and len(d) <= _MAX_DIGITS for d in digits):
             if int(total) > 0:
                 return min(int(done) / int(total), 1.0)
+    if entry.get("not_evaluated") is True:
+        # It defined assertions and checked none of them, so 0 or 1 would both be wrong.
+        return None
     passed = entry.get("passed")
     if not isinstance(passed, bool):
         return None
@@ -117,6 +124,11 @@ def _read_failure_class(exc: Exception) -> str:
         if refusal.startswith(_SENSITIVE_PATH_REFUSALS):
             return "the sensitive-path check refused it"
     return "the file could not be read"
+
+
+def is_not_evaluated(entry: object) -> bool:
+    """Whether a scenario summary checked nothing because its assertions were left out."""
+    return isinstance(entry, dict) and entry.get("not_evaluated") is True
 
 
 def load_baseline(path: str) -> tuple[dict[str, float] | None, str]:
@@ -164,18 +176,24 @@ def gate_from_args(args: Any) -> BaselineGate | None:
 
 def compare(gate: BaselineGate, scenarios: list[dict[str, Any]]) -> Comparison:
     """Set the run's scenario summaries against the gate's saved scores."""
+    ran = [s["name"] for s in scenarios]
     now = {s["name"]: sc for s in scenarios if (sc := scenario_score(s)) is not None}
     regressions = [
         (name, gate.scores[name], score)
         for name, score in now.items()
         if name in gate.scores and gate.scores[name] - score > gate.max_drop + _EPSILON
     ]
+    # A scenario the baseline scored and this run ran but could not score has lost
+    # what the baseline measured, so it counts against the gate like a fall.
+    unscored = [(n, gate.scores[n]) for n in ran if n not in now and n in gate.scores]
     failures = {n: f"score fell from {was:.2f} to {cur:.2f}" for n, was, cur in regressions}
+    failures.update({n: f"not evaluated; the baseline scored {was:.2f}" for n, was in unscored})
     return Comparison(
         regressions=regressions,
+        not_evaluated=unscored,
         reasons=failures,
-        not_in_baseline=[n for n in now if n not in gate.scores],
-        not_in_run=[n for n in gate.scores if n not in now],
+        not_in_baseline=[n for n in ran if n not in gate.scores],
+        not_in_run=[n for n in gate.scores if n not in ran],
     )
 
 
@@ -187,6 +205,8 @@ def print_comparison(result: Comparison, max_drop: float) -> None:
                 f"Regression: {name}: {was:.2f} -> {now:.2f} (allowed drop {max_drop:.2f})"
             )
         )
+    for name, was in result.not_evaluated:
+        print(safe_terminal_line(f"Regression: {name}: {was:.2f} -> not evaluated"))
     for name in result.not_in_baseline:
         print(safe_terminal_line(f"Not compared: {name} (not in the baseline)"))
     for name in result.not_in_run:
@@ -211,15 +231,21 @@ def junit_xml(scenarios: list[dict[str, Any]], reasons: dict[str, str] | None) -
     """A JUnit report: one test case per scenario, a failure for each failed one.
 
     *reasons* gives the failure line for a scenario the baseline names a regression;
-    any other failed scenario's line is its assertion count.
+    a scenario that checked nothing is skipped; any other failed scenario's line is
+    its assertion count.
     """
     cases: list[str] = []
     failed = 0
+    skipped = 0
     for s in scenarios:
         name = str(s.get("name", ""))
         why = (reasons or {}).get(name, "")
         body = ""
-        if why or not s.get("passed"):
+        if not why and is_not_evaluated(s):
+            skipped += 1
+            line = f"{s.get('not_run')} judge assertion(s) not checked without --judge"
+            body = f'<skipped message="{_xml(line)}"/>'
+        elif why or not s.get("passed"):
             failed += 1
             line = why or f"assertions {s.get('assertions')}"
             body = f'<failure message="{_xml(line)}"/>'
@@ -227,7 +253,8 @@ def junit_xml(scenarios: list[dict[str, Any]], reasons: dict[str, str] | None) -
             f'<testcase classname="kirocrew.eval" name="{_xml(name)}" '
             f'time="{float(s.get("elapsed_secs") or 0):.2f}">{body}</testcase>'
         )
-    head = f'<testsuite name="kirocrew-eval" tests="{len(cases)}" failures="{failed}">'
+    skips = f' skipped="{skipped}"' if skipped else ""
+    head = f'<testsuite name="kirocrew-eval" tests="{len(cases)}" failures="{failed}"{skips}>'
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + head + "".join(cases) + "</testsuite>\n"
 
 

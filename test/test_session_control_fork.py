@@ -36,9 +36,9 @@ from kiro_crew.validation import SESSION_FORK_SCHEMA, ValidationError, validate_
 
 
 @pytest.fixture(autouse=True)
-def _enabled(monkeypatch):
+def _enabled(_floor_monkeypatch):
     """Default every test to the shipped (enabled) state without reading config."""
-    monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
+    _floor_monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
 
 
 @pytest.fixture(autouse=True)
@@ -51,10 +51,10 @@ def _fresh_create_budget():
 
 
 @pytest.fixture(autouse=True)
-def _quiet_sel(monkeypatch):
+def _quiet_sel(_floor_monkeypatch):
     """The fork core writes SEL rows synchronously; keep them out of the test home."""
-    monkeypatch.setattr(chat_fork, "sel", lambda: MagicMock())
-    monkeypatch.setattr(sc, "sel", lambda: MagicMock())
+    _floor_monkeypatch.setattr(chat_fork, "sel", lambda: MagicMock())
+    _floor_monkeypatch.setattr(sc, "sel", lambda: MagicMock())
 
 
 def _key(slot) -> str:

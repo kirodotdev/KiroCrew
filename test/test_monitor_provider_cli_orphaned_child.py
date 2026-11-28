@@ -9,7 +9,7 @@ the child keeps running and the probe waits for it.
 from __future__ import annotations
 
 import subprocess
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 
 import pytest
 
@@ -66,4 +66,8 @@ def test_a_background_child_holding_the_pipes_is_stopped_with_the_probe(monkeypa
     finally:
         group = int(group_file.read_text()) if group_file.exists() else None
         if group is not None and platform_compat.pgroup_exists(group):
-            platform_compat.kill_process_group(group, platform_compat.SIGKILL)
+            # A group the probe stopped can still read as alive here: its last
+            # member is an orphan, reaped by whichever process adopted it, so the
+            # group can empty between the check and the kill.
+            with suppress(ProcessLookupError):
+                platform_compat.kill_process_group(group, platform_compat.SIGKILL)

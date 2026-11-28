@@ -10,7 +10,7 @@ import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
 import { reportForError, type ErrorReport } from '../../utils/errorReport'
-import { InAppUpdateFlow } from '../../pages/settings/AboutPanelUpdateFlow'
+import { InAppUpdateFlow, InstalledRestartStep, useInstalledAndWaiting } from '../../pages/settings/AboutPanelUpdateFlow'
 import WhatsNewAutoUpdateToggle from '../../components/WhatsNewAutoUpdateToggle'
 import { i18nT } from '../../i18n/t'
 
@@ -173,6 +173,7 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
     updateTargetRawVersion,
   } = flow
   const close = useCallback(() => { setShowChangelog(false); setShowFull(false) }, [setShowChangelog, setShowFull])
+  const waiting = useInstalledAndWaiting(updateTargetRawVersion || updateTargetVersion)
   // Escape closes like the X button; Tab stays inside; focus returns on close.
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocusTrap(dialogRef, close)
@@ -257,11 +258,13 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
             <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
               {i18nT('app.update_when_i_restart')}
             </button>
+          ) : affordance === 'arm' && waiting ? (
+            // Installed, or armed for the next start: only a restart is left.
+            <InstalledRestartStep version={updateTargetVersion} onHandoff={() => setShowChangelog(false)} />
           ) : affordance === 'arm' ? (
             <InAppUpdateFlow
               version={updateTargetVersion}
               rawVersion={updateTargetRawVersion}
-              manualCommand=""
               onHandoff={() => setShowChangelog(false)}
             />
           ) : affordance === 'command' ? (

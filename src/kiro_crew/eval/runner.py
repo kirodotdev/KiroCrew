@@ -89,6 +89,24 @@ _EVAL_NO_PATH_REASON = (
 
 # ── Result types ──
 
+#: A result's status. SKIP is a turn, session or scenario that defined assertions and
+#: checked none (judge assertions without ``--judge``): nothing was shown to pass.
+STATUS_PASS = "PASS"
+STATUS_FAIL = "FAIL"
+STATUS_SKIP = "SKIP"
+#: Why a turn's assertions read FAIL when the turn raised before it could be checked.
+TURN_ERRORED_NOTE = "the turn errored"
+
+
+def results_status(turns: list[TurnResult]) -> str:
+    """FAIL when a turn errored or an assertion failed; SKIP when nothing was checked
+    but something was left out; PASS otherwise (a turn with no assertions passes)."""
+    if any(t.error or not all(ok for _, ok in t.assertion_results) for t in turns):
+        return STATUS_FAIL
+    if any(t.not_run for t in turns) and not any(t.assertion_results for t in turns):
+        return STATUS_SKIP
+    return STATUS_PASS
+
 
 @dataclass
 class TurnResult:
@@ -105,10 +123,16 @@ class TurnResult:
     assertion_notes: list[str] = field(default_factory=list)
     elapsed_secs: float = 0.0
     error: str = ""
+    #: Assertions the turn defined but did not check: ``judge`` ones without ``--judge``.
+    not_run: int = 0
+
+    @property
+    def status(self) -> str:
+        return results_status([self])
 
     @property
     def passed(self) -> bool:
-        return not self.error and all(ok for _, ok in self.assertion_results)
+        return self.status == STATUS_PASS
 
 
 @dataclass
@@ -119,8 +143,12 @@ class SessionResult:
     turns: list[TurnResult] = field(default_factory=list)
 
     @property
+    def status(self) -> str:
+        return results_status(self.turns)
+
+    @property
     def passed(self) -> bool:
-        return all(t.passed for t in self.turns)
+        return self.status == STATUS_PASS
 
 
 @dataclass
@@ -139,8 +167,16 @@ class ScenarioResult:
     runs_passed: int = 0
 
     @property
+    def status(self) -> str:
+        return results_status([t for s in self.sessions for t in s.turns])
+
+    @property
     def passed(self) -> bool:
-        return all(s.passed for s in self.sessions)
+        return self.status == STATUS_PASS
+
+    @property
+    def not_run(self) -> int:
+        return sum(t.not_run for s in self.sessions for t in s.turns)
 
     @property
     def total_assertions(self) -> int:
@@ -161,6 +197,10 @@ class ScenarioResult:
             "elapsed_secs": round(self.elapsed_secs, 2),
             "dimensions": self.dimensions,
         }
+        if self.not_run:
+            data["not_run"] = self.not_run
+        if self.status == STATUS_SKIP:
+            data["not_evaluated"] = True
         if self.runs > 1:
             data["runs"] = self.runs
             data["runs_passed"] = self.runs_passed
@@ -212,6 +252,9 @@ def score_by_dimension(results: list[ScenarioResult]) -> dict[str, dict[str, Any
     """
     dim_stats: dict[str, dict[str, int]] = {}
     for r in results:
+        if r.status == STATUS_SKIP:
+            # Nothing in it was checked, so it is neither a pass nor a failure of the dimension.
+            continue
         for dim in r.dimensions:
             stats = dim_stats.setdefault(dim, {"total": 0, "passed": 0})
             stats["total"] += 1
@@ -597,7 +640,7 @@ class EvalRunner:
         for scenario in scenarios:
             result = await self.run_scenario(scenario)
             results.append(result)
-            status = "PASS" if result.passed else "FAIL"
+            status = result.status
             # A log line reaches the console with `-v`, and scenario text can come from a
             # file someone else wrote: every value is shown through `safe_terminal_line`.
             logger.info(
@@ -657,16 +700,28 @@ class EvalRunner:
                         safe_terminal_line(session_def.name),
                         safe_terminal_line(str(exc)),
                     )
+                    # Every assertion the turn would have checked counts as failed, so
+                    # its scenario's score falls and a baseline comparison sees it.
+                    checked, not_run = self._checked(turn_def.assertions)
                     turn_result = TurnResult(
                         user_message=turn_def.user,
                         agent_response="",
+                        assertion_results=[(a, False) for a in checked],
+                        assertion_notes=[TURN_ERRORED_NOTE] * len(checked),
                         error=str(exc),
+                        not_run=not_run,
                     )
                 session_result.turns.append(turn_result)
         finally:
             await provider.shutdown()
 
         return session_result
+
+    def _checked(self, assertions: list[Assertion]) -> tuple[list[Assertion], int]:
+        """The assertions this run checks, and how many it leaves out (judge ones
+        without ``--judge``)."""
+        checked = [a for a in assertions if self.judge_enabled or a.type != AssertionType.JUDGE]
+        return checked, len(assertions) - len(checked)
 
     @staticmethod
     def _classify_safe_tool(event: Any) -> str:
@@ -866,11 +921,8 @@ class EvalRunner:
         elapsed = time.monotonic() - t0
 
         records = calls.records()
-        verdicts = [
-            (a, a.verdict(response, records))
-            for a in turn_def.assertions
-            if self.judge_enabled or a.type != AssertionType.JUDGE
-        ]
+        checked, not_run = self._checked(turn_def.assertions)
+        verdicts = [(a, a.verdict(response, records)) for a in checked]
 
         return TurnResult(
             user_message=turn_def.user,
@@ -880,10 +932,21 @@ class EvalRunner:
             assertion_results=[(a, ok) for a, (ok, _) in verdicts],
             assertion_notes=[note for _, (_, note) in verdicts],
             elapsed_secs=elapsed,
+            not_run=not_run,
         )
 
 
 # ── Reporting ──
+
+
+#: How a report says why a judge assertion was not checked.
+JUDGE_OFF_HINT = "not checked without --judge"
+
+
+def not_evaluated_note(results: list[ScenarioResult]) -> str:
+    """``", N not evaluated (...)"`` for the scenarios that checked nothing, else ""."""
+    skipped = sum(1 for r in results if r.status == STATUS_SKIP)
+    return f", {skipped} not evaluated (judge assertions {JUDGE_OFF_HINT})" if skipped else ""
 
 
 def format_results(results: list[ScenarioResult]) -> str:
@@ -892,7 +955,7 @@ def format_results(results: list[ScenarioResult]) -> str:
 
     lines = ["# Eval Results", ""]
     total_pass = sum(1 for r in results if r.passed)
-    lines.append(f"**{total_pass}/{len(results)} scenarios passed**\n")
+    lines.append(f"**{total_pass}/{len(results)} scenarios passed**{not_evaluated_note(results)}\n")
 
     # Per-dimension scorecard
     dims = score_by_dimension(results)
@@ -905,8 +968,7 @@ def format_results(results: list[ScenarioResult]) -> str:
         lines.append("")
 
     for r in results:
-        status = "PASS" if r.passed else "FAIL"
-        lines.append(f"## {status} {r.name}")
+        lines.append(f"## {r.status} {r.name}")
         if r.description:
             lines.append(f"_{r.description}_")
         lines.append(
@@ -925,11 +987,9 @@ def format_results(results: list[ScenarioResult]) -> str:
         lines.append("")
 
         for si, sr in enumerate(r.sessions):
-            s_status = "PASS" if sr.passed else "FAIL"
-            lines.append(f"### {s_status} Session {si + 1}: {sr.name}")
+            lines.append(f"### {sr.status} Session {si + 1}: {sr.name}")
             for ti, tr in enumerate(sr.turns):
-                t_status = "PASS" if tr.passed else "FAIL"
-                lines.append(f"  {t_status} Turn {ti + 1}: `{tr.user_message[:60]}`")
+                lines.append(f"  {tr.status} Turn {ti + 1}: `{tr.user_message[:60]}`")
                 if tr.tool_calls:
                     names = ", ".join(_tool_label(n) for n in tr.tool_calls[:5])
                     lines.append(f"     Tools: {names}")
@@ -941,7 +1001,9 @@ def format_results(results: list[ScenarioResult]) -> str:
                         f"     {a_status} {assertion.type.value}: "
                         f"`{label}`" + (f" ({note})" if note else "")
                     )
-                if not tr.passed:
+                if tr.not_run:
+                    lines.append(f"     SKIP {tr.not_run} judge assertion(s): {JUDGE_OFF_HINT}")
+                if tr.status == STATUS_FAIL:
                     snippet = tr.agent_response[:200].replace("\n", " ")
                     snippet, _ = redact_exfiltration_urls(snippet)
                     snippet, _ = redact_credentials(snippet)

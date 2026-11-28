@@ -1728,6 +1728,8 @@ class TestArmStatusEndpoint:
             resp = await updates.api_update_arm_status(_request())
             body = resp.body.decode()
             assert json.loads(body)["armed"] is True
+            # A panel adopting this arm names what the approval installs.
+            assert json.loads(body)["version_display"] == "9.9.9"
             assert pending.nonce not in body
         finally:
             update_stepup.clear_pending()

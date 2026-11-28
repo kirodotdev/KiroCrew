@@ -10,6 +10,7 @@ here; see :mod:`kiro_crew.agent_parts`.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
         logger,
         project_agent_files,
         project_agent_name,
+        project_agents_dir,
     )
 
 
@@ -365,6 +367,22 @@ def _conflicting_spec_for(name: str, chosen: Path, agents_dir: Path) -> Path | N
     return direct
 
 
+def is_installed_agents_dir(project_agents: Path) -> bool:
+    """Is a checkout's agents directory the one Kiro Crew installs into?
+
+    A session whose cwd is the home directory has ``<cwd>/.kiro/agents`` equal to
+    ``~/.kiro/agents``, so the installed spec would read as its own shadow. Compared
+    by file identity, so a second spelling of the home directory (a symlinked
+    ``/home`` on a host that keeps it elsewhere) answers the same. A directory that
+    cannot be compared answers ``False``: the caller then treats it as a checkout,
+    which for the governance callers is the fail-closed direction.
+    """
+    try:
+        return os.path.samefile(project_agents, kiro_agents_dir_path())
+    except OSError:
+        return False
+
+
 def _project_shadow_of(
     agent: str,
     work_dir: str | Path | None,
@@ -406,15 +424,26 @@ def _project_shadow_of(
     "does not parse" and which already applies the filename fallback for a spec that
     parses without a ``name`` field.
 
+    A checkout whose ``.kiro/agents`` IS the installed agents directory
+    (:func:`is_installed_agents_dir`) holds no spec of its own, so nothing there is a
+    shadow. A session whose project is the home directory has
+    ``<work_dir>/.kiro/agents`` equal to ``~/.kiro/agents``, and every installed spec
+    would otherwise read as a checkout's copy of itself: the worker derivation Kiro
+    Crew wrote refused its own dispatch on that reading, and the message sent the user
+    to delete the installed spec.
+
     Never raises: an unreadable checkout answers "no shadow", and the caller's own
     fail-closed rule covers what it cannot see.
     """
     if not work_dir:
         return None
     try:
-        for spec in project_agent_files(
-            work_dir, operation="agent_project_shadow", source="unknown"
-        ):
+        specs = project_agent_files(work_dir, operation="agent_project_shadow", source="unknown")
+        # After the scan, whose fence refuses a protected project root before anything
+        # under it is touched: the identity check stats the directory too.
+        if specs and is_installed_agents_dir(project_agents_dir(work_dir)):
+            return None
+        for spec in specs:
             if not markdown_specs and is_markdown_spec(spec):
                 continue
             if dispatchable_only:

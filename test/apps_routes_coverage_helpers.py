@@ -65,6 +65,11 @@ def _setup_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     monkeypatch.setattr(routes_mod, "sel", lambda: MagicMock())
+    # The open route masks the gateway secret files it finds under the operator's
+    # REAL home (``~/.kiro/crew``, ``~/.kirocrew``) as well as the pinned one, so on a
+    # host with an installed Kiro Crew the wrapper got ``extra_hidden_dirs`` and on CI
+    # it did not. The mask list is covered by test_app_backend_gateway_secret_files_hidden.
+    monkeypatch.setattr(routes_mod, "app_backend_secret_mask_targets", lambda: ())
     invalidate_app_secret_cache(APP)
     return home
 

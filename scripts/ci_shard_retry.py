@@ -9,7 +9,8 @@ only on that retry to a record file, so the flaky test is named, not forgotten.
         $CI_SHARD_RETRY_EVENT is ``pull_request``.
 
     python3 scripts/ci_shard_retry.py summary
-        A later step, as the runner identity: one job summary line per flaky
+        A later step, as the runner identity: how many retried tests passed
+        and how many failed again, then one job summary line per retried
         test in the record (Linux shards run pytest as a user that cannot write
         $GITHUB_STEP_SUMMARY).
 
@@ -36,9 +37,14 @@ Rules (each is pinned by `test/test_ci_shard_retry.py`):
 4. The job turns green only when every retried test passed, the retry pass
    exited 0 and the record was written. A test that fails again keeps the job
    red.
-5. Each flaky pass is one JSON line in $CI_SHARD_RETRY_RECORD (default
+5. Each retried test is one JSON line in $CI_SHARD_RETRY_RECORD (default
    ``ci-shard-retry.jsonl`` in $RUNNER_TEMP, else the system temp dir):
-   ``nodeid`` (the plain id), ``first_failure``, ``shard`` and ``head_sha``.
+   ``nodeid`` (the plain id), ``first_failure``, ``outcome``, ``shard`` and
+   ``head_sha``. ``outcome`` is ``passed`` for a flaky pass and ``failed`` for
+   a test that did not pass its retry: it failed again, the retry pass did not
+   run it, or the pass did not report. The record never changes what the job
+   does; a line with no ``outcome`` is a flaky pass, as every line was before
+   the field existed.
 """
 
 from __future__ import annotations
@@ -67,6 +73,9 @@ ENV_RESULTS = "CI_SHARD_RETRY_RESULTS"
 ENV_TARGETS = "CI_SHARD_RETRY_TARGETS"
 PLUGIN = "scripts.ci_shard_retry"
 MAX_RETRY = 5
+# The record's `outcome` for a retried test.
+PASSED_ON_RETRY = "passed"
+FAILED_AGAIN = "failed"
 SUMMARY_CHARS = 200
 # Bounds the retry pass; far above five tests' worth of pytest-timeout.
 RETRY_TIMEOUT_SECONDS = 1800
@@ -278,37 +287,46 @@ class _Retry:
             )
             return
         nodeids = list(self.failures)
-        passed, retry_ok = self._run_retry(session, nodeids)
+        passed, ran, retry_ok = self._run_retry(session, nodeids)
         flaky = [nodeid for nodeid in nodeids if nodeid in passed]
         env = dict(os.environ)
         path = record_path(env)
         try:
-            if flaky:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("a", encoding="utf-8") as handle:
-                    for nodeid in flaky:
-                        row = {
-                            "nodeid": passed[nodeid],
-                            "first_failure": self.failures[nodeid],
-                            "shard": env.get(ENV_SHARD) or None,
-                            "head_sha": env.get(ENV_HEAD_SHA) or None,
-                        }
-                        handle.write(json.dumps(row, sort_keys=True) + "\n")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                for nodeid in nodeids:
+                    row = {
+                        # The plain id the pass ran; the reported one when it ran none.
+                        "nodeid": passed.get(nodeid) or ran.get(nodeid) or nodeid,
+                        "first_failure": self.failures[nodeid],
+                        "outcome": PASSED_ON_RETRY if nodeid in passed else FAILED_AGAIN,
+                        "shard": env.get(ENV_SHARD) or None,
+                        "head_sha": env.get(ENV_HEAD_SHA) or None,
+                    }
+                    handle.write(json.dumps(row, sort_keys=True) + "\n")
         except OSError as exc:
             self._say(
                 session, f"::warning::shard-retry: cannot write {path} ({exc}); job stays red."
             )
             return
         self._say(
-            session, f"shard-retry: {len(flaky)} flaky test(s) passed on retry, recorded in {path}"
+            session,
+            f"shard-retry: {len(flaky)} flaky test(s) passed on retry, "
+            f"{len(nodeids) - len(flaky)} failed again, recorded in {path}",
         )
         if retry_ok and len(flaky) == len(nodeids):
             session.exitstatus = 0
         elif not retry_ok:
             self._say(session, "shard-retry: the retry pass did not exit 0; job stays red.")
 
-    def _run_retry(self, session: Any, nodeids: list[str]) -> tuple[dict[str, str], bool]:
-        """``({failed id: its plain id} for each that passed, whether the pass exited 0)``."""
+    def _run_retry(
+        self, session: Any, nodeids: list[str]
+    ) -> tuple[dict[str, str], dict[str, str], bool]:
+        """``(passed, ran, whether the pass exited 0)``.
+
+        ``passed`` and ``ran`` are ``{failed id: its plain id}``, for each test
+        that passed and for each the pass collected.
+        """
         config = self.config
         argv = retry_argv(
             list(config.invocation_params.args),
@@ -340,11 +358,13 @@ class _Retry:
                 self._say(
                     session, f"::warning::shard-retry: the retry pass failed to report ({exc})."
                 )
-                return {}, False
+                return {}, {}, False
         passed = outcome.get("passed") if isinstance(outcome, dict) else None
         if not isinstance(passed, dict):
-            return {}, False
-        return {str(k): str(v) for k, v in passed.items()}, done.returncode == 0
+            return {}, {}, False
+        ran = outcome.get("ran")
+        plain = {str(k): str(v) for k, v in ran.items()} if isinstance(ran, dict) else {}
+        return {str(k): str(v) for k, v in passed.items()}, plain, done.returncode == 0
 
 
 class _Results:
@@ -378,7 +398,8 @@ class _Results:
             for nodeid in sorted(self.passed - self.failed)
             if nodeid in self.matched
         }
-        self.path.write_text(json.dumps({"passed": passed}), encoding="utf-8")
+        ran = {target: nodeid for nodeid, target in sorted(self.matched.items())}
+        self.path.write_text(json.dumps({"passed": passed, "ran": ran}), encoding="utf-8")
 
 
 def _targets(env: dict[str, str]) -> list[str]:
@@ -404,7 +425,11 @@ def pytest_configure(config: Any) -> None:
 
 
 def read_record(path: Path) -> list[dict[str, Any]]:
-    """The record's rows; a missing file or a malformed line gives no row."""
+    """The record's rows; a missing file, a malformed line or an unknown outcome gives no row.
+
+    A row with no ``outcome`` is a flaky pass: every row was one before the
+    field existed.
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -415,24 +440,36 @@ def read_record(path: Path) -> list[dict[str, Any]]:
             row = json.loads(line)
         except ValueError:
             continue
-        if isinstance(row, dict) and isinstance(row.get("nodeid"), str):
+        if not isinstance(row, dict) or not isinstance(row.get("nodeid"), str):
+            continue
+        row.setdefault("outcome", PASSED_ON_RETRY)
+        if row["outcome"] in (PASSED_ON_RETRY, FAILED_AGAIN):
             rows.append(row)
     return rows
+
+
+def count_outcomes(rows: list[dict[str, Any]]) -> tuple[int, int]:
+    """``(tests that passed on retry, tests that failed again)`` in a record's rows."""
+    failed = sum(1 for row in rows if row["outcome"] == FAILED_AGAIN)
+    return len(rows) - failed, failed
 
 
 def summary_line(row: dict[str, Any]) -> str:
     nodeid = printable(row["nodeid"], 400).replace("`", "'")
     failure = printable(str(row.get("first_failure") or "")).replace("`", "'")
-    return f"- Flaky, passed on retry: `{nodeid}` (first failure: {failure})"
+    said = "Failed again on retry" if row["outcome"] == FAILED_AGAIN else "Flaky, passed on retry"
+    return f"- {said}: `{nodeid}` (first failure: {failure})"
 
 
 def cmd_summary(env: dict[str, str]) -> int:
-    """Write one job summary line per flaky test in the record; never fails the step."""
+    """Write both counts, then one job summary line per retried test; never fails the step."""
     rows = read_record(record_path(env))
     if not rows:
-        print("Shard retry: no flaky retries.")
+        print("Shard retry: no test was retried.")
         return 0
-    text = "".join(summary_line(row) + "\n" for row in rows)
+    passed, failed = count_outcomes(rows)
+    text = f"Shard retry: {passed} test(s) passed on retry (flaky), {failed} failed again.\n"
+    text += "".join(summary_line(row) + "\n" for row in rows)
     summary = env.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as handle:

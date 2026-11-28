@@ -1348,8 +1348,10 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     # the reset is a purely ADDITIONAL denial and never removes one main had.
     # The bodies are found on the words as written (*cased*), since bash closes a body
     # only on its tag with case; without them, on the lowered line as before.
+    messages = not _HEREDOC_RESET.get()
     if own_line and "<<" in text_lower and _HEREDOC_RESET.get():
         reset = _shell_normalizer._heredoc_body_quotes_literal(cased or text_lower)
+        messages = reset == (cased or text_lower)
         text_lower = reset.lower() if cased is not None else reset
     # Single quotes read as literal only in the caller's own line, and only when it
     # has no live substitution opener before the splices below rewrite it: a spliced
@@ -1383,8 +1385,11 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     if _function_call_binds_self(kept):
         return True
     # The mask above keeps double-quoted text as data, but bash runs a ``$(...)``
-    # there, so each such body is judged as a command line of its own.
-    if any(map(_is_ssh_to_self, _double_quoted_substitution_bodies(unmasked))):
+    # there, so each such body is judged as a command line of its own. Under the reset,
+    # message text is cut only on an own line it left as written: a body and closing
+    # line it removed leave a heredoc bash never reads.
+    bodies = _double_quoted_substitution_bodies(unmasked, messages)
+    if any(map(_is_ssh_to_self, bodies)):
         return True
     # A self-targeting ``RSYNC_RSH`` set in one frame is inherited by
     # LATER frames (an exported value, or a command-scoped prefix on a command

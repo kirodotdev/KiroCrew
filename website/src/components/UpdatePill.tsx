@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Download, RefreshCw } from 'lucide-react'
 
-import { useAppDispatch, useAppSelector } from '../store'
+import { useAppDispatch, useAppSelector, type RootState } from '../store'
 import { setActiveId } from '../store/instancesSlice'
 import { i18nT } from '../i18n/t'
 import { settingsPath } from './settingsPath'
@@ -29,6 +29,17 @@ import HoverTip from './HoverTip'
  * interruption, and a user who skipped a version still deserves a quiet,
  * visible way back in.
  */
+/**
+ * Is the gateway installing an update right now? An install pushes update
+ * progress; its last frame is `done`, `failed` or `error`, and `restarting`
+ * belongs to a restart, not an install. Shared with the About card, which drops
+ * its "available" line for the installing step, so the two cannot disagree.
+ */
+export function selectUpdateInstalling(s: RootState): boolean {
+  const step = s.dashboard.updateProgress?.step
+  return !!step && !['done', 'failed', 'error', 'restarting'].includes(step)
+}
+
 /**
  * `variant="menu-item"`: the same update lifecycle (available → downloading N%
  * → ready) as a row inside a DropdownMenu, for a bar that has no room for the
@@ -64,6 +75,7 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
   // The person armed an update: it applies at the next start, never while the
   // gateway runs (`update_armed_version`).
   const armed = useAppSelector(s => !!s.dashboard.status?.update_armed_version)
+  const installing = useAppSelector(selectUpdateInstalling)
   const updateAvailable = useAppSelector(
     s => s.dashboard.status?.update_available === true || s.dashboard.desktopUpdateAvailable
   ) || restartReady || armed
@@ -89,6 +101,11 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
       : i18nT('components.updatePill.downloading_percent', { percent: pct })
   } else if (desktop?.state === 'downloaded' || restartReady) {
     label = i18nT('components.updatePill.update_ready')
+    Icon = RefreshCw
+  } else if (installing) {
+    // The gateway is building the update beside the running one (a one-click or
+    // approved install): one status line, until it is installed or fails.
+    label = i18nT('components.updatePill.installing')
     Icon = RefreshCw
   } else if (armed) {
     label = i18nT('components.updatePill.update_when_i_restart')

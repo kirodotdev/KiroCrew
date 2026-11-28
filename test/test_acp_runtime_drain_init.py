@@ -24,6 +24,7 @@ from acp_runtime_helpers import (
     _stop_reader,
 )
 
+from kiro_crew.acp import session_handle_mcp
 from kiro_crew.acp.runtime import AcpRuntime, AcpSessionHandle
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -31,6 +32,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_UPDATE,
     JsonRpcMessage,
 )
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 # ── Drift-parity fixes (AcpRuntime ↔ AcpClient): #1-#4 + #5b ──
@@ -226,7 +228,9 @@ async def test_drain_init_consumes_init_frames_and_captures_config():
 
 
 @pytest.mark.asyncio
-async def test_drain_init_counts_an_owed_compaction_terminal():
+async def test_drain_init_counts_an_owed_compaction_terminal(
+    manual_clock: ManualClock, monkeypatch
+):
     from kiro_crew.acp import stale_compaction
     from kiro_crew.acp.types import METHOD_COMPACTION_STATUS
 
@@ -241,6 +245,9 @@ async def test_drain_init_counts_an_owed_compaction_terminal():
         )
     )
 
+    # The drain's deadline reads a frozen virtual clock, so a slow runner cannot spend
+    # the 0.05 s window before the first read. The idle wait is the loop's own timer.
+    manual_clock.install(monkeypatch, session_handle_mcp)
     await handle.drain_init(duration=0.05, idle_exit=0.01, no_report_ceiling=0.0)
 
     assert handle._unresolved_compaction_statuses is None
@@ -362,13 +369,16 @@ async def test_drain_init_waits_past_idle_window_for_first_mcp_report(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_drain_init_no_reports_returns_at_ceiling():
+async def test_drain_init_no_reports_returns_at_ceiling(manual_clock: ManualClock, monkeypatch):
     """A drain that never sees an MCP report returns at the no-report
     ceiling instead of hanging (bounded even when servers are dead or absent)."""
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
     q["sA"].put_nowait(_metadata_frame("sA"))  # non-MCP traffic doesn't extend it
+    # A frozen virtual clock: a slow runner cannot use up the ceiling before the first
+    # read. The empty-queue wait that ends the drain is the loop's own timer.
+    manual_clock.install(monkeypatch, session_handle_mcp)
     # The outer bound is the hang guard (half the test's timeout): it only
     # names a genuine unbounded wait, never a slow shard.
     await _bounded(

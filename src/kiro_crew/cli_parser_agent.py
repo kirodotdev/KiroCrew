@@ -1081,6 +1081,7 @@ def register_memory_parser(sub: _Commands) -> None:
             "fact_origin_gate",
             "member_lesson_dedup",
             "dream",
+            "inject_lessons_per_turn",
         ],
         help="Only this stage, with its counts by day",
     )

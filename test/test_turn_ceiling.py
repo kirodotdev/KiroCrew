@@ -18,13 +18,13 @@ from __future__ import annotations
 import ast
 import asyncio
 import logging
-import time
 from unittest.mock import MagicMock
 
 import pytest
 from source_corpus import candidate_sources, src_root
 
 from kiro_crew.config import KiroCrewConfig
+from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.renderer import TEXT_CHUNK, OutputEvent
 from kiro_crew.messaging.turn_ceiling import (
     DEFAULT_MAX_TURNS,
@@ -46,6 +46,7 @@ from kiro_crew.messaging.turn_ceiling import (
     surface_of,
 )
 from kiro_crew.session import SessionManager
+from kiro_crew.testing.clock import ManualClock
 
 # ───────────────────────── behaviour ─────────────────────────
 
@@ -89,28 +90,34 @@ def test_conversations_are_counted_independently() -> None:
     assert not ceiling.is_latched("telegram:999")
 
 
-def test_turns_older_than_the_window_do_not_count() -> None:
+def test_turns_older_than_the_window_do_not_count(
+    manual_clock: ManualClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The window rolls, so a slow conversation is never refused."""
-    ceiling = _ceiling(max_turns=2, window_secs=0.05)
+    manual_clock.install(monkeypatch, turn_ceiling)
+    ceiling = _ceiling(max_turns=2)
     ceiling.check("slack:C1:T1")
     ceiling.check("slack:C1:T1")
-    time.sleep(0.08)
+    manual_clock.advance(ceiling.window_secs + 1)
     ceiling.check("slack:C1:T1")  # both earlier turns have aged out
     assert not ceiling.is_latched("slack:C1:T1")
 
 
-def test_the_latch_outlives_the_window() -> None:
+def test_the_latch_outlives_the_window(
+    manual_clock: ManualClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The discriminating test for latching.
 
     A rolling window alone bounds the burn RATE but never ends a loop: it
     resumes the moment the window slides. Once latched, waiting is not a way
     back in.
     """
-    ceiling = _ceiling(max_turns=1, window_secs=0.05)
+    manual_clock.install(monkeypatch, turn_ceiling)
+    ceiling = _ceiling(max_turns=1)
     ceiling.check("slack:C1:T1")
     with pytest.raises(TurnCeilingExceeded):
         ceiling.check("slack:C1:T1")
-    time.sleep(0.08)  # long enough that the window would have cleared
+    manual_clock.advance(ceiling.window_secs + 1)  # the window would have cleared
     with pytest.raises(TurnCeilingExceeded):
         ceiling.check("slack:C1:T1")
 
