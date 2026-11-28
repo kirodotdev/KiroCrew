@@ -11,6 +11,7 @@ value from episode text. Nothing here opens the database.
 
 from __future__ import annotations
 
+import codecs
 import json
 import re
 from collections.abc import Iterator
@@ -46,14 +47,17 @@ def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None]
     is normalized READ-safely (``authored_lesson_applies``, not the write path's
     raising form): this reads the file directly, so a hand-edited or
     future-schema value must migrate the row as unstated rather than abort.
+    A leading UTF-8 byte-order mark is dropped first, as ``LessonStore`` does, so
+    the first row of a file saved "UTF-8 with BOM" migrates.
     """
+    content = path.read_bytes().removeprefix(codecs.BOM_UTF8)
     try:
-        lines: list[str | None] = list(path.read_text(encoding="utf-8").splitlines())
+        lines: list[str | None] = list(content.decode("utf-8").splitlines())
     except UnicodeDecodeError:
         # One bad byte costs only its own line, like a line that does not parse;
         # a file that decodes reads exactly as before.
         lines = []
-        for raw in path.read_bytes().splitlines():
+        for raw in content.splitlines():
             try:
                 lines.append(raw.decode("utf-8"))
             except UnicodeDecodeError:

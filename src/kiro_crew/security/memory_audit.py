@@ -22,6 +22,7 @@ both are bound. New audits of stored content belong here.
 
 from __future__ import annotations
 
+import codecs
 import fnmatch
 import hashlib as _hashlib
 import json
@@ -461,8 +462,10 @@ def _scan_store_lessons(store_name: str, path: Path, findings: list[dict]) -> No
         # ``errors="replace"`` so a file carrying a non-UTF-8 byte is still screened
         # rather than reported unauditable: the rows around the bad byte are exactly the
         # ones an attacker would hope a decode error hid. It also means the only failure
-        # this can raise is an OSError -- there is no decode path left to fail.
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        # this can raise is an OSError -- there is no decode path left to fail. A
+        # leading UTF-8 byte-order mark is dropped as ``LessonStore`` drops it, so the
+        # row it loads first is screened too.
+        raw = path.read_bytes().removeprefix(codecs.BOM_UTF8).decode("utf-8", errors="replace")
     except FileNotFoundError:
         logger.debug("memory store %r has no lessons file at %s", store_name, path)
         return
