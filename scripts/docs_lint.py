@@ -1337,6 +1337,7 @@ sys.modules.pop("docs_lint_fact_checks", None)
 sys.modules.pop("docs_lint_selftest", None)
 from docs_lint_fact_checks import (  # noqa: E402,F401
     _ANCHOR_SCOPE_PREFIX,
+    _ANGLE_PLACEHOLDER_RE,
     _ATX_HEADING_RE,
     _BASELINE_HEADER,
     _COORDINATE_SUFFIX,
@@ -1349,6 +1350,7 @@ from docs_lint_fact_checks import (  # noqa: E402,F401
     _EXTERNAL_TARGET_COORDINATE_DOCS,
     _FENCED_TASK_SPEC_RE,
     _FORWARD_LOOKING_DOC_PREFIXES,
+    _HISTORY_RECORD_DOC_PREFIXES,
     _HTML_TAG_RE,
     _IDENT_CAMEL_RE,
     _IDENT_CODE_FILES,

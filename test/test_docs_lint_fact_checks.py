@@ -517,6 +517,45 @@ class TestDeadIdentifier:
         )
         assert rendered in gate._IDENT_SPEC_RENDERED_DOCS
 
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "docs/decisions/2026-01-01-a-name-was-kept.md",
+            "docs/decisions/README.md",
+            "CHANGELOG.md",
+            "docs/system-specs/common/testing-sweep-findings.md",
+        ],
+    )
+    def test_a_history_record_keeps_its_old_names_but_not_its_paths(
+        self, tree: Path, rel: str
+    ) -> None:
+        # A record describes a past state; a rename since cannot be followed there.
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(tree, rel, "# Record\n\nKept `vanished_handler` in `src/kiro_crew/ghost.py`.\n")
+        assert rel not in {f.path for f in gate.run(tree).advisories}
+        assert "src/kiro_crew/ghost.py" in _tokens(tree, gate.CHECK_PATH_EXISTS)
+
+    def test_a_doc_beside_a_history_record_is_still_checked(self, tree: Path) -> None:
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(tree, "docs/decisions-guide.md", "# Guide\n\nUses `vanished_handler`.\n")
+        _write(tree, "docs/CHANGELOG-notes.md", "# Notes\n\nUses `other_vanished_handler`.\n")
+        assert {(f.path, f.token) for f in gate.run(tree).advisories} == {
+            ("docs/decisions-guide.md", "vanished_handler"),
+            ("docs/CHANGELOG-notes.md", "other_vanished_handler"),
+        }
+
+    def test_silent_for_an_angle_bracket_placeholder_and_only_that_spelling(
+        self, tree: Path
+    ) -> None:
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(tree, "docs/ok.md", "# Ok\n\nSend `123:<ApplicationName>:prod`.\n")
+        _write(tree, "docs/bare.md", "# Bare\n\nCalls `ApplicationName` itself.\n")
+        _write(tree, "docs/both.md", "# Both\n\nRun `<VanishedHandler> VanishedHandler`.\n")
+        assert {(f.path, f.token) for f in gate.run(tree).advisories} == {
+            ("docs/bare.md", "ApplicationName"),
+            ("docs/both.md", "VanishedHandler"),
+        }
+
     def test_silent_for_a_curated_external_name_and_only_that_name(self, tree: Path) -> None:
         _write(tree, "src/kiro_crew/real.py", "a = 1\n")
         _write(

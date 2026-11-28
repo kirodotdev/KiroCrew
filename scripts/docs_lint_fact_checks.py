@@ -87,6 +87,17 @@ _FORWARD_LOOKING_DOC_PREFIXES: tuple[str, ...] = (
 # schema's field names are absent by design, but a path it cites into today's code
 # is still a claim about this tree, so the path checks keep reading it.
 _PLANNED_STATUS_RE = re.compile(r"^Status:\s*planned\b", re.IGNORECASE)
+# Records of a past state, which keep the names that held when they were written.
+# A decision entry is immutable (``scripts/check_decisions_history.py``) and the
+# decisions index summarises entries, a changelog section describes a shipped
+# release, and the testing sweep findings record each measured pass as it ran. A
+# later rename cannot be followed there, so only the dead-identifier check skips
+# them; their paths are still claims about today's tree.
+_HISTORY_RECORD_DOC_PREFIXES: tuple[str, ...] = (
+    "docs/decisions/",
+    "CHANGELOG.md",
+    "docs/system-specs/common/testing-sweep-findings.md",
+)
 # How far down a doc its Status line may sit: under the title and a short lede.
 _STATUS_HEAD_LINES = 12
 
@@ -203,6 +214,8 @@ _COUPLING_AMBIGUOUS_NAMES: frozenset[str] = frozenset({"README.md"})
 _IDENT_SNAKE_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 _IDENT_CAMEL_RE = re.compile(r"\b[A-Za-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+\b")
 _IDENT_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+# ``<ApplicationName>`` inside a code span is a slot the reader fills in.
+_ANGLE_PLACEHOLDER_RE = re.compile(r"<[A-Za-z_][A-Za-z0-9_]*>")
 # Shorter than this and the token is a word, not a symbol.
 _IDENT_MIN_LEN = 8
 _IDENT_CODE_TREES: tuple[str, ...] = (
@@ -638,8 +651,10 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
     worth more here than a gate they learn to skip.
 
     Forward-looking genres are skipped for the same reason as the path check, and
-    so is a doc whose head says ``Status: planned``. Documentation placeholders
-    (``MyPage``) are meant to be absent, and a name in the curated external list
+    so is a doc whose head says ``Status: planned`` and a record of a past state
+    (:data:`_HISTORY_RECORD_DOC_PREFIXES`). Documentation placeholders (``MyPage``,
+    or a name in angle brackets such as ``<ApplicationName>``) are meant to be
+    absent, and a name in the curated external list
     is defined somewhere this repo cannot see. A page rendered from a spec
     (:data:`_IDENT_SPEC_RENDERED_DOCS`) also counts the names its spec defines as
     live. A name the doc itself declares
@@ -678,6 +693,8 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
             continue
         if _declares_planned(text):
             continue
+        if rel_doc.startswith(_HISTORY_RECORD_DOC_PREFIXES):
+            continue
         spans = [span for _lineno, span in _iter_code_spans(text)]
         declared = _doc_declared_names(text)
         named = {token for span in spans for token in _IDENT_TOKEN_RE.findall(span)}
@@ -691,8 +708,9 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
         # naming one stale symbol eight times has one thing to fix, not eight.
         reported: set[str] = set()
         for span in spans:
+            cited = _ANGLE_PLACEHOLDER_RE.sub(" ", span)
             for pattern in (_IDENT_SNAKE_RE, _IDENT_CAMEL_RE):
-                for token in pattern.findall(span):
+                for token in pattern.findall(cited):
                     if len(token) < _IDENT_MIN_LEN:
                         continue
                     if token.lower() in _IDENT_STOPWORDS:
