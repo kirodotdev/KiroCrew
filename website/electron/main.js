@@ -870,6 +870,14 @@ app.whenReady().then(async () => {
   // fires window-all-closed, which quits the app on Windows and Linux.
   installSplash.close();
 
+  // The close button hides this window, and on macOS a Dock click (`activate`)
+  // is the only way back. Registered as soon as the window exists, never after
+  // the awaited gateway boot below: a boot step that stalls or throws would
+  // otherwise leave a closed window that no Dock click can reopen.
+  app.on("activate", () => {
+    windows.activateMainWindow();
+  });
+
   // An AppImage whose AppRun added --no-sandbox says why and how to fix it.
   // Shown before the gateway boot, not awaited, so a gateway that never
   // answers still leaves the explanation on screen.
@@ -1017,12 +1025,6 @@ app.whenReady().then(async () => {
     glog("app-window-host: init failed — " + (error && error.message));
   }
 
-  // Preserve the historical registration point: the main window's activation
-  // starts being handled only after boot and optional companion initialization
-  // finish.
-  app.on("activate", () => {
-    windows.activateMainWindow();
-  });
 });
 
 app.on("before-quit", () => {

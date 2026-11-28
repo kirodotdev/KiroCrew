@@ -1787,6 +1787,9 @@ it), and `user-restart.js` (Settings → About's Restart gateway).
   path (`showMainWindow`, `activateMainWindow`, and therefore the tray items and
   the summon hotkey) calls `app.show()` first: a hidden app ignores
   `win.show()`.
+- `main.js` registers the Dock's `activate` handler as soon as the main window
+  exists, before the awaited gateway boot: a boot step that stalls or throws
+  must not leave a closed window that no Dock click can bring back.
 
 ## Code signing & notarization (macOS)
 
