@@ -107,6 +107,7 @@ import { useQuoteJump } from '../pages/chat/useQuoteJump'
 import { slotRowByKey } from '../store/slotIndex'
 import { useMarkTranscriptShown } from '../hooks/useAckCronNotesInView'
 import { platformShortcut } from '../utils/platform'
+import { useChatPaneSessionControls } from './ChatPaneSessionControls'
 
 export type { PaneLeading } from './ChatPaneProps'
 // Side Chat runs the same upload flow under a key of its own.
@@ -162,6 +163,7 @@ export default function ChatPane({
   sessions,
   activeSession,
   foldBefore,
+  appSessionControls = false,
 }: ChatPaneProps) {
   const dispatch = useAppDispatch()
   const provider = useProvider()
@@ -592,6 +594,7 @@ export default function ChatPane({
     jevRouteOn, modelDD, anchorAgentBtn, anchorModelBtn, shownModel, effortSupported, defaultEffort, effectiveEffort,
     chipDefault, modelMarker,
   } = pickerModels
+  const appControls = useChatPaneSessionControls(slotKey, paneSlot, appSessionControls, installedAgents)
   // The pane header carries the same session colour as the sidebar row, read
   // from the display roster so a scope switch does not blank it.
   const headerPalette = useSessionPalette()
@@ -1381,6 +1384,7 @@ export default function ChatPane({
           message={titleError?.message}
           onDismiss={() => setTitleError(null)}
         />
+        {appControls.notice}
         </div>
 
         </div>
@@ -1559,6 +1563,8 @@ export default function ChatPane({
           projectLocked={pickerModels.projectLocked}
           projectSwitching={pickerActions.projectSwitching}
           onProjectClick={(rect, trigger) => { pickerModels.anchorProjectBtn(rect, trigger); pickerModels.setProjectPickerOpen(o => !o) }}
+          sessionControls={appControls.sessionControls}
+          onSessionControlClick={appControls.onSessionControlClick}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…")
           // and carries no sigil hint: next to a person's name the shortcut list
@@ -1583,6 +1589,7 @@ export default function ChatPane({
           onDragLeave={dropTargetProps.onDragLeave}
         />
         </Composer>
+        {appControls.host}
         </div>
         </div>
 

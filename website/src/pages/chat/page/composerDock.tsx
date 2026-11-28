@@ -16,7 +16,7 @@ import { i18nT } from '../../../i18n/t'
 import type { RootState } from '../../../store'
 import FolderSuggestionCard from '../FolderSuggestionCard'
 import { folderProjectMismatch } from '../../../utils/folderAgent'
-import type { useComposerSessionControls } from './sessionControls'
+import type { useComposerSessionControls } from '../../../hooks/composerSessionControls'
 
 /**
  * The memoized band the composer dock shows above the composer (read-aloud

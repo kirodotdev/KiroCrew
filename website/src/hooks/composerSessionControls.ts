@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, type QueryClient } from '@tanstack/react-query'
 
-import { api } from '../../../api/client'
-import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
-import { useFolderSortMode } from '../../../hooks/useFolderSortMode'
-import { dashboardSessionKey, SESSION_CONTROL_STATUS_KEY, useSessionControls, useSessionControlStatuses } from '../../../hooks/useSessionControls'
-import { memberThreadTitle } from '../../../lib/memberThreadTitle'
-import type { SessionControlContext } from '../../../components/SessionControlHost'
-import type { ChatFolder, ChatSlot } from '../../../types'
+import { api } from '../api/client'
+import { useAnchoredTriggerRect } from './useAnchoredTriggerRect'
+import { useFolderSortMode } from './useFolderSortMode'
+import { dashboardSessionKey, SESSION_CONTROL_STATUS_KEY, useSessionControls, useSessionControlStatuses } from './useSessionControls'
+import { memberThreadTitle } from '../lib/memberThreadTitle'
+import type { SessionControlContext } from '../components/SessionControlHost'
+import type { ChatFolder, ChatSlot } from '../types'
 
 /** One shared empty list, so an absent folder cache keeps a stable identity. */
 const NO_CHAT_FOLDERS: ChatFolder[] = []

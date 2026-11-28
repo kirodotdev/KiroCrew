@@ -129,7 +129,6 @@ describe('pages/chat/page owners', () => {
       'useAutoSendIntake',
       'useSessionChoices',
       'useCrewModeSwitch',
-      'useComposerSessionControls',
       'useAppPanelReveal',
       'useFileMentionActions',
       'useFollowupCardActions',
@@ -156,7 +155,6 @@ describe('pages/chat/page owners', () => {
       'useChatPanelTrackpadSwipe',
       'usePanelLayout',
       'useComposerAboveBand',
-      'useSessionControlChips',
     ])
   })
 })

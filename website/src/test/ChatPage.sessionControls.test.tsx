@@ -18,7 +18,7 @@ import { renderHookWithProviders } from './helpers'
 import { useSessionControlStatuses, normalizeStatus, safeStatusPath } from '../hooks/useSessionControls'
 import type { ResolvedSessionControl } from '../hooks/useSessionControls'
 import { api } from '../api/client'
-import { useSessionControlChips } from '../pages/chat/page/sessionControls'
+import { useSessionControlChips } from '../hooks/composerSessionControls'
 
 vi.mock('../api/client', () => ({ api: { appSessionStatus: vi.fn() } }))
 
