@@ -1513,11 +1513,19 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     so `_is_ssh_to_self` leaves it unspliced there. One quoting level down it runs
     (`eval "ssh -p 22 \`printf localhost\`"`); the `_MAIN_READING` pass of
     `_reaches_self_over_ssh` splices such a span, as main's splice did, and refuses it.
+    Bash removes the backslash before `$` and a backtick inside double quotes, and before
+    `$`, a backtick and `\` in a backtick body, so `_substitution_reaches_self` also
+    judges a shell payload read from double quotes outside a heredoc body with each
+    escaped `$(` or backtick opener unescaped and, as in a body, the text a `cat` prints
+    from a quoted heredoc cut, and a backtick body with those backslashes removed, which
+    only adds refusals.
     Known residuals fail closed: a body is refused when the floor already refuses it as a
     plain line, though bash runs no ssh, for a glued `;echo`, a `#` comment, the text
     a `cat` prints from an unquoted-tag heredoc, and an escaped `\;`; and the ssh
     floor's payload readers take a `bash -c` script that `echo` only prints as a
-    payload, on the plain line too (`test_known_fail_closed_residuals_are_refused`). A
+    payload, on the plain line too, and written with escaped openers in double quotes
+    (`test_known_fail_closed_residuals_are_refused`,
+    `test_a_script_echo_only_prints_stays_a_known_residual`). A
     double-quoted body is read as written here too, but `_is_ssh_to_self`'s own
     double-quoted reader still judges a lone body lowered, so
     `echo "$(sudo -H ls s* l*)"` stays refused.
