@@ -262,7 +262,11 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
               {/* Crossfaded rather than hard-swapped. One persistent button showing two
                 * different drawings on press reads as two different buttons -- a blind
                 * read of this control reported exactly that confusion -- and a short
-                * dissolve is what says "the same button changed" instead. */}
+                * dissolve is what says "the same button changed" instead.
+                *
+                * The icon takes no pointer events, so the node under the cursor is the
+                * button that carries the `title`, never the animated span: the native
+                * tooltip then reads the same plain element the funnel beside it does. */}
               <AnimatePresence mode="wait" initial={false}>
                 <motion.span
                   key={conductorView ? 'conductor' : 'list'}
@@ -270,7 +274,8 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.12 }}
-                  className="flex items-center justify-center"
+                  className="flex items-center justify-center pointer-events-none"
+                  data-testid="flat-view-toggle-icon"
                 >
                   {conductorView ? <ListTree size={14} /> : <List size={14} />}
                 </motion.span>
