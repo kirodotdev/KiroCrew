@@ -30,4 +30,8 @@ others' module docstring.
 
 `pr_status.py` and `pr_findings.py` need the sibling `_review_contract.py`, and
 CI loads `pr_status.py` too: copy the whole `kirocrew-prepare-pr/` directory, never one
-entry point.
+entry point. `local_review.py` needs the sibling `_review_base_files.py`: it reads a
+review's base-side files through one `git cat-file --batch` process, and leaves to
+`git show` whatever is not a file of the base commit. `pre_push_gate.py` asks git for
+the work tree's root once a run. Its `rev-parse --absolute-git-dir` needs git 2.13;
+the batch read needs nothing newer.
