@@ -20,8 +20,8 @@ const RELEASES_URL = `${REPO_URL}/releases`
  * when it carries none, this install's release list supplies the update's
  * sections if it has them (`archiveNotes`). Notes with no bullet or bold lead to
  * count are still shown, under a title with no count. A feed-installed gateway's check carries none, so an empty `notes`
- * says the notes are not shown here and links the release on GitHub, rather than
- * claiming the update changes nothing. A git checkout's check carries them, but
+ * is a small "Release notes" link to the release on GitHub, rather than a claim
+ * that the update changes nothing. A git checkout's check carries them, but
  * the update can be known from the background check alone: `onLoad` is that
  * case, and offers to run the check that brings them; `checked` says that check
  * ran and found no changelog lines.
@@ -99,18 +99,16 @@ export function AboutPanelUpdateChanges({ notes: carried, version, runningVersio
   }
   if (!hasNotes) {
     return (
-      <p className="text-[12px] text-muted" data-testid="update-changes-empty">
-        {i18nT('pages.settings.aboutPanel.what_you_d_get_no_entries')}{' '}
-        <a
-          href={releaseUrl}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="text-accent hover:underline inline-flex items-center gap-1"
-        >
-          {i18nT('pages.settings.aboutPanel.what_you_d_get_view_on_github')}
-          <ExternalLink size={11} className="lucide-inline" aria-hidden />
-        </a>
-      </p>
+      <a
+        href={releaseUrl}
+        target="_blank"
+        rel="noreferrer noopener"
+        data-testid="update-changes-empty"
+        className="self-start text-[12px] text-accent hover:underline inline-flex items-center gap-1"
+      >
+        {i18nT('pages.settings.aboutPanel.update_check_image_release_notes')}
+        <ExternalLink size={11} className="lucide-inline" aria-hidden />
+      </a>
     )
   }
   const hidden = entries.length - UPDATE_CHANGES_SHOWN

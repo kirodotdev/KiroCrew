@@ -333,6 +333,9 @@ class TestLeafOnlyNamesHaveNoBetterHold:
             "<crew>/workspace/md-notebook/vaults.json",
             # The default home's ``run`` under the suite's relocated ``$HOME``.
             "<isolated>/kiro-home/.kiro/crew/run",
+            # The Bot-move ledger: ``mates/`` keeps the Bots' agent files, owner record
+            # and the ledger's lock beside it, all of which stay writable.
+            "<isolated>/kiro-mates/migrated.json",
             # ``~/.config`` and ``~/.kiro`` hold the user's other tools' state.
             "~/.config/gcloud",
             "~/.config/gh",
@@ -484,6 +487,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "<crew>/yolo_ack.json": "standard",
         "<isolated>/kiro-agents": "standard",
         "<isolated>/kiro-home/.kiro/crew/run": "standard",
+        "<isolated>/kiro-mates/migrated.json": "standard",
         "~/.aws": "cc",
         "~/.azure": "standard",
         "~/.config/gcloud": "standard",

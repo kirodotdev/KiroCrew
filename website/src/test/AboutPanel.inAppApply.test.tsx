@@ -3,10 +3,12 @@
 // Contract under test:
 // - the Update button renders ONLY when the backend probed the managed-venv
 //   shape (`update_can_arm`); managed_by alone must not summon it
-// - clicking it POSTs /api/update/arm and swaps to the armed state showing
-//   the approve command and countdown — and NEVER any nonce
+// - clicking it POSTs /api/update/arm; a one-click answer (`status: "applying"`)
+//   goes straight to the progress line, and an armed answer shows one line, the
+//   approve command and Copy — and NEVER any nonce, countdown or intro
 // - an arm refusal surfaces as an inline error, not a dead button
-// - the manual installer command stays reachable behind the details fold
+// - no installer fold-out on this path (decision entry "the update panel is one
+//   line and one button per step")
 import type { ReactNode } from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react'
@@ -18,6 +20,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel, InAppUpdateFlow } from '../pages/settings/AboutPanel'
 import { __resetErrorJournalForTests, consumeChatHandoff } from '../utils/errorReport'
 import { newQueryClient } from '../api/queryClient'
+import { i18nT } from '../i18n/t'
 
 const BLANK_STATUS = {
   uptime: '1m', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
@@ -40,6 +43,20 @@ const LIVE_ARM = {
   armed: true, managed_by: 'kirocrew', request_id: 'r1', version: '9.9.9',
   expires_in: 590, approve_command: 'kirocrew update approve',
 } as const
+
+/**
+ * The text of the info button inside `el`, read the way a keyboard user reaches
+ * it: focus the button, then read the tooltip it now names as its description.
+ */
+function infoTextIn(el: HTMLElement): string {
+  const info = within(el).getByRole('button', { name: i18nT('components.infoTip.more_information') })
+  fireEvent.focus(info)
+  const tip = screen.getByRole('tooltip')
+  expect(info).toHaveAttribute('aria-describedby', tip.id)
+  const text = tip.textContent || ''
+  fireEvent.blur(info)
+  return text
+}
 
 function stubFetch(overrides: Record<string, unknown> = {}) {
   const json = (body: unknown) => ({
@@ -146,6 +163,9 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     // here so its fake clock cannot leak into the next test in the fork.
     vi.useRealTimers()
     store.dispatch(sseStatus({ ...BLANK_STATUS } as never))
+    // The store is shared: an install's progress left by one test reads as an
+    // install still running in the next.
+    store.dispatch(setUpdateProgress(null))
   })
 
   it('renders the Update button for an armable install and arms on click', async () => {
@@ -166,8 +186,14 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     expect(armedAction).toHaveTextContent(/copy command/i)
     expect(armed).toHaveTextContent(/gateway host/i)
     expect(screen.getByTestId('approve-command').textContent).toContain('kirocrew update approve')
-    // The countdown renders from expires_in.
-    expect(screen.getByTestId('arm-countdown').textContent).toMatch(/10:00|9:5\d/)
+    // One short line; what the command installs, and why it takes the host, is
+    // in the info button beside it. No countdown, no waiting note.
+    const armedLine = screen.getByTestId('armed-version')
+    expect(armedLine.textContent).toBe('To install v9.9.9, run this on the gateway host.')
+    // The info button holds only why it takes the host.
+    expect(infoTextIn(armedLine)).toBe(i18nT('pages.settings.aboutPanel.armed_why_host'))
+    expect(screen.queryByTestId('arm-countdown')).toBeNull()
+    expect(armed.querySelectorAll('p')).toHaveLength(1)
     // The arm POST went out; nothing in the DOM carries a nonce-shaped secret.
     const armPost = spy.mock.calls.find(
       c => String(c[0]).includes('/api/update/arm') && (c[1] as { method?: string })?.method === 'POST',
@@ -209,7 +235,7 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     // The panel's offer comes from a verdict refreshed every 12 hours, while the
     // arm re-checks the feed so the approval installs the NEWEST build. When a
     // newer release published in between, the two disagree — and the one that
-    // installs is the armed one, so that is the one the armed copy must name.
+    // installs is the armed one, so that is the one the armed line names.
     stubFetch({ armVersion: '9.9.10', armVersionDisplay: '9.9.10' })
     store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
     mountWeb()
@@ -217,82 +243,27 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
 
     await screen.findByTestId('in-app-update-armed')
-    // When the two disagree the explanatory note carries the armed version — its
-    // copy opens by naming it — and the plain "Update to v…" line stands down, so
-    // the panel states that number once instead of twice.
-    expect(screen.getByTestId('armed-version-changed').textContent).toMatch(/9\.9\.10/)
-    expect(screen.queryByTestId('armed-version')).toBeNull()
+    const line = screen.getByTestId('armed-version').textContent
+    expect(line).toMatch(/9\.9\.10/)
+    expect(line).not.toMatch(/9\.9\.9(?!\d)/)
   })
 
-  it('explains the version change instead of leaving two different numbers on screen', async () => {
-    // Naming the armed version is only half the job: the user clicked a button
-    // reading v9.9.9 and is now looking at v9.9.10, seconds before running an
-    // approval command on another machine. Unexplained, that reads as two
-    // different updates or as one of the numbers being wrong, and the safe
-    // response to either is to abandon a correct arm.
+  it('keeps naming the armed version when the status frame catches up to it', async () => {
     stubFetch({ armVersion: '9.9.10', armVersionDisplay: '9.9.10' })
     store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
     mountWeb()
 
     fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
-
     await screen.findByTestId('in-app-update-armed')
-    const note = screen.getByTestId('armed-version-changed').textContent || ''
-    expect(note).toMatch(/9\.9\.10/)
-    expect(note).toMatch(/9\.9\.9/)
-  })
-
-  it('stays quiet when the armed version is the one the button offered', async () => {
-    // Nothing to explain on the ordinary path, and a note that fires anyway would
-    // teach the user to ignore it on the one path that needs it.
-    stubFetch({ armVersion: '9.9.9', armVersionDisplay: '9.9.9' })
-    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
-    mountWeb()
-
-    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
-
-    await screen.findByTestId('in-app-update-armed')
-    expect(screen.getByTestId('armed-version').textContent).toMatch(/9\.9\.9/)
-    expect(screen.queryByTestId('armed-version-changed')).toBeNull()
-  })
-
-  it('keeps the explanation when the status frame catches up to the armed version', async () => {
-    // The arm's own re-check refreshes the cached verdict, so the next status frame
-    // moves the offered version to the armed one. The note compares against what
-    // the button said WHEN CLICKED, or it would vanish while being read.
-    stubFetch({ armVersion: '9.9.10', armVersionDisplay: '9.9.10' })
-    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
-    mountWeb()
-
-    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
-    await screen.findByTestId('armed-version-changed')
 
     await act(async () => {
       store.dispatch(sseStatus({ ...ARMABLE_STATUS, update_latest_version: '9.9.10' } as never))
     })
 
-    const note = screen.getByTestId('armed-version-changed').textContent || ''
-    expect(note).toMatch(/9\.9\.10/)
-    expect(note).toMatch(/9\.9\.9/)
+    expect(screen.getByTestId('armed-version').textContent).toMatch(/9\.9\.10/)
   })
 
-  it('does not call an OLDER armed build "a newer version"', async () => {
-    // The re-check can arm a lower build than the button named (the offered
-    // release was pulled; an older one is still ahead of the running build). The
-    // "a newer version was found" note would then be false, so the plain line,
-    // which names what installs and claims nothing about why, renders instead.
-    stubFetch({ armVersion: '9.9.8', armVersionDisplay: '9.9.8' })
-    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
-    mountWeb()
-
-    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
-
-    await screen.findByTestId('in-app-update-armed')
-    expect(screen.queryByTestId('armed-version-changed')).toBeNull()
-    expect(screen.getByTestId('armed-version').textContent).toMatch(/9\.9\.8/)
-  })
-
-  it('omits the armed-version line for a gateway that predates the field', async () => {
+  it('names the offered version for a gateway that predates the armed-version field', async () => {
     stubFetch({ armVersionDisplay: '' })
     store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
     mountWeb()
@@ -300,7 +271,131 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
 
     await screen.findByTestId('in-app-update-armed')
-    expect(screen.queryByTestId('armed-version')).toBeNull()
+    expect(screen.getByTestId('armed-version').textContent).toMatch(/9\.9\.9/)
+  })
+
+  it('a channel move names the version it switches to on the visible line', async () => {
+    stubFetch()
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    render(withProviders(newQueryClient(), <InAppUpdateFlow version="9.9.9" isChannelMove />))
+    fireEvent.click(await screen.findByRole('button', { name: /switch to v9\.9\.9/i }))
+    const line = await screen.findByTestId('armed-version')
+    expect(line.textContent).toBe('To switch to v9.9.9, run this on the gateway host.')
+    expect(infoTextIn(line)).toBe(i18nT('pages.settings.aboutPanel.armed_why_host'))
+  })
+
+  describe('one click installs a same-channel release', () => {
+    const oneClick = (answer: Record<string, unknown>) => {
+      const spy = stubFetch()
+      spy.mockImplementation(async (input: unknown, init?: { method?: string }) => {
+        const url = String(input)
+        const body = url.includes('/api/update/arm') && init?.method === 'POST'
+          ? answer
+          : url.includes('/api/update/arm') ? { armed: false } : {}
+        return {
+          ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body),
+          headers: new Headers({ 'content-type': 'application/json' }),
+        }
+      })
+      return spy
+    }
+
+    it('goes from the button straight to one progress line, with no command to run', async () => {
+      oneClick({ ok: true, status: 'applying', version: '9.9.9', version_display: '9.9.9' })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+
+      const applying = await screen.findByTestId('in-app-update-applying')
+      expect(screen.getByTestId('apply-progress').textContent).toMatch(/installing v9\.9\.9/i)
+      expect(screen.queryByTestId('approve-command')).toBeNull()
+      expect(screen.queryByTestId('in-app-update-action')).toBeNull()
+      // Its only control is the info button, which says what happens next.
+      const controls = within(applying).queryAllByRole('button')
+      expect(controls).toHaveLength(1)
+      expect(controls[0]).toHaveAccessibleName(i18nT('components.infoTip.more_information'))
+      expect(infoTextIn(applying)).toBe(i18nT('pages.settings.aboutPanel.applying_restart_note'))
+      // The install's frames keep the one line.
+      act(() => {
+        store.dispatch(setUpdateProgress({ step: 'building', detail: 'Building the new environment…' } as never))
+      })
+      expect(screen.getByTestId('apply-progress').textContent).toBe('Installing v9.9.9…')
+      expect(applying.querySelectorAll('p')).toHaveLength(1)
+      // The card's "is available" line stands down for the installing step.
+      expect(screen.queryByText(/is available/i)).toBeNull()
+    })
+
+    it('ends on one "Restart to use vX" button once the install is staged', async () => {
+      oneClick({ ok: true, status: 'applying', version: '9.9.9', version_display: '9.9.9' })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      await screen.findByTestId('in-app-update-applying')
+      act(() => {
+        store.dispatch(setUpdateProgress({ step: 'done', detail: 'v9.9.9 installed. Restart to use it.' } as never))
+      })
+      await waitFor(() => expect(screen.getByTestId('in-app-update-done')).toBeTruthy())
+      act(() => {
+        store.dispatch(sseStatus({
+          ...ARMABLE_STATUS, update_restart_ready: true,
+          update_restart_ready_version: '9.9.9', update_restart_ready_reason: 'staged',
+        } as never))
+      })
+      const installed = await screen.findByTestId('in-app-update-installed')
+      // No line: the one button names the version.
+      expect(installed.querySelector('p')).toBeNull()
+      expect(within(installed).getAllByRole('button')).toHaveLength(1)
+      expect(screen.getByTestId('gateway-restart-installed')).toHaveTextContent('Restart to use v9.9.9')
+    })
+
+    it('shows a failed one-click install with its reason and a retry', async () => {
+      oneClick({ ok: true, status: 'applying', version: '9.9.9', version_display: '9.9.9' })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      await screen.findByTestId('in-app-update-applying')
+      act(() => {
+        store.dispatch(setUpdateProgress({ step: 'failed', detail: 'wheel SHA-256 mismatch' } as never))
+      })
+      const failed = await screen.findByTestId('in-app-update-failed')
+      expect(failed.textContent).toContain('wheel SHA-256 mismatch')
+      expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy()
+    })
+
+    it('clears an earlier attempt\'s failure before the click, so its first frame is not lost', async () => {
+      oneClick({ ok: true, status: 'applying', version: '9.9.9', version_display: '9.9.9' })
+      store.dispatch(setUpdateProgress({ step: 'failed', detail: 'an earlier failure' } as never))
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      await screen.findByTestId('in-app-update-applying')
+      expect(screen.queryByText(/an earlier failure/)).toBeNull()
+    })
+
+    it('treats an answer armed for the next start as done, not as an approval to wait for', async () => {
+      oneClick({ ok: true, status: 'armed', armed: true, version: '9.9.9' })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      await waitFor(() => expect(screen.getByTestId('in-app-update-done')).toBeTruthy())
+      expect(screen.queryByTestId('approve-command')).toBeNull()
+      expect(screen.queryByTestId('arm-error')?.textContent || '').toBe('')
+    })
+
+    it('words a source-pin refusal of the click as a policy-managed host', async () => {
+      stubFetch({ armRefusal: { status: 403, code: 'arm_blocked_by_policy', error: 'source not allowed' } })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      const err = await screen.findByTestId('arm-error')
+      expect(err.textContent).toMatch(/managed by/i)
+    })
   })
 
   it('does not render the flow when the backend did not probe the shape', async () => {
@@ -334,8 +429,6 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     expect(err.textContent).toMatch(/no longer offered/i)
     // The contradiction is gone: no action to install what does not exist.
     expect(screen.queryByRole('button', { name: /update to v9\.9\.9/i })).toBeNull()
-    // And the way out is still on screen — this state is not a dead end.
-    expect(screen.getByText(/or re-run the installer manually/i)).toBeTruthy()
   })
 
   it('does not claim "already up to date" when the clicked upgrade became a downgrade', async () => {
@@ -536,7 +629,7 @@ describe('AboutPanel in-app update (arm + approve)', () => {
       await waitFor(() => expect(screen.getByTestId('in-app-update-applying')).toBeTruthy())
       // A progress push renders inline.
       store.dispatch(setUpdateProgress({ step: 'building', detail: 'Building the new environment…' } as never))
-      await waitFor(() => expect(screen.getByTestId('apply-progress').textContent).toContain('Building'))
+      await waitFor(() => expect(screen.getByTestId('apply-progress').textContent).toContain('Installing v9.9.9'))
       // A failed push pins the failure with a retry — never a silent reset.
       store.dispatch(setUpdateProgress({ step: 'failed', detail: 'wheel SHA-256 mismatch' } as never))
       const failed = await screen.findByTestId('in-app-update-failed')
@@ -714,7 +807,8 @@ describe('AboutPanel in-app update (arm + approve)', () => {
       await screen.findByTestId('in-app-update-armed')
       await vi.advanceTimersByTimeAsync(5100)
       await waitFor(() => expect(screen.getByTestId('in-app-update-applying')).toBeTruthy())
-      expect(screen.getByTestId('in-app-update-action')).toBeDisabled()
+      // Installing has its progress line and nothing to press.
+      expect(screen.queryByTestId('in-app-update-action')).toBeNull()
       await vi.advanceTimersByTimeAsync(APPLY_START_GRACE_MS + 100)
       await waitFor(() => expect(screen.getByTestId('in-app-update')).toBeTruthy())
       expect(screen.getByTestId('arm-ended-note')).toBeTruthy()
@@ -780,6 +874,48 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     const armed = await screen.findByTestId('in-app-update-armed')
     expect(within(armed).getByTestId('approve-command').textContent).toContain('kirocrew update approve')
     expect(spy.mock.calls.filter(isArmPost)).toHaveLength(1)
+  })
+
+  it('a second Update while an install runs is refused with the gateway\'s busy reason', async () => {
+    // A one-click install started in another surface holds the update lock, so a
+    // click here installs nothing twice and says why.
+    stubFetch({ armRefusal: { code: 'arm_busy', error: 'an update is already being applied' } })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    render(withProviders(newQueryClient(), <InAppUpdateFlow version="9.9.9" />))
+    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+    expect((await screen.findByTestId('arm-error')).textContent).toMatch(/already being applied/)
+  })
+
+  it('a refused second Update leaves the running install\'s progress on screen', async () => {
+    // The click clears only a PRIOR attempt's progress. While an install runs
+    // its frames are the install's, and the gateway refuses the click.
+    stubFetch({ armRefusal: { code: 'arm_busy', error: 'an update is already being applied' } })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    act(() => { store.dispatch(setUpdateProgress({ step: 'building', detail: 'Building the new environment…' } as never)) })
+    render(withProviders(newQueryClient(), <InAppUpdateFlow version="9.9.9" />))
+    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+    await screen.findByTestId('arm-error')
+    expect(store.getState().dashboard.updateProgress).toEqual({ step: 'building', detail: 'Building the new environment…' })
+  })
+
+  it('a new Update still clears a finished attempt\'s progress', async () => {
+    stubFetch()
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    act(() => { store.dispatch(setUpdateProgress({ step: 'failed', detail: 'wheel SHA-256 mismatch' } as never)) })
+    render(withProviders(newQueryClient(), <InAppUpdateFlow version="9.9.9" />))
+    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+    await screen.findByTestId('in-app-update-armed')
+    expect(store.getState().dashboard.updateProgress).toBeNull()
+  })
+
+  it('an adopted arm names the release the approval installs, not this copy\'s offer', async () => {
+    // The arm's re-check armed 9.9.10 while this copy still offers 9.9.9.
+    stubFetch({ armStatus: () => ({ ...LIVE_ARM, version: '9.9.10', version_display: '9.9.10' }) })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    render(withProviders(newQueryClient(), <InAppUpdateFlow version="9.9.9" />))
+    const line = (await screen.findByTestId('armed-version')).textContent
+    expect(line).toMatch(/9\.9\.10/)
+    expect(line).not.toMatch(/9\.9\.9(?!\d)/)
   })
 
   it('shows one copy\'s arm on another copy that is on screen at the same time', async () => {
@@ -1038,13 +1174,15 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     }
   })
 
-  it('keeps the manual installer command reachable behind the fold', async () => {
+  it('offers the update with one line and one button: no intro, no installer fold-out', async () => {
     stubFetch()
     store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
     mountWeb()
 
     const flow = await screen.findByTestId('in-app-update')
-    expect(flow.querySelector('details')).toBeTruthy()
-    expect(flow.textContent).toContain('curl -fsSL')
+    expect(flow.querySelector('details')).toBeNull()
+    expect(flow.textContent).not.toContain('curl -fsSL')
+    expect(flow.querySelectorAll('p')).toHaveLength(0)
+    expect(within(flow).getAllByRole('button')).toHaveLength(1)
   })
 })

@@ -99,7 +99,8 @@ describe('UpdateFoundModal focus', () => {
 
   it('pulls a Tab from behind the dialog back inside, and wraps Tab and Shift+Tab', async () => {
     await openDesktop()
-    const first = byName('components.updateFoundModal.dismiss')
+    // The title's info button is the dialog's first stop, ahead of Dismiss.
+    const first = byName('components.infoTip.more_information')
     const last = byName('components.updateFoundModal.download')
     trigger.focus()
     fireEvent.keyDown(trigger, { key: 'Tab' })

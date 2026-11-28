@@ -42,7 +42,7 @@ from kiro_crew.dashboard.handlers.updates_verdict import (
     _update_info,
 )
 from kiro_crew.dashboard.urls import is_loopback
-from kiro_crew.platform.update_layout import detect_install_layout
+from kiro_crew.platform.update_layout import RELEASE_CHANNELS, detect_install_layout
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_layout import set_release_channel, wheel_update_command
 from kiro_crew.platform.update_provider import resolve_provider
@@ -406,12 +406,26 @@ async def api_update_channel(request: web.Request) -> web.Response:
             status=409,
         )
 
+    normalized = requested.strip().lower()
+    if normalized not in RELEASE_CHANNELS:
+        # Rejected before anything is written, the channel move record included.
+        return web.json_response(
+            {"error": "unknown release channel", "code": "invalid_channel"}, status=400
+        )
     try:
+        # The channel this install came from, recorded BEFORE the file names
+        # another one: a one-click update is for a newer release of the channel an
+        # install came from, and a restart would otherwise forget the move. A
+        # record that cannot be written refuses the switch.
+        from kiro_crew.platform import update_channel_move
+
         # Offloaded: mkdir + write + os.replace are synchronous syscalls, and the
         # data home can be network-backed (NFS/SMB), where even a ten-byte write
         # can stall long enough to freeze the loop and the liveness heartbeat with
         # it. Small does not mean non-blocking.
-        stored = await asyncio.to_thread(set_release_channel, requested)
+        stored = await asyncio.to_thread(
+            update_channel_move.switch_channel, normalized, set_release_channel
+        )
     except ValueError:
         # The allowlist is the whole guard: `channel` becomes a path segment in
         # every feed URL and an argument in a shell command, so an unknown value

@@ -883,8 +883,29 @@ describe('UpdateFoundModal — gateway source', () => {
     expect(screen.getByTestId('in-app-update-action')).toBe(action)
     expect(action).toHaveTextContent(/copy command/i)
     expect(screen.getByTestId('in-app-update-armed')).toHaveTextContent(/gateway host/i)
-    expect(screen.getByTestId('arm-countdown')).toBeInTheDocument()
+    // One line, the command and Copy: no countdown.
+    expect(screen.queryByTestId('arm-countdown')).not.toBeInTheDocument()
     expect(screen.queryByText('curl -fsSL zzq.sh | sh')).not.toBeInTheDocument()
+  })
+
+  it('an armable update is the title and one button: no body sentence, the hint in an info button', async () => {
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '8.8.8',
+      update_can_apply: false, update_can_arm: true,
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(screen.getByTestId('in-app-update-action')).toHaveTextContent(/update to v8\.8\.8/i)
+    expect(dialog()!).not.toHaveTextContent(/is available\./i)
+    const hint = i18nT('components.updateFoundModal.you_can_update_anytime_from_settings_about')
+    // Not shown in the body, but reachable from the keyboard as the info button's description.
+    expect(screen.queryByText(hint)).not.toBeInTheDocument()
+    const info = byName('components.infoTip.more_information')
+    fireEvent.focus(info)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(hint)
+    expect(info).toHaveAccessibleDescription(hint)
+    // Skip and Remind me tomorrow stay.
+    expect(screen.getByRole('button', { name: i18nT('components.updateFoundModal.skip_this_version') })).toBeInTheDocument()
+    expect(byName('components.updateFoundModal.remind_me_tomorrow')).toBeInTheDocument()
   })
 
   it('an arm failure renders the shared error notice with agent hand-off', async () => {
@@ -1025,6 +1046,35 @@ describe('UpdateFoundModal — mandatory update (update_required)', () => {
     // Nothing was persisted either: a forced prompt must not write snooze
     // records the next (voluntary) prompt would then honour.
     expect(mockedApi.patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('a required armable offer armed for the next start turns into its restart, never a dead end', async () => {
+    // A managed venv on the stable link: the arm installs at the next start and
+    // answers `armed`. The dialog cannot be dismissed, so it must offer the restart.
+    mockedApi.armUpdate.mockResolvedValue({ ok: true, status: 'armed', version: '8.8.8' } as never)
+    mockedApi.restartGateway.mockResolvedValue({} as never)
+    const status = { ...requiredStatus, update_can_apply: false, update_can_arm: true } as StatusData
+    const store = gatewayStore(status)
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('in-app-update-action'))
+    await waitFor(() => expect(mockedApi.armUpdate).toHaveBeenCalledTimes(1))
+    act(() => { store.dispatch(sseStatus({ ...status, update_armed_version: '8.8.8' } as StatusData)) })
+
+    const restart = await screen.findByRole('button', { name: i18nT('components.updateFoundModal.restart_to_update') })
+    expect(screen.getByText(i18nT('components.updateFoundModal.update_armed_note'))).toBeInTheDocument()
+    fireEvent.click(restart)
+    await waitFor(() => expect(mockedApi.restartGateway).toHaveBeenCalledTimes(1))
+  })
+
+  it('an armable offer whose arm names another version keeps its Update', async () => {
+    await mount(undefined, gatewayStore({
+      ...requiredStatus, update_can_apply: false, update_can_arm: true, update_armed_version: '8.8.7',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(screen.getByTestId('in-app-update-action')).toHaveTextContent(/update to v8\.8\.8/i)
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.restart_to_update') }))
+      .not.toBeInTheDocument()
   })
 
   it('names the floor that made the update mandatory', async () => {

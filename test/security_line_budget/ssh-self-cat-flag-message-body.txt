@@ -1,0 +1,21 @@
++72
+Inside a double-quoted `$( )`, the ssh-to-self floor cuts out the quoted-tag heredoc
+text that a bare `cat` prints. `cat -`, `cat --` and `cat -n` print the same text, so
+the floor now cuts it out for them too when the body holds only that `cat` and the
+line, with each substitution read as one word, is one `gh pr|issue create|edit|comment`
+or `git commit|tag` message command (`shell_commands._is_message_line`, computed once
+per line and passed to `_without_quoted_heredoc_text`; the argv floor facade names
+it under `TYPE_CHECKING` like its other `shell_commands` imports), but not in a
+body holding a backslash, which bash may un-escape before it reads it, nor when a
+tag of that `cat` is anything but one `'...'` or `"..."` pair around a word with no
+quote, `$` or backtick, since only that tag ends its text on the line bash ends it,
+and in the ssh floor's `_HEREDOC_RESET` pass only on an own line that pass left
+as written (`_judge_ssh_to_self` gives `_double_quoted_substitution_bodies`
+`messages` False otherwise), since a heredoc body and closing line it removed
+leave a heredoc bash never reads, and only when each heredoc of that `cat` closes
+inside the body and no line of its text starts with its tag. The multi-line
+nested-payload pass of `_reaches_self_over_ssh` reads a message line's double-quoted
+body only to its own `)`, with the bounds found on the words as written
+(`_double_quoted_substitution_spans`), and only when the flag would cut text from
+it, then cuts it as a bare `cat`'s, and `_double_quoted_substitution_bodies` takes
+`messages` False by default.

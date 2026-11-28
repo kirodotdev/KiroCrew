@@ -26,6 +26,7 @@ from kiro_crew.voice_reply import (
     DEFAULT_PITCH,
     DEFAULT_PROVIDER,
     DEFAULT_RATE,
+    MAX_CHARS,
     PROVIDER_POLLY,
     PROVIDER_SYSTEM,
     SYSTEM_ENGINE_ESPEAK,
@@ -299,6 +300,13 @@ class TestTextToSsml:
         # Should end with a period (sentence boundary truncation)
         assert result.endswith("</prosody></speak>")
 
+    def test_truncates_long_text_after_the_last_sentence_end_of_any_script(self) -> None:
+        for sentence, last_word in (("नमस्ते दुनिया। ", "दुनिया।"), ("Is it? ", "it?")):
+            result = text_to_ssml(sentence * 1000, engine="neural")
+            body = result.removeprefix("<speak>").removesuffix("</speak>")
+            assert body.endswith(last_word)
+            assert len(body) <= MAX_CHARS
+
     def test_adds_paragraph_breaks(self) -> None:
         result = text_to_ssml("para one\n\npara two")
         assert 'break time="600ms"' in result
@@ -354,6 +362,25 @@ class TestSplitSentences:
         assert split_sentences("**Bold sentence.** Another one.") == [
             "Bold sentence.",
             "Another one.",
+        ]
+
+    def test_splits_at_devanagari_danda_and_double_danda(self) -> None:
+        assert split_sentences("नमस्ते। आप कैसे हैं? मैं ठीक हूँ॥ धन्यवाद।") == [
+            "नमस्ते।",
+            "आप कैसे हैं?",
+            "मैं ठीक हूँ॥",
+            "धन्यवाद।",
+        ]
+
+    def test_splits_at_danda_with_no_following_space(self) -> None:
+        assert split_sentences("প্রথম।দ্বিতীয়।") == ["প্রথম।", "দ্বিতীয়।"]
+
+    def test_splits_at_arabic_question_mark_and_urdu_full_stop(self) -> None:
+        assert split_sentences("كيف حالك؟ أنا بخير. یہ پہلا ہے۔ یہ دوسرا ہے۔") == [
+            "كيف حالك؟",
+            "أنا بخير.",
+            "یہ پہلا ہے۔",
+            "یہ دوسرا ہے۔",
         ]
 
 

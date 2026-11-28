@@ -1153,9 +1153,19 @@ def push_update_progress(self: DashboardState, step: str, detail: str = "") -> N
     )
 
 
-def clear_update_progress(self: DashboardState) -> None:
-    """Reset update progress (e.g. after cancel or completion)."""
+def clear_update_progress(self: DashboardState, *, announce: bool = False) -> None:
+    """Reset update progress (e.g. after cancel or completion).
+
+    ``announce`` also tells connected clients, with an ``update_progress`` frame
+    whose step is ``cleared``: an apply that ended without a terminal frame of
+    its own (it was deferred, stopped or found incompatible) would otherwise
+    leave its last ``pulling`` or ``building`` frame on every open tab, and the
+    dashboard would show an install that is not running. A tab opened later
+    reads the cleared value from the status read.
+    """
     self._update_progress = None
+    if announce:
+        self._broadcast({"_type": "update_progress", "step": "cleared", "detail": ""})
 
 
 def _broadcast(self: DashboardState, note: dict[str, Any]) -> None:
