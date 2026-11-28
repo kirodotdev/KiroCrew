@@ -764,7 +764,17 @@ class LinkPreviewConfig:
             errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
         if not self.entry:
             errors.append(f"{where}: missing entry")
-        errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, None))
+        # A provider fires on its hosts' links, its text patterns, or both; with
+        # neither it would install clean and never fire.
+        errors.extend(
+            host_list_errors(
+                where,
+                self.hosts,
+                self.bad_hosts,
+                None,
+                required=not self.textPatterns and not self.bad_text_patterns,
+            )
+        )
         if self.bad_full_url:
             errors.append(f"{where}: fullUrl must be true or false")
         if self.bad_text_patterns:

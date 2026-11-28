@@ -977,6 +977,15 @@ class TestContributesLinkPreviews:
         )
         assert any(fragment in e for e in m.contributes.validate()), m.contributes.validate()
 
+    def test_a_text_only_provider_needs_no_host(self):
+        text_only = _link_preview(hosts=[], textPatterns=[{"pattern": "R[0-9]+"}])
+        m = AppManifest.from_dict(_valid_manifest(contributes={"linkPreviews": [text_only]}))
+        assert m.contributes.validate() == []
+        no_hosts_key = _link_preview(textPatterns=[{"pattern": "R[0-9]+"}])
+        del no_hosts_key["hosts"]
+        m = AppManifest.from_dict(_valid_manifest(contributes={"linkPreviews": [no_hosts_key]}))
+        assert m.contributes.validate() == []
+
     def test_any_number_of_hosts_is_valid(self):
         """No host cap: an app may claim thousands, each still checked on its own."""
         hosts = [f"h{i}.example.com" for i in range(5000)] + [".example.dev"]
