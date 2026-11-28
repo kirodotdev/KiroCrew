@@ -192,7 +192,9 @@ behind an outer sandbox with its own user namespace gets `Permission denied` fro
 all of them; `systemctl --user is-system-running` says which case you are in. The
 `pod_up` / `pod_restart` / `pod_down` / `pod_status` / `pod_ls` tools do the same work through the
 gateway, which holds the host bus, and `pod_up` returns the `{base_url, token,
-port}` handle directly. They need the Dev Fleet app enabled.
+port}` handle directly. `pod_provision_start` / `pod_provision_status` do the work of
+`pod provision`, and `pod_api` sends one authenticated HTTP request to a pod, as
+`pod api` does, without handing you its token. They need the Dev Fleet app enabled.
 `pod ls`, `status`, `logs`, `provision`, `prune`, `exec` and `api` cover inspection,
 provisioning, removal of gone worktrees, in-pod commands and HTTP probes.
 Without a service manager, or for a foreground debugger, run `./dev-backend.sh`
