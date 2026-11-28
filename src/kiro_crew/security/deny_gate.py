@@ -523,6 +523,40 @@ def _reentered_floor_hit(command: str) -> "tuple[str, str | None] | None":
     return hit
 
 
+def _windows_line_ends(text: str) -> str:
+    """*text* with a blank after each backslash that escapes a newline outside single quotes.
+
+    PowerShell and cmd end a statement at that newline, where bash joins the two lines,
+    so the blank keeps it a separator in every reading the ssh floor takes. A
+    single-quoted string is a literal to PowerShell and bash, and stays as written, and so
+    does a command with a here-document: PowerShell has none and runs no such command.
+    """
+    if _submodule("shell_commands").heredoc_text_spans(text):
+        return text
+    return "".join(
+        "\\ \n" if step.text == "\\\n" and step.state != 1 else step.text
+        for step in _submodule("shell_normalizer")._iter_shell_chars(text)
+    )
+
+
+def _windows_ssh_self_hit(
+    lower: str, raw_text: str, floor_enabled: "set[str] | None"
+) -> "tuple[str, str] | None":
+    """The ssh-to-self floor's hit on the submitted command read by :func:`_windows_line_ends`,
+    on Windows only. A command another program runs (a git ``core.sshCommand`` the
+    dispatcher re-enters) is not read so: a POSIX shell runs it and joins its lines."""
+    from kiro_crew import platform_compat
+
+    pattern = _submodule("denied_rules")._SELF_PROTECTION_FLOOR_BY_ID.get("sandbox-escape-ssh-self")
+    if pattern is None or floor_enabled is not None and pattern not in floor_enabled:
+        return None
+    lines = _windows_line_ends(lower) if platform_compat.IS_WINDOWS and "\\\n" in lower else lower
+    reaches = _submodule("argv_floor")._reaches_self_over_ssh
+    if lines != lower and reaches(lines, raw_text=_windows_line_ends(raw_text)):
+        return "sandbox-escape-ssh-self", pattern
+    return None
+
+
 def _self_protection_floor_hit(
     lower: str, raw_text: str, floor_enabled: "set[str] | None"
 ) -> "tuple[str, str | None] | None":
@@ -924,6 +958,8 @@ def is_denied(
     # if its catalog row is still in the effective set, so an operator-disabled
     # rule stays disabled (``_self_protection_floor_hit``).
     floor_hit = _self_protection_floor_hit(lower, tool_name, floor_enabled)
+    if floor_hit is None:
+        floor_hit = _windows_ssh_self_hit(lower, tool_name, floor_enabled)
     if floor_hit is not None:  # never waived: a self-guard rule (``_DenyWaiver``)
         rule_id, floor_pattern = floor_hit
         # The kill floor derives its matched target's offsets so the diagnostic

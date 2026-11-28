@@ -1,0 +1,9 @@
++36
+On Windows PowerShell and cmd end a statement at a newline that follows a backslash,
+where bash joins the two lines, so a self connection on the line after one was read as
+an argument of the line before and passed the ssh-to-self floor. `deny_gate.py` reads
+the submitted command once more on Windows, after the floor dispatcher, with a blank
+after each backslash that escapes a newline outside single quotes (one pass of the
+shared quote walk; a command the shared reader finds a here-document in is left as
+written), and asks the ssh-to-self predicate about that reading. A command another
+program re-runs is not read so. It adds refusals on Windows only.
