@@ -586,9 +586,9 @@ async def _close_channel_locked(self: GatewayOrchestrator, channel_type: str) ->
     dashboard's mirror registration (a closed transport must not stay
     registered for cross-surface sends), closes the client under
     ``registry.shutdown_tasks``' 2s bound, clears the legacy
-    ``_<channel>_client`` mirror, and bumps the channel's restart
-    generation so a start already connecting from an older document
-    discards its result.
+    ``_<channel>_client`` mirror and the dashboard's ``<channel>_connected``
+    flag, and bumps the channel's restart generation so a start already
+    connecting from an older document discards its result.
     """
     old = self._channel_handles.pop(channel_type, None)
     transports = getattr(self.dashboard_state, "channel_transports", None)
@@ -607,6 +607,14 @@ async def _close_channel_locked(self: GatewayOrchestrator, channel_type: str) ->
                     exc_info=True,
                 )
     setattr(self, f"_{channel_type}_client", None)
+    # The ``<channel>_connected`` flag the closed client's start published says that
+    # client is up. Most clients do not report their own shutdown through their state
+    # callback, so the close clears it: the settings API and System > Services read
+    # it and would keep answering "connected" for a channel that is off. A new start
+    # publishes its own value.
+    state = self.dashboard_state
+    if state is not None:
+        setattr(state, f"{channel_type}_connected", False)
     # Teams' inbound webhook route is pre-registered and OUTLIVES the client: it
     # dispatches to the late-bound ``state.teams_on_activity``, so a closed Teams
     # client whose handler stays bound would keep validating and running turns
