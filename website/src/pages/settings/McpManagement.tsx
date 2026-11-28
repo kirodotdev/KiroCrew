@@ -1362,8 +1362,7 @@ function ConfirmSharing({
         </DialogHeader>
         <DialogBody>
           <DialogDescription className="text-text">
-            {i18nT('pages.mcpManagement.confirm_will_share', { count: marked.length })}{' '}
-            {i18nT('pages.mcpManagement.share_risk')}
+            {i18nT('pages.mcpManagement.confirm_will_share', { count: marked.length })}
           </DialogDescription>
           {/* Named, so the count is not one more number to decode. Data, not
               prose, so no catalog entry. */}
