@@ -38,12 +38,15 @@ pytestmark = pytest.mark.xdist_group(name="mcp_listing_import_budget")
 #: two facades that load every sub-agent and tool handler. ``jsonschema`` is never
 #: loaded at all: every server validates its config before the list, with the in-house
 #: ``kiro_crew.config.schema_check`` (jsonschema and its stack cost ~3 MB RSS a server).
+#: Neither SQLite driver loads either: the text sanitizer every listing runs reads its
+#: CJK helpers from ``kiro_crew.cjk_script``, not from ``kiro_crew._sqlite_compat``.
 FORBIDDEN_BEFORE_THE_LIST = (
     "aiohttp",
     "awscrt",
     "boto3",
     "botocore",
     "jsonschema",
+    "pysqlite3",
     "slack_sdk",
     "kiro_crew.acp.client",
     "kiro_crew.cli",
@@ -54,6 +57,7 @@ FORBIDDEN_BEFORE_THE_LIST = (
     "kiro_crew.sandbox",
     "kiro_crew.session",
     "kiro_crew.subagent",
+    "sqlite3",
 )
 
 #: command -> the most ``kiro_crew`` modules it may hold when it has listed. A ceiling
@@ -320,14 +324,26 @@ def test_the_live_hint_readers_are_inside_cores_budget(
 #: ``kiro_crew.mcp_core`` for its HTTP helpers took each of them to 750-970 modules.
 #: Same rules as the listing ceiling: room for a platform's extras, lowered when a change
 #: brings a count down.
+#: Lowered by 29 for ``mcp-guide``, ``mcp-mate``, ``mcp-panel`` and ``mcp-work``: they import
+#: the validation names from the ``validation_parts`` owners, so the facade and the owners
+#: only it loads (cron schemas, member goals, monitoring, the artifact store) stay out.
 HANDLER_MODULE_CEILING = {
     "mcp-cron": 500,
     "mcp-crew-log": 320,
     "mcp-debug": 320,
-    "mcp-guide": 380,
-    "mcp-mate": 380,
-    "mcp-panel": 400,
-    "mcp-work": 320,
+    "mcp-guide": 351,
+    "mcp-mate": 351,
+    "mcp-panel": 371,
+    "mcp-work": 291,
+}
+
+#: command -> what its handler module never loads. ``kiro_crew.validation`` eagerly imports
+#: every one of its owners; these servers need a few names, read from the owners (the same
+#: objects, so a patch through the facade still reaches them). They keep no database, so
+#: neither SQLite driver loads.
+FORBIDDEN_IN_A_SMALL_HANDLER = {
+    command: ("kiro_crew.validation", "pysqlite3", "sqlite3")
+    for command in ("mcp-guide", "mcp-mate", "mcp-panel", "mcp-work")
 }
 
 _HANDLER_PROBE = f"""
@@ -355,6 +371,7 @@ def test_a_small_servers_handlers_do_not_load_the_core_server(command: str, tmp_
     modules = set(json.loads(marked[-1][len(_MARK) :]))
     assert handler_module in modules
     assert "kiro_crew.mcp_core" not in modules
+    assert sorted(set(FORBIDDEN_IN_A_SMALL_HANDLER.get(command, ())) & modules) == []
     package = sorted(name for name in modules if name.split(".")[0] == "kiro_crew")
     assert len(package) <= HANDLER_MODULE_CEILING[command], (len(package), package)
 

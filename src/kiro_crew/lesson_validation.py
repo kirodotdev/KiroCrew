@@ -8,7 +8,7 @@ import re
 from collections.abc import Callable, Sequence
 
 from kiro_crew import context_omissions, injection_receipts
-from kiro_crew._sqlite_compat import is_cjk_char, script_runs
+from kiro_crew.cjk_script import is_cjk_char, script_runs
 from kiro_crew.model_registry import MODEL_ID_LITERAL_PATTERN
 
 

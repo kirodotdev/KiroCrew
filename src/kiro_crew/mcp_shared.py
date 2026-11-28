@@ -56,13 +56,13 @@ from kiro_crew.port_resolution import resolve_client_port_src
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import neutralize_markers
 from kiro_crew.session_token_sig import session_key_from_env_token
-from kiro_crew.validation import (
+from kiro_crew.validation_parts.field_engine import ValidationError
+from kiro_crew.validation_parts.wire_envelopes import (
     JSONRPC_INTERNAL_ERROR,
     JSONRPC_INVALID_PARAMS,
     JSONRPC_INVALID_REQUEST,
     JSONRPC_PARSE_ERROR,
     JsonRpcEnvelopeError,
-    ValidationError,
     build_tool_response,
     validate_jsonrpc_request,
     validate_jsonrpc_response,

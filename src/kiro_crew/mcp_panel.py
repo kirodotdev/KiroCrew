@@ -43,7 +43,8 @@ from kiro_crew.mcp_core_parts.gateway import _get, _post
 from kiro_crew.mcp_core_parts.identity import _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.validation import MCP_PANEL_SCHEMAS, validate_tool_args
+from kiro_crew.validation_parts.field_engine import validate_tool_args
+from kiro_crew.validation_parts.opt_in_server_schemas import MCP_PANEL_SCHEMAS
 
 logger = logging.getLogger(__name__)
 
