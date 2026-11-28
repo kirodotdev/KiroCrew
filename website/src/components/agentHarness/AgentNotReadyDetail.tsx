@@ -55,6 +55,7 @@ export function AgentNotReadyDetail({
   name,
   probe,
   workloadPodNoSandbox = false,
+  sandboxRemedy = '',
 }: {
   reason: AgentNotReadyReason
   name: string
@@ -62,6 +63,9 @@ export function AgentNotReadyDetail({
   /** A workload pod with no sandbox backend and no unsandboxed opt-in, for a harness
    *  that opt-in unblocks: name the setting. */
   workloadPodNoSandbox?: boolean
+  /** The prerequisite status's `sandbox_remedy` token: an AppArmor userns denial
+   *  names its one fix, which needs sudo from the gateway's own account. */
+  sandboxRemedy?: string
 }) {
   switch (reason) {
     case 'not_offered':
@@ -99,6 +103,12 @@ export function AgentNotReadyDetail({
             {i18nT('components.kiroPrerequisiteGate.sandbox_blocked_agent_detail', { name })}
           </p>
           {workloadPodNoSandbox && <WorkloadPodSandboxHint />}
+          {sandboxRemedy === 'apparmor_userns' && (
+            <div data-testid="sandbox-blocked-admin-fix">
+              <p>{i18nT('components.kiroPrerequisiteGate.sandbox_fix_needs_administrator')}</p>
+              <CopyCommand><code>kirocrew service install</code></CopyCommand>
+            </div>
+          )}
           <p className="text-muted">
             {i18nT('components.kiroPrerequisiteGate.run_kirocrew_doctor_on_the_gateway_host_for_a_ful')}
           </p>

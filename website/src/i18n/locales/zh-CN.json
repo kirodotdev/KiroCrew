@@ -7979,6 +7979,8 @@
       "unzip_missing_install_first": "首先安装 unzip。安装程序需要它，而网关主机上没有。使用以下任一命令或系统的包管理器安装。",
       "unzip_command_debian_ubuntu": "Debian 或 Ubuntu",
       "unzip_command_fedora_rhel": "Fedora 或 RHEL",
+      "unzip_needs_administrator": "这两个命令都需要 sudo。如果你在这台机器上无法使用 sudo，请让它的管理员安装 unzip，然后重新检查。",
+      "sandbox_fix_needs_administrator": "此命令需要 sudo，并且必须从网关自己的账户运行，这样服务才会为该账户安装。如果你在这里无法使用 sudo，请让这台机器的管理员为此账户授予 sudo 权限。管理员从自己的账户运行时，服务会为管理员安装，而不是为你安装。",
       "install_kiro_cli_then_run_on_host": "然后在 {{platform}} 网关主机上运行以下命令来安装 Kiro CLI。",
       "setup_intro": "在<0>{{platform}} 网关主机</0>上运行一个编程代理，然后仪表板会自动打开。",
       "setup_intro_unknown_platform": "在<0>网关主机</0>上运行一个编程代理，然后仪表板会自动打开。",

@@ -8399,6 +8399,8 @@
       "unzip_missing_install_first": "Installe d’abord unzip. L’installateur en a besoin, et l’hôte de la passerelle ne l’a pas. Utilise l’une de ces commandes ou le gestionnaire de paquets de ton système.",
       "unzip_command_debian_ubuntu": "Debian ou Ubuntu",
       "unzip_command_fedora_rhel": "Fedora ou RHEL",
+      "unzip_needs_administrator": "Les deux commandes nécessitent sudo. Si tu ne peux pas utiliser sudo sur cette machine, demande à son administrateur d’installer unzip, puis vérifie à nouveau.",
+      "sandbox_fix_needs_administrator": "Cette commande nécessite sudo et doit s’exécuter depuis le compte de la passerelle, pour que le service soit installé pour ce compte. Si tu ne peux pas utiliser sudo ici, demande à un administrateur de cette machine de donner à ce compte les droits sudo pour cela. Exécutée depuis son propre compte, elle installe le service pour lui, pas pour toi.",
       "install_kiro_cli_then_run_on_host": "Ensuite, exécute ceci sur l’hôte de la passerelle {{platform}} pour installer Kiro CLI.",
       "setup_intro": "Lance un agent de codage sur ton <0>hôte de passerelle {{platform}}</0>, puis le tableau de bord s'ouvrira automatiquement.",
       "setup_intro_unknown_platform": "Lance un agent de codage sur ton <0>hôte de passerelle</0>, puis le tableau de bord s'ouvrira automatiquement.",

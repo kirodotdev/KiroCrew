@@ -7979,6 +7979,8 @@
       "unzip_missing_install_first": "最初に unzip をインストールしてください。インストーラーに必要ですが、ゲートウェイホストにはありません。次のいずれかのコマンドか、システムのパッケージマネージャーを使ってください。",
       "unzip_command_debian_ubuntu": "Debian または Ubuntu",
       "unzip_command_fedora_rhel": "Fedora または RHEL",
+      "unzip_needs_administrator": "どちらのコマンドにも sudo が必要です。このマシンで sudo を使えない場合は、管理者に unzip のインストールを依頼してから、もう一度確認してください。",
+      "sandbox_fix_needs_administrator": "このコマンドには sudo が必要で、サービスがゲートウェイのアカウント用にインストールされるよう、そのアカウント自身から実行する必要があります。ここで sudo を使えない場合は、このマシンの管理者に、このアカウントへ sudo 権限を付与するよう依頼してください。管理者が自分のアカウントから実行すると、あなたではなく管理者用にサービスがインストールされます。",
       "install_kiro_cli_then_run_on_host": "続いて {{platform}} のゲートウェイホストで次のコマンドを実行し、Kiro CLI をインストールします。",
       "setup_intro": "<0>{{platform}} ゲートウェイホスト</0>でコーディングエージェントを起動すると、ダッシュボードが自動的に開きます。",
       "setup_intro_unknown_platform": "<0>ゲートウェイホスト</0>でコーディングエージェントを起動すると、ダッシュボードが自動的に開きます。",

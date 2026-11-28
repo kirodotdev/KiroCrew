@@ -5987,7 +5987,12 @@ still refresh while the dashboard body is blocked. On a new gateway it:
    off by setting, sandbox blocked with `kirocrew doctor` (and, on a workload
    pod (`container_boundary_hint`: a workload identity and no governance floor that
    requires a sandbox) with no backend and no opt-in, the
-   `agent.sandbox_allow_unsandboxed_exec` command and the Docker guide's pod section), and for KAS missing
+   `agent.sandbox_allow_unsandboxed_exec` command and the Docker guide's pod section; when the
+   status's `sandbox_remedy` is `apparmor_userns`, a line saying the command needs sudo
+   from the gateway's own account (`service install` installs for whoever runs it), so a
+   user without sudo asks an administrator to grant this account sudo for it, above
+   `kirocrew service install`, a line the full-page sandbox
+   screen's AppArmor remedy also carries), and for KAS missing
    specs with `kirocrew setup --agent-only` or rejected specs with `--clean`), no
    catch-all, and nothing while the configured agent's own open row already says
    it. The recheckable reasons (not installed, restart needed, unverified) carry
@@ -6008,7 +6013,9 @@ still refresh while the dashboard body is blocked. On a new gateway it:
    installer refuses to run without, on the gateway's PATH or in the system bin
    directories a login shell has, the not-found probe sets `unzip_missing`. The
    card then names the `apt` and `dnf` commands that install it as a first step,
-   and words the install command as the step after it. Neither action runs an installer in Kiro Crew;
+   says below them that both need sudo and that a user without it asks the
+   machine's administrator to install `unzip`, and words the install command as
+   the step after it. Neither action runs an installer in Kiro Crew;
 4. once a viable CLI is found, names the commands the USER runs to sign in
    (`KIRO_CLI_LOGIN_COMMAND`, `kiro-cli login`, for a personal account, and
    `KIRO_CLI_SSO_LOGIN_COMMAND`, `kiro-cli login --use-device-flow --license pro`,

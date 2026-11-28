@@ -562,7 +562,7 @@ export default function FirstRunHarnessSetup({ status, onDone }: {
             ),
             // Only a blocking state gets a detail; the harness's own sign-in
             // sentence waits for the ready screen, where it is the next step.
-            detail: reason ? <><AgentNotReadyDetail reason={reason} name={list.nameOf(id)} probe={b} />{checkAgain}</> : undefined,
+            detail: reason ? <><AgentNotReadyDetail reason={reason} name={list.nameOf(id)} probe={b} sandboxRemedy={status?.sandbox_remedy} />{checkAgain}</> : undefined,
           }
         }}
       />
