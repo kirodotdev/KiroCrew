@@ -644,6 +644,82 @@ class TestPublishDirNoreplace:
         assert (src / "f.txt").exists(), "the staged tree was consumed by a failed publish"
 
 
+class TestPublishDirNoreplaceWindowsRetry:
+    """The Windows branch retries a sharing violation on a file inside the
+    staged tree, and never retries or replaces an existing destination."""
+
+    @pytest.fixture
+    def windows_rename(self, monkeypatch):
+        from kiro_crew import atomic_write
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        # Doubles go on atomic_write's own bindings, never on the stdlib modules,
+        # so no other caller in the worker sees them.
+        sleeps: list[float] = []
+        fake_time = types.SimpleNamespace(**{**vars(time), "sleep": sleeps.append})
+        monkeypatch.setattr(atomic_write, "time", fake_time)
+        real_rename = os.rename
+        state = {"held": 0, "calls": 0}
+
+        def _rename(src, dst, **kwargs):
+            state["calls"] += 1
+            if state["held"] > 0:
+                state["held"] -= 1
+                raise PermissionError(errno.EACCES, "[WinError 5] Access is denied")
+            if os.path.exists(dst):
+                raise FileExistsError(errno.EEXIST, "destination exists", dst)
+            real_rename(src, dst)
+
+        fake_os = types.SimpleNamespace(**{**vars(os), "rename": _rename})
+        monkeypatch.setattr(atomic_write, "os", fake_os)
+        return state, sleeps
+
+    def _staged(self, tmp_path):
+        src = tmp_path / ".ws.staging-abc"
+        src.mkdir()
+        (src / "leaf.txt").write_text("x", encoding="utf-8")
+        return src, tmp_path / "ws"
+
+    def test_a_briefly_held_file_publishes_after_a_retry(self, tmp_path, windows_rename):
+        state, sleeps = windows_rename
+        state["held"] = 2
+        src, dst = self._staged(tmp_path)
+        pc.publish_dir_noreplace(src, dst)
+        assert (dst / "leaf.txt").read_text(encoding="utf-8") == "x"
+        assert not src.exists()
+        assert state["calls"] == 3
+        assert len(sleeps) == 2
+
+    def test_a_hold_past_the_budget_still_raises(self, tmp_path, windows_rename):
+        state, _sleeps = windows_rename
+        state["held"] = 1000
+        src, dst = self._staged(tmp_path)
+        with pytest.raises(PermissionError):
+            pc.publish_dir_noreplace(src, dst)
+        assert src.exists() and not dst.exists()
+
+    def test_an_existing_destination_is_refused_without_retry(self, tmp_path, windows_rename):
+        state, sleeps = windows_rename
+        src, dst = self._staged(tmp_path)
+        dst.mkdir()
+        with pytest.raises(FileExistsError):
+            pc.publish_dir_noreplace(src, dst)
+        assert state["calls"] == 1 and not sleeps
+        assert src.exists() and not any(dst.iterdir())
+
+    def test_no_sleep_on_an_event_loop_thread(self, tmp_path, windows_rename, monkeypatch):
+        from kiro_crew import atomic_write
+
+        state, sleeps = windows_rename
+        state["held"] = 1
+        monkeypatch.setattr(atomic_write, "on_event_loop", lambda: True)
+        src, dst = self._staged(tmp_path)
+        with pytest.raises(PermissionError):
+            pc.publish_dir_noreplace(src, dst)
+        assert state["calls"] == 1 and not sleeps
+        assert src.exists()
+
+
 class TestOpenLockFile:
     """GH-9248: acquiring a lock must not truncate the file it locks."""
 
