@@ -1098,11 +1098,21 @@ def validate_app_secret(app_name: str, provided_secret: str) -> bool:
     ``apps/{app_name}/`` (``installed.json``, ``app.json``) are never enough. With the
     marker present, the secret is compared in constant time against the gateway's
     own record (:func:`read_app_secret`), which no sandbox can read.
+
+    An app named after a local owner subject (``local-app`` / ``local-startup``) is
+    refused whatever its marker: its token's subject would be the owner's. Those
+    names are reserved (``apps.manifest_names``), so only an app that reached disk
+    before the reservation can carry one.
     """
     # circular import: apps.manager imports write_app_secret from token_auth
     from kiro_crew.apps.host_exec_grants import host_exec_granted
+    from kiro_crew.shared_crew.owner import LOCAL_BOOTSTRAP_SUBJECTS
 
-    if not provided_secret or not host_exec_granted(app_name):
+    if (
+        not provided_secret
+        or app_name in LOCAL_BOOTSTRAP_SUBJECTS
+        or not host_exec_granted(app_name)
+    ):
         return False
     stored = read_app_secret(app_name)
     if not stored:
@@ -1197,12 +1207,14 @@ def issue_in_process_app_token(app_name: str) -> str:
     proof of identity. The gate is the one :func:`validate_app_secret` applies first,
     the owner-enable marker, so a hook task that outlives a disable gets nothing. The
     token is the one the exchange route issues. Reads a sealed record, so never call it
-    on the event loop.
+    on the event loop. A local owner subject is refused as :func:`validate_app_secret`
+    refuses it.
     """
     # circular import: apps.manager imports write_app_secret from token_auth
     from kiro_crew.apps.host_exec_grants import host_exec_granted
+    from kiro_crew.shared_crew.owner import LOCAL_BOOTSTRAP_SUBJECTS
 
-    if not app_name or not host_exec_granted(app_name):
+    if not app_name or app_name in LOCAL_BOOTSTRAP_SUBJECTS or not host_exec_granted(app_name):
         _sel_fn().log_api_access(
             caller=app_name or "unknown",
             operation="app_token_exchange",
