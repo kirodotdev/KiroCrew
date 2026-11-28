@@ -6,9 +6,12 @@ running turn just before ``close_all()`` cuts them. The next gateway start,
 with or without a dashboard, takes that record once, deleting it before it
 acts (:func:`take_intent`), and attempts to resume those chats through the
 Resume-all run (``chat_resume_all.start_resume_all``), so its bound on
-concurrent turns and every refusal it makes still apply. A crash writes no
-record: with a dashboard its chats keep the Resume button and wait for the
-owner. Without a valid record, this startup recovery path resumes no chats.
+concurrent turns and every refusal it makes still apply. A Bot thread resumes
+with them, though the Resume-all button counts only the chat page's sessions.
+No resumed turn counts as one the person sent, so an operation only a person's
+turn may run refuses inside it, as in a loop wake. A crash writes no record:
+with a dashboard its chats keep the Resume button and wait for the owner.
+Without a valid record, this startup recovery path resumes no chats.
 
 The gateway's graceful shutdown records the chats it cuts to a separate
 last-stop record (``stop=True``) that no boot reads. Only ``kirocrew resume``
@@ -165,10 +168,22 @@ async def resume_after_restart(state: DashboardState) -> None:
         names = await asyncio.to_thread(take_intent)
         if not names:
             return
-        from kiro_crew.dashboard.chat_resume_all import start_resume_all
+        from kiro_crew.dashboard.chat_resume_all import CHAT_PAGE_MODES, start_resume_all
+        from kiro_crew.members import DM_SLOT_MODE
 
         # crew_mode: a Crew Mode worker stays with its conductor, as the button leaves it.
-        status, body = start_resume_all(state, {"app": ""}, crew_mode=True, only=names)
+        # modes: a Bot thread too, which the button (chat page rows only) never counts.
+        # user_origin: the gateway resumes these, not a person. A cut turn may have
+        # been a check-in, a cron or a loop wake, and the record is a data-home
+        # file that sandboxed code can write.
+        status, body = start_resume_all(
+            state,
+            {"app": ""},
+            crew_mode=True,
+            only=names,
+            modes=CHAT_PAGE_MODES | {DM_SLOT_MODE},
+            user_origin=False,
+        )
         logger.info(
             "Resume after restart: %d chat(s) recorded, %s started (status %d)",
             len(names),
