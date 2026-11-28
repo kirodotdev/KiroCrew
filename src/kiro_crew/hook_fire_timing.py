@@ -9,23 +9,60 @@ every phase; ``gc runs`` counts collections per generation (0/1/2) during the fi
 
 :class:`EventFireTiming` times one whole ``ScriptHookStore.fire`` call, so an event
 whose hooks are each under the threshold still logs when together they are not.
+
+A hop runs on :func:`hook_hop_executor`, not on the loop's default executor. A
+fire makes several hops per hook, one hook after another, before a tool call is
+approved, so on the shared default pool every burst of unrelated work (dashboard
+reads, tree walks) was paid once per hop per hook. On its own pool a hop waits
+only behind other hook hops, each a few milliseconds of work.
 """
 
 from __future__ import annotations
 
 import asyncio
+import atexit
+import functools
 import gc
 import logging
+import threading
 import time
 from collections.abc import Callable
-from contextvars import ContextVar
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar, copy_context
 from typing import Any, TypeVar
+
+from kiro_crew.enqueue_only_pool import EnqueueOnlyThreadPoolExecutor
 
 _T = TypeVar("_T")
 
 #: A hook fire at or above this many milliseconds, matcher to verdict, logs one
 #: warning with its phases; an event's whole fire at or above it logs one more.
 SLOW_FIRE_WARN_MS = 1000.0
+
+#: A healthy hop (a governance check, the deny-list vet, a matcher, the status
+#: write) takes milliseconds, so this bounds how many can be wedged at once, not
+#: throughput: a started call cannot be cancelled and keeps its worker.
+_MAX_HOOK_HOP_WORKERS = 8
+
+_pool: ThreadPoolExecutor | None = None  # process-cache-ok: worker threads, no per-test data
+_pool_lock = threading.Lock()
+
+
+def hook_hop_executor() -> ThreadPoolExecutor:
+    """Return the process-wide hook hop pool, creating it on first use.
+
+    Threads are named ``mc-hookhop``. Kept off the loop's default executor so a
+    busy default pool cannot delay each step of every hook before approval.
+    """
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                _pool = EnqueueOnlyThreadPoolExecutor(
+                    max_workers=_MAX_HOOK_HOP_WORKERS, thread_name_prefix="mc-hookhop"
+                )
+                atexit.register(_pool.shutdown, wait=False, cancel_futures=True)
+    return _pool
 
 
 def _gc_collections() -> list[int]:
@@ -90,10 +127,14 @@ class HookFireTiming:
         phase.ended = time.perf_counter()
 
     async def hop(self, name: str, fn: Callable[..., _T], /, *args: Any) -> _T:
-        """``asyncio.to_thread(fn, *args)``, timed as the phase *name*."""
+        """Run ``fn(*args)`` on :func:`hook_hop_executor`, timed as the phase *name*.
+
+        Like ``asyncio.to_thread``, the call runs in a copy of the caller's context.
+        """
         phase = self.begin(name)
         try:
-            return await asyncio.to_thread(phase.worker(fn), *args)
+            bound = functools.partial(copy_context().run, phase.worker(fn), *args)
+            return await asyncio.get_running_loop().run_in_executor(hook_hop_executor(), bound)
         finally:
             self.end(phase)
 
