@@ -2415,14 +2415,28 @@ missing record, an empty token or a recycled pid gives no pid, and the send is
 refused.
 
 - **Unix arm** — taken whenever `dashboard_socket_path(port)` exists. The send
-  uses `unix_socket_urlopen`, which has no TCP handler, so a stale or refused
-  socket raises `URLError` and is never retried over TCP. The hook requires
+  uses `unix_socket_urlopen`, which has no TCP handler. The hook requires
   `check_peer_is_self` to return `MATCH` (`SO_PEERCRED` on Linux,
   `LOCAL_PEERCRED` on macOS; `UNVERIFIABLE` refuses) AND the socket's peer pid
   (`get_peer_pid`) to equal the recorded pid
-  (`_connected_unix_peer_is_recorded_gateway`).
+  (`_connected_unix_peer_is_recorded_gateway`). By default any failure on
+  this arm raises and is never retried over TCP; `kirocrew update approve`,
+  `logout`, `stop` and the other sends keep that default, so the approval
+  nonce never leaves the owner-only socket. Only `kirocrew token` (`_token`)
+  passes `tcp_after_stale_socket=True`, which opts in to one exception: a
+  stale socket file (one that refuses or has vanished at `connect()`, which
+  `loopback_http.stale_socket_refused` recognises) fails before the hook runs
+  and before any byte is written, so that send falls through to the TCP arm.
+  A socket that connects but fails the hook raises `_GatewayPeerRefused` and
+  is never retried over TCP. Any other `URLError` is raised as-is.
 - **TCP arm** — taken when there is no socket (a TCP-only gateway, native
-  Windows, which has no `AF_UNIX`). The send uses `tcp_verified_urlopen`
+  Windows, which has no `AF_UNIX`) or, for `kirocrew token` only, after a
+  stale socket file in the Unix
+  arm. The secret is still written only on a `MATCH`. If the arm was reached
+  from a stale socket and TCP refuses too, the `URLError` keeps a
+  `ConnectionRefusedError` reason (callers read that type as "nothing is
+  running") whose message names the stale socket path and the port; other TCP
+  errors are raised unchanged. The send uses `tcp_verified_urlopen`
   (`ProxyHandler({})`, so no proxy is consulted), and the hook runs inside
   `connect()`; on any exception the fd is closed. `_connected_peer_verdict`
   resolves the pid that owns the GATEWAY's end of this exact 4-tuple via
