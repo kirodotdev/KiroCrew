@@ -15566,7 +15566,8 @@
       "jump_to_new_many": "{{count}} nouveaux · Aller en bas",
       "could_not_repair_images": "Impossible de réparer les images",
       "could_not_edit_and_resend": "Impossible de modifier et renvoyer",
-      "session_closed_elsewhere": "Cette conversation a été fermée en dehors de cette fenêtre."
+      "session_closed_elsewhere": "Cette conversation a été fermée en dehors de cette fenêtre.",
+      "conductor_link_not_started": "Une discussion normale a été ouverte : Conductor mode n’a pas pu démarrer. Active-le dans la zone de saisie avant ton premier message."
     },
     "chatSidebar": {
       "sign_in_then_resume": "Connecte-toi, puis Reprendre",

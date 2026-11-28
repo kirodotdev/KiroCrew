@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
-import { autoOpenRows } from '../../lib/crewMode'
+import { autoOpenRows, runsConductor } from '../../lib/crewMode'
 import { yieldToMain } from '../../lib/yieldToMain'
 import { unwrapResult } from '@reduxjs/toolkit'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -324,6 +324,21 @@ export function useChatPageSessionController({
    * stages it under the created session's key before activating that session.
    */
   const initialPrefillRef = useRef(initialNewRef.current ? (searchParams.get('prefill') ?? '') : '')
+  /**
+   * Who answers the session a `?new=1` link creates. `&bot=<name>` opens it on the
+   * person's own Bot of that name (the `member` namespace, so the gateway refuses a
+   * name that is no Bot instead of falling back to another agent). `&conductor=1`
+   * opens it in conductor mode on whichever conductor the gateway is configured
+   * with: the link names the ROLE, never an agent, so it keeps working when the
+   * agent behind the conductor changes. A Bot wins over the conductor, since a
+   * Bot's chat cannot be in conductor mode. Like `prefill`, both only shape the new
+   * session; nothing is sent.
+   */
+  const linkBotRef = useRef('')
+  const linkConductorRef = useRef(false)
+  // Set when the create landed but the `conductor=1` switch failed: the chat is
+  // kept, plain, and the page says so instead of looking like it worked.
+  const conductorFailedRef = useRef(false)
   // Deep-link mount activation in progress — stops the sync effect from stripping
   // ?sid before activation lands. Cleared once activeSlot is truthy.
   const pendingSidRef = useRef(!!initialSidRef.current)
@@ -392,6 +407,9 @@ export function useChatPageSessionController({
   const closeLandingRef = useRef<{ sid: string; landing: string } | null>(null)
   const [sidError, setSidError] = useState('')
   const [newSlotFailed, setNewSlotFailed] = useState(false)
+  // The slot the `conductor=1` failure notice speaks for, and the text it was
+  // raised with (a language change must not strand it); see the effect below.
+  const [conductorNotice, setConductorNotice] = useState<{ slot: string; msg: string } | null>(null)
   const [highlightTs, setHighlightTs] = useState<string | null>(null)
   // The row another surface sent the reader to (Search all chats, `?msg=`): its
   // own state, so the turn stepper's and the pins' flash never wear its look.
@@ -491,9 +509,14 @@ export function useChatPageSessionController({
     mutationFn: async () => {
       const prompt = initialPrefillRef.current
       const appDraftLaunch = appDraftLaunchRef.current
-      const action = await dispatch(createSlot({ mode, agent: appDraftAgentRef.current, ...appDraftSlotOptionsRef.current, prefill: prompt || undefined }))
+      const bot = linkBotRef.current
+      const linkAgent = bot
+        ? { agent: bot, agent_kind: 'member' as const }
+        : { agent: appDraftAgentRef.current, ...(linkConductorRef.current ? { conductor: true } : {}) }
+      const action = await dispatch(createSlot({ mode, ...linkAgent, ...appDraftSlotOptionsRef.current, prefill: prompt || undefined }))
       // A rejected create throws here and keeps the prompt for the retry.
       const slot = unwrapResult(action)
+      conductorFailedRef.current = createSlot.fulfilled.match(action) && action.meta.conductorFailed === true
       if (appDraftLaunch && slot?.key) trackLaunchedDraft(slot, prompt)
       // Spent once: a retry of a failed create still carries the same intent, but
       // must not re-seed a session the user has since typed into.
@@ -517,7 +540,9 @@ export function useChatPageSessionController({
     onSuccess: (slot) => {
       newSessionRef.current = false
       setNewSlotFailed(false)
-      setSidError('')
+      const conductorMsg = conductorFailedRef.current ? i18nT('pages.chatPage.conductor_link_not_started') : ''
+      setSidError(conductorMsg)
+      setConductorNotice(conductorMsg && slot?.key ? { slot: slot.key, msg: conductorMsg } : null)
       if (!slot?.key) return
       navigate(
         embedMode ? `/embed/chat/${slot.key}` : `/chat?sid=${encodeURIComponent(slot.key)}`,
@@ -551,6 +576,8 @@ export function useChatPageSessionController({
     appDraftAgentRef.current = undefined
     appDraftSlotOptionsRef.current = {}
     appDraftLaunchRef.current = false
+    linkBotRef.current = (searchParams.get('bot') ?? '').trim()
+    linkConductorRef.current = searchParams.get('conductor') === '1'
     // A launch that shapes the NEW session (memory mode, no session folder) is a
     // draft too: its message is staged, never sent, so the session's mode is
     // settled before a first turn could read or write memory.
@@ -563,6 +590,9 @@ export function useChatPageSessionController({
       initialPrefillRef.current = launch.message ?? ''
       appDraftAgentRef.current = launch.agent
       appDraftLaunchRef.current = true
+      // The app's own launch chooses its agent; the address bar does not.
+      linkBotRef.current = ''
+      linkConductorRef.current = false
       appDraftSlotOptionsRef.current = {
         ...(launchMemoryMode ? { memory_mode: launchMemoryMode } : {}),
         ...(launchNoSessionFolder ? { sessionFolder: false as const } : {}),
@@ -583,6 +613,16 @@ export function useChatPageSessionController({
     setNewSlotFailed(false)
     setSidError('')
   }, [activeSlot, newSlotFailed])
+
+  // The conductor-link notice belongs to the chat it was raised for: it goes
+  // once another chat is open or that chat now runs a conductor (the chip).
+  useEffect(() => {
+    if (!conductorNotice || !activeSlot) return
+    const row = filteredSlots.find(s => s.key === conductorNotice.slot)
+    if (activeSlot === conductorNotice.slot && !runsConductor(row?.agent, row?.agent_kind)) return
+    setConductorNotice(null)
+    setSidError(current => current === conductorNotice.msg ? '' : current)
+  }, [activeSlot, conductorNotice, filteredSlots])
 
   /** The URL open below asks once for a turn of the main thread; `taken` once it got it. */
   const urlOpenTurnRef = useRef<'none' | 'asked' | 'taken'>('none')

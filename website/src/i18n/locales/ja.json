@@ -14828,7 +14828,8 @@
       "jump_to_new_other": "新着 {{count}} 件 · 最新へ",
       "could_not_repair_images": "画像を修復できませんでした",
       "could_not_edit_and_resend": "編集して再送信できませんでした",
-      "session_closed_elsewhere": "このチャットはこのウィンドウの外で閉じられました。"
+      "session_closed_elsewhere": "このチャットはこのウィンドウの外で閉じられました。",
+      "conductor_link_not_started": "通常のチャットを開きました。Conductor mode を開始できませんでした。最初のメッセージを送る前に、入力欄でオンにしてください。"
     },
     "chatSidebar": {
       "sign_in_then_resume": "サインインしてから「再開」",

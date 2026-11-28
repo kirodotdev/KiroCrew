@@ -15197,7 +15197,8 @@
       "jump_to_new_other": "{{count}} neue · Zum Ende",
       "could_not_repair_images": "Die Bilder konnten nicht repariert werden",
       "could_not_edit_and_resend": "Bearbeiten & erneut senden fehlgeschlagen",
-      "session_closed_elsewhere": "Dieser Chat wurde außerhalb dieses Fensters geschlossen."
+      "session_closed_elsewhere": "Dieser Chat wurde außerhalb dieses Fensters geschlossen.",
+      "conductor_link_not_started": "Ein normaler Chat wurde geöffnet: Conductor mode konnte nicht starten. Schalte ihn vor deiner ersten Nachricht im Eingabefeld ein."
     },
     "chatSidebar": {
       "sign_in_then_resume": "Anmelden, dann „Wieder aufnehmen“",
