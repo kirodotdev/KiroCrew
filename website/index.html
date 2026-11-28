@@ -405,6 +405,48 @@
        whole app; here it is this empty element. -->
   <div hidden></div>
   <div id="root"></div>
+  <!-- Shell-owned loading sign, shown while #root is still empty. Before the first
+       render the entry module, a fresh profile's settings restore (which may
+       reload the page) and the language catalog all run with nothing in #root,
+       which on a first load is seconds of a dark empty page. It is a SIBLING of
+       #root, never a child: revealBootFailure's "did we boot" test reads
+       `root.firstChild`, so a child here would hide every boot failure. The rule
+       below drops it the moment React puts anything into #root, with no signal
+       from the bundle, and the failure panel paints over it (maximum z-index,
+       opaque) when the boot never comes. Inline styles for the same reason as the
+       panel's; tokens carry fallbacks for a stylesheet that has not arrived. The
+       label is English-only for the panel's reason too: no catalog has loaded.
+       It fades in after a short delay, so a warm load that renders at once
+       never flashes it. `display` lives in this stylesheet and NEVER inline on
+       the tag: an inline declaration outranks the hiding rule, and the sign would
+       then stay over the running app. bootLoadingSign.test.ts checks the computed
+       display. -->
+  <style>#boot-loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}#root:not(:empty) ~ #boot-loading{display:none}</style>
+  <div id="boot-loading" role="status"
+       style="opacity:0;transition:opacity 200ms ease 300ms">
+    <!-- Text content, not an aria-label: a live region announces what it holds. -->
+    <span style="position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0">Loading</span>
+    <div id="boot-loading-ring"
+         style="width:28px;height:28px;box-sizing:border-box;border-radius:50%;border:3px solid var(--border, #27272a);border-top-color:var(--accent, #00d492)"></div>
+  </div>
+  <script>
+    // Fade in after the delay above, and spin through the Web Animations API (no
+    // stylesheet keyframes exist before the bundle). Reduced motion keeps the ring
+    // still: the sign stays, only the motion goes.
+    (function () {
+      var sign = document.getElementById('boot-loading')
+      if (!sign) return
+      try { void sign.offsetWidth; sign.style.opacity = '1' } catch (e) { }
+      try {
+        var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        var ring = document.getElementById('boot-loading-ring')
+        if (!still && ring && ring.animate) {
+          ring.animate([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }],
+            { duration: 900, iterations: Infinity })
+        }
+      } catch (e) { }
+    })()
+  </script>
   <!-- Shell-owned failure panel, hidden until revealBootFailure decides the
        bundle never ran. Every style here is inline on purpose: if a boot-critical
        module could not be fetched then neither could the CSS chunk, so anything
