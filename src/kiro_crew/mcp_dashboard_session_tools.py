@@ -43,7 +43,7 @@ from kiro_crew.mcp_dashboard_session_runs import (
     _run_work_dispatch,
 )
 from kiro_crew.mcp_tools.table import Tool
-from kiro_crew.validation import MAX_TRIGGER_SKILL_KEY_LEN, MAX_TRIGGER_SKILLS
+from kiro_crew.validation_parts.input_bounds import MAX_TRIGGER_SKILL_KEY_LEN, MAX_TRIGGER_SKILLS
 
 #: ``session_create``'s ``skills``, which ``work_dispatch`` passes on.
 _TRIGGER_SKILLS_PROPERTY = {
