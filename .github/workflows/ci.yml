@@ -2328,6 +2328,16 @@ jobs:
           REDUCED_SHA256: ${{ needs.changes.outputs.reduced_windows_sha256 }}
           # Node ids red on main, deselected by scripts.ci_main_red_skip.
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+          # The shard retry (scripts/ci_shard_retry.py): 1 to 5 failed tests are
+          # run once more in a serial pass, and the job is green only when each
+          # of them passes it. The plugin does nothing unless the event is
+          # `pull_request`, so push and merge-queue runs show every failure.
+          # Removing the CI_SHARD_RETRY line turns the retry off.
+          CI_SHARD_RETRY: "1"
+          CI_SHARD_RETRY_EVENT: ${{ github.event_name }}
+          CI_SHARD_RETRY_RECORD: ${{ runner.temp }}/ci-shard-retry.jsonl
+          CI_SHARD_RETRY_SHARD: windows-${{ matrix.group }}
+          CI_SHARD_RETRY_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
@@ -2369,6 +2379,8 @@ jobs:
           PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir "$RUNNER_TEMP/pytest-progress")
           # Every invocation below also deselects the tests red on main, if any.
           PROGRESS+=(-p scripts.ci_main_red_skip)
+          # And retries a few failed tests once (see CI_SHARD_RETRY above).
+          PROGRESS+=(-p scripts.ci_shard_retry)
           # Reduced and leaf arms as in backend-test: subset lists reach pytest
           # as --file-shard-targets=PATH, never as arguments; the changed leaf
           # files run unsharded on every job, the corpus gates sharded once.
@@ -2421,6 +2433,7 @@ jobs:
             exit 0
           fi
           python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards -p scripts.ci_main_red_skip \
+            -p scripts.ci_shard_retry \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
             -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
@@ -2447,6 +2460,26 @@ jobs:
         with:
           name: windows-pytest-progress-${{ matrix.group }}
           path: ${{ runner.temp }}/pytest-progress/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summarize the shard retry
+        # Both counts and one line per retried test, on the job summary page.
+        if: ${{ always() }}
+        shell: bash
+        env:
+          CI_SHARD_RETRY_RECORD: ${{ runner.temp }}/ci-shard-retry.jsonl
+        run: python scripts/ci_shard_retry.py summary
+
+      - name: Upload the shard retry record
+        # One JSON line per retried test with its outcome, for the test
+        # selection ledger. Uploaded from a red shard too; a shard that retried
+        # nothing has no file.
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-shard-retry-${{ matrix.group }}
+          path: ${{ runner.temp }}/ci-shard-retry.jsonl
           if-no-files-found: ignore
           retention-days: 7
 
