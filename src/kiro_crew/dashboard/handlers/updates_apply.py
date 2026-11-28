@@ -466,6 +466,21 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
+        if (
+            capability.managed_by == MANAGED_BY_ELECTRON
+            and not capability.defers
+            and not capability.can_apply
+        ):
+            # A headless Windows desktop install whose update source is overridden:
+            # the host's own `kirocrew update` approves that one, not a dashboard click.
+            return web.json_response(
+                {
+                    "error": "This install's update source is overridden: run "
+                    "`kirocrew update` on the host",
+                    "code": "host_approval_required",
+                },
+                status=409,
+            )
 
     # The desktop app owns its own update feed and apply (this gateway often cannot
     # see the release at all), so a gateway it hosts records the version it names.

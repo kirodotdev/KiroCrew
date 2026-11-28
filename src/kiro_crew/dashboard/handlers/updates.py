@@ -77,6 +77,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_check import _already_noted  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _can_arm_this_install  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _cancel_update_check  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _check_desktop_feed  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _check_generation  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _check_git_checkout  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _check_release_feed  # noqa: F401
@@ -224,6 +225,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform.update_capability import EXTERNALLY_MANAGED_MESSAGES  # noqa: F401
     from kiro_crew.platform.update_capability import MANAGED_BY_COMMAND  # noqa: F401
     from kiro_crew.platform.update_capability import MANAGED_BY_CONTAINER  # noqa: F401
+    from kiro_crew.platform.update_capability import MANAGED_BY_ELECTRON  # noqa: F401
     from kiro_crew.platform.update_capability import MANAGED_BY_GIT  # noqa: F401
     from kiro_crew.platform.update_capability import MODE_NONE  # noqa: F401
     from kiro_crew.platform.update_capability import MODE_NOTIFY  # noqa: F401
