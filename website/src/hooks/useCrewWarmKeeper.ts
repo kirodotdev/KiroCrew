@@ -13,6 +13,7 @@ import { relayPaneOpened, removeWarm, type WarmConn } from '../store/instancesSl
 import { isEmbeddedPane } from '../lib/embedded'
 import { PANE_OWN_HEADER, relayPaneBridge, relayPaneRect } from '../lib/relayCrewPanes'
 import { noteCrewOpened, recentCrews, relayCrewKey, sshCrewKey } from '../lib/crewWarmSet'
+import { autoConnectDue, autoConnectWaitMs, clearConnectBackoff, noteAutoConnectFailed } from '../lib/connectBackoff'
 import { isRelayCrewOnline, useRelayViewerCrews } from './useRelayViewerCrews'
 import { useCrewWarmSet } from './useCrewWarmSet'
 
@@ -67,6 +68,8 @@ export function useCrewWarmKeeper(prewarm: () => boolean) {
     if (embedded || !relayActive) return
     closedByPerson.current.delete(relayActive)
     noteCrewOpened(relayCrewKey(relayActive))
+    // The person brought it to the front, so its prewarm backoff starts over.
+    clearConnectBackoff(relayCrewKey(relayActive))
     if (!unseen.current.delete(relayActive)) return
     const bridge = relayPaneBridge()
     if (bridge) void bridge.openPane(relayActive, ...paneAt(), PANE_OWN_HEADER).catch(() => {})
@@ -95,7 +98,8 @@ export function useCrewWarmKeeper(prewarm: () => boolean) {
   // `relay_viewer.token` audit row with no click. An older shell without the call prewarms nothing.
   const running = useRef(false)
   const lastTry = useRef<Record<string, number>>({})
-  // Bumped RELAY_RETRY_MS after a failed prewarm, so it is tried again even when no list changed.
+  // Bumped once a relay Crew backing off after a failed prewarm is due again (lib/connectBackoff.ts),
+  // so it is tried again even when no list changed.
   const [retry, setRetry] = useState(0)
   const retryTimer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(retryTimer.current), [])
@@ -107,12 +111,23 @@ export function useCrewWarmKeeper(prewarm: () => boolean) {
     const prewarmPane = bridge.prewarmPane.bind(bridge)
     const due = (id: string) =>
       !!setRef.current?.relay.includes(id) && !liveRef.current.includes(id) && !closedByPerson.current.has(id)
+    // Wake when the soonest relay Crew still backing off is due again.
+    const armRetry = () => {
+      const at = Date.now()
+      const waits = crews
+        .filter(c => isRelayCrewOnline(c) && due(c.endpointId))
+        .map(c => autoConnectWaitMs(relayCrewKey(c.endpointId), at))
+        .filter(ms => ms > 0)
+      if (!waits.length) return
+      window.clearTimeout(retryTimer.current)
+      retryTimer.current = window.setTimeout(() => setRetry(n => n + 1), Math.min(...waits))
+    }
     const now = Date.now()
     const todo = crews.filter(c =>
-      isRelayCrewOnline(c) && due(c.endpointId) && now - (lastTry.current[c.endpointId] ?? 0) >= RELAY_RETRY_MS)
-    if (!todo.length) return
+      isRelayCrewOnline(c) && due(c.endpointId) && now - (lastTry.current[c.endpointId] ?? 0) >= RELAY_RETRY_MS &&
+      autoConnectDue(relayCrewKey(c.endpointId), now))
+    if (!todo.length) { armRetry(); return }
     running.current = true
-    let failed = false
     void (async () => {
       try {
         for (const c of todo) {
@@ -122,18 +137,16 @@ export function useCrewWarmKeeper(prewarm: () => boolean) {
           let ok = false
           try {
             ok = (await prewarmPane(c.endpointId, ...paneAt(), PANE_OWN_HEADER)).ok
-          } catch { /* tried again after RELAY_RETRY_MS */ }
-          if (!ok) { failed = true; continue }
+          } catch { /* tried again once its backoff is up */ }
+          if (!ok) { noteAutoConnectFailed(relayCrewKey(c.endpointId), Date.now()); continue }
+          clearConnectBackoff(relayCrewKey(c.endpointId))
           unseen.current.add(c.endpointId)
           // gen -1 never matches pickSeq: the tab is added hidden and nothing on screen changes.
           dispatch(relayPaneOpened({ id: c.endpointId, name: c.name, gen: -1 }))
         }
       } finally {
         running.current = false
-        if (failed) {
-          window.clearTimeout(retryTimer.current)
-          retryTimer.current = window.setTimeout(() => setRetry(n => n + 1), RELAY_RETRY_MS)
-        }
+        armRetry()
       }
     })()
   }, [set, crews, relayLive, dispatch, prewarm, retry])

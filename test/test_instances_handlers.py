@@ -488,6 +488,9 @@ class TestHandlers:
             async def refresh_token(self, iid):
                 return None  # re-mint failed (SSH/link unreachable)
 
+            def last_refresh_error(self, iid):
+                return None  # no reason kept: the route's own wording stands
+
         r = asyncio.run(
             handlers.api_instances_connect(_FakeReq(_State(reg, FakeMgr()), match={"id": "cd-1"}))
         )

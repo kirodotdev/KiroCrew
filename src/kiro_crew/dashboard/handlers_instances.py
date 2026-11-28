@@ -60,6 +60,7 @@ from kiro_crew.dashboard.handlers_instances_gate import (
     _registry,
     _status_for,
 )
+from kiro_crew.dashboard.handlers_instances_remint import remint_failure
 from kiro_crew.dashboard.peer_redaction import redact_peer_text  # noqa: F401
 from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
@@ -811,12 +812,15 @@ async def api_instances_connect(request: web.Request) -> web.Response:
                     error="token unconfirmed and re-mint failed",
                 )
                 # The token may still have hours left; what failed is the far
-                # end answering for it, usually a stopped remote gateway.
-                body["error"] = (
+                # end answering for it, usually a stopped remote gateway, unless
+                # the mint itself said otherwise.
+                body["error"], code = remint_failure(
+                    mgr,
+                    instance_id,
                     "the crew's token could not be confirmed or re-minted; "
-                    "check that its remote gateway is running"
+                    "check that its remote gateway is running",
                 )
-                body["code"] = _connect_failure_code(body, "instance_token_unconfirmed")
+                body["code"] = code or _connect_failure_code(body, "instance_token_unconfirmed")
                 return web.json_response(body, status=502)
         # The token and the port it is paired with are one answer. `body` froze the
         # port before the probe and the re-mint, both of which await for seconds,
@@ -881,8 +885,11 @@ async def api_instances_refresh_token(request: web.Request) -> web.Response:
             request_id=instance_id,
             error="mint failed or instance not connected",
         )
+        error, code = remint_failure(
+            mgr, instance_id, "could not refresh token (instance not connected?)"
+        )
         return web.json_response(
-            {"error": "could not refresh token (instance not connected?)"}, status=502
+            {"error": error, "code": code or "instance_token_refresh_failed"}, status=502
         )
     _audit("refresh_token", "success", request_id=instance_id)
     st = mgr.status(instance_id)

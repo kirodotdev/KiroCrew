@@ -87,6 +87,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
 import { removeWarm, setCrewEditForm, setCrewLaunchDraft, dropLaunchedCrewDraft, type CrewLaunchDraft } from '../../store/instancesSlice'
 import { setCrewEnabled } from '../../lib/crewEnabled'
+import { clearConnectBackoff } from '../../lib/connectBackoff'
 import { i18nT } from '../../i18n/t'
 import { Trans } from 'react-i18next'
 import { AddInstanceForm } from './InstancesPanel'
@@ -682,7 +683,8 @@ export function RemoteCrewPanel() {
 
   const connectMutation = useMutation({
     mutationFn: (id: string) => api.connectInstance(id),
-    onMutate: () => { setActionErr(null); setDiagNote(null) },
+    // A person asked for this crew, so auto-connect's backoff starts over.
+    onMutate: (id: string) => { setActionErr(null); setDiagNote(null); clearConnectBackoff(id) },
     onSuccess: (st, id) => {
       if (st.state !== 'connected') {
         const summary = st.error ? tunnelErrorSummary(st.error_code) : null

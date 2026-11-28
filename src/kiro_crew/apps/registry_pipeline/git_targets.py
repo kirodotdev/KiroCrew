@@ -17,6 +17,16 @@ import re
 from ipaddress import IPv6Address
 from typing import Any
 
+# ssh's ``Permission denied (<methods>)`` has one matcher, shared with the remote
+# crew token mint. Its helpers stay bound here: ``manifests.py`` reads ssh's whole
+# sign-in line with them, and the facade re-exports every name this owner holds.
+from kiro_crew.ssh_auth_refusal import (  # noqa: F401
+    _SSH_METHOD_CHARS,
+    _SSH_REFUSAL_PREFIX,
+    _ssh_method_list_closes,
+)
+from kiro_crew.ssh_auth_refusal import is_ssh_auth_refusal as _is_ssh_auth_refusal
+
 
 def _entry_git_url(entry: dict[str, Any]) -> str:
     """Resolve the clone URL for a registry entry.
@@ -595,64 +605,6 @@ _GIT_AUTH_FAILURE_MARKERS = (
     "terminal prompts disabled",
     "invalid username or password",
 )
-
-# SSH credential refusal ONLY. The bare token "permission denied" also appears
-# in a LOCAL filesystem error — an unwritable clone destination emits
-# `fatal: could not create work tree dir '…': Permission denied` — so matching
-# it would mislabel a disk-permission failure as withheld remote credentials
-# and show the "move the repo inside the registry" hint on an error that has
-# nothing to do with credentials. SSH's auth-refusal wording always carries a
-# parenthesized, comma-separated list of the server's auth methods, in the
-# server's own order: `git@host: Permission denied (publickey).`,
-# `(publickey,password)`, `(publickey,keyboard-interactive)` and
-# `(keyboard-interactive,publickey)` all occur. A local errno `Permission
-# denied` never has that list, so the check requires one: method names that
-# start with a letter and contain no spaces, comma-separated, closed by `)`.
-# Matched against lowercased text.
-_SSH_REFUSAL_PREFIX = "permission denied ("
-_SSH_METHOD_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789@._+-")
-
-
-def _ssh_method_list_closes(low: str, pos: int) -> bool:
-    """Whether a method list starting at *pos* in *low* is closed by ``)``.
-
-    Reads one character at a time and stops at the first one that cannot
-    continue the list: each name starts with ``a``-``z`` and uses only
-    :data:`_SSH_METHOD_CHARS`, names are separated by single commas, and the
-    list ends at ``)``.
-    """
-    name_start = True
-    for i in range(pos, len(low)):
-        ch = low[i]
-        if name_start:
-            if not ("a" <= ch <= "z"):
-                return False
-            name_start = False
-        elif ch == ")":
-            return True
-        elif ch == ",":
-            name_start = True
-        elif ch not in _SSH_METHOD_CHARS:
-            return False
-    return False
-
-
-def _is_ssh_auth_refusal(low: str) -> bool:
-    """Whether lowercased *low* holds an SSH ``Permission denied (<methods>)``.
-
-    Each ``permission denied (`` occurrence is checked in turn. The next
-    search starts right after the current prefix, so an occurrence inside a
-    rejected list is still checked. A list stops at its first space or
-    ``(``, and the prefix holds both, so text is read a bounded number of
-    times and the check stays linear in the length of *low*.
-    """
-    start = low.find(_SSH_REFUSAL_PREFIX)
-    while start >= 0:
-        body_start = start + len(_SSH_REFUSAL_PREFIX)
-        if _ssh_method_list_closes(low, body_start):
-            return True
-        start = low.find(_SSH_REFUSAL_PREFIX, body_start)
-    return False
 
 
 # Known NON-auth failure classes, mapped to a fixed derived label. This is an

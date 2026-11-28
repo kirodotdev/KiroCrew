@@ -30,6 +30,10 @@
  *    churn, tab thrashing); a short cooldown keeps a burst from spamming mints
  *    at the same host. A genuinely-dropped tunnel is retried once the cooldown
  *    elapses.
+ *  - Per-instance backoff (lib/connectBackoff.ts): a crew whose auto-connects
+ *    keep failing waits longer after each one, doubling from one poll up to a
+ *    cap, so a host that refuses the SSH key is not dialled every minute all
+ *    day. A tab click, Retry or any connect that warms the crew clears it.
  *  - Embedded panes never run this: an embedded pane shows no switcher and must
  *    not connect onward (see isEmbeddedPane).
  *
@@ -45,6 +49,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { connectInstanceInto } from '../lib/connectInstance'
+import { autoConnectDue, noteAutoConnectFailed } from '../lib/connectBackoff'
 import { useCrewWarmSet } from './useCrewWarmSet'
 import { useCrewWarmKeeper } from './useCrewWarmKeeper'
 
@@ -151,8 +156,8 @@ export function useAutoConnectInstances() {
     const now = Date.now()
     const targets = selectAutoConnectTargets(inSet, warmRef.current, inSet.length)
       // Drop anything attempted within the cooldown so a focus burst can't spam
-      // the same host's SSH + mint.
-      .filter(id => now - (lastAttempt.current[id] ?? 0) >= COOLDOWN_MS)
+      // the same host's SSH + mint, and anything still backing off after failing.
+      .filter(id => now - (lastAttempt.current[id] ?? 0) >= COOLDOWN_MS && autoConnectDue(id, now))
 
     if (!targets.length) return
     running.current = true
@@ -164,7 +169,8 @@ export function useAutoConnectInstances() {
         } catch {
           // A failed/unreachable host settles into the switcher's terminal error
           // dot via the status poll; auto-connect stays silent and lets the
-          // cooldown gate the next attempt. Never surface an error here.
+          // backoff gate the next attempt. Never surface an error here.
+          noteAutoConnectFailed(id, Date.now())
         }
       })
     } finally {

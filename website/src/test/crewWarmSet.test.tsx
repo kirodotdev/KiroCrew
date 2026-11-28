@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, waitFor } from '@testing-library/react'
 import { api, ApiError, type InstanceView, type RelayCrewEntry } from '../api/client'
 import { noteCrewOpened, rankWarmCrews, recentCrews } from '../lib/crewWarmSet'
+import { CONNECT_BACKOFF_BASE_MS, __resetConnectBackoffForTests } from '../lib/connectBackoff'
 import { closeRelayCrews, openRelayCrewTab } from '../hooks/useRelayViewerCrews'
 import { useCrewWarmKeeper } from '../hooks/useCrewWarmKeeper'
 import { AUTO_CONNECT_KEY, useAutoConnectInstances } from '../hooks/useAutoConnectInstances'
@@ -66,6 +67,9 @@ const opened = (...keys: string[]) => localStorage.setItem('mc-crew-recent', JSO
 
 beforeEach(() => {
   localStorage.clear()
+  // Refused connects back a crew off, and that record is module state: without
+  // this a crew one case refused would not be dialled at all in the next.
+  __resetConnectBackoffForTests()
 })
 
 afterEach(() => {
@@ -275,6 +279,26 @@ describe('useCrewWarmKeeper with auto-connect', () => {
     now.mockReturnValue(T0 + 60_000)
     act(() => { retry() })
     await waitFor(() => expect(bridge.prewarmPane).toHaveBeenCalledTimes(2))
+  })
+
+  it('waits twice as long after a second failed relay prewarm', async () => {
+    const bridge = installBridge()
+    bridge.prewarmPane.mockResolvedValue({ ok: false })
+    const T0 = 1_800_000_000_000
+    const now = vi.spyOn(Date, 'now').mockReturnValue(T0)
+    const timers = vi.spyOn(window, 'setTimeout')
+    serve([], [relay('r1')])
+    opened('relay:r1')
+    const store = createTestStore()
+    await mountKeeper(store)
+    await waitFor(() => expect(bridge.prewarmPane).toHaveBeenCalledTimes(1))
+    const armedFor = (ms: number) => timers.mock.calls.find(c => c[1] === ms)?.[0] as (() => void) | undefined
+    await waitFor(() => expect(armedFor(CONNECT_BACKOFF_BASE_MS)).toBeDefined())
+    now.mockReturnValue(T0 + CONNECT_BACKOFF_BASE_MS)
+    act(() => { armedFor(CONNECT_BACKOFF_BASE_MS)!() })
+    await waitFor(() => expect(bridge.prewarmPane).toHaveBeenCalledTimes(2))
+    // A relay Crew that keeps failing is not asked for a token every minute.
+    await waitFor(() => expect(armedFor(2 * CONNECT_BACKOFF_BASE_MS)).toBeDefined())
   })
 
   it('drops a warm entry for an SSH crew outside the set at once, and no Crew in the set loses its pane', async () => {
