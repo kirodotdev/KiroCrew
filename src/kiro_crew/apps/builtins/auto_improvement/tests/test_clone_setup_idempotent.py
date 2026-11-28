@@ -587,3 +587,37 @@ def test_a_clone_made_before_identities_were_recorded_is_adopted(tmp_path: Path)
     assert clone_setup._local_config_values(clone, clone_setup._CLONE_IDENTITY_KEY) == [
         clone_setup._clone_identity(_spec(bare))
     ]
+
+
+def test_branch_list_follows_the_live_remote_not_frozen_origin_refs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bare = _seeded_bare(tmp_path)
+    subprocess.run(["git", "-C", str(bare), "branch", "master", "main"], check=True, cwd=tmp_path)
+    subprocess.run(
+        ["git", "-C", str(bare), "symbolic-ref", "HEAD", "refs/heads/master"],
+        check=True,
+        cwd=tmp_path,
+    )
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(clone)], check=True, cwd=tmp_path)
+    clone_setup._disable_push(clone)
+    # Upstream retires `master` and makes `main` the default after the clone was taken.
+    subprocess.run(
+        ["git", "-C", str(bare), "symbolic-ref", "HEAD", "refs/heads/main"],
+        check=True,
+        cwd=tmp_path,
+    )
+    subprocess.run(["git", "-C", str(bare), "branch", "-D", "master"], check=True, cwd=tmp_path)
+    monkeypatch.setattr(clone_setup, "resolve_origin_url", lambda config: bare.as_uri())
+
+    frozen, err = clone_setup.list_clone_branches(clone)
+    assert not err and frozen[0] == "origin/master"
+
+    live, err = clone_setup.list_clone_branches(clone, config={})
+    assert not err
+    assert live == ["main"]
+
+    monkeypatch.setattr(clone_setup, "resolve_origin_url", lambda config: "")
+    fallback, err = clone_setup.list_clone_branches(clone, config={})
+    assert not err and fallback == frozen
