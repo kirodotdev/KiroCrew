@@ -1,11 +1,11 @@
 ---
 title: Knowledge Library extraction gets its own harness choice, read by the extraction pool only
-status: draft
+status: accepted
 author: bolichen97
 created: 2026-11-24
-last-audited: 2026-11-24
-audited-at: 5128cdb12f
-doc-pr: null
+last-audited: 2026-11-28
+audited-at: 0d3a44b4770
+doc-pr: 41919
 implementation-prs: []
 tracking-issues: [39494]
 supersedes: []
@@ -14,12 +14,14 @@ superseded-by: []
 
 # RFC: A harness choice for Knowledge Library extraction
 
-Status: draft. Nothing is built and this document changes no code. It answers
-the first ask of [#39494](https://github.com/kirodotdev/KiroCrew/issues/39494),
-the follow-up to [#39087](https://github.com/kirodotdev/KiroCrew/issues/39087),
-where a maintainer asked for a design sign-off and pointed at this process.
-Acceptance is requested from a maintainer, who records it on this Status line.
-Every code reference below was read at `5128cdb12f`.
+Status: accepted 2026-11-28 by maintainer bolichen97 in
+[#39494](https://github.com/kirodotdev/KiroCrew/issues/39494#issuecomment-7237623577),
+with both open questions answered yes (section 10). Nothing is built yet. It
+answers the first ask of
+[#39494](https://github.com/kirodotdev/KiroCrew/issues/39494), the follow-up to
+[#39087](https://github.com/kirodotdev/KiroCrew/issues/39087), where a
+maintainer asked for a design sign-off and pointed at this process. Every code
+reference below was read at `0d3a44b4770`.
 
 It lands on its own because it moves a trust boundary in the sense of
 CONTRIBUTING.md: running extraction on KAS while chats run on another harness
@@ -33,7 +35,7 @@ Add `knowledge.extraction_backend`. Empty (the default) keeps today's behaviour
 byte for byte. A non-empty value picks the harness the Knowledge Library's
 extraction workers run on, without moving chats, background turns or Research
 Lab. Phase 1 serves the pick only through the worker paths that exist today.
-Phase 2, which waits on open question 1, adds a pool-owned tool-less KAS
+Phase 2, which starts once Phase 1 has merged, adds a pool-owned tool-less KAS
 runtime so KAS can be picked while the gateway's background runtime runs
 elsewhere.
 
@@ -208,7 +210,9 @@ pinned by a test in that PR:
 - It runs under the operator's `agent.sandbox` tier, the one `AcpWorker`
   applies (`_get_sandbox_mode`), and is retired when that setting is tightened
   past the tier it was spawned at, as the background runtime is
-  (`sandbox_tier_tightened`).
+  (`sandbox_tier_tightened`). The per-harness floor `agent.harness_sandbox`
+  sets no floor for KAS: `harness_sandbox_mode` keeps `agent.sandbox` for a
+  harness that is not enforced.
 - It belongs to the pool: the idle scale-to-zero and `shutdown()` stop it, and
   no process outlives the pool.
 - It carries the spawn identity stamp the background runtime carries, so a
@@ -271,7 +275,7 @@ Exit criteria:
 
 ### Phase 2: KAS through a pool-owned runtime
 
-Blocked on open question 1. D7 in one PR.
+Starts once Phase 1 has merged (open question 1). D7 in one PR.
 
 Exit criteria:
 
@@ -304,17 +308,18 @@ before it sends any. Nothing here widens a permission or mounts a tool.
 - **Run extraction wherever the background runtime runs, and let the key move
   that runtime.** That moves every background turn (non-goal 2).
 - **One key for every `LLMPool`.** That moves Research Lab (non-goal 1).
-- **Phase 1 only.** Kept as the answer if open question 1 is no: the key still
-  lets extraction run on another spawnable harness, but not on KAS while chats
-  run elsewhere.
+- **Phase 1 only.** Not chosen (open question 1): the key would still let
+  extraction run on another spawnable harness, but not on KAS while chats run
+  elsewhere.
 
 ## 10. Open questions
 
 1. Is Phase 2 wanted? It is the only phase that serves #39087's case (KAS
    signed in, chats elsewhere), and it costs a second KAS process while an
-   ingest runs. Proposed: yes, after Phase 1 ships, because without it the key
-   cannot reach KAS in the one case the request was filed for.
+   ingest runs. Answered 2026-11-28: yes, once Phase 1 has merged, because
+   without it the key cannot reach KAS in the one case the request was filed
+   for.
 2. Is "Extraction harness" / "Default" the wording? Proposed: yes. "Harness"
    is the word Settings → Agent Harness uses for `agent.acp_backend`, and
    "Default" avoids claiming "same as chats", which is false for a stored
-   `"kiro"`.
+   `"kiro"`. Answered 2026-11-28: yes.
