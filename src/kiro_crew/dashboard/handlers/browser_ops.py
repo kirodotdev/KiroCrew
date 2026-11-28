@@ -122,6 +122,7 @@ from kiro_crew.browser_harness.live_hub import (
     LiveHub,
     get_live_hub,
 )
+from kiro_crew.browser_harness.relay import CdpError, RelayClosed
 from kiro_crew.browser_harness.supervisor import IPC_LEAF, BrowserRestarted, HelperError
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
@@ -183,6 +184,26 @@ _OP_LOCK = LoopBoundLock()
 def _ledgered_targets(supervisor: Any) -> list[str]:
     relay = getattr(supervisor, "relay", None)
     return list(relay.agent_targets()) if relay is not None else []
+
+
+async def _browser_has_target(relay: Any, target_id: str) -> bool | None:
+    """Whether the browser itself lists *target_id* (``Target.getTargets``).
+
+    ``None`` when the browser cannot be asked: a relay with no ``send``, a closed
+    one, a CDP error or a reply past the relay's deadline. The caller treats that
+    as no proof the tab is gone.
+    """
+    send = getattr(relay, "send", None)
+    if not callable(send):
+        return None
+    try:
+        got = await send("Target.getTargets", {})
+    except (CdpError, RelayClosed, asyncio.TimeoutError):
+        return None
+    infos = got.get("targetInfos") if isinstance(got, dict) else None
+    if not isinstance(infos, list):
+        return None
+    return any(isinstance(t, dict) and t.get("targetId") == target_id for t in infos)
 
 
 def _own_targets(hub: LiveHub, supervisor: Any, key: str, targets: list[str]) -> list[str]:
@@ -751,9 +772,8 @@ async def _bind(hub: LiveHub, key: str, supervisor: Any, call: Any, *, context: 
         current = str(tab.get("targetId") or tab.get("target_id") or "")
     mine = hub.target_of(key)
     if mine and mine in ledgered:
-        if current != mine:
-            await call("switch_tab", target=mine, activate=False)
-        return mine
+        if current == mine or await _switch_to_bound(key, relay, call, mine, ledgered):
+            return mine
     opener = _live_opener(hub, key, getattr(supervisor, "relay", None), mine, ledgered)
     if opener:
         # The session was on a popup that closed (a sign-in window that finished):
@@ -773,6 +793,28 @@ async def _bind(hub: LiveHub, key: str, supervisor: Any, call: Any, *, context: 
         raise RuntimeError("the browser opened no tab for this session")
     hub.bind_target(key, target)
     return target
+
+
+async def _switch_to_bound(key: str, relay: Any, call: Any, mine: str, ledgered: set[str]) -> bool:
+    """Switch the daemon to *key*'s bound tab *mine*; ``False`` when the browser lost it.
+
+    The ledger drops a tab on ``Target.targetDestroyed``; a close that event never
+    reported leaves a tab the browser does not have, and a switch to it fails on
+    every op of this chat until the ledger is rebuilt. Only the browser's own
+    target list says the tab is gone: then the ledger forgets it, *ledgered* too,
+    and the caller binds the way an observed close does. Any other failure, and
+    one the browser cannot be asked about, is re-raised.
+    """
+    try:
+        await call("switch_tab", target=mine, activate=False)
+    except HelperError:
+        if relay is None or await _browser_has_target(relay, mine) is not False:
+            raise
+        logger.info("browser: %s's tab %s is gone from the browser; rebinding", key, mine)
+        relay.forget_target(mine)
+        ledgered.discard(mine)
+        return False
+    return True
 
 
 def _restarted() -> dict[str, Any]:
