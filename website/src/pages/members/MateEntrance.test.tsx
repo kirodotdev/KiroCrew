@@ -82,7 +82,9 @@ describe('MateEntrance', () => {
     // 150px to (600, 20) at 30px, as a translate + scale from the top-left.
     expect(face.style.transform).toBe('translate(175px, -257px) scale(0.2)')
     // Landed: the copy is unpainted (the slot's own face is), the ring is up.
-    expect(screen.getByTestId('mate-entrance')).toHaveAttribute('data-phase', 'landed')
+    // onLanded fires in the callback that sets the phase, before that render
+    // commits, so wait for the render rather than reading it right away.
+    await waitFor(() => expect(screen.getByTestId('mate-entrance')).toHaveAttribute('data-phase', 'landed'))
     expect(face).toHaveStyle({ visibility: 'hidden' })
     expect(screen.getByTestId('mate-entrance-ring')).toBeInTheDocument()
     // The pop runs on the slot's own face and leaves it as it found it.
