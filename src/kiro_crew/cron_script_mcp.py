@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import queue
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -140,6 +141,7 @@ class McpToolClient:
     """
 
     _bridge: Any = None
+    _server_cwd: str | None = None
 
     def __init__(self, server_name: str, session_key: str = ""):
         self._server_name = server_name
@@ -222,6 +224,11 @@ class McpToolClient:
             mode="w+", prefix="mcp-stderr-", suffix=".log", delete=False
         )
         try:
+            # A script run has no workspace, so without a cwd the server would start
+            # in the gateway's, usually the home directory. A server that indexes its
+            # working directory when it starts then walks the whole home tree on every
+            # run: builder-mcp took 18 s there and 1 s in an empty directory.
+            self._server_cwd = tempfile.mkdtemp(prefix="mcp-cwd-")
             self._proc = popen_limited(
                 sandboxed_argv,
                 stdin=subprocess.PIPE,
@@ -231,8 +238,10 @@ class McpToolClient:
                 # (it does not parse) rather than raising out of readline.
                 **UTF8_TEXT,
                 env=proc_env,
+                cwd=self._server_cwd,
             )
         except Exception:
+            self._remove_server_cwd()
             self._stderr_file.close()
             Path(self._stderr_file.name).unlink(missing_ok=True)
             if self._sandbox_cleanup:
@@ -497,6 +506,13 @@ class McpToolClient:
                     )
             if self._sandbox_cleanup:
                 Path(self._sandbox_cleanup).unlink(missing_ok=True)
+            self._remove_server_cwd()
+
+    def _remove_server_cwd(self) -> None:
+        """Delete the server's working directory with anything it wrote there; never raises."""
+        if self._server_cwd is not None:
+            shutil.rmtree(self._server_cwd, ignore_errors=True)
+            self._server_cwd = None
 
 
 class KeptMcpServers:
