@@ -3634,7 +3634,10 @@ loop when the slot was popped) or a persisted `closed` flag read off-loop throug
 reopen, an unreadable metadata record -- reads OPEN and keeps its proposal; there
 is no fallback to `get_slot` or `slot_exists`, whose absence a restore-window read
 would misread as closure. Cards reach owners as `card_update` frames, and their outcomes reach the
-proposing slot's next turn as a `[CHANGE CARD RESULTS]` block. Each card (and each
+proposing slot's next turn as a `[CHANGE CARD RESULTS]` block; a turn that starts
+while one of the slot's cards is still open gets that block with a line telling it to
+read `get_change_status` before it states the card's status or its model, since a
+press during the turn reaches neither. Each card (and each
 `guide_start` offer) is also a `card` row of the proposing slot's transcript, at the
 point it was proposed, patched in place as its status moves, with matching
 `card/*` / `guide/*` entries in that session's crew log; the row is display-only and

@@ -69,10 +69,17 @@ _ONLY_WHEN_ASKED = (
 )
 
 
+_STALE_CARD_NOTE = (
+    "A turn that started before the user pressed the button (a cron notification, "
+    "a heartbeat or a worker report can start one at once) still sees the old "
+    "state: call get_change_status before you say whether the card was pressed "
+    "or what changed."
+)
+
 _CARD_NOTE = (
     "Nothing changes when you call this: the user sees a card with a button in "
     "this chat and decides. Write ONE reply that refers to the card and end your "
-    "turn; the outcome is given to you at the start of your next turn."
+    "turn; the outcome is given to you at the start of your next turn. " + _STALE_CARD_NOTE
 )
 
 
@@ -476,7 +483,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "memory that changes before Apply is left as it is. It puts one card "
                 "in this chat. Reply with one short line saying how many changes you "
                 "put on the card for the user to review, then end your turn. The "
-                "outcome is given to you at the start of your next turn."
+                "outcome is given to you at the start of your next turn. " + _STALE_CARD_NOTE
             ),
             "inputSchema": {
                 "type": "object",
