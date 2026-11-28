@@ -1,0 +1,2 @@
++52
+The interpreter rows' copy budget in deny_gate: one linear pass (_inlined_growth) that adds up how many characters the bound names would add before the copy is built, and a fail-closed refusal past 8 x 20 KiB, because a long quoted value whose name recurs grew the copy to uses times length (18 million characters from a 10 KiB command) and both rows read all of it on the event loop. Its refusal key is a self-guard key in deny_waiver. Issue #34875.

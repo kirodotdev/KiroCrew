@@ -453,14 +453,53 @@ def _collapse_percent_format(text: str) -> str:
     return _PERCENT_FORMAT_RE.sub(_apply, text)
 
 
-def _inline_interpreter_bindings(text: str) -> str:
-    """Replace identifiers bound to a quoted literal in *text* with that literal."""
+def _interpreter_bindings(text: str) -> dict[str, str]:
+    """Each identifier *text* binds to a quoted literal, with the first literal bound."""
     bindings: dict[str, str] = {}
     for match in _INTERP_BINDING_RE.finditer(text):
         bindings.setdefault(match.group(1), match.group(2))
+    return bindings
+
+
+def _inline_interpreter_bindings(text: str) -> str:
+    """Replace identifiers bound to a quoted literal in *text* with that literal."""
+    bindings = _interpreter_bindings(text)
     if not bindings:
         return text
     return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
+
+
+# The most characters the bindings may ADD to the copy ``_inline_interpreter_bindings``
+# builds: eight times ``MAX_SCANNABLE_COMMAND_CHARS``, the budget
+# ``argv_floor_git_tar._CARRIED_READ_CHAR_BUDGET`` sets for carried commands.  Every
+# use of a bound name becomes its literal, a use inside the literal included, so one
+# long literal whose name recurs grows the copy by uses times length: a 10 KiB command
+# built a copy of 18 million characters, and both interpreter rows then read all of it
+# on the event loop.  A command whose copy would grow past the budget is refused
+# unread (fail closed), the way ``_MAX_SUBSTITUTION_DEPTH`` refuses a deep nest.
+_INTERP_COPY_CHAR_BUDGET = 8 * 20 * 1024
+_INTERP_COPY_REFUSAL = f"interpreter bindings add more than {_INTERP_COPY_CHAR_BUDGET} characters"
+_INTERP_COPY_NOTE = (
+    "a command that reuses a quoted value by name until the uses add more than"
+    f" {_INTERP_COPY_CHAR_BUDGET} characters is refused; shorten the value or run the"
+    " script from a file"
+)
+
+
+def _inlined_growth(text: str) -> int:
+    """How much longer than *text* ``_inline_interpreter_bindings(text)`` is.
+
+    One pass over the identifiers and no copy, so the caller can refuse a command
+    before the copy exists.  Negative when the literals are shorter than their names.
+    """
+    bindings = _interpreter_bindings(text)
+    if not bindings:
+        return 0
+    return sum(
+        len(bindings[name]) - len(name)
+        for name in _INTERP_IDENT_RE.findall(text)
+        if name in bindings
+    )
 
 
 #: SEL ``mechanism`` of a ``deny_exception`` a person's in-session override granted.
@@ -787,7 +826,16 @@ def is_denied(
     # two patterns on purpose: collapsing text for all the other rules would change
     # inputs they were never measured against.
     collapsed = _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
-    joined = _inline_interpreter_bindings(collapsed) if _INTERP_ROW_NEEDS in collapsed else lower
+    joined = lower
+    if _INTERP_ROW_NEEDS in collapsed and any(
+        p in _rules._INTERPRETER_RULE_PATTERNS for p in regex_patterns
+    ):
+        # Measured before the copy is built.  Never waived: past the budget neither
+        # interpreter row, both self-guard rules, can read the copy in bounded time.
+        if _inlined_growth(collapsed) > _INTERP_COPY_CHAR_BUDGET:
+            _emit_deny_event(tool_name, _INTERP_COPY_REFUSAL, lower)
+            return _reason(_INTERP_COPY_REFUSAL, _INTERP_COPY_NOTE)
+        joined = _inline_interpreter_bindings(collapsed)
     if joined != lower:
         for interpreter_pattern in regex_patterns:
             if interpreter_pattern not in _rules._INTERPRETER_RULE_PATTERNS:
