@@ -20,12 +20,16 @@ headers added (:mod:`kiro_crew.kas_http_bridge`).
 Standard library only and at the top of the package: the engine starts this once
 per server, so it must not import the ACP stack. The bridge path adds the
 package's trust bootstrap (:mod:`kiro_crew._ssl_compat`) and, once a request
-fails, :mod:`kiro_crew.asset_downloader`. It prints no env value.
+fails, :mod:`kiro_crew.asset_downloader`. The Windows job layout comes from
+:mod:`kiro_crew.platform_compat_native`, itself standard library only, and a
+Windows launch reads its engine's pid through the ``platform_compat`` owners. It prints
+no env value.
 """
 
 from __future__ import annotations
 
 import argparse
+import ctypes
 import errno
 import hashlib
 import json
@@ -34,10 +38,12 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, NoReturn
 
 from kiro_crew.bounded_read import bounded_read
+from kiro_crew.platform_compat_native import _JobObjectExtendedLimitInformation
 
 #: The crew data-home leaf the snapshots live in.
 SNAPSHOT_LEAF = "kas-mcp-launch"
@@ -59,6 +65,20 @@ _MAX_SNAPSHOT_BYTES = 1 << 20
 #: this launcher stays standard library only.
 _OPEN_ATTEMPTS = 10
 _OPEN_BACKOFF_SECONDS = 0.05
+#: ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK``: the job
+#: ends its members when its last handle closes, and a server that asks for
+#: ``CREATE_BREAKAWAY_FROM_JOB`` explicitly may still detach a process.
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+_JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0800
+_CHILD_JOB_LIMITS = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | _JOB_OBJECT_LIMIT_BREAKAWAY_OK
+#: ``JobObjectExtendedLimitInformation``, the information class of the struct.
+_JOB_EXTENDED_LIMITS = 9
+_SYNCHRONIZE = 0x00100000
+_INFINITE = 0xFFFFFFFF
+#: What ``OpenProcess`` reports for a pid no process holds: the parent is gone.
+_ERROR_INVALID_PARAMETER = 87
+#: The status a launcher ends with once the process that started it has gone.
+_EXIT_PARENT_GONE = 1
 
 
 def _digest(*parts: str) -> str:
@@ -244,16 +264,135 @@ def windows_child_command(command: str, env: dict[str, str]) -> str | None:
     return None
 
 
+def _on_windows() -> bool:
+    return os.name == "nt"
+
+
+def _kernel32() -> Any:
+    return ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+
+
+def _last_error() -> int:
+    return int(getattr(ctypes, "get_last_error", lambda: 0)())
+
+
+def _exit_process(code: int) -> None:
+    os._exit(code)
+
+
+def windows_bind_children_to_self() -> int | None:
+    """Put this process in a Windows job that ends its children when it ends.
+
+    A Windows launcher runs the server as a child, and a launcher that is
+    terminated (its engine exited, or was killed) runs no cleanup, so without
+    this its server tree outlives it with no parent. Every process this one
+    starts afterwards joins the job, and the job closes with this process's
+    handle to it, which the kernel closes however the process ends. Called
+    before the child is started, so no child can escape it. Windows does not end
+    a child when its parent exits, so the launcher also ends itself, and with it
+    the job, once the process that started it is gone
+    (:func:`_windows_exit_with_parent`).
+
+    Returns the job handle, held for the life of the process, or ``None`` off
+    Windows or when the job cannot be made; the server then starts without it.
+    """
+    if not _on_windows():
+        return None
+    try:
+        kernel32 = _kernel32()
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+        kernel32.SetInformationJobObject.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+        ]
+        kernel32.SetInformationJobObject.restype = ctypes.c_int
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        kernel32.AssignProcessToJobObject.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+        # Anonymous and not inheritable: no child holds the job open.
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = _JobObjectExtendedLimitInformation()
+        info.BasicLimitInformation.LimitFlags = _CHILD_JOB_LIMITS
+        if not kernel32.SetInformationJobObject(
+            job, _JOB_EXTENDED_LIMITS, ctypes.byref(info), ctypes.sizeof(info)
+        ) or not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
+            kernel32.CloseHandle(job)
+            return None
+        _windows_exit_with_parent(kernel32)
+        return int(job)
+    except Exception:
+        # Containment only: a host that cannot make the job still starts the server.
+        return None
+
+
+def _engine_pid() -> int:
+    """The pid of the engine that started this process.
+
+    Started through a Windows venv's ``python.exe`` redirector, this process's
+    parent is that redirector, which waits on this process and so never exits
+    first: the engine is one hop above it. Best-effort: a pid that cannot be
+    read falls back to the direct parent.
+    """
+    parent = os.getppid()
+    try:
+        # Deferred: only a Windows launch needs them, and a POSIX one stays standard library only.
+        from kiro_crew.platform_compat_identity import get_ppid
+        from kiro_crew.platform_compat_runtime import python_launcher_hops
+
+        above = get_ppid(parent) if python_launcher_hops() else -1
+    except Exception:
+        above = -1
+    return above if above > 0 else parent
+
+
+def _windows_exit_with_parent(kernel32: Any) -> threading.Thread | None:
+    """End this process once its parent (the engine) has exited.
+
+    The parent is opened now, before any child starts, and waited on by a daemon
+    thread, which ends this process and so closes its job. A parent already gone
+    before the open ends this process at once, before any server starts; one that
+    cannot be opened for another reason is not watched.
+    """
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    parent = kernel32.OpenProcess(_SYNCHRONIZE, False, _engine_pid())
+    if not parent:
+        if _last_error() == _ERROR_INVALID_PARAMETER:
+            _exit_process(_EXIT_PARENT_GONE)
+        return None
+
+    def _watch() -> None:
+        if kernel32.WaitForSingleObject(parent, _INFINITE) == 0:
+            _exit_process(_EXIT_PARENT_GONE)
+
+    watcher = threading.Thread(target=_watch, name="kirocrew-launcher-parent", daemon=True)
+    watcher.start()
+    return watcher
+
+
 def _spawn_child(argv: list[str], env: dict[str, str]) -> NoReturn:
     """Windows has no in-place exec: run the server as a child on this process's stdio.
 
     The engine waits on this process's pid and talks over its pipes, so the
     launcher stays alive as the server's parent and exits with its status, the
-    shape ``mcp_gateway.stub_fallback._fallback_spawn_child`` uses.
+    shape ``mcp_gateway.stub_fallback._fallback_spawn_child`` uses. The child
+    runs in this process's job (:func:`windows_bind_children_to_self`), so its
+    tree ends with the launcher.
     """
     resolved = windows_child_command(argv[0], env)
     if resolved is None:
         _unstartable(argv[0], FileNotFoundError(errno.ENOENT, "not found on its PATH"))
+    windows_bind_children_to_self()
     try:
         proc = subprocess.Popen([resolved, *argv[1:]], env=env, stdin=0, stdout=1, stderr=2)
     except OSError as exc:
