@@ -12,7 +12,8 @@ Quiescent means ALL of:
   channel handlers, sub-agents, scripts and the TaskRunner
   (``GatewayOrchestrator._in_flight_work_counts``);
 * no channel message waits in a session queue and no dashboard slot has queued
-  sends;
+  sends, except an idle slot whose whole queue is saved for the boot to restore
+  and already waits for a person to send it;
 * no approval card waits for a person;
 * nobody typed into a chat (dashboard or channel) for ``QUIET_WINDOW_SECS``: an
   open conversation between turns reads as idle to the census, and a restart
@@ -185,13 +186,52 @@ def queued_message_holders(orchestrator: Any) -> list[Holder]:
             held = [Holder(work_holders.UNREADABLE, "channel queue")]
     for key, slot in _slot_items(state):
         try:
-            waiting = len(getattr(slot, "_queue", None) or ())
-            if waiting:
-                held.append(Holder(work_holders.QUEUED, str(key), count=waiting))
+            queue = list(getattr(slot, "_queue", None) or ())
+            if queue and not _carried_across_restart(slot, queue):
+                held.append(Holder(work_holders.QUEUED, str(key), count=len(queue)))
         except Exception:
             logger.warning("quiescence: slot queue count failed", exc_info=True)
             held.append(Holder(work_holders.UNREADABLE, "slot queue"))
     return held
+
+
+def _slot_turn_live(slot: Any) -> bool:
+    """Whether *slot* runs or has admitted a turn its queue waits behind."""
+    if getattr(slot, "running", False) is True:
+        return True
+    task = getattr(slot, "task", None)
+    if task is None:
+        return False
+    done = getattr(task, "done", None)
+    return not (callable(done) and done())
+
+
+def _carried_across_restart(slot: Any, queue: list[Any]) -> bool:
+    """Whether a restart now would hand *queue* back whole.
+
+    True only for an idle slot whose every entry is on disk already and waits
+    for a person (``is_held_queue_entry``): no turn runs for the restart to cut,
+    and the boot restores the queue as it was. An entry the durable bounds
+    refuse, or a save still owed, would be lost, and an entry something else
+    would send (a crew's Resume, a lifted hold, a chosen card) comes back as a
+    card only a person sends, so that queue still counts.
+    """
+    if _slot_turn_live(slot) or getattr(slot, "queue_persist_pending", True) is not False:
+        return False
+    # circular import: the dashboard package imports the gateway at load.
+    from kiro_crew.dashboard.slot_queue_repository import (
+        durable_queue_entries,
+        is_held_queue_entry,
+    )
+
+    if not all(isinstance(e, dict) and is_held_queue_entry(e) for e in queue):
+        return False
+
+    # The writer persists from the slot's durable source (held steers first),
+    # so the bounds are judged on that list.
+    source_of = getattr(slot, "durable_source", None)
+    source = list(source_of()) if callable(source_of) else queue
+    return len(durable_queue_entries(source)) == len(source)
 
 
 def queued_message_count(orchestrator: Any) -> int:

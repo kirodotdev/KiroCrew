@@ -893,7 +893,15 @@ take the hold in `cli.main` after argument parsing.
   this gateway now?", and the edition imports it rather than keep a second
   census. Quiescent means: `_in_flight_work_counts` is empty, no message waits
   in a channel session queue (the allocation service session table) or a
-  dashboard slot queue, no approval card waits (a dashboard slot's, or a typed
+  dashboard slot queue. A slot queue does not count while
+  its slot runs no turn, nothing it holds is unsaved (`queue_persist_pending`),
+  every entry already waits for a person (`is_held_queue_entry`: restored from
+  disk, nobody chose it), and the durable bounds keep every entry
+  (`durable_queue_entries`): the restart hands that queue back as it was. A queue
+  past those bounds, holding an entry a restart drops (a cron or subagent
+  injection), or holding an entry something else would send (a paused crew's
+  Resume, a lifted hold), still counts. No approval
+  card waits (a dashboard slot's, or a typed
   reply prompt, `messaging.approval.pending_count`), nobody typed into a chat
   for `QUIET_WINDOW_SECS` (15 min), and a census last seen busy has stayed
   clear for `SETTLE_SECS` (60s, the hysteresis). An open interactive session
