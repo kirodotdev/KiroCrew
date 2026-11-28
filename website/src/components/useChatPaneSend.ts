@@ -230,7 +230,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     return true
   }, [input, slotKey, openSideChat, agentLocked, paneAgentName, readPastes, setPasteBlocks, dispatch, composerRef, mountedRef, slotKeyRef, inputRef, setInput])
 
-  const doSend = useCallback((optionText?: string, steerNow?: boolean | 'auto', onOutcome?: (outcome: PaneSendOutcome) => void, ownFiles: readonly string[] = []) => {
+  const doSend = useCallback((optionText?: string, steerNow?: boolean | 'auto', onOutcome?: (outcome: PaneSendOutcome) => void, ownFiles: readonly string[] = [], queueOnly = false) => {
     // `optionText` mirrors ChatPage.send's first parameter: the follow-up
     // bar's direct-send gesture (double-click / split button) hands the option
     // label here so it bypasses the setInput race, superseding any composer
@@ -247,6 +247,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     //
     // `ownFiles`: an option send's own uploaded files (a discussion card's
     // pictures). Only these go with it, never the composer's staged files.
+    //
+    // `queueOnly` (the MCP sign-in notice's button): the send must start its
+    // own turn, so a crewmate chat leaves out `responsive`, which steers first.
     const text = (optionText || input).trim()
     // A staged quote alone is a sendable message. An option pill's send is its
     // own text and leaves the stage untouched, as it leaves files and pastes.
@@ -367,7 +370,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // server holds the message, so only they let a restored draft's stash
     // entry go. This pane's recovery lives in component state, so a refusal
     // or an unconfirmed send must leave that entry stored for a reload to find.
-    return sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}), stopHold: !running && !paneSlot?.running ? holdForStop(slotKey) : undefined }).then((receipt) => {
+    return sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate && !queueOnly ? { responsive: true } : steerNow ? { steer: steerNow } : {}), stopHold: !running && !paneSlot?.running ? holdForStop(slotKey) : undefined }).then((receipt) => {
       // Read before the rulings below settle the bubble: an echo that already
       // proved this send landed outranks a lost or refused answer.
       onOutcome?.(paneSendOutcome(receipt.status, selectSendConfirmed(store.getState(), slotKey, sendId) || (!!crewmate && selectSendAccepted(store.getState(), slotKey, sendId))))

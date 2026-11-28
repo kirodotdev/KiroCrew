@@ -782,7 +782,7 @@ export default function ChatPane({
       // A `queue` send (the MCP sign-in notice's button) never steers.
       const flag = d.queue === true ? false : busySteerFlag({ slotKey, busy, turnRunning: running, stopState: paneStopState, jevAutoConsented, busyMode: composerBusyMode })
       d.result = 'pending'
-      doSend(text, flag, d.onOutcome, files)
+      doSend(text, flag, d.onOutcome, files, d.queue === true)
     }
     window.addEventListener(COMPOSE_SEND_EVENT, handler)
     return () => window.removeEventListener(COMPOSE_SEND_EVENT, handler)
