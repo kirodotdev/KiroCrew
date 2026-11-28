@@ -1305,6 +1305,15 @@ class TestFilePathShape:
                     r"C:\Users\me\a file with spaces.md",
                 ],
             ),
+            *named_cases(
+                "test_accepts_windows_extended_length",
+                "path",
+                [
+                    r"\\?\C:\work\notes.md",
+                    r"\\?\c:\Users\me\Notes (draft).md",
+                    r"\\?\UNC\host\share\notes.md",
+                ],
+            ),
         ],
     )
     def test_accepts_a_file_path_shape(self, path):
@@ -1332,6 +1341,22 @@ class TestFilePathShape:
             "/tmp/a\nb",
             "/tmp/a\rb",
             "/tmp/a\tb",
+            # The extended-length prefix admits only the drive-absolute form: a
+            # drive-relative or stream path behind it stays refused, as does its
+            # bare root.
+            r"\\?\C:notes.md",
+            r"\\?\C:\Users\me\notes.md:hidden",
+            r"\\?\C:/Users/me/notes.md",
+            "\\\\?\\C:\\",
+            # A name only the verbatim spelling reaches: the screen downstream
+            # folds the prefix off, which would redirect it to a sibling file.
+            r"\\?\C:\work\name.",
+            r"\\?\C:\work\folder \notes.md",
+            # A trailing space on the last name is judged before the field
+            # pass trims it: the handler acts on the untrimmed path.
+            "\\\\?\\C:\\work\\name ",
+            r"\\?\C:\work\CON.txt",
+            r"\\?\UNC\host\share\name.",
         ],
     )
     def test_refuses(self, path):
@@ -1368,3 +1393,15 @@ class TestFilePathShape:
         validate_tool_args({"path": r"C:\Users\me\notes.md", "content": "x"}, FILE_WRITE_SCHEMA)
         with pytest.raises(ValidationError):
             validate_tool_args({"path": r"C:notes.md", "content": "x"}, FILE_WRITE_SCHEMA)
+        validate_tool_args({"path": r"\\?\C:\Users\me\notes.md", "content": "x"}, FILE_WRITE_SCHEMA)
+        with pytest.raises(ValidationError):
+            validate_tool_args(
+                {"path": r"\\?\C:\Users\me\name.", "content": "x"}, FILE_WRITE_SCHEMA
+            )
+        with pytest.raises(ValidationError):
+            validate_tool_args(
+                {"path": "\\\\?\\C:\\Users\\me\\name ", "content": "x"}, FILE_WRITE_SCHEMA
+            )
+        # The plain spelling is not verbatim-only, so its trailing space is
+        # trimmed and admitted as before.
+        validate_tool_args({"path": "C:\\Users\\me\\name ", "content": "x"}, FILE_WRITE_SCHEMA)

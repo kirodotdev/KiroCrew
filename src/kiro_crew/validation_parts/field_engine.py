@@ -128,6 +128,10 @@ class ToolSchema:
     tool_name: str
     fields: list[FieldSpec] = field(default_factory=list)
     custom_validator: Any = None  # Optional callable(cleaned_args) -> None; raises ValidationError
+    # Optional callable(raw_args) -> None, run after the field pass: for a rule
+    # that must judge the spelling the caller sent, before ``sanitize_string``
+    # trimmed its edges, because the handler acts on that raw value.
+    raw_validator: Any = None
 
 
 def clamp_to_max_len(value: str, max_len: int) -> str:
@@ -407,6 +411,8 @@ def validate_tool_args(args: dict[str, Any], schema: ToolSchema) -> dict[str, An
             # Field not in args, but has a default - include it
             cleaned[spec.name] = spec.default
 
+    if schema.raw_validator:
+        schema.raw_validator(args)
     if schema.custom_validator:
         schema.custom_validator(cleaned)
 
