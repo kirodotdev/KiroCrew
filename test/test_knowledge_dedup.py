@@ -7,6 +7,7 @@ import sqlite3
 
 import pytest
 
+from kiro_crew.knowledge import dedup as dedup_module
 from kiro_crew.knowledge.dedup import (
     DocRef,
     _match_reason,
@@ -202,6 +203,85 @@ class TestFilenameMatch:
 
     def test_normalize_strips_extension_and_case(self):
         assert normalize_filename("My File.DOCX") == normalize_filename("my  file")
+
+
+class _RecordingPattern:
+    """Wraps a compiled pattern and records the text each ``sub`` call receives."""
+
+    def __init__(self, pattern):
+        self._pattern = pattern
+        self.texts: list[str] = []
+
+    def sub(self, repl, text, *args, **kwargs):
+        self.texts.append(text)
+        return self._pattern.sub(repl, text, *args, **kwargs)
+
+
+def _longest_whitespace_run(text: str) -> int:
+    longest = run = 0
+    for ch in text:
+        run = run + 1 if ch.isspace() else 0
+        longest = max(longest, run)
+    return longest
+
+
+# Names pinned to the strings normalize_filename returned before whitespace runs were
+# collapsed, so the collapse is held to "same result, bounded work".
+_NORMALIZED_NAMES = [
+    ("Report copy.docx", "report"),
+    ("Report  copy.docx", "report"),
+    ("Report \t copy.docx", "report"),
+    ("Report - copy.docx", "report"),
+    ("Report  -  copy 2.docx", "report"),
+    ("Report copy of.docx", "report of"),
+    ("copy of Report.docx", "report"),
+    ("Report (1).docx", "report"),
+    ("Report  (1).docx", "report"),
+    ("Report (copy).docx", "report"),
+    ("Report\n\ncopy\n\n2.pdf", "report"),
+    ("Plan   Apr 2026.docx", "plan"),
+    ("Plan \u00a0\u00a0 2026-04-14.docx", "plan"),
+    (" copy\nof\ncopyreport", "of copyreport"),
+    ("notes  \t  x.txt", "notes x"),
+    ("My   File.DOCX", "my file"),
+    ("a \u3000\u3000 - \u3000 copy", "a"),
+    ("dir\\sub\\Q3  Budget  (copy).xlsx", "q3 budget"),
+    ("Weekly  Update  04-14.md", "weekly update"),
+    ("Final \n copy \n 3.txt", "final"),
+]
+
+
+class TestWhitespaceRunInName:
+    @staticmethod
+    def _record_copy_modifier_input(monkeypatch):
+        recorder = _RecordingPattern(dedup_module._COPY_MODIFIER_RE)
+        monkeypatch.setattr(dedup_module, "_COPY_MODIFIER_RE", recorder)
+        return recorder
+
+    def test_copy_modifier_pass_never_sees_a_whitespace_run(self, monkeypatch):
+        recorder = self._record_copy_modifier_input(monkeypatch)
+        assert normalize_filename("notes" + " " * 1500 + "x.txt") == "notes x"
+        assert recorder.texts
+        assert all(_longest_whitespace_run(text) <= 1 for text in recorder.texts)
+
+    def test_mixed_whitespace_run_is_one_run(self, monkeypatch):
+        recorder = self._record_copy_modifier_input(monkeypatch)
+        assert normalize_filename("notes" + " \t\n\u00a0\u3000" * 300 + "x.txt") == "notes x"
+        assert all(_longest_whitespace_run(text) <= 1 for text in recorder.texts)
+
+    def test_dedup_pass_over_a_library_with_such_a_name_stays_bounded(
+            self, tmp_path, monkeypatch):
+        store = _mk_store(tmp_path)
+        _add_upload(store, "notes" + " " * 1200 + "x.txt", "H-hostile", [1.0, 0.0, 0.0, 0.0])
+        sid, _ = _add_upload(store, "plan.txt", "H-plain", [0.0, 1.0, 0.0, 0.0])
+        recorder = self._record_copy_modifier_input(monkeypatch)
+        assert dedup_document(store, sid, content_hash="H-plain", apply=False) == []
+        assert recorder.texts
+        assert all(_longest_whitespace_run(text) <= 1 for text in recorder.texts)
+
+    @pytest.mark.parametrize(("name", "expected"), _NORMALIZED_NAMES)
+    def test_normalized_names_are_unchanged(self, name, expected):
+        assert normalize_filename(name) == expected
 
 
 class TestPriority:
