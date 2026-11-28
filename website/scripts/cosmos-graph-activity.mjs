@@ -67,6 +67,9 @@ const REWRITES = [
   }
   setPointImageSizes(e) {
 `],
+  // Both a drawn frame and an empty clear replace the breath layer's image.
+  ['x.end(), this.device.submit();', 'x.end(), this.device.submit(), this.config.kcAfterDraw && this.config.kcAfterDraw();'],
+  ['}).end(), this.device.submit()));', '}).end(), this.device.submit(), this.config.kcAfterDraw && this.config.kcAfterDraw()));'],
   ['  float animateStrokeWidths;\n} drawVertex;', '  float animateStrokeWidths;\n  vec4 kcClock;\n  vec4 kcCentre;\n  vec4 kcLight;\n} drawVertex;'],
   ['#define animateStrokeWidths drawVertex.animateStrokeWidths\n', '#define animateStrokeWidths drawVertex.animateStrokeWidths\n#define kcClock drawVertex.kcClock\n#define kcCentre drawVertex.kcCentre\n#define kcLight drawVertex.kcLight\n'],
   ['uniform float animateStrokeWidths;\n', 'uniform float animateStrokeWidths;\nuniform vec4 kcClock;\nuniform vec4 kcCentre;\nuniform vec4 kcLight;\n'],

@@ -104,6 +104,22 @@ export function showsNodes(view: View, size: Size, clusters: GraphCluster[]): bo
   return true
 }
 
+/** Layout kept around the view for the memories the canvas holds, as a share of
+ *  the view's size on each side: a pan or a zoom out by one step stays inside it. */
+export const DRAW_MARGIN = 1
+
+/**
+ * The memories the canvas draws for `box` (the view with DRAW_MARGIN): whole
+ * clusters whose disc touches it, and any memory whose own position lies in it.
+ * Returns `items` itself when nothing is left out, so a view of the
+ * whole store keeps every index.
+ */
+export function drawnInBox<T extends { x: number; y: number; cluster: number }>(items: T[], clusters: GraphCluster[], box: GraphBbox): T[] {
+  const touches = new Map(clusters.map(c => [c.id, c.x + c.r >= box[0] && c.x - c.r <= box[2] && c.y + c.r >= box[1] && c.y - c.r <= box[3]]))
+  const kept = items.filter(n => touches.get(n.cluster) === true || (n.x >= box[0] && n.x <= box[2] && n.y >= box[1] && n.y <= box[3]))
+  return kept.length === items.length ? items : kept
+}
+
 /** True when `inner` lies wholly inside `outer`. */
 export const contains = (outer: GraphBbox, inner: GraphBbox) => inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3]
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { LINK_DIM_SHARE, LINK_LIT_ALPHA, LINK_MAX_ALPHA, LINK_OVERVIEW_ALPHA, drawnLinks, linkAlpha, linksInView, LABEL_GAP, LABEL_PAD, MARK_GAP, MAX_LABELS, NODE_MAX_PX, NODE_MIN_PX, canvasLabel, memoryLines, dotPxAt, MIN_INK_ALPHA, NODE_BUDGET, OVERVIEW_LABELS, inkAlpha, labelBudget, placeLabels, showsNodes, PHI, LEVEL_STEP, linkLevel, linkRule, panBy, topicLinks, topicLines, topicOrder, TOPIC_LINE_PX, labelGrid, topicLinePx } from '../pages/overview/memoryGraph/graphView'
+import { LINK_DIM_SHARE, LINK_LIT_ALPHA, LINK_MAX_ALPHA, LINK_OVERVIEW_ALPHA, drawnLinks, linkAlpha, linksInView, LABEL_GAP, LABEL_PAD, MARK_GAP, MAX_LABELS, NODE_MAX_PX, NODE_MIN_PX, canvasLabel, memoryLines, dotPxAt, MIN_INK_ALPHA, NODE_BUDGET, OVERVIEW_LABELS, inkAlpha, labelBudget, placeLabels, showsNodes, PHI, LEVEL_STEP, linkLevel, linkRule, panBy, topicLinks, topicLines, topicOrder, TOPIC_LINE_PX, labelGrid, topicLinePx, drawnInBox, DRAW_MARGIN, visibleBox } from '../pages/overview/memoryGraph/graphView'
 import { KIND_SIZE, oklchToRgb, topicColors } from '../pages/overview/memoryGraph/graphColors'
 
 const size = { width: 800, height: 600 }
@@ -325,5 +325,32 @@ describe('topic names', () => {
     const size = { width: 400, height: 400 }
     const cands = [200, 210, 330].map((x, i) => ({ id: `c${i}`, at: { x, y: 200 }, text: `T${i}`, lines: [`T${i}`], rank: -i, centred: true }))
     expect(placeLabels(cands, size, 12, () => 60).map(l => l.id)).toEqual(['c0', 'c2'])
+  })
+})
+
+describe('the memories handed to the canvas', () => {
+  const clusters = [{ id: 0, x: -1000, y: 0, r: 10, count: 2, label: null }, { id: 1, x: 0, y: 0, r: 10, count: 2, label: null }, { id: 2, x: 1000, y: 0, r: 10, count: 1, label: null }]
+  const items = [{ id: 'a', x: -1000, y: 0, cluster: 0 }, { id: 'b', x: -995, y: 0, cluster: 0 }, { id: 'c', x: 0, y: 0, cluster: 1 }, { id: 'd', x: 8, y: 2, cluster: 1 }, { id: 'e', x: 1000, y: 0, cluster: 2 }, { id: 'loose', x: 3, y: 1, cluster: -1 }, { id: 'far', x: 5000, y: 0, cluster: -1 }]
+
+  it('keeps the very same array while every cluster touches the box, so indices stay put', () => {
+    const whole = items.slice(0, 5)
+    expect(drawnInBox(whole, clusters, [-2000, -10, 2000, 10])).toBe(whole)
+  })
+
+  it('keeps token-placed memories inside the box even outside their assigned cluster disc', () => {
+    const token = { id: 'token', x: -500, y: 0, cluster: 0 }
+    const box: [number, number, number, number] = [-501, -1, -499, 1]
+    expect(drawnInBox([...items, token], clusters, box)).toEqual([token])
+    const alone = [token]
+    expect(drawnInBox(alone, clusters, box)).toBe(alone)
+    expect(drawnInBox(alone, clusters, [-400, -1, -300, 1])).toEqual([])
+  })
+
+  it('keeps whole clusters around the view, and memories outside a cluster only inside the box', () => {
+    const box = visibleBox({ cx: 0, cy: 0, k: 1 }, { width: 400, height: 400 }, DRAW_MARGIN)
+    expect(box).toEqual([-600, -600, 600, 600])
+    expect(drawnInBox(items, clusters, box).map(n => n.id)).toEqual(['c', 'd', 'loose'])
+    // A cluster whose disc only reaches into the box is kept whole.
+    expect(drawnInBox(items, clusters, [-995, -1, -500, 1]).map(n => n.id)).toEqual(['a', 'b'])
   })
 })

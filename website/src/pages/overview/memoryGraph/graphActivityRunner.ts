@@ -17,6 +17,8 @@ export type RunnerDeps = {
   layout: () => string | undefined
   bounds: () => GraphBbox | undefined
   dark: () => boolean; movedAt: () => number; now?: () => number
+  /** The breath drawn as one image (graphBreathLayer); null breathes in the point shader. */
+  layer?: () => { draw(): void } | null
 }
 export class ActivityRunner {
   readonly uniforms: ActivityUniforms = { clock: [0, 0, 0, 0], centre: [0, 0, LIT_GROWTH, 0], light: [0, 0, 0, 0] }
@@ -24,6 +26,7 @@ export class ActivityRunner {
   private lights = new Map<number, Light>()
   private end = 0
   private frame: number | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
   private lastDraw = -Infinity
   private on = false
   private uploaded = false
@@ -41,16 +44,24 @@ export class ActivityRunner {
   setRunning(on: boolean) {
     if (on === this.on) return
     this.on = on
-    this.uniforms.clock[2] = on ? BREATH_AMP : 0
+    this.shaderBreath()
     this.uniforms.light[0] = RISE_MS
     this.uniforms.light[2] = on ? FADE_MS : 0
     if (on) { this.schedule(); return }
-    if (this.frame !== null) cancelAnimationFrame(this.frame)
-    this.frame = null
+    this.cancel()
     this.queue.clear(); this.clearLights()
     const g = this.deps.graph(); if (g) draw(g)
   }
   get running() { return this.on }
+  /** The breath's amplitude for the breath layer: zero while stopped. */
+  get breathAmp() { return this.on ? BREATH_AMP : 0 }
+  /** The point shader breathes only when no breath layer draws the wave. */
+  private shaderBreath() { this.uniforms.clock[2] = this.on && !this.deps.layer?.() ? BREATH_AMP : 0 }
+  private cancel() {
+    if (this.frame !== null) cancelAnimationFrame(this.frame)
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.frame = null; this.timer = null
+  }
   push(frame: ActivityFrame) {
     if (!this.on || !Array.isArray(frame.ids)) return
     const clusters = frame.layout && frame.layout === this.deps.layout() ? frame.clusters : undefined
@@ -58,13 +69,28 @@ export class ActivityRunner {
     this.schedule()
   }
   reset() { this.items = null; this.queue.clear(); this.clearLights() }
-  dispose() { if (this.frame !== null) cancelAnimationFrame(this.frame); this.frame = null; this.on = false }
+  /** A camera pick changes indices, not the retained memories' activation clocks. */
+  remap(before: readonly GraphNodeRow[]) {
+    const shown = this.indexed(), lights = new Map<number, Light>()
+    for (const [i, light] of this.lights) {
+      const next = this.index.get(before[i].id)
+      if (next !== undefined) lights.set(next, light)
+    }
+    this.lights = lights
+    if (!lights.size) this.end = 0
+    if (this.uploaded) this.upload(shown.items.length)
+  }
+  dispose() { this.cancel(); this.on = false }
   private clearLights() {
     this.lights.clear(); this.end = 0
     if (this.uploaded) this.upload(this.deps.shown().items.length)
   }
-  private schedule() {
-    if (this.frame === null && this.on) this.frame = requestAnimationFrame(() => { this.frame = null; this.tick() })
+  /** The next step: on the next animation frame, or after `wait` ms when only the breath is left. */
+  private schedule(wait = 0) {
+    if (!this.on || this.frame !== null) return
+    if (wait > 0) { this.timer ??= setTimeout(() => { this.timer = null; this.schedule() }, wait); return }
+    if (this.timer !== null) { clearTimeout(this.timer); this.timer = null }
+    this.frame = requestAnimationFrame(() => { this.frame = null; this.tick() })
   }
   private indexed() {
     const shown = this.deps.shown()
@@ -129,12 +155,16 @@ export class ActivityRunner {
     }
     this.uniforms.light[3] = this.deps.dark() ? 1 : 0
     this.uniforms.clock[0] = t; this.uniforms.clock[1] = (2 * Math.PI * t) / BREATH_MS
-    const active = lit || now < this.end, g = this.deps.graph()
-    if (g && now - this.deps.movedAt() >= 150 && (active || this.lights.size || now - this.lastDraw >= 1000 / BREATH_FPS)) {
-      this.lastDraw = now; draw(g)
+    this.shaderBreath()
+    const active = lit || now < this.end, g = this.deps.graph(), layer = this.deps.layer?.()
+    if (g && now - this.deps.movedAt() >= 150) {
+      // Lit marks change every frame: cosmos.gl draws them (and the layer copies that frame).
+      if (active || this.lights.size) { this.lastDraw = now; draw(g) }
+      else if (now - this.lastDraw >= 1000 / BREATH_FPS) { this.lastDraw = now; if (layer) layer.draw(); else draw(g) }
     }
     if (!active) this.lights.clear()
-    this.schedule()
+    // Only the breath left: no animation frame until its next step.
+    this.schedule(active || this.queue.size ? 0 : Math.max(1, this.lastDraw + 1000 / BREATH_FPS - now))
   }
 }
 /** Queue a draw without forcing cosmos.gl to collect GPU picking synchronously. */

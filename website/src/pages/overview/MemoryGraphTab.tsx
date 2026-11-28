@@ -21,11 +21,12 @@ import { KindPills } from './memoryPage/KindPills'
 import type { KindTab } from './memoryPage/memoryListView'
 import { attachGraphGestures, type Box } from './memoryGraphGestures'
 import {
-  FETCH_MARGIN, LABEL_PX, MAX_LABELS, LINK_BUDGET, TOPIC_LINE_HEIGHT, labelGrid, topicLinePx, topicLines, topicOrder, NODE_BUDGET, canvasLabel, memoryLines, contains, dotPxAt, drawnLinks, fitBox, linkAlpha, linkLevel, linkRule, linksInView, inkAlpha, topicLinkAlpha, topicLinks, labelBudget, zoomFromFit, nextInDirection, panBy, placeLabels, screenRectToBox, showsNodes,
+  FETCH_MARGIN, LABEL_PX, MAX_LABELS, LINK_BUDGET, TOPIC_LINE_HEIGHT, labelGrid, topicLinePx, topicLines, topicOrder, NODE_BUDGET, canvasLabel, memoryLines, contains, dotPxAt, drawnLinks, fitBox, linkAlpha, linkLevel, linkRule, linksInView, inkAlpha, topicLinkAlpha, topicLinks, labelBudget, zoomFromFit, nextInDirection, panBy, placeLabels, screenRectToBox, showsNodes, drawnInBox, DRAW_MARGIN,
   toScreen, visibleBox, zoomAt, type Dir, type DrawnLink, type LabelCandidate, type PlacedLabel, type ScreenMark, type Size, type View,
 } from './memoryGraph/graphView'
 import { NodeCache, PAGE_ROWS, gridStep, tilesFor } from './memoryGraph/nodeCache'
-import { KIND_SHAPE, KIND_SIZE, readGraphColors, topicColors, type GraphColors } from './memoryGraph/graphColors'
+import { KIND_SHAPE, KIND_SIZE, cssRgb, readGraphColors, topicColors, type GraphColors } from './memoryGraph/graphColors'
+import { BreathLayer, breathView } from './memoryGraph/graphBreathLayer'
 import { ActivityRunner, LINK_BOW, MEMORY_ACTIVITY_EVENT, type ActivityFrame } from './memoryGraph/graphActivityRunner'
 import { easeOut, lerp, litFrom, litLinkAlpha, litMark, litScale, litTopic, mixMarks, type Fade, type Lit, type Mark } from './memoryGraph/graphLight'
 
@@ -133,6 +134,10 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   const reduced = useReducedMotion()
   /** The breathing and the light a memory read spreads (graphActivityRunner). */
   const activityRef = useRef<ActivityRunner | null>(null)
+  /** Whether the canvas is on screen at all (scrolled to, its tab shown). */
+  const onScreenRef = useRef(true)
+  /** The layout box and zoom of the last node pick, including picks that keep every node. */
+  const drawnBoxRef = useRef<{ box: GraphBbox; k: number } | null>(null)
   const phone = useIsMobile()
   // A touch screen has no Space key: one finger pans there.
   const touch = useIsTouchDevice()
@@ -445,7 +450,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
    * each cluster: its nodes start at the cluster's centre and move to their own
    * places (instant with reduced motion).
    */
-  const refreshShown = useCallback(() => {
+  const refreshShown = useCallback((cameraOnly = false) => {
     const g = cosmosRef.current
     if (!g) return
     const before = shownRef.current
@@ -462,14 +467,25 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     let next: Shown
     if (wantNodes) {
       const want = kindsRef.current
-      next = { mode: 'nodes', items: cacheRef.current.all().filter(n => !want || want.includes(n.kind)) }
+      const all = cacheRef.current.all().filter(n => !want || want.includes(n.kind))
+      // Only the clusters around the view go to the canvas: each frame costs per memory drawn.
+      const box = visibleBox(viewRef.current, sizeRef.current, DRAW_MARGIN)
+      const items = drawnInBox(all, clusters, box)
+      drawnBoxRef.current = { box, k: viewRef.current.k }
+      next = { mode: 'nodes', items }
     } else {
+      drawnBoxRef.current = null
       // shortcut: overview clusters include every kind; filter them when replies carry per-kind counts.
       next = { mode: 'clusters', items: clusters.filter(c => c.count > 0) }
     }
+    const keepActivity = cameraOnly && before.mode === 'nodes' && next.mode === 'nodes'
+    if (keepActivity && next.items.length === before.items.length && next.items.every((n, i) => n.id === before.items[i].id)) {
+      // Keep the array, link tables and GPU positions for an unchanged camera pick.
+      if (lastK.current !== viewRef.current.k || zoomDirty.current) { paint(); g.render(0, 0) }
+      return
+    }
     shownRef.current = next
-    // Lit marks are named by index: a new drawn set starts dark.
-    if (next.items !== before.items) activityRef.current?.reset()
+    if (!keepActivity && next.items !== before.items) activityRef.current?.reset()
     // Links join the memories drawn now; clusters have none.
     allLinksRef.current = next.mode === 'nodes' ? drawnLinks(next.items as GraphNodeRow[]) : []
     topicLinksRef.current = next.mode === 'nodes' ? topicLinks(allLinksRef.current, next.items as GraphNodeRow[], clusters) : []
@@ -492,6 +508,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     } else {
       // Nodes that arrived since the last draw join at their places, with no motion.
       g.setPointPositions(pos, true)
+      if (keepActivity) activityRef.current?.remap(before.items as GraphNodeRow[])
       paint()
       g.render(0, 0)
     }
@@ -588,12 +605,22 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   const paintedAt = useRef(0)
   /** A zoom moved past the last repaint: the settle repaints. */
   const zoomDirty = useRef(false)
+  /** The canvas holds clusters far outside the view: all of them with the view
+   *  zoomed in past the store's edge, or a set picked two zoom steps further out. */
+  const drawsTooMuch = useCallback(() => {
+    const d = drawnBoxRef.current, b = boundsRef.current, view = viewRef.current
+    if (d) return view.k / d.k > 2
+    return !!b && !contains(visibleBox(view, sizeRef.current, DRAW_MARGIN), b)
+  }, [])
   /** Draw the current view now: camera, dot sizes, clusters or memories, and labels after it settles. */
   const syncView = useCallback(() => {
     movedAt.current = performance.now()
     applyView()
     const nodesNow = wholeRef.current || showsNodes(viewRef.current, sizeRef.current, clusters)
-    if ((shownRef.current.mode === 'nodes') !== nodesNow) refreshShown()
+    const drawnBox = drawnBoxRef.current
+    // A view that left the memories handed to the canvas picks them again at once.
+    const outgrown = nodesNow && drawnBox !== null && !contains(drawnBox.box, visibleBox(viewRef.current, sizeRef.current))
+    if ((shownRef.current.mode === 'nodes') !== nodesNow || outgrown) refreshShown(true)
     else if (lastK.current !== viewRef.current.k) {
       // Dots and cluster discs are sized by zoom, so a zoom resizes them; a pan does
       // not. Repainting tens of thousands of marks every frame of a zoom costs the
@@ -611,6 +638,8 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     // Each step is its own task, so a settle never holds one frame for all of them;
     // a new move cancels the steps not yet run.
     const steps = [
+      // Zoomed in well past the drawn set: hand the canvas fewer memories.
+      () => { if (shownRef.current.mode === 'nodes' && drawsTooMuch()) { refreshShown(true); zoomDirty.current = false } },
       () => { if (zoomDirty.current) { zoomDirty.current = false; paint(); cosmosRef.current?.render(0, 0) } },
       () => placeOverlay(true),
       () => { pickLinks(true); cosmosRef.current?.render(0, 0) },
@@ -618,7 +647,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     const next = () => { const step = steps.shift(); if (!step) return; step(); settleRef.current = setTimeout(next, 0) }
     settleRef.current = setTimeout(next, SETTLE_MS)
     fetchVisible()
-  }, [applyView, clusters, fetchVisible, paint, pickLinks, placeOverlay, refreshShown, resize])
+  }, [applyView, clusters, drawsTooMuch, fetchVisible, paint, pickLinks, placeOverlay, refreshShown, resize])
   const viewChanged = useCallback(() => {
     if (frameRef.current !== null) return
     frameRef.current = requestAnimationFrame(() => { frameRef.current = null; syncView() })
@@ -662,7 +691,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
   }, [clearSelection, refetch])
   /** Breathe and light reads only with motion allowed and the tab in view. */
   const syncActivity = useCallback(() => {
-    activityRef.current?.setRunning(!reducedRef.current && document.visibilityState !== 'hidden')
+    activityRef.current?.setRunning(!reducedRef.current && document.visibilityState !== 'hidden' && onScreenRef.current)
   }, [])
   const liveFns = useRef({ viewChanged, flyTo, stopFlight, paint, paintLinks, relayout, refreshShown, fetchVisible, placeOverlay, syncActivity })
   liveFns.current = { viewChanged, flyTo, stopFlight, paint, paintLinks, relayout, refreshShown, fetchVisible, placeOverlay, syncActivity }
@@ -671,6 +700,17 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     document.addEventListener('visibilitychange', syncActivity)
     return () => document.removeEventListener('visibilitychange', syncActivity)
   }, [syncActivity])
+  // Scrolled away or its tab hidden (display: none), the canvas stops too.
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!ready || !el || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(entries => {
+      onScreenRef.current = entries[entries.length - 1].isIntersecting
+      syncActivity()
+    })
+    observer.observe(el)
+    return () => { observer.disconnect(); onScreenRef.current = true }
+  }, [ready, syncActivity])
   // The gateway reports each memory read on the dashboard socket (useWebSocket):
   // only this store's light up here.
   useEffect(() => {
@@ -710,7 +750,19 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     if (el.clientWidth > 0) sizeRef.current = { width: el.clientWidth, height: el.clientHeight }
     colorsRef.current = readGraphColors()
     let g: CosmosGraph
+    let layer: BreathLayer | null = null
+    /** The page background as RGB, parsed once per theme (cssRgb paints a pixel to read it). */
+    let background = { css: '', rgb: [0, 0, 0] as [number, number, number] }
+    /** The breath wave for the layer, from the runner's clock and the camera. */
+    const breath = () => {
+      const u = activity.uniforms, css = colorsRef.current?.background ?? ''
+      if (css !== background.css) background = { css, rgb: cssRgb(css, [0, 0, 0]) }
+      return { amp: activity.breathAmp, phase: u.clock[1], perUnit: u.clock[3], cx: u.centre[0], cy: u.centre[1],
+        view: breathView(viewRef.current, sizeRef.current), background: background.rgb }
+    }
+    const breathStep = { draw: () => layer?.draw(breath()) }
     const activity = new ActivityRunner({
+      layer: () => (layer ? breathStep : null),
       graph: () => cosmosRef.current,
       shown: () => shownRef.current,
       layout: () => layoutRef.current,
@@ -718,10 +770,14 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       dark: () => colorsRef.current?.dark ?? false,
       movedAt: () => movedAt.current,
     })
+    layer = BreathLayer.create(el)
     try {
     // `kcActivity` is this repo's own key: only the patched shader reads it.
     g = new Graph(el, {
       enableSimulation: false,
+      // Culling draws every mark twice (a depth pass, then colour); side by side
+      // on the 23k store, both themes, it changed no pixel by more than 2 levels.
+      pointOcclusionCulling: false,
       enableZoom: false,
       enableDrag: false,
       rescalePositions: false,
@@ -739,7 +795,8 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       curvedLinks: true,
       curvedLinkSegments: 9,
       curvedLinkControlPointDistance: LINK_BOW,
-      backgroundColor: colorsRef.current.background,
+      // With the breath layer the marks are drawn on a clear canvas, which the layer keeps.
+      backgroundColor: layer ? [0, 0, 0, 0] : colorsRef.current.background,
       focusedPointRingColor: colorsRef.current.ring,
       hoveredPointRingColor: colorsRef.current.ring,
       renderHoveredPointRing: true,
@@ -748,6 +805,11 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       attribution: '',
       // Read by the patched point shader each draw (scripts/cosmos-graph-activity.mjs).
       kcActivity: activity.uniforms,
+      kcAfterDraw: () => {
+        if (!shownRef.current.items.length) { layer?.clear(); return }
+        const source = (g as unknown as { canvas?: HTMLCanvasElement }).canvas
+        if (layer && source) { layer.capture(source); layer.draw(breath()) }
+      },
       onPointMouseOver: (index) => {
         const item = shownRef.current.items[index]
         hoveredRef.current = index
@@ -781,6 +843,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       // No WebGL here (an old browser, a locked-down VM): say so; search and filters stay usable.
       // eslint-disable-next-line no-console -- intentional init-failure diagnostic
       console.warn('MemoryGraph: the canvas could not start', err)
+      layer?.dispose()
       setCanvasError(err)
       return
     }
@@ -789,7 +852,12 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     liveFns.current.syncActivity()
     // The WebGL device starts after the constructor returns, so a browser without
     // WebGL fails here rather than in the try above.
-    g.ready.catch(err => { if (!disposed) setCanvasError(err) })
+    g.ready.catch(err => {
+      if (disposed) return
+      activity.dispose(); activityRef.current = null
+      layer?.dispose(); layer = null
+      setCanvasError(err)
+    })
     // cosmos.gl's world origin: the centre of its `spaceSize` square (default 4096).
     originRef.current = { ox: COSMOS_SPACE / 2, oy: COSMOS_SPACE / 2 }
     if (overview?.bounds) viewRef.current = fitBox(overview.bounds, sizeRef.current)
@@ -828,14 +896,14 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
     // Recolour live when the user switches light/dark (`<html data-theme>`).
     const themeObserver = new MutationObserver(() => {
       colorsRef.current = readGraphColors()
-      g.setConfigPartial({ backgroundColor: colorsRef.current.background, focusedPointRingColor: colorsRef.current.ring, hoveredPointRingColor: colorsRef.current.ring })
+      g.setConfigPartial({ backgroundColor: layer ? [0, 0, 0, 0] : colorsRef.current.background, focusedPointRingColor: colorsRef.current.ring, hoveredPointRingColor: colorsRef.current.ring })
       liveFns.current.paint(); g.render(0, 0); liveFns.current.placeOverlay()
     })
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
     teardown = () => {
       activity.dispose(); activityRef.current = null
       detach(); cancelGesture.current = null; themeObserver.disconnect()
-      g.destroy(); cosmosRef.current = null
+      g.destroy(); cosmosRef.current = null; layer?.dispose()
     }
     }).catch(err => { if (!disposed) setCanvasError(err) })
     return () => {
@@ -1030,7 +1098,7 @@ function MemoryGraphTab({ store = '' }: { store?: string }) {
       <div ref={canvasRef} tabIndex={0} role="application" aria-roledescription={i18nT('pages.overview.memoryGraphTab.memory_graph')}
         aria-label={i18nT('pages.overview.memoryGraphTab.memory_graph')} aria-describedby="memory-graph-keys"
         onKeyDown={onKey} onBlur={() => setFocusId(null)} data-testid="memory-graph-canvas"
-        className="w-full overflow-hidden rounded-md border border-border bg-bg-elevated focus-ring" style={{ height }} />
+        className="relative w-full overflow-hidden rounded-md border border-border bg-bg-elevated focus-ring" style={{ height }} />
       {canvasError != null && <div className="absolute inset-x-3 top-3">
         <ErrorNotice askAgent testId="memory-graph-canvas-error" messagePlacement="below"
           title={i18nT('pages.overview.memoryGraphTab.canvas_unavailable')} message={errMessage(canvasError) || i18nT('pages.overview.memoryGraphTab.load_failed_unknown')} />

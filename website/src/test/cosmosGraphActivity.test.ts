@@ -15,6 +15,10 @@ describe('breathing and lit marks in cosmos.gl point shader', () => {
     expect(out).not.toContain('kcBloom')
     expect(out).not.toContain('kcHalo')
     expect(out).toContain('setPointActivity(at, strength)')
+    // Each drawn frame and each empty clear is handed to the breath layer, once.
+    expect(out).toContain('x.end(), this.device.submit(), this.config.kcAfterDraw && this.config.kcAfterDraw();')
+    expect(out).toContain('}).end(), this.device.submit(), this.config.kcAfterDraw && this.config.kcAfterDraw()));')
+    expect(out.split('this.config.kcAfterDraw && this.config.kcAfterDraw()')).toHaveLength(3)
     expect(ACTIVITY_GLSL).toContain('flash * 0.45')
     expect(out).toContain('  vec4 kcLight;\n} drawVertex;')
     expect(out).toContain('uniform vec4 kcClock;')

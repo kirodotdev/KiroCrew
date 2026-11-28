@@ -79,6 +79,12 @@ const cosmos = vi.hoisted(() => {
     setLinkWidths() {}
     imageIndices = new Float32Array()
     imageSizes = new Float32Array()
+    activityUploads = 0
+    setPointActivity(at: Float32Array, strength: Float32Array) {
+      // The patched cosmos setter refuses activity for a different point count.
+      if (at.length !== this.positions.length / 2) return
+      this.imageIndices = at; this.imageSizes = strength; this.activityUploads++
+    }
     setPointImageIndices(a: Float32Array) { this.imageIndices = a }
     setPointImageSizes(a: Float32Array) { this.imageSizes = a }
     oneFrames = 0
@@ -109,6 +115,7 @@ vi.mock('../hooks/useReducedMotion', () => ({ useReducedMotion: () => motion.red
 
 import { api } from '../api/client'
 import MemoryGraphTab, { MOTION_MS, SEARCH_DEBOUNCE_MS } from '../pages/overview/MemoryGraphTab'
+import { BreathLayer } from '../pages/overview/memoryGraph/graphBreathLayer'
 import { BREATH_FPS } from '../pages/overview/memoryGraph/graphActivityRunner'
 import { MemoryJumpContext } from '../pages/overview/memoryPage/memoryJump'
 import { NODE_BUDGET } from '../pages/overview/memoryGraph/graphView'
@@ -498,6 +505,96 @@ describe('the memory graph over every memory', () => {
     visibility.mockRestore()
   })
 
+  it('stops while the graph is off screen (scrolled away or its tab hidden) and starts again on it', async () => {
+    const observers: IntersectionObserverCallback[] = []
+    class FakeObserver { constructor(cb: IntersectionObserverCallback) { observers.push(cb) } observe() {} disconnect() {} }
+    vi.stubGlobal('IntersectionObserver', FakeObserver)
+    onTestFinished(() => { vi.unstubAllGlobals() })
+    renderTab()
+    const g = await drawn()
+    const uniforms = (g.config.kcActivity as { clock: number[] })
+    expect(uniforms.clock[2]).toBeGreaterThan(0)
+    const seen = (on: boolean) => act(() => { for (const cb of observers) cb([{ isIntersecting: on } as IntersectionObserverEntry], {} as IntersectionObserver) })
+    seen(false)
+    expect(uniforms.clock[2]).toBe(0)
+    read({ store: 'member-a', kind: 'recall', ids: ['bb'], ts: 1 })
+    expect(g.imageIndices.length).toBe(0)
+    seen(true)
+    expect(uniforms.clock[2]).toBeGreaterThan(0)
+  })
+
+  it('hands the canvas only the clusters around the view, with links and lights on the right memories', async () => {
+    const at = (id: string, x: number, cluster: number, links?: [string, number][]) => ({ ...node(id, 'fact', x, 0), cluster, links })
+    const store = [at('l1', -1000, 0), at('l2', -996, 0), at('m1', -3, 1, [['m2', 0.9], ['r1', 0.95]]), at('m2', 3, 1), at('r1', 1000, 2), at('r2', 996, 2)]
+    vi.mocked(api.memoryGraphOverview).mockResolvedValue({ ...overview(), totals: { fact: 6 },
+      clusters: [{ id: 0, x: -998, y: 0, r: 6, count: 2, label: 'l' }, { id: 1, x: 0, y: 0, r: 6, count: 2, label: 'm' }, { id: 2, x: 998, y: 0, r: 6, count: 2, label: 'r' }],
+      bounds: [-1010, -10, 1010, 10] } as never)
+    vi.mocked(api.memoryGraphNodes).mockResolvedValue({ status: 'ready', layout: 'L1', nodes: store, cursor: null } as never)
+    renderTab()
+    const g = await drawn(6)
+    const xs = () => Array.from({ length: g.positions.length / 2 }, (_, i) => g.positions[i * 2])
+    // Zoomed in on the middle topic: the outer two leave the canvas once it settles.
+    await zoomIn(g, 4)
+    await waitFor(() => expect(xs()).toEqual([-3, 3]), { timeout: 3000 })
+    // Its own link joins its two drawn memories; the link to an undrawn one is gone.
+    await waitFor(() => expect([...g.links]).toEqual([0, 1]))
+    read({ store: 'member-a', kind: 'recall', ids: ['m2'], ts: 1 })
+    await waitFor(() => expect(g.imageIndices[1]).toBeGreaterThanOrEqual(0))
+    expect(g.imageIndices).toHaveLength(2)
+    // Zoomed back out past the drawn set: every topic is handed over again.
+    const canvas = screen.getByTestId('memory-graph-canvas')
+    fireEvent.keyDown(canvas, { key: '0' })
+    await waitFor(() => expect(xs()).toHaveLength(6), { timeout: 3000 })
+  })
+
+  it.each([false, true])('keeps recall lights through a camera repick (changed subset: %s)', async changed => {
+    const store = [-1000, -996, -3, 3, 996, 1000].map((x, i) => ({ ...node(`m${i}`, 'fact', x, 0), cluster: Math.floor(i / 2) }))
+    vi.mocked(api.memoryGraphOverview).mockResolvedValue({ ...overview(), totals: { fact: 6 },
+      clusters: [-998, 0, 998].map((x, id) => ({ id, x, y: 0, r: changed ? 6 : 1200, count: 2, label: `topic${id}` })),
+      bounds: [-1010, -10, 1010, 10] } as never)
+    vi.mocked(api.memoryGraphNodes).mockResolvedValue({ status: 'ready', layout: 'L1', nodes: store, cursor: null } as never)
+    renderTab()
+    const g = await drawn(6), clock = cameraClock()
+    const canvas = screen.getByTestId('memory-graph-canvas')
+    const xs = () => Array.from({ length: g.positions.length / 2 }, (_, i) => g.positions[i * 2])
+    for (let i = 0; i < 4; i++) {
+      fireEvent.keyDown(canvas, { key: '+' })
+      await clock.frame(MOTION_MS)
+      await clock.settle()
+    }
+    expect(xs()).toEqual(changed ? [-3, 3] : store.map(n => n.x))
+    read({ store: 'member-a', kind: 'recall', ids: ['m3'], ts: 1 })
+    await clock.frame(16)
+    const oldIndex = xs().indexOf(3)
+    const at = g.imageIndices[oldIndex], hold = g.imageSizes[oldIndex]
+    expect(at).toBeGreaterThanOrEqual(0)
+    const uploads = g.drawnCounts.length, activityUploads = g.activityUploads, colours = g.colorUploads
+    const all = vi.spyOn(NodeCache.prototype, 'all')
+    onTestFinished(() => all.mockRestore())
+    const pan = async (x: number) => {
+      act(() => { canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: x * g.view.k })) })
+      await clock.frame(16)
+      await clock.settle()
+    }
+    // Leave the previous pick's box. The middle memory stays drawn, at a new index if the left topic joins.
+    await pan(-500)
+    expect(all).toHaveBeenCalledTimes(1)
+    expect(xs()).toEqual(changed ? [-1000, -996, -3, 3] : store.map(n => n.x))
+    const nextIndex = xs().indexOf(3)
+    expect(g.imageIndices[nextIndex]).toBe(at)
+    expect(g.imageSizes[nextIndex]).toBe(hold)
+    expect(g.drawnCounts.length).toBe(uploads + (changed ? 1 : 0))
+    expect(g.activityUploads).toBe(activityUploads + (changed ? 1 : 0))
+    expect(g.colorUploads).toBe(colours + (changed ? 1 : 0))
+    if (changed) expect([...g.imageIndices].slice(0, 2)).toEqual([-1, -1])
+    // Even an all-kept pick records its box: a nearby pan needs no further pick or upload.
+    await pan(20)
+    expect(all).toHaveBeenCalledTimes(1)
+    expect(g.imageIndices[nextIndex]).toBe(at)
+    expect(g.drawnCounts.length).toBe(uploads + (changed ? 1 : 0))
+    expect(g.activityUploads).toBe(activityUploads + (changed ? 1 : 0))
+  })
+
   it.each(['recall', 'session_start'])('lights an uncached memory at cluster zoom for %s', async kind => {
     vi.mocked(api.memoryGraphOverview).mockResolvedValue({
       ...overview(250000),
@@ -850,10 +947,45 @@ describe('the memory graph over every memory', () => {
     expect(rgb('aa')).toEqual(rgb('cc'))
   })
 
-  it('says so when the WebGL device fails after the canvas starts', async () => {
+  it('clears the breath layer when a kind filter leaves no shown memories', async () => {
+    motion.reduced = true
+    const layer = { capture: vi.fn(), draw: vi.fn(), clear: vi.fn(), dispose: vi.fn() }
+    const create = vi.spyOn(BreathLayer, 'create').mockReturnValue(layer as unknown as BreathLayer)
+    onTestFinished(() => create.mockRestore())
+    vi.mocked(api.memoryGraphNodes).mockResolvedValue({ status: 'ready', layout: 'L1', nodes: [NODES[0]], cursor: null } as never)
+    renderTab()
+    const g = await drawn(1)
+    const source = document.createElement('canvas')
+    Object.assign(g, { canvas: source })
+    const afterDraw = g.config.kcAfterDraw as () => void
+    act(afterDraw)
+    expect(layer.capture).toHaveBeenCalledExactlyOnceWith(source)
+    expect(layer.draw).toHaveBeenCalled()
+    layer.draw.mockClear()
+    vi.mocked(api.memoryGraphNodes).mockResolvedValue({ status: 'ready', layout: 'L1', nodes: [], cursor: null } as never)
+    fireEvent.click(screen.getByRole('radio', { name: /Lessons/ }))
+    await drawn(0)
+    expect(g.links).toHaveLength(0)
+    act(afterDraw)
+    expect(layer.clear).toHaveBeenCalledOnce()
+    expect(layer.capture).toHaveBeenCalledTimes(1)
+    expect(layer.draw).not.toHaveBeenCalled()
+  })
+
+  it('disposes the breath layer when the WebGL device fails after the canvas starts', async () => {
+    const canvas = document.createElement('canvas')
+    const dispose = vi.fn(() => canvas.remove())
+    const create = vi.spyOn(BreathLayer, 'create').mockImplementation(host => {
+      host.appendChild(canvas)
+      return { dispose, draw: vi.fn() } as unknown as BreathLayer
+    })
+    onTestFinished(() => create.mockRestore())
     cosmos.deviceFails = true
     renderTab()
     expect(await screen.findByTestId('memory-graph-canvas-error', {}, LAZY_INIT)).toBeTruthy()
+    expect(create).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(canvas.isConnected).toBe(false)
     expect(screen.getByRole('searchbox')).toBeTruthy()
   })
 

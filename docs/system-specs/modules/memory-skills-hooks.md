@@ -2301,8 +2301,30 @@ The point shader (`scripts/cosmos-graph-activity.mjs`) receives arrival and pack
 hold/strength once per batch; a negative packed hold identifies the instant seed.
 Per-frame JavaScript changes only uniforms and requests one draw, never iterates
 points. Idle brightness breathes ±3.5% over 6 s at 20 fps; activation requests
-every animation frame. Both stop under reduced motion and while the tab is hidden,
-and reads received while stopped are dropped. The canvas is
+every animation frame. The breath is drawn as one image
+(`memoryGraph/graphBreathLayer.ts`): cosmos.gl draws the marks on a clear
+canvas, a WebGL 2 canvas over it copies each frame cosmos.gl draws (the
+`kcAfterDraw` hook) and draws one quad per breath step with the same brightness
+wave per pixel over the page background, so a breath step costs one draw and no
+buffer upload whatever the number of memories, and cosmos.gl draws only when
+marks, lights or the camera change. Between breath steps no animation frame is
+requested. The layer stays hidden until a captured frame is drawn, so an
+unpatched development build leaves cosmos.gl visible. The hook also runs after
+an empty graph clears its canvas; an empty shown set or zero-sized capture
+invalidates and hides the layer. Device initialization failure disposes it.
+Without WebGL 2 the point shader breathes as before. Both stop under
+reduced motion, while the browser tab is hidden and while the canvas is off
+screen (scrolled away, or its tab hidden), and reads received while stopped are
+dropped. The canvas holds memories whose own position or whose cluster disc
+falls inside the view grown by its own size on each side (`drawnInBox`,
+`DRAW_MARGIN`): a view that leaves that box picks them again at once, and a
+settle after zooming in by more than 2x picks again. Every pick records its
+box and zoom, even when it keeps every memory. Camera picks with unchanged
+ordered ids keep the same array and GPU positions; changed subsets remap
+retained lights by memory id without restarting their clocks. Links and lights
+index the drawn memories. cosmos.gl's
+point occlusion culling is off: it drew every mark twice and changed no pixel
+by more than 2 levels on the 23k store. The canvas is
 cosmos.gl (WebGL, loaded on first visit in its own bundle chunk); when the chunk
 fails to load or WebGL cannot start, an error inside the canvas says so and search
 and filters stay usable. Each kind pill carries a dot in the colour its nodes are
