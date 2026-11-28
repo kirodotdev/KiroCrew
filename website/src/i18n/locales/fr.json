@@ -19936,7 +19936,10 @@
       "close_wont_cancel_create": "Fermer ne l'annule pas — la planification peut tout de même être créée.",
       "close_wont_cancel_edit": "Fermer ne l'annule pas — les modifications peuvent tout de même être enregistrées.",
       "late_save_failed": "La planification « {{job}} » n'a pas été enregistrée.",
-      "late_save_unconfirmed": "La planification « {{job}} » a peut-être été enregistrée, ou pas — le serveur ne l'a pas confirmé."
+      "late_save_unconfirmed": "La planification « {{job}} » a peut-être été enregistrée, ou pas — le serveur ne l'a pas confirmé.",
+      "waiting_starts_by": "En attente, démarrage au plus tard à {{time}}",
+      "waiting_to_start_hint": "Cette exécution n’a pas encore commencé. Une tâche récurrente démarre à un moment aléatoire après son heure planifiée, afin que les tâches ne démarrent pas toutes en même temps.",
+      "cancel_waiting_run": "Annuler cette exécution avant son démarrage"
     },
     "servicesTab": {
       "channels": "Plateformes de chat",

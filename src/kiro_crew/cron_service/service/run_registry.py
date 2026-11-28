@@ -180,6 +180,20 @@ def running_since(self: CronService, job_id: str) -> float | None:
     return self._runs.running_since(job_id)
 
 
+def run_waiting_until(self: CronService, job_id: str) -> float | None:
+    """Return the epoch time a job's claimed run starts executing, or None.
+
+    Set while the run waits out its jitter: the job is claimed, so
+    :meth:`is_running` is true, and it has executed nothing. None for a job with
+    no run, a run that is executing, and a run ``cancel()`` or the reaper has
+    taken (as :meth:`running_since`).
+    """
+    claim = self._runs.claims.get(job_id)
+    if claim is None or claim.taken:
+        return None
+    return claim.waiting_until
+
+
 def run_trigger(self: CronService, job_id: str) -> str | None:
     """How a job's running run was started (``"manual"`` or ``"scheduled"``), or None."""
     claim = self._runs.claims.get(job_id)

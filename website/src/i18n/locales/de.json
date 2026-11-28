@@ -19409,7 +19409,10 @@
       "close_wont_cancel_create": "Schließen bricht den Vorgang nicht ab — der Zeitplan kann trotzdem angelegt werden.",
       "close_wont_cancel_edit": "Schließen bricht den Vorgang nicht ab — deine Änderungen können trotzdem gespeichert werden.",
       "late_save_failed": "Der Zeitplan „{{job}}“ wurde nicht gespeichert.",
-      "late_save_unconfirmed": "Der Zeitplan „{{job}}“ wurde vielleicht gespeichert, vielleicht nicht — der Server hat es nicht bestätigt."
+      "late_save_unconfirmed": "Der Zeitplan „{{job}}“ wurde vielleicht gespeichert, vielleicht nicht — der Server hat es nicht bestätigt.",
+      "waiting_starts_by": "Wartet, startet bis {{time}}",
+      "waiting_to_start_hint": "Diese Ausführung hat noch nicht begonnen. Ein wiederkehrender Job startet zu einem zufälligen Zeitpunkt nach seiner geplanten Zeit, damit nicht alle Jobs gleichzeitig starten.",
+      "cancel_waiting_run": "Diese Ausführung vor dem Start abbrechen"
     },
     "servicesTab": {
       "channels": "Chat-Plattformen",

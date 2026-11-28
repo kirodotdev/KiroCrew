@@ -19936,7 +19936,10 @@
       "close_wont_cancel_create": "Cerrar no lo cancela — la programación puede crearse igualmente.",
       "close_wont_cancel_edit": "Cerrar no lo cancela — tus cambios pueden guardarse igualmente.",
       "late_save_failed": "La programación “{{job}}” no se guardó.",
-      "late_save_unconfirmed": "La programación “{{job}}” puede haberse guardado o no — el servidor no lo confirmó."
+      "late_save_unconfirmed": "La programación “{{job}}” puede haberse guardado o no — el servidor no lo confirmó.",
+      "waiting_starts_by": "En espera, empieza como máximo a las {{time}}",
+      "waiting_to_start_hint": "Esta ejecución aún no ha empezado. Un trabajo periódico empieza en un momento aleatorio después de su hora programada, para que no empiecen todos a la vez.",
+      "cancel_waiting_run": "Cancelar esta ejecución antes de que empiece"
     },
     "servicesTab": {
       "channels": "Plataformas de chat",

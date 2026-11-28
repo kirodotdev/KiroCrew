@@ -147,6 +147,14 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
         # must still reach the finally.
         if jitter > 0:
             logger.debug("Cron: applying %.0fs jitter to job '%s'", jitter, job.name)
+            # Read by the Schedule page, which shows this run as waiting until
+            # then; the refresh shows it without a reload.
+            claim.waiting_until = seams.time.time() + jitter
+            try:
+                if self._push_refresh:
+                    self._push_refresh("crons")
+            except Exception:
+                logger.debug("push_refresh failed on jitter wait start", exc_info=True)
             # The same marker, written before the wait so a hard exit in it
             # still leaves the claimed run on disk; the write below replaces it.
             marker_write = asyncio.ensure_future(
@@ -162,6 +170,7 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
             )
             await asyncio.shield(marker_write)
             await seams._sleep_out_jitter(jitter)
+            claim.waiting_until = None
         exec_started_at = seams.time.time()
         # The record a hard exit leaves behind: an os._exit from the loop-stall
         # watchdog skips the finally, so without it the job would look never

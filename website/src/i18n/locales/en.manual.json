@@ -9395,7 +9395,10 @@
       "backing_off_after_n_failures_other": "Delayed until {{time}} · {{count}} failures in a row",
       "backoff_ends_on_success": "A successful run ends the delay.",
       "full_run_text_load_failed": "Couldn't load the full text of the last run, so the text below may be cut short. The job's settings are not affected.",
-      "jobs_table": "Scheduled jobs"
+      "jobs_table": "Scheduled jobs",
+      "waiting_starts_by": "Waiting, starts by {{time}}",
+      "waiting_to_start_hint": "This run has not started yet. A repeating job starts at a random time after its scheduled time, so that jobs do not all start at once.",
+      "cancel_waiting_run": "Cancel this run before it starts"
     },
     "servicesTab": {
       "channels": "Messaging Channels",

@@ -783,6 +783,7 @@ class CronService:
     attach_run_task = _run_registry.attach_run_task
     discard_finished_run = _run_registry.discard_finished_run
     running_since = _run_registry.running_since
+    run_waiting_until = _run_registry.run_waiting_until
     run_trigger = _run_registry.run_trigger
     set_refresh_callback = _run_registry.set_refresh_callback
     set_timeout_alert = _run_registry.set_timeout_alert

@@ -19936,7 +19936,10 @@
       "close_wont_cancel_create": "Fechar não cancela — o agendamento ainda pode ser criado.",
       "close_wont_cancel_edit": "Fechar não cancela — suas alterações ainda podem ser salvas.",
       "late_save_failed": "O agendamento “{{job}}” não foi salvo.",
-      "late_save_unconfirmed": "O agendamento “{{job}}” pode ou não ter sido salvo — o servidor não confirmou."
+      "late_save_unconfirmed": "O agendamento “{{job}}” pode ou não ter sido salvo — o servidor não confirmou.",
+      "waiting_starts_by": "Aguardando, começa até {{time}}",
+      "waiting_to_start_hint": "Esta execução ainda não começou. Um job recorrente começa em um momento aleatório depois do horário agendado, para que os jobs não comecem todos ao mesmo tempo.",
+      "cancel_waiting_run": "Cancelar esta execução antes que ela comece"
     },
     "servicesTab": {
       "channels": "Plataformas de chat",
