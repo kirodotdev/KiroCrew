@@ -408,8 +408,34 @@ def build_context(
             raise HelperError("the browser is not running")
         await _GatedRelay(relay, caller_key or session_key).emulate(target_id, method, params)
 
+    url_allowed = (
+        _site_gate(sites, own_origins)
+        if sites
+        else lambda url: committed_url_allowed(url, own_origins)
+    )
+    guard_relay: list[Any] = []
+
+    async def _helper(name: str, **kwargs: Any) -> Any:
+        # Once a guard armed on a relay, every later helper of this op is pinned to
+        # it, in shared mode too: a daemon restart in between would otherwise run
+        # ``goto`` on a fresh browser no guard intercepts (``BrowserRestarted``).
+        if guard_relay:
+            kwargs.setdefault("relay", guard_relay[0])
+        return await helper(name, **kwargs)
+
+    def _nav_guard() -> Any:
+        # Read at the op, after the tab bind: the session's pinned relay when its
+        # op is isolated, else the daemon's. A missing relay or tab makes the guard
+        # refuse the navigation (fail closed), never skip the gate.
+        from kiro_crew.browser_harness.nav_guard import NavigationGuard
+
+        relay = hub.bound_relay(session_key) or getattr(supervisor, "relay", None)
+        if relay is not None:
+            guard_relay[:] = [relay]
+        return NavigationGuard(relay, hub.target_of(session_key), url_allowed)
+
     return harness_ops.OpContext(
-        helper=helper,
+        helper=_helper,
         step=_step,
         in_control=_in_control,
         agent_targets=_agent_targets,
@@ -418,11 +444,8 @@ def build_context(
         upload_dir=config_dir() / IPC_LEAF / "uploads",
         sleep=asyncio.sleep,
         sites=tuple(sites),
-        url_allowed=(
-            _site_gate(sites, own_origins)
-            if sites
-            else lambda url: committed_url_allowed(url, own_origins)
-        ),
+        url_allowed=url_allowed,
+        nav_guard=_nav_guard,
         loop=_loop,
         mark=_mark,
         record=_record,
