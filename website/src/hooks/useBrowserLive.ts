@@ -305,6 +305,10 @@ const EMPTY_TURNS: readonly BrowserLiveTurn[] = []
 
 const isEnded = (s: BrowserLiveState) => s === 'done' || s === 'error'
 
+/** The agent is still browsing in this turn: it has not ended, and its turn is not over. */
+export const isBrowsingNow = (t: BrowserLiveTurn | null): boolean => !!t && !t.turnOver && !isEnded(t.state)
+const browsingRank = (t: BrowserLiveTurn) => (isBrowsingNow(t) ? 1 : 0)
+
 /** Map keys are `session + SEP + id`; a NUL cannot appear in either half. */
 const SEP = '\u0000'
 const joinKey = (a: string, b: string) => a + SEP + b
@@ -547,6 +551,22 @@ class BrowserLiveStore {
 
   current(sessionKey: string | null): BrowserLiveTurn | null {
     return sessionKey ? this.sessions.get(sessionKey)?.current ?? null : null
+  }
+
+  /**
+   * One record for several sessions at once (a Bot's page follows its sessions):
+   * a turn still browsing first, else the one that started last.
+   */
+  newestCurrent(keys: readonly string[]): BrowserLiveTurn | null {
+    let best: BrowserLiveTurn | null = null
+    for (const k of keys) {
+      const cur = this.sessions.get(k)?.current
+      if (!cur) continue
+      const ahead = !best || browsingRank(cur) > browsingRank(best)
+        || (browsingRank(cur) === browsingRank(best) && cur.startedAt > best.startedAt)
+      if (ahead) best = cur
+    }
+    return best
   }
 
   inControl(sessionKey: string | null): boolean {
@@ -951,6 +971,15 @@ export function useBrowserLiveCurrent(sessionKey: string | null): BrowserLiveTur
   return useSyncExternalStore(
     browserLiveStore.subscribe,
     () => browserLiveStore.current(sessionKey),
+    () => null,
+  )
+}
+
+/** `newestCurrent` over `keys`: the record the Preview tab opens on when it serves several sessions. */
+export function useBrowserLiveNewest(keys: readonly string[]): BrowserLiveTurn | null {
+  return useSyncExternalStore(
+    browserLiveStore.subscribe,
+    () => browserLiveStore.newestCurrent(keys),
     () => null,
   )
 }

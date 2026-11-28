@@ -331,8 +331,10 @@ export function HydratingFileTab({ path, slot, onDiskContent }: {
   return <div data-testid="file-tab-hydrating" className="h-full p-4"><ContentSkeleton rows={8} /></div>
 }
 
-function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onSubmitComments, connected = true, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, slot, browserFollowKeys, projectDir, onClose, onPanelHandle, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onSubmitComments, connected = true, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
+  /** More sessions the Preview tab's agent browser shows (`SidePanel.browserFollowKeys`). */
+  browserFollowKeys?: readonly string[]
   /** The chat's project directory — the file-browser rail's tree root. */
   projectDir?: string
   onClose: () => void
@@ -370,7 +372,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   // A restored shell may be gone: connecting before the ruling would spawn a new one.
   if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} remoteSlot={tab.remoteSlot} chatSlot={slot || undefined} visible={active} onSendToChat={onTerminalSendToChat} />
   // The Preview tab: the local dev-server preview, or the agent's browser big.
-  if (tab.kind === 'browser') return <PreviewTabBody sessionKey={slot} active={active} />
+  if (tab.kind === 'browser') return <PreviewTabBody sessionKey={slot} active={active} followKeys={browserFollowKeys} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
   // Cross-remount scroll identity for document bodies. Same slot+id key shape
   // as the app-frame list: the tab id is unique within a slot and stable in

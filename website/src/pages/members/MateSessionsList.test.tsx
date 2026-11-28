@@ -4,7 +4,7 @@
  * panel. The recap is records-only, with no model-written summary.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { act, cleanup, render, screen, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ChatSlot, CrewWorker, CrewWorkerRecap } from '../../types'
 
@@ -23,6 +23,7 @@ vi.mock('../../api/client', () => ({
 
 import MateSessionsList, { MateSessionRecap, RecapBody } from './MateSessionsList'
 import { ApiError } from '../../api/apiError'
+import { browserLiveStore } from '../../hooks/useBrowserLive'
 
 const MATE = 'dm-ada'
 
@@ -39,12 +40,12 @@ const RECAP: CrewWorkerRecap = {
   open_approvals: 1, approvals: [{ tool: 'Shell', requested_at: '' }], open_questions: 2, live: true,
 }
 
-function mount(live: Partial<ChatSlot>[] = [], onOpen: (w: CrewWorker) => void = () => {}) {
+function mount(live: Partial<ChatSlot>[] = [], onOpen: (w: CrewWorker) => void = () => {}, onWatch?: (w: CrewWorker) => void) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
       <MateSessionsList root={MATE} mateName="Ada" liveSlots={live as ChatSlot[]} slotsLoaded
-        empty={<p data-testid="empty">empty</p>} onOpen={onOpen} />
+        empty={<p data-testid="empty">empty</p>} onOpen={onOpen} onWatch={onWatch} />
     </QueryClientProvider>,
   )
 }
@@ -138,6 +139,48 @@ describe('MateSessionsList', () => {
     const recapClasses = recap.className.split(/\s+/)
     expect(recapClasses.filter(c => /^(bg-|rounded)/.test(c))).toEqual([])
     expect(recapClasses).toContain('border-l-2')
+  })
+})
+
+describe('MateSessionsList Live', () => {
+  const browse = (key: string, state: string) => act(() => {
+    browserLiveStore.applyEvent({ session_key: key, turn_id: `t-${key}`, state, url: 'https://example.com/docs' })
+  })
+  const rowOf = (title: string) => screen.getByText(title).closest('li') as HTMLElement
+  // Unmount first: a reset's notify() would re-render the mounted rows outside act().
+  afterEach(() => { cleanup(); browserLiveStore.__resetForTests() })
+
+  it('offers Live on a row whose session is browsing now and hands it to the host', async () => {
+    crewWorkers.mockResolvedValue({ root: MATE, workers: [
+      worker('m1', { title: 'Read the docs', group: 'working', status: 'working' }),
+      worker('m2', { title: 'Check the links', group: 'working', status: 'working' }),
+    ] })
+    browse('m1', 'live')
+    browse('m2', 'live')
+    browse('m2', 'done')
+    const onOpen = vi.fn()
+    const onWatch = vi.fn()
+    mount([], onOpen, onWatch)
+    await screen.findByText('Read the docs')
+    const live = within(rowOf('Read the docs')).getByTestId('mate-session-watch')
+    expect(live).toHaveTextContent('Live')
+    expect(live).toHaveAccessibleName('Expand the live view')
+    // A finished turn offers nothing.
+    expect(within(rowOf('Check the links')).queryByTestId('mate-session-watch')).toBeNull()
+    fireEvent.click(live)
+    expect(onWatch).toHaveBeenCalledWith(expect.objectContaining({ key: 'm1' }))
+    expect(onOpen).not.toHaveBeenCalled()
+    // The turn ends: Live goes.
+    browse('m1', 'done')
+    expect(screen.queryByTestId('mate-session-watch')).toBeNull()
+  })
+
+  it('offers no Live where the host passes no onWatch (the Profile card)', async () => {
+    crewWorkers.mockResolvedValue({ root: MATE, workers: [worker('m1', { title: 'Read the docs', group: 'working', status: 'working' })] })
+    browse('m1', 'live')
+    mount()
+    await screen.findByText('Read the docs')
+    expect(screen.queryByTestId('mate-session-watch')).toBeNull()
   })
 })
 
