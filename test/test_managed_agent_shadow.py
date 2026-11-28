@@ -389,7 +389,7 @@ def test_an_agents_directory_linked_to_a_protected_location_is_refused_unlisted(
     agents = tmp_path / "project" / ".kiro" / "agents"
     agents.symlink_to(protected, target_is_directory=True)
     monkeypatch.setattr(hooks, "validate_file_path", lambda p: None)
-    monkeypatch.setattr(mod, "_is_installed_agents_dir", lambda d: pytest.fail("probed"))
+    monkeypatch.setattr(agent_mod, "is_installed_agents_dir", lambda d: pytest.fail("probed"))
     monkeypatch.setattr(mod, "_project_spec_files", lambda d: pytest.fail("scanned"))
     refusal = managed_agent_shadow_refusal("reviewer", tmp_path / "project")
     assert refusal is not None and str(agents) in refusal
