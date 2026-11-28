@@ -247,9 +247,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `download_to` also RETURNS its failure string with the url cut to
         # scheme+host and the exception reduced to its type, never `{exc}`. The
         # callers own where that string goes: Papyrus's Tectonic install puts it in
-        # its install state and PPTX Maker's engine install in its provision log,
-        # and each app's own routes hand that to the dashboard. Those two app
-        # modules call no redactor themselves, so they are not listed.
+        # its install state, and the app's own routes hand that to the dashboard.
+        # That app module calls no redactor itself, so it is not listed.
         "asset_downloader.py",
         "feature_videos_manifest.py",
         # Same transfer-side hygiene for the KAS engine installer: a fetch failure
@@ -1290,13 +1289,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The shared mark-collected sender: redacts only the gateway error text its
         # warning log line carries; it returns nothing to the model or a user.
         "subagent_read_collected.py",
-        # Uses the redactor as a PREDICATE, not a transform: `resolve_deck_dir`
-        # asks `refuses(deck_id, redact)` to decide whether to refuse the deck
-        # outright. A deck id cannot be scrubbed on the way out — it is the directory
-        # name, the `preview/<deckId>/...` URL segment and the handle every later
-        # request sends back — so the only safe answer is not to serve that deck at
-        # all. Nothing is emitted here; the app's egress path is decks.py/routes.py.
-        "apps/builtins/pptx_maker/backend/paths.py",
         # Redacts INBOUND attacker-controllable provider metadata before it is
         # stored/displayed — a sanitizer on the way in, not an output boundary.
         "dashboard/handlers/mcp_discover.py",
@@ -1450,8 +1442,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/meetings/backend/routes/meeting_lifecycle.py",
         "apps/builtins/meetings/backend/routes/tasks.py",
         "apps/builtins/papyrus/backend/routes.py",
-        "apps/builtins/pptx_maker/backend/decks.py",
-        "apps/builtins/pptx_maker/backend/routes.py",
         # A behavior-preserving decomposition of the Spec Builder app backend.
         # These modules still feed the same app-owned HTTP/dashboard surface; the
         # split adds no transport or audience and therefore no posture sink.

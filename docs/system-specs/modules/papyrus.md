@@ -446,10 +446,11 @@ is how the test suite guarantees it never reaches the network.
 
 ### This is NOT the system-package install `pptx-maker` refuses
 
-`docs/system-specs/modules/pptx-maker.md` records a deliberate product decision:
-that app's upstream shelled out to `brew`/`apt-get` from a browser request, and
-*installing a system package is a host-level action a web request must not take*;
-a test there pins the absence of `POST /deps/install`. **That decision stands.**
+PPTX Maker's own repository (KiroCrewCaptain/kirocrew-app-pptx-maker) records a
+deliberate product decision in its `/deps` route: that app's upstream shelled out to
+`brew`/`apt-get` from a browser request, and *installing a system package is a
+host-level action a web request must not take*; a test there pins the absence of
+`POST /deps/install`. **That decision stands.**
 `POST /compiler/provision` is a categorically different act, and the differences
 are the reason it is allowed:
 

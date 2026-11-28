@@ -1504,11 +1504,6 @@
         "skip": "Skip"
       }
     },
-    "pptxMaker": {
-      "libraryPanel": {
-        "font_specimen": "Aa"
-      }
-    },
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "Answer failed — ask again below",

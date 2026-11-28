@@ -419,7 +419,7 @@ class TestRedaction:
     def test_returned_reason_never_carries_the_credentialed_url(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_exc
     ) -> None:
-        """The returned reason reaches the Papyrus and PPTX Maker install state on the dashboard.
+        """The returned reason reaches an app's install state on the dashboard (Papyrus's).
 
         It names the exception type and the host, and no credential the url carries.
         """

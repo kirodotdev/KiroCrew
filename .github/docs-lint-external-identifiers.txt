@@ -278,9 +278,6 @@ userSettings
 # Prometheus Alertmanager config (ops-mission-control.md)
 webhook_config
 
-# macOS dyld `@loader_path` (pptx-maker.md)
-loader_path
-
 # electron-updater (build/release.md)
 DebUpdater
 RpmUpdater

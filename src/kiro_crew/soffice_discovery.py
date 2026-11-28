@@ -3,8 +3,7 @@
 The one implementation in the repository. The file panel's slide previews
 (``dashboard/handlers/office_slides.py``) render a deck through ``soffice``, a system
 package the product neither ships nor installs from a browser request, so finding it
-is a core capability that holds with no app installed. An app that renders office
-documents (PPTX Maker) imports these helpers rather than carrying its own copy.
+is a core capability that holds with no app installed.
 
 Discovery order: ``PATH`` first, so the user's own install wins; then the fixed
 Windows install roots, because the LibreOffice installer does not extend ``PATH``

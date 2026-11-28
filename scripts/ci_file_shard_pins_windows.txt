@@ -561,7 +561,6 @@
 2 test/test_pod_provision.py
 2 test/test_pod_scenarios_command.py
 5 test/test_portability.py
-6 test/test_pptx_maker_routes.py
 3 test/test_pr_status_owners.py
 3 test/test_pre_fix_fork_carrier_repair.py
 1 test/test_precompile_windows.py

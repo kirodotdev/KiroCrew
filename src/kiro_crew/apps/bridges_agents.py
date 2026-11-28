@@ -615,8 +615,8 @@ def _unresolvable_tool_refs(agent_data: dict[str, Any]) -> list[str]:
     kiro-cli resolves a ``@`` tool reference against the agent's own
     ``mcpServers`` plus the global ``mcp.json``; a name found in neither is
     dropped SILENTLY at mount time — the agent simply loses the tool with no
-    exception and no log line anywhere. CI gates the shipped specs (see
-    ``test_pptx_maker_provision.py``), but a user-installed app whose server
+    exception and no log line anywhere. CI gates the specs an app ships in its
+    own repository, but a user-installed app whose server
     failed to register is a runtime event CI cannot see, so the registration
     path — the last point that holds both the grants and the merged server
     map — reports it here.

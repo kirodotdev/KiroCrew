@@ -91,7 +91,6 @@ const ROWS: {
   { name: 'projects', displayName: 'Projects', iconUrl: '/app-assets/projects/icon.svg', localAuthor: 'kirocrew', catalogAuthor: 'Kiro Crew' },
   { name: 'meetings', displayName: 'Meetings', iconUrl: '/app-assets/meetings/icon.svg', localAuthor: 'adunuthu', catalogAuthor: 'adunuthu' },
   { name: 'papyrus', displayName: 'Papyrus', iconUrl: '/app-assets/papyrus/icon.svg', localAuthor: 'tricatte', catalogAuthor: 'tricatte' },
-  { name: 'pptx-maker', displayName: 'PPTX Maker', iconUrl: '/app-assets/pptx-maker/icon.svg', localAuthor: 'sktok', catalogAuthor: 'sktok' },
 ]
 
 function rowFor(r: (typeof ROWS)[number]): RegistryApp {

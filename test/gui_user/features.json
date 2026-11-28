@@ -5,15 +5,15 @@
     "smoke": 42,
     "nightly": 164,
     "native-only": 13,
-    "needs-secret": 27,
+    "needs-secret": 26,
     "excluded": 24,
-    "total": 270
+    "total": 269
   },
   "priorities": {
     "P0": 10,
     "P1": 35,
     "P2": 159,
-    "P3": 64
+    "P3": 63
   },
   "per_feature": {
     "chat": {
@@ -125,7 +125,7 @@
       "smoke": 3,
       "nightly": 10,
       "native-only": 2,
-      "needs-secret": 7,
+      "needs-secret": 6,
       "excluded": 2
     },
     "task-runner": {
@@ -3910,33 +3910,6 @@
         "app-papyrus-create-compile"
       ],
       "component": "website/src/apps/papyrus/PapyrusPage.tsx"
-    },
-    {
-      "id": "app-pptx-maker-studio",
-      "feature": "apps",
-      "title": "PPTX Maker: open the studio, browse the library, and start a deck chat",
-      "user_story": "As a presenter, I want to describe a deck in chat and watch slides appear in a live preview, so that I get a real .pptx without a design tool.",
-      "start_url": "/pptx-maker",
-      "entry_path": "Enable PPTX Maker > Rail > PPTX Maker > Decks view > New deck (choose Spec/Vibe agent) > chat > watch preview",
-      "preconditions": {
-        "seed": "apps-installed",
-        "members": [],
-        "feature_flags": [],
-        "notes": "First use installs the sha256-pinned spec-driven-presentation-maker engine from the network; @sdpm MCP tools and optional soffice/pdftoppm needed for full previews. Generation happens in a chat session on a shipped agent."
-      },
-      "runnable": "needs-secret",
-      "estimated_steps": 6,
-      "rationale": "The primary flow (start a deck chat, watch preview) requires the engine download and MCP tools that need network, which the target does not have; the Decks/Library/Settings views render headless but are not the primary flow.",
-      "source": [
-        "src/kiro_crew/apps/builtins/pptx_maker/app.json",
-        "website/src/apps/pptx-maker/PptxMakerPage.tsx",
-        "website/src/apps/pptx-maker/LibraryPanel.tsx"
-      ],
-      "priority": "P3",
-      "merged_from": [
-        "app-pptx-maker-studio"
-      ],
-      "component": "website/src/apps/pptx-maker/PptxMakerPage.tsx"
     },
     {
       "id": "apps-migration",

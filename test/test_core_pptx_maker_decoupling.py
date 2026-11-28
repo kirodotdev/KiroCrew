@@ -1,11 +1,12 @@
 """GATE: Kiro Crew core does not depend on the PPTX Maker (``pptx-maker``) app's code.
 
-PPTX Maker is to leave this repository whole. That is only possible while nothing
-outside ``src/kiro_crew/apps/builtins/`` imports it or names it. What the core
-needs from the app it reads through a generic, app-keyed seam the app fills; what
-the app needs from the core it imports from the core. The app's pins of core
-parity (the shared credential spelling, the one-scope spawn layer, the Windows
-containment fold, its agents' welcome hints) run in the app's own ``tests/``.
+PPTX Maker has left this repository: it installs from its own repository at the
+commit its adoption pin names. It stays out only while nothing in core imports it or
+names it. What the core needs from the app it reads through a generic, app-keyed
+seam the app fills; what the app needs from the core it asks through the public App
+Kit seams. The app's pins of core parity (the credential scan, the one-scope spawn
+layer, the Windows containment fold, its agents' welcome hints) run in the app's own
+``tests/``.
 
 Two properties are pinned:
 
@@ -18,11 +19,12 @@ Two properties are pinned:
 2. **The strings that still name the app are a pinned, shrinking list.** A path
    built from ``"pptx_maker"``, or a lookup keyed on the app id ``"pptx-maker"``,
    reaches the app as surely as an import does. Docstrings are prose and are not
-   read. The rows left are listed in ``KNOWN_NAME_REFERENCES`` with the reason
-   each stays; a new one fails here, and so does a listed one that is gone.
+   read. The one row left is listed in ``KNOWN_NAME_REFERENCES`` with the reason it
+   stays; a new one fails here, and so does a listed one that is gone. The packaged
+   skill id and the security-posture rows for the package's files left with the
+   wheel copy.
 
-The scans are the shared ones in ``test/core_app_independence.py``. The dashboard
-half is ``website/src/apps/pptx-maker/pptxMakerBoundary.test.ts``.
+The scans are the shared ones in ``test/core_app_independence.py``.
 
 If this goes red because core reached for the app, add a generic, app-keyed seam
 the app fills instead. Do not add an exemption.
@@ -42,20 +44,15 @@ APP_PACKAGE = "kiro_crew.apps.builtins.pptx_maker"
 #: The package directory name and the app id: every spelling that addresses the app.
 APP_NAMES = ("pptx_maker", "pptx-maker")
 
-#: (path relative to ``src/kiro_crew``, the literal): the core strings that still
-#: name the app, each with why it is not a seam. Each row is deleted together with
-#: the file or the skill it names.
+#: (path relative to ``src/kiro_crew``, or to the repository root outside it, the
+#: literal): the core strings that still name the app, each with why it is not a seam.
+#: Each row is deleted together with the file or the citation it names.
 KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
     {
-        # The app's chat skill ships in ``builtin_skills/pptx-maker/`` like every
-        # other packaged skill, so the closed skill-id list names it;
-        # ``test_feature_usage`` pins that list equal to the tree.
-        ("metrics/feature_usage.py", "pptx-maker"),
-        # The security-posture tables classify named files of the package, built-in
-        # apps included: the core's audit of the app's code, not a reach into it.
-        ("security_posture.py", "apps/builtins/pptx_maker/backend/paths.py"),
-        ("security_posture.py", "apps/builtins/pptx_maker/backend/decks.py"),
-        ("security_posture.py", "apps/builtins/pptx_maker/backend/routes.py"),
+        # docs-lint's ignore entry for the deleted spec, which Papyrus's wheel copy
+        # still cites; a path the linter is told to skip, not a reach into the app.
+        # It goes when Papyrus's copy leaves core.
+        ("scripts/docs_lint.py", "docs/system-specs/modules/pptx-maker.md"),
     }
 )
 

@@ -15,7 +15,6 @@ BUILTIN_NAMES: list[str] = [
     "ops_mission_control",
     "papyrus",
     "mochi",
-    "pptx_maker",
     "spec_builder",
 ]
 

@@ -310,21 +310,6 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.papyrus.manifest.use_case_1'],
     configuration: ['apps.papyrus.manifest.configuration_1'],
   },
-  'pptx-maker': {
-    displayName: 'apps.pptxMaker.manifest.display_name',
-    description: 'apps.pptxMaker.manifest.description',
-    pageLabel: 'apps.pptxMaker.manifest.page_label',
-    highlights: [
-      'apps.pptxMaker.manifest.highlight_1',
-      'apps.pptxMaker.manifest.highlight_2',
-      'apps.pptxMaker.manifest.highlight_3',
-      'apps.pptxMaker.manifest.highlight_4',
-      'apps.pptxMaker.manifest.highlight_5',
-      'apps.pptxMaker.manifest.highlight_6',
-    ],
-    useCases: ['apps.pptxMaker.manifest.use_case_1'],
-    configuration: ['apps.pptxMaker.manifest.configuration_1'],
-  },
   // `spec-builder` ships no `highlights`, so its list is empty on both sides and
   // `appHighlights()` returns the manifest's own empty array. An entry is still
   // required: the sync gate derives keys from the app id, not from this table.

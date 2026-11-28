@@ -862,8 +862,8 @@ def _find_uv() -> str | None:
 
     Resolution is :func:`kiro_crew.env.resolve_uv` — ``uv`` is a declared
     dependency shipped as a wheel, located through ``uv.find_uv_bin()`` and then
-    ``PATH`` — the same ladder the pptx-maker engine uses. ``None`` is a
-    reportable condition (the pip path runs), never an exception.
+    ``PATH`` — the same ladder the backend SDK's ``uv_executable`` answers. ``None``
+    is a reportable condition (the pip path runs), never an exception.
     """
     if not env_flag_enabled(USE_UV_ENV):
         return None

@@ -245,7 +245,6 @@ BUILTIN_SKILL_IDS: tuple[str, ...] = (
     "papyrus-make-fluent",
     "papyrus-writing",
     "pipeline-conductor",
-    "pptx-maker",
     "remote-crew-microvm",
     "security-conductor",
     "session-summaries",

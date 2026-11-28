@@ -146,34 +146,81 @@ async def test_a_server_with_a_tool_left_still_has_to_show_it(runtime, agents_di
 
 # The PPTX Maker app's Spec agent, as Crew registers and launches it on KAS: its
 # manifest declares only the app's own tools, so registration excludes every
-# managed tool, `skill_search` aside.
+# managed tool, `skill_search` aside. The app installs from its own repository, so
+# its adopted tree and record live under the data home; the tree here is the shape
+# that repository ships (host placeholders only).
 _APP = "pptx-maker"
 _APP_AGENT = "pptx-maker-spec"
 _CORE = "kirocrew-core"
+_SDPM_TOOLS = [
+    f"@sdpm/{tool}"
+    for tool in (
+        "analyze_template",
+        "apply_style",
+        "code_to_slide",
+        "generate_pptx",
+        "grid",
+        "import_attachment",
+        "init_presentation",
+        "list_asset_sources",
+        "list_guides",
+        "list_styles",
+        "list_templates",
+        "list_workflows",
+        "measure_slides",
+        "pptx_to_json",
+        "read_examples",
+        "read_guides",
+        "read_workflows",
+        "run_python",
+        "run_style_python",
+        "search_assets",
+    )
+]
+_MANIFEST = {
+    "name": _APP,
+    "version": "0.3.6",
+    "displayName": "PPTX Maker",
+    "description": "Describe the deck you want in chat and get a real .pptx back.",
+    "author": "sktok",
+    "agents": [f"agents/{_APP_AGENT}.json"],
+    "permissions": {"api": [f"/api/apps/{_APP}", f"/api/apps/{_APP}/*"], "mcpTools": _SDPM_TOOLS},
+}
+_SPEC_AGENT = {
+    "name": _APP_AGENT,
+    "mcpServers": {
+        "sdpm": {
+            "command": "{UV_BIN}",
+            "args": ["run", "--frozen", "--directory", "{APP_DATA}/vendor/sdpm/mcp-local"],
+            "env": {"PATH": "{HOST_PATH}{PATH_SEP}{APP_DATA}/vendor/preview-tools/bin"},
+        }
+    },
+    "prompt": "file://{APP_ROOT}/prompts/spec-studio.md",
+    "tools": [*_SDPM_TOOLS[:3], "use_subagent", "read", "glob", "grep"],
+}
 
 
 def _register_app_agents() -> None:
-    """Install the shipped app's record and register its agents, as enabling it does."""
+    """Write the adopted app's tree and record and register its agents, as enabling it does."""
     from kiro_crew.apps import bridges, manager
-    from kiro_crew.apps.execution import shipped_builtin_app_root
     from kiro_crew.apps.manifest import AppManifest
 
-    root = shipped_builtin_app_root(_APP)
-    assert root is not None
-    raw = json.loads((root / "app.json").read_text())
-    manager.app_dir(_APP).mkdir(parents=True, exist_ok=True)
+    root = manager.app_dir(_APP)
+    (root / "agents").mkdir(parents=True, exist_ok=True)
+    (root / manager.APP_MANIFEST_FILENAME).write_text(json.dumps(_MANIFEST), encoding="utf-8")
+    (root / "agents" / f"{_APP_AGENT}.json").write_text(json.dumps(_SPEC_AGENT), encoding="utf-8")
     manager._write_installed(
         _APP,
         manager.InstalledApp(
             name=_APP,
-            version=raw["version"],
-            displayName=raw["displayName"],
+            version=_MANIFEST["version"],
+            displayName=_MANIFEST["displayName"],
             enabled=True,
-            source="builtin",
-            origin="builtin",
+            source="https://github.com/KiroCrewCaptain/kirocrew-app-pptx-maker",
+            origin="registry",
         ),
     )
-    bridges._register_agents(_APP, AppManifest.from_dict(raw), root, [])
+    bridges._register_agents(_APP, AppManifest.from_dict(_MANIFEST), root, [])
 
 
 async def _launched_params() -> dict:

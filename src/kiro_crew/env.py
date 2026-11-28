@@ -657,7 +657,7 @@ def resolve_uv() -> str | None:
     2. ``shutil.which("uv")``, so a user's own uv still works;
     3. ``None``.
 
-    Never raises: pptx-maker reports "unavailable" and pod provisioning falls
+    Never raises: an app reports "unavailable" and pod provisioning falls
     back to pip. The result is always absolute. A ``which`` hit through a
     relative ``PATH`` entry is SKIPPED, not absolutized: pod provisioning runs uv
     with ``cwd=<checkout>`` where it would not resolve, and whatever sits in the
@@ -1096,8 +1096,6 @@ def spec_env_path(env_path: str) -> str:
     server a PATH of only that dir: a wrapper launcher then dies "not found"
     while the merging dashboard probe reports it healthy. Expanding before the
     agent config is written makes the child's PATH the one the probe validated.
-    ``pptx_maker.backend.provision.mcp_tools_path`` composes a full PATH for the
-    same reason.
 
     The spec's own entries stay FIRST, so a pinned toolchain still wins.
     Idempotent (:func:`dedup_path` collapses re-expansion), since the agent

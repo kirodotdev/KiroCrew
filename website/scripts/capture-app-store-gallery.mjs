@@ -52,7 +52,6 @@ const APPS = [
   ['mochi', 'mochi', 'mochi', '/mochi', 'shot-1-gallery.png'],
   ['ops-mission-control', 'ops_mission_control', 'ops-mission-control', '/ops-mission-control'],
   ['papyrus', 'papyrus', 'papyrus', '/papyrus'],
-  ['pptx-maker', 'pptx_maker', 'pptx-maker', '/pptx-maker'],
   ['spec-builder', 'spec_builder', 'spec-builder', '/spec-builder'],
   ['workflows', 'workflows', 'workflows', '/workflows'],
 ]
@@ -117,21 +116,6 @@ const FIXTURES = {
     entries: [], stats: { total: 0, promoted: 0, demoted: 0 },
   },
   '/api/apps/papyrus/projects': { projects: [] },
-  '/api/apps/pptx-maker/engine': {
-    ready: true, clone: true, venv: true, pinnedTag: 'v1',
-    provision: { state: 'done', log: '', elapsed: 0 },
-  },
-  '/api/apps/pptx-maker/deps': {
-    labels: {}, present: {}, managed: {}, missing: [], hints: {},
-  },
-  '/api/apps/pptx-maker/assets': {
-    sources: [], provisioned: {}, ready: true, tag: 'v1', state: 'done',
-    log: '', elapsed: 0, perSource: {},
-  },
-  '/api/apps/pptx-maker/config': { deckRoot: '/workspace/decks', default: '/workspace/decks' },
-  '/api/apps/pptx-maker/decks': { decks: [] },
-  '/api/apps/pptx-maker/styles': { styles: [] },
-  '/api/apps/pptx-maker/templates': { templates: [] },
   '/api/apps/spec-builder/specs': { specs: [] },
   '/api/apps/workflows/runs': { runs: [] },
   '/api/workflows': { workflows: [] },

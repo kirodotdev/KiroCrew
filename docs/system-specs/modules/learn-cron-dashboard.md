@@ -3865,7 +3865,7 @@ the superseded-replay cases in `TestRunChatRefusalFallbackReplay`
 An agent spec may carry `welcomeMessage`, a hint its author wants read when that
 agent starts answering. `agent_discovery.agent_welcome_message` is the ONE reader
 of the transcript path and `chat_turn.turn_spec_hooks._surface_agent_welcome` its ONE emitter;
-the bundled `pptx_maker` agents ship a value.
+an app's agent spec may ship a value (PPTX Maker's agents do, from their own repository).
 
 There is a second consumer, and it is deliberately not a second READING:
 `acp/kas_agents.to_client_custom_agent` projects the hint onto the KAS wire

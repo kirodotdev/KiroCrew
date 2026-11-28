@@ -1487,13 +1487,18 @@ async def test_preview_off_every_installed_pair_is_built_without_this_module(
         stored(value)
     assert kas_parent_grants.preview_on() is False
     directory = paths_mod.kiro_agents_dir()
-    for shipped in (spec for spec in _shipped_specs() if spec["name"] not in names):
+    shipped_specs = _shipped_specs()
+    for shipped in (spec for spec in shipped_specs if spec["name"] not in names):
         _write(directory, shipped)
     specs = {
         path.stem: json.loads(path.read_text(encoding="utf-8"))
         for path in sorted(directory.glob("*.json"))
     }
-    assert len(specs) >= 26, sorted(specs)
+    # Every installed agent and every agent a shipped manifest declares is a pair
+    # member. Named rather than counted: the wheel loses agents as built-in apps
+    # move out, and ``_installed`` and ``_shipped_specs`` each refuse an empty walk.
+    expected = set(names) | {spec["name"] for spec in shipped_specs}
+    assert expected <= set(specs), sorted(expected - set(specs))
     kas_parent_limits.note_parent("subagent:c1", "dashboard:p")
     batch = [{"id": "x"}]
     for parent in specs:
