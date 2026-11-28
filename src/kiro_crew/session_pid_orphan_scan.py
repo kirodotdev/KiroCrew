@@ -231,14 +231,23 @@ def _accepted_subreaper_pids() -> set[int]:
     return accepted
 
 
+#: Whether this process has said the orphan scan does not run here (Windows).
+_orphan_scan_skip_logged = False
+
+
 def _our_orphan_pids() -> list[int]:
     """PIDs owned by current user whose parent is init (pid 1) or systemd --user.
 
     POSIX-only: relies on ``os.getuid`` and either ``/proc`` (Linux) or ``ps``
     (macOS). On Windows there is no init/systemd concept and no ``os.getuid``;
-    the orphan-sweep is inactive there and returns an empty list.
+    the orphan-sweep is inactive there and returns an empty list, saying so once
+    per process so a log can tell "no orphans" from "not looked".
     """
+    global _orphan_scan_skip_logged
     if platform_compat.IS_WINDOWS:
+        if not _orphan_scan_skip_logged:
+            _orphan_scan_skip_logged = True
+            logger.info("orphan scan skipped: not supported on this platform")
         return []
     my_uid = os.getuid()
     # Pass 1 detects the accepted reparent targets (init + systemd --user
