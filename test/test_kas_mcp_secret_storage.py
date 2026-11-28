@@ -302,6 +302,64 @@ async def test_a_stale_process_cannot_delete_a_grant_stored_since(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_stale_process_cannot_store_over_a_grant_stored_since(tmp_path):
+    """A and B read R1, A stores R2, B's store derived from R1 is refused."""
+    await _server(tmp_path).answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": "R1"})
+    a, b = _server(tmp_path), _server(tmp_path)
+    assert await a.answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {"value": "R1"}
+    assert await b.answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {"value": "R1"}
+    await a.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": "R2"})
+
+    with pytest.raises(kss.SecretStorageRefused, match="read it again"):
+        await b.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": "R1-derived"})
+    assert await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {
+        "value": "R2"
+    }
+    # B's refused store left B holding its old revision: its clear keeps R2.
+    await b.answer(kss.METHOD_SECRET_DELETE, {"key": _TOKENS_KEY})
+    assert await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {
+        "value": "R2"
+    }
+
+    # After re-reading, B's next store succeeds, and so does A's own next one
+    # on the revision it wrote.
+    assert await b.answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {"value": "R2"}
+    await b.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": "R3"})
+    with pytest.raises(kss.SecretStorageRefused):
+        await a.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": "R2-derived"})
+    assert await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {
+        "value": "R3"
+    }
+
+
+@pytest.mark.asyncio
+async def test_one_process_read_refresh_store_records_each_new_revision(tmp_path):
+    server = _server(tmp_path)
+    assert await server.answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {}
+    for value in ("R1", "R2", "R3"):
+        await server.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": value})
+    assert await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {
+        "value": "R3"
+    }
+    # The recorded revision is the last write's, so this process's clear removes it.
+    await server.answer(kss.METHOD_SECRET_DELETE, {"key": _TOKENS_KEY})
+    assert await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_first_sign_in_that_read_nothing_cannot_store_over_one_saved_since(tmp_path):
+    a, b = _server(tmp_path), _server(tmp_path)
+    assert await a.answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {}
+    assert await b.answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {}
+    await a.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": "A"})
+    with pytest.raises(kss.SecretStorageRefused):
+        await b.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": "B"})
+    assert await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {
+        "value": "A"
+    }
+
+
+@pytest.mark.asyncio
 async def test_a_process_that_read_nothing_cannot_delete_a_grant_stored_since(tmp_path):
     a, b = _server(tmp_path), _server(tmp_path)
     assert await a.answer(kss.METHOD_SECRET_GET, {"key": _CLIENT_KEY}) == {}
