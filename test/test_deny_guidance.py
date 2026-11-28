@@ -351,6 +351,10 @@ class TestRuleIdentityRoutesTheRegexTier:
             ("credential-exfil-python-botocore-credentials", dg.DENY_CLASS_AWS_CREDENTIAL),
             ("credential-exfil-export-aws-access", dg.DENY_CLASS_AWS_CREDENTIAL),
             ("credential-exfil-export-aws-secret", dg.DENY_CLASS_AWS_CREDENTIAL),
+            # The three commands whose output is a credential.
+            ("credential-exfil-aws-configure-export-credentials", dg.DENY_CLASS_AWS_CREDENTIAL),
+            ("credential-exfil-aws-configure-get-secret", dg.DENY_CLASS_AWS_CREDENTIAL),
+            ("credential-exfil-ada-credentials-print", dg.DENY_CLASS_AWS_CREDENTIAL),
             # Acquiring a credential from the instance metadata endpoint is a
             # READ, so the credential answer is the actionable one -- and it is
             # what the sensitive-path floor already says for the same address, so
@@ -688,6 +692,10 @@ class TestCatalogCensus:
             "credential-exfil-python-botocore-credentials",
             "credential-exfil-export-aws-access",
             "credential-exfil-export-aws-secret",
+            # Three print a credential the host already holds.
+            "credential-exfil-aws-configure-export-credentials",
+            "credential-exfil-aws-configure-get-secret",
+            "credential-exfil-ada-credentials-print",
         }
         for rule in security.BUILTIN_DENIED_RULES:
             if rule.category != "credential-exfil" or rule.id in moves_nothing:

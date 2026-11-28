@@ -28,7 +28,7 @@ from collections.abc import Callable
 from ..trust_patterns import ENV_ASSIGNMENT_RE
 from . import rm_floor as _rm
 from . import shell_normalizer as _shell
-from .denied_rules import BUILTIN_DENIED_RULES
+from .denied_rules import _SHELL_TITLE_PREFIX, BUILTIN_DENIED_RULES
 from .shell_normalizer import _strip_win_program_suffix
 
 #: Programs that run another command from their arguments, as
@@ -742,10 +742,51 @@ def _writes_raw_disk(_program: str, args: "list[str]") -> bool:
     return any(arg.startswith(_RAW_DISK_OUTPUTS) for arg in args)
 
 
+#: The AWS CLI's global options that take a value; the value is never a rule word.
+_AWS_VALUED_OPTIONS = frozenset(
+    {
+        *("--profile", "--region", "--output", "--endpoint-url", "--query", "--color"),
+        *("--ca-bundle", "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"),
+    }
+)
+
+
+def _words(args: "list[str]") -> "list[str] | None":
+    """The lower-cased non-option words, past a valued option's value; ``None`` on help."""
+    low = [arg.lower() for arg in args]
+    words = [
+        a for a, b in zip(low, ["", *low]) if a and a[0] != "-" and b not in _AWS_VALUED_OPTIONS
+    ]
+    return None if {"--help", "-h"} & set(low) or words[-1:] == ["help"] else words
+
+
+def _after(words: "list[str] | None", *path: str) -> "list[str] | None":
+    """The words after *path* when *words* starts with it, else ``None``."""
+    return words[len(path) :] if words is not None and words[: len(path)] == [*path] else None
+
+
+def _runs_subcommand(*path: str) -> "Callable[[str, list[str]], bool]":
+    """The first non-option words are *path*."""
+    return lambda _program, args: _after(_words(args), *path) is not None
+
+
+def _gets_a_secret(_program: str, args: "list[str]") -> bool:
+    """``aws configure get`` of a key whose last dotted part names a secret."""
+    key = (_after(_words(args), "configure", "get") or [""])[0].rsplit(".", 1)[-1]
+    return any(word in key for word in ("secret", "session_token", "security_token"))
+
+
 #: rule id -> (the program it is about, the test on that program's arguments).
 _PREDICATES: dict[str, tuple[str, Callable[[str, list[str]], bool]]] = {
     "local-destructive-chmod-777": ("chmod", _is_mode_777),
     "local-destructive-dd-of-device": ("dd", _writes_raw_disk),
+    # Commands whose output is a credential.
+    "credential-exfil-aws-configure-export-credentials": (
+        "aws",
+        _runs_subcommand("configure", "export-credentials"),
+    ),
+    "credential-exfil-aws-configure-get-secret": ("aws", _gets_a_secret),
+    "credential-exfil-ada-credentials-print": ("ada", _runs_subcommand("credentials", "print")),
     **{
         f"local-destructive-{verb}-{root.strip('/')}": (verb, _changes_system_dir(root))
         for verb in ("chmod", "chown")
@@ -797,8 +838,15 @@ def argv_rule_hit(command: str, enabled_patterns: "set[str] | frozenset[str]") -
         and not any(_COULD_NAME[program].search(command) for program in wanted)
     ):
         return None
+    # kiro-cli's ``Running: <command>`` title gets the verdict of the command it shows.
+    if command[: len(_SHELL_TITLE_PREFIX)].lower() == _SHELL_TITLE_PREFIX:
+        command = command[len(_SHELL_TITLE_PREFIX) :]
     try:
-        commands = [(p, a) for p, a in _commands(command) if p in wanted]
+        commands = [
+            (name, a)
+            for p, a in _commands(command)
+            if (name := _strip_win_program_suffix(p.lower())) in wanted
+        ]
     except Exception:  # noqa: BLE001 - an unreadable command is not refused here
         return None
     for rule_id, pattern in ARGV_RULE_BY_ID.items():

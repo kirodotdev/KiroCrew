@@ -301,11 +301,11 @@ def build_opener(
     The one way the callers of THIS module — the embedding-model transfer, the
     feature-video manifest and clip transfers, the Papyrus (Tectonic) and PPTX
     Maker (engine archive) app installs, the whisper model and ffmpeg decoder
-    fetches (``stt.models.stream_pinned_payload``) and the update engine's
-    manifest and wheel fetch (``wheel_engine_transfer._read_bounded``) — make an
-    outbound request. A caller reaching for ``urllib.request.urlopen`` directly
-    gets urllib's default redirect handler back, which is the SSRF this exists to
-    close.
+    fetches (``stt.models.stream_pinned_payload``), the update engine's
+    manifest and wheel fetch (``wheel_engine_transfer._read_bounded``) and the App
+    Kit verified download (``apps.download_sdk``) — make an outbound request. A
+    caller reaching for ``urllib.request.urlopen`` directly gets urllib's default
+    redirect handler back, which is the SSRF this exists to close.
 
     *allow_cross_host_redirects* selects :class:`_HttpsOnlyRedirectHandler` in
     place of :class:`_SameHostRedirectHandler`. It is for a url the operator set
