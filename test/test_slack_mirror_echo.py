@@ -495,7 +495,9 @@ def _titled_cards(slack: _SlackRecorder) -> list[tuple[str, str, str, str]]:
 @pytest.mark.asyncio
 async def test_a_tool_running_past_slacks_limit_goes_on_in_a_fresh_stream() -> None:
     slack = await _linked_turn([_TOOL, Wait(700), _ANSWER, _DONE], owner_id="U0OWNER")
-    first, second = _streams(slack)
+    streams = _streams(slack)
+    assert len(streams) == 2
+    first, second = streams
     # The running step is closed "continues below" on the old message and opened
     # again on the new one, never left for Slack to turn into an error.
     assert _titled_cards(slack) == [
@@ -573,7 +575,9 @@ async def test_a_turn_ending_during_a_renewal_closes_the_stream_it_opened() -> N
 
     slack = _SlowSecondStream()
     await _linked_turn([_TOOL, Wait(STREAM_RENEW_AFTER_S + 5), _ANSWER, _DONE], slack=slack)
-    first, second = _streams(slack)
+    streams = _streams(slack)
+    assert len(streams) == 2
+    first, second = streams
     assert _step_cards(slack) == [
         (first, "tool_1", "in_progress"),
         (first, "tool_1", "complete"),

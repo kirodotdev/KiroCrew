@@ -679,7 +679,7 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
             ):
                 # A person wrote in the thread below the step list, so this step and
                 # the ones after it are drawn under their message.
-                _mirror_stream_ts, _noted = await _move_mirror_stream(
+                _mirror_stream_ts, _moved_noted = await _move_mirror_stream(
                     state.slack_client,
                     _mirror_chan,
                     turn._mirror_post_ts or "",
@@ -688,7 +688,7 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                     (_mirror_active_task, _mirror_active_task_title),
                 )
                 turn._mirror_stream_ts = _mirror_stream_ts
-                _note_mirror_stream_opened(turn, _noted)
+                _note_mirror_stream_opened(turn, _moved_noted)
                 _mirror_active_task = ""
                 turn._mirror_active_task = _mirror_active_task
             if _mirror_stream_ts:
