@@ -759,7 +759,8 @@ class DashboardState:
         self.restore_front_keys: list[str] = []
         # Return-triggered warm task briefs: when each thread was last on screen
         # in an owner view (wall time, this process only), a read-saving "not
-        # eligible before" cache, and the live tasks. The claim and the durable
+        # eligible before" cache (it holds each thread's away anchor), and the
+        # live tasks. The claim and the durable
         # away fallback live in the transcript.
         self._warm_task_brief_last_seen: dict[str, float] = {}
         self._warm_task_brief_not_before: dict[str, float] = {}

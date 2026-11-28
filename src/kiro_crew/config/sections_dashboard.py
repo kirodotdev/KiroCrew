@@ -9,6 +9,11 @@ from dataclasses import dataclass, field
 from typing import overload
 
 from kiro_crew.config.fields import _meta
+from kiro_crew.config.sections_limits import (
+    CHAT_ENTRY_CACHE_BYTES_DEFAULT,
+    CHAT_ENTRY_CACHE_ENTRIES_DEFAULT,
+    WARM_TASK_BRIEF_AWAY_MINUTES_DEFAULT,
+)
 from kiro_crew.config.sections_shared_crew import SharedCrewConfig
 from kiro_crew.config.sections_tailnet import TailscaleConfig
 
@@ -169,22 +174,6 @@ LOOP_STALL_EXIT_AFTER_MAX = 300
 LOOP_STALL_EXIT_AFTER_DEFAULT = 25
 LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT = 90
 _MANAGED_SERVICE_ENV = "KIROCREW_SERVICE_MANAGED"
-
-# dashboard.chat_entry_cache_max_entries / chat_entry_cache_max_bytes -- bounds
-# on the persisted-message entry memo in ``dashboard/chat_persistence.py``. The
-# right entry count is host-dependent: the cache's working set is roughly
-# ``active_slots x window_size``, so a gateway with many concurrent chat slots
-# overflows the entry bound while the byte bound still has headroom, and the LRU
-# then evicts each slot's window just before its next save (a zero-hit cliff,
-# every save re-paying redaction plus key derivation). The defaults match the
-# previous hardcoded values; raising the entry bound on a many-slot host is the
-# operator's call, with the byte ceiling still bounding memory.
-CHAT_ENTRY_CACHE_ENTRIES_MIN = 256
-CHAT_ENTRY_CACHE_ENTRIES_MAX = 262144
-CHAT_ENTRY_CACHE_ENTRIES_DEFAULT = 4096
-CHAT_ENTRY_CACHE_BYTES_MIN = 4 * 1024 * 1024
-CHAT_ENTRY_CACHE_BYTES_MAX = 512 * 1024 * 1024
-CHAT_ENTRY_CACHE_BYTES_DEFAULT = 32 * 1024 * 1024
 
 #: The ``dashboard.verbosity`` levels a writer may store.
 VERBOSITY_LEVELS: tuple[str, ...] = ("default", "concise", "answer_only")
@@ -1174,6 +1163,15 @@ class DashboardConfig:
             "Recent Session Tint Count",
             "Number of most-recently-active sessions to highlight in the sidebar with a "
             "graded accent stripe (0-10; 0 = off).",
+        ),
+    )
+    warm_task_brief_away_minutes: int = field(
+        default=WARM_TASK_BRIEF_AWAY_MINUTES_DEFAULT,
+        metadata=_meta(
+            "Since You Left Away Time (minutes)",
+            "Minutes a crewmate thread or Crew Mode chat must be off screen before "
+            'coming back to it posts a "Since you left" brief (30-1440). Takes '
+            "effect on the next return; no restart.",
         ),
     )
     show_unread_dot: bool = field(

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import crew_mode
 from kiro_crew import members as members_mod
+from kiro_crew.config.sections_limits import WARM_TASK_BRIEF_AWAY_MINUTES_DEFAULT
 from kiro_crew.dashboard import warm_task_brief_facts as facts
 from kiro_crew.dashboard import warm_task_brief_inputs as inputs
 from kiro_crew.dashboard import warm_task_brief_welcome as welcome
@@ -62,7 +63,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger(__name__)
 
-WARM_TASK_BRIEF_AWAY_SECS = 30 * 60
+WARM_TASK_BRIEF_AWAY_SECS = WARM_TASK_BRIEF_AWAY_MINUTES_DEFAULT * 60
 # A return while a turn runs waits for the turn to end, at most this long, and
 # only while the owner keeps the thread on screen.
 WARM_TASK_BRIEF_DEFER_MAX_SECS = 30 * 60
@@ -186,17 +187,33 @@ def _skip(slot_key: str, reason: str) -> None:
     logger.debug("warm task brief skipped for %s: %s", slot_key, reason)
 
 
-def _remember_not_before(state: "DashboardState", slot_key: str, instant: float) -> None:
-    """Cache that *slot_key* cannot qualify before *instant*.
+def _away_secs() -> int:
+    """The away time in force: ``dashboard.warm_task_brief_away_minutes``, in seconds.
 
-    Safe because the away anchor only moves later: a new message or claim
-    pushes it forward, never back.  The cache only saves history reads.
+    Read from the live watcher's in-memory snapshot (boot primes it), so the loop
+    never reads ``config.json`` and a change applies from the next return. With
+    no snapshot the default applies.
+    """
+    from kiro_crew.config import live
+
+    cfg = live.snapshot()
+    if cfg is None:
+        return WARM_TASK_BRIEF_AWAY_SECS
+    return cfg.dashboard.warm_task_brief_away_minutes * 60
+
+
+def _remember_not_before(state: "DashboardState", slot_key: str, anchor: float) -> None:
+    """Cache *slot_key*'s away *anchor*: it cannot qualify before anchor + away time.
+
+    The anchor, not the instant, is kept so a changed away time applies to the
+    next return.  Safe because the anchor only moves later: a new message or
+    claim pushes it forward, never back.  The cache only saves history reads.
     """
     cache = getattr(state, "_warm_task_brief_not_before", None)
     if not isinstance(cache, dict):
         return
     cache.pop(slot_key, None)
-    cache[slot_key] = instant
+    cache[slot_key] = anchor
     while len(cache) > _MAX_NOT_BEFORE:
         cache.pop(next(iter(cache)))
 
@@ -281,11 +298,12 @@ def handle_focus_frame(
     if seen_at is None and announce:
         _skip(slot_key, "connect_announce")
         return
-    if seen_at is not None and now - seen_at < WARM_TASK_BRIEF_AWAY_SECS:
+    away_secs = _away_secs()
+    if seen_at is not None and now - seen_at < away_secs:
         _skip(slot_key, "short_away")
         return
-    not_before = getattr(state, "_warm_task_brief_not_before", {}).get(slot_key)
-    if isinstance(not_before, float) and now < not_before:
+    cached_anchor = getattr(state, "_warm_task_brief_not_before", {}).get(slot_key)
+    if isinstance(cached_anchor, float) and now - cached_anchor < away_secs:
         _skip(slot_key, "short_away")
         return
     slot = state.get_slot(slot_key)
@@ -1031,8 +1049,8 @@ async def _run_warm_task_brief(
     if anchor is None:
         _skip(slot.key, "no_user_time")
         return
-    if returned_at - anchor < WARM_TASK_BRIEF_AWAY_SECS:
-        _remember_not_before(state, slot.key, anchor + WARM_TASK_BRIEF_AWAY_SECS)
+    if returned_at - anchor < _away_secs():
+        _remember_not_before(state, slot.key, anchor)
         _skip(slot.key, "short_away")
         return
 

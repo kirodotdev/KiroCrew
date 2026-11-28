@@ -1543,6 +1543,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         recent_tint_count=section.read(
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
         ),
+        warm_task_brief_away_minutes=_sections.read_warm_task_brief_away_minutes(section),
         show_unread_dot=section.read("show_unread_dot", _safe_bool),
         expand_linked_items=section.read("expand_linked_items", _safe_bool),
         command_bar_enabled=section.read("command_bar_enabled", _safe_bool),
@@ -1568,10 +1569,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             dashboard_data.get("import_onboarded"),
             section.read("onboarded", _safe_bool),
         ),
-        # Falls back to `onboarded`: a user who finished first run before
-        # this chapter existed has already reached the product, and
-        # re-gating their heartbeat on a screen they will never be shown
-        # would suppress it forever.
+        # Falls back to `onboarded`: a user who finished first run before this chapter existed has
+        # already reached the product, and re-gating their heartbeat on a screen they will never be
+        # shown would suppress it forever.
         privacy_acked=_safe_bool(
             dashboard_data.get("privacy_acked"),
             section.read("onboarded", _safe_bool),

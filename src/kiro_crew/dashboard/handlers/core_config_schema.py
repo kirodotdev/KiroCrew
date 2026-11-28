@@ -70,6 +70,8 @@ from kiro_crew.config.sections import (
     SHARED_CREW_BOUNDS,
     STRANDS_PROVIDER_CHOICES,
     TITLE_REFRESH_EVERY_TURNS_MAX,
+    WARM_TASK_BRIEF_AWAY_MINUTES_MAX,
+    WARM_TASK_BRIEF_AWAY_MINUTES_MIN,
     validate_deepseek_env_patch,
     validate_strands_env_patch,
 )
@@ -328,6 +330,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "int",
         "min": RECENT_TINT_COUNT_MIN,
         "max": RECENT_TINT_COUNT_MAX,
+    },
+    # Read on each return by ``dashboard/warm_task_brief.py`` from the live
+    # watcher, so a save applies from the next return with no restart.
+    "dashboard.warm_task_brief_away_minutes": {
+        "type": "int",
+        "min": WARM_TASK_BRIEF_AWAY_MINUTES_MIN,
+        "max": WARM_TASK_BRIEF_AWAY_MINUTES_MAX,
     },
     # Auto-title refresh cadence (Settings → Chat → Sessions). The gate admits
     # the loader's whole domain, 0 (the built-in schedule) through MAX, and the

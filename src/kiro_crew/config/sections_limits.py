@@ -8,9 +8,13 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from kiro_crew.config.fields import _meta
+from kiro_crew.config.fields import _meta, _safe_int
 from kiro_crew.config.sections_agent import AgentConfig
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from kiro_crew.config.sections_defaults import SectionReader
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -334,6 +338,41 @@ EMBED_RATE_LIMIT_MAX = 10000
 # folder/sweep budgets above: clamp a negative to 0 (0 == unbounded) and cap an
 # absurd hand-edited value so it cannot load verbatim into real work.
 IMPORT_CHUNK_BUDGET_MAX = 50000
+
+# dashboard.chat_entry_cache_max_entries / chat_entry_cache_max_bytes -- bounds
+# on the persisted-message entry memo in ``dashboard/chat_persistence.py``. The
+# right entry count is host-dependent: the cache's working set is roughly
+# ``active_slots x window_size``, so a gateway with many concurrent chat slots
+# overflows the entry bound while the byte bound still has headroom, and the LRU
+# then evicts each slot's window just before its next save (a zero-hit cliff,
+# every save re-paying redaction plus key derivation). The defaults match the
+# previous hardcoded values; raising the entry bound on a many-slot host is the
+# operator's call, with the byte ceiling still bounding memory.
+CHAT_ENTRY_CACHE_ENTRIES_MIN = 256
+CHAT_ENTRY_CACHE_ENTRIES_MAX = 262144
+CHAT_ENTRY_CACHE_ENTRIES_DEFAULT = 4096
+CHAT_ENTRY_CACHE_BYTES_MIN = 4 * 1024 * 1024
+CHAT_ENTRY_CACHE_BYTES_MAX = 512 * 1024 * 1024
+CHAT_ENTRY_CACHE_BYTES_DEFAULT = 32 * 1024 * 1024
+
+# dashboard.warm_task_brief_away_minutes -- how long a crewmate thread or Crew
+# Mode chat must be off screen before a return posts the "Since you left" brief.
+# The floor is the minimum docs/request-for-change/rfc-delayed-task-brief.md
+# section 3.2 accepts; the RFC sets no ceiling, so one day bounds a hand-edited value.
+WARM_TASK_BRIEF_AWAY_MINUTES_MIN = 30
+WARM_TASK_BRIEF_AWAY_MINUTES_MAX = 1440
+WARM_TASK_BRIEF_AWAY_MINUTES_DEFAULT = 30
+
+
+def read_warm_task_brief_away_minutes(section: "SectionReader") -> int:
+    """The stored away time, clamped to its bounds; unreadable reads as the default."""
+    return section.read(
+        "warm_task_brief_away_minutes",
+        _safe_int,
+        WARM_TASK_BRIEF_AWAY_MINUTES_MIN,
+        WARM_TASK_BRIEF_AWAY_MINUTES_MAX,
+    )
+
 
 # Keys whose out-of-domain value has already been reported, so a knob read once
 # per spawn warns once per process instead of once per agent launch. Same shape
