@@ -8,13 +8,21 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_crew import cli_server, cli_server_restart, update_next_start
+from kiro_crew import (
+    cli_server,
+    cli_server_restart,
+    cli_server_update,
+    platform_compat,
+    update_next_start,
+)
 from kiro_crew.cli_server_update import _untracked_collisions
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.testing.links import make_dir_link
 
 
 def _git(cwd, *args):
@@ -194,6 +202,77 @@ class TestUntrackedCollisionReplacements:
         repo, target = self._repo(tmp_path, make_dir_with_link, self._dir_to_file)
 
         assert _untracked_collisions(repo, target, dict(os.environ)) == []
+
+    @staticmethod
+    def _recording_walk(monkeypatch) -> list[str]:
+        """Record every directory ``os.walk`` yields from inside the check.
+
+        Off Windows the walk is made to follow links, which is what it does to a
+        junction there: ``os.walk``'s own link test is ``os.path.islink``, and that
+        is False for a junction.
+        """
+        entered: list[str] = []
+        real_walk = os.walk
+
+        def walk(top, **kwargs):
+            if not platform_compat.IS_WINDOWS:
+                kwargs = {**kwargs, "followlinks": True}
+            for here, dirs, files in real_walk(top, **kwargs):
+                entered.append(os.fspath(here))
+                yield here, dirs, files
+
+        monkeypatch.setattr(cli_server_update.os, "walk", walk)
+        return entered
+
+    @staticmethod
+    def _stage_junction(monkeypatch, link, target) -> None:
+        """An untracked junction at *link*: a real one on Windows, modelled elsewhere.
+
+        The model is what Windows answers for a junction: ``os.path.islink`` says no
+        and ``platform_compat.is_link_or_junction`` says yes.
+        """
+        make_dir_link(link, target)
+        if platform_compat.IS_WINDOWS:
+            return
+        real_islink = os.path.islink
+        real_is_link_or_junction = platform_compat.is_link_or_junction
+
+        def islink(path):
+            return False if Path(path) == link else real_islink(path)
+
+        def is_link_or_junction(path):
+            return Path(path) == link or real_is_link_or_junction(path)
+
+        monkeypatch.setattr(os.path, "islink", islink)
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", is_link_or_junction)
+
+    @pytest.mark.parametrize("target_holds_a_file", [False, True])
+    def test_an_untracked_junction_inside_it_is_named_and_never_entered(
+        self, tmp_path, monkeypatch, target_holds_a_file
+    ):
+        repo, target = self._repo(tmp_path, self._make_dir, self._dir_to_file)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        if target_holds_a_file:
+            (elsewhere / "outside.txt").write_text("not this checkout's")
+        link = tmp_path / "d" / "linkJ"
+        self._stage_junction(monkeypatch, link, elsewhere)
+        entered = self._recording_walk(monkeypatch)
+
+        assert _untracked_collisions(repo, target, dict(os.environ)) == ["d"]
+        assert str(link) not in entered
+
+    def test_a_tracked_subdirectory_under_it_is_still_walked(self, tmp_path, monkeypatch):
+        def make_nested_dir(root):
+            self._make_dir(root)
+            (root / "d" / "sub").mkdir()
+            (root / "d" / "sub" / "b.txt").write_text("b")
+
+        repo, target = self._repo(tmp_path, make_nested_dir, self._dir_to_file)
+        entered = self._recording_walk(monkeypatch)
+
+        assert _untracked_collisions(repo, target, dict(os.environ)) == []
+        assert str(tmp_path / "d" / "sub") in entered
 
     @staticmethod
     def _case_rename(root):
