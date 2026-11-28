@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/dialog'
@@ -10,6 +12,14 @@ import { i18nT } from '../../i18n/t'
 
 /** The file picker's filter: a `.crewmate` file is a zip under its own name. */
 export const CREWMATE_FILE_ACCEPT = '.kirobot,.crewjam,.crewmate'
+
+/** The slice of `GET /api/config/kirocrew` the picker reads. */
+interface ImportConfig {
+  dashboard?: { import_agent_files?: unknown }
+}
+
+/** `.md` (an agent definition file) joins the filter only with `dashboard.import_agent_files` on. */
+export const crewmateFileAccept = (agentFiles: boolean) => (agentFiles ? `${CREWMATE_FILE_ACCEPT},.md` : CREWMATE_FILE_ACCEPT)
 
 /** Cards that still ask something of the owner: press, wait, retry or undo. */
 const OPEN: ReadonlySet<string> = new Set(['pending', 'applying', 'failed', 'partial'])
@@ -44,6 +54,8 @@ export default function CrewmateImportDialog({ open, onOpenChange }: {
 }) {
   const { t } = useTranslation()
   const { cards, error: readError, isSuccess: cardsRead, store, refresh, remove } = useChangeCards(open ? CREWMATE_IMPORT_SLOT : null)
+  const cfg = useQuery<ImportConfig>({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() as Promise<ImportConfig>, enabled: open })
+  const cfgRead = cfg.isSuccess || cfg.isError
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
   const [justRaised, setJustRaised] = useState<Card | null>(null)
@@ -64,14 +76,15 @@ export default function CrewmateImportDialog({ open, onOpenChange }: {
 
   // Opened with nothing waiting: go straight to the file picker, once. Only
   // after the cards were read: until then one may be waiting unseen, whether
-  // the read failed or is being re-read.
+  // the read failed or is being re-read. And after the setting was read, so the
+  // picker's filter is final when it opens (an unreadable setting keeps main's).
   useEffect(() => {
     if (!open) { asked.current = false; setProblem(null); setJustRaised(null); return }
-    if (cardsRead && !asked.current && !waiting) {
+    if (cardsRead && cfgRead && !asked.current && !waiting) {
       asked.current = true
       inputRef.current?.click()
     }
-  }, [open, cardsRead, waiting])
+  }, [open, cardsRead, cfgRead, waiting])
 
   const pick = async (file: File | undefined) => {
     if (!file) return
@@ -96,7 +109,7 @@ export default function CrewmateImportDialog({ open, onOpenChange }: {
       <input
         ref={inputRef}
         type="file"
-        accept={CREWMATE_FILE_ACCEPT}
+        accept={crewmateFileAccept(cfg.data?.dashboard?.import_agent_files === true)}
         className="hidden"
         aria-hidden="true"
         tabIndex={-1}
@@ -123,6 +136,15 @@ export default function CrewmateImportDialog({ open, onOpenChange }: {
               <ErrorNotice
                 message={readError instanceof Error ? readError.message : String(readError)}
                 testId="crewmate-import-read-error"
+                askAgent
+              />
+            )}
+            {/* The picker stays on main's filter; the dialog holds no draft (a raised card lives in its own slot), so the hand-off is safe. */}
+            {cfg.error && (
+              <ErrorNotice
+                message={cfg.error instanceof Error ? cfg.error.message : String(cfg.error)}
+                testId="crewmate-import-config-error"
+                impact="partial"
                 askAgent
               />
             )}

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { Card } from '../../api/cards'
+import { api } from '../../api/client'
 
 /* Import from file (rfc-crewmate-share.md §5.4): the dialog asks the gateway for
  * the import slot's pending cards, offers the `.crewmate` file picker, shows the
@@ -15,6 +16,11 @@ vi.mock('../../api/cards', async (orig) => {
   const real = await orig<typeof import('../../api/cards')>()
   return { ...real, cardsApi: { ...real.cardsApi, pending: (s: string) => pending(s), importCrewmate: (f: Blob) => importCrewmate(f) } }
 })
+vi.mock('../../api/client', async (orig) => {
+  const real = await orig<typeof import('../../api/client')>()
+  return { ...real, api: { ...real.api, kirocrewConfig: vi.fn() } }
+})
+const kirocrewConfig = vi.mocked(api.kirocrewConfig)
 vi.mock('../../cards/ChangeCard', () => ({
   default: ({ card, remove }: { card: Card; remove: (id: string) => void }) => (
     <div>
@@ -47,6 +53,8 @@ describe('CrewmateImportDialog', () => {
   beforeEach(() => {
     pending.mockReset()
     importCrewmate.mockReset()
+    kirocrewConfig.mockReset()
+    kirocrewConfig.mockResolvedValue({ dashboard: { import_agent_files: false } })
   })
 
   it('reads the reserved import slot and reopens a card left pending', async () => {
@@ -72,11 +80,45 @@ describe('CrewmateImportDialog', () => {
 
   it('offers a picker filtered to .crewmate files', async () => {
     pending.mockResolvedValue([])
+    const click = vi.spyOn(HTMLInputElement.prototype, 'click')
     mount()
     const input = screen.getByTestId('crewmate-import-input') as HTMLInputElement
     expect(input.type).toBe('file')
     expect(input.accept).toBe(CREWMATE_FILE_ACCEPT)
     expect(CREWMATE_FILE_ACCEPT).toBe('.kirobot,.crewjam,.crewmate')
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1)) // the setting was read, off
+    expect(input.accept).toBe(CREWMATE_FILE_ACCEPT)
+    click.mockRestore()
+  })
+
+  it('offers .md only with dashboard.import_agent_files on', async () => {
+    pending.mockResolvedValue([])
+    kirocrewConfig.mockResolvedValue({ dashboard: { import_agent_files: true } })
+    mount()
+    const input = screen.getByTestId('crewmate-import-input') as HTMLInputElement
+    await waitFor(() => expect(input.accept).toBe('.kirobot,.crewjam,.crewmate,.md'))
+  })
+
+  it('says so and keeps the original filter when the setting cannot be read', async () => {
+    pending.mockResolvedValue([])
+    kirocrewConfig.mockRejectedValue(new Error('config read failed'))
+    mount()
+    expect((await screen.findByTestId('crewmate-import-config-error')).textContent).toContain('config read failed')
+    expect((screen.getByTestId('crewmate-import-input') as HTMLInputElement).accept).toBe(CREWMATE_FILE_ACCEPT)
+  })
+
+  it('opens the picker only after the setting was read, so its filter is final', async () => {
+    pending.mockResolvedValue([])
+    let settle: (cfg: object) => void = () => {}
+    kirocrewConfig.mockImplementation(() => new Promise((resolve) => { settle = resolve }))
+    const click = vi.spyOn(HTMLInputElement.prototype, 'click')
+    mount()
+    await waitFor(() => expect(kirocrewConfig).toHaveBeenCalled())
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0) }) // let the card read finish
+    expect(click).not.toHaveBeenCalled()
+    settle({ dashboard: { import_agent_files: true } })
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1))
+    click.mockRestore()
   })
 
   it('sends the picked file and shows the one card the gateway raised', async () => {
@@ -137,5 +179,7 @@ describe('CrewmateImportDialog', () => {
     await waitFor(() => expect(screen.getByTestId('crewmate-import-refused')).toBeTruthy())
     expect(screen.queryByTestId('change-card-stub')).toBeNull()
     expect(importRefusal({ body: JSON.stringify({ code: 'grant_in_bundle' }) })).not.toBe(importRefusal({}))
+    // No code of its own: an agent file is refused like any file that is not a zip.
+    expect(importRefusal({ body: JSON.stringify({ code: 'invalid_bundle' }) })).toBe(importRefusal({}))
   })
 })

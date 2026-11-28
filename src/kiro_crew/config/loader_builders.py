@@ -1462,6 +1462,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             _sections.UPLOAD_MAX_MB_MAX,
         ),
         attachment_sheet_digest=section.read("attachment_sheet_digest", _safe_bool),
+        import_agent_files=section.read("import_agent_files", _safe_bool),
         mcp_probe_timeout_secs=section.read(
             "mcp_probe_timeout_secs", _safe_int, MCP_PROBE_TIMEOUT_MIN, MCP_PROBE_TIMEOUT_MAX
         ),

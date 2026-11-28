@@ -549,6 +549,19 @@ class DashboardConfig:
             "gets the path alone. Takes effect on the next message; no restart.",
         ),
     )
+    import_agent_files: bool = field(
+        default=False,
+        metadata=_meta(
+            "Import Agent Definition Files As Bots",
+            "When on, the Bot import card also takes one agent definition file "
+            "(Markdown with a front matter block, then the prompt): its name, "
+            "description and model hint fill the card and its body, at most 4,000 "
+            "characters, becomes the Bot's rules. A tool list, hooks and MCP servers "
+            "are never carried. Off by default: the file picker does not offer such "
+            "a file and one that is sent anyway is refused as before. Takes effect "
+            "on the next import; no restart.",
+        ),
+    )
     mcp_probe_timeout_secs: int = field(
         default=15,
         metadata=_meta(
