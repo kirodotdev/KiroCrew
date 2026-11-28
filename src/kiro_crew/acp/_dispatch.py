@@ -635,6 +635,10 @@ def classify_notification(msg: JsonRpcMessage) -> str:
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.acp._dispatch_parts.adapter_signals import (  # noqa: F401
+        _ANTIGRAVITY_ERROR_MAX_LEN,
+        _ANTIGRAVITY_INVALID_API_KEY_RE,
+        _ANTIGRAVITY_MCP_INIT_ERROR_RE,
+        _ANTIGRAVITY_RESULT_USAGE_KEYS,
         _CLAUDE_COMPACTION_COMPLETED_MARKER,
         _CLAUDE_COMPACTION_FAILED_MARKER,
         _CLAUDE_COMPACTION_STARTED_MARKER,
@@ -651,8 +655,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         BackgroundLaunchRecord,
         NativeCompactionStates,
         _is_launch_shaped,
+        _is_positive_token_count,
+        _parse_antigravity_unattributed_error,
         _printable_launch_label,
+        _result_has_positive_usage,
         _service_error_detail,
+        _usage_update_has_positive_tokens,
         antigravity_unattributed_error_exception,
         is_antigravity_unattributed_terminal_error,
         is_unattributed_error_candidate,

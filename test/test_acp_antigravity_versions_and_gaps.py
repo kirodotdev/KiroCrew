@@ -168,6 +168,8 @@ def test_find_main_executable_uses_localappdata_fallback_and_precedence(
     path_dir.mkdir()
     path_server = path_dir / "agy_acp_server.exe"
     path_server.write_bytes(b"path-server")
+    # shutil.which needs the execute bit on POSIX hosts, where this Windows test also runs.
+    path_server.chmod(0o755)
 
     override_server = tmp_path / "override_agy_acp_server.exe"
     override_server.write_bytes(b"override-server")
@@ -866,7 +868,7 @@ def test_find_main_and_helper_block_windows_cwd_hijack_and_off_directory_fallbac
     msg = antigravity_not_found_message(
         antigravity_mod.AntigravityResolution(server=None, helper=None, search_path=str(path_dir))
     )
-    assert "%LOCALAPPDATA%\\agy\\bin\\custom_agy.exe" in msg
+    assert os.path.join("%LOCALAPPDATA%", "agy", "bin", "custom_agy.exe") in msg
 
     # End-to-end probe skips CWD binaries even when both exist beside the gateway.
     monkeypatch.setattr(client_mod, "augmented_path", lambda _path: str(path_dir))
@@ -1138,13 +1140,17 @@ async def test_antigravity_held_chunk_flushes_before_notification_and_completes(
 
 
 def _install_eof_timeout_clock(monkeypatch: pytest.MonkeyPatch, client: AcpClient) -> None:
-    """Advance only client_turn's clock past deadline once EOF is reached."""
+    """Advance the client's clock past deadline once EOF is reached."""
+    import time as real_time
     from types import SimpleNamespace
 
-    from kiro_crew.acp import client_turn as client_turn_mod
-
     now = [1000.0]
-    monkeypatch.setattr(client_turn_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    fake_time = SimpleNamespace(
+        **{name: getattr(real_time, name) for name in dir(real_time) if not name.startswith("__")}
+    )
+    fake_time.monotonic = lambda: now[0]
+    # Patched through the facade: ``time`` is bound by several client owners.
+    monkeypatch.setattr(client_mod, "time", fake_time)
     orig_read = client._read_message
 
     async def _fast_eof_read(timeout: float = 0.0):

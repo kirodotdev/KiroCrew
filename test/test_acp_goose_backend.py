@@ -1632,7 +1632,7 @@ def test_the_drift_refusals_run_on_both_answering_sites() -> None:
         assert "self._refuse_identity_drift(" in body, site
         assert "self._deny_spec_disabled_tool(" in body, site
     stream = inspect.getsource(AcpClient.send_message_stream)
-    assert "if self._judges_permission_requests:" in stream
+    assert "if self._judges_permission_requests" in stream
     assert "self._extract_tool_event(msg)" in stream
 
 
