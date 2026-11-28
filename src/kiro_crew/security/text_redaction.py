@@ -158,6 +158,10 @@ _STREAM_DISCARD_RUN_RES = {
     "bearer": re.compile(rf"{_BEARER_VALUE_CLASS}*"),
     "aws-keyed": re.compile(rf"{stream_aws_anchor.VALUE_CLASS}*"),
 }
+# An unspaced run past the hold floor that holds glued credentials is dropped to
+# whitespace, a quote, ``,`` or ``}``: the AWS value class, which takes every token
+# alphabet, a Telegram token's ``:`` included.
+_STREAM_DISCARD_RUN_RES["credential-run"] = _STREAM_DISCARD_RUN_RES["aws-keyed"]
 # Bytes of terminator-less continuation dropped silently between two tags. It is
 # NOT an exit: at the bound the discard re-emits the tag, zeroes the counter and
 # keeps dropping, so the counter stays O(1) and a credential's continuation never
@@ -315,6 +319,24 @@ def _outside_batch_spans(buf: str, cut: int, context: str = "") -> int:
     return cut
 
 
+def _glued_chain(spans: list[tuple[int, int]], lo: int, cut: int) -> tuple[int, int] | None:
+    """``(start, end)`` of two or more spans written back to back, from ``lo`` on,
+    that straddle ``cut``; else None."""
+    chain_start, chain_end, count = -1, -1, 0
+    found = False
+    for start, end in spans:
+        if end <= lo:
+            continue
+        if start == chain_end:
+            chain_end, count = end, count + 1
+        elif found:
+            break  # the chain that straddles the cut has ended
+        else:
+            chain_start, chain_end, count = start, end, 1
+        found = found or (count > 1 and chain_start < cut < chain_end)
+    return (chain_start, chain_end) if found else None
+
+
 def _token_start(buf: str, pos: int) -> int:
     while pos > 0 and not buf[pos - 1].isspace():
         pos -= 1
@@ -451,9 +473,9 @@ class StreamRedactor:
             # A credential label glued to the dropped run (`.../Authorization:`,
             # `...SecretAccessKey = `) must survive it: its own value follows
             # whitespace the discard stops at, and would stream with no label.
-            # Only when the AWS value is the sole carrier: an enclosing Bearer,
-            # JWT or token value must keep dropping until its own terminator.
-            if self._discard_kind == ("aws-keyed",):
+            # Only when the AWS value or glued chain is the sole carrier: an
+            # enclosing Bearer, JWT or token must drop until its own terminator.
+            if self._discard_kind in (("aws-keyed",), ("credential-run",)):
                 run = stream_aws_anchor.label_backoff(self._buf, run)
                 # A key name the run ends at, followed so far only by a little
                 # whitespace, may still get its separator in the next chunk:
@@ -468,7 +490,11 @@ class StreamRedactor:
             if run == len(self._buf):
                 # Keep the tail still in the discard, so a label split across
                 # chunks is seen whole on the next pass.
-                carry = stream_aws_anchor.LABEL_CARRY if "aws-keyed" in kinds else 0
+                carry = (
+                    stream_aws_anchor.LABEL_CARRY
+                    if "aws-keyed" in kinds or "credential-run" in kinds
+                    else 0
+                )
                 kept = max(0, len(self._buf) - carry)
                 self._left(self._buf[:kept])
                 self._buf = self._buf[kept:]
@@ -733,6 +759,36 @@ class StreamRedactor:
             i = len(self._buf) - cap
             i -= self._buf.startswith("${", i - 1)  # keep a JS/TS `${` placeholder whole
 
+            # Credentials glued back to back across the cut: each piece would be
+            # redacted alone, and a glued token is read only beside its neighbour.
+            # Drop the chain behind the tag, failing closed, as an over-long
+            # STRONG anchor does; the text before it is committed as usual.
+            # One plan read per cut: the chain check and the floor repair below share it.
+            spans = _batch_spans(self._buf)
+            chain = _glued_chain(spans, _token_start(self._buf, i), i)
+            if chain is not None:
+                chain_start, chain_end = chain
+                # Only through the chain; what follows it stays buffered. A run
+                # still going at the buffer end may hold more of the chain, so it
+                # is dropped whole and the next chunk continues the drop.
+                rest = _STREAM_DISCARD_RUN_RES["credential-run"].match(self._buf, chain_end)
+                credential_reaches_end = rest is not None and stream_aws_anchor.label_backoff(
+                    self._buf, rest.end(), chain_end
+                ) == len(self._buf)
+                if credential_reaches_end:
+                    # Carry a possible split label into the discard, but never
+                    # carry any of the chain's already-decided credentials.
+                    chain_end = max(chain_end, len(self._buf) - stream_aws_anchor.LABEL_CARRY)
+                commit = self._buf[:chain_start]
+                dropped = self._buf[chain_start:chain_end]
+                self._buf = self._buf[chain_end:]
+                out = self._redact_window(commit) if commit else ""
+                self._left(dropped)
+                self._discarding = credential_reaches_end or not self._buf
+                self._discard_kind = ("credential-run",) if self._discarding else None
+                self._discarded = 0
+                return out + _redaction._REDACTED_CREDENTIAL_TAG
+
             # The floor was computed after Phase A, so re-check complete token
             # parameters against the actual cut. Advancing through the value is
             # safe because the whole parameter reaches one batch-redaction call,
@@ -740,13 +796,13 @@ class StreamRedactor:
             floor_crossing = _complete_token_match_crossing(complete_token_matches, i)
             if floor_crossing is not None:
                 i = floor_crossing.end(1)
-            # The same holds for a complete AWS key-value pair or private-key
-            # body the floor would split (a PEM hold can keep one buffered after
-            # its value ended): its tail would stream with no anchor left to redact it.
-            if aws_label_seen or self._armour_blocks:
-                for start, end in _batch_spans(self._buf):
-                    if start < i < end:
-                        i = end
+            # The same holds for any complete span the plan replaces that the floor
+            # would split (an AWS key-value pair, a private-key body a PEM hold kept
+            # buffered, a token in a long unspaced run): its halves would stream with
+            # no anchor left to redact them.
+            for start, end in spans:
+                if start < i < end:
+                    i = end
 
             # Repair the complete-match cut first, then preserve a trailing WEAK
             # prefix if that repair crossed it. An encoded separator is at most

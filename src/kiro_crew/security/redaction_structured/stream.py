@@ -31,11 +31,12 @@ from __future__ import annotations
 
 from kiro_crew.default_ignorable import DEFAULT_IGNORABLE
 
-from .charsets import B64STD
+from .charsets import B64STD, B64URL_DOT
 from .encoded import RUN_CHARS
 from .engine import render, resolve, scan
 from .model import SECRET, TAG, TAIL_ALL, TAIL_B64RUN, TAIL_ENCRUN, TAIL_LINE, Hit, Span
 from .table import TABLE
+from .tokens import TAIL_JOSE
 
 # Look-behind kept from committed text: covers the pairing window (300 + 40 + 21),
 # line leads (64), key-token expansion (64) and URL schemes (32) with margin.
@@ -44,7 +45,7 @@ CONTEXT = 1024
 # URL scheme plus ``://``), so a partial anchor is always held.
 TAIL = 47
 #: The characters each run tail drops.
-_RUN_TAILS = {TAIL_B64RUN: B64STD, TAIL_ENCRUN: RUN_CHARS}
+_RUN_TAILS = {TAIL_B64RUN: B64STD, TAIL_ENCRUN: RUN_CHARS, TAIL_JOSE: B64URL_DOT}
 #: What :func:`line_tail` reads a dropped line for: the private-key BEGIN markers, the
 #: longest one's length less one, and the characters it reads them through.
 _BEGINS = tuple({row.begin for row in TABLE.armour})
@@ -68,6 +69,8 @@ def discard(tail: str, pad: int, chunk: str) -> tuple[int, int, bool]:
     i = 0
     if pad == 0:
         i = len(chunk) - len(chunk.lstrip(_RUN_TAILS[tail]))
+    if tail == TAIL_JOSE:
+        return i, pad, i < len(chunk)
     while i < len(chunk) and chunk[i] == "=" and pad < 2:
         pad += 1
         i += 1
@@ -119,6 +122,9 @@ class StreamRedactor:
         self._closed = False
         # Input offset where the last committed private-key block's END line ends.
         self._armour_from = 0
+        # Input offset where the last committed Secret span ends: a token glued
+        # after it is read as glued once that span has left the look-behind.
+        self._glued_from = 0
         # The end of the line a line drop has dropped so far (:func:`line_tail`).
         self._seen = ""
 
@@ -178,6 +184,8 @@ class StreamRedactor:
         for h in resolved:
             if h.start >= lo and h.end <= hi:
                 self._spans.append((h.start + offset, h.end + offset, h.rule_id, h.tier))
+                if h.tier == SECRET:
+                    self._glued_from = max(self._glued_from, h.end + offset)
 
     def _note_blocks(self, blocks: tuple[tuple[int, int], ...], cut: int, offset: int) -> None:
         """Keep where whole text resumes its private-key scan after a committed BEGIN."""
@@ -190,7 +198,11 @@ class StreamRedactor:
         base = len(self._ctx)
         offset = self._pos - base
         result = scan(
-            window, final=final, origin=base, armour_from=max(0, self._armour_from - offset)
+            window,
+            final=final,
+            origin=base,
+            armour_from=max(0, self._armour_from - offset),
+            glued_from=max(0, self._glued_from - offset),
         )
         resolved = resolve([h for h in result.hits if h.start >= base])
         n = len(window)

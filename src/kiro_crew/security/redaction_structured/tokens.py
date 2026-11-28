@@ -16,14 +16,18 @@ from the earliest open unit, so streamed and whole text give the same result.
 from __future__ import annotations
 
 import bisect
+import heapq
+from dataclasses import replace
 
 from .charsets import B64URL, B64URL_DOT, cached, run_end
 from .checks import CHECKSUMS, b64url_json_object, is_placeholder, is_placeholder_body
 from .model import SECRET, Hit
 from .table import FormatRow, JoseRow, PairRow, Part
 
-# JOSE runs longer than every JOSE row's maximum are decided (rejected) once read.
+# Maximum sentence punctuation after a JOSE token.
 _JOSE_TRAILING_DOTS = 3
+# A replaced oversized glued JOSE run discards only its own alphabet.
+TAIL_JOSE = "jose"
 
 
 def _match_parts(text: str, pos: int, parts: tuple[Part, ...]) -> int | None:
@@ -61,9 +65,26 @@ def _prefix_groups(
     return tuple((head, tuple(members)) for head, members in groups.items())
 
 
+def _body_end(text: str, i: int, prefix: str, row: FormatRow) -> int | None:
+    """End of the token *row* reads at *i*, boundaries aside; ``None`` when it reads none."""
+    e = _match_parts(text, i + len(prefix), row.parts)
+    if e is None:
+        return None
+    if row.checksum is not None:
+        return e if CHECKSUMS[row.checksum](text[i:e]) else None
+    if row.tier == SECRET and is_placeholder_body(text[i + len(prefix) : e]):
+        return None
+    return e
+
+
 def detect_formats(
-    text: str, rows: tuple[FormatRow, ...], final: bool
+    text: str,
+    rows: tuple[FormatRow, ...],
+    final: bool,
+    right_blocked: list[tuple[int, int, FormatRow]] | None = None,
 ) -> tuple[list[Hit], list[int]]:
+    """Format hits and open units; a Secret token whose only miss is its right
+    boundary goes to *right_blocked* for :func:`detect_glued`."""
     n = len(text)
     hits: list[Hit] = []
     opens: list[int] = []
@@ -83,20 +104,219 @@ def detect_formats(
                     if not final and r == n and r - i <= row.max_total:
                         opens.append(i)
                     else:
+                        # _body_end, inline: this loop is the plan's hottest.
                         e = _match_parts(text, i + len(prefix), row.parts)
-                        if (
-                            e is not None
-                            and (glued or e == n or text[e] not in row.right)
-                            and (row.checksum is None or CHECKSUMS[row.checksum](text[i:e]))
-                            and not (
-                                row.checksum is None
-                                and row.tier == SECRET
-                                and is_placeholder_body(text[i + len(prefix) : e])
-                            )
-                        ):
+                        if e is None:
+                            pass
+                        elif row.checksum is not None:  # glued
+                            if CHECKSUMS[row.checksum](text[i:e]):
+                                hits.append(
+                                    Hit(i, e, row.id, row.tier, "token_format", row.certainty)
+                                )
+                        elif row.tier == SECRET and is_placeholder_body(text[i + len(prefix) : e]):
+                            pass
+                        elif e == n or text[e] not in row.right:
                             hits.append(Hit(i, e, row.id, row.tier, "token_format", row.certainty))
+                        elif right_blocked is not None and row.tier == SECRET:
+                            right_blocked.append((i, e, row))
                 i = text.find(prefix, i + 1)
     return hits, opens
+
+
+# Held at the end of a stream window: longer than every format prefix and ``eyJ``,
+# so a credential that may still start right after a token is seen before it is decided.
+_GLUED_HOLD = 16
+# Glued JWT starts read per base64url-and-dot run; each read costs up to the run's
+# length, so the bound keeps the scan linear. Past it the rest of the run is
+# redacted whole, so the bound fails closed.
+_GLUED_JOSE_TRIES = 8
+
+
+def _glued_groups(
+    rows: tuple[FormatRow, ...],
+) -> tuple[tuple[str, tuple[tuple[str, FormatRow, tuple[tuple[str, ...], int] | None], ...]], ...]:
+    """:func:`_prefix_groups` for the rows :func:`detect_glued` reads (Secret, no
+    checksum), each with its first literal part's literals and how far past the
+    prefix that part can start; ``None`` for a row with no literal part."""
+    out = []
+    for head, members in _prefix_groups(rows):
+        kept = []
+        for prefix, row in members:
+            if row.tier != SECRET or row.checksum is not None:
+                continue  # a checksum row already reads a token glued to a word
+            gate, reach = None, 0
+            for part in row.parts:
+                if part.is_literal:
+                    gate = None if "" in part.literals else (part.literals, reach)
+                    break
+                reach += part.max  # run_end reads a part at most this long
+            kept.append((prefix, row, gate))
+        if kept:
+            out.append((head, tuple(kept)))
+    return tuple(out)
+
+
+def detect_glued(
+    text: str,
+    rows: tuple[FormatRow, ...],
+    jose_rows: tuple[JoseRow, ...],
+    hits: list[Hit],
+    right_blocked: list[tuple[int, int, FormatRow]],
+    blocks: list[tuple[int, int]],
+    final: bool,
+    open_from: int | None,
+) -> tuple[list[Hit], list[int]]:
+    """Secret tokens written with no gap after or before another credential.
+
+    A boundary keeps a token from being read out of a longer word. A character
+    that belongs to another credential (a Secret hit, a private-key block, or a
+    token read here) is not such a word, so it does not block. Two glued tokens
+    both redact, and a chain of them does too.
+
+    Only the text inside a credential is searched for a glued start, so the
+    cost follows the credentials in the text, not its length.
+    """
+    n = len(text)
+    # An armour hit's BEGIN anchor borders the preceding credential even when
+    # its END is missing (or cut off by a stream window); the hit covers only its body.
+    spans = [
+        (h.anchor if h.detector == "armour" and h.anchor >= 0 else h.start, h.end)
+        for h in hits
+        if h.tier == SECRET
+    ] + list(blocks)
+    # (start, end, rule, certainty, detector, right neighbour that must be a credential's).
+    # A start found below sits inside a credential, so its left side always is.
+    cands = [(i, e, row.id, row.certainty, "token_format", e) for i, e, row in right_blocked]
+    heap = spans + [(i, e) for i, e, _row in right_blocked]
+    heapq.heapify(heap)
+    opens: list[int] = []
+    groups = cached(rows, _glued_groups)
+    hold = cached(jose_rows, _jose_plan)[2] if jose_rows else 0
+    done = 0  # every start before this has been searched: each position once
+    jose_done = 0  # an oversized JOSE run already covered whole
+    run_from, run_to, tries = -1, -1, 0  # the JOSE run read last, and its starts tried
+    # (outer span, start, end, rule) of a glued token that starts inside the outer
+    # span and runs past its end. Once accepted, the outer format token ends where
+    # it starts: the two still cover every character, as separate spans a stream
+    # can cut between.
+    nested: list[tuple[tuple[int, int], int, int, str]] = []
+    while heap:
+        s, e = heapq.heappop(heap)
+        lo = max(s + 1, done)
+        if lo > e:
+            continue
+        done = e + 1
+        area = text[lo : e + _GLUED_HOLD]
+        for head, members in groups:
+            if head not in area:
+                continue
+            for prefix, row, gate in members:
+                stop = e + len(prefix)
+                first = lo
+                if gate is not None and not any(
+                    text.find(lit, lo + len(prefix), stop + gate[1] + len(lit)) != -1
+                    for lit in gate[0]
+                ):
+                    # No start here can reach the row's literal part, so none reads a
+                    # token: only a run still open at the end of the text can matter.
+                    if final:
+                        continue
+                    first = max(lo, n - row.max_total)
+                i = text.find(prefix, first, stop)
+                while i != -1:
+                    if text[i - 1] in row.left:  # else the plain scan read it
+                        r = run_end(text, i, row.run_chars, row.max_total + 1)
+                        if not final and r == n and r - i <= row.max_total:
+                            opens.append(i)
+                        else:
+                            end = _body_end(text, i, prefix, row)
+                            if end is not None:
+                                right = end if end < n and text[end] in row.right else -1
+                                cands.append((i, end, row.id, row.certainty, "token_format", right))
+                                heapq.heappush(heap, (i, end))
+                                if i < e < end:
+                                    nested.append(((s, e), i, end, row.id))
+                    i = text.find(prefix, i + 1, e + len(prefix))
+        i = text.find("eyJ", max(lo, jose_done), e + 3) if jose_rows else -1
+        while i != -1:
+            if not run_from <= i < run_to:
+                # Read each run once, whole: every start in it shares its real end.
+                run_from, run_to = i, run_end(text, i, B64URL_DOT)
+                tries = 0
+            r = run_to
+            if r - i > hold:
+                # A long run may contain several valid tokens. Cover it once,
+                # then discard its continuation rather than releasing its tail.
+                cands.append((i, r, "jwt", "jose", "jose", -1))
+                heapq.heappush(heap, (i, r))
+                if i < e < r:
+                    nested.append(((s, e), i, r, "jwt"))
+                jose_done = r
+            elif not final and r == n:
+                opens.append(i)
+            else:
+                tries += 1
+                if tries <= _GLUED_JOSE_TRIES:
+                    found, _ = detect_jose(text[i : r + 1], jose_rows, True)
+                    if not any(h.start == 0 and h.tier == SECRET for h in found):
+                        # shortcut: mask an invalid glued run whole; split it only if
+                        # individual JOSE spans become necessary.
+                        end = len(text[i:r].rstrip("."))  # keep sentence punctuation
+                        found.append(Hit(0, end, "jwt", SECRET, "jose", "jose"))
+                    for h in found:
+                        if h.start == 0 and h.tier == SECRET:
+                            cands.append((i, i + h.end, h.rule_id, h.certainty, "jose", -1))
+                            heapq.heappush(heap, (i, i + h.end))
+                            if i < e < i + h.end:
+                                nested.append(((s, e), i, i + h.end, h.rule_id))
+                elif tries == _GLUED_JOSE_TRIES + 1:
+                    # Out of tries: the rest of the run is redacted, failing closed.
+                    cands.append((i, r, "jwt", "jose", "jose", -1))
+                    heapq.heappush(heap, (i, r))
+            i = text.find("eyJ", max(i + 1, jose_done), e + 3)
+    if not cands:
+        return [], opens
+    spans += [(c[0], c[1]) for c in cands]
+    spans.sort()
+    starts = [lo for lo, _hi in spans]
+    reach: list[int] = []
+    for _lo, hi in spans:
+        reach.append(max(reach[-1], hi) if reach else hi)
+
+    def covered(pos: int) -> bool:
+        k = bisect.bisect_right(starts, pos) - 1
+        return k >= 0 and reach[k] > pos
+
+    if opens:
+        open_from = min(opens) if open_from is None else min(open_from, *opens)
+    glued: list[Hit] = []
+    accepted: set[tuple[int, int, str]] = set()
+    for start, end, rule, certainty, detector, right in cands:
+        if right == -1 or covered(right):
+            tail = (
+                TAIL_JOSE
+                if detector == "jose" and not final and end == n and end - start > hold
+                else ""
+            )
+            glued.append(Hit(start, end, rule, SECRET, detector, certainty, tail=tail))
+            accepted.add((start, end, rule))
+        elif not final and (
+            (n - right < _GLUED_HOLD and not any(c.isspace() for c in text[right:]))
+            or (open_from is not None and right >= open_from)
+        ):
+            # What follows may still turn out to be a credential.
+            opens.append(start)
+    trim: dict[tuple[int, int], int] = {}
+    for outer, start, end, rule in nested:
+        if (start, end, rule) in accepted:
+            trim[outer] = min(trim.get(outer, outer[1]), start)
+    if trim:
+        for group in (hits, glued):
+            for k, h in enumerate(group):
+                cut = trim.get((h.start, h.end))
+                if cut is not None and h.detector == "token_format" and h.tier == SECRET:
+                    group[k] = replace(h, end=cut)
+    return glued, opens
 
 
 # ── JOSE ──
@@ -149,6 +369,7 @@ def _jose_plan(
 def detect_jose(text: str, rows: tuple[JoseRow, ...], final: bool) -> tuple[list[Hit], list[int]]:
     """JWT/JWE by full-token split; the two-segment link token by a bounded read."""
     hits: list[Hit] = []
+    fallbacks: list[tuple[Hit, int]] = []
     opens: list[int] = []
     i = text.find("eyJ")
     if i == -1:
@@ -170,6 +391,7 @@ def detect_jose(text: str, rows: tuple[JoseRow, ...], final: bool) -> tuple[list
             opens.append(i)
             i = text.find("eyJ", i + 1)
             continue
+        before = len(hits)
         for row in multi:
             if prev and prev in row.left:
                 continue
@@ -195,7 +417,20 @@ def detect_jose(text: str, rows: tuple[JoseRow, ...], final: bool) -> tuple[list
             hit = _link_at(text, i, row)
             if hit is not None:
                 hits.append(hit)
+        if multi and i == run_from and len(hits) == before:
+            # shortcut: an invalid run with two JSON payload starts is masked
+            # whole; split it only if individual JOSE spans become necessary.
+            # Check once per run, not once per eyJ, so suffix reads stay linear.
+            first = text.find(".eyJ", i, r)
+            if first != -1 and text.find(".eyJ", first + 4, r) != -1:
+                end = i + len(text[i:r].rstrip("."))
+                tail = TAIL_JOSE if not final and r == n and r - i > hold else ""
+                fallbacks.append(
+                    (Hit(i, r if tail else end, "jwt", SECRET, "jose", "jose", tail=tail), before)
+                )
         i = text.find("eyJ", i + 1)
+    # Hits are in start order. Defer whole-run masking until every start was tried.
+    hits += [h for h, before in fallbacks if before == len(hits) or hits[before].start >= h.end]
     return hits, opens
 
 

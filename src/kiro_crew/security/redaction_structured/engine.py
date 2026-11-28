@@ -53,8 +53,8 @@ from .model import (
     Hit,
     Span,
 )
-from .table import TABLE, StructureRow, Table
-from .tokens import detect_formats, detect_jose, detect_pairs
+from .table import TABLE, FormatRow, StructureRow, Table
+from .tokens import detect_formats, detect_glued, detect_jose, detect_pairs
 
 _NONE: tuple[list[Hit], list[int]] = ([], [])
 
@@ -78,11 +78,13 @@ def scan(
     table: Table = TABLE,
     depth: int = 0,
     armour_from: int = 0,
+    glued_from: int = 0,
 ) -> ScanResult:
     """Every detector's raw hits, and the earliest undecided unit at or after ``origin``.
 
     ``depth`` counts the decodes the encoded detector went through to reach ``text``.
     ``armour_from`` is where the private-key scan starts (:func:`.armour.detect_armour`).
+    ``glued_from`` is where a credential the caller already redacted ends, 0 for none.
     """
     hits: list[Hit] = []
     opens: list[int] = []
@@ -91,7 +93,8 @@ def scan(
     value_hits, value_opens = detect_identifier_values(text, table.structures, final, low)
     hits += value_hits
 
-    found, op = detect_formats(text, table.formats, final)
+    right_blocked: list[tuple[int, int, FormatRow]] = []
+    found, op = detect_formats(text, table.formats, final, right_blocked)
     hits += found
     opens += op
     key_ids = [(h.start, h.end) for h in found if h.rule_id == "aws.access_key_id"]
@@ -120,6 +123,21 @@ def scan(
         found, op = detect_object_names(text, plan, final)
         hits += found
         opens += op
+    found, op = detect_glued(
+        text,
+        table.formats,
+        table.jose,
+        hits,
+        right_blocked,
+        # A stream starts the private-key scan after its last committed block, and
+        # may have let its last committed credential leave the look-behind; each
+        # end still borders what follows it.
+        list(blocks) + [(end - 1, end) for end in (armour_from, glued_from) if end > 0],
+        final,
+        min(opens + value_opens, default=None),
+    )
+    hits += found
+    opens += op
 
     # An open unit runs to the end of the text, so one that started before
     # ``origin`` (its label already streamed) still holds the text after it.
