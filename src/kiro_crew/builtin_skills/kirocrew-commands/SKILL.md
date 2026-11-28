@@ -157,6 +157,8 @@ Browsing is not a `kirocrew` subcommand.
 
 ## Cron Jobs
 
+From an agent's shell, `kirocrew cron remove`, `update`, `pause`, `resume` and `adopt` are refused: the CLI acts on every chat's jobs. To change a job this chat owns, use the `cron_remove`, `cron_update`, `cron_pause` and `cron_resume` tools. Those five rows below are for the user's own terminal.
+
 | Command | Description |
 |---------|-------------|
 | `kirocrew cron list` | List all cron jobs |

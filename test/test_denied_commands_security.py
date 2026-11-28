@@ -275,6 +275,7 @@ class TestSelfProtectionFlagInterposition:
         "self-protection-gateway-restart": "kirocrew {flags} gateway restart",
         "self-protection-cloud": "kirocrew {flags} cloud destroy",
         "self-protection-skills-authority-retire": "kirocrew {flags} skills authority-retire",
+        "self-protection-cron-remove": "kirocrew {flags} cron remove",
     }
     _FLAGS = ("-v", "-vv", "--verbose", "--no-jail", "-v --no-jail")
 
@@ -427,6 +428,7 @@ class TestSelfProtectionFlagInterposition:
         "self-protection-gateway-restart": ["gateway", "restart"],
         "self-protection-cloud": ["cloud", "destroy"],
         "self-protection-skills-authority-retire": ["skills", "authority-retire"],
+        "self-protection-cron-remove": ["cron", "remove"],
     }
 
     @staticmethod
@@ -542,6 +544,7 @@ class TestSelfProtectionFlagInterposition:
         assert security._is_self_gateway_restart("kirocrew -\\v gateway restart")
         assert security._is_self_cloud_destructive("kirocrew -\\v cloud destroy")
         assert security._is_self_skills_authority_retire("kirocrew -\\v skills authority-retire")
+        assert security._is_self_cron_job_change("kirocrew -\\v cron remove")
         assert security._is_dev_mode_out_of_root_confirm(
             "kirocrew app dev x --confirm-out-of-install-'root'"
         )

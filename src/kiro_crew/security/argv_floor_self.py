@@ -1107,6 +1107,11 @@ _SELF_CLOUD_DESTRUCTIVE_VERBS: frozenset[str] = frozenset(
     {"destroy", "stop", "start", "launch", "connect", "tunnel", "login", "logout"}
 )
 
+# The ``cron`` verbs that delete or change an existing job. The CLI applies them to
+# any job in the store, whichever chat owns it; ``list``, ``history``, ``add``,
+# ``trigger`` and ``preview`` leave every existing job as it is and are not here.
+_SELF_CRON_JOB_CHANGE_VERBS: frozenset[str] = frozenset({"remove", "update", "pause", "resume"})
+
 
 def _self_cli_operands(tokens: "list[str]", i: int, *, glued_words: bool) -> "list[str]":
     """Non-flag operand words the product CLI at program index *i* receives, in order.
@@ -1622,6 +1627,11 @@ def _is_self_gateway_restart(text_lower: str) -> bool:
 def _is_self_cloud_destructive(text_lower: str) -> bool:
     """``kirocrew cloud <destructive>`` behind any shell dressing of interposed flags."""
     return _matches_self_subcommand(text_lower, ("cloud", _SELF_CLOUD_DESTRUCTIVE_VERBS))
+
+
+def _is_self_cron_job_change(text_lower: str) -> bool:
+    """``kirocrew cron remove|update|pause|resume`` behind interposed shell dressing."""
+    return _matches_self_subcommand(text_lower, ("cron", _SELF_CRON_JOB_CHANGE_VERBS))
 
 
 def _is_self_skills_authority_retire(text_lower: str) -> bool:

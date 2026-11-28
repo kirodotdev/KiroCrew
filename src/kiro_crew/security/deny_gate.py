@@ -587,6 +587,7 @@ def _self_protection_floor_hit(
         ("self-protection-gateway-restart", _argv._is_self_gateway_restart),
         ("self-protection-cloud", _argv._is_self_cloud_destructive),
         ("self-protection-skills-authority-retire", _argv._is_self_skills_authority_retire),
+        ("self-protection-cron-remove", _argv._is_self_cron_job_change),
     ):
         if predicate(lower):
             return rule_id, None

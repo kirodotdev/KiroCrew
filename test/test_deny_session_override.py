@@ -246,6 +246,7 @@ _SELF_GUARD_COMMANDS = [
     "kirocrew gateway restart",
     "kirocrew cloud destroy",
     "kirocrew skills authority-retire",
+    "kirocrew cron remove job-1",
 ]
 
 

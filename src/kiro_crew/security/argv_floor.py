@@ -294,6 +294,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_dev_mode_out_of_root_confirm,
         _is_kill_by_name_program,
         _is_self_cloud_destructive,
+        _is_self_cron_job_change,
         _is_self_gateway_restart,
         _is_self_kill,
         _is_self_module_flag,

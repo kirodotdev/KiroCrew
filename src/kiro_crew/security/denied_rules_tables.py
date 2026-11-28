@@ -159,8 +159,8 @@ _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
 _SELF_PROTECTION_FLOOR_PATTERNS: frozenset[str] = frozenset(_SELF_PROTECTION_FLOOR_BY_ID.values())
 
 # The self-management SUBCOMMAND floors named in this set -- restart, update,
-# gateway restart, cloud <destructive>, skills authority-retire -- have NO catalog row
-# and NO opt-out.  A regex
+# gateway restart, cloud <destructive>, skills authority-retire, cron
+# remove/update/pause/resume -- have NO catalog row and NO opt-out.  A regex
 # row (``.*kiro.?crew ... restart.*`` and siblings) opening with an unbounded any-run would
 # match the product name in a worktree path plus the verb word later, denying
 # ``ls ~/kirocrew-wt/restart.log``, and adds nothing to the structural predicate, which requires
@@ -178,6 +178,7 @@ _SELF_PROTECTION_UNGATED_FLOOR_IDS: frozenset[str] = frozenset(
         "self-protection-gateway-restart",
         "self-protection-cloud",
         "self-protection-skills-authority-retire",
+        "self-protection-cron-remove",
     }
 )
 
@@ -240,6 +241,13 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "program and its leading subcommands retire the auto-skill authority. This "
         "stopped-installation recovery must run from the operator's own terminal, so "
         "this floor has no catalog row and no opt-out."
+    ),
+    "self-protection-cron-remove": (
+        "Matched structurally on the command's argv: the product CLI is the argv's own "
+        "program and its leading subcommands remove, update, pause or resume a scheduled "
+        "job. The CLI acts on any chat's job, so an agent's shell may not run it; the "
+        "cron tools (cron_remove, cron_update, cron_pause, cron_resume) do the same for "
+        "the jobs this chat owns. This floor has no catalog row and no opt-out."
     ),
     "self-protection-dev-mode-out-of-root-confirm": (
         "Matched structurally on the command's argv, not by the pattern text above: "

@@ -1,0 +1,6 @@
++23
+The self-protection-cron-remove floor, which refuses the product CLI's cron remove,
+update, pause and resume through an agent shell: the verb set and one argv matcher in
+argv_floor_self, its facade manifest line, its rule id and reason in denied_rules_tables,
+its deny_gate registration, its facade exports, and its name in the ungated-floor
+comment. No pass widened and no threshold moved.
