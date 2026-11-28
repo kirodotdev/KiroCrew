@@ -57,7 +57,7 @@ from kiro_crew.apps.kiro_operations import (
     kiro_app_enabled,
 )
 from kiro_crew.apps.rpc_cbor import cbor_decode, cbor_encode
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +321,11 @@ async def _post(url: str, body: bytes, signed: SignedCall) -> _Reply:
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                url, data=body, headers=headers, allow_redirects=False, proxy=resolve_proxy(url)
+                url,
+                data=body,
+                headers=headers,
+                allow_redirects=False,
+                proxy=await resolve_proxy_off_loop(url),
             ) as resp:
                 declared = resp.content_length
                 if declared is not None and declared > MAX_RESPONSE_BYTES:

@@ -45,7 +45,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 import kiro_crew._facade_mirror as _facade_mirror
-from kiro_crew import __version__, slack_manifest
+from kiro_crew import __version__, http_proxy, slack_manifest
 from kiro_crew.agent_discovery import agent_spec_stems
 from kiro_crew.agent_spec_format import (
     is_markdown_spec,
@@ -66,7 +66,7 @@ from kiro_crew.dashboard.handlers import get_update_info
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.attachments import unlink_temp
@@ -307,14 +307,16 @@ async def init_socket_mode(
     # companion supplies a fail-closed workspace allowlist.  validate_enterprise
     # does a synchronous auth.test network call — blocking, so off-loop.
     _validate = current_context().slack_gate.validate_enterprise
-    if not await asyncio.to_thread(_validate, orch._bot_token, extra_ids=extra_ids):
+    proxy = await http_proxy.resolve_proxy_off_loop(http_proxy.SLACK_API_URL)
+    with http_proxy.gate_proxy_snapshot(proxy):
+        admitted = await asyncio.to_thread(_validate, orch._bot_token, extra_ids=extra_ids)
+    if not admitted:
         logger.error("Slack workspace failed enterprise validation — Slack disabled")
         orch._slack_connect_error = "workspace failed enterprise validation"
         orch._slack_enabled = False
         orch.slack = None
         return
-
-    web_client = AsyncWebClient(token=orch._bot_token)
+    web_client = http_proxy.slack_web_client(orch._bot_token, proxy)
     # slack.shared_access checks each listed id with this client (users.info).
     install_shared_access(web_client)
     orch._socket_client = WSSocketModeClient(

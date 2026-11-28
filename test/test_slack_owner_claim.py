@@ -89,7 +89,7 @@ class _Claim(oc.OwnerClaim):
         self.enterprise_ok = True
         self.transport_ok = True
 
-    def _web_client(self, bot: str) -> Any:
+    def _web_client(self, bot: str, proxy: Any = None) -> Any:
         return self.web_
 
     def _socket_client(self, app: str, web_: Any) -> Any:

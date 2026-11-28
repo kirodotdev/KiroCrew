@@ -669,6 +669,7 @@ class TestOutbound:
         proxy = "http://proxy.invalid:3128"
         monkeypatch.setattr(urllib_request, "getproxies", lambda: {"https": proxy})
         monkeypatch.setattr(urllib_request, "proxy_bypass", lambda _host: False)
+        _os_proxy(monkeypatch, {"https": proxy})
         client = TeamsClient(app_id=_APP_ID, app_password="pw")
         session = _FakeSession(
             [
@@ -963,3 +964,11 @@ class TestWireTruncationGuard:
         }
         fitted = TeamsClient._fit_activity(activity)
         assert fitted["text"] == "…"
+
+
+def _os_proxy(monkeypatch, proxies):
+    """The OS proxy settings the off-loop resolver reads, with no bypass list."""
+    from kiro_crew import http_proxy
+
+    monkeypatch.setattr(http_proxy, "_os_proxies", lambda: dict(proxies))
+    monkeypatch.setattr(http_proxy, "_os_bypass", lambda: None)

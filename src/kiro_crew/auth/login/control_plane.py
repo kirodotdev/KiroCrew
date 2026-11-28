@@ -34,7 +34,7 @@ from dataclasses import dataclass
 import aiohttp
 
 from kiro_crew.auth.login.endpoints import USER_AGENT
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,9 @@ async def _profiles_page(
     a non-200, an undecodable or malformed body, or a ``nextToken`` that is not a
     string.
     """
-    async with session.post(url, json=body, headers=headers, proxy=resolve_proxy(url)) as resp:
+    async with session.post(
+        url, json=body, headers=headers, proxy=await resolve_proxy_off_loop(url)
+    ) as resp:
         if resp.status != 200:
             # The body is only log material. A mislabelled or unknown charset makes
             # decoding raise, and that must still end as ControlPlaneError so the

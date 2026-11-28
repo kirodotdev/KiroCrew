@@ -67,6 +67,7 @@ from kiro_crew.config.loader import (
     CRED_SLACK_BOT_TOKEN,
     KiroCrewConfig,
 )
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy_off_loop, slack_web_client
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -129,10 +130,12 @@ async def _team_of(client: Any) -> str:
 
 async def probe_workspace(bot_token: str) -> str:
     """The ``team_id`` *bot_token* authenticates to. Raises on any failure."""
-    from slack_sdk.web.async_client import AsyncWebClient
-
     return await _team_of(
-        AsyncWebClient(token=bot_token, timeout=int(_WORKSPACE_PROBE_TIMEOUT_SECS))
+        slack_web_client(
+            bot_token,
+            await resolve_proxy_off_loop(SLACK_API_URL),
+            timeout=int(_WORKSPACE_PROBE_TIMEOUT_SECS),
+        )
     )
 
 

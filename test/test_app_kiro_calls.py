@@ -241,7 +241,12 @@ async def bff(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[FakeBff, s
     app.router.add_post("/{prefix}/service/{service}/operation/{op}", fake.handle)
     server = TestServer(app)
     await server.start_server()
-    monkeypatch.setattr(kiro_calls, "resolve_proxy", lambda _url: None)
+
+    async def _direct(_url: str) -> None:
+        return None
+
+    # raising=False: a tree without the off-loop resolver fails in the test, not here.
+    monkeypatch.setattr(kiro_calls, "resolve_proxy_off_loop", _direct, raising=False)
     try:
         yield fake, str(server.make_url("")).rstrip("/")
     finally:

@@ -37,7 +37,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from kiro_crew import http_proxy
 from kiro_crew.config.loader import CRED_OWNER_ID, CRED_SLACK_APP_TOKEN, CRED_SLACK_BOT_TOKEN
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy_off_loop, slack_web_client
 from kiro_crew.sel import sel
 from kiro_crew.validation import USER_ID_RE
 
@@ -310,7 +312,7 @@ class OwnerClaim:
             # differs from its .env line, or a CLI save between the two reads.
             if saved_values != _token_digest(bot, app):
                 raise ClaimRefused("credentials_mismatch", 400)
-            web = self._web_client(bot)
+            web = self._web_client(bot, await resolve_proxy_off_loop(SLACK_API_URL))
             auth = await self._auth_test(web)
             team = auth.get("team_id")
             if not isinstance(team, str) or not team.startswith("T"):
@@ -348,10 +350,8 @@ class OwnerClaim:
         _audit("claim_window_opened")
         return self.snapshot()
 
-    def _web_client(self, bot: str) -> Any:
-        from slack_sdk.web.async_client import AsyncWebClient
-
-        return AsyncWebClient(token=bot, timeout=int(_SLACK_TIMEOUT_SECS))
+    def _web_client(self, bot: str, proxy: str | None) -> Any:
+        return slack_web_client(bot, proxy, timeout=int(_SLACK_TIMEOUT_SECS))
 
     def _socket_client(self, app: str, web: Any) -> Any:
         from kiro_crew.slack.socket_mode_proxy import ProxySelectingSocketModeClient
@@ -374,7 +374,9 @@ class OwnerClaim:
 
         validate = current_context().slack_gate.validate_enterprise
         extra = self._orch._cfg.slack_enterprise_ids
-        return bool(await asyncio.to_thread(validate, bot, extra_ids=extra))
+        proxy = await http_proxy.resolve_proxy_off_loop(http_proxy.SLACK_API_URL)
+        with http_proxy.gate_proxy_snapshot(proxy):
+            return bool(await asyncio.to_thread(validate, bot, extra_ids=extra))
 
     async def _transport_permitted(self) -> bool:
         from kiro_crew.slack.gateway import _channel_transport_permitted

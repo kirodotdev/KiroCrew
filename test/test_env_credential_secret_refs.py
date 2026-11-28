@@ -405,14 +405,12 @@ def test_the_slack_wizard_checks_a_kept_reference_as_its_secret(
     _store(home, "SLACK_BOT_TOKEN", _PLACEHOLDER)
     tokens: list[str] = []
 
-    class _Client:
-        def __init__(self, token: str, timeout: float) -> None:
-            tokens.append(token)
+    def _call(token: str, proxy: str | None, method: str, /, **kwargs: object) -> dict:
+        tokens.append(token)
+        assert method == "auth_test"
+        return {"team": "Example"}
 
-        def auth_test(self) -> dict:
-            return {"team": "Example"}
-
-    monkeypatch.setattr(cli_setup, "WebClient", _Client)
+    monkeypatch.setattr(cli_setup, "slack_call_sync", _call)
 
     assert cli_setup._verify_slack_secret("SLACK_BOT_TOKEN", "secret://SLACK_BOT_TOKEN") == (
         True,

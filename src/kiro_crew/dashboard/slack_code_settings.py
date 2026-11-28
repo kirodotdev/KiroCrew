@@ -31,6 +31,7 @@ from kiro_crew.config.sections_slack import (
     CODE_CHANNEL_DEFAULT_MAX,
 )
 from kiro_crew.effort import is_valid_effort
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy_off_loop, slack_web_client
 from kiro_crew.slack import features as slack_features
 from kiro_crew.slack import scope_probe
 
@@ -761,9 +762,8 @@ async def manifest_status(cfg: Any, bot_token: str, *, refresh: bool = False) ->
     if cached is not None and not refresh and now - cached[0] < _STATUS_TTL:
         install = cached[1]
     else:
-        from slack_sdk.web.async_client import AsyncWebClient
-
-        client = AsyncWebClient(token=bot_token, timeout=10)
+        proxy = await resolve_proxy_off_loop(SLACK_API_URL)
+        client = slack_web_client(bot_token, proxy, timeout=10)
         if refresh:
             # Check again re-probes like a reconnect: a workspace an admin has
             # since enabled must read as such, so a runtime "feature_disabled"

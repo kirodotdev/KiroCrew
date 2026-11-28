@@ -39,7 +39,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
 )
 from kiro_crew.config.paths import config_dir
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.secrets.vault import SecretVault
 
@@ -162,7 +162,7 @@ async def _post_token(data: dict[str, str]) -> dict[str, Any]:
             async with session.post(
                 TOKEN_URL,
                 data=data,
-                proxy=resolve_proxy(TOKEN_URL),
+                proxy=await resolve_proxy_off_loop(TOKEN_URL),
                 headers={"Accept": "application/json"},
                 timeout=aiohttp.ClientTimeout(total=_TOKEN_TIMEOUT_SECS),
             ) as resp:
@@ -296,7 +296,7 @@ async def revoke_tokens() -> None:
             async with session.post(
                 REVOKE_URL,
                 data={"client_id": client_id, "client_secret": client_secret, "token": access},
-                proxy=resolve_proxy(REVOKE_URL),
+                proxy=await resolve_proxy_off_loop(REVOKE_URL),
                 timeout=aiohttp.ClientTimeout(total=_TOKEN_TIMEOUT_SECS),
             ) as resp:
                 if not (200 <= resp.status < 300):

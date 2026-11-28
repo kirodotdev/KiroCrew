@@ -52,7 +52,7 @@ from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.telegram import client_albums as _client_albums
 from kiro_crew.telegram import client_http as _client_http
 from kiro_crew.telegram import client_polling as _client_polling
-from kiro_crew.telegram.client_http import _file_base, _resolve_proxy
+from kiro_crew.telegram.client_http import _file_base
 from kiro_crew.telegram.client_polling import _CURSOR_DIRNAME, _CURSOR_FILENAME
 
 logger = logging.getLogger("kiro_crew.telegram.client")
@@ -701,7 +701,8 @@ class TelegramClient:
         self._on_message = on_message
         self._on_callback = on_callback
         self._polling_timeout = polling_timeout
-        self._proxy = proxy or _resolve_proxy()
+        # The async caller resolves *proxy* (``_resolve_proxy_off_loop``), off the loop.
+        self._proxy = proxy
         self._session: aiohttp.ClientSession | None = None
         self._session_lock: asyncio.Lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
@@ -1746,8 +1747,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LOOPBACK_HOSTS,
         _METHOD_TAIL,
         _api_base,
+        _env_proxy,
         _is_loopback_host,
+        _proxy_for_url,
         _record_api_duration,
+        _resolve_proxy,
+        _resolve_proxy_off_loop,
         _url_is_loopback,
     )
     from kiro_crew.telegram.client_polling import (  # noqa: F401

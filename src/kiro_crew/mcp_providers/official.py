@@ -24,7 +24,7 @@ from typing import Any
 
 import aiohttp
 
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 from kiro_crew.mcp_providers.base import (
     McpInstallPlan,
     McpSearchResult,
@@ -82,7 +82,7 @@ async def _fetch_json(url: str) -> Any | None:
     """
     timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_SECS)
     # Explicit proxy selection keeps aiohttp's netrc credential lookup disabled.
-    proxy = resolve_proxy(url)
+    proxy = await resolve_proxy_off_loop(url)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, headers={"User-Agent": _USER_AGENT}, proxy=proxy) as resp:

@@ -115,6 +115,31 @@ async def test_get_summaries_returns_the_data_list() -> None:
     }
 
 
+async def test_a_request_runs_the_os_bypass_matcher_off_the_loop(monkeypatch: Any) -> None:
+    # NO_PROXY alone: the OS bypass list applies, and it can block on DNS.
+    import threading
+    import urllib.request
+
+    import kiro_crew.http_proxy as http_proxy
+
+    threads: list[int] = []
+
+    def _matcher(host: str) -> bool:
+        threads.append(threading.get_ident())
+        return False
+
+    monkeypatch.setattr(urllib.request, "getproxies_environment", lambda: {"no": "example.test"})
+    monkeypatch.setattr(http_proxy, "_os_proxies", lambda: {"https": "http://proxy:3128"})
+    monkeypatch.setattr(http_proxy, "_os_bypass", lambda: _matcher)
+    monkeypatch.setattr(http_proxy, "_os_reader", lambda: dict)  # a Windows or macOS host
+    session = _FakeSession([_FakeResp(200, {"data": []}), _FakeResp(200, {"data": {}})])
+    client = _client_with(session)
+    await client.get_summaries("2026-09-01", "2026-09-03")
+    await client.verify()
+    assert [call["proxy"] for call in session.calls] == ["http://proxy:3128"] * 2
+    assert threads and threading.get_ident() not in threads
+
+
 async def test_get_stats_returns_the_data_dict() -> None:
     session = _FakeSession([_FakeResp(200, {"data": {"languages": [{"name": "Python"}]}})])
     client = _client_with(session)
@@ -320,8 +345,13 @@ async def test_close_is_idempotent() -> None:
 def _set_proxy(monkeypatch: pytest.MonkeyPatch, proxy: str) -> None:
     from urllib import request as urllib_request
 
+    from kiro_crew import http_proxy
+
     monkeypatch.setattr(urllib_request, "getproxies", lambda: {"https": proxy})
     monkeypatch.setattr(urllib_request, "proxy_bypass", lambda _host: False)
+    # The off-loop resolver reads the OS settings through _os_proxies.
+    monkeypatch.setattr(http_proxy, "_os_proxies", lambda: {"https": proxy})
+    monkeypatch.setattr(http_proxy, "_os_bypass", lambda: None)
 
 
 async def test_api_and_verify_go_through_the_configured_proxy(

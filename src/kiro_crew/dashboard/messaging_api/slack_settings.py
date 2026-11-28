@@ -45,9 +45,11 @@ async def _validate_slack_token(key: str, token: str) -> str | None:
     blocked by being offline.
     """
     from slack_sdk.errors import SlackApiError
-    from slack_sdk.web.async_client import AsyncWebClient
 
-    client = AsyncWebClient(token=token, timeout=_TOKEN_VERIFY_TIMEOUT)
+    from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy_off_loop, slack_web_client
+
+    proxy = await resolve_proxy_off_loop(SLACK_API_URL)
+    client = slack_web_client(token, proxy, timeout=_TOKEN_VERIFY_TIMEOUT)
     try:
         if key == "SLACK_APP_TOKEN":
             await client.apps_connections_open(app_token=token)

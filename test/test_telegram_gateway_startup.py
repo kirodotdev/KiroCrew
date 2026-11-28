@@ -31,7 +31,7 @@ class _Client:
     me: Any = {"username": "crewbot", "id": 42}
     commands_error: Exception | None = None
 
-    def __init__(self, *, token: str, on_callback: Any) -> None:
+    def __init__(self, *, token: str, on_callback: Any, proxy: Any = None) -> None:
         self.token, self.on_callback = token, on_callback
         self.message_handler: Any = None
         self.on_close: Any = None

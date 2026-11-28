@@ -270,6 +270,8 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     except Exception:
         logger.debug("Agent spec verification failed", exc_info=True)
 
+    # No proxy lookup here (no-new-work-on-gateway-boot-path): the client
+    # resolves it off the loop on its first Web API call.
     self.slack = RealSlackClient(self._bot_token) if self._slack_enabled else None
     # Slack agent sessions (status, title, native Stop): the driver is attached
     # at boot and reads slack.agent_sessions (and the install's capability) live.

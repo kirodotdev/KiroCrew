@@ -712,6 +712,29 @@ class TestInitSocketMode:
         assert orch._slack_connect_error == "workspace failed enterprise validation"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("admits", [True, False], ids=["open-gate", "fail-closed-gate"])
+    async def test_a_gate_with_mains_signature_is_called_as_on_main(self, admits):
+        # The edition seam keeps main's signature: validate_enterprise(bot_token,
+        # *, extra_ids=None). A gate that accepts nothing more must not raise.
+        calls: list[tuple] = []
+
+        class _MainSignatureGate:
+            def validate_enterprise(self, bot_token, *, extra_ids=None) -> bool:
+                calls.append((bot_token, extra_ids))
+                return admits
+
+        orch = _socket_orch()
+        with _SocketPatches() as sp:
+            sp.ctx.return_value.slack_gate = _MainSignatureGate()
+            await ev.init_socket_mode(orch, ev.SeenCache())
+        assert calls == [(orch._bot_token, orch._cfg.slack_enterprise_ids)]
+        if admits:
+            assert orch._socket_client is not None
+        else:
+            assert orch._slack_enabled is False
+            assert orch._slack_connect_error == "workspace failed enterprise validation"
+
+    @pytest.mark.asyncio
     async def test_success_installs_listener_and_shares_state(self):
         orch = _socket_orch()
         orch.dashboard_state = MagicMock()

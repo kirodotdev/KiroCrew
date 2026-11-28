@@ -570,6 +570,7 @@ class TestCredentialVerifier:
                 urllib_request, "getproxies", lambda: {"http": str(proxy.make_url("/"))}
             )
             monkeypatch.setattr(urllib_request, "proxy_bypass", lambda _host: False)
+            _os_proxy(monkeypatch, {"http": str(proxy.make_url("/"))})
 
             result = await mod._validate_teams_app_credentials("app-1", "secret", "tenant-1")
 
@@ -618,3 +619,11 @@ class TestCredentialVerifier:
         # Read from teams.client, not a handler-local copy: one owning module is
         # what keeps the save-time check and the boot path on the same authority.
         assert seen == [TEAMS_MULTITENANT_AUTHORITY]
+
+
+def _os_proxy(monkeypatch, proxies):
+    """The OS proxy settings the off-loop resolver reads, with no bypass list."""
+    from kiro_crew import http_proxy
+
+    monkeypatch.setattr(http_proxy, "_os_proxies", lambda: dict(proxies))
+    monkeypatch.setattr(http_proxy, "_os_bypass", lambda: None)
