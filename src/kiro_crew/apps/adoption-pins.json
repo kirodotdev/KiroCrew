@@ -72,11 +72,11 @@
     {
       "name": "pptx-maker",
       "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-pptx-maker",
-      "commit": "b5b54b0a0574af13f208df8a6424a3dc4d114485",
-      "version": "0.3.5",
-      "treeSha256": "d279ec97d4350d6c5ec92afa82859a99b53a12c232ad226dee4c731a65af1aca",
-      "archiveSha256": "d30a4ed14f1ab2e65c08bd1b62a288093b1aae24ed98103e4e1a1851a653a378",
-      "minAppSdkLevel": 14,
+      "commit": "f2b6ed42e1b344b4cad43780c75b8fa05afac00e",
+      "version": "0.3.6",
+      "treeSha256": "34dd003f415949f96d70a697231ed53d22a87152b9d4c8b03ee12271f4291b80",
+      "archiveSha256": "64855155051d5b27a71dbcef864bb6e83ffdb591621e97e4d5e6993d04e58f2d",
+      "minAppSdkLevel": 20,
       "legacyNav": {
         "route": "/pptx-maker",
         "icon": "Presentation"
