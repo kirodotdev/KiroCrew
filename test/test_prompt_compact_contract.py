@@ -94,8 +94,12 @@ def test_each_prompt_keeps_its_own_output_and_host_boundaries(name: str) -> None
     rules = _section(text, "## Rules")
     _require(
         rules,
-        r"Do NOT run `git push` to protected branches",
-        r"MUST name the branch explicitly",
+        r"Push a feature branch by naming it explicitly",
+        # A protected-branch push is asked, not refused: once the user says yes
+        # the agent runs it, so the gate's approval card can confirm it.
+        r"protected branch \(such as main or mainline\) needs the user's yes",
+        r"ask first, and once they say yes, run the exact command",
+        r"never rewrite a command to dodge the gate",
         r"Do NOT read credential files directly",
         r"Do NOT run destructive AWS operations",
         r"ALWAYS bind to (?:localhost/)?127\.0\.0\.1.*explicit bind address",
