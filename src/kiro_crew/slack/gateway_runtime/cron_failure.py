@@ -15,7 +15,7 @@ see :mod:`kiro_crew.slack.gateway_runtime`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import socket
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         channel_namespace_of,
         escape_mrkdwn,
         logger,
+        payload_from_legacy,
         redact,
         redact_credentials,
         redact_exfiltration_urls,
@@ -85,6 +86,20 @@ def _log_held_alert(job: CronJob) -> None:
         )
     except Exception:
         logger.debug("SEL logging failed in cron failure hold path", exc_info=True)
+
+
+def _no_sound_bell(state: Any, title: str, body: str, meta: dict[str, Any]) -> None:
+    """Record a failure in the bell without a sound.
+
+    For a failure the user does not need to hear about now: a repeat of one
+    already told, or one held below ``alert_after_failures``. The note keeps the
+    ``system.cron`` priority, so it still counts on the badge and shows its
+    banner; only the sound is dropped. The first alert keeps its sound. The flag
+    is set on the payload, the way every legacy producer sets a schema field.
+    """
+    payload = payload_from_legacy("cron", title, body, meta)
+    payload.no_sound = True
+    state.notification_bus.push(payload)
 
 
 def _failure_alert_is_duplicate(self: GatewayOrchestrator, job: CronJob, failure_hash: str) -> bool:
@@ -329,11 +344,11 @@ async def _alert_cron_failure(
             )
             try:
                 if self.dashboard_state:
-                    self.dashboard_state.notify(
-                        "cron",
+                    _no_sound_bell(
+                        self.dashboard_state,
                         f"Cron: {label} (failure {streak} of {limit})",
                         f"{headline} (alert held until failure {limit}):\n{text}",
-                        meta={"job_id": job.id, "failure_hash": fh},
+                        {"job_id": job.id, "failure_hash": fh},
                     )
             except Exception:
                 logger.debug(
@@ -354,15 +369,16 @@ async def _alert_cron_failure(
                 "denied" if denied else "failed",
             )
             # Same split the message path draws: the LOCAL bell still
-            # rings (marked suppressed, so a user watching the feed sees
-            # the job is still down) and only the Slack DM is withheld.
+            # records it (marked suppressed, so a user watching the feed
+            # sees the job is still down), without a sound, and only the
+            # Slack DM is withheld.
             try:
                 if self.dashboard_state:
-                    self.dashboard_state.notify(
-                        "cron",
+                    _no_sound_bell(
+                        self.dashboard_state,
                         f"Cron: {label} (repeat)",
                         f"Still failing (suppressed — same reason):\n{text}",
-                        meta={"job_id": job.id, "failure_hash": fh},
+                        {"job_id": job.id, "failure_hash": fh},
                     )
             except Exception:
                 logger.debug(
@@ -669,11 +685,11 @@ async def _cron_single_failure(
                 title = f"Cron: {job.name} (failure {streak} of {limit})"
                 title, _ = redact_exfiltration_urls(title)
                 title, _ = redact_credentials(title)
-                self.dashboard_state.notify(
-                    "cron",
+                _no_sound_bell(
+                    self.dashboard_state,
                     title,
                     f"Error: Job failed (alert held until failure {limit}):\n{exc_detail}",
-                    meta={"job_id": job.id, "failure_hash": fh},
+                    {"job_id": job.id, "failure_hash": fh},
                 )
         except Exception:
             logger.debug("Dashboard notify failed in cron failure hold path", exc_info=True)
@@ -707,11 +723,11 @@ async def _cron_single_failure(
                 title = f"Cron: {job.name} (dup failure #{job.consecutive_failures})"
                 title, _ = redact_exfiltration_urls(title)
                 title, _ = redact_credentials(title)
-                self.dashboard_state.notify(
-                    "cron",
+                _no_sound_bell(
+                    self.dashboard_state,
                     title,
                     f"Error: Job failed (suppressed — same error):\n{exc_detail}",
-                    meta={"job_id": job.id, "failure_hash": fh},
+                    {"job_id": job.id, "failure_hash": fh},
                 )
         except Exception:
             logger.debug("Dashboard notify failed in cron failure suppress path", exc_info=True)

@@ -138,10 +138,10 @@ def _register_pending_skill_hooks(state: DashboardState) -> None:
     """Raise and retire the bell-feed notification for a staged skill candidate.
 
     A staged candidate (new OR update) stays invisible until a human approves
-    it, so raise a bell-feed notification with a deep link to the review queue
-    and broadcast ``skills.pending_changed`` so an open Skills tab refreshes
-    live. The hook is registered at MODULE level in ``skills`` because
-    candidates are staged by whichever loader instance the producer holds
+    it, so raise a bell-feed notification with a deep link to the review queue,
+    marked ``no_sound``, and broadcast ``skills.pending_changed`` so an open
+    Skills tab refreshes live. The hook is registered at MODULE level in
+    ``skills`` because candidates are staged by whichever loader instance the producer holds
     (consolidation uses the ContextBuilder's; dashboard requests build their
     own), so a per-instance callback would miss the consolidation path.
     """
@@ -166,14 +166,26 @@ def _register_pending_skill_hooks(state: DashboardState) -> None:
 
                 def _emit() -> None:
                     try:
-                        state.notify(
-                            "skills",
-                            title,
-                            body,
-                            meta=payload,
-                            url=review_url,
-                            actions=actions,
+                        from kiro_crew.notifications.bus import (
+                            NotificationValidationError,
+                            payload_from_legacy,
                         )
+
+                        # No sound: the note keeps its priority, so it counts on the
+                        # badge and shows its banner, but plays no sound. A
+                        # candidate waits for the user without interrupting them.
+                        try:
+                            note = payload_from_legacy(
+                                "skills", title, body, payload, url=review_url, actions=actions
+                            )
+                            note.no_sound = True
+                            state.notification_bus.push(note)
+                        except NotificationValidationError:
+                            # Dropped, as notify() drops an invalid note; the queue
+                            # still refreshes below.
+                            logger.warning(
+                                "Dropped invalid notification (kind=skills)", exc_info=True
+                            )
                         state.broadcast_ws("skills.pending_changed", payload)
                     except Exception:
                         logger.debug("pending-skill notification failed", exc_info=True)

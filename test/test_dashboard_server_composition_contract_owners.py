@@ -307,18 +307,21 @@ async def test_a_staged_skill_rings_the_bell_on_the_serving_loop(
     on_staged, on_consumed = _skill_hooks(monkeypatch, state)
     info = {"slug": "tidy-up", "name": "Tidy", "kind": "update", "target": "tidy"}
     await asyncio.to_thread(on_staged, info)
+    push = state.notification_bus.push
     await async_wait_until(
-        lambda: state.notify.called,
+        lambda: push.called,
         describe=lambda: (
-            f"notify calls: {state.notify.call_args_list!r}; "
+            f"push calls: {push.call_args_list!r}; "
             f"broadcast calls: {state.broadcast_ws.call_args_list!r}"
         ),
     )
     payload = {"slug": "tidy-up", "candidate_kind": "update", "target": "tidy"}
     title, body, url, actions = server._pending_skill_notification(info)
-    state.notify.assert_called_once_with(
-        "skills", title, body, meta=payload, url=url, actions=actions
-    )
+    push.assert_called_once()
+    note = push.call_args.args[0]
+    assert (note.kind, note.title, note.body, note.meta) == ("skills", title, body, payload)
+    assert (note.url, note.actions, note.priority, note.no_sound) == (url, actions, None, True)
+    state.notify.assert_not_called()
     state.broadcast_ws.assert_called_once_with("skills.pending_changed", payload)
     await asyncio.to_thread(on_consumed, {"slug": "tidy-up", "consumed_at": "t1"})
     await asyncio.to_thread(on_consumed, {"slug": "", "consumed_at": "t2"})
@@ -340,12 +343,13 @@ def test_without_a_serving_loop_the_bell_rings_inline_and_retires_nothing(
 ) -> None:
     state = MagicMock()
     state.serving_loop = None
-    state.notify.side_effect = RuntimeError("feed unavailable")
+    state.notification_bus.push.side_effect = RuntimeError("feed unavailable")
     on_staged, on_consumed = _skill_hooks(monkeypatch, state)
     on_staged({"slug": "tidy-up", "name": "Tidy"})
-    state.notify.assert_called_once()
-    assert state.notify.call_args.args[0] == "skills"
-    assert state.notify.call_args.kwargs["meta"]["slug"] == "tidy-up"
+    state.notification_bus.push.assert_called_once()
+    note = state.notification_bus.push.call_args.args[0]
+    assert note.kind == "skills"
+    assert note.meta["slug"] == "tidy-up"
     state.broadcast_ws.assert_not_called()
     on_consumed({"slug": "tidy-up", "consumed_at": "t1"})
     state.resolve_skill_review_notifications.assert_not_called()
@@ -355,6 +359,21 @@ def test_without_a_serving_loop_the_bell_rings_inline_and_retires_nothing(
 
     monkeypatch.setattr(server, "set_pending_staged_hook", _refuse)
     server._register_pending_skill_hooks(state)
+
+
+def test_an_invalid_skill_note_is_dropped_and_the_queue_still_refreshes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.notifications.bus import NotificationValidationError
+
+    state = MagicMock()
+    state.serving_loop = None
+    state.notification_bus.push.side_effect = NotificationValidationError("bad url")
+    on_staged, _on_consumed = _skill_hooks(monkeypatch, state)
+    on_staged({"slug": "tidy-up", "name": "Tidy"})
+    state.broadcast_ws.assert_called_once_with(
+        "skills.pending_changed", {"slug": "tidy-up", "candidate_kind": "new", "target": ""}
+    )
 
 
 class _Recorder:

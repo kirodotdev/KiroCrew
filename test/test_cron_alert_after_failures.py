@@ -194,8 +194,25 @@ def _orchestrator() -> Any:
     return orch
 
 
+def _bell(orch: Any) -> list[tuple[str, str]]:
+    """``(title, "sounds" | "no_sound")`` per bell row, in order.
+
+    A row that sounds goes through ``notify`` at the channel's priority; a
+    no-sound one is pushed on the bus at that same priority with ``no_sound`` set.
+    """
+    rows: list[tuple[str, str]] = []
+    for name, args, _kwargs in orch.dashboard_state.mock_calls:
+        if name == "notify":
+            rows.append((args[1], "sounds"))
+        elif name == "notification_bus.push":
+            payload = args[0]
+            assert payload.priority is None, "a no-sound row keeps the channel's priority"
+            rows.append((payload.title, "no_sound" if payload.no_sound else "sounds"))
+    return rows
+
+
 def _bell_titles(orch: Any) -> list[str]:
-    return [call.args[1] for call in orch.dashboard_state.notify.call_args_list]
+    return [title for title, _priority in _bell(orch)]
 
 
 async def _script_failure(orch: Any, job: CronJob, reason: str, *, denied: bool = False) -> None:
@@ -327,7 +344,7 @@ async def test_a_silent_job_is_unchanged(fail) -> None:
     await fail(orch, job, "boom")
     await fail(orch, job, "boom")
     orch.slack.post_message.assert_not_awaited()
-    orch.dashboard_state.notify.assert_not_called()
+    assert _bell(orch) == []
     assert job.consecutive_failures == 2
 
 
@@ -386,3 +403,45 @@ async def test_a_held_failure_is_audited(fail, tmp_path, monkeypatch) -> None:
         if r.get("operation") == "cron_failure_alert_held"
     ]
     assert held == [(f"cron:{job.id}", "held", "none")]
+
+
+# ── which bell rows sound ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail", [_script_failure, _agent_failure])
+async def test_a_held_failure_lands_in_the_bell_without_a_sound(fail) -> None:
+    """The owner asked not to hear about it until failure N, so the held row plays no sound."""
+    orch = _orchestrator()
+    job = _job(alert_after_failures=2)
+    await fail(orch, job, "boom")
+    await fail(orch, job, "boom")
+    assert _bell(orch) == [
+        ("Cron: watcher (failure 1 of 2)", "no_sound"),
+        ("Cron: watcher", "sounds"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fail", "repeat_title"),
+    [
+        (_script_failure, "Cron: watcher (repeat)"),
+        (_agent_failure, "Cron: watcher (dup failure #2)"),
+    ],
+)
+async def test_only_the_first_of_identical_failures_sounds(fail, repeat_title) -> None:
+    orch = _orchestrator()
+    job = _job()
+    await fail(orch, job, "boom")
+    await fail(orch, job, "boom")
+    assert _bell(orch) == [("Cron: watcher", "sounds"), (repeat_title, "no_sound")]
+
+
+@pytest.mark.asyncio
+async def test_a_sign_in_wait_keeps_its_sound() -> None:
+    orch = _orchestrator()
+    job = _job(alert_after_failures=2)
+    with patch.object(gw, "sel", lambda: MagicMock()):
+        await orch._alert_cron_failure(job, "sign in again", awaiting_sign_in=True)
+    assert _bell(orch) == [("Cron: watcher", "sounds")]

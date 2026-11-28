@@ -177,6 +177,9 @@ self.addEventListener('push', e => {
         badge: '/icon-192.png',
       }
       if (renotify) options.renotify = true
+      // A note its producer marked no_sound arrives with `silent`: its banner
+      // shows without a sound.
+      if (n.silent === true) options.silent = true
       return self.registration.showNotification(n.title, options)
     })
   )

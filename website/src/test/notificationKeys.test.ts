@@ -144,6 +144,34 @@ describe('useWebSocket keyed notes', () => {
     }
   })
 
+  it('plays no sound for a no_sound note but keeps its banner and bell row', () => {
+    // Unlike a quiet replacement, a no_sound note drops only the sound.
+    const { store, ws } = mount()
+    const sounds: string[] = []
+    const banners: string[] = []
+    const onSound = (e: Event) => { sounds.push((e as CustomEvent).detail?.kind) }
+    const onBanner = (e: Event) => { banners.push((e as CustomEvent).detail?.note?.title) }
+    window.addEventListener('mc-notification', onSound)
+    window.addEventListener('mc-live-notification', onBanner)
+    try {
+      act(() => {
+        ws.simulateMessage({ type: 'notification', data: agentNote({ ts: '1', title: 'First failure' }) })
+      })
+      act(() => {
+        ws.simulateMessage({
+          type: 'notification',
+          data: agentNote({ ts: '2', title: 'Same failure again', no_sound: true }),
+        })
+      })
+      expect(sounds).toEqual(['agent'])
+      expect(banners).toEqual(['First failure', 'Same failure again'])
+      expect(store.getState().notifications.items.map(n => n.title)).toEqual(['First failure', 'Same failure again'])
+    } finally {
+      window.removeEventListener('mc-notification', onSound)
+      window.removeEventListener('mc-live-notification', onBanner)
+    }
+  })
+
   it('drops the note a notification_dismiss frame names', () => {
     const { store, ws } = mount()
     act(() => {

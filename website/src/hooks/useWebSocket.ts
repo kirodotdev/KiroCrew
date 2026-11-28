@@ -450,8 +450,9 @@ export function useWebSocket() {
             // toast/badge, not the sound.
             // RFC Phase 3: muted-channel (silenced) and passive notes are
             // feed-only — no sound. So is a quiet replacement: a keyed note
-            // moving along its lifecycle at no higher priority.
-            if (!n.silenced && n.priority !== 'passive' && !n.quiet) {
+            // moving along its lifecycle at no higher priority. A no_sound note
+            // keeps every other surface and only plays no sound.
+            if (!n.silenced && n.priority !== 'passive' && !n.quiet && !n.no_sound) {
               dispatchMcNotification(n.kind)
             }
             // The in-app banner hears LIVE arrivals only. A reconnect catch-up

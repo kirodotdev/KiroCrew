@@ -1091,10 +1091,10 @@ class TestNotifyNudgeExpired:
             created_ts=time.time() - 600,
         )
         orch._notify_nudge_expired(loop)
-        ds.notify.assert_called_once()
-        title = ds.notify.call_args.args[1]
-        body = ds.notify.call_args.args[2]
+        title, body, _meta, _priority = _monitor_notice(ds)
         assert title == "Monitoring loop spent its time budget"
+        # Its goal may be unmet, so it keeps the channel's priority and sound.
+        ds.notify.assert_called_once()
         assert (
             "60s runtime budget (awake time while the gateway runs; a restart counts "
             "the time since created_ts on the wall clock)"
@@ -1499,9 +1499,13 @@ class TestNotifyNudgeExpired:
             stopped_reason=MONITOR_TERMINAL_REASON,
         )
         orch._notify_nudge_expired(loop)
-        title = ds.notify.call_args.args[1]
+        title, _body, _meta, priority = _monitor_notice(ds)
         assert "time budget" not in title, "a finished subject is not a spent budget"
         assert title == "Monitoring loop finished — it reported done"
+        # A goal that reported done needs nothing from the user now: it keeps the
+        # channel's priority (badge, banner) but plays no sound.
+        assert priority is None
+        assert ds.notification_bus.push.call_args.args[0].no_sound is True
 
     def test_a_terminal_subject_outranks_the_cycle_cap(self):
         """A merge that lands ON the capping delivery must not read as an unmet goal.
@@ -1527,9 +1531,11 @@ class TestNotifyNudgeExpired:
             stopped_reason=MONITOR_TERMINAL_REASON,
         )
         orch._notify_nudge_expired(loop)
-        title = ds.notify.call_args.args[1]
+        title, _body, _meta, priority = _monitor_notice(ds)
         assert "cycle cap" not in title, "a finished subject is terminal, cap or no cap"
         assert title == "Monitoring loop finished — it reported done"
+        assert priority is None
+        assert ds.notification_bus.push.call_args.args[0].no_sound is True
 
     @pytest.mark.parametrize(
         ("pending", "delivered", "expected_title", "expected_body"),
@@ -1666,9 +1672,10 @@ class TestNotifyNudgeExpired:
             stopped_reason=APPROVAL_STALL_REASON,
         )
         orch._notify_nudge_expired(loop)
-        title = ds.notify.call_args.args[1]
-        body = ds.notify.call_args.args[2]
+        title, body, _meta, _priority = _monitor_notice(ds)
         assert title == "Monitoring loop stopped — it could not get tool approval"
+        # A loop that stopped short of its goal keeps the channel's priority and sound.
+        ds.notify.assert_called_once()
         assert "cycle cap" not in body
         assert "auto-approve" in body
         # Both causes get their own remedy. The evidence is slot-level, so this

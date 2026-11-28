@@ -450,6 +450,14 @@ def test_web_push_payload_shape(monkeypatch, tmp_path):
     assert payload["notification"]["data"]["url"] == "/chat/x"
 
 
+def test_web_push_payload_shows_a_no_sound_note_silently():
+    from kiro_crew.dashboard.state_parts.dashboard_services import _web_push_payload
+
+    note = {"ts": "t", "title": "Hi", "body": "b"}
+    assert _web_push_payload({**note, "no_sound": True})["notification"]["silent"] is True
+    assert "silent" not in _web_push_payload(note)["notification"]
+
+
 def test_web_push_payload_truncates_oversized_body(monkeypatch, tmp_path):
     """Title/body/tag are capped on a UTF-8 BYTE budget so the push stays <4KB."""
     from kiro_crew.dashboard.notification_coordinator import NATIVE_TAG_MAX_BYTES

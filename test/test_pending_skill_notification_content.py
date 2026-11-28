@@ -102,3 +102,34 @@ def test_payload_passes_notification_validation(kind: str, has_scripts: bool):
         "skills", title, body, url=review_url, actions=actions
     )
     payload.validate()  # must not raise
+
+
+@pytest.mark.parametrize("kind", ["new", "update"])
+def test_a_staged_candidate_lands_in_the_bell_without_a_sound(monkeypatch, tmp_path, kind):
+    """A candidate waits for the user but does not interrupt them: the row is
+    marked no_sound (the dashboard plays no sound for it), keeps its priority, so it still
+    counts on the badge, and keeps its review link."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.dashboard import server
+    from kiro_crew.dashboard.notification_coordinator import unread_count
+    from kiro_crew.dashboard.state import DashboardState
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = DashboardState(
+        sessions=MagicMock(count=0), crons=MagicMock(), lessons=MagicMock(), start_time=0.0
+    )
+    staged: list = []
+    monkeypatch.setattr(server, "set_pending_staged_hook", staged.append)
+    monkeypatch.setattr(server, "set_pending_consumed_hook", lambda _hook: None)
+    server._register_pending_skill_hooks(state)
+    info = _info(kind=kind, target="existing-skill" if kind == "update" else "")
+    staged[0](info)
+
+    (note,) = state._notification_log
+    _title, _body, review_url, actions = _pending_skill_notification(info)
+    assert note["channel"] == "system.skills"
+    assert (note["priority"], note["no_sound"]) == ("default", True)
+    assert unread_count([note]) == 1
+    assert note["url"] == review_url
+    assert note["actions"] == actions

@@ -531,6 +531,7 @@ from kiro_crew.slack.gateway_runtime.cron_dispatch import (
 from kiro_crew.slack.gateway_runtime.cron_failure import (
     _failure_alert_due,
     _log_held_alert,
+    _no_sound_bell,
     _scrubbed,
 )
 from kiro_crew.slack.gateway_runtime.cron_fire import (

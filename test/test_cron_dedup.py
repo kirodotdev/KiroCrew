@@ -329,11 +329,14 @@ class TestCronFailureDedup:
         _run_callback_raising(gw, job, exc)
         assert gw.slack.post_message.await_count == 1  # no new Slack post
         assert job.consecutive_failures == 2
-        # Dashboard still gets notified (with dup marker)
-        dup_calls = [
-            c for c in gw.dashboard_state.notify.call_args_list if "dup failure" in str(c)
+        # The bell still records it (with dup marker), with no sound for a repeat
+        dup_notes = [
+            c.args[0]
+            for c in gw.dashboard_state.notification_bus.push.call_args_list
+            if "dup failure" in c.args[0].title
         ]
-        assert dup_calls, "Expected a dup failure dashboard notification"
+        assert dup_notes, "Expected a dup failure dashboard notification"
+        assert [(n.no_sound, n.priority) for n in dup_notes] == [(True, None)]
 
     def test_different_failure_re_alerts(self) -> None:
         gw = _make_gateway()

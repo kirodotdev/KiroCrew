@@ -890,6 +890,10 @@ export interface Notification {
   /** Server-stamped on a replacement no more urgent than the note it replaced:
    *  it lands in the bell, but no sound, banner or OS notification announces it. */
   quiet?: boolean
+  /** Set by a gateway producer on a note the user need not hear: it keeps its
+   *  priority, badge, banner and OS notification, and only plays no sound.
+   *  Not `silenced`, which is a muted channel or session. */
+  no_sound?: boolean
   /** Server-stamped on a keyed note that replaced an earlier note under the
    *  same source and key; the feed marks the row as edited. */
   replaced?: boolean
