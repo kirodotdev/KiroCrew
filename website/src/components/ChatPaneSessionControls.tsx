@@ -52,13 +52,16 @@ export function useChatPaneSessionControls(
     sessionControls: chips,
     onSessionControlClick,
     notice: failure ? (
-      <ErrorNotice
-        variant="inline"
-        className="mx-4 mt-2"
-        testId="chat-pane-session-controls-error"
-        title={i18nT('components.sessionControlHost.controls_unavailable')}
-        message={failure.message}
-      />
+      <>
+        {/* No hand-off: the pane's composer draft below is unsaved local state. */}
+        <ErrorNotice
+          variant="inline"
+          className="mx-4 mt-2"
+          testId="chat-pane-session-controls-error"
+          title={i18nT('components.sessionControlHost.controls_unavailable')}
+          message={failure.message}
+        />
+      </>
     ) : null,
     host: open ? (
       // Keyed on the control: the host's error boundary only resets on remount.
