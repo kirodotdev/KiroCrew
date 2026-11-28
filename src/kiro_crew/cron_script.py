@@ -1207,6 +1207,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.cron_script_grants import (  # noqa: F401
         _GRANT_EPOCHS_LOCK,
         _MAX_GRANTED_SCRIPT_BYTES,
+        _MOUNTINFO_PATH,
         _SECRET_ENV_DENIED_EXACT,
         _SECRET_ENV_DENIED_PREFIXES,
         _SECRET_ENV_MAX_ENTRIES,
@@ -1214,6 +1215,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         _SECRET_ENV_VAULT_NAME_RE,
         GRANT_PIN_MISSING_ERROR,
         GRANT_PIN_STALE_ERROR,
+        GrantEpochsMasked,
         _grant_epoch,
         _grant_epochs_guard,
         _grant_epochs_path,
@@ -1222,6 +1224,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         _pin_payload,
         _read_grant_epochs,
         _resolve_secret_env,
+        _vault_is_masked,
         _write_grant_epochs,
         bump_grant_epoch,
         commit_grant_epoch,

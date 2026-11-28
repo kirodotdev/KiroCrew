@@ -622,6 +622,28 @@ def _cron(args: argparse.Namespace) -> None:
             # A policy refusal (``raise PermissionError("...")``), not the OS:
             # keep it as it was rather than mislabel it an OS refusal.
             raise
+        # Deferred: a module-level name here would be served by the ``cli_commands``
+        # facade, whose name set is pinned.
+        from kiro_crew.cron_script import GrantEpochsMasked
+        from kiro_crew.sandbox_unavailable import agent_confinement_evidence
+
+        # macOS Seatbelt refuses the vault outright, so there the only sign of the
+        # sandbox is the confinement evidence; Linux binds a stand-in instead.
+        vault = os.fspath(config_dir() / ".vault")
+        in_sandbox = isinstance(exc, GrantEpochsMasked) or (
+            exc.filename is not None
+            and os.fsdecode(exc.filename).startswith(vault)
+            and agent_confinement_evidence() is not None
+        )
+        if in_sandbox:
+            print(
+                "Error: this command runs inside the agent sandbox, which hides the "
+                "secret vault, so it cannot retire the job's secret grant and nothing "
+                "was changed. Use the kirocrew-cron cron_remove tool, which the "
+                "gateway runs, the dashboard Schedule page, or your own terminal.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         where = exc.filename or "a Kiro Crew data file"
         print(
             f"Error: the OS refused this process access to {where} ({exc.strerror or exc}). "
