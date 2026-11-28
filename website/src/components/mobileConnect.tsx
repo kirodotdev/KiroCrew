@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Smartphone, X } from 'lucide-react'
-import { api } from '../api/client'
-import { readAfterRenewal } from '../api/readAfterRenewal'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { useViewerIsNotOwner } from '../hooks/sharedCrew/useSharedCrew'
 import { i18nT } from '../i18n/t'
 import { lazyRetry } from './lazyRetry'
+import { useMobileConnectMethods } from './mobileConnectMethods'
 import { canRenderMobileConnectKind } from './mobileConnectRenderers'
 import type { MobileConnectBody as MobileConnectBodyType } from './MobileConnectModal'
 
@@ -39,14 +37,7 @@ export function useMobileConnect(locationKey: string) {
   // dialog stranded over the newly selected session. location.key changes on
   // every history entry, so this closes it on ANY navigation at once.
   useEffect(() => { setMobileConnectOpen(false) }, [locationKey])
-  const mobileConnectQuery = useQuery({
-    queryKey: ['mobile-connect-methods'],
-    // No retry, so a read refused at a lapsed sign-in would hide the row until
-    // the window next gets focus: it is read once more after the renewal.
-    queryFn: () => readAfterRenewal(() => api.mobileConnectMethods()),
-    staleTime: 5 * 60_000,
-    retry: false,
-  })
+  const mobileConnectQuery = useMobileConnectMethods()
   // Only kinds this frontend can draw — a built-in section or an edition's
   // registered renderer (`components/mobileConnectRenderers.tsx`). A kind
   // nothing can draw would otherwise show the rail row and then open an empty
