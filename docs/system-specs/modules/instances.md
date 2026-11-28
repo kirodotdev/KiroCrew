@@ -260,7 +260,12 @@ connection-error/disconnected overlay each render a `.host-drag-strip` across th
 top (clipped clear of the Windows/Linux caption controls) to keep the window
 draggable while a pane is connecting or has failed. The injected no-drag rule
 leaves the `InstanceTabBar` switcher, Retry and ErrorNotice clickable under the
-strip.
+strip. On Windows both this overlay strip and the per-pane gap strips stop at the
+zoom-aware `--mc-win-drag-reserve` the main process pushes onto `<html>`, read
+through `winDragReservePx()` (`lib/electron.ts`, falling back to
+`WIN_CAPTION_OVERLAY_WIDTH`, 138px, until a value arrives). The caption buttons are
+fixed in DIP, so a static 138 CSS px would reach over Minimize below 100% zoom; a
+`MutationObserver` on `<html>`'s style re-renders the strips on each zoom step.
 
 ---
 

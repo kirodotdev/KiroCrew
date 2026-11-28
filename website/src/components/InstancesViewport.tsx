@@ -83,7 +83,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useRelayViewerCrews } from '../hooks/useRelayViewerCrews'
 import { OPEN_RELAY_CREW_PARAM, paneRelayCrews, pickRelayFromPane } from '../lib/paneRelayCrews'
 import { relayPaneBridge } from '../lib/relayCrewPanes'
-import { LINUX_CAPTION_CONTROLS_WIDTH, LINUX_CAPTION_RESERVE_PX, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
+import { LINUX_CAPTION_CONTROLS_WIDTH, LINUX_CAPTION_RESERVE_PX, TRAFFIC_LIGHT_INSET_PX, winDragReservePx } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import { PANE_ACTIVE_SLOT_TYPE, PANE_SLOT_HINT_PARAM, readPaneSlot, rememberPaneSlot } from '../lib/paneLastSlot'
 import ErrorNotice from './ErrorNotice'
@@ -159,25 +159,26 @@ const NO_RELAY_TABS: RelayTab[] = []
 
 
 /**
- * The live `--mc-win-caption-reserve` the main process sets inline on this
- * document's <html> (pushWinCaptionReserve in electron/runtime/window/chrome.js),
- * followed across every rewrite (zoom step, reload) so it can be relayed into
- * embedded panes, which are separate documents and never inherit it. Empty when
- * there is no Windows inset or the main process has not pushed a value yet.
+ * A live reserve the main process sets inline on this document's <html>
+ * (pushWinCaptionReserve in electron/runtime/window/chrome.js), followed across
+ * every rewrite (zoom step, reload): `--mc-win-caption-reserve` is relayed into
+ * embedded panes, which are separate documents and never inherit it, and
+ * `--mc-win-drag-reserve` re-clips the host drag strips. Empty when there is no
+ * Windows inset or the main process has not pushed a value yet.
  */
-function useWinCaptionReserve(enabled: boolean): string {
-  const read = () => document.documentElement.style.getPropertyValue('--mc-win-caption-reserve').trim()
-  const [value, setValue] = useState(() => (enabled ? read() : ''))
+function useWinRootReserve(enabled: boolean, name: string): string {
+  const [value, setValue] = useState(() => (enabled ? document.documentElement.style.getPropertyValue(name).trim() : ''))
   useEffect(() => {
     if (!enabled) {
       setValue('')
       return
     }
+    const read = () => document.documentElement.style.getPropertyValue(name).trim()
     setValue(read())
     const observer = new MutationObserver(() => setValue(read()))
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
     return () => observer.disconnect()
-  }, [enabled])
+  }, [enabled, name])
   return value
 }
 
@@ -207,7 +208,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         ...(winInset ? { paddingRight: 'var(--mc-win-caption-reserve)' } : null),
       }
     : undefined
-  const winCaptionReserve = useWinCaptionReserve(winInset)
+  const winCaptionReserve = useWinRootReserve(winInset, '--mc-win-caption-reserve')
+  // Where Windows drag strips stop: the caption buttons' zoom-aware width.
+  const winDragReserve = winDragReservePx(useWinRootReserve(winInset, '--mc-win-drag-reserve'))
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const warm = useAppSelector(s => s.instances.warm)
@@ -1627,7 +1630,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const overlayDragStrip = isElectron
     ? (() => {
         const rightBound = isWinElectron
-          ? Math.max(0, window.innerWidth - WIN_CAPTION_OVERLAY_WIDTH)
+          ? Math.max(0, window.innerWidth - winDragReserve)
           : isLinuxFramelessElectron
             ? Math.max(0, window.innerWidth - LINUX_CAPTION_CONTROLS_WIDTH)
             : Number.POSITIVE_INFINITY
@@ -1742,7 +1745,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // platform, so clip here — otherwise a drag strip overlays Close and
           // a click there drags the window instead.
           const rightBound = isWinElectron
-            ? Math.max(0, window.innerWidth - WIN_CAPTION_OVERLAY_WIDTH)
+            ? Math.max(0, window.innerWidth - winDragReserve)
             : isLinuxFramelessElectron
               ? Math.max(0, window.innerWidth - LINUX_CAPTION_CONTROLS_WIDTH)
               : Number.POSITIVE_INFINITY

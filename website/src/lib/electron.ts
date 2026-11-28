@@ -239,6 +239,18 @@ export async function openWakaTimeInBrowser(): Promise<WakaTimeBrowserHandoff> {
 export const WIN_CAPTION_OVERLAY_WIDTH = 138
 
 /**
+ * CSS px a Windows drag strip must stop short of the right edge. The caption
+ * buttons are fixed in DIP, so the main process pushes their width for the
+ * current zoom as `--mc-win-drag-reserve` on <html>; a fixed 138 would reach
+ * over Minimize below 100% zoom. Falls back to 138 until that value arrives.
+ */
+export function winDragReservePx(
+  raw: string = document.documentElement.style.getPropertyValue('--mc-win-drag-reserve'),
+): number {
+  return parseFloat(raw) || WIN_CAPTION_OVERLAY_WIDTH
+}
+
+/**
  * Height of the caption band at the top of a frameless window: the 42px header
  * row. The Windows titleBarOverlay is sized to it (its height is derived from
  * the header px, scaled by renderer zoom — `titleBarOverlayOptions` in
