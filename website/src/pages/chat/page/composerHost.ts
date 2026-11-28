@@ -107,6 +107,18 @@ export function useComposerDraftState({
  */
 export function useComposerIntakeRefs() {
   const [prefillHint, setPrefillHint] = useState(false)
+  // A prompt carried by a cold `/chat?new=1&prefill=` link, held back from the
+  // composer until the operator confirms it. Such a link can be opened by any
+  // page, so its text is shown as a draft to put in the box or discard rather
+  // than seeded into the live composer, where a single stray click could send
+  // it. Keyed by the session the link created, so it shows only on that session
+  // and never on another chat. An app's own openChat launch and the in-app
+  // `pendingInput` seeders do not go through here.
+  const [coldPrefillDraft, setColdPrefillDraft] = useState<{ slotKey: string; prompt: string } | null>(null)
+  // The session whose composer holds a confirmed cold-link prompt not yet sent.
+  // Its first send ignores a press briefly after the prompt lands and after the
+  // window gains focus; cleared once that composer is empty (sent or cleared).
+  const [coldPrefillSendSlot, setColdPrefillSendSlot] = useState<string | null>(null)
   // Whether the user has edited the seeded composer. The hint's expiry is armed
   // by that first edit, not by the seed's arrival: a hand-off's error report is
   // a dozen lines the user reads before touching anything, and a clock started
@@ -146,7 +158,7 @@ export function useComposerIntakeRefs() {
   }, [prefillHint, prefillEdited])
   return {
     prefillHint, setPrefillHint, prefillEdited, setPrefillEdited, raisePrefillHint, autoSendRef, appLaunchSendRef, autoSendTick, setAutoSendTick, newSessionRef, tokenConsumingRef, widgetPrefillRef,
-    consumedPrefillRef,
+    consumedPrefillRef, coldPrefillDraft, setColdPrefillDraft, coldPrefillSendSlot, setColdPrefillSendSlot,
   }
 }
 

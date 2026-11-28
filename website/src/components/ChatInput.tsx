@@ -32,6 +32,8 @@ import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
 import { useComposerArrowKeyHistory } from '../hooks/useComposerArrowKeyHistory'
 import { useComposerSendMode } from '../hooks/useComposerSendMode'
 import { useComposerSettings } from './chat-input/composerSettings'
+import { useInputDelay } from './chat-input/useInputDelay'
+import { ColdPrefillConfirm } from './chat-input/ColdPrefillConfirm'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePressActivation } from '../hooks/usePressActivation'
 import { isTouchDevice } from '../utils/isTouchDevice'
@@ -88,7 +90,7 @@ import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-input/keyboard'
 import { useComposerOptimizeEscape } from './chat-input/optimizeEscape'
 import { ESCAPE_PRIORITY, useEscapeLayer } from '../hooks/useEscapeLayer'
-import { INPUT_DEFAULT_MAX_H, INPUT_DRAG_MIN_H, INPUT_PREFILL_MAX_H, useInputAreaKeyboardLift, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
+import { COMPOSER_ONE_ROW_RADIUS, COMPOSER_RIM_FROM_PX, INPUT_DEFAULT_MAX_H, INPUT_DRAG_MIN_H, INPUT_PREFILL_MAX_H, ONE_ROW_CLUSTER_PAD_PX, ONE_ROW_TEXT_PAD, useInputAreaKeyboardLift, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory } from './chat-input/draftHistory'
 import { useUndoHistory } from '../chat-core/composer/undoHistory'
 import { useOptimizeBeforeSend, usePromptOptimizer, usePromptOptimizerEnabled } from './chat-input/optimizer'
@@ -130,23 +132,6 @@ const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
 // gate. Extensions align the picker exactly with the verified server allowlist
 // instead of broadening the dialog to neighboring unsupported formats.
 const AUDIO_ACCEPT = '.mp3,.m4a,.wav,.ogg,.oga,.opus,.flac'
-// Half the one-row box: the 44px text line plus its 1px border each side.
-const COMPOSER_ONE_ROW_RADIUS = 23
-// The one-row text line's padding, equal above and below so the line sits on
-// the buttons' centre whatever its height. INPUT_TYPO's 12px over 4px puts it
-// lower by half of (line height - 20px): 2px at the 16px touch floor. Set on
-// the text column, so the textarea, its paste mirror and the Lexical editor
-// all take it; `1.5em` is INPUT_TYPO's `leading-normal` line, and resolves on
-// each of them at its own font size. Not `1lh`: Safari before 16.4 has no
-// such unit, and an invalid value would drop the padding to 0.
-const ONE_ROW_TEXT_PAD = '[--composer-pt:max(0px,calc((44px_-_1.5em)_/_2))] [--composer-pb:max(0px,calc((44px_-_1.5em)_/_2))]'
-// The one-row clusters' edge padding (pl-1.5 + pr-1.5), which the text column
-// gives up besides the clusters themselves.
-const ONE_ROW_CLUSTER_PAD_PX = 12
-// The glass rim is a slice of the pane's smaller side. A one-row composer
-// would get half the rim of a two-row one, so the rim is sized from the
-// two-row height (one wrapped line of text plus the toolbar) in both shapes.
-const COMPOSER_RIM_FROM_PX = 102
 const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.eml,.py,.js,.ts,.tsx,.jsx,.html,.htm,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.dotx,.xls,.xlsx,.xltx,.ppt,.pptx,.potx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz,.tgz'
 
 import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
@@ -180,6 +165,10 @@ function ChatInput({
   placeholder = '',
   lockedPlaceholder,
   prefillHint,
+  coldPrefillPrompt = null,
+  onColdPrefillStart,
+  onColdPrefillDiscard,
+  coldPrefillSendKey = null,
   onScreenshot,
   onUploadFiles,
   uploading = false,
@@ -551,10 +540,15 @@ function ChatInput({
   })
   // All terminal draft sends enter here before agent routing or prompt-length
   // confirmation. A terminal draft never queues or steers.
+  // The first send after a cold-link prompt reaches the composer ignores a
+  // press briefly after it appears and after the window gains focus, so a
+  // press meant for whatever was there before is not taken.
+  const coldPrefillSendReady = useInputDelay(coldPrefillSendKey)
   const fireComposer = useCallback((alternate?: unknown) => {
     // A locked composer sends nothing, except into a running turn (the busy
     // controls' steer), which the lease never holds.
     if (typingLocked && !isRunning) return
+    if (!coldPrefillSendReady()) return
     if (terminal.active) {
       if (!disabled && !voiceTranscribing && connected && !optimizingRef.current) {
         composerVoice?.controls?.disarmForSend()
@@ -563,15 +557,16 @@ function ChatInput({
       return
     }
     fireAgentComposer(alternate)
-  }, [typingLocked, isRunning, terminal.active, disabled, voiceTranscribing, connected, composerVoice, runTerminalCommand, fireAgentComposer])
+  }, [typingLocked, isRunning, coldPrefillSendReady, terminal.active, disabled, voiceTranscribing, connected, composerVoice, runTerminalCommand, fireAgentComposer])
   const fireFollowUp = useCallback((text?: string, sourceKeyAtClick?: string | null) => {
     // Both chat parents consume the current draft for missing or empty text.
+    if (!text && !coldPrefillSendReady()) return
     if (!text && terminal.active) {
       fireComposer()
       return
     }
     sendFollowUp(text, sourceKeyAtClick)
-  }, [terminal.active, fireComposer, sendFollowUp])
+  }, [coldPrefillSendReady, terminal.active, fireComposer, sendFollowUp])
   // A quick-send click sends from the host's own handler; it gets the same send
   // the ↑ segment uses, so an instant click takes the composer's busy decision.
   const selectFollowUp = useCallback((option: string, event: React.MouseEvent, sourceKeyAtClick?: string | null) => {
@@ -713,10 +708,11 @@ function ChatInput({
   // Every optimize entry, Send included, goes through here.
   const optimizeUnlessLocked = useCallback(() => !disabled && optimizePrompt(), [disabled, optimizePrompt])
   // Enter, Send and the Lexical send; every other send keeps today's path.
-  const sendOrOptimize = useOptimizeBeforeSend({
+  const sendOrOptimizeReady = useOptimizeBeforeSend({
     enabled: promptOptimizer && connected && !disabled && !terminal.active && !isRunning && !typingLocked && !voiceTranscribing && !holdSend,
     slotId, value, optimize: optimizeUnlessLocked, onBusy: sayBusy, send: fireComposer,
   })
+  const sendOrOptimize = useCallback((alternate?: unknown) => { if (coldPrefillSendReady()) sendOrOptimizeReady(alternate) }, [coldPrefillSendReady, sendOrOptimizeReady])
   const { promptStash, promptStashChord, stashTouchHost, stashInOverflow } = useComposerPromptStash({
     enabled: promptStashEnabled, slotId, value, blocks: pasteBlocks, onChange, onBlocksChange: onPasteBlocksChange, reseedUndoHistory,
     // A typing lock keeps another collaborator's draft read-only until the
@@ -1274,6 +1270,8 @@ function ChatInput({
           <span className="text-muted text-[13px]">{approvalNotice}</span>
         </Glass>
       )}
+
+      {!showGhost && coldPrefillPrompt && <ColdPrefillConfirm prompt={coldPrefillPrompt} onStart={onColdPrefillStart} onDiscard={onColdPrefillDiscard} />}
 
       {!showGhost && prefillHint && (
         <Glass variant="chip" thickness="thick" radius={8} className="glass-accent flex items-center gap-2 px-4 py-2 m-1.5">

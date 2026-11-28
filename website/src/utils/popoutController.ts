@@ -559,7 +559,8 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
    * slot selection and the first available prompt ride as the query params the
    * main `/chat` route already understands: `?sid=` selects the slot and
    * `?prefill=` seeds its composer; with no slot named, `?new=1&prefill=` creates
-   * a session seeded with the prompt — the one cold-URL prompt channel the chat
+   * a session and the /chat route shows the prompt as a draft the operator
+   * starts, not a seeded composer — the one cold-URL prompt channel the chat
    * page honours (a bare `?prefill=` is an in-app sentinel there, and is dropped).
    * A diagnostic always opens a fresh session, never the session the intent
    * names, because keyed prefill for an existing session replaces that session's

@@ -116,6 +116,15 @@ export interface ChatInputProps {
   lockedPlaceholder?: string
   prefillHint?: boolean
   onDismissHint?: () => void
+  /** A prompt carried by a cold `?new=1&prefill=` link, awaiting the operator's
+   *  confirmation before it enters the composer; null when there is none. */
+  coldPrefillPrompt?: string | null
+  onColdPrefillStart?: () => void
+  onColdPrefillDiscard?: () => void
+  /** Set while the composer holds a cold-link prompt the operator put in it and
+   *  has not sent yet; its send then ignores a press briefly after the prompt
+   *  lands and after the window gains focus. Null otherwise. */
+  coldPrefillSendKey?: string | null
   /** macOS-only screenshot */
   onScreenshot?: () => void
   /** Browser-native file upload (cross-platform) */

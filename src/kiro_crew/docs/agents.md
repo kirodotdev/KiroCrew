@@ -80,14 +80,15 @@ closed instead, turn off **Settings → Chat → Side panel → Auto-Open Board 
 Panel** (on by default). Conductor mode used to be a Feature Preview; a switch for
 it saved from then is ignored.
 
-A link can open a new chat with a prompt waiting in its composer:
+A link can open a new chat with a prompt waiting above its composer:
 `<dashboard>/chat?new=1&prefill=<URL-encoded prompt>`. Add `&conductor=1` to open
 that chat in conductor mode, on whichever agent `agent.crew_mode_agent` names, or
 `&bot=<name>` to open it on one of your own Bots instead (a name that is not one
 of your Bots is refused rather than opened on another agent). If the dashboard
 tries to turn conductor mode on and is refused, the chat still opens as a plain
 chat and says so. The prompt is never
-sent for you: you read it and press Enter. A bookmark, a browser userscript or an
+sent for you: you read it, press **Put in message box** (or **Discard**), then
+press Enter. A bookmark, a browser userscript or an
 issue page can build these links.
 
 The LTS edition does not offer conductor mode:

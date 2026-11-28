@@ -9,7 +9,7 @@ import { useUserRowSpeaker } from './chat/shared-crew/MessageByline'
 import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput, selectPageLoaded,
 } from '../store/chatSlice'
-import { mergeReplyIntoDraft } from '../utils/chatDrafts'
+import { mergeIntoDraft, mergeReplyIntoDraft, setDraft } from '../utils/chatDrafts'
 import type { ComposeSendOutcome, ComposeSendResult } from '../components/chat/GrillCard'
 import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
 import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
@@ -289,7 +289,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
   const {
     prefillHint, setPrefillHint, prefillEdited, setPrefillEdited, raisePrefillHint, autoSendRef, appLaunchSendRef, autoSendTick, setAutoSendTick, newSessionRef, tokenConsumingRef, widgetPrefillRef,
-    consumedPrefillRef,
+    consumedPrefillRef, coldPrefillDraft, setColdPrefillDraft, coldPrefillSendSlot, setColdPrefillSendSlot,
   } = useComposerIntakeRefs()
 
   // Error hand-offs ("Ask the agent"): claimed into a FIFO, one fresh session at a time.
@@ -575,6 +575,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     navigate,
     navigationType,
     newSessionRef,
+    onColdUrlPrefill: (slotKey, prompt) => setColdPrefillDraft({ slotKey, prompt }),
     noUrlSync,
     pasteDrafts,
     popout,
@@ -717,6 +718,36 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The armed auto-send (?autoSend=1, a signed token, an app launch) and a
   // widget action's prefill.
   useAutoSendIntake({ connected, send, autoSendTick, autoSendRef, appLaunchSendRef, widgetPrefillRef, setInput, raisePrefillHint })
+
+  // A cold `?new=1&prefill=` link's prompt shows only on the session it
+  // created, so it never appears on another chat. Starting it adds the prompt
+  // after anything already typed in the composer, then shows the passive
+  // prefill hint.
+  const coldPrefillPrompt = coldPrefillDraft && coldPrefillDraft.slotKey === activeSlot ? coldPrefillDraft.prompt : null
+  const startColdPrefillDraft = useCallback(() => {
+    const draft = coldPrefillDraft
+    if (!draft || draft.slotKey !== activeSlot) return
+    const merged = mergeIntoDraft(inputRef.current, draft.prompt)
+    setDraft(drafts.current, draft.slotKey, merged)
+    saveDraftsDebounced()
+    setInput(merged)
+    raisePrefillHint()
+    setColdPrefillDraft(null)
+    setColdPrefillSendSlot(draft.slotKey)
+  }, [coldPrefillDraft, activeSlot, drafts, inputRef, saveDraftsDebounced, setInput, raisePrefillHint, setColdPrefillDraft, setColdPrefillSendSlot])
+  const discardColdPrefillDraft = useCallback(() => setColdPrefillDraft(null), [setColdPrefillDraft])
+  // Only the first send after the prompt lands waits; once that composer has
+  // shown the prompt and is empty again (sent or cleared) the session's sends
+  // behave as usual. The composer can still read blank on the render that sets
+  // the slot, so emptiness counts only after the prompt has been seen there.
+  const coldPrefillSendLandedRef = useRef(false)
+  useEffect(() => {
+    if (!coldPrefillSendSlot) { coldPrefillSendLandedRef.current = false; return }
+    if (coldPrefillSendSlot !== activeSlot) return
+    if (inputNonBlank) coldPrefillSendLandedRef.current = true
+    else if (coldPrefillSendLandedRef.current) setColdPrefillSendSlot(null)
+  }, [coldPrefillSendSlot, activeSlot, inputNonBlank, setColdPrefillSendSlot])
+  const coldPrefillSendKey = coldPrefillSendSlot && coldPrefillSendSlot === activeSlot ? coldPrefillSendSlot : null
   const {
     decideRow, switchAgent, pickModel, setProject, projectSwitching,
   } = useSessionChoices({
@@ -1323,6 +1354,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onAgentListKeyDown={onAgentListKeyDown} onModelListKeyDown={onModelListKeyDown} anchorModelBtn={anchorModelBtn} modelBtnRect={modelBtnRect} messageQuote={messageQuote} onJumpToQuote={handleJumpToQuote}
               applyAutomationChange={applyAutomationChange} automation={automation} automationCreationReady={automationCreationReady} automationOpen={automationOpen}
               automationSnapshotFailed={automationSnapshotFailed} setAutomationOpen={setAutomationOpen} prefillHint={prefillHint} setPrefillHint={setPrefillHint} pasteSlice={pasteSlice}
+              coldPrefillPrompt={coldPrefillPrompt} onColdPrefillStart={startColdPrefillDraft} onColdPrefillDiscard={discardColdPrefillDraft} coldPrefillSendKey={coldPrefillSendKey}
               pendingFiles={pendingFiles} pendingSessions={pendingSessions} resizedInfo={resizedInfo} unstageSessionRef={unstageSessionRef} uploading={uploading} agentBtnRect={agentBtnRect}
               anchorAgentBtn={anchorAgentBtn} projectPickerOpen={projectPickerOpen} setProjectPickerOpen={setProjectPickerOpen} anchorProjectBtn={anchorProjectBtn} projectBtnRect={projectBtnRect}
               pendingDirs={pendingDirs} composerRef={composerRef} composerVoiceOptions={composerVoiceOptions} isMac={isMac} composerUploadFiles={composerUploadFiles}
