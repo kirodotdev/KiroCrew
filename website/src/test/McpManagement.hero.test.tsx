@@ -424,7 +424,7 @@ describe('the Review dialog', () => {
     // No explainer in the dialog: the risk is said once, in the turn-on
     // confirm, and each block's buttons are named by their result. So
     // neither an intro nor a per-block line repeats it.
-    expect(dialog.textContent).not.toContain(M('share_risk'))
+    expect(dialog.textContent).not.toContain('Outside the sandbox')
     expect(dialog.querySelectorAll('[id^="mcp-review-means-"]')).toHaveLength(0)
     // A changed launch has no "what changed" hint line: its diff says it.
     expect(within(search).queryByText(M('command_changed_hint_command'))).toBeNull()

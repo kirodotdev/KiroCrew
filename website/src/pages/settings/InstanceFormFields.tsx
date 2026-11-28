@@ -707,8 +707,15 @@ export function InstanceFormFields({
           placeholder={i18nT('pages.settings.instancesPanel.home_you_local_bin_kirocrew_leave_blank_for_stan')}
         />
         <span className="text-[12px] text-muted leading-snug">
-          {i18nT('pages.settings.instancesPanel.only_needed_if')} <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew')}</code> {i18nT('pages.settings.instancesPanel.is_installed_somewhere_non_standard_on_the_remot')} <code className="text-text">{i18nT('pages.settings.instancesPanel.command_v_kirocrew')}</code>{' '}
-          <Trans i18nKey="pages.settings.instancesPanel.commonly_path_use_absolute" components={{ path: <code className="text-text">{i18nT('pages.settings.instancesPanel.local_bin_kirocrew')}</code>, tilde: <code className="text-text">~</code> }} />
+          <Trans
+            i18nKey="pages.settings.instancesPanel.only_needed_if_installed_non_standard"
+            components={{
+              bin: <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew')}</code>,
+              cmd: <code className="text-text">{i18nT('pages.settings.instancesPanel.command_v_kirocrew')}</code>,
+              path: <code className="text-text">{i18nT('pages.settings.instancesPanel.local_bin_kirocrew')}</code>,
+              tilde: <code className="text-text">~</code>,
+            }}
+          />
         </span>
       </label>
       )}

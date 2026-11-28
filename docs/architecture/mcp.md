@@ -2014,7 +2014,7 @@ keeps running while sharing is off, so a tab notices sharing turned on elsewhere
 **Share across chats** per server (and **Don't share**, which writes
 nothing), the same pinned write; there is no approve-all. The dialog carries no
 explainer of its own: what sharing risks is said once, in the confirm shown when
-sharing is turned on (`share_risk`), and the buttons are named by their result.
+sharing is turned on (`confirm_will_share`), and the buttons are named by their result.
 A block for a changed launch draws no "what changed" hint either, since its diff
 says it; a block refused for another reason (never approved here, not
 approvable) keeps that reason line, as the row's **Details** does.

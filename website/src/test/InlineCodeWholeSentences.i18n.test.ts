@@ -39,9 +39,16 @@ const MESSAGES: Array<[string, string, string[]]> = [
   ['pages.settings.securityPanel.no_policy_author_ceiling', 'pages/settings/SecurityPanelGovernance.tsx', ['<policy/>', '<profiles/>']],
   ['pages.settings.teamsPanel.register_azure_bot_intro', 'pages/settings/TeamsPanel.tsx', ['<channel/>', '<path/>']],
   ['pages.settings.teamsPanel.messaging_endpoint_url', 'pages/settings/TeamsPanel.tsx', ['<url/>']],
-  ['pages.settings.teamsPanel.public_host_required_detail', 'pages/settings/TeamsPanel.tsx', ['<localhost/>', '<host/>']],
+  ['pages.settings.instancesPanel.disabled_restart_to_tear_down_tunnels', 'pages/settings/InstancesPanel.tsx', ['<cmd/>']],
+  ['pages.settings.teamsPanel.public_host_required_detail', 'pages/settings/TeamsPanel.tsx', ['<strong>', '</strong>', '<localhost/>', '<host/>']],
   ['pages.settings.teamsPanel.side_load_app_with_bot_id', 'pages/settings/TeamsPanel.tsx', ['<field/>']],
-  ['pages.settings.instancesPanel.commonly_path_use_absolute', 'pages/settings/InstanceFormFields.tsx', ['<path/>', '<tilde/>']],
+  ['pages.settings.instancesPanel.only_needed_if_installed_non_standard', 'pages/settings/InstanceFormFields.tsx', ['<bin/>', '<cmd/>', '<path/>', '<tilde/>']],
+]
+
+/** Sentences once rendered as two catalog pieces joined by an English space, now one message. */
+const JOINED: Array<[string, string, Record<string, unknown>]> = [
+  ['pages.settings.chatPanel.refusal_fallback_desc', 'pages/settings/ChatPanel.tsx', {}],
+  ['pages.mcpManagement.confirm_will_share', 'pages/settings/McpManagement.tsx', { count: 2 }],
 ]
 
 const t = (lng: string, key: string) => i18next.getFixedT(lng)(key, { provider: 'GitHub' }) as string
@@ -73,6 +80,33 @@ describe('sentences around inline code are whole messages', () => {
   it('lets Japanese put the verb after the inline element', () => {
     expect(t('ja', 'apps.issueRadar.views.settings.generalSettings.not_signed_in_run_login')).toContain('<login/> を実行してください')
     expect(t('ko', 'components.reportProblemModal.saved_to_path')).toContain('<path/>에 저장')
+  })
+
+  it('joins no full-width sentences with an ASCII space', () => {
+    for (const [key, , opts] of [...JOINED, ['pages.settings.teamsPanel.public_host_required_detail', '', {}] as const]) {
+      for (const lng of ['ja', 'zh-CN']) {
+        const value = i18next.getFixedT(lng)(key, opts) as string
+        expect(value, `${lng} ${key}`).not.toBe(key)
+        expect(value, `${lng} ${key}`).not.toMatch(/[。）]\s|<\/strong>\s/)
+      }
+    }
+    expect(t('ja', 'pages.settings.instancesPanel.only_needed_if_installed_non_standard')).toContain('<cmd/> を実行してください（通常は <path/>）。')
+  })
+
+  it('renders each joined sentence through one translator call in its file', () => {
+    for (const [key, file] of JOINED) {
+      const src = fs.readFileSync(path.join(SRC, file), 'utf8')
+      expect(src, `${file} ${key}`).toContain(`'${key}'`)
+    }
+    for (const [piece, file] of [
+      ['refusal_fallback_same_model_note', 'pages/settings/ChatPanel.tsx'],
+      ['share_risk', 'pages/settings/McpManagement.tsx'],
+      ['requires_a_public_https_url', 'pages/settings/TeamsPanel.tsx'],
+      ['to_fully_tear_down_any_tunnels_still_running_fro', 'pages/settings/InstancesPanel.tsx'],
+      ['is_installed_somewhere_non_standard_on_the_remot', 'pages/settings/InstanceFormFields.tsx'],
+    ]) {
+      expect(fs.readFileSync(path.join(SRC, file), 'utf8'), `${file} ${piece}`).not.toContain(piece)
+    }
   })
 
   it('renders each message through one Trans call in its file', () => {

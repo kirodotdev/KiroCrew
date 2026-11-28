@@ -711,8 +711,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         <div>
         <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.refusal_fallback')} size="sm" />
         <div className="text-[12px] text-muted -mt-1 mb-2 px-4 max-w-[720px]">
-          {i18nT('pages.settings.chatPanel.refusal_fallback_desc')}{' '}
-          {i18nT('pages.settings.chatPanel.refusal_fallback_same_model_note')}
+          {i18nT('pages.settings.chatPanel.refusal_fallback_desc')}
         </div>
         <SettingsCard index={4}>
           <SettingsSelect
