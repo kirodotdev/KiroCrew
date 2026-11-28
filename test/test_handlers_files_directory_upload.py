@@ -200,6 +200,22 @@ async def test_uploads_a_file_into_the_target_directory(tmp_path: Path, mock_sel
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504, b"string name\nint32 id\n"],
+    ids=["outlook", "plain-text"],
+)
+async def test_msg_uploads_into_the_target_directory(
+    tmp_path: Path, mock_sel, content: bytes
+) -> None:
+    """An Outlook ``.msg`` (OLE) and a plain-text ``.msg`` both upload as sent."""
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await _upload(client, directory=str(tmp_path), content=content, filename="m.msg")
+        assert resp.status == 200, await resp.text()
+    assert (tmp_path / "m.msg").read_bytes() == content
+
+
+@pytest.mark.asyncio
 async def test_windows_pin_final_path_must_match_validated_directory(
     tmp_path: Path, mock_sel, monkeypatch
 ) -> None:
