@@ -618,8 +618,9 @@ that names the rate limit as CI infrastructure, not the code under test. It
 retries nothing and reports nothing for the action it guards. A job runs it
 before the action. Where the action can be run again in the same job, the job
 runs it once more after a failed attempt: `waited` means the pool was spent and
-has reset, `ready` means quota remained and the fixed pause applies. Two jobs
-use it, both with a floor of 100 requests and a 30-minute budget:
+has reset, `ready` means quota remained and the fixed pause applies. CodeQL and
+the Dependency License Gate use it with a floor of 100 requests and a 30-minute
+budget, and PR Readiness with a floor of 100 and a 15-minute budget:
 
 - **CodeQL** (`codeql.yml`). Two requests fail this job on a spent pool, and
   each is handled where it is made.
@@ -662,6 +663,17 @@ use it, both with a floor of 100 requests and a 30-minute budget:
   A retry that did read the dependency graph and reported a license it does
   not accept (its `invalid-license-changes` output) is the action's license
   verdict whatever the pool reads by then.
+- **PR Readiness** (`pr-readiness.yml`). It installs the action with
+  `wrap-gh: "false"`, which puts only `gh-rate-limit-wait` on PATH, and a
+  15-minute budget inside its 20-minute timeout, and runs `gh-rate-limit-wait
+  100` once, before its first read. Every page a verdict is built from is then
+  read after the wait, so no status is built from a read older than the wait:
+  one could otherwise land over a newer run's verdict. Nothing later waits. A
+  pool that empties during the run fails that read as before, and a reset past
+  the budget prints the `::error::` and the run goes on to publish the
+  non-terminal "could not be evaluated" verdict. A `workflow_run:
+  in_progress` run skips the wait: its merge-guard hold has to replace a
+  stale `success` while the re-run lane runs.
 
 What this does not cover: a pool that empties between the wait and the action's
 own request still fails that attempt (the CodeQL job then fails as before; the
