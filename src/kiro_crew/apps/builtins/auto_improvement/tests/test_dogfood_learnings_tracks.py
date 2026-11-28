@@ -9,6 +9,9 @@ bug track may add tests.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from kiro_crew.apps.builtins.auto_improvement.tests.dogfood_learnings_helpers import (  # noqa: F401
     _cwd_is_the_scratch_dir,
@@ -116,7 +119,10 @@ class TestReproTestDirIsRepoAware:
         (tmp_path / "tests" / "test_a.py").write_text("def test_a(): pass\n")
         assert _repro_test_dir(tmp_path) == self._profile(tmp_path)._test_dir()
 
-    def test_the_prompt_names_the_detected_dir(self, tmp_path: Path) -> None:
+    def test_the_prompt_names_the_detected_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner
         from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner import (
             AgentResult,
             author_bug_fix,
@@ -126,6 +132,12 @@ class TestReproTestDirIsRepoAware:
             Candidate,
         )
 
+        # A clean tree: this test reads the prompt, not the worktree status.
+        monkeypatch.setattr(
+            agent_runner.subprocess,
+            "run",
+            lambda argv, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
         (tmp_path / "tests").mkdir()
         (tmp_path / "tests" / "test_a.py").write_text("def test_a(): pass\n")
         seen: dict = {}
