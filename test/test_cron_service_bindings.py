@@ -197,6 +197,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "run_job": ("function", False, "965a55e3568d", "run_registry"),
     "running_since": ("function", False, "987a386c5e2e", "run_registry"),
     "run_trigger": ("function", False, "7d3f7de35812", "run_registry"),
+    # When a claimed run in its jitter wait starts executing; the Schedule page's
+    # reader, beside ``running_since``.
+    "run_waiting_until": ("function", False, "987a386c5e2e", "run_registry"),
     "set_interrupt_alert": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_refresh_callback": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_timeout_alert": ("function", False, "7a2c52d9ea93", "run_registry"),

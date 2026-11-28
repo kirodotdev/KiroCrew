@@ -8,11 +8,13 @@ import { usePagerFocus } from '../hooks/usePagerFocus'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 
 import { i18nT } from '../i18n/t'
+import { fmtTime } from '../i18n/format'
+import { cn } from '../lib/utils'
 const PAGE_SIZE = 10
 /** The "Hide idle runs" choice, kept per browser for every script job. */
 const HIDE_IDLE_KEY = 'kc-cron-logs-hide-idle'
 
-export default function JobLogsView({ jobId, jobName, isRunning, runningSince, onCancel, cancelError, canHideIdle }: { jobId: string; jobName?: string; isRunning?: boolean; runningSince?: number | null; onCancel?: () => void; cancelError?: string | null; /** A script job, whose Skip() runs can be hidden. */ canHideIdle?: boolean }) {
+export default function JobLogsView({ jobId, jobName, isRunning, runningSince, waitingUntil, onCancel, cancelError, canHideIdle }: { jobId: string; jobName?: string; isRunning?: boolean; runningSince?: number | null; /** When the claimed run starts executing, while it waits out its start delay. */ waitingUntil?: number | null; onCancel?: () => void; cancelError?: string | null; /** A script job, whose Skip() runs can be hidden. */ canHideIdle?: boolean }) {
   const [page, setPage] = useState(0)
   const [hideIdleChoice, setHideIdleChoice] = usePersistedBool(HIDE_IDLE_KEY, false)
   const hideIdle = !!canHideIdle && hideIdleChoice
@@ -31,11 +33,11 @@ export default function JobLogsView({ jobId, jobName, isRunning, runningSince, o
 
   // Live elapsed timer
   useEffect(() => {
-    if (!isRunning || !runningSince) { setElapsed(0); return }
+    if (!isRunning || !runningSince || waitingUntil) { setElapsed(0); return }
     setElapsed(Math.floor(Date.now() / 1000 - runningSince))
     const id = setInterval(() => setElapsed(Math.floor(Date.now() / 1000 - runningSince)), 1000)
     return () => clearInterval(id)
-  }, [isRunning, runningSince])
+  }, [isRunning, runningSince, waitingUntil])
 
   const entries = data?.entries ?? []
   const total = data?.total ?? 0
@@ -47,14 +49,22 @@ export default function JobLogsView({ jobId, jobName, isRunning, runningSince, o
 
   return (
     <div className="flex flex-col gap-3">
+      {/* One banner for the held run: muted while it waits to start, the ok
+          tint once it executes, so the same element stays in place across the two. */}
       {isRunning && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-ok-subtle border border-ok/20">
-          <span className="w-2 h-2 rounded-full bg-ok animate-pulse" />
-          <span className="text-[13px] text-ok font-medium">{i18nT('components.jobLogsView.currently_running')}</span>
+        <div
+          className={cn('flex items-center gap-2 px-3 py-2 rounded-lg border', waitingUntil ? 'bg-bg-hover border-border' : 'bg-ok-subtle border-ok/20')}
+          data-testid={waitingUntil ? 'job-logs-waiting' : 'job-logs-running'}
+          title={waitingUntil ? i18nT('pages.schedulePage.waiting_to_start_hint') : undefined}
+        >
+          {!waitingUntil && <span className="w-2 h-2 rounded-full bg-ok animate-pulse" />}
+          <span className={cn('text-[13px] font-medium', waitingUntil ? 'text-muted' : 'text-ok')}>
+            {waitingUntil ? i18nT('pages.schedulePage.waiting_starts_by', { time: fmtTime(waitingUntil) }) : i18nT('components.jobLogsView.currently_running')}
+          </span>
           <span className="ml-auto flex items-center gap-2">
-            {elapsed > 0 && <span className="text-[12px] text-muted">{elapsed}{i18nT('components.jobLogsView.s_elapsed')}</span>}
-            {/* The stock Btn is transparent, so on the ok tint it has no edge until hovered. */}
-            {onCancel && <Btn danger onClick={onCancel} className="border-border-strong bg-bg-elevated" title={i18nT('components.jobLogsView.cancel_running_execution')}>{i18nT('components.jobLogsView.cancel')}</Btn>}
+            {!waitingUntil && elapsed > 0 && <span className="text-[12px] text-muted">{elapsed}{i18nT('components.jobLogsView.s_elapsed')}</span>}
+            {/* The stock Btn is transparent, so on a tinted banner it has no edge until hovered. */}
+            {onCancel && <Btn danger onClick={onCancel} className="border-border-strong bg-bg-elevated" title={waitingUntil ? i18nT('pages.schedulePage.cancel_waiting_run') : i18nT('components.jobLogsView.cancel_running_execution')}>{i18nT('components.jobLogsView.cancel')}</Btn>}
           </span>
         </div>
       )}

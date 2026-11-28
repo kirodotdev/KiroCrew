@@ -67,6 +67,10 @@ class _RunClaim:
     started_monotonic: float | None = None
     #: Jitter seconds the run slept before executing; the reaper's allowance.
     jitter: float | None = None
+    #: Epoch time the run's jitter wait ends, while it is in that wait; None before
+    #: the wait and from the moment it ends. A run that holds this has executed
+    #: nothing yet, so a reader shows it as waiting, not running.
+    waiting_until: float | None = None
     #: The job object this run executes and mutates, stamped with ``started_monotonic``.
     #: Every store reload replaces the registry's job objects, and the runtime-only
     #: markers the run set (``run_never_started``, ``fire_time_denied``) stay on this

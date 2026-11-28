@@ -315,6 +315,8 @@ To avoid traffic spikes from thousands of users' jobs all firing at the same ins
 | Sub-hourly (every <1h, or `*/5 * * * *`) | None |
 | One-shot (`at`) | None |
 
+While a job waits out this delay, the Schedule page shows it as **Waiting**, with the time it starts by, not as Running: the run is held for the job and nothing has run yet. Its history gets a row when the run ends. Cancel stops the run before it starts.
+
 ### Opting out: strict schedule
 
 If your workflow requires exact timing or depends on job ordering, set `strict_schedule: true` to disable jitter entirely.
