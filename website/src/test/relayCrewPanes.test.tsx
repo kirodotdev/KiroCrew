@@ -74,7 +74,7 @@ describe('relay Crew panes in the main window', () => {
     const { api } = installBridge()
     const store = createTestStore()
     expect(await openRelayCrewTab('r1', 'One', store.dispatch)).toEqual({ ok: true })
-    expect(api.openPane).toHaveBeenCalledWith('r1', RECT, { width: window.innerWidth, height: window.innerHeight })
+    expect(api.openPane).toHaveBeenCalledWith('r1', RECT, { width: window.innerWidth, height: window.innerHeight }, true)
     expect(api.open).not.toHaveBeenCalled()
     expect(store.getState().instances.relayTabs).toEqual([{ id: 'r1', name: 'One' }])
     expect(store.getState().instances.relayActive).toBe('r1')
@@ -280,7 +280,7 @@ describe('relay pane windows, SSH Crews and the local Crew', () => {
     act(() => { store.dispatch(setActiveId('ssh-1')) })
     const opening = openRelayCrewTab('r1', 'One', store.dispatch)
     // The pane starts hidden, so the window's rect is enough until the host reports <main>'s.
-    expect(api.openPane).toHaveBeenCalledWith('r1', { x: 0, y: 0, ...VIEWPORT() }, VIEWPORT())
+    expect(api.openPane).toHaveBeenCalledWith('r1', { x: 0, y: 0, ...VIEWPORT() }, VIEWPORT(), true)
     expect(store.getState().instances.activeId).toBe('ssh-1')
     await answer(0, { ok: false, error: 'CREW_OFFLINE' })
     expect(await opening).toEqual({ ok: false, error: 'CREW_OFFLINE' })
