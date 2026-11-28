@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _builtin_app_for_agent,
         _cu_read_only_auto_approve,
         _governance_denial,
+        _grant_matches,
         _host_builtin_alias,
         _is_declared_builtin_mcp_server,
         _is_deepseek_read_only_builtin,
@@ -1231,7 +1232,7 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
     from kiro_crew.tool_grant_launch_audit import observe_granted_call
 
     for pattern in facts.config.auto_approve_tools:
-        if any(_tool_matches(pattern, target) for target in grant_targets):
+        if any(_grant_matches(pattern, target) for target in grant_targets):
             if identity_grant:
                 observe_granted_call(facts.call, facts.agent, "pattern")
             return ToolHookResult.auto_approve(identity_grant=identity_grant)
@@ -1247,7 +1248,7 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
         # symptom is a card nobody answers, so say once per (pattern, identity)
         # which rewrite restores the grant.
         for pattern in facts.config.auto_approve_tools:
-            if _tool_matches(pattern, call.title) or _tool_matches(pattern, facts.normalized):
+            if _grant_matches(pattern, call.title) or _grant_matches(pattern, facts.normalized):
                 _note_title_only_grant_pattern(pattern, identity_ref)
     return None
 
