@@ -1536,6 +1536,8 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         theme_mode=section.get("theme_mode"),
         theme_schedule_light=section.get("theme_schedule_light"),
         theme_schedule_dark=section.get("theme_schedule_dark"),
+        theme_schedule_source=section.get("theme_schedule_source"),
+        theme_schedule_location=section.get("theme_schedule_location"),
         sso_login_flags=str(section.get("sso_login_flags")),
         theme_color=section.get("theme_color"),
         instance_label=_sanitize_bot_name(section.get("instance_label")),

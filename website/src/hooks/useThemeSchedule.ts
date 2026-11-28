@@ -3,7 +3,7 @@
  * times, their browser copy, and the clock that re-resolves the mode while
  * Scheduled is on.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { safeSetItem } from '../utils/safeStorage'
 import {
   THEME_SCHEDULE_STORAGE_KEY,
@@ -12,12 +12,33 @@ import {
   type ThemeSchedule,
 } from '../utils/themeSchedule'
 
+/** The `/api/config/theme` fields a schedule save writes. */
+export interface ThemeScheduleBody {
+  schedule_light: string
+  schedule_dark: string
+  schedule_source?: string
+  schedule_location?: string
+}
+
+/**
+ * The save for `next`. Its source goes once one was chosen, so a times-only
+ * schedule writes the same two keys it always has. Its location goes only while
+ * `sendLocation`: a browser that never loaded the workspace's location (boot
+ * leaves it out) must not write '' over it with a time or source edit.
+ */
+function scheduleBody(next: ThemeSchedule, sendLocation: boolean): ThemeScheduleBody {
+  const body: ThemeScheduleBody = { schedule_light: next.light, schedule_dark: next.dark }
+  if (next.source) body.schedule_source = next.source
+  if (sendLocation) body.schedule_location = next.location ?? ''
+  return body
+}
+
 export function useThemeSchedule(
   mode: string,
   setResolved: (resolved: 'light' | 'dark') => void,
   persist: (
-    body: { schedule_light: string; schedule_dark: string },
-    options?: { onError?: () => void },
+    body: ThemeScheduleBody,
+    options?: { onError?: () => void; onSuccess?: () => void },
   ) => void,
 ) {
   const [schedule, adoptSchedule] = useState<ThemeSchedule>(readStoredThemeSchedule)
@@ -37,11 +58,19 @@ export function useThemeSchedule(
     return () => window.clearInterval(id)
   }, [mode, schedule, setResolved])
 
+  // A location edited here stays unsaved until a save carrying it succeeds, so a
+  // retry after a refused save sends it again.
+  const locationUnsavedRef = useRef(false)
   const setSchedule = useCallback((next: ThemeSchedule) => {
+    if (next.location !== schedule.location) locationUnsavedRef.current = true
+    const sendLocation = locationUnsavedRef.current
     adoptSchedule(next)
     setSaveFailed(false)
-    persist({ schedule_light: next.light, schedule_dark: next.dark }, { onError: () => setSaveFailed(true) })
-  }, [persist])
+    persist(scheduleBody(next, sendLocation), {
+      onError: () => setSaveFailed(true),
+      onSuccess: () => { if (sendLocation) locationUnsavedRef.current = false },
+    })
+  }, [persist, schedule])
 
   return { schedule, setSchedule, adoptSchedule, saveFailed }
 }

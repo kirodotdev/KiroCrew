@@ -4017,6 +4017,8 @@ class DashboardConfig:
     theme_mode: str = ""           # "dark" | "light" | "system" | "schedule"; empty = unset (frontend falls back to localStorage or "system")
     theme_schedule_light: str = "" # 24-hour "HH:MM" the "schedule" mode turns light, device time zone; empty = never set (07:00)
     theme_schedule_dark: str = ""  # 24-hour "HH:MM" the "schedule" mode turns dark, device time zone; empty = never set (19:00)
+    theme_schedule_source: str = ""   # "times" | "sun" (sunrise to sunset at theme_schedule_location); empty = never chosen ("times")
+    theme_schedule_location: str = "" # "latitude, longitude" in degrees for the "sun" source; empty = none (the two times apply)
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
     instance_label: str = ""       # a short name for this gateway: the browser tab title (`<detail> — <label> — <bot>`), a favicon of its initial on the theme accent, and the `origin` of a session transferred to another instance. Run through the bot-name sanitizer at load (letters, digits, space, `_-.`; 50 code points); empty = unset (title and favicon as before, a transfer names the host). Set it in `config.json` or with `kirocrew config set dashboard.instance_label` (not dashboard-editable); the SPA reads it from the authenticated GET /api/dashboard/branding, never /api/theme/boot, so a change shows on the next page load. A pod seed drops it.
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
@@ -4628,6 +4630,16 @@ mode switches at (themes.md, *Mode preference*), surfaced as `schedule_light` /
 24-hour `HH:MM` and refuses anything else (400); the frontend saves both together
 and adopts them at boot only when the workspace has saved one, so a browser's own
 copy holds on a workspace that never did.
+
+`theme_schedule_source` / `theme_schedule_location` pick sunrise and sunset
+instead (`schedule_source` / `schedule_location` in the payloads). The PUT takes
+`""`, `times` or `sun` for the source and `""` or a `latitude, longitude` within
+±90 / ±180 for the location, stored trimmed, and refuses anything else (400). The
+location is only read by the device showing the dashboard; the gateway never
+uses it. It is where the user is, so the unauthenticated `GET /api/theme/boot`
+leaves it out (as it leaves out `instance_label`); the SPA reads it from the
+token-gated `GET /api/config/theme` once boot is applied, and keeps its own
+`mc-theme-schedule` copy until then.
 
 `translucent_panels` is the "Translucent panels" switch (Settings -> Display ->
 View; the Liquid Glass primitive). It is a string like `theme_mode`, not a bool,

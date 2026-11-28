@@ -724,6 +724,8 @@ _OLDER_WRITER_KEYS = (
     "dashboard.theme_mode",
     "dashboard.theme_schedule_light",
     "dashboard.theme_schedule_dark",
+    "dashboard.theme_schedule_source",
+    "dashboard.theme_schedule_location",
     "dashboard.theme_color",
     "dashboard.language",
     "dashboard.preferred_language",
