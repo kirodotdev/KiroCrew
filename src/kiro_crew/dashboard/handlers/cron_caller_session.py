@@ -144,6 +144,13 @@ async def _recognize_session(
         and sessions is not None
         and sessions.has_session(sk) is True
     ) or (subagents is not None and subagents.has_live_shared_session(sk) is True)
+    # A Channels room seat is an established session only while it is in its room,
+    # live, and bound to its Bot's current store (``channel_seat_memory``); a
+    # template seat has no memory.
+    from kiro_crew.channel_seat_memory import ROOM_SEAT_KEY_PREFIX, seat_is_established
+
+    if not in_live_session and sk.startswith(ROOM_SEAT_KEY_PREFIX):
+        in_live_session = await seat_is_established(state, sk)
     if in_live_session:
         refusal = await _headless_mode_refusal(state, sk, operation, blocks_persisted_mode)
         if refusal is not None:
