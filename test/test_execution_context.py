@@ -575,6 +575,7 @@ def test_every_binder_declares_whether_it_vouches():
             "_pin_private_agent_assignment",
         ): "True",
         ("dashboard/handlers/hooks.py", "bind_captured"): "False",
+        ("cli_chat_run_session.py", "bind_run_session"): "ABSENT",
         ("dashboard/session_control_parts/session_create.py", "_persist_birth"): "True",
         ("member_memory_auth.py", "bind_private_session_store"): "True",
         ("session_agent_selection.py", "record_agent_selection"): "vouch",

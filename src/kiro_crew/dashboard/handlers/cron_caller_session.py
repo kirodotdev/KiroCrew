@@ -144,6 +144,17 @@ async def _recognize_session(
         and sessions is not None
         and sessions.has_session(sk) is True
     ) or (subagents is not None and subagents.has_live_shared_session(sk) is True)
+    # A Bot's terminal chat runs in its own process, so no live session here owns
+    # its ``cli_chat:<run>`` key; the run's binding to the Bot's store stands for it.
+    if not in_live_session and sk.startswith("cli_chat:"):
+        from kiro_crew.context import store_of_session
+        from kiro_crew.memory_stores import named_store_or_empty
+
+        try:
+            run_store = await asyncio.to_thread(store_of_session, None, sk)
+        except (OSError, ValueError):
+            run_store = ""
+        in_live_session = bool(named_store_or_empty(run_store))
     if in_live_session:
         refusal = await _headless_mode_refusal(state, sk, operation, blocks_persisted_mode)
         if refusal is not None:
