@@ -6837,6 +6837,19 @@ Because the token grants nothing, its Linux boot-relativity costs a missed prune
 rather than a wrong kill. `platform_compat._own_identity_token` is the reboot-unique
 form should a future change need one.
 
+An entry whose root reads DEAD is pruned, except on Windows, where a tree is reached only
+through its root's `taskkill /T` and an exited root cannot be handed to it.
+`_windows_dead_root_retained`, called by both `_sweep_pid_entries` and
+`cleanup_orphaned_session_roots`, keeps the entry and warns once per entry per process
+when a Toolhelp snapshot lists a process under the root's pid that was not provably
+created before the root's recorded token (an equal time counts as a possible child), or
+when the snapshot cannot be read at all; with no such process the entry is pruned as
+before, with one WARNING that no possible direct child was found. A grandchild under an exited intermediate names that
+intermediate as its parent, so no snapshot links it to the root. It signals nothing: once the root's
+number can be reused, a parent link plus a creation time cannot prove a process belongs
+to the tree, so ending such a tree waits for exact descendant identities a later gateway
+can read. POSIX is unchanged.
+
 The periodic sweep's two phases do not pass a verdict between them. The kill phase
 re-reads the entry and re-applies the subtractive check, since an event-loop hop
 separates the phases and a PID can be reallocated across it. A candidate whose entry is

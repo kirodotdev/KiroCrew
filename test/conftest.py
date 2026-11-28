@@ -438,6 +438,9 @@ from conftest_resets_search import (  # noqa: E402,F401 -- bound for pytest and 
 from conftest_resets_session_control import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_session_control_replays,
 )
+from conftest_resets_session_pid import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_dead_root_retain_warnings,
+)
 from conftest_resets_shared_crew import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_ssm_invite_store,
 )
