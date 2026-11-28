@@ -7842,7 +7842,13 @@ names every phase in order: `matcher`, `gov_capability`, `gov_event`, `gov_hook`
 `deny_list`, `prepare`, `spawn`, `communicate`. Each thread-pool hop is split into
 `wait` (until a pool worker started it), `run` (in the worker) and `resume` (until
 the event loop resumed the fire), so a busy pool or a stalled loop shows apart from
-slow work. `other` is the fire's time outside every phase, and `gc runs` counts the
+slow work. Those hops (`matcher`, the three governance checks, `deny_list` and
+the status write's `persist`) run on the hook path's own bounded pool
+(`hook_hop_executor`, threads `mc-hookhop`), never on the loop's default
+executor, so a burst of unrelated default-executor work is not paid once per hop
+per hook before a tool call is approved; every check still runs for each hook.
+`prepare` takes its pool from `sandboxed_spawn_argv_async` and stays on the
+default executor. `other` is the fire's time outside every phase, and `gc runs` counts the
 collector's runs per generation (`0/1/2`) during the fire. A matcher that does not
 match ends that hook's fire and logs the same way when it was slow. The `hooks.json`
 status write after the fire's hooks is timed the same way and logs its own line,
