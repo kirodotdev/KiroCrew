@@ -1040,6 +1040,9 @@ def _build_discord_config(discord_data: dict) -> DiscordConfig:
         # keep them as strings (JSON round-trip safe, matches the
         # transport's string comparison).
         allowed_user_ids=_coerce_str_ids(section.get("allowed_user_ids")),
+        # One snowflake through the list coercer, so a non-digit value is
+        # dropped to "" (no explicit owner) rather than kept.
+        owner_id=(_coerce_str_ids([section.get("owner_id")]) or [""])[0],
         allowed_thread_ids=_coerce_str_ids(section.get("allowed_thread_ids")),
         allowed_channel_ids=_coerce_str_ids(section.get("allowed_channel_ids")),
         auto_thread=bool(section.get("auto_thread")),

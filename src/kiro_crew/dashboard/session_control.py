@@ -583,6 +583,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.messaging.link import is_channel_session_key  # noqa: F401
     from kiro_crew.messaging.link import parse_session_key  # noqa: F401
     from kiro_crew.messaging.transport import DM_TARGET_PREFIX  # noqa: F401
+    from kiro_crew.messaging.transport import owner_direct_target  # noqa: F401
     from kiro_crew.messaging.transport import sole_direct_target  # noqa: F401
     from kiro_crew.metrics.sessions import END_REASON_REMOVED  # noqa: F401
     from kiro_crew.metrics.turns import turn_outcome  # noqa: F401

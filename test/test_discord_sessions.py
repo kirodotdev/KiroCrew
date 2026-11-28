@@ -272,8 +272,89 @@ async def test_sessions_requires_exactly_one_allowed_user() -> None:
     await dispatcher.handle_message(_message("!sessions private"))
 
     assert log.list_calls == 0
-    assert "exactly one" in client.sent[-1][0]
+    assert "`!sessions` is owner-only" in client.sent[-1][0]
     assert client.sent[-1][1] is None
+
+
+@pytest.mark.asyncio
+async def test_a_named_owner_lists_sessions_beside_another_allowed_user() -> None:
+    log = _log()
+    dispatcher, client, _ = _dispatcher({"u1", "u2"}, log)
+    dispatcher._session_resume.reconfigure({"u1", "u2"}, "u1")
+
+    await dispatcher.handle_message(_message("!sessions"))
+
+    assert log.list_calls >= 1
+    assert "owner-only" not in client.sent[-1][0]
+
+
+def _reassign_owner_on(log: Any, method: str, dispatcher: Any) -> None:
+    """Make *log*'s *method* name ``u2`` the owner while the call runs, as a reload would."""
+    real = getattr(log, method)
+
+    def _call(*args: Any, **kwargs: Any) -> Any:
+        dispatcher._session_resume.reconfigure({"u1", "u2"}, "u2")
+        return real(*args, **kwargs)
+
+    setattr(log, method, _call)
+
+
+@pytest.mark.asyncio
+async def test_an_owner_reassigned_while_the_list_is_read_gets_no_picker() -> None:
+    log = _log()
+    dispatcher, client, _ = _dispatcher({"u1", "u2"}, log)
+    dispatcher._session_resume.reconfigure({"u1", "u2"}, "u1")
+    _reassign_owner_on(log, "list_sessions", dispatcher)
+
+    await dispatcher.handle_message(_message("!sessions"))
+
+    assert "`!sessions` is owner-only" in client.sent[-1][0]
+    assert client.sent[-1][1] is None  # no picker buttons were posted
+
+
+@pytest.mark.asyncio
+async def test_an_owner_reassigned_during_a_pick_binds_nothing() -> None:
+    log = _log()
+    log.messages["dashboard:chat-1"] = [{"role": "assistant", "content": "prior"}]
+    dispatcher, client, _ = _dispatcher({"u1", "u2"}, log)
+    dispatcher._session_resume.reconfigure({"u1", "u2"}, "u1")
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+    _reassign_owner_on(log, "has_log", dispatcher)
+
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    assert dispatcher._session_resume.resumed_session("c1") is None
+    assert not any("prior" in text for text, _ in client.sent)
+
+
+@pytest.mark.asyncio
+async def test_an_owner_reassigned_while_suggestions_are_read_gets_none() -> None:
+    log = _log()
+    dispatcher, _client, _ = _dispatcher({"u1", "u2"}, log)
+    resume = dispatcher._session_resume
+    resume.reconfigure({"u1", "u2"}, "u1")
+    key = dispatcher.current_session_key("u1")
+    assert await resume.suggestions("sessions", "u1", "", native_key=key, limit=5)
+
+    _reassign_owner_on(log, "list_sessions", dispatcher)
+    resume.reconfigure({"u1", "u2"}, "u1")
+    assert await resume.suggestions("sessions", "u1", "", native_key=key, limit=5) == ()
+
+
+@pytest.mark.asyncio
+async def test_an_owner_reassigned_before_the_replay_replays_nothing() -> None:
+    log = _log()
+    log.messages["dashboard:chat-1"] = [{"role": "assistant", "content": "prior"}]
+    dispatcher, client, _ = _dispatcher({"u1", "u2"}, log)
+    dispatcher._session_resume.reconfigure({"u1", "u2"}, "u1")
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+    _reassign_owner_on(log, "recent", dispatcher)
+
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    assert not any("prior" in text for text, _ in client.sent)
 
 
 @pytest.mark.asyncio

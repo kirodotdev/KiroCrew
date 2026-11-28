@@ -129,7 +129,7 @@ _BASE_NAMES = frozenset("""
         read_bounded_json read_config_text read_panel_records read_state read_tombstone
         record_panel_dismissal_outcome redact_credentials redact_exfiltration_urls
         redact_for_display rehydrate_slot_from_history_async remember_slack_options
-        run_to_completion slack_options_owner_key slot_owner_snapshot sole_direct_target
+        run_to_completion slack_options_owner_key slot_owner_snapshot owner_direct_target
         stored_folder_name subagent_event_slot validate_tool_args warm_project_agents_for_spawn
         web
     """.split())

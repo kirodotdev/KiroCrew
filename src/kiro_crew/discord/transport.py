@@ -18,7 +18,7 @@ new thread; turns never run directly in a normal guild channel.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -63,6 +63,21 @@ def _coerce_snowflakes(value: object) -> frozenset[str] | None:
     if not isinstance(value, list):
         return None
     return frozenset(str(v).strip() for v in value if v is not None and str(v).strip())
+
+
+def resolve_owner_id(configured: str, allowed_user_ids: Collection[str]) -> str:
+    """The Discord owner's user id, or ``""`` when nobody is the owner.
+
+    ``discord.owner_id`` names the owner when it is set, and only while that id is
+    also on ``allowed_user_ids``: the setting picks the owner among the admitted
+    users and never admits anyone. Unset, the single-user rule holds: exactly one
+    allowed user is the owner, and none or several leave nobody. The one reading
+    of the owner for Discord: session resume, the owner-DM reopen and
+    :meth:`DiscordTransport.explicit_owner_target` all call it.
+    """
+    if configured:
+        return configured if configured in allowed_user_ids else ""
+    return next(iter(allowed_user_ids)) if len(allowed_user_ids) == 1 else ""
 
 
 @dataclass
@@ -138,11 +153,15 @@ class DiscordTransport(MessagingTransport):
         auto_thread: bool = True,
         on_thread_created: Callable[[str], None] | None = None,
         dispatch: DispatchFn | None = None,
+        owner_id: str = "",
     ) -> None:
         self._client = client
         # Deny-by-default: freeze both allow-lists as snowflake strings so they
         # cannot mutate under an in-flight authorization decision.
         self._allowed: frozenset[str] = frozenset(str(u) for u in allowed_user_ids)
+        # ``discord.owner_id`` as configured; it admits nobody (see
+        # ``explicit_owner_target``).
+        self._owner_id = owner_id if isinstance(owner_id, str) else ""
         # Mutable: an approved user's message in an allowed channel can promote
         # itself into a brand-new thread at runtime (see ``receive`` below), and
         # that thread must immediately become valid for the user's own follow-up
@@ -200,6 +219,8 @@ class DiscordTransport(MessagingTransport):
         changes are SEL-audited by COUNT (the receive path audits its own
         outcomes on the same channel); ids are never logged.
         """
+        owner = getattr(section, "owner_id", "")
+        self._owner_id = owner if isinstance(owner, str) else ""
         users = _coerce_snowflakes(getattr(section, "allowed_user_ids", None))
         if users is None:
             logger.warning(
@@ -362,6 +383,13 @@ class DiscordTransport(MessagingTransport):
             for thread_id in sorted(self._allowed_threads)
         )
         return targets
+
+    def explicit_owner_target(self) -> str | None:
+        """``discord.owner_id``'s DM target; ``None`` when unset, ``""`` when not allow-listed."""
+        if not self._owner_id:
+            return None
+        owner = resolve_owner_id(self._owner_id, self._allowed)
+        return f"user:{owner}" if owner else ""
 
     async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
         kind, separator, value = target_id.partition(":")

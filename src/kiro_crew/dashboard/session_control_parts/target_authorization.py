@@ -61,7 +61,11 @@ from kiro_crew.dashboard.session_control_parts.delivery_containment import (
 from kiro_crew.dashboard.state import load_window_off_loop
 from kiro_crew.history import transcript_stem
 from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, ChannelLink, parse_session_key
-from kiro_crew.messaging.transport import DM_TARGET_PREFIX, sole_direct_target
+from kiro_crew.messaging.transport import (  # noqa: F401  (sole_direct_target: facade surface)
+    DM_TARGET_PREFIX,
+    owner_direct_target,
+    sole_direct_target,
+)
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
@@ -159,7 +163,7 @@ def _sole_owner(state: "DashboardState", surface: str) -> tuple[Any, str, str]:
     if transport is None:
         return None, "", f"the {surface} channel is not running"
     try:
-        owner = sole_direct_target(transport.configured_targets())
+        owner = owner_direct_target(transport, transport.configured_targets())
     except Exception:
         logger.debug("owner-DM check: %s targets unreadable", surface, exc_info=True)
         return None, "", f"the {surface} roster is unreadable"
@@ -249,8 +253,9 @@ def judge_owner_dm(state: "DashboardState", slot: "_ChatSlot") -> OwnerDmVerdict
       names no peer; the legacy two-segment Slack shape does not parse; a surface
       not verified for this fails closed by construction.
     * The channel's LIVE transport names exactly one owner and it is that peer:
-      :func:`~kiro_crew.messaging.transport.sole_direct_target` over
-      ``configured_targets()``, the same one-identity rule ``/sessions`` and the
+      :func:`~kiro_crew.messaging.transport.owner_direct_target` over
+      ``configured_targets()`` (a channel's explicit owner setting, else
+      ``sole_direct_target``), the same one-identity rule ``/sessions`` and the
       proactive owner DM apply, and the same reasoning -- an allow-list is a list
       of people permitted to talk to the agent, not a claim that any of them is
       the operator, so several entries name nobody. Read off the transport rather

@@ -367,6 +367,7 @@ class DiscordDispatcher:
             sessions,
             conv_log,
             self._allowed,
+            owner_id=getattr(getattr(cfg, "discord", None), "owner_id", ""),
         )
         # Kept as a direct alias for diagnostics/tests; the controller owns it.
         self._session_pickers = self._session_resume.pickers
@@ -450,8 +451,9 @@ class DiscordDispatcher:
             self._allowed.clear()
             self._allowed.update(users)
             # The ``!sessions`` owner is the third copy of the roster and must
-            # move with it: an added second identity revokes the surface now.
-            self._session_resume.reconfigure(self._allowed)
+            # move with it: an added second identity, or a removed named owner,
+            # revokes the surface now.
+            self._session_resume.reconfigure(self._allowed, getattr(section, "owner_id", ""))
         threads = _coerce_snowflakes(getattr(section, "allowed_thread_ids", None))
         if threads is None:
             logger.warning(

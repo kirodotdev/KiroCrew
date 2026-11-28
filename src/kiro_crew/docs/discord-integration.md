@@ -361,11 +361,15 @@ session, by the same `!steer` / `!queue` / default-mode rules. The DM confirms
 which one happened. A message with attachments, one that meets a full queue, and
 one for a session that was closed or moved are refused, and the DM says so.
 
-`!sessions` is **owner-only and requires exactly one entry in
-`discord.allowed_user_ids`**. Session listing and resume can reach any dashboard
-conversation plus this DM's native generations, so with two
-or more allowed users Kiro Crew cannot tell which one owns the workspace and
-refuses the command instead of guessing. Incognito and temporary sessions are
+`!sessions` and `!bot` are **owner-only**. Session listing and resume can reach
+any dashboard conversation plus this DM's native generations. Set
+`discord.owner_id` to your own user ID to name the owner; it must also be in
+`discord.allowed_user_ids`, because it admits nobody on its own. When
+`owner_id` is empty, the owner is the only entry in `discord.allowed_user_ids`.
+With two or more allowed users and no `owner_id`, Kiro Crew cannot tell which
+one owns the workspace and refuses the command instead of guessing. Changing
+`owner_id` applies to new sends; to cut someone off, remove them from
+`discord.allowed_user_ids`, which also stops a message already in flight to them. Incognito and temporary sessions are
 never listed, and session titles plus replayed messages are scrubbed of
 credentials, inside URLs too, before they reach Discord.
 

@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES
-from kiro_crew.messaging.transport import sole_direct_target
+from kiro_crew.messaging.transport import owner_direct_target
 from kiro_crew.notifications.bridge import BridgeTransportUnavailable
 from kiro_crew.notifications.bridge_approval_note import (
     ACTION_TOKEN_KEY,
@@ -57,9 +57,10 @@ def reply_owner(state: Any, transport: str) -> str:
     """The owner's user id on reply transport *transport*, or ``""``. Never raises.
 
     The one owner rule the messaging layer already owns: the transport must be in
-    ``constants.CHANNEL_OWNER_DM_NAMESPACES`` and advertise exactly one available,
-    non-learned direct target (``messaging.transport.sole_direct_target``). Read
-    live, so an owner dropped from the allow-list cannot answer.
+    ``constants.CHANNEL_OWNER_DM_NAMESPACES`` and name its owner through
+    ``messaging.transport.owner_direct_target`` (an explicit owner setting, else
+    exactly one available, non-learned direct target). Read live, so an owner
+    dropped from the allow-list cannot answer.
     """
     try:
         if transport not in REPLY_TRANSPORTS or transport not in CHANNEL_OWNER_DM_NAMESPACES:
@@ -67,7 +68,7 @@ def reply_owner(state: Any, transport: str) -> str:
         live = state.get_channel_transport(transport)
         if live is None:
             return ""
-        target = sole_direct_target(list(live.configured_targets()))
+        target = owner_direct_target(live, live.configured_targets())
         return target.removeprefix(_DM_PREFIX) if target.startswith(_DM_PREFIX) else ""
     except Exception:
         return ""

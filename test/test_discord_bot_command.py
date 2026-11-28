@@ -118,7 +118,7 @@ async def test_a_bot_thread_with_no_transcript_yet_is_not_offered(tmp_path) -> N
 async def test_bot_is_owner_only_and_dm_only(tmp_path) -> None:
     dispatcher, client, sessions = _bot_dm(tmp_path, allowed={"u1", "u2"})
     await dispatcher.handle_message(_message("!bot radar"))
-    assert "requires exactly one" in client.sent[-1][0]
+    assert "`!bot` is owner-only" in client.sent[-1][0]
 
     dispatcher, client, sessions = _bot_dm(tmp_path)
     await dispatcher.handle_message(_message("!bot radar", channel_id="t1", thread_id="t1"))

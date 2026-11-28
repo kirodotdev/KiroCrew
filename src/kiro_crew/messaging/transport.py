@@ -54,8 +54,9 @@ class ConfiguredChannelTarget:
 def sole_direct_target(targets: Iterable[Any]) -> str:
     """The ONE configured direct target id among *targets*, if available, or ``""``.
 
-    The single rule by which a channel NAMES its owner. No channel carries an
-    owner field the way Slack's ``owner_id`` does, and an allow-list is a list of
+    The single rule by which a channel INFERS its owner, for a channel with no
+    owner field the way Slack's ``owner_id`` is one (a channel that has one names
+    its owner through :func:`owner_direct_target`). An allow-list is a list of
     people permitted to talk to the agent rather than a claim that any of them is
     the operator — so an owner can only be inferred, and this refuses to infer one
     from an ambiguous list: a target is returned only when the channel advertises
@@ -80,6 +81,43 @@ def sole_direct_target(targets: Iterable[Any]) -> str:
     if len(direct) != 1 or not getattr(direct[0], "available", False):
         return ""
     return str(getattr(direct[0], "target_id", "") or "")
+
+
+def explicit_owner(transport: Any) -> str | None:
+    """*transport*'s ``explicit_owner_target()``, or ``None`` when it has no owner setting.
+
+    ``None`` for a transport without the hook or one answering anything but a
+    string, so a reader treats it as a channel with no owner setting.
+    """
+    hook = getattr(transport, "explicit_owner_target", None)
+    named = hook() if callable(hook) else None
+    return named if isinstance(named, str) else None
+
+
+def owner_direct_target(transport: Any, targets: Iterable[Any]) -> str:
+    """The direct target *transport* names as its owner among *targets*, or ``""``.
+
+    The owner rule every reader applies to a channel: an explicit owner setting
+    (``transport.explicit_owner_target()``) wins when the channel has one, and
+    only as one of *targets*' configured, available direct targets. With no
+    setting the owner is inferred by :func:`sole_direct_target`, unchanged. A
+    transport without the hook, or one answering anything but a string, has no
+    setting.
+    """
+    targets = list(targets)
+    named = explicit_owner(transport)
+    if named is None:
+        return sole_direct_target(targets)
+    for target in targets:
+        if (
+            named
+            and str(getattr(target, "target_id", "") or "") == named
+            and named.startswith(DM_TARGET_PREFIX)
+            and not getattr(target, "learned", False)
+            and getattr(target, "available", False)
+        ):
+            return named
+    return ""
 
 
 @dataclass
@@ -522,6 +560,19 @@ class MessagingTransport(ABC):
         a transport that does not override it confirms nothing.
         """
         return ""
+
+    def explicit_owner_target(self) -> str | None:
+        """The ``user:`` target an explicit owner setting names, or ``None`` for no setting.
+
+        For a channel that carries an owner field the way Slack's ``owner_id`` does
+        (Discord's ``discord.owner_id``). ``None`` means the channel has no such
+        setting, or it is empty, and :func:`owner_direct_target` infers the owner
+        with :func:`sole_direct_target`. A string is the configured owner's
+        target; ``""`` means an owner is configured but this transport cannot name
+        it (not on its roster), and nobody is the owner. Synchronous and in memory,
+        like :meth:`direct_peer_of`. Default ``None``.
+        """
+        return None
 
     # -- Inbound adapter ----------------------------------------------------
     @abstractmethod
