@@ -589,6 +589,7 @@ COMPACTION_SEEN = {
     "deepseek": False,
     "mimocode": False,
     "antigravity": False,
+    "mistral-vibe": False,
 }
 
 

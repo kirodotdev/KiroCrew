@@ -35,6 +35,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_MISTRAL_VIBE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_COMPACT,
@@ -67,6 +68,7 @@ class TestCompactCapabilitySet:
                 ACP_BACKEND_PI,
                 ACP_BACKEND_COPILOT,
                 ACP_BACKEND_MIMOCODE,
+                ACP_BACKEND_MISTRAL_VIBE,
             }
         )
         # deepseek is the one known harness outside the set: its ACP surface carries
