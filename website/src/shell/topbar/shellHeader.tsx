@@ -42,6 +42,8 @@ import { relayHeaderInFront } from '../../store/instancesSlice'
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('../../components/UpdatePill'))
+// The crew switcher's Remote Crews window: lazy, since it is closed almost always.
+const RemoteCrewsWindow = lazy(() => import('../../components/remoteCrewsWindow'))
 // The switcher with its Team Crews group, lazy so the relay list's code stays
 // out of the app core. The group renders nothing while the relay viewer is off.
 const TeamCrewsSwitcher = lazy(() => import('../../components/TeamCrewsGroup'))
@@ -227,6 +229,8 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
       {/* The one Milestones panel; the top-bar indicator, the phone menu row
           and the milestone notice all open it. */}
       {explore && <MilestonesSheet />}
+      {/* The crew switcher's Remote Crews window; a pane asks this window for it. */}
+      {!isEmbeddedPane() && <Suspense fallback={null}><RemoteCrewsWindow /></Suspense>}
       {/* Topbar */}
       {/* stable theming hook — see website/docs/theming-contract.md */}
       <header

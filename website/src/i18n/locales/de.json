@@ -7767,7 +7767,10 @@
       "instances_load_failed": "Die Remote-Crews konnten nicht geladen werden.",
       "unreachable": "nicht erreichbar",
       "unreachable_via": "nicht erreichbar — {{via}} ist aus",
-      "switch_crew_new_team_crew": "Crew wechseln, neue geteilte Crew"
+      "switch_crew_new_team_crew": "Crew wechseln, neue geteilte Crew",
+      "add_remote_crew": "Remote-Crew hinzufügen",
+      "crew_settings": "Einstellungen",
+      "remote_crews_window": "Remote-Crews"
     },
     "relayCrews": {
       "list_label": "Remote-Crews, die du über das Relay öffnen kannst",

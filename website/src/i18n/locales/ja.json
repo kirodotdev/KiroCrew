@@ -7558,7 +7558,10 @@
       "instances_load_failed": "リモートクルーを読み込めませんでした。",
       "unreachable": "到達不可",
       "unreachable_via": "到達不可 — {{via}} が停止中",
-      "switch_crew_new_team_crew": "Crew を切り替え、新しい共有 Crew"
+      "switch_crew_new_team_crew": "Crew を切り替え、新しい共有 Crew",
+      "add_remote_crew": "リモート Crew を追加",
+      "crew_settings": "設定",
+      "remote_crews_window": "リモート Crew"
     },
     "relayCrews": {
       "list_label": "リレー経由で開けるリモート Crew",

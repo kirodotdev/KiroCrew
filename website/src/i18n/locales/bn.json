@@ -7767,7 +7767,10 @@
       "instances_load_failed": "রিমোট ক্রু লোড করা যায়নি।",
       "unreachable": "পৌঁছানো যাচ্ছে না",
       "unreachable_via": "পৌঁছানো যাচ্ছে না — {{via}} বন্ধ",
-      "switch_crew_new_team_crew": "Crew বদলাও, নতুন শেয়ার্ড Crew"
+      "switch_crew_new_team_crew": "Crew বদলাও, নতুন শেয়ার্ড Crew",
+      "add_remote_crew": "রিমোট ক্রু যোগ করো",
+      "crew_settings": "সেটিংস",
+      "remote_crews_window": "রিমোট ক্রু"
     },
     "relayCrews": {
       "list_label": "রিলের মাধ্যমে খোলা যায় এমন রিমোট Crew",

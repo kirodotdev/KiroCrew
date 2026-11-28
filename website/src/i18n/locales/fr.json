@@ -7976,7 +7976,10 @@
       "instances_load_failed": "Impossible de charger les équipes distantes.",
       "unreachable": "injoignable",
       "unreachable_via": "injoignable — {{via}} est hors service",
-      "switch_crew_new_team_crew": "Changer de crew, nouvelle Crew partagée"
+      "switch_crew_new_team_crew": "Changer de crew, nouvelle Crew partagée",
+      "add_remote_crew": "Ajouter un crew distant",
+      "crew_settings": "Paramètres",
+      "remote_crews_window": "Crews distants"
     },
     "relayCrews": {
       "list_label": "Crews distantes que tu peux ouvrir via le relais",

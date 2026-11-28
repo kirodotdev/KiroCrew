@@ -7976,7 +7976,10 @@
       "instances_load_failed": "Impossibile caricare le crew remote.",
       "unreachable": "non raggiungibile",
       "unreachable_via": "non raggiungibile — {{via}} è giù",
-      "switch_crew_new_team_crew": "Cambia crew, nuova Crew condivisa"
+      "switch_crew_new_team_crew": "Cambia crew, nuova Crew condivisa",
+      "add_remote_crew": "Aggiungi crew remoto",
+      "crew_settings": "Impostazioni",
+      "remote_crews_window": "Crew remoti"
     },
     "relayCrews": {
       "list_label": "Crew remote che puoi aprire tramite il relay",

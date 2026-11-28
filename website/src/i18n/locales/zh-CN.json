@@ -7558,7 +7558,10 @@
       "instances_load_failed": "无法加载远程团队。",
       "unreachable": "连不上",
       "unreachable_via": "连不上 — {{via}} 挂了",
-      "switch_crew_new_team_crew": "切换 Crew，新的共享 Crew"
+      "switch_crew_new_team_crew": "切换 Crew，新的共享 Crew",
+      "add_remote_crew": "添加远程 Crew",
+      "crew_settings": "设置",
+      "remote_crews_window": "远程 Crew"
     },
     "relayCrews": {
       "list_label": "可通过中继打开的远程 Crew",

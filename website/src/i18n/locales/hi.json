@@ -7767,7 +7767,10 @@
       "instances_load_failed": "रिमोट क्रू लोड नहीं किए जा सके।",
       "unreachable": "पहुंच नहीं रहा",
       "unreachable_via": "पहुंच नहीं रहा — {{via}} बंद है",
-      "switch_crew_new_team_crew": "क्रू बदलो, नया साझा Crew"
+      "switch_crew_new_team_crew": "क्रू बदलो, नया साझा Crew",
+      "add_remote_crew": "रिमोट क्रू जोड़ें",
+      "crew_settings": "सेटिंग्स",
+      "remote_crews_window": "रिमोट क्रू"
     },
     "relayCrews": {
       "list_label": "रिले से खोले जा सकने वाले रिमोट Crew",

@@ -73,10 +73,11 @@ Cmd/Ctrl+digit in the Electron shell); the hub keeps the most-recently-used set
 "warm" (tunnel + iframe live) and lazily reconnects the rest. The switcher is a
 menu rather than a row of chips by DEFAULT because the number of configured crews
 is unbounded: the closed trigger costs constant width, and unread counts stay
-visible on it as an aggregate badge over every crew that is not on screen. A user
-who switches between the same two or three crews can PIN those out of the menu
-into always-visible chips beside it, spending header width only on the
-destinations they actually use — see [Pinned crew chips](#pinned-crew-chips).
+visible on it as an aggregate badge over every crew that is not on screen. Local
+and the crew on screen are always chips; a user who switches between the same
+two or three crews can PIN those out of the menu into always-visible chips
+beside it, spending header width only on the destinations they actually use —
+see [Pinned crew chips](#pinned-crew-chips).
 
 **Key properties**
 
@@ -1163,8 +1164,8 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
    - *Remote kirocrew path*: only needed when `kirocrew` lives somewhere
      non-standard on the remote.
 4. Click **Connect**. The hub opens the tunnel and mints a token.
-5. **Switch** panes from the switcher dropdown in the top header (**Local**
-   returns to your own dashboard). In the Electron shell, Cmd/Ctrl+digit jumps
+5. **Switch** panes from the switcher in the top header (the **Local** chip,
+   always shown, returns to your own dashboard). In the Electron shell, Cmd/Ctrl+digit jumps
    between panes in switcher order. Each row names its tunnel state in words on
    screen next to the status dot — colour is reinforcement, not the carrier, so
    the row that errored is findable without hovering every entry. Crews you switch
@@ -1394,11 +1395,13 @@ Crew is turned off waits in the draft until the add form can show it.
 
 ### Pinned crew chips
 
-Switching between two crews through the dropdown costs a click every time. Any
-entry — including **Local** — can be PINNED from the pin icon on its own dropdown
-row (lit for pinned, unlit outline for not), which lifts it out of the menu into
-an always-visible chip beside the trigger. Nothing is pinned by default, so a
-single-crew user pays no header width for the feature and sees no chip row at all.
+Switching between two crews through the dropdown costs a click every time. Two
+chips are always shown: **Local**, the place every crew is reached from, and the
+crew on screen. Any other crew can be PINNED from the pin icon on its own
+dropdown row (lit for pinned, unlit outline for not), which lifts it out of the
+menu into an always-visible chip beside them. Local's row has no pin. Nothing is
+pinned by default. A chip click only switches crews; only the `▾` caret, always
+shown and bordered, opens the menu.
 
 The pin sits on the row rather than in a second list of the same crews below it,
 and it is a SIBLING menu item of the row's switch target rather than a button
@@ -1414,9 +1417,9 @@ is what keeps that budget spendable on the ones actually being switched between.
 
 | Concern | Behaviour |
 |---|---|
-| Storage | `localStorage` key `mc-crew-switcher-pinned`, a JSON array of instance ids (`__local__` for the local dashboard). A module-level store broadcasts changes, because several bars in one realm are mounted at once and hidden with `display:none` rather than unmounted — a per-component hook would leave a hidden bar on a stale value until it remounted. A remote pane's embedded bar is a separate cross-origin realm and does not read that store: the parent relays its pin set into each pane (`pinnedCrews` in `mc-host-model`) and a pin toggled in a pane posts `mc-set-crew-pin` back up, so every bar shares one pin set. |
-| Migration | The predecessor was one expand-everything flag, `mc-crew-switcher-expanded`. On first read a `'1'` there migrates to a pinned **Local** rather than to an empty set: that user wanted chips, and migrating them to nothing would read as the feature having been removed. The legacy key is dropped in the same pass. |
-| Order | The crew on screen leads as its own chip, then the pinned chips, then the dropdown. Clicking that leading chip opens and closes the same dropdown as its caret, and Escape or a pick in a menu the chip opened returns focus to the chip; a pinned chip switches crews. The dropdown TRAILS the chips so it stays adjacent to the last one and reads as "and the rest"; it carries the aggregate unread for every crew not on screen, clipped ones included. The active crew is never also a pinned chip — two copies of one name would spend the budget twice. |
+| Storage | `localStorage` key `mc-crew-switcher-pinned`, a JSON array of instance ids. A stored `__local__` (the local dashboard, pinnable before Local became an always-shown chip) still parses and changes nothing. A module-level store broadcasts changes, because several bars in one realm are mounted at once and hidden with `display:none` rather than unmounted — a per-component hook would leave a hidden bar on a stale value until it remounted. A remote pane's embedded bar is a separate cross-origin realm and does not read that store: the parent relays its pin set into each pane (`pinnedCrews` in `mc-host-model`) and a pin toggled in a pane posts `mc-set-crew-pin` back up, so every bar shares one pin set. |
+| Migration | The predecessor was one expand-everything flag, `mc-crew-switcher-expanded`. On first read a `'1'` there still migrates to a pinned `__local__`, which is now a no-op because Local is always a chip. The legacy key is dropped in the same pass. |
+| Order | The crew on screen leads as its own chip, then Local (unless Local is the crew on screen) and the pinned chips, then the dropdown. Every chip, the leading one included, only switches crews; the leading chip is a plain tab and does not open the menu. The dropdown TRAILS the chips so it stays adjacent to the last one and reads as "and the rest"; it carries the aggregate unread for every crew not on screen, clipped ones included. The active crew is never also a pinned chip — two copies of one name would spend the budget twice. |
 | Width bound | None of its own. The switcher sits in the topbar's left grid track (`minmax(0,1fr)`) inside `.tb-left`, which carries `min-width:0` and `overflow:hidden`, so the track structurally prevents it from reaching the centered search column — see [the three-track topbar](#pinned-crew-chips). |
 | Overflow | The row is a single `nowrap` line with `overflow: hidden`, and the chip at the boundary is CUT rather than dropped. Wrapping into a hidden second row would keep every chip whole, but a wrapped row still holds its full ALLOCATED width with the wrapped chips' space empty — which pushes the trailing dropdown away from the last visible chip by a gap that changes with the viewport. Filling the row keeps the two adjacent (measured at the 4px flex gap, asserted by the capture harness). A trailing fade marks the cut edge, so a cut chip reads as "there is more, in the dropdown next to me" rather than as a rendering fault. Cut chips stay reachable in the dropdown, whose row marks them *no room* so a pin with no visible chip does not read as a pin that failed. |
 
@@ -1447,6 +1450,22 @@ because jsdom performs no layout and a rendered test could never distinguish a
 fitted row from a clipped one. `offsetLeft` is only sound there because the row
 carries `position: relative`, making it the chips' offsetParent and putting both
 in the same coordinate space as its `clientWidth`.
+
+### Add remote crew and Settings
+
+The switcher's menu ends with two actions behind a separator, **Add remote
+crew** and **Settings** (`crewSwitcherActions.tsx`). Managing crews belongs to
+the whole window rather than to the crew on screen, so both open the Remote
+Crews window over whichever crew is visible instead of that crew's Settings.
+
+| Concern | Behaviour |
+|---|---|
+| No remote crew | The bar is a single `+` (desktop widths only; a phone's empty header cell stays empty) whose menu is Local plus the two actions. It shows only once the instances list has loaded, and not while the feature is turned off. |
+| The window | `remoteCrewsWindow.tsx`: a modal holding today's `RemoteCrewPanel`, mounted once by the shell header and rendered in the global overlay scope, so it stays above whichever pane is visible. Its open state is a module store, like the pins. **Settings** opens it on the crew list. |
+| Add-only | **Add remote crew** shows Add a Crew alone; the panel mounts hidden behind it because it owns the add forms' state. The list appears only after a crew is added, a cloud launch is accepted or still pending, or when management is turned off; a cancel closes everything. |
+| Closing | Picking a crew closes the window, reselecting the crew already on screen included. A successful chat hand-off closes it and brings Local forward. |
+| Local Settings | When Local is visible on a Settings route, the window never mounts a second panel: **Settings** navigates to `/settings/instances`, and **Add remote crew** opens Add a Crew on that page's panel. |
+| Inside a remote pane | The window is the host's. The pane's actions post `mc-open-remote-crews` (`{add}`) up, and the host opens its window. They are shown only when the host model carries `crewActions: true`; an older host omits it, so its pane shows neither action rather than a click that does nothing. |
 
 ---
 
