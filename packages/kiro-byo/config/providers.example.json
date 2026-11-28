@@ -1,0 +1,56 @@
+{
+  "mode": {
+    "id": "tiga",
+    "type": "multi"
+  },
+  "credential_schema_version": 1,
+  "model_capability_schema_version": 1,
+  "providers": [
+    {
+      "id": "deepseek",
+      "preset_id": "deepseek",
+      "name": "DeepSeek",
+      "type": "openai-compatible",
+      "base_url": "https://api.deepseek.com",
+      "credential_ref": "env:DEEPSEEK_API_KEY",
+      "stream": true,
+      "timeout_seconds": 120,
+      "models": [
+        {
+          "id": "deepseek-flash",
+          "name": "DeepSeek Flash",
+          "effort_supported_levels": [
+            "low",
+            "high",
+            "max"
+          ],
+          "effort_default_level": "high",
+          "reasoning": {
+            "mode": "levels",
+            "levels": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": "high",
+            "source": "provider"
+          }
+        },
+        {
+          "id": "fixed-reasoning-model",
+          "name": "Example fixed-reasoning model",
+          "effort_supported_levels": [
+            "high"
+          ],
+          "effort_default_level": "high",
+          "reasoning": {
+            "mode": "fixed",
+            "fixed_level": "high",
+            "source": "provider"
+          }
+        }
+      ],
+      "metadata_schema_version": 2
+    }
+  ]
+}

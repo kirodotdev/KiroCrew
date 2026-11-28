@@ -1,0 +1,14 @@
+{
+  "read_only": false,
+  "allowed_roots": [
+    "D:\\APP\\KiroCrewData"
+  ],
+  "web_enabled": true,
+  "shell_timeout_seconds": 120,
+  "shell_max_output_bytes": 1048576,
+  "process_max_concurrent": 8,
+  "process_max_history": 32,
+  "process_buffer_bytes": 1048576,
+  "web_timeout_seconds": 15,
+  "web_max_output_bytes": 2097152
+}

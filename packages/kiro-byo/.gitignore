@@ -1,0 +1,41 @@
+# ── 打包产物：只留给下载安装用，不进 git ──
+dist/
+build/
+Kiro_BYO_*-release/
+Kiro_BYO_*-source/
+*.whl
+*.zip
+*.tar.gz
+SHA256SUMS.txt
+
+# ── Python 编译缓存 ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ── 真实本地配置（可能含模型 API 密钥），只放样例 ──
+config/*.json
+!config/*.example.json
+# 架构预算是 CI 契约，必须纳入 git；其他真实配置仍被忽略
+!config/architecture_budget.json
+
+# ── 研发原型 / 实验：本地保留，不进正式仓库 ──
+experiments/
+
+# ── 编辑器与系统杂项 ──
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
