@@ -7,12 +7,21 @@ The exit criteria are those of ``docs/request-for-change/rfc-work-dispatch.md``.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
 from mcp_dashboard_folders_helpers import _CALLER, _call
 
+from kiro_crew import mcp_session_once
+from kiro_crew.mcp_session_once import LOST_REPLY_ATTEMPTS
 from kiro_crew.mcp_tools.dashboard_client import DashboardRequest
+
+
+@pytest.fixture(autouse=True)
+def _no_resend_pause(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    _floor_monkeypatch.setattr(mcp_session_once, "LOST_REPLY_PAUSE_SECS", 0.0)
+
 
 _ITEM = "it_0000abcd"
 _WORKER = "chat-9-900"
@@ -78,6 +87,9 @@ def test_the_happy_path_returns_the_ids_the_routes_returned() -> None:
     # The ledger route decides who may dispatch; the tool reads no slot first.
     assert dash.requests[0].route == _RECORD
     (seed,) = dash.sent(_SEND)
+    # ``request_id`` lets the gateway answer a resent seed from the first reply.
+    assert re.fullmatch(r"[0-9a-f]{32}", seed.body.pop("request_id"))
+    assert seed.body.pop("request_attempt") == 0
     assert seed.body == {"target": _WORKER, "message": _ARGS["seed"], "steer": False}
     (create,) = dash.sent(_CREATE)
     assert create.body["agent"] == "kirocrew-worker"
@@ -219,7 +231,8 @@ def test_a_refused_cleanup_is_reported_with_the_surviving_id() -> None:
         (
             "session_create",
             {_CREATE: _LOST},
-            [f"{_RECORD} create", _CREATE, f"{_RECORD} close"],
+            # Resent under one request_id while the reply stays lost.
+            [f"{_RECORD} create", *[_CREATE] * LOST_REPLY_ATTEMPTS, f"{_RECORD} close"],
         ),
         (
             "bind",
@@ -243,6 +256,45 @@ def test_a_lost_seed_returns_both_ids_and_warns_against_a_blind_resend() -> None
     assert "step=seed outcome=outcome_unknown" in out
     assert f"item_id={_ITEM} worker_session_key={_WORKER}" in out
     assert "session_read_message before resending" in out
+
+
+def test_a_create_resend_refused_by_an_older_gateway_is_an_unknown_outcome() -> None:
+    """The first create may have opened the worker; reporting refused would abandon it."""
+    replies = iter([_LOST, {"error": "cap reached", "code": "bot_worker_cap_reached"}])
+    out, _ = _call("work_dispatch", dict(_ARGS), _routes(**{_CREATE: lambda _req: next(replies)}))
+    assert "step=session_create outcome=outcome_unknown" in out
+    assert "outcome=refused" not in out.splitlines()[0]
+
+
+def test_a_seed_an_older_gateway_ran_again_is_reported_as_a_possible_double() -> None:
+    """A gateway that does not echo the request id ran the resend as a new send."""
+    replies = iter([_LOST, {"target": _WORKER, "started": True}])
+    out, dash = _call("work_dispatch", dict(_ARGS), _routes(**{_SEND: lambda _req: next(replies)}))
+    assert len(dash.sent(_SEND)) == 2
+    assert "the seed may have been delivered twice" in out
+
+
+_DOUBLE_CREATE = "a second session may have been opened"
+
+
+@pytest.mark.parametrize(
+    ("step", "over"),
+    [
+        ("bind", {_RECORD: _ledger(bind={"error": "not yours", "code": "worker_not_owned"})}),
+        ("seed", {_SEND: {"error": "gone", "code": "target_not_found"}}),
+        ("session_create", {}),
+    ],
+)
+def test_a_create_an_older_gateway_ran_again_is_warned_on_every_failure_reply(
+    step: str, over: dict[str, Any]
+) -> None:
+    """A resent create may have opened a second worker; a later failure must not hide it."""
+    replies = iter([_LOST, {"target": "" if step == "session_create" else _WORKER, "title": "t"}])
+    routes = _routes(**{_CREATE: lambda _req: next(replies)}, **over)
+    out, dash = _call("work_dispatch", dict(_ARGS), routes)
+    assert len(dash.sent(_CREATE)) == 2
+    assert f"step={step} " in out.splitlines()[0]
+    assert out.count(_DOUBLE_CREATE) == 1
 
 
 def test_a_refused_seed_returns_both_ids_and_cleans_up_nothing() -> None:
