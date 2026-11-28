@@ -413,7 +413,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
                   Controls stay visible without hover below `sm`: a touch
                   viewport has no hover, so hover-only actions are unreachable. */}
               <Clickable
-                className="text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                className="text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:focus-visible:opacity-100 sm:group-hover:opacity-100 [@media(hover:none)]:opacity-100"
                 onClick={() => window.open(repoWebUrl(reg.repo), '_blank')}
                 aria-label={i18nT('components.registryManager.open_repository', { repo: reg.repo })}
               >
@@ -422,7 +422,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               {/* Offline, the refresh/remove icon dims rather than its container,
                   whose own opacity drives the hover reveal. */}
               <Clickable
-                className={`text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 aria-disabled:cursor-not-allowed aria-disabled:[&>svg]:opacity-30 ${refreshMutation.isPending ? 'pointer-events-none opacity-30 [@media(hover:none)]:opacity-30' : '[@media(hover:none)]:opacity-100'}`}
+                className={`text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 aria-disabled:cursor-not-allowed aria-disabled:[&>svg]:opacity-30 ${refreshMutation.isPending ? 'pointer-events-none opacity-30 [@media(hover:none)]:opacity-30' : '[@media(hover:none)]:opacity-100'}`}
                 onClick={() => { if (connected) refreshMutation.mutate(reg.repo) }}
                 aria-label={i18nT('components.registryManager.refresh_registry', { name: reg.label || reg.name || reg.repo })}
                 {...offlineProps(connected, offlineVerb, i18nT('components.registryManager.refresh_registry', { name: reg.label || reg.name || reg.repo }))}
@@ -431,7 +431,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               </Clickable>
               {!reg.isPinned && (
                 <Clickable
-                  className={`text-muted hover:text-danger transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 aria-disabled:cursor-not-allowed aria-disabled:[&>svg]:opacity-30 ${mutation.isPending ? 'pointer-events-none opacity-30 [@media(hover:none)]:opacity-30' : '[@media(hover:none)]:opacity-100'}`}
+                  className={`text-muted hover:text-danger transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 aria-disabled:cursor-not-allowed aria-disabled:[&>svg]:opacity-30 ${mutation.isPending ? 'pointer-events-none opacity-30 [@media(hover:none)]:opacity-30' : '[@media(hover:none)]:opacity-100'}`}
                   onClick={() => handleRemove(reg.repo)}
                   aria-label={i18nT('components.registryManager.remove_registry', { name: reg.name })}
                   {...offlineProps(connected, offlineVerb, i18nT('components.registryManager.remove_registry', { name: reg.name }))}
