@@ -581,6 +581,15 @@ def deferred_call_arguments(raw_args: Any) -> dict | None:
     return None
 
 
+def deferred_tool_ids(server: str, tool: str) -> tuple[str, str]:
+    """The ``tool_id`` spellings a deferred-call envelope uses for *server*/*tool*.
+
+    ``<server>::<tool>``, and the resource-v2 loader's ``tool::<server>::<tool>``.
+    """
+    call = f"{server}::{tool}"
+    return call, f"tool::{call}"
+
+
 def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
     """Select call arguments from an attributed ACP MCP envelope.
 
@@ -610,8 +619,7 @@ def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
         raw_args = raw_args["arguments"]
     else:
         inner = deferred_call_arguments(raw_args)
-        core_id = f"{CORE_MCP_SERVER}::{tool}"
-        if inner is not None and raw_args["tool_id"] in (core_id, f"tool::{core_id}"):
+        if inner is not None and raw_args["tool_id"] in deferred_tool_ids(CORE_MCP_SERVER, tool):
             raw_args = inner
     return call_input_digest(tool, raw_args)
 

@@ -453,8 +453,9 @@ def test_a_call_that_mints_ids_is_a_creator(event):
             "arguments": {"action": "create"},
         },
         {"tool_id": "kirocrew-work::work_ledger_record", "arguments": {"action": "create"}},
+        {"tool_id": "tool::kirocrew-work::work_ledger_record", "arguments": {"action": "create"}},
     ],
-    ids=["server-tool-arguments", "tool-id-arguments"],
+    ids=["server-tool-arguments", "tool-id-arguments", "resource-v2-tool-id-arguments"],
 )
 def test_a_wrapped_ledger_create_is_a_creator(envelope):
     # Harnesses that wrap MCP arguments in an envelope still mint the item id.
