@@ -211,10 +211,28 @@ def first_linked_ancestor(path: str | os.PathLike) -> str | None:
 
     The leaf is deliberately excluded -- pair this with
     :func:`is_link_or_junction` on the path itself.
+
+    Inside :func:`kiro_crew.link_screen_memo.ancestor_link_memo` each
+    ancestor's answer is kept for the rest of that block, so paths sharing
+    parents test each parent once; the walk order and the first-hit stop are
+    the same.
     """
+    # Deferred: a module-level import binds a new name here, and the
+    # platform_compat facade forwards every name of this owner from a pinned set.
+    from kiro_crew.link_screen_memo import active_memo
+
+    memo = active_memo()
     for ancestor in reversed(pathlib.Path(os.fspath(path)).parents):
-        if is_link_or_junction(ancestor):
-            return str(ancestor)
+        if memo is None:
+            if is_link_or_junction(ancestor):
+                return str(ancestor)
+            continue
+        key = str(ancestor)
+        linked = memo.get(key)
+        if linked is None:
+            linked = memo[key] = is_link_or_junction(ancestor)
+        if linked:
+            return key
     return None
 
 
