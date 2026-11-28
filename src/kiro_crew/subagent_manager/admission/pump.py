@@ -489,6 +489,7 @@ class _PumpMixin(ManagerComponent):
                 app=str(params.get("app") or ""),
                 execution_context=params.get("_execution_context"),
                 prevalidated=bool(params.get("_agent_prevalidated")),
+                parent_session_key=str(params.get("parent_session_key") or ""),
             )
             if undurable and not _still_wanted():
                 # Stopped while the reads ran: the stop already reported it.

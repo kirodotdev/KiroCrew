@@ -706,3 +706,20 @@ def validate_cwd(cwd: str, allowed_roots: list[str]) -> tuple[str, str]:
         if sandbox_plan.path_within(plain_resolved, strip_extended_length_prefix(root)):
             return (resolved, "")
     return ("", f"cwd is not under any allowed root: {allowed_roots}")
+
+
+def spawn_cwd_roots(sessions: Any, parent_session_key: str, configured: list[str]) -> list[str]:
+    """The roots a spawn's ``cwd`` may sit under: *configured* plus the parent's scratch tree.
+
+    The parent's ``$KIROCREW_SCRATCH`` is the directory its child runs beside
+    (``subagent_manager/run_turn.py`` mounts it as ``shared_scratch``), and the
+    prompt sends worktrees there, so a reviewer pointed at one must not be refused.
+    Only THAT tree is added, never the managed scratch root, so a cwd under another
+    session's scratch stays refused. An empty *configured* list still disables cwd
+    overrides outright.
+    """
+    if not configured or not parent_session_key:
+        return list(configured)
+    resolve = getattr(sessions, "parent_work_scratch_dir", None)
+    scratch = resolve(parent_session_key) if callable(resolve) else None
+    return [*configured, str(scratch)] if isinstance(scratch, Path) else list(configured)

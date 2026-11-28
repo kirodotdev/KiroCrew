@@ -52,6 +52,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         sel,
+        spawn_cwd_roots,
         time,
         validate_cwd,
     )
@@ -615,6 +616,9 @@ class _GateMixin(ManagerComponent):
                 # silently re-enable the feature for admins who set
                 # subagent_cwd_allowed_roots=[] to disable it.
                 allowed_roots = []
+            allowed_roots = spawn_cwd_roots(
+                self._manager._sessions, parent_session_key, allowed_roots
+            )
             resolved_cwd, cwd_err = validate_cwd(cwd, allowed_roots)
             if cwd_err:
                 if _persistent_diagnostics:

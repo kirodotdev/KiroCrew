@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         sel,
+        spawn_cwd_roots,
         validate_cwd,
     )
 
@@ -446,6 +447,7 @@ async def _check_agent_off_loop(
     app: str = "",
     execution_context: "Mapping[str, Any] | None" = None,
     prevalidated: bool = False,
+    parent_session_key: str = "",
 ) -> "AgentCheck | None":
     """The gate's two agent-directory checks for *agent*, on a worker thread.
 
@@ -453,7 +455,7 @@ async def _check_agent_off_loop(
     run will use, keyed by their inputs so the gate uses the answer only for
     the same ``(agent, cwd, app)`` (``AgentCheck``). An explicit *cwd* is
     canonicalized here exactly as the gate resolves it (``validate_cwd``
-    against the configured roots), and the app is the one the gate settles
+    against ``spawn_cwd_roots``), and the app is the one the gate settles
     on (the captured *execution_context*'s app wins over the caller's, as
     ``resolve_spawn_execution`` does), so the keys match. None when there is
     nothing to check, or when the cwd will be refused anyway."""
@@ -467,6 +469,7 @@ async def _check_agent_off_loop(
         return None
     app = str(context.get("app") or "") or app
     pool_cwd = str(getattr(self._sessions, "_pool_cwd", "") or "")
+    sessions = self._sessions
 
     def _check() -> "AgentCheck | None":
         effective = pool_cwd
@@ -475,6 +478,7 @@ async def _check_agent_off_loop(
                 roots = KiroCrewConfig.load().agent.subagent_cwd_allowed_roots
             except Exception:
                 roots = []  # the gate fails closed the same way
+            roots = spawn_cwd_roots(sessions, parent_session_key, roots)
             resolved, err = validate_cwd(cwd, roots)
             if err:
                 return None
@@ -653,6 +657,7 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
             app=str(kwargs.get("app") or ""),
             execution_context=kwargs.get("_execution_context"),
             prevalidated=bool(kwargs.get("_agent_prevalidated")),
+            parent_session_key=str(kwargs.get("parent_session_key") or ""),
         )
     # The memory read's re-entry re-runs the policy gates and the agent
     # check; the parent's declaration and the agent answer read off the

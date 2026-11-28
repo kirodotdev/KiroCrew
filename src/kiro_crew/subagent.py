@@ -281,6 +281,7 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     parent_template_allowlists,
     parent_template_spawn_policy,
     set_parent_project_resolver,
+    spawn_cwd_roots,
     validate_cwd,
     with_cron_dispatched_policy,
 )

@@ -588,7 +588,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "_cap_unclaimed_result": ("async method", "(self, info: 'SubagentInfo') -> 'None'"),
     "_check_agent_off_loop": (
         "async method",
-        "(self, agent: 'str', cwd: 'str', *, app: 'str' = '', execution_context: \"'Mapping[str, Any] | None'\" = None, prevalidated: 'bool' = False) -> \"'AgentCheck | None'\"",
+        "(self, agent: 'str', cwd: 'str', *, app: 'str' = '', execution_context: \"'Mapping[str, Any] | None'\" = None, prevalidated: 'bool' = False, parent_session_key: 'str' = '') -> \"'AgentCheck | None'\"",
     ),
     "_claim_continuation": (
         "method",
