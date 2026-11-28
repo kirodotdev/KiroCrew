@@ -838,6 +838,75 @@ class TestSavedMemberSpecOnKas:
         assert f"[Essential source: {source}]" in native_envelope[0]
         assert "GLOBAL_ALWAYS_BODY" not in native_envelope[0]
 
+    @pytest.mark.asyncio
+    async def test_workspace_guides_reach_a_member_once(
+        self, env, close_skills_loaders, monkeypatch
+    ):
+        """KAS loads the workspace AGENTS.md and always-steering itself, so the
+        snapshot blanks their bodies; a guide KAS does not load keeps its body.
+
+        The record is taken in ``create_session`` before any prompt, so the
+        transport is a double and no engine child is started for this case.
+        """
+        from kiro_crew.config.paths import kiro_agents_dir
+
+        (env.project / ".kiro" / "steering" / "team.md").write_text(
+            "---\ninclusion: always\n---\nTEAM_ALWAYS_BODY", encoding="utf-8"
+        )
+        spec_path = env.project / ".kiro" / "agents" / "writer-template.json"
+        agents = kiro_agents_dir()
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / spec_path.name).write_text(
+            spec_path.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        runtime = AcpRuntime(
+            work_dir=env.project,
+            agent="writer-template",
+            acp_backend=ACP_BACKEND_KAS,
+            member_context=True,
+        )
+        runtime._initialized = True
+        runtime._expect_mcp_reports = False
+
+        async def transport(method, params, timeout=None):
+            if method == METHOD_SESSION_NEW:
+                return {
+                    "sessionId": "workspace-guides",
+                    "modes": {
+                        "currentModeId": "writer-template",
+                        "availableModes": [{"id": "writer-template", "name": "Writer"}],
+                    },
+                }
+            return {}
+
+        monkeypatch.setattr(runtime, "_send_and_await", transport)
+        handle = await runtime.create_session(
+            cwd=env.project, agent="writer-template", mcp_servers=[]
+        )
+        recorded = handle.native_context_documents
+        assert (
+            recorded.get(str(env.project / "AGENTS.md")) == "Project rules: run the review checks."
+        )
+        assert recorded.get(str(env.project / ".kiro" / "steering" / "team.md")) == (
+            "---\ninclusion: always\n---\nTEAM_ALWAYS_BODY"
+        )
+        assert not any("MANUAL_SECRET" in body for body in recorded.values())
+        native_envelope: list[str] = []
+        full = env.builder._build_v2_essentials(
+            env.store,
+            member=env.member,
+            project=str(env.project),
+            native_documents=recorded,
+            native_envelope_out=native_envelope,
+        )
+        for body in ("Project rules: run the review checks.", "TEAM_ALWAYS_BODY"):
+            assert full.count(body) == 1
+            assert body not in native_envelope[0]
+        assert "Always guide: explain assumptions." not in native_envelope[0]
+        assert f"[Essential source: {env.project / 'AGENTS.md'}]" in native_envelope[0]
+        # SOUL.md is Crew's own file, never a KAS native load: its body stays.
+        assert native_envelope[0].count("Project Soul: write with empathy.") == 1
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
 class TestKiroPathUntouched:

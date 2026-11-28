@@ -635,6 +635,7 @@ async def create_session(
         from kiro_crew.member_essential_context import (
             global_always_steering_documents,
             projected_resource_documents,
+            workspace_native_documents,
         )
 
         for definition in kas_agents or ():
@@ -645,12 +646,16 @@ async def create_session(
                     )
                 )
                 # The KAS engine that registered the agent also loads the global
+                # steering tree, the workspace AGENTS.md and the workspace
                 # steering tree itself, whatever the inheritance setting says
                 # (kas_steering.inheritance_off_notice). A harness that registers
                 # no agent records none of it.
                 if self.acp_backend == ACP_BACKEND_KAS:
                     projected_sources.update(
                         await asyncio.to_thread(global_always_steering_documents)
+                    )
+                    projected_sources.update(
+                        await asyncio.to_thread(workspace_native_documents, str(session_work_dir))
                     )
 
     budget = await self._session_start_budget()
