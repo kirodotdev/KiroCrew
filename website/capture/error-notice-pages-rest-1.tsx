@@ -30,7 +30,7 @@ import HooksPage from '../src/pages/HooksPage'
 import AppPage from '../src/pages/AppPage'
 import DevFleetPage from '../src/apps/dev-fleet/DevFleetPage'
 import ChannelPage from '../src/pages/ChannelPage'
-import AgentsPage from '../src/pages/AgentsPage'
+import KiroCrewAgentsPage from '../src/pages/KiroCrewAgentsPage'
 import { store } from '../src/store'
 import { initI18n } from '../src/i18n/all'
 import '../src/index.css'
@@ -111,10 +111,10 @@ root.render(
             </div>
           </MemoryRouter>
         </Scene>
-        <Scene label="AgentsPage — installed agents, sub-agents and usage requests rejected">
-          <MemoryRouter initialEntries={['/agents']}>
+        <Scene label="KiroCrewAgentsPage (Capabilities › Crews) — crew roster request rejected">
+          <MemoryRouter initialEntries={['/capabilities']}>
             <div style={{ maxHeight: 520, overflow: 'hidden' }}>
-              <AgentsPage embedded />
+              <KiroCrewAgentsPage embedded />
             </div>
           </MemoryRouter>
         </Scene>
