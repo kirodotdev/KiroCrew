@@ -244,7 +244,6 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => slotRowByKey(s.dashboard.slots, slotKey))
-  const appControls = useChatPaneSessionControls(slotKey, paneSlot, appSessionControls)
   // Children accepted but still queued behind the spawn caps: delegated work the
   // slots frame's `subagents_running` does not count. Read only as the pill
   // seam's `delegatedOnly` input, so this caption and the header pill resolve
@@ -595,6 +594,7 @@ export default function ChatPane({
     jevRouteOn, modelDD, anchorAgentBtn, anchorModelBtn, shownModel, effortSupported, defaultEffort, effectiveEffort,
     chipDefault, modelMarker,
   } = pickerModels
+  const appControls = useChatPaneSessionControls(slotKey, paneSlot, appSessionControls, installedAgents)
   // The pane header carries the same session colour as the sidebar row, read
   // from the display roster so a scope switch does not blank it.
   const headerPalette = useSessionPalette()

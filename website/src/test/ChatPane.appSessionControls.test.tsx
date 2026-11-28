@@ -28,8 +28,8 @@ vi.mock('../hooks/useSessionControls', async (importOriginal) => ({
   useSessionControls: () => ({ controls: [CONTROL], error: null }),
 }))
 vi.mock('../components/SessionControlHost', () => ({
-  default: ({ session }: { session: { sessionKey: string } }) => (
-    <div data-testid="session-control-host">{session.sessionKey}</div>
+  default: ({ session }: { session: { sessionKey: string; member?: { name: string } } }) => (
+    <div data-testid="session-control-host" data-member={session.member?.name ?? ''}>{session.sessionKey}</div>
   ),
 }))
 vi.mock('../hooks/useVoiceInput', () => ({
@@ -84,7 +84,7 @@ async function renderPane(appSessionControls: boolean) {
     preloadedState: {
       dashboard: {
         status: null, connected: true,
-        slots: [{ key: SLOT, project: '/repo', messages: 0, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+        slots: [{ key: SLOT, project: '/repo', messages: 0, running: false, mode: 'member', agent: 'interview-coach', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -114,6 +114,8 @@ describe('ChatPane app session controls', () => {
     const chip = screen.getByRole('button', { name: 'Talk' })
     await act(async () => { fireEvent.click(chip) })
     expect(screen.getByTestId('session-control-host').textContent).toBe(`dashboard:${SLOT}`)
+    // A Bot's own thread names the Bot, as the chat page's dock does.
+    expect(screen.getByTestId('session-control-host').getAttribute('data-member')).toBe('interview-coach')
     // A second click on the open chip closes it.
     await act(async () => { fireEvent.click(chip) })
     expect(screen.queryByTestId('session-control-host')).toBeNull()

@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 
-import { useComposerSessionControls, useSessionControlChips } from '../pages/chat/page/sessionControls'
+import { sessionControlContext, useComposerSessionControls, useSessionControlChips } from '../pages/chat/page/sessionControls'
 import type { ChatInputProps } from './chat-input/props'
 import ErrorNotice from './ErrorNotice'
 import SessionControlHost from './SessionControlHost'
@@ -16,7 +16,12 @@ import type { ChatSlot } from '../types'
  * Off unless the host opts in (`appSessionControls`): with it off the pane gets
  * no chips, no notice and no host, and no status is polled.
  */
-export function useChatPaneSessionControls(slotKey: string, paneSlot: ChatSlot | undefined, enabled: boolean) {
+export function useChatPaneSessionControls(
+  slotKey: string,
+  paneSlot: ChatSlot | undefined,
+  enabled: boolean,
+  agents: readonly { name: string; display_name?: string; selection_kind?: string }[],
+) {
   const queryClient = useQueryClient()
   const activeSlot = enabled ? slotKey : null
   const {
@@ -65,12 +70,12 @@ export function useChatPaneSessionControls(slotKey: string, paneSlot: ChatSlot |
           setOpenSessionControl(null)
           refreshSessionControlStatuses()
         }}
-        session={{
+        session={sessionControlContext({
           sessionKey: sessionControlKey,
-          folderId: paneSlot?.folder_id || '',
+          currentSlot: paneSlot,
           folderName: activeFolderName,
-          cwd: paneSlot?.project || '',
-        }}
+          agents,
+        })}
       />
     ) : null,
   }
