@@ -5973,6 +5973,13 @@ left as it is, with one WARNING, until it is fixed or removed
 and the next write would drop the thread passes it still owes. Nothing is deleted: setting `kiro_agent` back rolls the Bot's
 new chats back; threads already moved stay on the conductor.
 
+On startup, a previously checked Bot whose backend now supports its policy can
+recover a complete legacy hold. The stored hold must match the restrictions
+reconstructed from the original agent for the same member. Crew verifies that
+the merged worker spec preserves every original restriction and reads back the
+written Bot file before clearing the hold. A partial or changed hold stays in
+effect.
+
 **Its pre-upgrade threads move with it**
 (`mate_config_migration.repoint_moved_threads`, after the repoints and on every
 boot that still owes it). A thread's own execution record names its old agent,

@@ -1031,8 +1031,9 @@ _AuditDecision = Callable[[str, str, str], None]
 #: rule, so the bound belongs on this side where the cost is one log line. The
 #: pattern-count cap sits under KAS's own number with room to spare; the rule cap
 #: and the length cap bound the projected payload, which travels on every
-#: ``session/new``.
-_MAX_RULES = 200
+#: ``session/new``. Leave room for the worker template rules when carrying a
+#: legacy policy authored at the former 200-rule bound.
+_MAX_RULES = 208
 _MAX_PATTERNS_PER_RULE = 64
 _MAX_PATTERN_LENGTH = 1024
 

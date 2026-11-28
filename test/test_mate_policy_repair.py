@@ -210,6 +210,49 @@ def test_a_bot_whose_worker_is_not_on_kas_gets_every_limit_held_and_none_written
     assert _owed("zxc")[1] is True
 
 
+@pytest.mark.parametrize("old_policy_changed", [False, True])
+def test_retry_full_hold_when_the_worker_switches_to_kas(layout, persisted, monkeypatch, old_policy_changed):
+    user, mates = layout
+    cfg = _moved_before(user, mates, _old(permissions={"rules": DENIES}), _MOVED_FILE)
+    persisted(cfg)
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda c, n=None: "claude")
+    assert restore_dropped_policy(cfg) == ["zxc"]
+    original = _ledger(mates)[HELD_KEY]["zxc"]
+    if old_policy_changed:
+        _write(user, "crew-zxc", _old(permissions={"rules": DENIES[:1]}))
+
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda c, n=None: "kas")
+    if old_policy_changed:
+        assert restore_dropped_policy(cfg) == []
+        assert _ledger(mates)[HELD_KEY]["zxc"] == original
+        assert _file(mates, "zxc") == _MOVED_FILE
+    else:
+        assert restore_dropped_policy(cfg) == ["zxc"]
+        assert "zxc" not in _ledger(mates)[HELD_KEY]
+        assert _file(mates, "zxc")["permissions"]["rules"] == DENIES
+        assert restore_dropped_policy(cfg) == []
+
+
+def test_retry_can_layer_a_full_legacy_policy_on_top_of_existing_rules(layout, persisted, monkeypatch):
+    user, mates = layout
+    legacy = [
+        {"capability": "shell", "effect": "deny", "match": [f"blocked-{n}"]}
+        for n in range(200)
+    ]
+    existing = {"capability": "fs_write", "effect": "deny", "match": ["/protected/**"]}
+    moved = {**_MOVED_FILE, "permissions": {"rules": [existing]}}
+    cfg = _moved_before(user, mates, _old(permissions={"rules": legacy}), moved)
+    persisted(cfg)
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda c, n=None: "claude")
+    assert restore_dropped_policy(cfg) == ["zxc"]
+    assert len(_ledger(mates)[HELD_KEY]["zxc"]["rules"]) == 200
+
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda c, n=None: "kas")
+    assert restore_dropped_policy(cfg) == ["zxc"]
+    assert _file(mates, "zxc")["permissions"]["rules"] == [existing, *legacy]
+    assert "zxc" not in _ledger(mates)[HELD_KEY]
+
+
 def test_a_bot_pointed_back_by_hand_is_not_touched(layout, persisted):
     user, mates = layout
     cfg = _moved_before(user, mates, _old(permissions={"rules": DENIES}), _MOVED_FILE)
