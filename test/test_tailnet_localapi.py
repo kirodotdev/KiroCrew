@@ -65,14 +65,29 @@ def _stat(uid: int, mode: int) -> SimpleNamespace:
 
 
 @pytest.mark.parametrize(
-    ("dir_mode", "expected"),
-    [(0o040755, True), (0o040775, False), (0o040757, False)],
-    ids=["sealed", "group-writable-dir", "world-writable-dir"],
+    ("dir_mode", "euid", "writable", "expected"),
+    [
+        (0o040755, 1001, True, True),
+        (0o040775, 1001, False, True),
+        (0o040775, 1001, True, False),
+        (0o040775, 0, False, False),
+        (0o040757, 1001, False, False),
+    ],
+    ids=[
+        "sealed",
+        "group-writable-dir-gateway-cannot-write",
+        "group-writable-dir-gateway-can-write",
+        "group-writable-dir-root-gateway",
+        "world-writable-dir",
+    ],
 )
-def test_root_ownership_needs_a_directory_nobody_else_writes(
-    monkeypatch: pytest.MonkeyPatch, dir_mode: int, expected: bool
+def test_root_ownership_needs_a_directory_the_gateway_user_cannot_write(
+    monkeypatch: pytest.MonkeyPatch, dir_mode: int, euid: int, writable: bool, expected: bool
 ) -> None:
-    sock = "/run/tailscale/tailscaled.sock"
+    # Stock macOS /var/run is root:daemon 0775; the gateway user is not in daemon.
+    sock = "/var/run/tailscaled.socket"
+    monkeypatch.setattr(la.os, "geteuid", lambda: euid, raising=False)
+    monkeypatch.setattr(la.os, "access", lambda p, _m: writable and p == os.path.dirname(sock))
     real_lstat, real_stat = os.lstat, os.stat
 
     def lstat(p: Any, *a: Any, **kw: Any) -> Any:

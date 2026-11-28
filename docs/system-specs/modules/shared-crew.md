@@ -245,7 +245,11 @@ Unattributed fallback on this listener.
 
 The daemon is reached with `tailnet_localapi`, LocalAPI first, then the CLI. Every
 location is one the gateway user cannot write: a socket or token file must be
-root-owned in a root-owned directory, and a CLI found on `PATH` is used only when
+root-owned, not a symlink, in a root-owned directory that is not world-writable.
+That directory may be group-writable (stock macOS `/var/run` is `root:daemon`
+`0775`) only when the gateway user cannot write it and the gateway does not run
+as root; this LocalAPI exception does not extend to the CLI, which refuses any
+group-writable binary or directory. A CLI found on `PATH` is used only when
 it resolves to a vetted install location (`tailnet._CLI_CANDIDATE_PATHS`). Nothing
 is installed. The method used is reported in the capabilities
 (`tailnet_direct.method`). The CLI fallback spawns through `tailnet.run_cli_json`,
