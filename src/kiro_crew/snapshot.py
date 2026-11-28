@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import logging
 import os
 import shutil  # noqa: F401 - facade re-exports (tests patch snapshot.shutil)
 import socket
@@ -248,6 +249,8 @@ if TYPE_CHECKING:
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.staging import staging_dir
 
+# The port the restore guard probes when the client port chain cannot be consulted
+# (see ``_gateway_probe_port``); the guard itself resolves the port at call time.
 try:
     from kiro_crew.config.loader import DASHBOARD_PORT as _DASHBOARD_PORT
 except Exception:  # pragma: no cover - optional during early/standalone import
@@ -932,6 +935,37 @@ def snapshot_main(
 # ── Restore ───────────────────────────────────────────────────────────────────
 
 
+#: The ``source`` :func:`_gateway_probe_port` reports when the client chain could not
+#: answer and the guard probes the import-time port instead.
+_PROBE_PORT_FALLBACK_SOURCE = "import-time default"
+
+
+def _gateway_probe_port() -> tuple[int, str]:
+    """The loopback port the restore guard probes, and the chain step that named it.
+
+    Resolved at call time through the chain every client command uses
+    (``kiro_crew.port_resolution``: ``KIROCREW_PORT``, ``KIROCREW_BOUND_PORT``, the
+    port written in ``dashboard.url``, on POSIX the verified run marker, then the
+    default), so a gateway on a configured port is found without the user also
+    exporting ``KIROCREW_PORT``. The chain fails soft by design (an unreadable config or marker
+    falls through to the next step), so an exception out of it is unexpected; the
+    guard protects a restore and must not crash it, and must not answer "not
+    running" without probing anything, so it then probes :data:`_DASHBOARD_PORT`, the
+    import-time port, which is what the guard probes when the chain is unavailable.
+    """
+    try:
+        from kiro_crew import port_resolution
+
+        return port_resolution.resolve_client_port_src(None)
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "Could not resolve the gateway port (%s); the restore guard probes port %d",
+            e,
+            _DASHBOARD_PORT,
+        )
+        return _DASHBOARD_PORT, _PROBE_PORT_FALLBACK_SOURCE
+
+
 def _is_gateway_running() -> bool:
     """Check if the KiroCrew gateway is listening on its dashboard port."""
     # Deterministic override (used by tests / scripted restores) — avoids a real
@@ -939,7 +973,8 @@ def _is_gateway_running() -> bool:
     override = os.environ.get("KIROCREW_ASSUME_GATEWAY_RUNNING")
     if override is not None:
         return override.strip().lower() not in ("", "0", "false", "no")
-    port = _DASHBOARD_PORT
+    port, source = _gateway_probe_port()
+    logging.getLogger(__name__).debug("restore guard probes 127.0.0.1:%d (%s)", port, source)
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=1):
             return True
