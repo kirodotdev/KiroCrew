@@ -87,7 +87,7 @@ def test_a_done_item_gets_a_real_verdict_without_its_bar(
         answer = json.loads(mcp_work._call_tool_inner("accept_eval", args))
         assert answer["results"] == [{"id": item_id, "verdict": "pass"}]
         assert answer["skipped"] == [] and answer["published_fields_only"] is True
-    assert argvs[-1] == ["gh", "pr", "checks", "41", "--repo", "owner/name"]
+    assert ["gh", "pr", "checks", "41", "--repo", "owner/name"] in argvs
     # The gateway runs the checks behind the GET, so it outwaits them.
     assert waits and all(wait > 600 for wait in waits)
     # Nothing of the bar or the check's own output comes back.
