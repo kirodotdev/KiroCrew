@@ -67,6 +67,8 @@ _PARENT_POLL_SECS = 1.0
 _MAX_RESPONSE_BYTES = 16 << 20
 # How long close() waits for the child to exit after asking it to.
 _CHILD_STOP_WAIT_SECS = 5.0
+# A stop that finished but took longer than this is logged at INFO.
+_CHILD_SLOW_STOP_SECS = 1.0
 
 
 class ChildEmbeddingError(RuntimeError):
@@ -377,10 +379,26 @@ class _ChildState:
             return
         conn.send({"op": "exit"})
         conn.outbox.put(None)
+        started = time.monotonic()
         try:
             conn.proc.wait(_CHILD_STOP_WAIT_SECS)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "embedding child did not exit within %.1fs of the stop request; "
+                "killing it (elapsed_s=%.1f)",
+                _CHILD_STOP_WAIT_SECS,
+                time.monotonic() - started,
+            )
         except Exception:  # noqa: BLE001 - fall through to kill
             pass
+        else:
+            elapsed = time.monotonic() - started
+            if elapsed > _CHILD_SLOW_STOP_SECS:
+                logger.info(
+                    "embedding child took %.1fs to exit after the stop request (budget %.1fs)",
+                    elapsed,
+                    _CHILD_STOP_WAIT_SECS,
+                )
         _kill(conn.proc)
 
     # ── requests ──

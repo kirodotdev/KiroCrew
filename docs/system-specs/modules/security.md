@@ -6318,6 +6318,10 @@ The cached probes (`--version`, `chat --help`) leave that answer out of their
 cache, so the next reader probes again; after
 `kiro_cli._UNVERIFIED_PROBE_ATTEMPTS` such runs in a row on one binary the
 answer is cached as unknown, as a timed-out probe's is.
+When `chat --help` gives no engine list (`reason=timeout`, `nonzero_exit` or
+`no_output`), `kiro_cli.chat_agent_engines_at` logs one INFO with the reason,
+the seconds it took and the 15 s budget, and no path, argv or output; the
+cached answer means the same binary logs it only once.
 A cancellation of the run itself still propagates after the same teardown. One
 deadline covers process exit, initial and terminal discovery, and inherited
 output-pipe closure.
