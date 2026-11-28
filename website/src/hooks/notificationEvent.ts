@@ -34,9 +34,10 @@ export function dispatchMcNotification(kind: string): void {
 export const TURN_DONE_KIND = 'turn' as const
 
 /**
- * Sound kind for a tool approval or explicit question. Synthesized by the
- * websocket layer when the agent needs a user decision. Uses a distinct preset
- * so the user can distinguish "needs my action" from "finished".
+ * Sound kind for a tool approval, an explicit question, or a turn that stopped
+ * for the user (a question with no live card, or a terminal error).
+ * Synthesized by the websocket layer when the user has to act. Uses a distinct
+ * preset so the user can distinguish "needs my action" from "finished".
  */
 export const APPROVAL_KIND = 'approval' as const
 

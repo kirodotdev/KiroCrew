@@ -344,9 +344,10 @@ describe('useWebSocket chat_done native toast', () => {
     window.addEventListener(MC_NOTIFICATION_EVENT, onSound)
     try {
       act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-input', ...frame } }) })
-      // No question card preceded this frame, so the completion chime is the
-      // one sound — and the toast may carry the OS sound too (not silent).
-      expect(kinds).toEqual(['turn'])
+      // No question card preceded this frame, so the completion's sound is the
+      // one sound, the approval sound because the turn waits on the user — and
+      // the toast may carry the OS sound too (not silent).
+      expect(kinds).toEqual(['approval'])
       expect(CONSTRUCTED).toHaveLength(1)
       expect(CONSTRUCTED[0].title).toBe('Roll out the migration')
       expect(CONSTRUCTED[0].options?.body).toBe('Waiting for your input')

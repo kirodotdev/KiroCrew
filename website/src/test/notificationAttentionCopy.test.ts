@@ -76,10 +76,10 @@ describe('conversation attention copy', () => {
     const en = CATALOGS.en.translation
     expect(leaf(en, TURN_LABEL)).toBe('Conversation handoffs')
     expect(leaf(en, TURN_DESCRIPTION)).toBe(
-      'When a conversation finishes and hands control back to you. Agent questions use the “Approvals and questions” sound instead.',
+      'When a conversation finishes and hands control back to you. A turn that stops on a question or an error uses the “Approvals and questions” sound instead.',
     )
     expect(leaf(en, APPROVAL_LABEL)).toBe('Approvals and questions')
-    expect(leaf(en, APPROVAL_DESCRIPTION)).toBe('When the agent needs a tool approval or an answer')
+    expect(leaf(en, APPROVAL_DESCRIPTION)).toBe('When the agent needs a tool approval or an answer, or a turn stops on an error')
     expect(leaf(en, TOAST_INPUT)).toBe('Waiting for your input')
     expect(leaf(en, TOAST_DONE)).toBe('Response ready')
   })

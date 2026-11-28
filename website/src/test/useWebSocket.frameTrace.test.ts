@@ -1464,7 +1464,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   ],
   "chat_done needing input": [
     'action chat/sseChatMessage {"slot":"slot-b","ts":"2026-09-01T00:00:00.000Z","needs_input":true,"continuing":false,"role":"_done"}',
-    'event mc-notification {"kind":"turn"}',
+    'event mc-notification {"kind":"approval"}',
     'action dashboard/markSlotUnread {"slot":"slot-b","ts":"2026-09-01T00:00:00.000Z"}',
     'action chat/warmSlotCache/pending',
     'action chat/setSlotStatusDetail {"slot":"slot-b","kind":"idle"}',

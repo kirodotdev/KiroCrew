@@ -2029,14 +2029,14 @@
       "label": "Approvals and questions",
       "tab": "notifications",
       "route": "/settings/notifications/percategory?highlight=notifications.sound-category-approval",
-      "description": "When the agent needs a tool approval or an answer"
+      "description": "When the agent needs a tool approval or an answer, or a turn stops on an error"
     },
     {
       "id": "notifications.sound-category-turn",
       "label": "Conversation handoffs",
       "tab": "notifications",
       "route": "/settings/notifications/percategory?highlight=notifications.sound-category-turn",
-      "description": "When a conversation finishes and hands control back to you. Agent questions use the “Approvals and questions” sound instead."
+      "description": "When a conversation finishes and hands control back to you. A turn that stops on a question or an error uses the “Approvals and questions” sound instead."
     },
     {
       "id": "notifications.sound-category-cron",

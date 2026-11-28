@@ -211,7 +211,7 @@ describe('conversation attention sounds', () => {
   it('an authoritative input request is audible even if its card frame was not seen', async () => {
     const ws = await connect()
     ws.frame('chat_done', { slot: SLOT, continuing: true, needs_input: true })
-    expect(kinds).toEqual(['turn'])
+    expect(kinds).toEqual(['approval'])
   })
 
   it('preserves approval and unrelated notification sounds', async () => {
