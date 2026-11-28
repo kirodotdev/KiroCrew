@@ -34,6 +34,7 @@ Defects a linked thread showed on mirrored turns:
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 from types import SimpleNamespace
 from typing import Any
@@ -46,7 +47,7 @@ from slot_ownership_checkpoint_helpers import (  # noqa: F401 -- fixtures are re
     chat_run_fixture,
     state_fixture,
 )
-from turn_harness import Do, Raise, TurnContext, TurnScript, run_turn
+from turn_harness import Do, Raise, TurnContext, TurnScript, Wait, run_turn
 
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -59,7 +60,11 @@ from kiro_crew.crew_log import emit_turn as crew_log_emit
 from kiro_crew.dashboard.chat_runner import _prepare_mirror_msg
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import escape_mrkdwn_keep_links, mirror_prompt_echo
-from kiro_crew.slack.stream_window import note_thread_message
+from kiro_crew.slack.stream_window import (
+    CONTINUES_BELOW,
+    STREAM_RENEW_AFTER_S,
+    note_thread_message,
+)
 from kiro_crew.testing.wait import async_wait_until
 
 _DONE = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
@@ -469,6 +474,178 @@ async def test_a_stream_slack_refuses_after_a_move_ends_the_step_list() -> None:
     assert [a["ts"] for n, a in slack.calls if n == "stop_stream"] == [first]
     assert len(_streams(slack)) == 2
     assert [a["text"] for n, a in slack.calls if n == "post_message"][-1] == "the reply"
+
+
+# ── Renewal before Slack's 10-minute stream limit ──────────────────────────
+#
+# Slack ends a stream 10 minutes after it opens and turns the step still running
+# into an error. The mirror draws a card only when a tool call starts, so one long
+# tool gets no append: the mirror renews on a timer, on the turn's virtual clock.
+
+
+def _titled_cards(slack: _SlackRecorder) -> list[tuple[str, str, str, str]]:
+    """``(stream ts, task id, title, status)`` of every task card, in order."""
+    return [
+        (a["ts"], a["task_id"], a["title"], a["status"])
+        for n, a in slack.calls
+        if n == "append_task"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_running_past_slacks_limit_goes_on_in_a_fresh_stream() -> None:
+    slack = await _linked_turn([_TOOL, Wait(700), _ANSWER, _DONE], owner_id="U0OWNER")
+    streams = _streams(slack)
+    assert len(streams) == 2
+    first, second = streams
+    # The running step is closed "continues below" on the old message and opened
+    # again on the new one, never left for Slack to turn into an error.
+    assert _titled_cards(slack) == [
+        (first, "tool_1", "read_1", "in_progress"),
+        (first, "tool_1", "read_1" + CONTINUES_BELOW, "complete"),
+        (second, "tool_1", "read_1", "in_progress"),
+        (second, "tool_1", "read_1", "complete"),
+    ]
+    assert [a["ts"] for n, a in slack.calls if n == "stop_stream"] == [first, second]
+    renewed = [a for n, a in slack.calls if n == "start_stream"][1]
+    assert (renewed["channel"], renewed["thread_ts"], renewed["user_id"]) == (
+        "C-1",
+        "thread-1",
+        "U0OWNER",
+    )
+    assert [a["text"] for n, a in slack.calls if n == "post_message"][-1] == "the reply"
+
+
+@pytest.mark.asyncio
+async def test_each_renewed_stream_is_renewed_again_at_its_own_age() -> None:
+    slack = await _linked_turn([_TOOL, Wait(2 * STREAM_RENEW_AFTER_S + 60), _ANSWER, _DONE])
+    streams = _streams(slack)
+    assert len(streams) == 3
+    assert [a["ts"] for n, a in slack.calls if n == "stop_stream"] == streams
+
+
+@pytest.mark.asyncio
+async def test_a_stream_moved_by_a_tool_call_is_renewed_from_its_own_opening() -> None:
+    # The move at the second tool call opens a younger stream; the timer waits on
+    # it rather than on the first stream's age.
+    slack = await _linked_turn(
+        [
+            _TOOL,
+            Wait(STREAM_RENEW_AFTER_S - 100),
+            _a_person_writes(),
+            _SECOND_TOOL,
+            Wait(STREAM_RENEW_AFTER_S - 100),
+            _ANSWER,
+            _DONE,
+        ]
+    )
+    assert len(_streams(slack)) == 2
+    assert all(CONTINUES_BELOW not in title for _, _, title, _ in _titled_cards(slack))
+
+
+@pytest.mark.asyncio
+async def test_a_turn_ending_before_the_limit_stops_its_renewal() -> None:
+    def _work_left_behind(ctx: TurnContext) -> None:
+        # Background work the harness lets run on after the turn ends, past the
+        # renewal age: a timer the turn left armed would fire meanwhile.
+        ctx.state._background_tasks.add(asyncio.ensure_future(asyncio.sleep(50)))
+
+    slack = await _linked_turn(
+        [_TOOL, Wait(STREAM_RENEW_AFTER_S - 10), Do(_work_left_behind), _ANSWER, _DONE]
+    )
+    first = _streams(slack)
+    assert len(first) == 1
+    assert [a["ts"] for n, a in slack.calls if n == "stop_stream"] == first
+
+
+@pytest.mark.asyncio
+async def test_a_teardown_cancelled_before_the_timers_stop_still_cancels_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.dashboard import chat_runner
+
+    async def _cancelled_here(turn: Any) -> None:
+        # A cancellation delivered to teardown before it reaches the timer's stop.
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(chat_runner, "_stop_mirror_stream_renewal", _cancelled_here)
+
+    def _work_left_behind(ctx: TurnContext) -> None:
+        ctx.state._background_tasks.add(asyncio.ensure_future(asyncio.sleep(50)))
+
+    slack = await _linked_turn(
+        [_TOOL, Wait(STREAM_RENEW_AFTER_S - 10), Do(_work_left_behind), _ANSWER, _DONE]
+    )
+    # No timer outlives the turn to renew its stream past the age it was due at.
+    assert len(_streams(slack)) == 1
+    assert all(CONTINUES_BELOW not in title for _, _, title, _ in _titled_cards(slack))
+
+
+@pytest.mark.asyncio
+async def test_a_turn_ending_during_a_renewal_closes_the_stream_it_opened() -> None:
+    class _SlowSecondStream(_SlackRecorder):
+        def __getattr__(self, name: str) -> Any:
+            call = super().__getattr__(name)
+            if name != "start_stream":
+                return call
+
+            async def _start(*args: Any, **kwargs: Any) -> str:
+                if "start_stream" in [n for n, _ in self.calls]:
+                    await asyncio.sleep(30)  # virtual: the turn ends while Slack answers
+                return await call(*args, **kwargs)
+
+            return _start
+
+    slack = _SlowSecondStream()
+    await _linked_turn([_TOOL, Wait(STREAM_RENEW_AFTER_S + 5), _ANSWER, _DONE], slack=slack)
+    streams = _streams(slack)
+    assert len(streams) == 2
+    first, second = streams
+    assert _step_cards(slack) == [
+        (first, "tool_1", "in_progress"),
+        (first, "tool_1", "complete"),
+        (second, "tool_1", "in_progress"),
+        (second, "tool_1", "complete"),
+    ]
+    assert [a["ts"] for n, a in slack.calls if n == "stop_stream"] == [first, second]
+
+
+@pytest.mark.asyncio
+async def test_a_renewed_stream_slack_refuses_ends_the_step_list() -> None:
+    class _RefusesTheRenewal(_SlackRecorder):
+        def __getattr__(self, name: str) -> Any:
+            call = super().__getattr__(name)
+            if name != "start_stream":
+                return call
+
+            async def _start(*args: Any, **kwargs: Any) -> str | None:
+                ts = await call(*args, **kwargs)
+                return ts if [n for n, _ in self.calls].count("start_stream") == 1 else None
+
+            return _start
+
+    slack = _RefusesTheRenewal()
+    await _linked_turn([_TOOL, Wait(700), _SECOND_TOOL, _ANSWER, _DONE], slack=slack)
+    first = _streams(slack)[0]
+    assert _step_cards(slack) == [(first, "tool_1", "in_progress"), (first, "tool_1", "complete")]
+    assert [a["ts"] for n, a in slack.calls if n == "stop_stream"] == [first]
+    assert len(_streams(slack)) == 2
+    assert [a["text"] for n, a in slack.calls if n == "post_message"][-1] == "the reply"
+
+
+@pytest.mark.asyncio
+async def test_a_turn_withheld_after_its_stream_opened_is_not_renewed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.dashboard import chat_runner
+
+    def _withhold(ctx: TurnContext) -> None:
+        monkeypatch.setattr(chat_runner, "cross_surface_withheld", lambda state, slot: True)
+
+    slack = await _linked_turn([_TOOL, Do(_withhold), Wait(700), _ANSWER, _DONE])
+    # Renewing would re-post the step's title to a thread the turn may not publish to.
+    assert len(_streams(slack)) == 1
+    assert _step_cards(slack) == [(_streams(slack)[0], "tool_1", "in_progress")]
 
 
 @pytest.mark.asyncio

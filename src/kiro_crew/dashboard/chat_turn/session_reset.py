@@ -33,6 +33,10 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.directives import _report_unclaimed_directives
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
+    from kiro_crew.dashboard.chat_turn.mirror_stream_renewal import (
+        _cancel_mirror_stream_renewal,
+        _stop_mirror_stream_renewal,
+    )
     from kiro_crew.dashboard.chat_turn.queue_cycle import _arm_synthesis_recheck
     from kiro_crew.dashboard.chat_turn.queue_drain import (
         _REPLAYS_COMPLETION_KEY,
@@ -636,6 +640,11 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
             _deferred_options_expiry = False
             turn._deferred_options_expiry = _deferred_options_expiry
             await expire_slack_options(state, session_key)
+        # The renewal timer may have moved the stream: stop it, then read what it left.
+        await _stop_mirror_stream_renewal(turn)
+        _mirror_stream_ts = turn._mirror_stream_ts
+        _mirror_active_task = turn._mirror_active_task
+        _mirror_active_task_title = turn._mirror_active_task_title
         if (
             (_mirror_stream_ts or turn._mirror_thinking_ts)
             and _mirror_chan
@@ -708,6 +717,8 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
             # _broadcast_expired_oauth_banners).
             _broadcast_expired_oauth_banners(state, slot)
     finally:
+        # A cancel landing before the renewal timer's stop above skipped it.
+        _cancel_mirror_stream_renewal(turn)
         if _acquired:
             # A successful reset() above already popped the key under its
             # own lock, so this is a no-op on that path (the popped

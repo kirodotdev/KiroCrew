@@ -210,6 +210,13 @@ class _ChatTurn:
     _mirror_stream_ts: "str"
     # ``messages_noted()`` count when the mirror's task stream was opened; None with none open.
     _mirror_stream_messages_noted: "int | None"
+    # ``stream_clock()`` reading when the mirror's live task stream opened; 0.0 with none open.
+    _mirror_stream_started_at: "float"
+    # Held by whatever reads or changes the mirror's stream and running step
+    # (``chat_turn/mirror_stream_renewal.py``).
+    _mirror_stream_lock: "Lock"
+    # The timer renewing the mirror's stream before Slack's 10-minute limit; None until it opens.
+    _mirror_stream_renewal: "Task[None] | None"
     _mirror_task_counter: "int"
     _mirror_thread: "str | None"
     _mirror_stream_tried: "bool"

@@ -949,6 +949,9 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     _mirror_stream_ts: str = ""
     turn._mirror_stream_ts = _mirror_stream_ts
     turn._mirror_stream_messages_noted = None
+    turn._mirror_stream_started_at = 0.0
+    turn._mirror_stream_lock = asyncio.Lock()
+    turn._mirror_stream_renewal = None
     # The task stream opens lazily on the first mirrored tool call; one attempt
     # per turn, so a stream Slack refuses is not re-requested on every tool.
     turn._mirror_stream_tried = False
