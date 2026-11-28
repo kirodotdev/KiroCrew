@@ -26,7 +26,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 from kiro_crew import agent as agent_mod
-from kiro_crew import platform_compat
+from kiro_crew import kiro_hooks_dir, platform_compat
 from kiro_crew.hooks import is_unc_shape, unc_probe_allowed
 
 # Allowlist for hook-command paths (config.json is LLM-writable, so this guards
@@ -1002,7 +1002,7 @@ def _autoimport_kiro_hooks(hooks_dir: Path) -> dict[str, list[dict[str, str]]]:
         agent_mod._sel_hook_rejected("autoimport", str(hooks_dir), "cannot resolve hooks_dir")
         return result
     try:
-        entries = sorted(resolved_hooks_dir.iterdir())
+        entries = sorted(kiro_hooks_dir.list_or_refuse(resolved_hooks_dir))
     except FileNotFoundError:
         agent_mod.logger.debug(
             "kiro_hooks_autoimport: directory %s does not exist, skipping",
@@ -1361,7 +1361,7 @@ def resolve_kiro_hooks_dir(agent_cfg: dict, *, audit: bool = True) -> Path:
     ``agent.kiro_hooks_dir`` when set and safe, else the default
     ``~/.kiro/hooks``. ``config.json`` is LLM-writable, so a custom override is
     required to resolve UNDER the user's HOME (not equal to it) and outside a
-    sensitive location; any failure falls back to the default rather than turning
+    sensitive location; a rejected value falls back to the default rather than turning
     the directory off. Shared by the ``*.sh`` script autoimport and the standalone
     ``*.json`` hook-file loader
     (:func:`kiro_crew.agent_sdk.spec_hooks.user_hook_files`) so the two agree on
@@ -1389,11 +1389,11 @@ def resolve_kiro_hooks_dir(agent_cfg: dict, *, audit: bool = True) -> Path:
     # available.
     requested = Path(os.path.expanduser(custom_dir))
     try:
-        resolved = requested.resolve()
+        resolved = Path(kiro_hooks_dir.walk_or_refuse(str(requested)).resolved)
         home = Path.home().resolve()
     except (OSError, ValueError):
-        # OSError: ENAMETOOLONG, ELOOP (symlink loop), EACCES.
-        # ValueError: Path() / resolve() reject strings with null bytes
+        # OSError: ENAMETOOLONG, EACCES. ValueError: a symlink loop (the walk),
+        # or Path() / the walk rejecting a string with null bytes
         # (``"\x00"``) or similar malformed Unicode. An LLM-writable
         # ``kiro_hooks_dir: "\x00"`` would otherwise propagate ValueError up
         # through install_agent() and crash agent bootstrap (denial of service).

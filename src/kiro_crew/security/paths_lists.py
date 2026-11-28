@@ -1373,6 +1373,19 @@ _KIRO_SETTINGS_MCP_JSON = ".kiro/settings/mcp.json"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
 
 
+# ── The user's hook registrations (~/.kiro/hooks) ──
+# Each file is a hook: kiro-cli loads its ``*.json`` files, Crew fires them on its
+# permission path and folds the ``*.sh`` scripts into the agent specs it writes. An
+# agent that could delete or edit one would switch the person's PreToolUse gate off
+# from its next turn, so the whole directory is fenced, like the agents dir. Write
+# protection only: every reader still reads it. No Crew code writes it. The OS half
+# is ``sandbox_seals._resolved_kiro_hooks_targets``.
+_KIRO_HOOKS_DIR = ".kiro/hooks"
+
+
+_WRITE_PROTECTED_HOME_PATHS += [_KIRO_HOOKS_DIR]
+
+
 # ── Kiro Crew's own MCP registry (<data home>/mcp.json) ──
 # The MCP page's store: every agent spec the gateway renders merges it, and a
 # shared server's backend is launched from it outside the sandbox. Only the person
@@ -1423,6 +1436,7 @@ _KIRO_PERMISSION_RULE_LEAVES: tuple[str, ...] = (
 _KIRO_CLI_WRITE_TIER_LEAVES: tuple[str, ...] = (
     _KIRO_AGENTS_DIR,
     _KIRO_SETTINGS_MCP_JSON,
+    _KIRO_HOOKS_DIR,
     *_KIRO_PERMISSION_RULE_LEAVES,
     _KIRO_MATE_AGENTS_DIR,
     *_KIRO_MATE_STATE_LEAVES,

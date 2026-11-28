@@ -1194,7 +1194,7 @@ class TestKiroHooksAutoimport:
         assert "cannot resolve" in reason.lower()
 
     def test_kiro_hooks_dir_resolve_oserror_falls_back(self, tmp_path: Path, monkeypatch, caplog):
-        """An ``OSError`` from ``Path.resolve()`` (ELOOP, EACCES) falls back cleanly.
+        """An ``OSError`` from resolving the path (EACCES, ENAMETOOLONG) falls back cleanly.
 
         The rejection branch logs a warning and emits a SEL audit; hooks stay empty.
         """
@@ -1209,19 +1209,21 @@ class TestKiroHooksAutoimport:
             tmp_path / "nonexistent" / "hooks",
         )
 
-        # Force Path.resolve to raise OSError.  Narrow the patch so only
-        # resolve() on the "requested" path fails; Path.home() still
-        # works so home=None comes from resolved=None cascade.
-        real_resolve = Path.resolve
+        # Force the resolver's walk to raise OSError, only on the
+        # "requested" path; Path.home() still works so home=None comes
+        # from the resolved=None cascade.
+        from kiro_crew import kiro_hooks_dir
 
-        def _raising_resolve(self, *args, **kwargs):
+        real_walk = kiro_hooks_dir.walk_or_refuse
+
+        def _raising_walk(path: str):
             # Raise only on the user-supplied path (a custom fake-home
-            # target we pass below).  Leave other resolve() calls alone.
-            if self.name == "too-long":
+            # target we pass below).  Leave other walks alone.
+            if Path(path).name == "too-long":
                 raise OSError("ENAMETOOLONG simulated")
-            return real_resolve(self, *args, **kwargs)
+            return real_walk(path)
 
-        monkeypatch.setattr(Path, "resolve", _raising_resolve)
+        monkeypatch.setattr(kiro_hooks_dir, "walk_or_refuse", _raising_walk)
 
         sel_calls: list[tuple[str, str, str]] = []
 

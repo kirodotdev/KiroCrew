@@ -194,7 +194,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         """.split()),
     "kiro_crew.sandbox_seals": tuple("""
         _sealable_absent_ceilings SandboxCeilingUnsealable _warn_unsealed_ceiling
-        _CREW_NO_ALIAS_LEAVES _symlink_target_display _refuse_if_aliased_protected_leaf
+        SandboxHooksDirUnreadable _CREW_NO_ALIAS_LEAVES _symlink_target_display _refuse_if_aliased_protected_leaf
         _warn_unsealed_ceiling_parent_missing _warn_if_alias_backed _refuse_if_dangling_symlink
         _refuse_if_symlink_leaf _is_link_or_junction _refuse_linked_models_leaf
         require_real_model_path _require_real_dir_nofollow _require_real_file_nofollow
@@ -204,6 +204,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         require_unaliased_model_file _resolved_kiro_mcp_registry_targets
         _EMPTY_KIRO_MCP_REGISTRY _materialize_kiro_mcp_registry _materialize_mate_ledger
         _MAX_REGISTRY_LINK_HOPS _registry_chain_end
+        _resolved_kiro_hooks_targets _materialize_kiro_hooks_dirs _resolved_kiro_hooks_walk_entries
         """.split()),
     "kiro_crew.sandbox_aliases": tuple("""
         _CREW_ALIAS_TOLERATED_LEAVES _CREW_ALIAS_CHAIN_DEGRADE_LEAVES _CREW_HARDLINK_REFUSED_LEAVES
@@ -1396,6 +1397,7 @@ def test_the_owners_log_under_the_sandbox_name() -> None:
 #: in tracebacks and the Subagents panel, so the owner's name must not leak into that text.
 _FACADE_NAMED_EXCEPTIONS: dict[str, ModuleType] = {
     "SandboxCeilingUnsealable": sandbox_seals,
+    "SandboxHooksDirUnreadable": sandbox_seals,
     "BoundWorkspaceMismatch": sandbox_workspace,
     "UnauditedSpawnRefused": sandbox_unavailable,
     "SandboxUnavailableError": sandbox_unavailable,

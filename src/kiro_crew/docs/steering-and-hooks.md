@@ -612,6 +612,15 @@ edit to `agent.kiro_hooks`, without a restart, press **Rescan hooks folder** on
 that card. New chats use the list it then shows; a script that is not on it was
 rejected, and the Logs page says why. Only the dashboard owner can rescan.
 
+Agents can read `~/.kiro/hooks` but cannot change it: the file tools refuse it and
+every sandbox mounts it read-only, so a hook you put there cannot be deleted or
+edited by the agent it gates. The directory `agent.kiro_hooks_dir` points at, when you
+set one, is protected the same way. If that folder, or a folder on the way to it, cannot
+be read (its permissions were changed), Kiro Crew blocks the agent's tool calls and does
+not start a sandboxed agent until you restore them, rather than run without your hooks.
+Add, edit and remove those files yourself from a terminal. A hook script
+that writes its own state there fails inside the sandbox, so point it somewhere else.
+
 The standalone hook-file wrapper `{"version": "v1", "hooks": [...]}` is a file
 format, not a spec value, and is rejected.
 

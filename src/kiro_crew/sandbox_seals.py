@@ -309,6 +309,114 @@ def _materialize_mate_ledger(established: list[str] | None = None) -> list[str]:
     return created
 
 
+def _resolved_kiro_hooks_targets() -> list[str]:
+    """The user's hook registrations (``~/.kiro/hooks``), sealed read-only as a directory.
+
+    Each file there is a hook: kiro-cli loads its ``*.json`` files at session start,
+    Crew fires them on its own permission path (``spec_hooks.user_hook_files``) and
+    folds its ``*.sh`` scripts into the agent specs it writes. A sandboxed process that
+    could write the directory could switch a person's ``PreToolUse`` gate off from its
+    next turn by deleting or editing the file, or plant a hook of its own. Nothing in
+    Crew writes it; the person does, from outside every sandbox. Read stays open.
+
+    One target per directory a reader reaches
+    (:func:`kiro_crew.kiro_hooks_dir.hooks_dir_walks`: the default, ``$KIRO_HOME/hooks``
+    and ``agent.kiro_hooks_dir``), plus each spelling as written when it is absolute and
+    has no ``.`` or ``..`` name, so it names that same directory as a path. The entries
+    on each walk are guarded separately (:func:`_resolved_kiro_hooks_walk_entries`).
+    Makes no filesystem writes. Never raises.
+    """
+    from kiro_crew.kiro_hooks_dir import hooks_dir_spellings, walk
+
+    targets: list[str] = []
+    for spelling in hooks_dir_spellings():
+        try:
+            reached = walk(spelling).resolved
+        except (OSError, ValueError):
+            continue
+        if os.path.isabs(spelling) and os.path.normpath(spelling) == spelling.rstrip(os.sep):
+            targets.append(spelling.rstrip(os.sep) or os.sep)
+        targets.append(reached)
+    return list(dict.fromkeys(targets))
+
+
+def _resolved_kiro_hooks_walk_entries() -> list[str]:
+    """Every entry a hooks directory's spelling steps on, guarded against rename.
+
+    The directories, symlinks and missing names of every spelling a reader may use
+    (:func:`kiro_crew.kiro_hooks_dir.guarded_spellings`), walked by the same walker
+    Crew's resolver uses, whether the resolver accepts the spelling or not: those
+    entries also decide whether it accepts it. Replacing any of them would change the
+    directory a reader reaches, so the launcher builder guards each on both backends:
+    Seatbelt denies writing the name, and the namespace launcher pins the ones that
+    exist and this uid could rename, which is every one once
+    :func:`_materialize_kiro_hooks_dirs` has created the missing ones. Makes no
+    filesystem writes. Never raises.
+    """
+    from kiro_crew.kiro_hooks_dir import guard_walk, guarded_spellings
+
+    return list(
+        dict.fromkeys(
+            entry
+            for spelling, accepted in guarded_spellings()
+            for entry in guard_walk(spelling, accepted).entries
+        )
+    )
+
+
+def _materialize_kiro_hooks_dirs() -> list[str]:
+    """Create every missing name a hooks spelling depends on, so nothing can take it.
+
+    The namespace launcher pins and seals only names that exist, and a missing one
+    could be created from inside the sandbox: as a link that re-points the spelling, or
+    as the hooks directory with a hook in it. So each missing entry of every spelling
+    a reader may use (:func:`kiro_crew.kiro_hooks_dir.guard_walk`, accepted or not),
+    and an accepted spelling's reached directory, is created 0o700 as a directory, in
+    walk order, and the spelling is walked again until nothing on it is missing.
+    Creating a missing name keeps what the spelling reaches: the walker treats a
+    missing name as a directory. An existing entry, a link included, is never touched.
+    A name that cannot be created is logged and left for this spawn (quietly for a
+    rejected spelling, which nothing reads), like the MCP registry.
+
+    Refuses the spawn (:class:`SandboxHooksDirUnreadable`) when a folder this uid owns
+    stops a spelling from being searched, or an accepted spelling's directory from
+    being listed. On Linux a pin holds a name, not its mode, so an agent could make
+    one unreadable: the names below it can then be neither created nor pinned, and
+    the next sandbox would seal less than the readers rely on.
+    """
+    from kiro_crew.kiro_hooks_dir import guard_walk, guarded_spellings, unreadable_owned_dir
+
+    created: list[str] = []
+    for spelling, accepted in guarded_spellings():
+        tried: set[str] = set()
+        while True:  # each pass creates one new name, or stops
+            found = guard_walk(spelling, accepted)
+            pending = [name for name in found.missing if name not in tried]
+            if accepted and not os.path.lexists(found.resolved) and found.resolved not in pending:
+                pending.append(found.resolved)
+            pending = [name for name in pending if name not in tried]
+            if not pending:
+                break
+            target = pending[0]
+            tried.add(target)
+            try:
+                os.mkdir(target, 0o700)
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                (logger.warning if accepted else logger.debug)(
+                    "could not create %s to seal it read-only: %s",
+                    safe_terminal_line(target),
+                    exc.strerror or exc,
+                )
+                break
+            created.append(target)
+        blocker = unreadable_owned_dir(spelling, listing=accepted)
+        if blocker is not None:
+            raise SandboxHooksDirUnreadable(blocker)
+    return created
+
+
 class SandboxCeilingUnsealable(RuntimeError):
     """A governance ceiling could not be made sealable, so the sandbox refuses to launch.
 
@@ -338,6 +446,26 @@ class SandboxCeilingUnsealable(RuntimeError):
 # as ``module.qualname`` (``subagent._describe_exception``), and that text reaches the
 # Subagents panel and tracebacks, so this module's name must not leak into it.
 SandboxCeilingUnsealable.__module__ = "kiro_crew.sandbox"
+
+
+class SandboxHooksDirUnreadable(SandboxCeilingUnsealable):
+    """A folder this uid owns stops the user's hooks directory from being read.
+
+    Raised by :func:`_materialize_kiro_hooks_dirs` before a Linux launch, so every
+    caller that already refuses an unsealable ceiling refuses this too. The person
+    restores the folder's permissions from a terminal.
+    """
+
+    def __init__(self, directory: str) -> None:
+        super().__init__(
+            f"sandbox: refusing to launch: {safe_terminal_line(directory)} is on the path "
+            "to the user's hooks folder and cannot be searched or listed, so the hooks "
+            "cannot be read or sealed. Restore its permissions (for example chmod u+rx)."
+        )
+        self.directory = directory
+
+
+SandboxHooksDirUnreadable.__module__ = "kiro_crew.sandbox"
 
 
 def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:

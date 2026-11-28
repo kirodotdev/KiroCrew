@@ -1058,6 +1058,8 @@ class TestAdaptiveHomeTargetsExpiry:
                 expected.add(os.path.join(roots.home, *gate._leaf_segments(entry)))
             if roots.kiro_home and gate._KIRO_AGENTS_DIR in tier:
                 expected.add(os.path.join(roots.kiro_home, "agents"))
+            if roots.kiro_home and gate._KIRO_HOOKS_DIR in tier:
+                expected.add(os.path.join(roots.kiro_home, "hooks"))
             if roots.kiro_home and gate._KIRO_MATE_AGENTS_DIR in tier:
                 expected.add(os.path.join(roots.kiro_home, "mates", "agents"))
             for mate_leaf in (*gate._KIRO_MATE_STATE_LEAVES, *gate._KIRO_PERMISSION_RULE_LEAVES):
