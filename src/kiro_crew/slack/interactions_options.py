@@ -18,7 +18,6 @@ Nothing here imports the facade. New OPTIONS work goes here.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -54,7 +53,11 @@ from kiro_crew.slack.handler import (
     shared_command_refused,
     shared_user_refused_for_session,
 )
-from kiro_crew.slack.interactions_context import _orch, register_view_handler
+from kiro_crew.slack.interactions_context import (
+    _orch,
+    _start_interaction_turn,
+    register_view_handler,
+)
 from kiro_crew.slack.outbound import (
     OptionsSeveralRequest,
     PostedOptions,
@@ -296,7 +299,9 @@ async def _route_action_to_session(
         "--- CONTEXT ENTRY END ---"
     )
 
-    t = asyncio.create_task(
+    # The thread's router task while it runs, so a message typed meanwhile is answered.
+    _start_interaction_turn(
+        _orch,
         handle_message(
             _orch.slack,
             _orch.sessions,  # type: ignore[arg-type]
@@ -320,10 +325,10 @@ async def _route_action_to_session(
             user_meta=user_meta,
             # The label is model-authored: it is the answer, never a command.
             interpret_commands=False,
-        )
+        ),
+        thread_ts or new_ts,
+        thread_ts,
     )
-    _orch._handler_tasks.add(t)
-    t.add_done_callback(_orch._handler_tasks.discard)
 
 
 def _is_home_tab_action_button(payload: dict, action: dict) -> bool:
@@ -875,7 +880,9 @@ async def _answer_options(
         "--- CONTEXT ENTRY END ---"
     )
 
-    t = asyncio.create_task(
+    # The thread's router task while it runs, so a message typed meanwhile is answered.
+    _start_interaction_turn(
+        _orch,
         handle_message(
             _orch.slack,
             _orch.sessions,  # type: ignore[arg-type]
@@ -900,10 +907,10 @@ async def _answer_options(
             user_meta=user_meta,
             # The choice is model-authored: it is the answer, never a command.
             interpret_commands=False,
-        )
+        ),
+        thread_ts,
+        thread_ts,
     )
-    _orch._handler_tasks.add(t)
-    t.add_done_callback(_orch._handler_tasks.discard)
     sel().log_tool_invocation(
         session_key=thread_ts,
         agent="kirocrew",

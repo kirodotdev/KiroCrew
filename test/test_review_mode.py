@@ -590,6 +590,11 @@ def mock_orch():
     orch.slack.set_thread_status = AsyncMock()
     orch.slack.views_open = AsyncMock()
     orch.sessions = MagicMock()
+    orch.sessions.dequeue = MagicMock(return_value=None)
+    # The router surface the revision turn registers with; its end drains an empty queue.
+    orch._handler_tasks = set()
+    orch._session_tasks = {}
+    orch._pending_queue = {}
     orch.ctx_builder = MagicMock()
     orch.cron_svc = MagicMock()
     orch.conv_log = MagicMock()

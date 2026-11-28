@@ -1659,11 +1659,13 @@ async def test_a_shared_users_revision_is_judged_on_their_feedback(
 
     await _confirmed_friend()
     ran = AsyncMock()
-    sessions = SimpleNamespace(get_session_for_thread=lambda ts: None)
+    sessions = SimpleNamespace(get_session_for_thread=lambda ts: None, dequeue=lambda key: None)
     orch = SimpleNamespace(
         slack=SimpleNamespace(post_message=AsyncMock(), post_ephemeral=AsyncMock()),
         sessions=sessions,
         _handler_tasks=set(),
+        _session_tasks={},
+        _pending_queue={},
         _approval_mode=None,
         _cfg=SimpleNamespace(agent=SimpleNamespace(approval_mode="interactive")),
         ctx_builder=None,

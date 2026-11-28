@@ -193,7 +193,9 @@ reply answers and before the reply.
 A message that cannot be steered is queued: it carries files
 or a voice memo, it comes from a shared user or a trusted bot, the running reply
 answers a shared user's message (they approve its tool prompts, so it takes
-nobody else's words), the reply runs on the native handler
+nobody else's words), the reply was opened by a button click (an OPTIONS choice,
+an `action::` button, a forwarded message or a review revision), the reply runs
+on the native handler
 (`messaging.use_transport: false`), the backend has no
 steer, a `!stop` is still settling, the channel is in `review` mode, an earlier
 message is already queued, or the reply ended just as the message arrived. In a
@@ -334,7 +336,10 @@ thread linked to a dashboard session the choice reaches the agent word for word:
 an `@prompt`, `$skill` or quick-prompt name in it is not expanded. To send several at once, open the card's ⋯ menu
 and pick **Choose several…**, then tick them in the dialog and press Send. Once a
 card is answered its buttons give way to a line saying who chose what and when;
-a later click on it only gets a private "Already answered".
+a later click on it only gets a private "Already answered". A message you type
+while a choice is being answered is not steered into that reply (it answers a
+click, not a message of yours); it waits with ⏳ and is answered once that reply
+ends.
 
 ## Access control
 

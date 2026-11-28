@@ -16,7 +16,6 @@ Nothing here imports the facade. New modal work goes here.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 
@@ -49,6 +48,7 @@ from kiro_crew.slack.interactions_context import (
     VIEW_REGISTRY,
     _orch,
     _probe_tracked_channel_scope,
+    _start_interaction_turn,
     register_view_handler,
 )
 from kiro_crew.slack.shared_access import prime_shared_user
@@ -489,7 +489,9 @@ async def _handle_shortcut_submission(payload: dict) -> None:
         "--- CONTEXT ENTRY END ---"
     )
 
-    t = asyncio.create_task(
+    # The new thread's router task while it runs, so a message typed into it is answered.
+    _start_interaction_turn(
+        _orch,
         handle_message(
             _orch.slack,
             _orch.sessions,  # type: ignore[arg-type]
@@ -508,10 +510,10 @@ async def _handle_shortcut_submission(payload: dict) -> None:
             task_runner=_orch.task_runner,
             action_context=action_context,
             start_priority=StartPriority.FOREGROUND,
-        )
+        ),
+        new_ts,
+        new_ts,
     )
-    _orch._handler_tasks.add(t)
-    t.add_done_callback(_orch._handler_tasks.discard)
 
     sel().log_api_access(
         caller=user_id,
