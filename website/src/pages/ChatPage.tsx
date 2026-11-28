@@ -159,8 +159,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useChatPageEnvironment({
     embedded, embedMode, popout,
   })
-  // The sessions-only embed renders no transcript, so its active slot stays off screen.
-  useEffect(() => (embedMode === 'sessions' ? undefined : holdChatTranscriptMount()), [embedMode])
   // Tool-call ids already routed to a tab, so re-renders of the same app don't
   // yank focus back to the panel on every streaming update.
   useEffect(() => {
@@ -352,6 +350,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     resizedInfo, setResizedInfo,
   } = staging
   usePinnedScrollOrigin(chatPaneEl)
+  // The sessions-only embed renders no transcript, so its active slot stays off
+  // screen; a pane hidden by its container is off screen too, and showing it reads the chat.
+  useEffect(() => (embedMode === 'sessions' ? undefined : holdChatTranscriptMount(chatPaneEl)), [embedMode, chatPaneEl])
   const { reconcileFileChipsRef, onComposerDraftCommit, noCarryCreateIdsRef } = useComposerDraftLifecycle({
     activeSlot,
     stores: draftStores,

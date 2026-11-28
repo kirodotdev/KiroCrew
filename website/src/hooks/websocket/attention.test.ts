@@ -426,6 +426,69 @@ describe('the retained active slot off the chat routes', () => {
     })
   })
 
+  it('badges a reply on an app page whose ChatPage is mounted hidden', () => {
+    atPath('/apps/notes', () => {
+      store.dispatch(setActiveSlot('slot-kept'))
+      const pane = document.createElement('div')
+      document.body.appendChild(pane)
+      let shown = false
+      pane.checkVisibility = () => shown
+      const release = holdChatTranscriptMount(pane)
+      try {
+        expect(isSlotOnScreen('slot-kept')).toBe(false)
+        expect(arrive('slot-kept')).toHaveBeenCalledWith('slot-kept')
+        shown = true
+        expect(isSlotOnScreen('slot-kept')).toBe(true)
+        pane.remove()
+        expect(isSlotOnScreen('slot-kept')).toBe(false)
+      } finally { release(); pane.remove() }
+    })
+  })
+
+  it.each([true, false])('reads the badged reply once the hidden ChatPage is shown (focused: %s)', (focused) => {
+    const resized: Array<() => void> = []
+    vi.stubGlobal('ResizeObserver', class { constructor(cb: () => void) { resized.push(cb) } observe() {} disconnect() {} })
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(focused)
+    const sendIfOpen = vi.fn()
+    const reads = () => sendIfOpen.mock.calls.filter(([m]) => (m as { type: string }).type === 'slot_read')
+    const flushSlotActivity = vi.fn()
+    atPath('/apps/notes', () => {
+      store.dispatch(setActiveSlot('slot-kept'))
+      const detach = attachFocusRelay({
+        socket: { sendIfOpen, reconnectingRef: { current: false } } as unknown as SocketConnection,
+        flushSlotActivity,
+        onActiveSlotChange: vi.fn(),
+      })
+      const pane = document.createElement('div')
+      document.body.appendChild(pane)
+      let shown = false
+      pane.checkVisibility = () => shown
+      const release = holdChatTranscriptMount(pane)
+      try {
+        arrive('slot-kept')
+        resized.forEach(cb => cb())
+        expect(store.getState().dashboard.unreadSlots).toContain('slot-kept')
+        shown = true
+        resized.forEach(cb => cb())
+        if (!focused) {
+          expect(store.getState().dashboard.unreadSlots).toContain('slot-kept')
+          expect(reads()).toHaveLength(0)
+          focus.mockReturnValue(true)
+          act(() => window.dispatchEvent(new Event('focus')))
+        }
+        expect(store.getState().dashboard.unreadSlots).not.toContain('slot-kept')
+        expect(reads()).toHaveLength(1)
+        // Buffered arrivals land before the read, so it carries their last_ts.
+        const readAt = sendIfOpen.mock.invocationCallOrder[sendIfOpen.mock.calls.indexOf(reads()[0])]
+        expect(flushSlotActivity.mock.invocationCallOrder.some(at => at < readAt)).toBe(true)
+      } finally {
+        release(); pane.remove(); detach()
+        hidden.mockRestore(); focus.mockRestore(); vi.unstubAllGlobals(); _resetSlotReadRelayForTest()
+      }
+    })
+  })
+
   it('stays on screen on a chat route with no transcript counted', () => {
     atPath('/chat', () => {
       store.dispatch(setActiveSlot('slot-kept'))

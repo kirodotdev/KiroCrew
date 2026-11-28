@@ -100,6 +100,19 @@ describe('ChatPage transcript count', () => {
     expect(isChatTranscriptMounted()).toBe(false)
   })
 
+  it('does not count an app ChatPanel its container hides', async () => {
+    const proto = Element.prototype as unknown as { checkVisibility?: () => boolean }
+    proto.checkVisibility = function (this: Element) { return !this.closest('[data-hidden-host]') }
+    try {
+      const view = renderAt(<div data-hidden-host=""><ChatPanel slotKey={SLOT} conversationOnly /></div>)
+      await waitFor(() => expect(view.container.querySelector('[data-chat-scope]')).not.toBeNull())
+      expect(isChatTranscriptMounted()).toBe(false)
+      view.container.querySelector('[data-hidden-host]')?.removeAttribute('data-hidden-host')
+      expect(isChatTranscriptMounted()).toBe(true)
+      view.unmount()
+    } finally { delete proto.checkVisibility }
+  })
+
   it('counts the chat embed but not the sessions-only embed', () => {
     const chat = renderAt(<ChatPage embedded embedMode="chat" />)
     expect(isChatTranscriptMounted()).toBe(true)
