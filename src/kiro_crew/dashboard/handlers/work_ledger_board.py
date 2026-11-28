@@ -41,6 +41,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import session_ledger, work_ledger
+from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.crew_board_flight import BoardAnswer, shared_board
@@ -50,7 +51,10 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _board_lock,
     _find_slot,
     _own_ledger,
+    _refuse_409,
+    _refuse_503,
     _refuse_if_dirty,
+    _refuse_store_error,
     _slot_closed,
     _slot_loop_held,
     _slot_looping,
@@ -803,9 +807,31 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
     # Single flight (see crew_board_flight): concurrent reads share one build that
     # started after each of them arrived; nothing is kept afterwards. The owner gate and
     # the request's own validation ran above, so only an admitted caller joins a build.
-    answer = await shared_board(
-        key, requested, lambda: _build_board(request.app["state"], requested, key, caller)
-    )
+    #
+    # A build that raises is answered here with a code, the way the sibling ledger routes
+    # answer the same faults. Left to aiohttp it is a bare 500 that says neither what
+    # failed nor whether the Board's next poll can clear it.
+    try:
+        answer = await shared_board(
+            key, requested, lambda: _build_board(request.app["state"], requested, key, caller)
+        )
+    except work_ledger.WorkLedgerError as exc:
+        logger.warning("crew board: the store refused the read of %s", key, exc_info=True)
+        return _refuse_store_error(exc)
+    except CrewLogError as exc:
+        logger.warning("crew board: the crew log fold refused the read of %s", key, exc_info=True)
+        return _refuse_409("crew_log_unreadable", f"the crew log could not be read ({exc.code})")
+    except OSError:
+        logger.warning("crew board: the work ledger of %s could not be read", key, exc_info=True)
+        return _refuse_503(
+            "ledger_unreadable",
+            "the work ledger could not be read right now (a transient I/O error); try again",
+        )
+    except Exception:  # noqa: BLE001 - any other failure still answers with a code
+        logger.exception("crew board: the read of %s failed", key)
+        return web.json_response(
+            {"error": "the board could not be read", "code": "read_failed"}, status=500
+        )
     if answer.status != 200:
         return web.Response(body=answer.body, status=answer.status, content_type="application/json")
     # Record the ALLOWED read, not only denials: an owner gate that logs a grant
