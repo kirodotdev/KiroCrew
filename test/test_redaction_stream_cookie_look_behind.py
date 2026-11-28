@@ -455,10 +455,11 @@ def test_an_equals_free_run_past_the_hold_bound_streams_as_whole_text(
 
 
 @pytest.mark.parametrize("chunk", [1, 7, 47])
-@pytest.mark.parametrize("gap", [65, 1022])
+@pytest.mark.parametrize("gap", [65, 1000])
 def test_a_word_cookie_before_a_blank_run_streams_as_whole_text(gap: int, chunk: int) -> None:
-    # The separator hold fails closed only where the look-behind stops carrying the
-    # name (CONTEXT): a benign ``cookie`` followed by fewer blanks streams unchanged.
+    # The separator hold fails closed only past the bound the look-behind can carry
+    # (CONTEXT less the kept prefix): a benign ``cookie`` followed by fewer blanks
+    # streams unchanged.
     text = f"the cookie{' ' * gap}jar is tasty\nafter\n"
     whole = _whole(text)
     assert whole == text
@@ -577,3 +578,137 @@ def test_a_pair_name_past_the_hold_bound_on_an_open_line_holds_a_bounded_buffer(
     assert peak <= 8192, peak
     whole = redact(text)[0] if entry == "structured" else _whole(text)
     assert out == whole
+
+
+def _separator_gap_text(gap: int) -> str:
+    return f"x Cookie{' ' * gap}: session={_SET_COOKIE_TOKEN}; b=1\nafter\n"
+
+
+def test_the_lane_separator_gap_shape_streams_as_whole_text() -> None:
+    # The local GPT lane's case: 1,025 blanks at 47-character feeds let the name leave
+    # the look-behind before the separator bound tripped.
+    text = _separator_gap_text(1025)
+    whole = _whole(text)
+    assert _SET_COOKIE_TOKEN not in whole
+    out = _feed_chunks(text, 47)
+    assert _SET_COOKIE_TOKEN not in out
+    assert TAG in out and out.endswith("\nafter\n")
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 47])
+def test_no_separator_gap_lets_the_cookie_name_leave_the_look_behind(chunk: int) -> None:
+    # The separator hold fails closed before the name can leave the look-behind, at
+    # every gap around CONTEXT.
+    leaks = [
+        gap
+        for gap in range(1000, 1101)
+        if _SET_COOKIE_TOKEN in _feed_chunks(_separator_gap_text(gap), chunk)
+    ]
+    assert leaks == []
+
+
+def test_a_separator_gap_under_the_bound_still_streams_as_whole_text() -> None:
+    # Control: a gap the look-behind still carries is held and read as whole text reads
+    # it, with no new over-mask.
+    text = _separator_gap_text(1000)
+    assert _feed_chunks(text, 47) == _whole(text)
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 47, 256])
+def test_an_ignorable_separator_gap_is_bounded_in_raw_offsets(chunk: int) -> None:
+    # The lanes' case: 700 x " \u200b" is 700 characters in the ignorable view but 1,400
+    # raw, so a bound counted in the view let the name leave the raw look-behind.
+    text = "Cookie" + " \u200b" * 700 + f": session={_SET_COOKIE_TOKEN}; b=1\nafter\n"
+    assert _SET_COOKIE_TOKEN not in _whole(text)
+    out = _feed_chunks(text, chunk)
+    assert _SET_COOKIE_TOKEN not in out
+    # Past the bound the line fails closed from the name's end; the name and the next line
+    # survive.
+    assert out.startswith("Cookie") and out.endswith("\nafter\n")
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 47])
+def test_a_mixed_ignorable_gap_short_in_the_view_is_bounded_raw(chunk: int) -> None:
+    # View length under the bound, raw length over it. A combining mark (U+0301) is not
+    # default-ignorable: whole text does not read ``Cookie`` + marks + ``:`` as a header,
+    # so it sits in the control below, not here.
+    run = " \u200b\ufeff\u00ad"
+    gap = run * 260
+    assert (
+        len(gap.replace("\u200b", "").replace("\ufeff", "").replace("\u00ad", "")) < 1008 < len(gap)
+    )
+    text = f"Cookie{gap}: session={_SET_COOKIE_TOKEN}; b=1\nafter\n"
+    assert _SET_COOKIE_TOKEN not in _whole(text)
+    out = _feed_chunks(text, chunk)
+    assert _SET_COOKIE_TOKEN not in out
+    assert out.startswith("Cookie") and out.endswith("\nafter\n")
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 47, 1024])
+def test_a_long_ignorable_gap_with_no_separator_keeps_the_next_line(chunk: int) -> None:
+    # GPT's review41 case: no separator ever comes; the hold stays bounded and fails
+    # closed from the name's end, so the next line streams as written.
+    text = "Cookie" + " \u200b" * 20000 + "\nafter\n"
+    out = _feed_chunks(text, chunk)
+    assert out == f"Cookie{TAG}\nafter\n"
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 47])
+def test_ignorables_inside_an_ordinary_header_value_mask_nothing_extra(chunk: int) -> None:
+    # Control: ignorables (and a combining mark) in a benign value: nothing extra masks.
+    text = "X-Note: " + "ab\u200bc\u00ad\u0301 " * 300 + "\nafter\n"
+    whole = _whole(text)
+    assert TAG not in whole
+    assert _feed_chunks(text, chunk) == whole
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 47])
+def test_a_quote_after_an_ignorable_run_still_counts_in_the_raw_gap(chunk: int) -> None:
+    # GPT's review42 case: the view reads the quote as the name's closing quote, so the
+    # raw gap runs on past it.
+    text = (
+        "Cookie"
+        + "\u200b" * 100
+        + '"'
+        + " \u200b" * 500
+        + f": session={_SET_COOKIE_TOKEN}; b=1\nafter\n"
+    )
+    assert _SET_COOKIE_TOKEN not in _whole(text)
+    out = _feed_chunks(text, chunk)
+    assert _SET_COOKIE_TOKEN not in out
+    assert out.startswith("Cookie") and out.endswith("\nafter\n")
+
+
+def _view_gap(name: str, gap: str) -> str:
+    return name + gap + f": session={_SET_COOKIE_TOKEN}; b=1\nafter\n"
+
+
+@pytest.mark.parametrize(
+    ("name", "chunk"),
+    [("Cook\u200bie", c) for c in (1, 2, 4, 8)]
+    + [("Set-Coo\u200bkie", c) for c in (1, 2, 3, 4, 6, 12)],
+)
+def test_a_view_only_cookie_name_counts_its_separator_gap_raw(name: str, chunk: int) -> None:
+    # The review43 lanes' case: only the ignorable view reads the name, so its gap must
+    # be counted in the raw offsets the look-behind keeps (600 in the view, 1,200 raw).
+    text = _view_gap(name, " \u200b" * 600)
+    whole = _whole(text)
+    assert _SET_COOKIE_TOKEN not in whole
+    out = _feed_chunks(text, chunk)
+    assert _SET_COOKIE_TOKEN not in out
+    assert out.startswith(name[:4]) and out.endswith("\nafter\n")
+
+
+@pytest.mark.parametrize("chunk", [1, 2, 4, 8])
+def test_a_view_only_name_with_a_mixed_gap_counts_it_raw(chunk: int) -> None:
+    gap = " \u200b\ufeff\u00ad" * 260  # 260 in the view, 1,040 raw
+    text = _view_gap("Cook\u200bie", gap)
+    assert _SET_COOKIE_TOKEN not in _whole(text)
+    assert _SET_COOKIE_TOKEN not in _feed_chunks(text, chunk)
+
+
+@pytest.mark.parametrize("chunk", [1, 2, 4, 8])
+def test_a_view_only_name_under_the_raw_bound_streams_as_whole_text(chunk: int) -> None:
+    # Control: 300 pairs (600 raw) stay under the bound and stream as whole text.
+    text = _view_gap("Cook\u200bie", " \u200b" * 300)
+    assert _feed_chunks(text, chunk) == _whole(text)

@@ -34,6 +34,7 @@ import base64
 import binascii
 import functools
 from collections.abc import Callable
+from contextvars import ContextVar
 
 from kiro_crew.default_ignorable import DEFAULT_IGNORABLE
 
@@ -85,10 +86,51 @@ _NETRC_TOKENS = 6
 _BASIC_DECODE_MAX = 512
 # How long a value still running at the end of a stream window is held undecided.
 _HOLD_MAX = 4096
-# How many blanks and quotes a stream holds after a Cookie name while its separator
-# has not arrived yet: as far as the stream's look-behind carries the name
-# (``stream.CONTEXT``), so the hold fails closed only where the name would be lost.
-_SEPARATOR_MAX = 1024
+# The longest prefix the look-behind keeps in front of its raw tail: a ``Set-Cookie``
+# name, a quote on each side, the separator and the ``_=;`` stand-in.
+_KEPT_PREFIX_MAX = len("set-cookie") + 2 + 1 + len("_=;")
+
+
+@functools.cache
+def _separator_max() -> int:
+    """How many blanks and quotes a stream holds after a Cookie name while its separator
+    has not arrived yet: what the look-behind (``stream.CONTEXT``) can still carry in
+    front of the name, less the longest kept prefix, so the hold fails closed before the
+    name could leave the window."""
+    from .stream import CONTEXT
+
+    return CONTEXT - _KEPT_PREFIX_MAX
+
+
+#: ``(window, to_raw)`` while a stream reads ``window`` as its ignorable view:
+#: ``to_raw`` maps a view offset back to the raw text the look-behind keeps
+#: (``compat._joined_stream_read`` sets it around the view reading).
+RAW_OFFSETS: ContextVar[tuple[str, Callable[[int], int]] | None] = ContextVar(
+    "kirocrew_structured_raw_offsets", default=None
+)
+
+
+def _separator_gap_end(text: str, k: int, walk: _Walk, quote: bool) -> int:
+    """The end of the blanks and ignorable runs from ``k``: where a Cookie name's
+    separator would start, in ``text``'s own (raw) offsets. ``quote``: the name's
+    closing quote has not been read yet, so one quote after an ignorable run is skipped
+    too, as the ignorable view reads it right after the name."""
+    j = walk.nonblank(k)
+    if j == len(text) or text[j].isascii():
+        return j
+    import kiro_crew.security.redaction as redaction
+
+    while j < len(text):
+        # shortcut: re-reads the gap per anchor; linear unless many Cookie names share
+        # one ignorable gap, upgrade to a shared finder if a cost probe shows it.
+        if (run := redaction._IGNORABLE_RE.match(text, j)) is not None:
+            j = walk.nonblank(run.end())
+        elif quote and text[j] in _QUOTES:
+            quote = False
+            j = walk.nonblank(j + 1)
+        else:
+            break
+    return j
 
 
 class _Open(Exception):
@@ -302,6 +344,8 @@ class _Walk:
         "_cur_lo",
         "_head_lo",
         "_head_words",
+        "_raw",
+        "_raw_read",
         "_scan",
         "_spent",
         "breaks",
@@ -321,6 +365,8 @@ class _Walk:
 
     def __init__(self, text: str, low: str) -> None:
         self.text = text
+        self._raw: Callable[[int], int] | None = None
+        self._raw_read = False
         self.breaks = _Next(text, "\r\n")
         self.eqs = _Next(text, "=")
         self.semis = _Next(text, ";")
@@ -362,6 +408,17 @@ class _Walk:
         if self._scan is None:
             self._scan = _ValueScan(self.text[self._cur_lo : self._cur_hi])
         return self._scan
+
+    def raw_gap(self, start: int, end: int) -> int:
+        """``end - start`` in the raw text the look-behind keeps, for either reading. The
+        view-to-raw mapping (:data:`RAW_OFFSETS`) is matched to this walk's text once."""
+        if not self._raw_read:
+            self._raw_read = True
+            raw = RAW_OFFSETS.get()
+            self._raw = raw[1] if raw is not None and raw[0] == self.text else None
+        if self._raw is None:
+            return end - start
+        return self._raw(end) - self._raw(start)
 
     def after_name(self, end: int) -> int | None:
         """:func:`_after_name` for the cookie path, with the two blank skips bounded by the
@@ -602,16 +659,45 @@ def _cookies(text: str, at: int, name: str, row: HeaderRow, final: bool, walk: _
     if i is None:
         # The window ends between the name and its separator: the separator still
         # decides whether the line is a Cookie header, so the name is held, bounded by
-        # :data:`_SEPARATOR_MAX`; past it the rest of the line is masked (fail closed).
+        # :func:`_separator_max`; past it the rest of the line is masked (fail closed).
         end = at + len(name)
         k = end + 1 if end < len(text) and text[end] in _QUOTES else end
-        if not final and walk.nonblank(k) == len(text):
-            if len(text) - end <= _SEPARATOR_MAX:
+        if final:
+            return []
+        n = len(text)
+        # The bound is counted in raw offsets, ignorable runs included: the look-behind
+        # keeps raw text, so a gap the ignorable view reads as short can still carry the
+        # name out of it. The as-written reading skips the runs here; the view reading
+        # maps its offsets back (``_Walk.raw_gap``).
+        j = _separator_gap_end(text, k, walk, k == end)
+        if j == n:
+            if walk.raw_gap(end, n) <= _separator_max():
                 raise _Open
-            return [Hit(end, len(text), row.id, row.tier, "cookie", "known_key", tail=TAIL_LINE)]
+            return [Hit(end, n, row.id, row.tier, "cookie", "known_key", tail=TAIL_LINE)]
+        if (
+            j > walk.nonblank(k)
+            and text[j] in ":="
+            and walk.breaks(j) == n
+            and walk.raw_gap(end, j) > _separator_max()
+        ):
+            # The separator came past the bound across ignorable runs, line still open:
+            # held from the name up to ``_HOLD_MAX``, then masked from its end.
+            if n - at <= _HOLD_MAX:
+                raise _Open
+            return [Hit(end, n, row.id, row.tier, "cookie", "known_key", tail=TAIL_LINE)]
         return []
     n = len(text)
     line_end = walk.breaks(i)
+    end = at + len(name)
+    k = end + 1 if end < n and text[end] in _QUOTES else end
+    if not final and line_end == n and walk.raw_gap(end, walk.nonblank(k)) > _separator_max():
+        # The separator arrived past the bound while the line is still open: the
+        # look-behind could not carry the name to the line's later pairs, so the line
+        # is held from the name, bounded by ``_HOLD_MAX``; past it the rest of the line
+        # is masked from the name's end (fail closed).
+        if n - at <= _HOLD_MAX:
+            raise _Open
+        return [Hit(end, n, row.id, row.tier, "cookie", "known_key", tail=TAIL_LINE)]
     hits: list[Hit] = []
     first_only = name == "set-cookie"
     seen: list[int] = []

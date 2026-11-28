@@ -602,12 +602,19 @@ def _joined_stream_read(
     if raw is None:
         return None
     view_context, view_buf, view_armour_from = redaction._ignorable_view(context, buf, armour_from)
-    view = stream_read(
-        view_context, view_buf, boundary=boundary, armour_from=view_armour_from, as_written=True
-    )
+    to_text = redaction._view_to_text(context + buf)
+    from kiro_crew.security.redaction_structured.headers import RAW_OFFSETS
+
+    # The Cookie separator bound is counted in the raw offsets the look-behind keeps.
+    token = RAW_OFFSETS.set((view_context + view_buf, to_text))
+    try:
+        view = stream_read(
+            view_context, view_buf, boundary=boundary, armour_from=view_armour_from, as_written=True
+        )
+    finally:
+        RAW_OFFSETS.reset(token)
     if view is None:
         return None
-    to_text = redaction._view_to_text(context + buf)
 
     def on_buf(offset: int) -> int:
         # A view offset, negative inside the context, as an offset in ``buf``.
