@@ -736,6 +736,24 @@ def test_outcomes_are_reported_once_and_rendered_as_reference_data():
     assert "change_card_results" in split_blocks(block, user_chars=0)
 
 
+def test_an_open_card_at_turn_start_tells_the_turn_to_read_its_status():
+    """A turn started before the user pressed a card must not state its status unread."""
+    store = CardStore(None, clock=Clock())
+    assert render_change_card_results([], open_cards=store.holds_open_card(SLOT)) == ""
+    rec = _propose(store)
+    assert store.take_unreported(SLOT) == [] and store.holds_open_card(SLOT)
+    block = render_change_card_results([], open_cards=store.holds_open_card(SLOT))
+    assert "still unanswered" in block and "get_change_status" in block
+    assert "none of the change cards you proposed ended" in block
+    assert block.count("[END CHANGE CARD RESULTS]") == 1
+    assert "change_card_results" in split_blocks(block, user_chars=0)
+    store.cancel(rec, revision=1)
+    out = store.take_unreported(SLOT)
+    assert not store.holds_open_card(SLOT)
+    block = render_change_card_results(out, open_cards=store.holds_open_card(SLOT))
+    assert "still unanswered" not in block and "cancelled" in block
+
+
 def test_store_survives_a_restart(tmp_path):
     path = tmp_path / "change_cards.json"
     store = CardStore(path, clock=Clock())

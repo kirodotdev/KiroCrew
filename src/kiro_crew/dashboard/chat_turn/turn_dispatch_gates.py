@@ -151,7 +151,9 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     # Change-card outcomes since this slot's last turn (a card proposed here
     # was applied, cancelled, undone...). Read and marked heard in one step,
     # so the next turn does not repeat them. Reference data only: it never
-    # starts a turn of its own, and a card never carries a secret value.
+    # starts a turn of its own, and a card never carries a secret value. A card
+    # still open now may be pressed while this turn runs, which neither this
+    # block nor the model the turn starts on can show, so the block says so.
     if _sends_prompt and not is_slash and _prompt_depth < 1:
         try:
             from kiro_crew.context_blocks import render_change_card_results
@@ -160,9 +162,13 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
             _card_store = card_store_for(state)
             await _card_store.warm()
             _card_outcomes = _card_store.take_unreported(slot.key)
-            if _card_outcomes:
-                _request_prefix_context += render_change_card_results(_card_outcomes)
+            _card_block = render_change_card_results(
+                _card_outcomes, open_cards=_card_store.holds_open_card(slot.key)
+            )
+            if _card_block:
+                _request_prefix_context += _card_block
                 turn._request_prefix_context = _request_prefix_context
+            if _card_outcomes:
                 await _card_store.flush()
         except Exception:
             logger.debug("change-card results block skipped", exc_info=True)

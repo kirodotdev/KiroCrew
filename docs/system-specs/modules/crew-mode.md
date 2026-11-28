@@ -1525,7 +1525,10 @@ nothing matches. The card renders in the proposing chat as a row of the conversa
 only the owner's click applies it through the existing settings route, verified by the
 card hook. A secret's value is typed into the card and never passes through the agent.
 Card outcomes reach the agent's next turn as a `[CHANGE CARD RESULTS]` block that never
-starts a turn; a card raised in a Bot's own thread also starts one `[User action]`
+starts a turn. A turn that starts while a card of its slot is still open (an automation
+turn right after the card reply) gets the block with a line saying so and naming
+`get_change_status`, because a press during that turn reaches neither the block nor the
+model it runs on; a card raised in a Bot's own thread also starts one `[User action]`
 turn there when the user applies, declines or undoes it ("The user's answer reaches the
 Bot"). Every owner change through those routes, card or manual, is a
 names-only "Dashboard: ..." line in Global memory history.

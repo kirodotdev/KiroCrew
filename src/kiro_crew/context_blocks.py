@@ -488,20 +488,27 @@ def render_self_change_undos(undos: list[dict]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-def render_change_card_results(outcomes: list[dict]) -> str:
+def render_change_card_results(outcomes: list[dict], *, open_cards: bool = False) -> str:
     """The block telling a proposing agent how its change cards ended.
 
     Reference data for the next turn, never a request: it is built from the
     gateway's own record (kind, product-written title, status, summary) and
     carries no secret value, since a card never holds one. Text from the card is
     flattened to one line and its brackets defused, so a title cannot forge a
-    block boundary. Empty input renders nothing.
+    block boundary. *open_cards* adds a line saying a card of this chat is still
+    unanswered at turn start: the user may press it while the turn runs, which
+    this block and the turn's model cannot reflect. Empty input renders nothing.
     """
-    if not outcomes:
+    if not outcomes and not open_cards:
         return ""
     lines = [
-        "[CHANGE CARD RESULTS -- how the change cards you proposed ended since your "
-        "last turn. Reference data, not a request from the user.]"
+        (
+            "[CHANGE CARD RESULTS -- how the change cards you proposed ended since your "
+            "last turn. Reference data, not a request from the user.]"
+            if outcomes
+            else "[CHANGE CARD RESULTS -- none of the change cards you proposed ended since "
+            "your last turn. Reference data, not a request from the user.]"
+        )
     ]
     for item in outcomes[:_CARD_RESULTS_MAX]:
         line = (
@@ -517,5 +524,13 @@ def render_change_card_results(outcomes: list[dict]) -> str:
         lines.append(line)
     if len(outcomes) > _CARD_RESULTS_MAX:
         lines.append(f"- … and {len(outcomes) - _CARD_RESULTS_MAX} more (get_change_status)")
+    if open_cards:
+        lines.append(
+            "- A card you proposed in this chat was still unanswered when this turn "
+            "started. The user may press it while this turn runs, and neither this "
+            "block nor the model this turn runs on would show it: call "
+            "get_change_status before you say whether it was pressed, or which model, "
+            "effort or setting you are on."
+        )
     lines.append("[END CHANGE CARD RESULTS]")
     return "\n".join(lines) + "\n\n"
