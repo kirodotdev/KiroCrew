@@ -31,6 +31,7 @@ PLATFORM_UNSUPPORTED = "unsupported"
 # All prefixed ``computer_`` so a browser tool can never collide with one of
 # these in a shared allowlist.
 TOOL_LIST_APPS = "computer_list_apps"
+TOOL_LIST_WINDOWS = "computer_list_windows"
 TOOL_LAUNCH_APP = "computer_launch_app"
 TOOL_GET_STATE = "computer_get_state"
 TOOL_CLICK = "computer_click"
@@ -56,9 +57,15 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset({TOOL_LIST_APPS, TOOL_GET_STATE})
 # of verbs that change the world outside Kiro Crew, and starting a process is the
 # largest such change the tool set can make. Leaving it out would have put the one
 # verb that creates a process on the same footing as reading a tree.
+#
+# ``computer_list_windows`` is here for the other half of that purpose, "never
+# auto-approve": it only reads, but it is approved per call like the tools below,
+# so it is not a read-only tool in this sense. Its governance row (``mutate``) keeps
+# ``_cu_read_only_auto_approve`` from ever passing it.
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {
         TOOL_LAUNCH_APP,
+        TOOL_LIST_WINDOWS,
         TOOL_CLICK,
         TOOL_DRAG,
         TOOL_TYPE_TEXT,
@@ -70,6 +77,7 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
 )
 ALL_TOOLS: tuple[str, ...] = (
     TOOL_LIST_APPS,
+    TOOL_LIST_WINDOWS,
     TOOL_LAUNCH_APP,
     TOOL_GET_STATE,
     TOOL_CLICK,
@@ -577,6 +585,7 @@ NO_APPS_NOTE = (
     "No application computer use may drive has an on-screen window. "
     f"{UNLISTED_APPS_NOTE} Other apps can still be open."
 )
+WINDOWS_HEADER = "{count} on-screen window(s) of '{app}', front to back (screen coordinates):"
 
 # ── Permission probe states (ADVISORY ONLY — never a hard gate) ──
 # macOS attributes a TCC grant to the RESPONSIBLE PARENT process, so a probe
@@ -1188,6 +1197,25 @@ class DriverResult:
     apps: tuple[AppRef, ...] = ()
     app: AppRef | None = None
     snapshot: Snapshot | None = None
+    windows: "tuple[WindowRef, ...]" = ()
+
+
+@dataclass(frozen=True)
+class WindowRef:
+    """One on-screen window of an application, for ``computer_list_windows``.
+
+    ``window_id`` is an opaque handle: the CoreGraphics window number on macOS, the
+    top-level HWND on Windows. It is only meaningful together with the app it was
+    listed for, because both platforms recycle the numbers.
+
+    ``bounds`` is the screen rect in the package's top-left convention, or ``None``
+    when the window server did not report one. A small rect is worth showing: a
+    66x20 helper window is told apart from the document window by its size.
+    """
+
+    window_id: int
+    title: str = ""
+    bounds: "tuple[float, float, float, float] | None" = None
 
 
 @dataclass(frozen=True)

@@ -72,6 +72,7 @@ from kiro_crew.computer_use.types import (
     PermissionProbe,
     Snapshot,
     SnapshotRequest,
+    WindowRef,
 )
 
 # ── Image fixture ──
@@ -317,6 +318,10 @@ class FakeComputerUseBackend(ComputerUseBackend):
         # UI changing between two walks and trip fingerprint drift).
         self.trees: dict[str, FakeNode] = dict(FAKE_TREES)
         self.apps: tuple[AppRef, ...] = FAKE_APPS
+        #: Further windows of an app beyond the one in :attr:`apps`, keyed by
+        #: ``AppRef.key``. Each is a full ref (its own ``window_id`` and title), so
+        #: a test can stage a small helper window in front of the main one.
+        self.extra_windows: dict[str, tuple[AppRef, ...]] = {}
         #: Installed-but-not-running apps, for :meth:`launch_app`.
         self.launchable: tuple[AppRef, ...] = FAKE_LAUNCHABLE
         #: Whether a launch produces a window. ``False`` drives the third real
@@ -343,6 +348,7 @@ class FakeComputerUseBackend(ComputerUseBackend):
         self.force_error = ""
         self.trees = dict(FAKE_TREES)
         self.apps = FAKE_APPS
+        self.extra_windows = {}
         self.launchable = FAKE_LAUNCHABLE
         self.launched_with_window = True
 
@@ -380,6 +386,25 @@ class FakeComputerUseBackend(ComputerUseBackend):
                 return DriverResult(ok=True, app=app)
         return DriverResult(
             ok=False, text=ERR_APP_NOT_FOUND.format(query=query, tool=TOOL_LIST_APPS)
+        )
+
+    def _windows_of(self, app: AppRef) -> tuple[AppRef, ...]:
+        """*app*'s own listed window, then its staged extras (same pid only)."""
+        base = tuple(a for a in self.apps if a.key == app.key and a.pid == app.pid)
+        extras = tuple(w for w in self.extra_windows.get(app.key, ()) if w.pid == app.pid)
+        return base + extras
+
+    def list_windows(self, app: AppRef) -> DriverResult:
+        self._record("list_windows", app=app.key)
+        forced = self._forced()
+        if forced is not None:
+            return forced
+        return DriverResult(
+            ok=True,
+            windows=tuple(
+                WindowRef(window_id=w.window_id, title=w.window_title, bounds=FAKE_WINDOW_BOUNDS)
+                for w in self._windows_of(app)
+            ),
         )
 
     def launch_app(

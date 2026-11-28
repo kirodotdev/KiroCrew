@@ -56,6 +56,7 @@ from kiro_crew.computer_use.types import (
     TOOL_LIST_APPS,
     AppRef,
     ComputerUseError,
+    WindowRef,
 )
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,33 @@ def resolve_app(query: str) -> AppRef:
         if app.name and needle in app.name.lower():
             return app
     raise ComputerUseError(ERR_APP_NOT_FOUND.format(query=query, tool=TOOL_LIST_APPS))
+
+
+def _windows_of(pid: int) -> "list[macos_ffi.WindowInfo]":
+    """Every on-screen, layer-0 window *pid* owns, front to back.
+
+    The layer and pid filter :func:`list_apps` applies before it collapses an app to
+    one window, so the two lists agree on what an addressable window is.
+    """
+    return [
+        info
+        for info in macos_ffi.window_list()
+        if info.layer == macos_ffi.CG_WINDOW_LAYER_NORMAL and info.pid == pid and info.pid > 0
+    ]
+
+
+def list_windows(app: AppRef) -> "tuple[WindowRef, ...]":
+    """The on-screen windows of *app*'s process, front to back.
+
+    Every layer-0 window, titled or not and however small: a helper window in front of
+    an app's main window can be 66x20, and a legitimate dialog can be as small.
+    Choosing among them is the caller's job, which is why this returns them all with
+    their size rather than guessing which one is "real".
+    """
+    return tuple(
+        WindowRef(window_id=info.window_id, title=info.title, bounds=info.bounds)
+        for info in _windows_of(app.pid)
+    )
 
 
 def resolve_identity(pid: int) -> AppIdentity:
@@ -567,6 +595,7 @@ __all__ = [
     "bundle_identity_at",
     "identity_for",
     "list_apps",
+    "list_windows",
     "pid_owns_point",
     "read_bundle_plist",
     "reset_identity_cache",

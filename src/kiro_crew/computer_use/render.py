@@ -36,9 +36,11 @@ from kiro_crew.computer_use.types import (
     TRUNCATED_WINDOW_NOTE,
     UNLISTED_APPS_NOTE,
     WINDOW_ORIGIN_NOTE,
+    WINDOWS_HEADER,
     AppRef,
     ElementRec,
     Snapshot,
+    WindowRef,
 )
 from kiro_crew.imessage.plaintext import _grapheme_boundary
 
@@ -77,6 +79,29 @@ def render_apps(apps: "tuple[AppRef, ...]") -> str:
             line += f' — "{_clip(app.window_title, _APP_FIELD_LIMIT)}"'
         lines.append(line)
     lines.append(UNLISTED_APPS_NOTE)
+    return policy.redact_result("\n".join(lines))
+
+
+def render_windows(app: AppRef, windows: "tuple[WindowRef, ...]") -> str:
+    """Render one application's on-screen windows, front to back.
+
+    One line per window: the ``window_id`` that names it, the title, and the screen
+    rect. The rect is what tells a 66x20 helper from the real document window, so
+    it is shown even though the title usually suffices. Titles are flattened and
+    clipped like the app list's, and the whole listing ends with the redaction
+    pass, for the same reasons.
+    """
+    label = _clip(app.bundle_id or app.name, _APP_FIELD_LIMIT) or "(unnamed)"
+    if not windows:
+        return policy.redact_result(WINDOWS_HEADER.format(count=0, app=label))
+    lines = [WINDOWS_HEADER.format(count=len(windows), app=label)]
+    for win in windows:
+        line = f"- window_id {win.window_id}"
+        title = _clip(win.title, _APP_FIELD_LIMIT)
+        line += f' "{title}"' if title else " (untitled)"
+        if win.bounds is not None:
+            line += " " + _render_frame(win.bounds)
+        lines.append(line)
     return policy.redact_result("\n".join(lines))
 
 

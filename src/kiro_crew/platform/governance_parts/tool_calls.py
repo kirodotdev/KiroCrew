@@ -61,6 +61,11 @@ _CU_ACTION_CLASSES: Dict[str, Tuple[str, ...]] = {
     # Observation only — no input is synthesized into any window.
     "list_apps": (CU_CLASS_OBSERVE,),
     "get_state": (CU_CLASS_OBSERVE,),
+    # Reads one app's window list (ids, titles, rects) and synthesizes no input,
+    # but is classed ``mutate`` on purpose: ``observe`` is the class
+    # ``_cu_read_only_auto_approve`` passes, and this listing is approved per call
+    # like the tools below.
+    "list_windows": (CU_CLASS_MUTATE,),
     # Control plane: drops Kiro Crew's OWN cached snapshots and touches no other
     # application, so it is neither observe nor mutate.  A read-only ceiling that
     # wants the model to be able to release its cache explicitly must therefore

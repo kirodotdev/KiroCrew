@@ -71,6 +71,7 @@ from kiro_crew.computer_use.types import (
     Snapshot,
     SnapshotRequest,
     StaleIndex,
+    WindowRef,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,12 @@ class ComputerUseService:
             # later address the wrong process.
             raise ComputerUseError(f"the driver resolved '{query}' to no application")
         return result.app
+
+    def list_windows(self, app: AppRef) -> "tuple[WindowRef, ...]":
+        """The on-screen windows of *app*, front to back (window list only, no walk)."""
+        result = self.backend.list_windows(app)
+        self._require_ok(result)
+        return result.windows
 
     def launch_app(
         self,

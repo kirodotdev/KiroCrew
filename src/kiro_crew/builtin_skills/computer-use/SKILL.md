@@ -117,6 +117,23 @@ not pass a frame straight through); **Focus** names the focused element; and
 A `<secure>` element shows no title, no value, no traits and no frame — only
 that it exists.
 
+**If the tree is not the window you meant** (a tiny helper, a palette, the wrong
+document), list the app's windows. `computer_get_state` walks the app's default
+window; `computer_list_windows` shows every window of the app, front to back, with
+its title and screen rect:
+
+```
+computer_list_windows(app="Notes")
+  -> - window_id 71 "Window" @ x=10,y=10 66x20
+     - window_id 72 "All on My Mac" @ x=0,y=25 1200x800
+```
+
+On Windows, passing a listed window's title as `app` reaches that window. On
+macOS, `computer_get_state` still walks the default window, so tell the user which
+window you need and that it is not the one you can reach. The listing is approved
+per call like an action, so call it when the window you got is wrong, not before
+every snapshot.
+
 **3. Act by index.**
 
 | Tool | Use it for |

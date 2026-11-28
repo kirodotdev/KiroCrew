@@ -121,6 +121,7 @@ from kiro_crew.computer_use.types import (
     TOOL_GET_STATE,
     TOOL_LAUNCH_APP,
     TOOL_LIST_APPS,
+    TOOL_LIST_WINDOWS,
     TOOL_PERFORM_ACTION,
     TOOL_PRESS_KEY,
     TOOL_SCROLL,
@@ -290,7 +291,7 @@ def _coord_prop(description: str) -> dict[str, Any]:
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
-    """The eleven tool definitions.
+    """The twelve tool definitions.
 
     Bounds mirror ``validation.MCP_COMPUTER_SCHEMAS`` (which is the enforcement
     point — this is advertisement, so a mismatch would only produce a confusing
@@ -331,6 +332,20 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "you do not already know how the user names the app."
             ),
             "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": TOOL_LIST_WINDOWS,
+            "description": (
+                "List one application's on-screen windows, front to back, with "
+                "each window's window_id, title and screen rect. Use it when the "
+                f"window {TOOL_GET_STATE} walked is not the one you want, to see "
+                "what else the app has open and where."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"app": app_prop},
+                "required": ["app"],
+            },
         },
         {
             "name": TOOL_LAUNCH_APP,

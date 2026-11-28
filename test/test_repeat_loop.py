@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from kiro_crew.computer_use.types import ALL_TOOLS as COMPUTER_USE_TOOLS
 from kiro_crew.dashboard.chat_runner import _steer_repeat_loop_notice
 from kiro_crew.repeat_loop import (
     _EXEMPT_TOOL_IDS,
@@ -172,6 +173,8 @@ def test_computer_use_tools_are_exempt_too() -> None:
     assert not any(_repeat(RepeatLoopTracker(), 10, "computer_press_key", '{"key": "a"}', "k"))
     assert not any(_repeat(RepeatLoopTracker(), 10, "tool_call", wrapped, ""))
     assert all(is_exempt_tool(name) for name in _EXEMPT_TOOL_IDS)
+    # Every kirocrew-computer tool, so a tool added there is exempt here as well.
+    assert set(COMPUTER_USE_TOOLS) <= _EXEMPT_TOOL_IDS
 
 
 def test_a_refinement_naming_an_exempt_tool_drops_the_record() -> None:
