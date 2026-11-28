@@ -3323,6 +3323,7 @@ jobs:
             test/test_pinned_order_real_sandbox.py \
             test/test_md_notebook_real_sandbox.py \
             test/test_app_backend_secret_files_real_sandbox.py \
+            test/test_app_backend_spawns_real_sandbox_secret_files.py \
             test/test_sandbox_hidden_leaf_parent_pins.py \
             test/test_app_credential_mask_dirs.py \
             test/test_session_record_directory_sealed.py \
