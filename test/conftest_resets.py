@@ -1983,3 +1983,26 @@ def _published_redaction_verdict_on():
     seams = sys.modules.get("kiro_crew.redaction_seams")
     if seams is not None:
         seams.publish(False)
+
+
+@per_test_guard
+def _fresh_ssm_session_answer():
+    """Start each test with no cached Session Manager answer.
+
+    ``shell_origin.is_ssm_session`` walks the process ancestry once per process
+    and caches the answer, so a test that fakes the process table would leak
+    its answer into later tests on the same worker.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.shell_origin")
+        # A test may have patched the function itself; only the cached one clears.
+        cache_clear = getattr(getattr(module, "is_ssm_session", None), "cache_clear", None)
+        if cache_clear is not None:
+            cache_clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()

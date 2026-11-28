@@ -652,10 +652,15 @@ def test_cli_a_bad_port_exits_with_the_usual_message(
 
 
 @pytest.mark.parametrize(
-    ("env", "expect_no_open"),
+    ("env", "ssm", "expect_no_open"),
     [
-        ({"DISPLAY": ":0"}, False),
-        ({"SSH_CONNECTION": "10.0.0.1 1 10.0.0.2 22"}, True),
+        ({"DISPLAY": ":0"}, False, False),
+        ({}, False, False),
+        ({"SSH_CONNECTION": "10.0.0.1 1 10.0.0.2 22"}, False, True),
+        # A Session Manager shell sets no SSH variable and has no display.
+        ({}, True, True),
+        # A remote session with a display set still opens a browser.
+        ({"DISPLAY": ":0"}, True, False),
     ],
 )
 def test_cli_opens_a_browser_only_where_the_gateway_would(
@@ -664,6 +669,7 @@ def test_cli_opens_a_browser_only_where_the_gateway_would(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
     env: dict[str, str],
+    ssm: bool,
     expect_no_open: bool,
 ) -> None:
     for name in ("SSH_CONNECTION", "SSH_CLIENT", "DISPLAY", "WAYLAND_DISPLAY"):
@@ -676,6 +682,7 @@ def test_cli_opens_a_browser_only_where_the_gateway_would(
     # `sys.platform` or `platform_compat` would be live while `_cli_gateway` imports
     # `cli_server`, and every module imported then would see the fake value.
     monkeypatch.setattr(cli, "_headless_ssh_skips_browser_here", lambda: True)
+    monkeypatch.setattr("kiro_crew.shell_origin.is_ssm_session", lambda: ssm)
     seen: dict[str, Any] = {}
 
     def sign_in_then_exit(_exc: BaseException, **kwargs: Any) -> None:
