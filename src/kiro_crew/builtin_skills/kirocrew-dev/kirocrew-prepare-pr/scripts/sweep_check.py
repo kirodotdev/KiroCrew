@@ -110,7 +110,13 @@ DEFAULT_PATHSPECS = (
 )
 
 ENTRY_RE = re.compile(r"^## span=([0-9a-f]{12})\s*$")
-FIELD_RE = re.compile(r"^(class|search|risk|resolution|sites|branches):[ \t]*(.*?)\s*$")
+# The value is empty or ends on a non-space, and ``(?![ \t])`` keeps the run
+# before it whole, so each whitespace run has one reader: a lazy value beside
+# ``\s*$`` rescanned the trailing run once per value character. Every match
+# is unchanged.
+FIELD_RE = re.compile(
+    r"^(class|search|risk|resolution|sites|branches):[ \t]*(?![ \t])((?:.*\S)?)\s*$"
+)
 # A site or branch row. The keyword and its argument are named groups, so no
 # later step splits on a delimiter the pattern did not require (any whitespace
 # separates the parts).
