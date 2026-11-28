@@ -36,6 +36,7 @@ from kiro_crew.apps.manager_records import (
     InstalledApp,
     _approved_grants_after_manifest_change,
     _approved_grants_snapshot,
+    _card_approved_agent_tools,
     _consented_grant_entries,
     _effective_approved_grants,
     _held_back_entries,
@@ -46,6 +47,7 @@ from kiro_crew.apps.manager_records import (
     _session_control_widening,
     _tree_swap,
     _UpdateMarker,
+    _widening_entries,
     _write_approved_grants,
     _write_installed,
     app_data_dir,
@@ -162,6 +164,7 @@ def install_app(
     source_repository: str = "",
     market_source: str = "",
     source_commit: str = "",
+    agent_tools_consent: list[str] | tuple[str, ...] = (),
 ) -> AppResult:
     """Install an app from a local directory path.
 
@@ -177,6 +180,11 @@ def install_app(
     ``sourceCommit = source_commit``, so no record ever names the staging folder
     as the source of marketplace code; a local-folder grant would admit that.
     The install-time trust check then compares against the listing coordinate.
+
+    ``agent_tools_consent`` is the ``agentTools`` entries the owner's trust card
+    listed. Only those the manifest declares are approved; every other declared
+    tool waits for the owner on the app's page, so an install no card preceded
+    approves none.
     """
     # Imported here, not at module level: the MCP listing imports this module and
     # its import budget has no room (test_mcp_listing_import_budget).
@@ -558,7 +566,10 @@ def install_app(
             error_code="app_install_approvals_unreadable",
         )
     try:
-        _write_approved_grants(name, _consented_grant_entries(grant_source(manifest)))
+        declared = grant_source(manifest)
+        grants = _consented_grant_entries(declared)
+        grants["agentTools"] = _card_approved_agent_tools(name, declared, agent_tools_consent)
+        _write_approved_grants(name, grants)
         if not manifest.ui.startup:
             protected_app_state.write_startup_text(name, None)
         _write_installed(name, meta)
@@ -788,7 +799,7 @@ def update_app(
         old_permissions=baseline.grants if baseline is not None else grant_source(old_manifest),
         new_permissions=grant_source(manifest),
     )
-    widened_grants = any(_held_back_entries(approved_grants, grant_source(manifest)).values())
+    widened_grants = any(_widening_entries(name, approved_grants, grant_source(manifest)).values())
     # Same discriminator as ``manager_builtins._builtin_owns_install`` (a later
     # owner, so not importable here): only ``register_builtin_apps`` writes it.
     builtin_owned = existing.source == "builtin" or existing.origin == "builtin"
@@ -800,7 +811,11 @@ def update_app(
                 error=f"app {name!r} is not a built-in record",
                 error_code="not_builtin_owned",
             )
-        if widened_session_approval or widened_grants:
+        # An adopted record's agent tools are held to the wheel copy's
+        # (``app_agent_tools._within_wheel_copy``), never to an approved set.
+        adoption_held = _held_back_entries(approved_grants, grant_source(manifest))
+        adoption_held.pop("agentTools", None)
+        if widened_session_approval or any(adoption_held.values()):
             return AppResult(
                 ok=False,
                 name=name,

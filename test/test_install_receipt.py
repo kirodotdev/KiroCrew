@@ -459,7 +459,7 @@ async def _run_registry_install(
     monkeypatch.setattr(
         registry,
         "install_app",
-        lambda _source: AppResult(
+        lambda _source, **_k: AppResult(
             ok=install_ok,
             name="issue-radar",
             message="installed" if install_ok else "",

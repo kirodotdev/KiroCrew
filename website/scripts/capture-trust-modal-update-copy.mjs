@@ -63,7 +63,7 @@ const ENABLE_ON_CANCEL_GRANTED = `keeps \u201c${DISPLAY}\u201d trusted and switc
 const ONE_SWITCH = `Trusting \u201c${DISPLAY}\u201d is what turns it on.`
 /** The install path's copy, which the Update path must not show either. */
 const INSTALL_ON_CANCEL = 'nothing is installed'
-const INSTALL_OUTCOME = 'it installs switched off'
+const INSTALL_OUTCOME = 'Remove it later in Settings'
 const INSTALL_FAILED = 'could not be installed'
 /** The Update path's own copy (AFTER). */
 const BEFORE = PREFIX === 'before'
@@ -204,7 +204,6 @@ const fail = (msg, text) => { throw new Error(`${PREFIX}: ${msg}: ${JSON.stringi
 /** Shared: the Update path never carries the install path's sentences, in either build. */
 function assertNoInstallCopy(body) {
   if (body.includes(INSTALL_ON_CANCEL)) fail('the update path must not say nothing is installed', body)
-  if (body.includes(INSTALL_OUTCOME)) fail('the update path must not say the app installs switched off', body)
   if (body.includes(INSTALL_FAILED)) fail('the update path must not say the app could not be installed', body)
 }
 
@@ -212,7 +211,8 @@ async function captureConsent(context, base) {
   const { page, modal } = await openUpdateModal(context, base, 'consent')
   const body = await modal.innerText()
   assertNoInstallCopy(body)
-  if (!body.includes(UPDATE_ON_CANCEL)) fail('the update path has its own Cancel line', body)
+  if (!body.includes(INSTALL_OUTCOME)) fail('consent ends on the take-back line', body)
+  if (body.includes(UPDATE_ON_CANCEL)) fail('the consent card has no Cancel line', body)
   if (body.includes(ENABLE_ON_CANCEL)) fail('the update path must not say the app is switched off', body)
   if (!body.includes(UPDATE_OUTCOME)) fail('the consent state says this is an update', body)
   if (!await modal.getByRole('button', { name: CONFIRM_UPDATE, exact: true }).count()) fail('the confirm names the update', body)
@@ -226,6 +226,7 @@ async function captureNotSaved(context, base) {
   const text = await modal.getByRole('alert').innerText()
   const body = await modal.innerText()
   assertNoInstallCopy(body)
+  if (body.includes(INSTALL_OUTCOME)) fail('unsaved trust has no take-back line', body)
   if (!text.includes(TRUST_REASON)) fail("the modal must render the server's reason beneath", text)
   if (!body.includes(UPDATE_OUTCOME)) fail('the outcome line stays after a failure: it says the retry still updates', body)
   if (text.includes(LOGS_CLAUSE)) fail('the not-saved headline must not point at logs', text)
@@ -233,7 +234,7 @@ async function captureNotSaved(context, base) {
   if (!text.includes(UPDATE_GENERIC)) fail('the not-saved headline says the app could not be updated', text)
   if (!text.includes(CHOOSE_RETRY)) fail('connected, the reader is told to choose the retry', text)
   if (text.includes(ONE_SWITCH)) fail('the update path must not say trusting is what turns the app on', text)
-  if (!body.includes(UPDATE_ON_CANCEL)) fail('the not-saved state keeps the update Cancel line', body)
+  if (body.includes(UPDATE_ON_CANCEL)) fail('the not-saved headline already says trust was not saved; no Cancel line repeats it', body)
   if (body.includes(ENABLE_ON_CANCEL)) fail('the update path must not say the app is switched off', body)
   if (await retry.isDisabled()) fail('connected, the not-saved retry is on', body)
   await modal.screenshot({ path: `${OUT}/${PREFIX}-02-update-not-saved-failure.png` })
@@ -246,6 +247,7 @@ async function captureTrusted(context, base) {
   const text = await modal.getByRole('alert').innerText()
   const body = await modal.innerText()
   assertNoInstallCopy(body)
+  if (!body.includes(INSTALL_OUTCOME)) fail('retained trust keeps the take-back line', body)
   if (!text.includes(UPDATE_REASON)) fail("the modal must render the server's reason beneath", text)
   if (page.rollbacks() !== 0) fail('the grant must stand: the app is installed, so nothing is rolled back', text)
   if (!body.includes(UPDATE_OUTCOME)) fail('the outcome line stays after a failure: it says the retry still updates', body)
@@ -277,6 +279,8 @@ async function captureOffline(context, base) {
   const { page, modal } = await openUpdateModal(context, base, 'offline')
   const retry = await failThroughTheModal(page, modal, RETRY_NOT_SAVED)
   const text = await modal.getByRole('alert').innerText()
+  const body = await modal.innerText()
+  if (body.includes(INSTALL_OUTCOME)) fail('unsaved trust has no take-back line', body)
   if (!text.includes(UPDATE_GENERIC)) fail('the not-saved headline says the app could not be updated', text)
   if (!text.includes(OFFLINE_NEXT)) fail('offline, the next step says when the retry comes back', text)
   if (text.includes('Ask the agent')) fail('offline, nothing names or shows the hidden hand-off', text)

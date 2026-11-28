@@ -32,9 +32,7 @@ import { CATALOGS } from './catalogs'
 const GRANTED = ['failed', 'install_failed', 'update_failed'] as const
 const GENERIC = ['failed_generic', 'install_failed_generic', 'update_failed_generic'] as const
 const CANCEL_LINES = [
-  'on_cancel', 'on_cancel_granted',
-  'install_on_cancel', 'install_on_cancel_granted',
-  'update_on_cancel', 'update_on_cancel_granted',
+  'on_cancel_granted', 'install_on_cancel_granted', 'update_on_cancel_granted',
 ] as const
 
 type Catalog = Record<string, unknown>

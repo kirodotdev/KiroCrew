@@ -1158,6 +1158,8 @@ def _declared_grant_entries(permissions: Any) -> dict[str, list[str]]:
 #: ``browser``: the verbs ``ctx.browser`` and ``BrowserView`` use on its own slots' tabs.
 #: ``browserRecipes``: the fixed clicks Crew runs on the app's own agent's tab.
 #: ``browserRecipeWatch``: the separate yes for a watch recipe to run by itself.
+#: ``agentTools``: a third-party app's agent tools. An install approves only the
+#: entries its trust card listed (``install_app(agent_tools_consent=...)``).
 _OWNER_APPROVED_FAMILIES = (
     BOT_GRANT_FAMILY,
     "browserSites",
@@ -1165,7 +1167,26 @@ _OWNER_APPROVED_FAMILIES = (
     "kiroOperations",
     "browserRecipes",
     "browserRecipeWatch",
+    "agentTools",
 )
+
+
+def _card_approved_agent_tools(name: str, declared: Any, consent: Any) -> list[str]:
+    """The declared ``agentTools`` entries an install card's *consent* approves.
+
+    Only entries the card listed and the manifest declares, and never a tool the
+    owner turned off on the app's page (``read_revoked_agent_tools``): that tool
+    waits for the owner's turn-on. A revoked list that cannot be read approves none.
+    """
+    shown = {e for e in consent if isinstance(e, str)}
+    revoked = protected_app_state.revoked_agent_tools_or_none(name)
+    if revoked is None:
+        return []
+    return [
+        e
+        for e in (declared or {}).get("agentTools", ())
+        if e in shown and e.partition("@")[0] not in revoked
+    ]
 
 
 def _consented_grant_entries(permissions: Any) -> dict[str, list[str]]:
@@ -1227,6 +1248,41 @@ def _held_back_entries(
         # One set per family: a link-preview provider may list any number of hosts.
         granted = set(approved[family]) if family in approved else None
         held[family] = [] if granted is None else [e for e in declared[family] if e not in granted]
+    return held
+
+
+def _widening_entries(
+    name: str,
+    approved: dict[str, list[str]] | None,
+    permissions: Any,
+    *,
+    third_party: bool | None = None,
+) -> dict[str, list[str]]:
+    """The held-back entries that make an update or re-registration widen *name*'s grants.
+
+    ``agentTools`` counts only for a third-party app, and only the tools its page
+    offers to approve: a first-party or adopted app's tools need no grant, and a
+    tool the owner turned off is an off switch there, not a new permission. An
+    unreadable revoked list offers none (``agent_tools_grant_row``). On-loop callers
+    pass provenance computed off-loop; ``None`` computes it here when tools are held.
+    """
+    held = _held_back_entries(approved, permissions)
+    if not held.get("agentTools"):
+        return held
+    if third_party is None:
+        # Deferred: ``app_agent_tools`` reads the manager facade, which imports this module.
+        from kiro_crew.apps import app_agent_tools  # noqa: PLC0415
+
+        third_party = app_agent_tools.is_third_party(name)
+    if not third_party:
+        held.pop("agentTools", None)
+    else:
+        revoked = protected_app_state.revoked_agent_tools_or_none(name)
+        held["agentTools"] = (
+            []
+            if revoked is None
+            else [e for e in held["agentTools"] if e.partition("@")[0] not in revoked]
+        )
     return held
 
 

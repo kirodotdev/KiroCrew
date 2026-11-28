@@ -24,6 +24,7 @@ from aiohttp import web
 
 from kiro_crew.apps import official_catalog
 from kiro_crew.apps.manager import app_lifecycle_lock, get_app, list_apps
+from kiro_crew.apps.manifest_agent_tools import MAX_AGENT_TOOLS_PER_APP
 from kiro_crew.apps.official_category_order import forget_cache as forget_category_order_cache
 from kiro_crew.apps.official_category_order import load_category_order
 from kiro_crew.apps.official_editorial import forget_cache as forget_editorial_cache
@@ -382,6 +383,18 @@ async def _reach_bot_chats(request: web.Request) -> None:
     await bot_chat_app_tools.after_app_change(request.app.get("state"))
 
 
+def agent_tools_consent(body: dict[str, Any]) -> list[str]:
+    """The ``agentToolsConsent`` entries a request names: the tools its trust card listed.
+
+    Anything that is not a list of strings names none. The install keeps only the
+    entries the manifest declares (``install_app``), so this caps the list only.
+    """
+    raw = body.get("agentToolsConsent")
+    if not isinstance(raw, list):
+        return []
+    return [e for e in raw if isinstance(e, str) and e][:MAX_AGENT_TOOLS_PER_APP]
+
+
 async def handle_registry_install(request: web.Request) -> web.Response:
     """POST /api/apps/registry/install — install an app from the registry.
 
@@ -423,7 +436,9 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         if was_installed:
             result = await _reinstall_from_registry(name, name)
         else:
-            result = await install_from_registry(name)
+            result = await install_from_registry(
+                name, agent_tools_consent=agent_tools_consent(body)
+            )
 
         # Redact install log and error before returning to client — build output
         # may contain internal hostnames, package URLs, or credential fragments.
@@ -614,7 +629,9 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
             if was_installed:
                 r = await _reinstall_from_registry(name, name, log_lines=streaming_log)
             else:
-                r = await install_from_registry(name, log_lines=streaming_log)
+                r = await install_from_registry(
+                    name, log_lines=streaming_log, agent_tools_consent=agent_tools_consent(body)
+                )
             if r.get("ok") and not r.get("needsClientInstall"):
                 may_run = await _app_may_run_after_install(r["name"])
                 if not may_run:

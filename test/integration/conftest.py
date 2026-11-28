@@ -137,6 +137,9 @@ cross-home flake three tests later.
      every app manifest the boot's spawns read, keyed on the home's paths.
    * ``apps.manager_records._recorded_names_cache`` -- the apps folder's
      recorded entry names that a boot's listings reuse, keyed on its path.
+   * ``apps.app_agent_tools._cache`` and ``_third_party_cache`` -- the agent
+     tools the home's installed apps declare (and, for third-party apps, the
+     owner approved), keyed on that home's manifests and approved sets.
    * ``apps.routes_proxy`` app-secret cache and its invalidation counts -- the
      secret the reverse proxy signs each app's requests with, keyed by app name
      only. A later home with an app of the same name would have its requests
@@ -331,6 +334,7 @@ from kiro_crew import (
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth, kas_machine
 from kiro_crew.apps import (
+    app_agent_tools,
     credential_masks,
     execution,
     hidden_sessions,
@@ -861,6 +865,9 @@ def _reset_home_bound_globals() -> None:
     sandbox._SHIM_ARGV_CACHE.clear()
     credential_masks.clear_cache()
     manager_records._recorded_names_cache.clear()
+    with app_agent_tools._cache_lock:
+        app_agent_tools._cache = None
+        app_agent_tools._third_party_cache = None
     with routes_proxy._app_secret_lock:
         routes_proxy._app_secret_cache.clear()
         routes_proxy._app_secret_generation.clear()
@@ -913,6 +920,13 @@ def _reset_home_bound_globals() -> None:
     overlay_refresh.set_overlay_refresher(None)
     status_counts._last_counts_warn_monotonic = None
     inventory_gauges.reset_for_testing()
+    # The host posture the resource-pressure notifier publishes on each sample, as
+    # ``test/conftest_resets.py`` drops it per test. Whether a boot's first sample lands
+    # before its teardown is timing, so a boot may or may not leave one set.
+    resource_pressure._current_posture = None
+    resource_pressure._worsened = None
+    resource_pressure._worker_growth.clear()
+    resource_pressure._session_marks.clear()
     with diag_threads._prev_lock:
         diag_threads._prev_reading.clear()
     resource_pressure._current_posture = None

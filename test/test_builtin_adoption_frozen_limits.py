@@ -582,6 +582,31 @@ async def test_a_call_reaches_the_adopted_apps_route_once_the_copy_is_deleted(
     assert seen == [(NAME, "agent-tools")]
 
 
+def test_an_adopted_record_stays_first_party_once_the_copy_is_deleted(tmp_path, monkeypatch):
+    """Its frozen tools list without a grant, so its page and updates offer none to approve."""
+    from kiro_crew.apps.agent_tool_grants import agent_tools_grant_row
+
+    wheel = _ship(tmp_path, monkeypatch)
+    _adopted()
+    _delete(wheel)
+    get_app = manager.get_app
+    calls: list[str] = []
+
+    def counted_get_app(name: str) -> Any:
+        calls.append(name)
+        return get_app(name)
+
+    monkeypatch.setattr(manager, "get_app", counted_get_app)
+    record = json.loads((manager.app_dir(NAME) / "app.json").read_text(encoding="utf-8"))
+    assert not app_agent_tools.is_third_party(NAME)
+    assert agent_tools_grant_row(NAME, record) == {}
+    # Provenance reads no app row, so building the row below enters get_app once.
+    assert calls == []
+    assert "agentToolsGrant" not in manager.get_app(NAME)
+    assert calls == [NAME]
+    assert [t.app for t in app_agent_tools.third_party_tools()] == []
+
+
 # --------------------------------------------------------------------------- #
 # Row 9: the built-in leg of the credential masks and agent read-only directories
 # --------------------------------------------------------------------------- #

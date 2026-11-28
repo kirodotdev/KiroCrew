@@ -1,5 +1,6 @@
 import { i18nT } from '../../i18n/t'
 import type { BackendStatus } from '../../utils/backendStatus'
+import type { AgentToolGrant } from './agentTools'
 
 /** An app row's `composerActionGrant`: the approved composer buttons, and the ids
  *  of the ones an update added that wait (`apps/composer_action_grants.py`). */
@@ -121,6 +122,8 @@ export type RegistryApp = {
     permissions?: { api?: string[]; sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean; chatSlots?: boolean; hiddenSessions?: boolean; chatLaunch?: unknown; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; browser?: string[]; webhookSource?: boolean }
     mcpServers?: Record<string, McpServerView>
     platform?: { requiresDesktopApp?: boolean }
+    /** The manifest `agentTools` block, as written: the install card lists its tools. */
+    agentTools?: unknown
   }
 }
 
@@ -187,6 +190,8 @@ export type InstalledApp = {
   kiroOperationsGrant?: { approved: string[]; staged: string[] }
   /** `permissions.browserRecipes` the owner approved, the ones waiting, the watch ones split by the separate run-by-itself yes, and whether the `app_browser_sdk` preview is on; grant entries, absent when undeclared. */
   browserRecipesGrant?: { approved: string[]; staged: string[]; watchOn?: string[]; watchOff?: string[]; preview?: boolean }
+  /** Third-party `agentTools` the owner approved, the ones an install or update holds back, and the ones the owner turned off; absent when none. */
+  agentToolsGrant?: { approved: AgentToolGrant[]; staged: AgentToolGrant[]; revoked?: AgentToolGrant[] }
   /** `permissions.browser` verbs the owner approved, the ones waiting, and whether the `app_browser_sdk` preview is on; absent when undeclared. */
   browserGrant?: { approved: string[]; staged: string[]; preview: boolean }
   installedAt: string
@@ -234,6 +239,8 @@ export type InstalledApp = {
     displayName: string
     description: string
     author: string
+    /** The manifest `agentTools` block, as written: the install card lists its tools. */
+    agentTools?: unknown
     agents?: string[]
     skills?: string[]
     sops?: string[]

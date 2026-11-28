@@ -450,6 +450,27 @@ class TestSignedPrincipalProxy:
         assert (claim.kind, claim.owner_id) == ("agent-tool", "")
 
     @pytest.mark.asyncio
+    async def test_an_agent_tool_call_reaches_the_backend_without_core_credentials(
+        self, monkeypatch
+    ):
+        """The call route hands a third-party tool call to this proxy; app code sees none of core's credentials."""
+        secret = "test-internal-secret"
+        received, _ = await self._proxy(
+            monkeypatch,
+            internal_secret=secret,
+            headers={
+                "X-Internal-Secret": secret,
+                "X-Session-Key": "chat-the-caller",
+                "X-Session-Token": "session-token-value",
+                "X-Internal-Caller": "kirocrew-core",
+            },
+        )
+        assert received, "the proxy never sent the backend request"
+        for name in ("x-internal-secret", "x-session-key", "x-session-token", "x-internal-caller"):
+            assert name not in received, f"{name} reached the app backend"
+        assert all(secret not in v for values in received.values() for v in values)
+
+    @pytest.mark.asyncio
     async def test_real_middleware_owner_cookie_on_mixed_internal_path_receives_owner_claim(
         self, monkeypatch
     ):

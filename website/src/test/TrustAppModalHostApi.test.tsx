@@ -83,7 +83,7 @@ describe('TrustAppModal host endpoint disclosure', () => {
     expect(box.getByText('/api/chat')).toBeTruthy()
     expect(box.queryByText('/apps/crew-app/api/*')).toBeNull()
     // The three-row ceiling is still there, unchanged.
-    expect(dialog.getByText(`${K}.capability_note`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.capability_shell`)).toBeTruthy()
   })
 
   it('leaves the chat sentence out when no listed path is a chat path', () => {

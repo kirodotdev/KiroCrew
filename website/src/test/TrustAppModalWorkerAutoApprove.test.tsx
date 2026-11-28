@@ -43,7 +43,7 @@ describe('TrustAppModal worker auto-approve disclosure', () => {
     expect(dialog.getByText(`${K}.worker_auto_approve_heading`)).toBeTruthy()
     expect(dialog.getByText(`${K}.worker_auto_approve_desc`)).toBeTruthy()
     // The three-row ceiling is still there, unchanged.
-    expect(dialog.getByText(`${K}.capability_note`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.capability_shell`)).toBeTruthy()
   })
 
   it('shows no such box for an app that does not declare it', () => {

@@ -11,8 +11,10 @@ import { PREVIEW_APP_BROWSER_SDK } from '../utils/previewFlags'
 import { chatLaunchLine, chatLaunchScopeLine, knownChatLaunch } from '../components/appstore/chatLaunch'
 import { recipeLine } from '../components/appstore/browserRecipes'
 import { BrowserRecipeList, type BrowserRecipeItem } from '../components/appstore/BrowserRecipeList'
+import type { AgentToolGrant } from '../components/appstore/agentTools'
 
 export { browserVerbLine, knownBrowserVerbs, knownDesktopCapabilities }
+export { default as AppDetailAgentTools } from './AppDetailAgentTools'
 
 // The declared-grant boxes of the detail page's permissions card, and the
 // reach lines of its "approve new permissions" notice. They live here because
@@ -305,6 +307,24 @@ export function StagedBrowserRecipes({ label, entries }: { label: string; entrie
   )
 }
 
+/** `agentTools` an install or update holds back (not the ones the owner turned off): each tool by name and description, never by its entry. */
+export function AgentToolsStaged({ staged }: { staged: AgentToolGrant[] }) {
+  if (staged.length === 0) return null
+  return (
+    <div>
+      <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_agent_tools')}</div>
+      <ul className="mt-1 flex flex-col gap-1 text-[13px]" data-testid="staged-agent-tools">
+        {staged.map(tool => (
+          <li key={tool.entry}>
+            <code className="max-w-full break-all bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{tool.name}</code>
+            {tool.description && <span className="text-muted"> {tool.description}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 /**
  * `permissions.browserRecipes`: every declared recipe as it runs, the held-back ones
  * marked. An approved watch recipe runs only when the page asks until the owner gives
@@ -372,5 +392,16 @@ export function BrowserRecipesBox({ grant, appName, enabled, onChanged }: {
         {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>browserRecipes</code>
       </div>
     </div>
+  )
+}
+
+/** The approval notice's last line. Approved agent tools get their own switches on the app page, so with tools held back it names those, not disabling the app. */
+export function GrantsReconsentUndo({ agentTools, name }: { agentTools: boolean; name: string }) {
+  return (
+    <span className="text-[13px] text-muted" data-testid="grants-reconsent-undo">
+      {agentTools
+        ? i18nT('pages.appDetailPage.grants_reconsent_undo_agent_tools')
+        : i18nT('pages.appDetailPage.grants_reconsent_undo', { name })}
+    </span>
   )
 }

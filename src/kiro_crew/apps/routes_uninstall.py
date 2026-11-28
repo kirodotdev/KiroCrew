@@ -183,7 +183,8 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     name = request.match_info["name"]
-    info = get_app(name)
+    # Off-loop: the row reads the app's provenance (``agent_tools_grant_row``).
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         # No installed record, but a Bot chat may still run the app's tools.
         from kiro_crew.bot_chat_ending_fence import stop_tracked_bot_chats

@@ -37,6 +37,7 @@ from kiro_crew.apps.manager import (
     disable_app,
     enable_app,
     get_app,
+    revoke_agent_tools,
 )
 from kiro_crew.apps.manifest import Dependencies
 from kiro_crew.apps.point_grants import point_grant_families
@@ -200,6 +201,42 @@ async def _notify_builtin_service(request: web.Request, name: str) -> str | None
         return f"restart failed: {exc}"
 
 
+#: The most ``agentToolsRevoke`` entries one request reads; a switch sends one.
+MAX_AGENT_TOOLS_REVOKE = 16
+
+
+async def _revoke_agent_tools(request: web.Request, name: str, raw: Any) -> web.Response:
+    """``agentToolsRevoke``: a dashboard user turns approved agent tools off (``revoke_agent_tools``).
+
+    The caller already passed ``handle_enable_app``'s gates: an app token is refused,
+    and ``require_owner_dashboard_request`` admits only a signed-in dashboard user
+    (the owner or a Shared Crew teammate). The app is not enabled or touched otherwise.
+    """
+    if (
+        not isinstance(raw, list)
+        or len(raw) > MAX_AGENT_TOOLS_REVOKE
+        or not all(isinstance(e, str) for e in raw)
+    ):
+        return web.json_response(
+            {
+                "error": f"agentToolsRevoke must list at most {MAX_AGENT_TOOLS_REVOKE} entries",
+                "code": "invalid_agent_tools_revoke",
+            },
+            status=400,
+        )
+    async with app_lifecycle_lock(name):
+        result = await asyncio.to_thread(revoke_agent_tools, name, raw)
+    if result.error_code == "agent_tools_not_saved":
+        return web.json_response(
+            {"error": result.error, "code": "agent_tools_not_saved"}, status=500
+        )
+    if not result.ok:
+        return web.json_response(
+            {"error": result.error, "code": "agent_tools_revoke_failed"}, status=400
+        )
+    return web.json_response(result.to_dict())
+
+
 async def handle_enable_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/enable — enable an app.
 
@@ -273,6 +310,9 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             # before parsing: a bad charset or invalid bytes must land on the
             # same "no body" path as malformed JSON, not a 500.
             pass
+    if "agentToolsRevoke" in body:
+        # The app page's switch: it only narrows, and does nothing else on this route.
+        return await _revoke_agent_tools(request, name, body["agentToolsRevoke"])
     session_approval_consent = body.get("sessionApprovalConsent") is True
     # Whether the disclosure the owner confirmed named member threads. Consent
     # covers only what was shown, so it travels with the request rather than
@@ -802,7 +842,9 @@ async def handle_open_app(request: web.Request) -> web.Response:
     if not open_cmd:
         return web.json_response({"error": "app has no openCommand"}, status=400)
 
-    denied = app_execution_denied(
+    # Off-loop: a granted app's admission reads its installed row (``get_app``).
+    denied = await asyncio.to_thread(
+        app_execution_denied,
         name,
         action="open_command",
         app_root=apps_dir() / name,

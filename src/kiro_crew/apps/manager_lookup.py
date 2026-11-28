@@ -442,6 +442,7 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
 def list_apps() -> list[dict[str, Any]]:
     """Return metadata for all installed apps."""
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.agent_tool_grants import agent_tools_grant_row  # noqa: PLC0415
     from kiro_crew.apps.browser_recipes import browser_recipes_grant_row  # noqa: PLC0415
     from kiro_crew.apps.browser_sdk import browser_grant_row  # noqa: PLC0415
     from kiro_crew.apps.browser_sites import browser_sites_grant_row  # noqa: PLC0415
@@ -513,6 +514,7 @@ def list_apps() -> list[dict[str, Any]]:
             **frame_sources_grant_row(entry.name, manifest_data),
             **browser_sites_grant_row(entry.name, manifest_data),
             **kiro_operations_grant_row(entry.name, manifest_data),
+            **agent_tools_grant_row(entry.name, manifest_data),
             **browser_grant_row(entry.name, manifest_data),
             **browser_recipes_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
@@ -533,6 +535,7 @@ def list_apps() -> list[dict[str, Any]]:
 def get_app(name: str) -> dict[str, Any] | None:
     """Return full metadata for a single installed app, or None."""
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.agent_tool_grants import agent_tools_grant_row  # noqa: PLC0415
     from kiro_crew.apps.browser_recipes import browser_recipes_grant_row  # noqa: PLC0415
     from kiro_crew.apps.browser_sdk import browser_grant_row  # noqa: PLC0415
     from kiro_crew.apps.browser_sites import browser_sites_grant_row  # noqa: PLC0415
@@ -571,6 +574,7 @@ def get_app(name: str) -> dict[str, Any] | None:
         **frame_sources_grant_row(name, manifest_data),
         **browser_sites_grant_row(name, manifest_data),
         **kiro_operations_grant_row(name, manifest_data),
+        **agent_tools_grant_row(name, manifest_data),
         **browser_grant_row(name, manifest_data),
         **browser_recipes_grant_row(name, manifest_data),
         "manifest": manifest_data,

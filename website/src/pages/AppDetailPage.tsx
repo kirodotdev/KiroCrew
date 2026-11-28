@@ -69,8 +69,8 @@ import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetai
 import { actionGrant } from '../composerActions/composerActionRegistry'
 import { memoryAccessLabel, memoryRequested } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
-import { BrowserRecipesBox, StagedBrowserRecipes, BrowserVerbsBox, BrowserVerbsStaged, KiroOperationsBox, StagedCodeList, ChatLaunchBox, ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, browserVerbLine, knownBrowserVerbs, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
-import { trustGrants } from '../components/appstore/trustGrants'
+import { AgentToolsStaged, AppDetailAgentTools, GrantsReconsentUndo, BrowserRecipesBox, StagedBrowserRecipes, BrowserVerbsBox, BrowserVerbsStaged, KiroOperationsBox, StagedCodeList, ChatLaunchBox, ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, browserVerbLine, knownBrowserVerbs, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
+import { agentToolEntries, trustGrants } from '../components/appstore/trustGrants'
 import { recipeLine } from '../components/appstore/browserRecipes'
 import { stagedGrantsOf } from './appDetailPageStagedGrants'
 // The page's parts live in sibling owners that never import this module:
@@ -110,7 +110,7 @@ export default function AppDetailPage() {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowserRecipes, stagedBrowser, hasStagedGrants: hasOtherStagedGrants, firstKiroApproval: firstKiroOnly,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowserRecipes, stagedBrowser, stagedAgentTools, hasStagedGrants: hasOtherStagedGrants, firstKiroApproval: firstKiroOnly,
   } = stagedGrantsOf(app)
   // Bot scopes the owner has not approved wait the same way (`AppDetailBotGrants.tsx`).
   const stagedBots = stagedBotScopes(app)
@@ -346,7 +346,7 @@ export default function AppDetailPage() {
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
             frameSourcesGrant: installed.frameSourcesGrant,
             browserSitesGrant: installed.browserSitesGrant,
-            kiroOperationsGrant: installed.kiroOperationsGrant,
+            kiroOperationsGrant: installed.kiroOperationsGrant, agentToolsGrant: installed.agentToolsGrant,
             browserRecipesGrant: installed.browserRecipesGrant,
             browserGrant: installed.browserGrant,
             managed: installed.managed,
@@ -477,7 +477,7 @@ export default function AppDetailPage() {
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
             frameSourcesGrant: installed.frameSourcesGrant,
             browserSitesGrant: installed.browserSitesGrant,
-            kiroOperationsGrant: installed.kiroOperationsGrant,
+            kiroOperationsGrant: installed.kiroOperationsGrant, agentToolsGrant: installed.agentToolsGrant,
             browserRecipesGrant: installed.browserRecipesGrant,
             browserGrant: installed.browserGrant,
             managed: installed.managed,
@@ -561,7 +561,7 @@ export default function AppDetailPage() {
    * `'done'` therefore left a grant standing over a name no app occupies — a
    * consent bypass for whatever gets installed under that name next.
    */
-  const runInstall = async (): Promise<'done' | 'trust-required' | 'failed' | 'aborted'> => {
+  const runInstall = async (agentToolsConsent?: string[]): Promise<'done' | 'trust-required' | 'failed' | 'aborted'> => {
     if (!app) return 'done'
     startAction('install')
     setInstallLog('')
@@ -589,7 +589,7 @@ export default function AppDetailPage() {
             }
           })
         },
-        controller.signal,
+        controller.signal, agentToolsConsent,
       )
       // Server says this app needs client-side installation
       //
@@ -716,7 +716,7 @@ export default function AppDetailPage() {
         displayName: app.displayName,
         trustRepository: app.trustRepository,
         origin: app.origin,
-        ...trustGrants(app.manifest?.permissions),
+        ...trustGrants(app.manifest?.permissions, app.installed ? undefined : app.manifest?.agentTools),
         desktop: desktopRequestOf(app.manifest),
         retryInstalls: true,
         // The Update buttons funnel here too, over an app that is already there.
@@ -729,7 +729,7 @@ export default function AppDetailPage() {
         // occupies. A second trust refusal additionally means the grant did not
         // take effect, which the modal reports inline rather than closing on a
         // silent no-op.
-        const outcome = await runInstall()
+        const outcome = await runInstall(app.installed ? undefined : agentToolEntries(app.manifest?.agentTools))
         // Carries the code as a property so `isTrustDeniedError` reads it as the
         // trust refusal it is, the same as a refused enable's response body.
         if (outcome === 'trust-required') {
@@ -1237,10 +1237,8 @@ export default function AppDetailPage() {
               {stagedWorkerAutoApprove && <WorkerAutoApproveStaged />}
               <UserSessionReachStaged staged={stagedUserSessionReach} />
               <DesktopCapabilitiesStaged staged={stagedDesktopCapabilities} />
-              <BrowserVerbsStaged staged={stagedBrowser} />
-              {app.enabled && (
-                <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
-              )}
+              <BrowserVerbsStaged staged={stagedBrowser} /><AgentToolsStaged staged={stagedAgentTools} />
+              {app.enabled && <GrantsReconsentUndo agentTools={stagedAgentTools.length > 0} name={appDisplayName(app)} />}
             </div>
             {/* Approval is offered only on a running app: on a disabled one the
                 enable route would also switch the app on. Enabling it first runs
@@ -1250,7 +1248,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources, ...stagedBrowserSites, ...stagedKiroOperations, ...stagedBrowserRecipes.map(e => recipeLine(e)?.name || e), ...stagedBrowser.map(v => browserVerbLine(v).replace(/\.$/, ''))], { style: 'narrow' })
+                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources, ...stagedBrowserSites, ...stagedKiroOperations, ...stagedBrowserRecipes.map(e => recipeLine(e)?.name || e), ...stagedBrowser.map(v => browserVerbLine(v).replace(/\.$/, '')), ...stagedAgentTools.map(t => t.name)], { style: 'narrow' })
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1269,7 +1267,7 @@ export default function AppDetailPage() {
                     desktopCapabilities: stagedDesktopCapabilities,
                     frameSources: stagedFrameSources,
                     browserSites: stagedBrowserSites,
-                    kiroOperations: stagedKiroOperations,
+                    kiroOperations: stagedKiroOperations, ...(stagedAgentTools.length ? { agentTools: stagedAgentTools.map(t => t.entry) } : {}),
                     browserRecipes: stagedBrowserRecipes,
                     browser: stagedBrowser,
                   })
@@ -1838,7 +1836,7 @@ export default function AppDetailPage() {
             </Card>
           )}
 
-          {app.installed && <><AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} /><AppDetailBrowserSites appName={app.name} onChanged={() => void load({ keepView: true })} /></>}
+          {app.installed && <><AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} /><AppDetailBrowserSites appName={app.name} onChanged={() => void load({ keepView: true })} /><AppDetailAgentTools appName={app.name} enabled={!!app.enabled} grant={app.agentToolsGrant} onChanged={() => void load({ keepView: true })} /></>}
 
           <AppDetailPageMcpServers servers={app.manifest?.mcpServers} />
 

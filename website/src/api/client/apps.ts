@@ -135,13 +135,15 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     changeAppBrowserSite: (name: string, action: AppBrowserSiteAction, site: string) => post('/api/apps/' + encodeURIComponent(name) + '/browser-sites', { action, site }).then(j) as Promise<AppBrowserSites>,
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; bots?: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; frameSources?: string[]; browserSites?: string[]; kiroOperations?: string[]; browserRecipes?: string[]; browserRecipeWatch?: string[]; browser?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; bots?: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; frameSources?: string[]; browserSites?: string[]; kiroOperations?: string[]; browserRecipes?: string[]; browserRecipeWatch?: string[]; browser?: string[]; agentTools?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
       sessionApprovalConsent,
       // Only a consent whose disclosure named member threads says so; the
       // server refuses a consent that omits a scope the live manifest declares.
       ...(sessionApprovalConsent && memberThreadsConsent ? { memberThreadsConsent: true } : {}),
       ...(grantsConsent ? { grantsConsent } : {}),
     }).then(j),
+    // Takes approved `agentTools` entries out; owner only, and it does not enable the app.
+    revokeAgentTools: (name: string, entries: string[]) => post('/api/apps/' + encodeURIComponent(name) + '/enable', { agentToolsRevoke: entries }).then(j),
     disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
     /** `POST /api/browser/recipe-watch-off`: takes back one watch recipe's run-by-itself yes (owner only). */
     stopAppRecipeWatch: (name: string, recipe: string) => post('/api/browser/recipe-watch-off', { app: name, recipe }).then(j) as Promise<{ ok: boolean; removed?: boolean; error?: string }>,
@@ -186,7 +188,8 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     // path ownership (token_auth._app_owns_path).
     refreshAppStore: () => post('/api/app-store/refresh').then(j) as Promise<{ ok: boolean }>,
     refreshRegistries: (repo?: string) => post('/api/apps/registries/refresh', repo ? { repo } : {}).then(j) as Promise<{ ok: boolean; refreshed: string[]; failed: string[]; results: { name: string; ok: boolean; reason?: string; host?: string; cached?: boolean }[]; apps: number; lastSyncedAt: string }>,
-    installFromRegistry: (name: string) => post('/api/apps/registry/install', { name }).then(j),
+    // agentToolsConsent: the `agentTools` entries the trust card listed; only those are approved.
+    installFromRegistry: (name: string, agentToolsConsent?: string[]) => post('/api/apps/registry/install', { name, ...(agentToolsConsent?.length ? { agentToolsConsent } : {}) }).then(j),
     /**
      * Stream install logs via SSE.  Calls `onLog` for each line and resolves
      * with the final result JSON when the install completes.
@@ -195,11 +198,12 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
       name: string,
       onLog: (line: string) => void,
       signal?: AbortSignal,
+      agentToolsConsent?: string[],
     ): Promise<InstallStreamResult> => {
       const res = await fetch('/api/apps/registry/install-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ..._sk },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, ...(agentToolsConsent?.length ? { agentToolsConsent } : {}) }),
         signal,
       })
       if (!res.ok) {

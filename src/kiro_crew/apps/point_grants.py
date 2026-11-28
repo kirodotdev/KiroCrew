@@ -33,6 +33,10 @@ registry is complete once it is imported.
 ``register_ui_grants(families, entries, *, explicit_only=False)``
     The same again, for a grant a manifest declares in ``ui`` (``ui.frameSources``):
     ``entries`` maps the manifest's ``ui`` (parsed or a raw dict).
+
+``register_manifest_grants(families, entries, *, explicit_only=False)``
+    The same again, for a grant a manifest declares in a top-level block of its own
+    (``agentTools``): ``entries`` maps the whole manifest (parsed or a raw dict).
 """
 
 from __future__ import annotations
@@ -48,6 +52,8 @@ _REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
 _PERMISSION_REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
 #: ``ui`` -> ``{family: entries}`` for one ui field's families.
 _UI_REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
+#: The whole manifest -> ``{family: entries}`` for one top-level block's families.
+_MANIFEST_REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
 #: Families a stored set approves only by naming their entries.
 _EXPLICIT_ONLY: list[str] = []
 
@@ -90,10 +96,22 @@ def register_ui_grants(
         _EXPLICIT_ONLY.extend(families)
 
 
+def register_manifest_grants(
+    families: tuple[str, ...], entries: EntriesFn, *, explicit_only: bool = False
+) -> None:
+    """Register one top-level block's grant families, read from the whole manifest."""
+    _refuse_clash(families)
+    _MANIFEST_REGISTRY.append((tuple(families), entries))
+    if explicit_only:
+        _EXPLICIT_ONLY.extend(families)
+
+
 def point_grant_families() -> tuple[str, ...]:
-    """Every registered point family, then every permission and ui family, in registration order."""
+    """Every registered point family, then every permission, ui and manifest family, in order."""
     return tuple(
-        f for families, _ in (*_REGISTRY, *_PERMISSION_REGISTRY, *_UI_REGISTRY) for f in families
+        f
+        for families, _ in (*_REGISTRY, *_PERMISSION_REGISTRY, *_UI_REGISTRY, *_MANIFEST_REGISTRY)
+        for f in families
     )
 
 
@@ -141,6 +159,10 @@ def grant_source(manifest: Any) -> dict[str, list[str]] | None:
             out[family] = list(declared.get(family, []))
     for families, entries in _UI_REGISTRY:
         declared = entries(ui_view)
+        for family in families:
+            out[family] = list(declared.get(family, []))
+    for families, entries in _MANIFEST_REGISTRY:
+        declared = entries(manifest)
         for family in families:
             out[family] = list(declared.get(family, []))
     return out
@@ -274,11 +296,24 @@ def _frame_source_grant_entries(ui: Any) -> dict[str, list[str]]:
 register_ui_grants(("frameSources",), _frame_source_grant_entries, explicit_only=True)
 
 
+def _agent_tool_grant_entries(manifest: Any) -> dict[str, list[str]]:
+    # Deferred, like ``frame_sources`` above: off the MCP server's pre-list budget.
+    from kiro_crew.apps.agent_tool_grants import agent_tool_grant_entries  # noqa: PLC0415
+
+    return agent_tool_grant_entries(manifest)
+
+
+#: ``agent_tool_grants.GRANT_FAMILY`` (the top-level ``agentTools`` block), named here
+#: so registering it imports nothing.
+register_manifest_grants(("agentTools",), _agent_tool_grant_entries, explicit_only=True)
+
+
 __all__ = [
     "EntriesFn",
     "explicit_only_grant_families",
     "grant_source",
     "point_grant_families",
+    "register_manifest_grants",
     "register_permission_grants",
     "register_point_grants",
     "register_ui_grants",

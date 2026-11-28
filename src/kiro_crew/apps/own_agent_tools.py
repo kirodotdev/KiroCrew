@@ -1,7 +1,8 @@
 """The tool gate's grant for a first-party app's own agent calling that app's own tools.
 
 An app's manifest ``agentTools`` block declares MCP tools the app serves from its own
-process; ``apps/app_agent_tools.py`` reads the blocks of first-party apps only, and the
+process; ``apps/app_agent_tools.py`` reads the blocks of first-party apps with no grant
+(a third-party app's only tool by tool, as the owner approved them), and the
 ``kirocrew-core`` server lists them. The default agent approves that whole server, so a
 person's chat already calls these tools unasked. An app's own agent carries no such
 approval, so without this grant each of its calls to the app's own tool asks, and an
@@ -31,7 +32,8 @@ agent or the model chose:
 Which declarations count is ``app_agent_tools``' rule, unchanged: a built-in's block is
 read from the wheel, and an adopted former built-in's block is kept only up to its wheel
 copy (once a release deletes it, the block its pin row froze), so a tool added to an
-installed tree is not declared and asks. A third-party app's block is not read at all,
+installed tree is not declared and asks. A third-party app's approved tools are not in
+``app_tools._tools()`` and its agent is no built-in's,
 so its agents keep their card.
 """
 

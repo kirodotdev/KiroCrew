@@ -91,7 +91,8 @@ async def _update_app(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     name = request.match_info["name"]
-    info = get_app(name)
+    # Off-loop: the row reads the app's provenance (``agent_tools_grant_row``).
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 

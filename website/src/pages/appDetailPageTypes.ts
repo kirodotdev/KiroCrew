@@ -9,6 +9,7 @@
  * runtime code and never imports the page.
  */
 import type { AppLink } from './AppDetailLinks'
+import type { AgentToolGrant } from '../components/appstore/agentTools'
 import type {
   AppAdoptionRow,
   ComposerActionGrantRow,
@@ -90,6 +91,8 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   kiroOperationsGrant?: { approved: string[]; staged: string[] }
   /** `permissions.browserRecipes` the owner approved, the ones waiting, the watch ones split by the separate run-by-itself yes, and whether the `app_browser_sdk` preview is on; grant entries, absent when undeclared. */
   browserRecipesGrant?: { approved: string[]; staged: string[]; watchOn?: string[]; watchOff?: string[]; preview?: boolean }
+  /** Third-party `agentTools` the owner approved, and the ones an update holds back; absent when none. */
+  agentToolsGrant?: { approved: AgentToolGrant[]; staged: AgentToolGrant[]; revoked?: AgentToolGrant[] }
   /** `permissions.browser` verbs the owner approved, the ones waiting, and whether the `app_browser_sdk` preview is on; absent when undeclared. */
   browserGrant?: { approved: string[]; staged: string[]; preview: boolean }
   managed?: string
@@ -194,6 +197,8 @@ interface AppManifest {
   crons?: { name: string }[]
   mcpServers?: Record<string, McpServerConfig>
   permissions?: AppPermissions
+  /** The manifest `agentTools` block, as written: the install card lists its tools. */
+  agentTools?: unknown
   minKiroCrewVersion?: string
 }
 

@@ -479,7 +479,9 @@ async def on_app_enable(
     Returns dict with hook results to include in the enable response.
     """
     result: dict[str, Any] = {}
-    denied = app_execution_denied(
+    # Off-loop: a granted app's admission reads its installed row (``get_app``).
+    denied = await asyncio.to_thread(
+        app_execution_denied,
         app_name,
         action="hook_enable_register",
         app_root=_app_hook_root(app_name),
@@ -912,7 +914,9 @@ async def on_gateway_startup(
     # route handlers (and vice versa), matching the on_app_enable approach.
     for app_info in sorted(enabled, key=lambda a: a.get("name", "")):
         name = app_info.get("name", "")
-        denied = app_execution_denied(
+        # Off-loop: a granted app's admission reads its installed row (``get_app``).
+        denied = await asyncio.to_thread(
+            app_execution_denied,
             name,
             action="hook_boot_register",
             app_root=_app_hook_root(name),

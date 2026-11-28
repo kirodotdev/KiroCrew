@@ -122,6 +122,8 @@ _LISTING_IMPORTS = (
     "lesson_validation.py",
     "mcp_caller.py",
     "mcp_core.py",
+    "mcp_core_parts/__init__.py",
+    "mcp_core_parts/gateway.py",
     "mcp_core_parts/identity.py",
     "mcp_shared.py",
     "mcp_shared_policy.py",
