@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.lesson_validation import authored_lesson_applies
 from kiro_crew.project_scope import scope_is_admissible
+from kiro_crew.user_json import strip_utf8_bom
 
 if TYPE_CHECKING:
     from kiro_crew.platform.interfaces import MemoryFiles
@@ -87,8 +88,12 @@ def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None]
 
 
 def preference_bullets(files: MemoryFiles, path: Path) -> Iterator[str]:
-    """The non-empty ``- `` bullet texts of ``preferences.md``, in file order."""
-    for line in files.read_text(path).splitlines():
+    """The non-empty ``- `` bullet texts of ``preferences.md``, in file order.
+
+    One leading UTF-8 byte-order mark is dropped: ``str.strip`` keeps U+FEFF, so it
+    would hide a bullet on line 1.
+    """
+    for line in strip_utf8_bom(files.read_text(path)).splitlines():
         line = line.strip()
         if not line.startswith("- "):
             continue
@@ -120,10 +125,11 @@ def project_entries(files: MemoryFiles, path: Path) -> Iterator[tuple[str, str, 
     A ``- name: ...`` bullet opens a project; a later plain bullet is a detail of
     the most recent one. A plain bullet before any project yields nothing, and a
     detail bullet whose text is blank yields ``("detail", "", project)``, which the
-    migration counts as skipped.
+    migration counts as skipped. One leading UTF-8 byte-order mark is dropped, as in
+    :func:`preference_bullets`.
     """
     current_project = ""
-    for line in files.read_text(path).splitlines():
+    for line in strip_utf8_bom(files.read_text(path)).splitlines():
         line = line.strip()
         if line.startswith("- ") and ":" in line:
             name = line[2:].split(":")[0].strip()

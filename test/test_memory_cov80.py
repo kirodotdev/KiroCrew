@@ -8,6 +8,7 @@ of MemoryStore, this one aims at the guard clauses and failure branches.
 
 from __future__ import annotations
 
+import codecs
 from datetime import datetime, timedelta
 
 import pytest
@@ -60,6 +61,12 @@ class TestLegacyMemoryPresent:
         md.mkdir(parents=True)
         (md / "preferences.md").write_text("# User Preferences\n")
         (md / "projects.md").write_text("# Active Projects\n\n- wxyv project\n")
+        assert legacy_memory_present() is True
+
+    def test_true_for_a_lone_bullet_behind_a_utf8_byte_order_mark(self, fake_config_dir):
+        md = fake_config_dir / "workspace" / "memory"
+        md.mkdir(parents=True)
+        (md / "preferences.md").write_bytes(codecs.BOM_UTF8 + b"- zzqqx mode\r\n")
         assert legacy_memory_present() is True
 
     def test_true_for_any_history_file(self, fake_config_dir):

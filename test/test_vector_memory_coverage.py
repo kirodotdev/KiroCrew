@@ -10,6 +10,7 @@ and a deterministic embedder; no network or FAISS. More cases are in
 from __future__ import annotations
 
 import base64
+import codecs
 import gc
 import json
 import struct
@@ -1087,6 +1088,29 @@ class TestMigrateFromMarkdown:
         assert [r["text"] for r in rows] == [
             "The consolidation pass writes semantic keys nightly"
         ]
+
+    @pytest.mark.parametrize("mark", [b"", codecs.BOM_UTF8], ids=["no-mark", "utf8-mark"])
+    def test_a_utf8_byte_order_mark_keeps_the_first_preference_and_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mark: bytes
+    ) -> None:
+        """A file saved "UTF-8 with BOM" migrates the same rows as the same file without it."""
+        memory = self._home(tmp_path, monkeypatch) / "workspace" / "memory"
+        (memory / "preferences.md").write_bytes(mark + b"- editor: vim\r\n- I prefer dark mode\r\n")
+        (memory / "projects.md").write_bytes(
+            mark
+            + b"- Redwood: the ingestion rewrite\r\n"
+            + b"- The consolidation pass writes semantic keys nightly\r\n"
+        )
+        store = _store(tmp_path)
+        counts = store.migrate_from_markdown()
+
+        assert counts == {"semantic": 3, "episodic": 1, "skipped": 0}
+        editor = store.get_semantic("pref.editor")
+        assert editor is not None and json.loads(editor["value_json"]) == "vim"
+        name = store.get_semantic("project.name")
+        assert name is not None and json.loads(name["value_json"]) == "Redwood"
+        rows = store.get_episodic_list(tag_filter=["redwood"])
+        assert [r["text"] for r in rows] == ["The consolidation pass writes semantic keys nightly"]
 
     def test_history_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         home = self._home(tmp_path, monkeypatch)
