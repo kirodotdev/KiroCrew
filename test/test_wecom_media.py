@@ -415,6 +415,32 @@ class TestDownloadIsPinnedToTheVettedAddress:
         assert caller.calls[0]["allow_redirects"] is False
         assert caller.calls[0]["url"].startswith("https://cdn.example/o")
 
+    @pytest.mark.parametrize("no_proxy", ["cdn.example", ".example", "cdn.example:443", "*"])
+    def test_a_no_proxy_host_goes_direct_on_the_pinned_session(self, monkeypatch, no_proxy) -> None:
+        # The client's reply POST and WebSocket already go direct for a NO_PROXY
+        # host; the media fetch must too, or a proxy that refuses the CDN drops
+        # every inbound picture while the channel stays connected.
+        monkeypatch.setenv("NO_PROXY", no_proxy)
+        pinned = _Pinned(monkeypatch, resolve="93.184.216.34")
+        caller = _FakeSession()
+        with pytest.raises(WeComMediaError):
+            self._run(caller, proxy="http://proxy.example:3128")
+
+        assert caller.calls == [], "a NO_PROXY host must not reach the proxy"
+        assert isinstance(pinned.resolver, link_unfurl.PinnedResolver)
+        assert pinned.session.calls[0]["url"].startswith("https://cdn.example/o")
+        assert "proxy" not in pinned.session.calls[0]
+
+    def test_a_no_proxy_list_naming_another_host_keeps_the_proxy(self, monkeypatch) -> None:
+        monkeypatch.setenv("NO_PROXY", "other.example,cdn.example:8443")
+        pinned = _Pinned(monkeypatch)
+        caller = _FakeSession()
+        with pytest.raises(WeComMediaError):
+            self._run(caller, proxy="http://proxy.example:3128")
+
+        assert pinned.connector_kwargs == {}
+        assert caller.calls[0]["proxy"] == "http://proxy.example:3128"
+
 
 class TestMediaUrlVetting:
     """The inbound ``url`` is platform-SUPPLIED but not platform-GUARANTEED.

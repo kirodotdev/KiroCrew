@@ -35,6 +35,7 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from kiro_crew import link_unfurl
+from kiro_crew.http_proxy import proxy_for_url
 
 logger = logging.getLogger(__name__)
 
@@ -238,11 +239,15 @@ async def download_media(
     pinned to the address the vet approved, so a second DNS answer cannot move the
     socket to an internal address. ``session`` is still the transport for the
     proxied case, so the signature and every caller stay unchanged.
+
+    A host the operator lists in ``NO_PROXY`` is fetched directly, on the pinned
+    session, as the client's own reply and WebSocket requests are.
     """
     if not url:
         raise WeComMediaError("media item carries no url")
     # Off the loop: the vet performs one `getaddrinfo`, which blocks.
     vetted = await asyncio.to_thread(_vet_media_url, url)
+    proxy = proxy_for_url(proxy, vetted.url)
     key = decode_aes_key(aeskey)
 
     async def _read(resp: Any) -> bytes:
