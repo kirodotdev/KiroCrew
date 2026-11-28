@@ -1,8 +1,10 @@
 """Discord message components: the button rows a turn and the dispatcher post.
 
 The button styles, Discord's layout limits (five buttons to a row, five rows to a
-message, an 80-character label) and the row builders: ``build_option_components``
-for an answer's ``[OPTIONS:]`` choices, ``build_model_components`` for the ``!model``
+message, an 80-character label) and the row builders: ``build_option_rows`` for an
+answer's ``[OPTIONS:]`` choices (``build_option_components`` buttons plus string
+selects, with the registry of the select prompts a press may still answer),
+``build_model_components`` for the ``!model``
 picker and ``build_stop_components`` for the Stop button on a streaming reply, with the
 registry of the turns a Stop button may still cancel. The renderer, the dispatcher's
 model picker and its spawn-approval prompt all
@@ -18,6 +20,7 @@ import secrets
 import threading
 from collections import OrderedDict
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 # Button style constants (Discord component styles).
 _STYLE_PRIMARY = 1
@@ -122,6 +125,177 @@ def build_option_components(options: list[str], origin_tag: str = "") -> list[di
             row = []
     if row:
         rows.append({"type": 1, "components": row})
+    return rows
+
+
+#: Select-menu custom_id prefix: ``sel:<nonce>:<menu>``. Distinct from ``opt:``,
+#: ``s:``, ``a:``, ``m:`` and ``x:`` so the dispatcher's prefix routing cannot read
+#: one as another.
+SELECT_PREFIX = "sel:"
+#: Component-spec ceilings on a string select: 25 options, a 100-character option
+#: label and a 150-character placeholder.
+_SELECT_OPTIONS_MAX = 25
+_SELECT_LABEL_CHARS = 100
+#: Up to this many choices show as buttons (four rows) with a "Choose several..."
+#: select in the fifth row, the way Slack's card ends in its overflow menu. A
+#: longer list shows as selects only, one per row.
+_BUTTONS_WITH_SELECT = _BUTTONS_PER_ROW * (_MAX_ACTION_ROWS - 1)
+#: TOTAL choices one message can offer: five selects of 25 each.
+MAX_OPTION_CHOICES = _SELECT_OPTIONS_MAX * _MAX_ACTION_ROWS
+
+
+@dataclass(frozen=True)
+class _OptionSelect:
+    """One posted set of option selects: the session tag, every choice offered
+    (full text) and each menu's ``[start, stop)`` slice of them."""
+
+    origin_tag: str
+    choices: tuple[str, ...]
+    menus: tuple[tuple[int, int], ...]
+
+
+#: The select prompts a press may still answer: nonce -> what was offered. A press
+#: answers with the text kept here, never with anything the client sends back, and
+#: the entry is taken by the first valid press, so a prompt answers once. Posting
+#: a newer prompt for the same session retires the older one, and so does the
+#: start of the session's next turn (:func:`retire_option_selects`): a select from
+#: an older prompt, or one Discord replays after a restart (when this map is
+#: empty), names no entry and answers nothing. Bounded like ``_STOP_TURNS``.
+#: process-cache-ok: keyed by a random per-prompt nonce, so no later test can read
+#: an entry an earlier one left; the cap only ever evicts the oldest.
+_OPTION_SELECTS: OrderedDict[str, _OptionSelect] = OrderedDict()
+_OPTION_SELECTS_MAX = 256
+_OPTION_SELECTS_LOCK = threading.Lock()
+
+
+def _register_option_select(
+    origin_tag: str, choices: tuple[str, ...], menus: tuple[tuple[int, int], ...]
+) -> str:
+    nonce = secrets.token_hex(8)
+    # Bounded in characters as well as entries, like ``_FULL_CHOICES``: a choice
+    # past the ceiling is not kept, and a press picking it asks to type it.
+    kept = tuple(c if len(c) <= _FULL_CHOICE_MAX_CHARS else "" for c in choices)
+    with _OPTION_SELECTS_LOCK:
+        for stale in [k for k, v in _OPTION_SELECTS.items() if v.origin_tag == origin_tag]:
+            del _OPTION_SELECTS[stale]
+        _OPTION_SELECTS[nonce] = _OptionSelect(origin_tag, kept, menus)
+        while len(_OPTION_SELECTS) > _OPTION_SELECTS_MAX:
+            _OPTION_SELECTS.popitem(last=False)
+    return nonce
+
+
+def retire_option_selects(origin_tag: str) -> None:
+    """Retire every select prompt the session tagged *origin_tag* posted."""
+    if not origin_tag:
+        return
+    with _OPTION_SELECTS_LOCK:
+        for stale in [k for k, v in _OPTION_SELECTS.items() if v.origin_tag == origin_tag]:
+            del _OPTION_SELECTS[stale]
+
+
+#: :func:`take_option_select` outcomes.
+SELECT_ANSWERED = "answered"
+SELECT_STALE = "stale"
+SELECT_INVALID = "invalid"
+
+
+def take_option_select(custom_id: str, values: Sequence[str]) -> tuple[str, str, list[str]]:
+    """Check a select press against what was offered and, when it fits, consume it.
+
+    Returns ``(outcome, origin_tag, choices)``. ``SELECT_STALE``: the prompt is not
+    live (already answered, superseded, from before a restart, or never posted).
+    ``SELECT_INVALID``: the prompt is live but *values* do not fit the pressed menu
+    (an index it did not offer, a repeat, or fewer than one or more than the menu
+    holds); the prompt stays live. ``SELECT_ANSWERED``: the prompt is taken, and
+    ``choices`` is the full text of each pick in the order offered. The check and
+    the take run under one lock, so two presses cannot both answer.
+    """
+    nonce, _, menu_ref = custom_id[len(SELECT_PREFIX) :].partition(":")
+    with _OPTION_SELECTS_LOCK:
+        entry = _OPTION_SELECTS.get(nonce)
+        if entry is None:
+            return SELECT_STALE, "", []
+        if not (menu_ref.isascii() and menu_ref.isdigit()) or int(menu_ref) >= len(entry.menus):
+            return SELECT_INVALID, entry.origin_tag, []
+        start, stop = entry.menus[int(menu_ref)]
+        picked: set[int] = set()
+        for value in values:
+            if not (value.isascii() and value.isdigit()) or len(value) > 3:
+                return SELECT_INVALID, entry.origin_tag, []
+            index = int(value)
+            if not start <= index < stop or index in picked:
+                return SELECT_INVALID, entry.origin_tag, []
+            picked.add(index)
+        if not 1 <= len(picked) <= stop - start:
+            return SELECT_INVALID, entry.origin_tag, []
+        if not all(entry.choices[i] for i in picked):
+            # A pick whose text was too long to keep: never send its cut label.
+            return SELECT_INVALID, entry.origin_tag, []
+        del _OPTION_SELECTS[nonce]
+    return SELECT_ANSWERED, entry.origin_tag, [entry.choices[i] for i in sorted(picked)]
+
+
+def _select_label(option: str) -> str:
+    if len(option) <= _SELECT_LABEL_CHARS:
+        return option or "…"
+    return option[: _SELECT_LABEL_CHARS - 1] + "…"
+
+
+def build_option_rows(options: list[str], origin_tag: str = "") -> list[dict] | None:
+    """Action rows for an answer's ``[OPTIONS:]`` choices, buttons and selects.
+
+    Up to 20 choices: one button each (:func:`build_option_components`), and, for
+    two or more, a "Choose several..." select in the last row that sends every pick
+    together, as Slack's card does. More than 20: one select per row, 25 choices
+    each, up to :data:`MAX_OPTION_CHOICES`; one or several picks in a menu send
+    together. The caller caps the list upstream (``apply_options_cap``), and the
+    slice here is the platform backstop only.
+
+    A select's ``custom_id`` is ``sel:<nonce>:<menu>`` and each option's ``value``
+    is the choice's index. The nonce names the exact list kept server-side, so a
+    press answers with the offered text and is checked against it.
+    """
+    if not options:
+        return None
+    options = options[:MAX_OPTION_CHOICES]
+    count = len(options)
+    if count <= _BUTTONS_WITH_SELECT:
+        rows = build_option_components(options, origin_tag) or []
+        if count < 2:
+            # Still a newer prompt: it supersedes any menu this session posted.
+            retire_option_selects(origin_tag)
+            return rows
+        menus: tuple[tuple[int, int], ...] = ((0, count),)
+        placeholders = ["Choose several…"]
+    else:
+        # shortcut: picks in two different menus cannot go together, since each
+        # menu answers on its own; upgrade to a modal if that is ever asked for.
+        rows = []
+        menus = tuple(
+            (start, min(start + _SELECT_OPTIONS_MAX, count))
+            for start in range(0, count, _SELECT_OPTIONS_MAX)
+        )
+        placeholders = [f"Choose from {start + 1}–{stop}" for start, stop in menus]
+    nonce = _register_option_select(origin_tag, tuple(options), menus)
+    for menu, ((start, stop), placeholder) in enumerate(zip(menus, placeholders)):
+        rows.append(
+            {
+                "type": 1,  # action row
+                "components": [
+                    {
+                        "type": 3,  # string select
+                        "custom_id": f"{SELECT_PREFIX}{nonce}:{menu}",
+                        "placeholder": placeholder,
+                        "min_values": 1,
+                        "max_values": stop - start,
+                        "options": [
+                            {"label": _select_label(options[i]), "value": str(i)}
+                            for i in range(start, stop)
+                        ],
+                    }
+                ],
+            }
+        )
     return rows
 
 

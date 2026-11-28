@@ -200,15 +200,18 @@ class TestRenderer:
         await r.on_done()
         comps = cli.final_components()
         assert comps is not None
-        labels = [b["label"] for row in comps for b in row["components"]]
-        assert labels == ["A", "B"]
+        buttons = [b for row in comps for b in row["components"] if b["type"] == 2]
+        assert [b["label"] for b in buttons] == ["A", "B"]
+        # Two or more choices also get the "Choose several..." select, last.
+        (select,) = comps[-1]["components"]
+        assert select["type"] == 3 and select["custom_id"].startswith("sel:")
         assert "[OPTIONS" not in cli.final_text()
         # The sealed row is PROVENANCE-STAMPED with this renderer's session key —
         # the producer half of the stale-press fix. Without this pin, reverting
         # the call sites to untagged build_option_components(opts) keeps the
         # whole suite green while every new button falls back to the legacy
         # current-binding path, silently reopening cross-session injection.
-        ids = [b["custom_id"] for row in comps for b in row["components"]]
+        ids = [b["custom_id"] for b in buttons]
         assert ids == [
             f"opt:0:{session_provenance_tag('sk')}",
             f"opt:1:{session_provenance_tag('sk')}",
@@ -228,7 +231,7 @@ class TestRenderer:
         await r.on_done()
 
         components = [c for _, c in cli.sent if c] + [c for _, _, c in cli.edits if c]
-        labels = [b["label"] for row in components[0] for b in row["components"]]
+        labels = [b["label"] for row in components[0] for b in row["components"] if b["type"] == 2]
         assert labels == ["Alpha", "Bravo", "Charlie"]
         visible = "\n".join([t for t, _ in cli.sent] + [t for _, t, _ in cli.edits])
         assert "[OPTIONS" not in visible

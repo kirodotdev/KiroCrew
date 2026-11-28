@@ -846,7 +846,13 @@ class TestDiscordEnforcement:
 
         asyncio.run(_go())
         comps = cli.final_components()
-        labels = [b["label"] for row in comps for b in row["components"]]
+        # Past 20 choices Discord offers them as string selects, 25 to a menu.
+        labels = [
+            option["label"]
+            for row in comps
+            for c in row["components"]
+            for option in (c["options"] if c["type"] == 3 else [c])
+        ]
         assert len(labels) == n
         final = cli.final_text()
         assert f"{n + 1}. Choice {n + 1}" in final

@@ -109,11 +109,11 @@ DISCORD_CAPABILITIES = TransportCapabilities(
     # they fit a phone-sized monospace viewport and cards wider tables.
     table_mode=TABLE_POLICY_AUTO,
     max_message_chars=DISCORD_CHUNK_LIMIT,
-    # 25 = TOTAL interactive choices (5 buttons/row x 5 action rows -- the
-    # platform max the renderer actually ships). The previous 5 was the
-    # per-row layout number, not a total. Enforced via apply_options_cap in
+    # 125 = TOTAL interactive choices: up to 20 show as buttons, and a longer
+    # list as five string selects of 25 (renderer_components.MAX_OPTION_CHOICES,
+    # the platform max the renderer ships). Enforced via apply_options_cap in
     # the renderer; overflow degrades to a numbered text list.
-    max_buttons=25,
+    max_buttons=125,
     supports_proactive_send=True,
     # The one transport whose inbound path resolves the mirror binding: a message
     # in a bound conversation routes to the owning session via

@@ -353,7 +353,7 @@ class TestCorrectedDeclarations:
         from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
 
         assert SLACK_CAPABILITIES.max_buttons == 10  # checkboxes options[] cap
-        assert DISCORD_CAPABILITIES.max_buttons == 25  # 5 rows x 5 buttons
+        assert DISCORD_CAPABILITIES.max_buttons == 125  # 5 string selects x 25
         assert TELEGRAM_CAPABILITIES.max_buttons == 25  # 2/row, parity with discord
 
 

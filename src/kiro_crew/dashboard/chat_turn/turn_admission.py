@@ -281,6 +281,19 @@ def _refuse_channel_turn(slot, operation: str) -> None:
     )
 
 
+def _retire_discord_option_selects(session_key: str) -> None:
+    """Retire the Discord option menus this session posted, as a new turn does.
+
+    A Discord answer's select menus are tied to the session's latest question,
+    and a dashboard turn on a session bound to Discord moves it on just as a
+    Discord turn does (``DiscordRenderer.__init__``).
+    """
+    from kiro_crew.discord.renderer import retire_option_selects
+    from kiro_crew.messaging.renderer import session_provenance_tag
+
+    retire_option_selects(session_provenance_tag(session_key))
+
+
 def _release_dispatch_lock(turn) -> None:
     _dispatch_lock = turn._dispatch_lock
     if turn._dispatch_lock_held:
@@ -1549,6 +1562,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         _deferred_options_expiry = False
         turn._deferred_options_expiry = _deferred_options_expiry
         await expire_slack_options(state, session_key)
+    # Retired only now that this turn holds the session: a Discord turn that was
+    # still answering while this one waited for the lease can post menus as it
+    # ends, and this turn supersedes them too. Every admitted turn, an expanded
+    # saved prompt's included.
+    _retire_discord_option_selects(session_key)
     # Publish the live inner AcpClient onto the slot so a concurrent request
     # (the dashboard steer handler) can reach the running session's client
     # to inject a mid-turn steer. Cleared in _turn_release_handles (chat_turn/turn_entry.py).

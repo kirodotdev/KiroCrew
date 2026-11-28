@@ -4260,6 +4260,22 @@ ceiling) never answers with the cut label: it gets the existing "type it
 instead" reply. The quoted echo of the press goes through the same display
 pass as the answer body before it is posted.
 
+**Option selects.** `build_option_rows` lays out an answer's choices. Up to 20
+show as buttons, and two or more also get a "Choose several…" string select in
+the last row (Slack's overflow-menu multi-select). A longer list shows as up to
+five string selects of 25, so Discord's `max_buttons` is 125 and overflow past
+that is numbered text as before. A select's id is `sel:<nonce>:<menu>` and each
+option's value is the choice's index. The nonce names a process-local entry
+(`_OPTION_SELECTS`, at most 256) holding the session tag, every choice's full
+text up to `_FULL_CHOICE_MAX_CHARS` (a longer one is not kept, and picking it
+asks the user to type it) and each menu's slice. A press passes every gate an `opt:` press passes,
+then `take_option_select` checks its values against that menu (offered indices
+only, no repeats, one to the menu's size) and takes the entry under one lock, so
+a prompt answers once. A newer prompt for the session, the session's next turn
+(the renderer's constructor) and a restart all retire it, and a press on a
+retired prompt sends nothing. The picks answer as one message joined with
+", ", with commands off and the tag routed exactly as for a button.
+
 **Native-generation picker scope.** Discord, Telegram and Teams include persistent
 dashboard sessions plus native generations from the current private conversation's
 exact durable bucket. A native history filename is never reverse-parsed: every row
@@ -4569,7 +4585,7 @@ byte for byte as it did in one module. New work of an owner's kind goes to that 
 | Owner | Holds |
 |---|---|
 | `renderer_text.py` | the text transforms applied to model output: the `[OPTIONS:]` and steering-marker strips, the delivered form a cut is graded through, the buried-image-reference check, subtext, the steer-chip neutralizer and the platform-cap slicer |
-| `renderer_components.py` | Discord message components: the button styles and layout limits, `build_option_components` and `build_model_components` (the dispatcher's model picker and spawn-approval prompt build from here too) |
+| `renderer_components.py` | Discord message components: the button styles and layout limits, `build_option_rows` (option buttons from `build_option_components` plus string selects, and the select-prompt registry `take_option_select` reads) and `build_model_components` (the dispatcher's model picker and spawn-approval prompt build from here too) |
 | `renderer_approval.py` | `DiscordApprovalDecider` and `_APPROVAL_TIMEOUT_S`: the wait an Approve or Deny press ends, `agent.tool_approval_timeout_secs` through `dashboard.turn_dispatch.tool_approval_timeout_secs` (as Slack reads it) unless a test pins a number |
 | `renderer_status.py` | the typing indicator, the phase ladder's emoji vocabulary and `_MessageReactionSink`, the reasoning gate, the tool footer and the turn footer |
 | `renderer_live.py` | chunk intake: steer-marker detection (each complete marker is handed to `on_steer_consumed`), the steer chip, table conversion for delivery, the canonical `[OPTIONS:]` take and the segment text |

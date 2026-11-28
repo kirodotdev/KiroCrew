@@ -418,15 +418,17 @@ class TestStopLifecycle:
         assert _carrying_stop(cli) == set()
 
     @pytest.mark.asyncio
-    async def test_twenty_five_options_finish_with_five_rows_and_no_stop(self) -> None:
+    async def test_twenty_options_finish_with_five_rows_and_no_stop(self) -> None:
         r, cli = _renderer()
         await r.on_text_chunk("Pick one.")
         assert _stop_ids(cli.sent[0][1])
-        labels = " | ".join(f"Choice {i}" for i in range(25))
+        labels = " | ".join(f"Choice {i}" for i in range(20))
         await r.on_text_chunk(f"\n\n[OPTIONS: {labels}]")
         await r.on_done()
         final = cli.edits[-1][2]
-        assert len(final) == 5 and all(len(row["components"]) == 5 for row in final)
+        # Four rows of five buttons, then the "Choose several..." select.
+        assert len(final) == 5 and all(len(row["components"]) == 5 for row in final[:4])
+        assert [c["type"] for c in final[4]["components"]] == [3]
         assert _stop_ids(final) == [] and _carrying_stop(cli) == set()
 
     @pytest.mark.asyncio

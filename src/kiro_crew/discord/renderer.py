@@ -91,9 +91,10 @@ from kiro_crew.discord.renderer_approval import DiscordApprovalDecider, approval
 from kiro_crew.discord.renderer_components import (
     _STYLE_DANGER,
     _STYLE_SUCCESS,
-    build_option_components,
+    build_option_rows,
     build_stop_components,
     register_stop_turn,
+    retire_option_selects,
     retire_stop_turn,
 )
 from kiro_crew.discord.renderer_text import (
@@ -334,9 +335,7 @@ class DiscordRenderer(Renderer):
         # near-limit answer with over-cap options seals past the transport cap.
         await self._rotate_on_length()
         components = (
-            build_option_components(opts, session_provenance_tag(self._session_key))
-            if opts
-            else None
+            build_option_rows(opts, session_provenance_tag(self._session_key)) if opts else None
         )
         sealed = bool(self._segment_text().strip()) or components is not None
         await self._seal_rotated_part(components=components, extract_uploads=True)
@@ -1376,9 +1375,7 @@ class DiscordRenderer(Renderer):
         self._buf = []
         self._delivery_text = body_text
         components = (
-            build_option_components(opts, session_provenance_tag(self._session_key))
-            if opts
-            else None
+            build_option_rows(opts, session_provenance_tag(self._session_key)) if opts else None
         )
         # No-rotation fallback: steers were injected but no marker rotated —
         # prepend one summary chip so they're still shown. The chip is the USER's
@@ -1484,8 +1481,13 @@ class DiscordRenderer(Renderer):
 
         Bound by the dispatcher once the session exists; read at turn END, so
         the chip reports the window as the user leaves it, not as it started.
+
+        Bound once the turn holds the session, which is also when this turn
+        supersedes the choice menus the session's last answer offered: a turn
+        that waited for the session retires menus the turn before it posted.
         """
         self._context_source = provider
+        retire_option_selects(session_provenance_tag(self._session_key))
 
     def _limit(self) -> int:
         # Leave headroom below the 2000-char cap for the chip/footer overhead
@@ -1602,23 +1604,39 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.discord.renderer_components import (  # noqa: F401
         _BUTTON_LABEL_CHARS,
         _BUTTONS_PER_ROW,
+        _BUTTONS_WITH_SELECT,
         _FULL_CHOICE_MAX_CHARS,
         _FULL_CHOICES,
         _FULL_CHOICES_LOCK,
         _FULL_CHOICES_MAX,
         _MAX_ACTION_ROWS,
         _MAX_BUTTONS,
+        _OPTION_SELECTS,
+        _OPTION_SELECTS_LOCK,
+        _OPTION_SELECTS_MAX,
+        _SELECT_LABEL_CHARS,
+        _SELECT_OPTIONS_MAX,
         _STOP_TURNS,
         _STOP_TURNS_LOCK,
         _STOP_TURNS_MAX,
         _STYLE_PRIMARY,
         _STYLE_SECONDARY,
+        MAX_OPTION_CHOICES,
+        SELECT_ANSWERED,
+        SELECT_INVALID,
+        SELECT_PREFIX,
+        SELECT_STALE,
         STOP_PREFIX,
         _choice_ref,
+        _OptionSelect,
+        _register_option_select,
         _remember_full_choice,
+        _select_label,
         build_model_components,
+        build_option_components,
         full_choice_text,
         stop_turn_target,
+        take_option_select,
     )
     from kiro_crew.discord.renderer_status import (  # noqa: F401
         _TYPING_REFRESH_S,
