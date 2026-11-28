@@ -38,6 +38,7 @@ function renderRoster(agents: KiroCrewAgent[], view: CrewView) {
       <MemoryRouter>
         <CrewRosterList
           agents={agents}
+          rosterLoaded
           filtered={agents}
           view={view}
           defaultAgent=""

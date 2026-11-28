@@ -368,8 +368,12 @@ export function CrewRosterToolbar({ agents, filter, setFilter, view, pickView, o
 }
 
 /** The crewmate list in either view, or the empty state that stands for it. */
-export function CrewRosterList({ agents, filtered, view, defaultAgent, sharedKind, memoryStores, openEdit, openCreate }: {
+export function CrewRosterList({ agents, rosterLoaded, filtered, view, defaultAgent, sharedKind, memoryStores, openEdit, openCreate }: {
   agents: KiroCrewAgent[]
+  /** The latest roster read succeeded. Until it does, an empty `agents` means
+   *  the roster is unknown, not that there are no crews, so the zero-crew
+   *  empty state waits for it. */
+  rosterLoaded: boolean
   /** `config.json`'s `memory_stores`, which says whose a store is. */
   memoryStores: MemoryStores | undefined
   filtered: KiroCrewAgent[]
@@ -382,16 +386,18 @@ export function CrewRosterList({ agents, filtered, view, defaultAgent, sharedKin
   return (
     <div role="group" aria-label={i18nT('pages.kiroCrewAgentsPage.agents')} {...uiLocation('agents.crew-list')}>
     {agents.length === 0 ? (
-      <div className="flex flex-col items-center">
-        <EmptyState
-          icon={<Users className="lucide-inline" aria-hidden="true" />}
-          title={i18nT('pages.kiroCrewAgentsPage.no_crews_yet')}
-          subtitle={i18nT('pages.kiroCrewAgentsPage.create_a_crew_to_give_an_agent_its_own_workspace')}
-        />
-        {/* The call to action belongs where the explanation is, not only in
-            the toolbar above it. */}
-        <SendBtn onClick={openCreate} {...uiLocation('agents.create-first')}>{i18nT('pages.kiroCrewAgentsPage.create_your_first_crew')}</SendBtn>
-      </div>
+      rosterLoaded && (
+        <div className="flex flex-col items-center">
+          <EmptyState
+            icon={<Users className="lucide-inline" aria-hidden="true" />}
+            title={i18nT('pages.kiroCrewAgentsPage.no_crews_yet')}
+            subtitle={i18nT('pages.kiroCrewAgentsPage.create_a_crew_to_give_an_agent_its_own_workspace')}
+          />
+          {/* The call to action belongs where the explanation is, not only in
+              the toolbar above it. */}
+          <SendBtn onClick={openCreate} {...uiLocation('agents.create-first')}>{i18nT('pages.kiroCrewAgentsPage.create_your_first_crew')}</SendBtn>
+        </div>
+      )
     ) : filtered.length === 0 ? (
       <EmptyState
         icon={<Users className="lucide-inline" aria-hidden="true" />}
