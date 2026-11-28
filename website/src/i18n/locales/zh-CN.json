@@ -10397,7 +10397,6 @@
       "show_the_exact_markdown_source": "显示确切的 Markdown 源码"
     },
     "fileMenuContributions": {
-      "app_actions": "应用操作",
       "contributed_by": "应用：{{app}}"
     },
     "featurePreviewIntro": {

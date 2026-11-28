@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, ArrowRight, Folder, FolderCode, RotateCw, ExternalLink, ChevronDown, ChevronUp, MoreHorizontal, Search, X } from 'lucide-react'
@@ -16,7 +16,10 @@ import { pushNav, type NavState } from '../../components/WebPreviewPanel'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
-import { useFileMenuItems, visibleFileMenuItems, FolderRowActions } from '../../apps/fileMenuContributions'
+import { useFileMenuItems } from '../../apps/fileMenuContributions'
+import FileRowMenu, { type FileRowMenuAnchor, type FileRowMenuNode } from '../../components/FileRowMenu'
+import { ESCAPE_PRIORITY, useEscapeLayer } from '../../hooks/useEscapeLayer'
+import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
 import { reportForError } from '../../utils/errorReport'
 import {
   failureMessage,
@@ -156,11 +159,11 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   projectDir?: string
   onClose: () => void
   onFileOpen?: (p: string) => void
-  /** Right-click "Add to context" on a tree row, forwarded to the composer host.
+  /** Right-click "Add to chat" on a row, forwarded to the composer host.
    *  Passed through so the tree here is not a weaker copy of the SAME tree in the
    *  Files rail — a row that offers the action in one surface and not the other is
-   *  the divergence a second render site invites. Listing mode has no context
-   *  menu, so it is tree-mode only. */
+   *  the divergence a second render site invites. The listing rows open the same
+   *  `FileRowMenu` the tree does (#43258), so it reaches both bodies. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onPathChange?: (p: string) => void
 }) {
@@ -217,15 +220,68 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
     return () => clearTimeout(id)
   }, [query])
 
-  // App-contributed 'folder-row' actions, rendered per row (hover-revealed).
+  // App-contributed 'folder-row' actions, rendered in each listing row's menu.
   const folderItems = useFileMenuItems('folder-row')
-  // A contributed row's dispatch failure. Held here rather than in the row: the menu
-  // closes on select, and the row is unmounted the moment the listing re-renders, so
-  // neither can host the notice. Cleared on navigation for the reason `useRevealFailure`
-  // clears on its subject — a refusal raised for the old directory must not be shown
-  // under the new one.
+  // A row action's failure (a contributed row's dispatch, a Download). Held here rather
+  // than in the row: the menu closes on select, and the row is unmounted the moment the
+  // listing re-renders, so neither can host the notice. Cleared on navigation for the
+  // reason `useRevealFailure` clears on its subject — a refusal raised for the old
+  // directory must not be shown under the new one.
   const [contribError, setContribError] = useState<string | null>(null)
   useEffect(() => { setContribError(null) }, [cwd])
+
+  // The listing row menu: the SAME `FileRowMenu` the Files tab's tree opens on its
+  // rows (#43258), so a `/tmp/...` folder a chat chip opened offers Add to chat and
+  // Download like the project tree does. In tree mode Pierre owns the open context
+  // and the dismissal; here the panel does both. One menu at a time: a second open
+  // replaces the first. The anchor object is state so its identity holds across
+  // re-renders -- the menu's dismiss and placement effects key on it.
+  const [rowMenu, setRowMenu] = useState<{ node: FileRowMenuNode; anchor: FileRowMenuAnchor } | null>(null)
+  const openRowMenu = useCallback((node: FileRowMenuNode, anchorElement: HTMLElement, anchorRect: FileRowMenuAnchor['anchorRect'], toggle = false) => {
+    setRowMenu(prev => {
+      // The row's "..." button toggles, as the kebab it replaces did: a second
+      // press on the open row's button closes the menu rather than re-anchoring
+      // it. Right-click and the keyboard always (re)open.
+      if (toggle && prev && prev.anchor.anchorElement === anchorElement) { anchorElement.focus(); return null }
+      return {
+        node,
+        anchor: {
+          anchorElement,
+          anchorRect,
+          // Closing hands focus back to the row, as Pierre's `restoreFocus` does for
+          // the tree: a keyboard user who opened the menu from the row must land
+          // where they were, not on <body>.
+          close: () => { setRowMenu(null); anchorElement.focus() },
+        },
+      }
+    })
+  }, [])
+  // Dismissal, which `FileRowMenu` leaves to its host: Escape through the shared
+  // Escape stack at `menu` priority -- the hook's own tier for a menu opened
+  // last, above `flyout`, so when the side panel is itself a flyout one press
+  // closes the menu and leaves the panel (the same tier `useListKeyboardNav`
+  // gives its menus) -- and a pointer down
+  // anywhere outside the portaled menu (its root carries the data marker Pierre's
+  // own outside-click wash reads, so the two hosts recognise the same surface).
+  // A pointer down on the open row's own "..." button is NOT an outside press: it
+  // is left to the button's click, which toggles the menu closed (`Row` below),
+  // where closing here would let the click reopen it at once. Navigation clears
+  // it too, with the error above: a menu for a row of the old directory must not
+  // survive into the new one.
+  useEffect(() => { setRowMenu(null) }, [cwd])
+  useEscapeLayer(!!rowMenu, () => { rowMenu?.anchor.close(); return 'take' }, ESCAPE_PRIORITY.menu)
+  useEffect(() => {
+    if (!rowMenu) return
+    const { close, anchorElement } = rowMenu.anchor
+    const onPointer = (e: PointerEvent) => {
+      if (!(e.target instanceof Element)) { close(); return }
+      if (e.target.closest('[data-file-tree-context-menu-root]')) return
+      if (e.target.closest('[data-testid="folder-row-menu"]')?.closest('[role="button"]') === anchorElement) return
+      close()
+    }
+    document.addEventListener('pointerdown', onPointer, true)
+    return () => document.removeEventListener('pointerdown', onPointer, true)
+  }, [rowMenu])
 
   const { data, isLoading, isError, error: listErr, refetch, isFetching } = useQuery({
     queryKey: ['browse-files', cwd],
@@ -635,6 +691,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
                   sub={m.sub}
                   title={m.path}
                   onActivate={() => onFileOpen?.(m.path)}
+                  onMenu={(el, rect, toggle) => openRowMenu({ path: m.path, kind: 'file' }, el, rect, toggle)}
                 />
               )
             })}
@@ -739,7 +796,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
                 label={d.name}
                 title={d.path}
                 onActivate={() => navigate(d.path)}
-                actions={<FolderRowActions items={visibleFileMenuItems(folderItems, { path: d.path, kind: 'dir' })} node={{ path: d.path, kind: 'dir' }} onError={setContribError} />}
+                onMenu={(el, rect, toggle) => openRowMenu({ path: d.path, kind: 'dir' }, el, rect, toggle)}
               />
             ))}
             {files.map(f => {
@@ -751,40 +808,70 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
                   label={f.name}
                   title={f.path}
                   onActivate={() => onFileOpen?.(f.path)}
-                  actions={<FolderRowActions items={visibleFileMenuItems(folderItems, { path: f.path, kind: 'file' })} node={{ path: f.path, kind: 'file' }} onError={setContribError} />}
+                  onMenu={(el, rect, toggle) => openRowMenu({ path: f.path, kind: 'file' }, el, rect, toggle)}
                 />
               )
             })}
           </>
         )}
       </div>
+      {rowMenu && (
+        <FileRowMenu
+          node={rowMenu.node}
+          anchor={rowMenu.anchor}
+          projectRoot={projectDir ?? ''}
+          onAddToContext={onAddToContext}
+          contrib={{ surface: 'folder-row', items: folderItems }}
+          onError={setContribError}
+        />
+      )}
     </DetailPanel>
   )
 }
 
-/** One listing row. Mirrors the Files tab's FileRow interaction contract:
- *  clickable, focusable, Enter/Space activates.
+/** One listing row. Mirrors the Files tab's tree row interaction contract:
+ *  clickable, focusable, Enter/Space activates, and the row menu opens the three
+ *  ways Pierre's rows open theirs -- right-click, the hover-revealed "..." button,
+ *  and Shift+F10 / the ContextMenu key.
  *
  *  `sub` carries a search hit's subfolder. It is right-aligned and truncates from
  *  the START, because the tail of a path is what distinguishes two same-named
  *  files while the head is the part they share. */
-function Row({ icon, label, sub, title, onActivate, actions }: {
+function Row({ icon, label, sub, title, onActivate, onMenu }: {
   icon: React.ReactNode
   label: string
   sub?: string
   title: string
   onActivate: () => void
-  /** App-contributed row actions (folder-row surface), right-aligned. */
-  actions?: React.ReactNode
+  /** Open the row menu anchored at `rect`, focus returning to `row` on close;
+   *  `toggle` (the "..." button) closes it instead when it is already open for
+   *  this row. Absent (the parent-folder row) → no trigger, and right-click is
+   *  the browser's. */
+  onMenu?: (row: HTMLElement, rect: FileRowMenuAnchor['anchorRect'], toggle?: boolean) => void
 }) {
+  const { t } = useTranslation()
+  const rowRef = useRef<HTMLDivElement>(null)
+  /** A right-click anchors at the pointer, a zero-width point (the menu then
+   *  aligns its left edge there); the button and the keyboard anchor at a rect
+   *  with width, which aligns right edges. Same rule the tree's menu applies. */
+  const openAt = (rect: FileRowMenuAnchor['anchorRect'], toggle = false) => { if (rowRef.current) onMenu?.(rowRef.current, rect, toggle) }
+  const pointRect = (x: number, y: number) => ({ top: y, bottom: y, left: x, right: x, width: 0, height: 0 })
   return (
     <div
+      ref={rowRef}
       className="group flex items-center gap-2 px-2 py-1 rounded-md cursor-pointer hover:bg-bg-hover transition-colors"
       onClick={onActivate}
       title={title}
       role="button"
       tabIndex={0}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onActivate() } }}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onActivate(); return }
+        if (onMenu && (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey))) {
+          e.preventDefault()
+          openAt(e.currentTarget.getBoundingClientRect())
+        }
+      }}
+      onContextMenu={onMenu ? e => { e.preventDefault(); openAt(pointRect(e.clientX, e.clientY)) } : undefined}
     >
       {icon}
       <span className="min-w-0 flex-1 text-[12.5px] text-text truncate">{label}</span>
@@ -796,7 +883,39 @@ function Row({ icon, label, sub, title, onActivate, actions }: {
           {sub}
         </span>
       )}
-      {actions}
+      {onMenu && (
+        // role="presentation" keeps the wrapper out of the accessibility tree while it
+        // stops the interaction from reaching the enclosing row: the row is a
+        // `role="button"` with its own click and Enter/Space handlers, so opening the
+        // menu would otherwise also navigate into the folder or open the file.
+        // Hover-reveal keeps the row quiet on a pointer device, but on a touch screen
+        // there is no hover and nothing here has been focused yet, so `opacity-0` alone
+        // would leave the ONLY trigger for these actions permanently invisible. Keyed
+        // on hover CAPABILITY rather than a width breakpoint (`HOVER_NONE_ACTIONS_ROW_CLS`,
+        // the repo's owned constant): a narrow desktop window still hovers, and a wide
+        // tablet still does not.
+        <span
+          role="presentation"
+          onClick={e => e.stopPropagation()}
+          onKeyDown={e => e.stopPropagation()}
+          className={`flex items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}
+        >
+          <button
+            type="button"
+            aria-label={t('pages.chatPage.more_actions')}
+            title={t('pages.chatPage.more_actions')}
+            data-testid="folder-row-menu"
+            onClick={e => openAt(e.currentTarget.getBoundingClientRect(), true)}
+            // The row constant above carries `[&_button]:p-3` for the tap target, but
+            // padding cannot grow a box whose width and height are fixed — so the SIZE
+            // is overridden here instead, or the trigger would become visible on touch
+            // and still be a 22px target.
+            className="flex items-center justify-center w-[22px] h-[22px] [@media(hover:none)]:w-9 [@media(hover:none)]:h-9 rounded text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer"
+          >
+            <MoreHorizontal size={14} className="lucide-inline" />
+          </button>
+        </span>
+      )}
     </div>
   )
 }

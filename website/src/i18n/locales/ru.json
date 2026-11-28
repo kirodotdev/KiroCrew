@@ -11123,7 +11123,6 @@
       "show_the_exact_markdown_source": "Показать точный исходный markdown"
     },
     "fileMenuContributions": {
-      "app_actions": "Действия приложения",
       "contributed_by": "Приложение: {{app}}"
     },
     "featurePreviewIntro": {
