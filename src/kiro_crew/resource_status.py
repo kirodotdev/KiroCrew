@@ -31,7 +31,9 @@ The memory figure reuses :func:`kiro_crew.subagent._available_memory_gb`, the
 same cgroup-clamped, container-aware probe behind the sub-agent cap's
 memory-readability check and the TaskRunner's memory-sized auto value, so the
 two never disagree. It is imported lazily to keep this module import-cheap
-and free of any import cycle (``context`` imports this; ``subagent`` is heavy).
+and free of any import cycle (``context`` imports this; ``subagent`` is heavy),
+and every sub-agent name here is read through :mod:`kiro_crew.subagent_standalone`,
+so a tool server that answers ``resource_status`` never loads the manager.
 
 Alongside memory the probe reads one more ceiling: the agent slice's TASK count
 against its ``pids.max`` (see :func:`_read_agent_slice_tasks`). The slice's
@@ -94,7 +96,7 @@ def _read_available_gb() -> float:
     ``unknown`` → the caller stays silent (fail-open, never a false alarm).
     """
     try:
-        from kiro_crew.subagent import _available_memory_gb
+        from kiro_crew.subagent_standalone import _available_memory_gb
 
         return _available_memory_gb()
     except Exception:  # pragma: no cover - defensive; probe must never raise
@@ -105,7 +107,7 @@ def _read_available_gb() -> float:
 def _memory_limit_out_of_view() -> bool:
     """Whether a container memory limit can sit above the visible cgroup mount."""
     try:
-        from kiro_crew.subagent import out_of_view_memory_pressure_file
+        from kiro_crew.subagent_standalone import out_of_view_memory_pressure_file
 
         return out_of_view_memory_pressure_file() is not None
     except Exception:  # pragma: no cover - defensive; probe must never raise
@@ -121,7 +123,7 @@ def _read_measured_available_gb() -> float:
     readable ancestor and agents-slice figures remain.
     """
     try:
-        from kiro_crew.subagent import _available_memory_gb
+        from kiro_crew.subagent_standalone import _available_memory_gb
 
         return _available_memory_gb(measured_only=True)
     except Exception:  # pragma: no cover - defensive; probe must never raise
@@ -140,11 +142,14 @@ def _read_posture_available_gb(pressure_gb: float, critical_gb: float) -> float:
     critical under *pressure_gb* and *critical_gb* that figure stands,
     otherwise the posture is ``unknown``.
     """
-    from kiro_crew.subagent import MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE, pop_memory_check_cause
+    from kiro_crew.subagent_standalone import (
+        memory_cause_cgroup_usage_unreadable,
+        pop_memory_check_cause,
+    )
 
     pop_memory_check_cause()  # drop a cause left by any earlier reading
     available_gb = _read_available_gb()
-    if pop_memory_check_cause() != MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE:
+    if pop_memory_check_cause() != memory_cause_cgroup_usage_unreadable():
         return available_gb
     measured_gb = _read_measured_available_gb()
     pop_memory_check_cause()  # the second read records the same cause again
@@ -1245,7 +1250,7 @@ class SpawnFloorReading:
 
 def _read_spawn_floor_figure(min_gb: float) -> tuple[float, str]:
     """The spawn gate's own memory figure (GB, -1 unmeasurable) and its cause."""
-    from kiro_crew.subagent import check_memory_available, pop_memory_check_cause
+    from kiro_crew.subagent_standalone import check_memory_available, pop_memory_check_cause
 
     pop_memory_check_cause()  # drop a cause left by any earlier reading
     _ok, avail = check_memory_available(min_gb=min_gb)
@@ -1280,12 +1285,13 @@ def _cheapest_dedicated_price_gb(cost_gb: float) -> float:
     at least; a learned one at its figure. When the figures cannot be read, the
     bare ``cost_gb`` is the only bound known, so it is used.
     """
-    from kiro_crew.subagent import REMOTE_COST_BUCKET_SUFFIX, _dedicated_start_price_gb
+    from kiro_crew.subagent_standalone import _dedicated_start_price_gb, remote_cost_bucket_suffix
 
     settled = _read_learned_settled()
     if settled is None:
         return cost_gb
-    local = [b for b in settled if not b.endswith(REMOTE_COST_BUCKET_SUFFIX)]
+    remote = remote_cost_bucket_suffix()
+    local = [b for b in settled if not b.endswith(remote)]
     # The empty-string key is never written (it normalizes to the default
     # agent), so it stands for a bucket with nothing learned.
     unlearned = _dedicated_start_price_gb(cost_gb, {}, "")
@@ -1303,10 +1309,10 @@ def spawn_floor_reading(cfg: object | None = None, *, remote: bool = False) -> S
     disabled floor, so the tool says nothing it did not measure.
     """
     try:
-        from kiro_crew.subagent import (
-            MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE,
+        from kiro_crew.subagent_standalone import (
             _shared_start_price_gb,
             _spawn_memory_floor_and_cost,
+            memory_cause_cgroup_usage_unreadable,
         )
 
         agent_cfg = getattr(cfg if cfg is not None else _load_config(), "agent", None)
@@ -1317,7 +1323,7 @@ def spawn_floor_reading(cfg: object | None = None, *, remote: bool = False) -> S
         avail, cause = _read_spawn_floor_figure(min_start)
         note = (
             "memory headroom unknown: a cgroup memory limit is set but its usage is unreadable"
-            if cause == MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+            if cause == memory_cause_cgroup_usage_unreadable()
             else ""
         )
         return SpawnFloorReading(

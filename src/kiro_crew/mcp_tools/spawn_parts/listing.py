@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
+from kiro_crew.agent_discovery import is_internal_agent_spec
 from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE, UNVERIFIED_MODEL_NOTE
 from kiro_crew.mcp_tools.spawn_parts.schemas import (
     _parent_allowlist_filter,
@@ -24,9 +25,8 @@ from kiro_crew.mcp_tools.spawn_parts.schemas import (
 )
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.subagent import (  # noqa: F401 -- visible_agent_names: the facade serves it
+from kiro_crew.subagent_standalone import (  # noqa: F401 -- visible_agent_names: the facade serves it
     format_subagent_usage,
-    is_internal_agent_spec,
     visible_agent_names,
 )
 from kiro_crew.subagent_wait_reasons import queued_wait_text

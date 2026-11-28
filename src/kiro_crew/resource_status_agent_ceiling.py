@@ -75,11 +75,12 @@ def read_agent_ceiling() -> AgentCeiling | None:
     if not platform_compat.IS_LINUX:
         return None
     try:
-        # Lazy, like resource_status's own slice probes: ``sandbox`` and
-        # ``subagent`` are large, and ``resource_status`` is imported on the
-        # per-turn context path.
+        # Lazy, like resource_status's own slice probes: ``sandbox`` is large, and
+        # ``resource_status`` is imported on the per-turn context path. The two
+        # readings come through ``subagent_standalone``, so a tool server that words
+        # a tight posture does not load the sub-agent manager for them.
         from kiro_crew import sandbox
-        from kiro_crew.subagent import (
+        from kiro_crew.subagent_standalone import (
             _agents_slice_available_gb,
             _container_cgroup_available_gb,
         )

@@ -5,7 +5,16 @@ off-loop host reading every waiting start shares.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, NamedTuple
+
+# Real imports for the three price readers ``kiro_crew.subagent_standalone`` calls
+# before the facade is loaded (its ``STANDALONE_READS``); every other function here
+# runs only on the facade's globals.
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB, DEFAULT_SUBAGENT_COST_GB
+from kiro_crew.subagent_cost import learned_settled_for
+from kiro_crew.subagent_mcp_roster import session_mcp_roster_gb
 
 if TYPE_CHECKING:
     import time
@@ -14,21 +23,15 @@ if TYPE_CHECKING:
         _HOST_READ_OFF_LOOP_SECS,
         _RSS_SAMPLES_TO_SETTLE,
         _SETTLE_AFTER_SECS,
-        DEFAULT_SPAWN_MIN_MEMORY_GB,
-        DEFAULT_SUBAGENT_COST_GB,
         MEMORY_CAUSE_READ_UNANSWERED,
         Any,
         Iterable,
-        KiroCrewConfig,
         Mapping,
         SubagentInfo,
         asyncio,
         check_memory_available,
-        learned_settled_for,
-        math,
         platform_compat,
         pop_memory_check_cause,
-        session_mcp_roster_gb,
     )
 
 

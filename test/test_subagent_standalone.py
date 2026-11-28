@@ -50,6 +50,21 @@ def test_a_standalone_owner_binds_every_global_its_functions_read() -> None:
         assert unbound == [], f"{short} reads names only the facade binds"
 
 
+def test_each_standalone_read_binds_every_global_it_reads() -> None:
+    """The few functions read from the other owners also run on their own globals first."""
+    from kiro_crew import subagent_standalone as early
+
+    for short, names in early.STANDALONE_READS.items():
+        owner = importlib.import_module(f"{subagent_parts.__name__}.{short}")
+        for name in names:
+            # The facade's compose rebinds the owner's copy; its code is the same.
+            code = vars(owner)[name].__code__
+            unbound = sorted(
+                n for n in global_names(code) if n not in vars(owner) and not hasattr(builtins, n)
+            )
+            assert unbound == [], f"{short}.{name} reads names only the facade binds"
+
+
 def test_the_standalone_readers_answer_without_loading_the_facade() -> None:
     probe = textwrap.dedent("""
         import sys

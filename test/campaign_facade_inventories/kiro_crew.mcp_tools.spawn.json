@@ -61,17 +61,17 @@
   "SPAWN_RUN_SCHEMA": "kiro_crew.validation",
   "SPAWN_STEER_SCHEMA": "kiro_crew.validation",
   "SPAWN_SUB_AGENTS_SCHEMA": "kiro_crew.validation",
-  "agent_matches_allowlist": "kiro_crew.subagent",
-  "format_subagent_usage": "kiro_crew.subagent",
+  "agent_matches_allowlist": "kiro_crew.subagent_standalone",
+  "format_subagent_usage": "kiro_crew.subagent_standalone",
   "is_internal_agent_spec": "kiro_crew.subagent",
   "mcp_core": "kiro_crew",
-  "parent_spawn_allowlists": "kiro_crew.subagent",
+  "parent_spawn_allowlists": "kiro_crew.subagent_standalone",
   "queued_wait_text": "kiro_crew.subagent_wait_reasons",
   "read_session_execution": "kiro_crew.execution_context",
   "redact_credentials": "kiro_crew.security",
   "redact_exfiltration_urls": "kiro_crew.security",
-  "resolve_max_subagents": "kiro_crew.subagent",
+  "resolve_max_subagents": "kiro_crew.subagent_standalone",
   "validate_tool_args": "kiro_crew.validation",
-  "visible_agent_names": "kiro_crew.subagent"
+  "visible_agent_names": "kiro_crew.subagent_standalone"
  }
 }

@@ -213,6 +213,18 @@ function early. Pinned by `test/test_subagent_standalone.py` (every global bound
 owner, the answers with the facade unloaded, the patch reach after it loads) and by the
 importer check in the composition contract.
 
+**The tool server's spawn and headroom tools read through it too.** `resource_status`,
+its agent-slice ceiling, and the `spawn_*` tools run in `kirocrew-core`, which never runs
+a sub-agent, so they read the host-memory, start-price, usage-line and refusal-code names
+from `subagent_standalone` rather than the facade, and the core server never loads the
+manager for them. Those readers call `kiro_crew.subagent`'s binding once it is loaded (where
+tests patch it), else the owner's. They import `start_pricing`, `run_output` and
+`agent_policy` on first use, so the listing path loads no more owners; only the functions
+named in `subagent_standalone.STANDALONE_READS` run on those owners' own globals. Pinned by
+`test/test_spawn_tools_without_manager.py` (the probe checks the facade stays unloaded after
+each tool and the replies carry the usage line, refusal code and each posture; in-process
+tests check that a facade patch reaches each reader).
+
 **The class binds its methods.** A `*_surface` owner holds `SubagentManager` methods as
 module functions taking the manager as `self`, and `manager.py` binds each one as the class
 attribute of the same name (`spawn = _admission_surface.spawn`, `staticmethod(...)` for a
