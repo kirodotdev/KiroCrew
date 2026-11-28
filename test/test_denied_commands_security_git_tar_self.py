@@ -657,19 +657,17 @@ class TestSandboxEscapeGitTarSelf:
     def test_static_substitution_reads_like_its_output(self, substituted, literal):
         assert security._is_git_tar_to_self(substituted) == security._is_git_tar_to_self(literal)
 
-    # Only a static substitution's FIRST word is spliced, so one that prints
-    # SEVERAL words beside a git or tar command cannot be read exactly.  It is
-    # refused under the waivable unreadable row, whether or not its later words
-    # dial this host: ``ssh -i key`` dials nowhere new and is still refused.
+    # A static echo substitution that prints SEVERAL words beside a git or tar
+    # command is allowed when those words dial nowhere new (``ssh -i key``).
+    # One whose words dial this host is refused like the line written out, pinned
+    # in ``test_denied_commands_security_git_tar_echo_output.py``.
     @pytest.mark.parametrize(
         "cmd",
         [
-            'GIT_SSH_COMMAND="$(echo ssh localhost)" git fetch origin',
-            'git -c core.sshCommand="$(echo ssh localhost)" fetch o',
             'GIT_SSH_COMMAND="$(echo ssh -i key)" git fetch origin',
             'git -c core.sshCommand="$(echo ssh -i key)" fetch far',
         ],
-        ids=["env-command", "config-command", "env-command-far", "config-command-far"],
+        ids=["env-command-far", "config-command-far"],
     )
     def test_multi_word_static_substitution_is_read_as_on_main(self, cmd):
         assert _denied_by(cmd) is None, cmd

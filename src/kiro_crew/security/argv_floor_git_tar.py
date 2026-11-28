@@ -87,8 +87,10 @@ from .argv_floor_git_tar_parallel import (  # noqa: F401
 )
 from .argv_floor_self import _SELF_FLOOR_MACHINERY_RE, _SELF_FLOOR_QUOTE_JUNK_RE
 from .argv_floor_ssh import (
+    _ECHO_WORDS_MET,
     _FUNCTION_BIND_CAP,
     _LITERAL_HOSTS,
+    _WHOLE_ECHO,
     _bind_positional_parameters,
     _command_value_names_self_endpoint,
     _dequoted,
@@ -1051,12 +1053,32 @@ def _is_git_tar_to_self(text_lower: str, *, raw_text: "str | None" = None) -> bo
     is present it then runs one more reading with every here-document body and its
     closing line removed (``_heredoc_body_quotes_literal``, found on the words as
     written when *raw_text* is that command), again under both splits, so a quote
-    inside a body cannot pair across its closing line with the text after it. Every
-    reading only ADDS refusals: a newly over-refused shape is the worst case, never
-    a newly allowed one.
+    inside a body cannot pair across its closing line with the text after it. Last,
+    when a flat ``echo`` substitution prints more than one word, those readings run
+    once more with every word it prints spliced (``_WHOLE_ECHO``), where the others
+    keep one operand. Every reading only ADDS refusals: a newly over-refused shape is
+    the worst case, never a newly allowed one.
     """
     if _READ_MEMO.get() is not None:
         return _git_tar_read(text_lower)
+    met: "list[bool]" = []
+    token = _ECHO_WORDS_MET.set(met)
+    try:
+        if _git_tar_readings(text_lower, raw_text):
+            return True
+    finally:
+        _ECHO_WORDS_MET.reset(token)
+    if not met:
+        return False
+    whole = _WHOLE_ECHO.set(True)
+    try:
+        return _git_tar_readings(text_lower, raw_text)
+    finally:
+        _WHOLE_ECHO.reset(whole)
+
+
+def _git_tar_readings(text_lower: str, raw_text: "str | None") -> bool:
+    """The outermost readings of ``_is_git_tar_to_self`` (its docstring), each with its own memo."""
     raw = _RAW_COMMAND.set(text_lower if raw_text is None else raw_text)
     try:
         for glue in (False, True):
@@ -1144,7 +1166,8 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
         host from at run time, read from the command as submitted
         (``_RAW_COMMAND``), since the normalizer can drop the ``$`` marker.
 
-        The open-quote backstop passes *expansions* False.  An unclosed quote
+        The open-quote backstop, and every read of the extra echo reading, pass
+        *expansions* False.  An unclosed quote
         cannot make a self host appear that the text does not already carry, and
         kinds 1 and 2 already read every self host and override the floor can
         recognise (the ``$(hostname`` / `` `hostname `` self forms among them),
@@ -1258,9 +1281,11 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
     signals: "list[bool]" = []
 
     def _signal() -> bool:
-        """``_carries_self_dial_signal()`` (kinds 1-3), read once per input."""
+        """``_carries_self_dial_signal()`` (kinds 1-3), read once per input.  Every read
+        of the extra echo reading (``_WHOLE_ECHO``) uses kinds 1-2 only, so a line this
+        signal would refuse only for a ``$`` keeps the first readings' answer."""
         if not signals:
-            signals.append(_carries_self_dial_signal())
+            signals.append(_carries_self_dial_signal(expansions=not _WHOLE_ECHO.get()))
         return signals[0]
 
     reads: "list[tuple[int, str, str | None]]" = [

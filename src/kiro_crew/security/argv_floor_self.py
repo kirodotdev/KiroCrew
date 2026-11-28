@@ -11,8 +11,8 @@ as its own subcommand, so the name appearing in a path or a message is not a ver
 new floor for one of the product's own subcommands goes here.
 
 The frame walk (``_self_token_frames``, ``_shell_payload_sources``) and the static
-reader of a flat command substitution (``_static_substitution_output``) are reused by
-the ssh self-target floor above this module.
+readers of a flat command substitution (``_static_substitution_output``,
+``_echo_output_words``) are reused by the ssh self-target floor above this module.
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the shell reader,
 the inline-payload checks, the Windows by-name kill reader (``self_kill_windows``) and the
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import re
+import shlex
 from typing import NamedTuple
 
 # The reader names a test instruments on the facade are reached as attributes of
@@ -590,6 +591,31 @@ def _static_substitution_output(body: str) -> str:
                 continue
             return operand
     return "\x00"
+
+
+def _echo_output_words(body: str) -> "str | None":
+    """Every word a flat ``echo`` *body* prints, or None when this reader cannot tell.
+
+    The body is read as the shell hands echo its argv (quotes removed, escapes
+    undone). A backslash left after that is one echo itself receives and may expand,
+    so such a body is not read, nor one with an unpaired quote, an operator or a ``#``.
+    """
+    if any(char in body for char in ";|&<>#\n"):
+        return None
+    try:
+        words = shlex.split(body, posix=True)
+    except ValueError:
+        return None
+    if not words or _shell_normalizer._program_basename(words[0]) != "echo":
+        return None
+    if any("\\" in word for word in words):
+        return None
+    del words[0]
+    while (
+        words and len(words[0]) > 1 and words[0][0] == "-" and not words[0][1:].lower().strip("ne")
+    ):
+        del words[0]
+    return " ".join(words) or None
 
 
 # An assignment word (``k=kill``): bash only honours these BEFORE the first

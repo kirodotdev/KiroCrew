@@ -39,6 +39,7 @@ from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _glob_matches, _host_is_self
 from .argv_floor_self import (
     _SELF_FLOOR_QUOTE_JUNK_RE,
+    _echo_output_words,
     _heredoc_data_view,
     _self_frames,
     _static_substitution_output,
@@ -180,6 +181,15 @@ _MAIN_READING = contextvars.ContextVar("ssh_floor_main_reading", default=False)
 # this pass can only ADD a denial, never remove one.
 _HEREDOC_RESET = contextvars.ContextVar("ssh_floor_heredoc_reset", default=False)
 
+# Set for the git/tar floor's EXTRA, additive echo pass only (``_is_git_tar_to_self``):
+# a flat ``echo`` substitution splices as every word it prints, not one operand.
+_WHOLE_ECHO = contextvars.ContextVar("ssh_floor_whole_echo", default=False)
+# Set by that floor's outermost read: the splice notes here an echo that prints more
+# than one word, in any frame it reads, which is what opens the extra pass.
+_ECHO_WORDS_MET: "contextvars.ContextVar[list[bool] | None]" = contextvars.ContextVar(
+    "ssh_floor_echo_words_met", default=None
+)
+
 
 def _splice_static_substitutions(text: str, *, escaped_too: bool = False) -> str:
     """*text* with each flat ``echo``/``printf`` substitution replaced by its static output.
@@ -189,14 +199,23 @@ def _splice_static_substitutions(text: str, *, escaped_too: bool = False) -> str
     ``eval`` or ``sh -c`` payload, an outer double quote) bash runs it.
     An output's quotes and trailing backslash are written as ``_`` (bash reads none of
     them; ``"$(echo 'a"b')" ; ssh``), except in heredoc text and *_MAIN_READING*.
+    Under *_WHOLE_ECHO* an ``echo`` splices every word it prints; while the git/tar
+    floor's read has *_ECHO_WORDS_MET* set, each spliced echo printing more than one
+    word is noted there.
     """
     docs = [] if _MAIN_READING.get() else heredoc_text_spans(text)
 
     def _splice(match: "re.Match[str]") -> str:
         body = match.group(1) if match.group(1) is not None else match.group(2)
-        out = _static_substitution_output(body)
+        noting = _ECHO_WORDS_MET.get()
+        words = _echo_output_words(body) if _WHOLE_ECHO.get() or noting is not None else None
+        out = (_WHOLE_ECHO.get() and words) or _static_substitution_output(body)
         escaped = match.group(2) is not None and _escaped(text, match.start())
-        if out == "\x00" or (escaped and not escaped_too and not _MAIN_READING.get()):
+        if escaped and not escaped_too and not _MAIN_READING.get():
+            return match.group(0)
+        if noting is not None and words and len(words.split()) > 1:
+            noting.append(True)
+        if out == "\x00":
             return match.group(0)
         if _MAIN_READING.get() or any(a <= match.start() < e for a, e in docs):
             return out
@@ -972,7 +991,8 @@ def _ssh_floor_unmasked_text(text_lower: str) -> str:
     # literals; every other body keeps its original text (the ``$(hostname``
     # hints below read it) and stays the documented run-time residual.  A
     # single-quoted spelling resolves too -- an over-approximation toward
-    # deny, accepted for a deny floor.  Only the first word is spliced.
+    # deny, accepted for a deny floor.  Only the first word is spliced, except an
+    # echo's every printed word in the git/tar floor's extra reading (``_WHOLE_ECHO``).
     # An escaped backtick span stays unspliced here; one quoting level down
     # (``eval "ssh \`printf localhost\`"``) the ``_MAIN_READING`` pass of
     # ``_reaches_self_over_ssh`` splices it, as main did.
@@ -1266,6 +1286,7 @@ def _is_ssh_to_self(
         _MAIN_READING.get(),
         _LITERAL_HOSTS.get(),
         _HEREDOC_RESET.get(),
+        _WHOLE_ECHO.get(),
         _ssh_reading_depth.get(),
     )
     key = ("ssh_to_self", text_lower, own_line, raw_text, *reading)
