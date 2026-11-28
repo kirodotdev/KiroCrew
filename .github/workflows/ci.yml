@@ -4513,9 +4513,7 @@ jobs:
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          python -m pytest -q -rs --no-cov \
-            test/test_find_ui_auto.py::test_the_generated_auto_tier_is_well_formed \
-            test/test_find_ui_auto.py::test_a_generated_shell_only_control_is_on_every_page
+          python -m pytest -q -rs --no-cov test/test_find_ui_auto.py
 
       - name: Check the color utilities this change touches name real tokens
         # A Tailwind utility naming a token the theme never declared is not an

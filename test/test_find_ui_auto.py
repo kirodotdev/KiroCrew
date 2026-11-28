@@ -411,7 +411,7 @@ def test_a_generated_shell_only_control_is_on_every_page(built: tuple[Path, Path
     ("query", "lang", "label", "path"),
     [
         (
-            # Shared by several pages: placed under each by page id, the shell last.
+            # Shared by several pages: placed under each page, the chat page one of them.
             "continue with github",
             "en",
             "Continue with GitHub",
@@ -438,7 +438,9 @@ def test_the_generated_auto_tier_answers_labels_only_it_carries(
     assert top["tier"] == "auto" and top["conditions_unknown"] is True
     assert top["label"] == label
     if path is not None:
-        assert [s["label"] for s in top["placements"][0]["path"]] == path
+        # Membership, not the first placement: which pages share a control
+        # changes with the dashboard, and the first one is simply the lowest page id.
+        assert path in [[s["label"] for s in p["path"]] for p in top["placements"]], top
     # Without the build-time file the same question is curated-only: no answer.
     ui_index._cache.update(key=None, index=None)
     bare = ui_index.find_ui(query, lang, path=built[0])
