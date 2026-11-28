@@ -633,12 +633,11 @@ def voice_runtime_workspace_conflict(
     if sys.platform != "darwin":
         return None
     if backend is not None:
-        from kiro_crew.agent_sdk.backends_launch import (
-            ACP_BACKENDS_INTERNAL_SANDBOX,
-            ACP_BACKENDS_RELAY_INTERNAL_SANDBOX,
-        )
+        from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
 
-        if backend not in ACP_BACKENDS_INTERNAL_SANDBOX | ACP_BACKENDS_RELAY_INTERNAL_SANDBOX:
+        # A relay counts as delegating: with no plan here, assume the route that
+        # needs the guard, so the pre-flight never accepts what a spawn refuses.
+        if not spawn_delegates_to_internal_sandbox(backend, kiro_cli_internal_sandbox=True):
             return None
     workspace_paths = tuple(
         dict.fromkeys(

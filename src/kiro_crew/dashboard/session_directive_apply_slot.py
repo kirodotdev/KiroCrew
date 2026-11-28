@@ -98,9 +98,15 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     # without this check the overlap refusal would still land at spawn time,
     # after the bad folder was committed. Same helper, same message; off the
     # loop because it stats the runtime paths.
-    from kiro_crew.dashboard.slot_spawn_backend import slot_spawn_backend
+    # Judged by the backend the spawn will pick (member-aware gate); a pin that
+    # cannot start keeps the strict answer.
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+    from kiro_crew.dashboard.chat_handlers import _configured_backend_for_slot
 
-    spawn_backend = await slot_spawn_backend(slot)
+    try:
+        spawn_backend: str | None = await _configured_backend_for_slot(slot)
+    except CrewmateHarnessUnavailable:
+        spawn_backend = None
     overlap = await asyncio.to_thread(voice_runtime_workspace_conflict, rp, backend=spawn_backend)
     if overlap is not None:
         return f"Error: {overlap}"

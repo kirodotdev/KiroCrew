@@ -31,19 +31,3 @@ def test_sandbox_delegating_backends_are_refused(overlapping, backend):
 
 def test_claude_backend_is_not_refused(overlapping):
     assert voice_runtime_workspace_conflict(overlapping, backend=ACP_BACKEND_CLAUDE) is None
-
-
-@pytest.mark.asyncio
-async def test_slot_spawn_backend_prefers_the_slots_pick(monkeypatch):
-    from unittest.mock import MagicMock
-
-    import kiro_crew.dashboard.slot_spawn_backend as fallback_mod
-
-    slot = MagicMock(backend="claude")
-    monkeypatch.setattr("kiro_crew.agent_sdk.backends.resolve_selected_backend", lambda v: v)
-    assert await fallback_mod.slot_spawn_backend(slot) == ACP_BACKEND_CLAUDE
-    slot = MagicMock(backend="")
-    cfg = MagicMock()
-    cfg.agent.acp_backend = ACP_BACKEND_KIRO
-    monkeypatch.setattr("kiro_crew.config.KiroCrewConfig.load", lambda: cfg)
-    assert await fallback_mod.slot_spawn_backend(slot) == ACP_BACKEND_KIRO

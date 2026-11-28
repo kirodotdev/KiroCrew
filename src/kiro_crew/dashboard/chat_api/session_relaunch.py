@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         _append_session_switch_notice,
         _ChatSlot,
         _CommitToken,
+        _configured_backend_for_slot,
         _reset_slot_session,
         _reset_slot_session_or_warn,
         _save_recent_project,
@@ -767,9 +768,14 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # with a spawn-time stack trace. Reject it here, at the moment of
         # choice, with the same actionable message. Off-loop: the check primes
         # the runtime path cache (mkdir/realpath) on first use.
-        from kiro_crew.dashboard.slot_spawn_backend import slot_spawn_backend
+        # Judged by the backend the spawn will pick (member-aware gate); a pin
+        # that cannot start keeps the strict answer.
+        from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
 
-        spawn_backend = await slot_spawn_backend(slot)
+        try:
+            spawn_backend: str | None = await _configured_backend_for_slot(slot)
+        except CrewmateHarnessUnavailable:
+            spawn_backend = None
         conflict = await asyncio.to_thread(
             voice_runtime_workspace_conflict, project, backend=spawn_backend
         )
