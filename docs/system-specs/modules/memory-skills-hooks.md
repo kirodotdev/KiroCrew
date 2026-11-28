@@ -2689,7 +2689,14 @@ The envelope is split into a core -- identity, the template persona prompt,
 `SOUL.md`, the template context settings, a guide-not-loaded note,
 `preferences.md`, `projects.md` and the on-demand memory note -- and guides:
 `AGENTS.md`, global and project always-steering, the conditional-guide index and
-declared `file://` resources. An over-budget envelope drops whole guides from the
+declared `file://` resources. The context-settings document is descriptive, not
+authorization: it carries the template's `name`, `description`, `model` and
+`includeCrewContext`, and counts its `resources` by URI scheme (`file`, `skill`,
+`object` for object-form declarations, `other` for anything else, so the count
+is bounded whatever a spec spells) rather than listing them, so a template
+declaring hundreds of `skill://` paths keeps a core that fits; the skills reach
+the agent through the skill index and the `file://` guides are documents of
+their own. An over-budget envelope drops whole guides from the
 tail of declaration order, gives back (in declaration order) each one that still
 fits, and names each one left out, with its size, in one in-band
 `essential-context#omitted` notice whose cost is reserved (a count-only notice

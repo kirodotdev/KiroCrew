@@ -115,6 +115,28 @@ def _declared_document_count(resources: list[ResourceDeclaration]) -> int:
     return sum(1 for r in resources if isinstance(r, str) and r.startswith("file://"))
 
 
+def _resources_by_scheme(resources: object) -> dict[str, int]:
+    """How many resources a spec declares, counted by URI scheme.
+
+    The context-settings document is core, so it describes the declarations
+    instead of carrying them: hundreds of ``skill://`` paths would fill the
+    essentials envelope on their own, while the skills reach the agent through
+    the skill index and ``file://`` guides are essential documents of their own.
+    Only the schemes this reader knows are named, so the document stays bounded
+    whatever a spec spells: object-form declarations count as ``object`` and
+    every other string as ``other``.
+    """
+    counts: dict[str, int] = {}
+    for entry in resources if isinstance(resources, list) else ():
+        if isinstance(entry, str):
+            scheme = entry.partition("://")[0]
+            key = scheme if scheme in ("file", "skill") else "other"
+        else:
+            key = "object"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 class _ManagedEssentialSourceError(MemberEssentialContextError):
     """A managed source is excluded from wildcard discovery, never readable.
 
@@ -1456,7 +1478,7 @@ def documents_for_member(
                 "Template context settings (descriptive, not authorization):\n"
                 + json.dumps(
                     {
-                        key: spec[key]
+                        key: (_resources_by_scheme(spec[key]) if key == "resources" else spec[key])
                         for key in (
                             "name",
                             "description",
