@@ -128,7 +128,7 @@ def launch_seams(monkeypatch, tmp_path):
     monkeypatch.setattr(launch_mod, "resolve_self_served_launch", _launch)
     monkeypatch.setattr(launch_mod, "_run_preflight_bounded", _preflight)
     monkeypatch.setattr(deepseek_mod, "_seal_deepseek_gate_extension", lambda: _SEALED)
-    monkeypatch.setattr(deepseek_mod, "_write_deepseek_gate_patch", lambda _p: _PATCH)
+    monkeypatch.setattr(deepseek_mod, "_write_deepseek_gate_patch", lambda _p, _v="": _PATCH)
     monkeypatch.setattr(deepseek_mod, "_deepseek_vault_env_names", lambda: ("DEEPSEEK_API_KEY",))
     monkeypatch.setattr(agent_scratch, "allocate_scratch", _allocate)
     monkeypatch.setattr(deepseek_mod, "wrap_argv_async", _wrap)

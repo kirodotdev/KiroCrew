@@ -123,10 +123,22 @@ function approvalRouting(ctx) {
  * release that reorders the layers, or a plugin that rewrites the mode after
  * composition, is refused by Kiro Crew rather than trusted to precedence. A
  * per-agent `presentAs()` scope cannot exist yet at load and is not visible here.
+ *
+ * From dsh 0.2.2 the service has no `mode`: the presentation is the mounted
+ * executor, so the root one is read instead, and only a `NativeToolExecutor`
+ * reports `native`. Anything else is reported as `executor:<its class name>`, or
+ * null, and Kiro Crew refuses it.
  */
 function toolsSnapshot(ctx) {
   const mode = ctx.tools?.defaultMode;
-  return { mode: typeof mode === "string" ? mode : null };
+  if (typeof mode === "string") return { mode };
+  try {
+    const kind = ctx.tools?.selectExecutor?.()?.constructor?.name;
+    if (kind === "NativeToolExecutor") return { mode: "native" };
+    return { mode: typeof kind === "string" ? `executor:${kind}` : null };
+  } catch {
+    return { mode: null };
+  }
 }
 
 /**
