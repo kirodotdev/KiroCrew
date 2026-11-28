@@ -1106,7 +1106,10 @@ state the alert exists to prevent.
 - **The failure dedup anchor is delivery-agnostic too.** A channel-delivered alert
   never sets `slack_failed`, so `last_failure_hash` / `last_failure_at` advance and
   an identical failure re-alerts once per `_FAILURE_REMINDER_SECS` rather than on
-  every fire. The SEL `downstream_service` names the channel namespace that
+  every fire. A repeat inside that window still gets a bell row (`Cron: <name>
+  (repeat)` on the script and command path, `Cron: <name> (dup failure #N)` on the
+  agent-turn path), pushed `no_sound` by `_no_sound_bell`: it counts on the badge but
+  plays no sound, because the user heard the first one. The SEL `downstream_service` names the channel namespace that
   actually took it, so the audit trail does not read "slack" for a Telegram
   delivery.
 - **A per-job threshold holds the first failures on the bell.** `alert_after_failures`
@@ -1115,7 +1118,8 @@ state the alert exists to prevent.
   is refused because `silent` already means never) is how many consecutive failed
   runs it takes before either surface delivers. `_failure_alert_due` is the one
   spelling both callers run before the duplicate check: below the threshold the
-  bell still rings (title `Cron: <name> (failure N of M)`) but neither
+  bell still records it (title `Cron: <name> (failure N of M)`, pushed `no_sound`, so
+  it counts on the badge but plays no sound) but neither
   leg is attempted and the dedup anchor does not move, so the failure that reaches
   the threshold alerts even with an identical reason. A held failure writes a
   `cron_failure_alert_held` audit row.

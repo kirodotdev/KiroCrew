@@ -29,10 +29,10 @@ vi.mock('../store', () => ({
 const SW_PATH = path.resolve(__dirname, '..', '..', 'public', 'sw.js')
 type NavLike = { serviceWorker?: unknown }
 
-/** Run sw.js's push handler for `notification` with no visible tab; return the tag it shows. */
-async function workerTag(notification: Record<string, unknown>): Promise<string | undefined> {
+/** Run sw.js's push handler for `notification` with no visible tab; return the options it shows. */
+async function workerOptions(notification: Record<string, unknown>): Promise<{ tag?: string; silent?: boolean }> {
   const listeners: Record<string, (e: unknown) => void> = {}
-  const showNotification = vi.fn((_title: string, _opts: { tag?: string }) => Promise.resolve())
+  const showNotification = vi.fn((_title: string, _opts: { tag?: string; silent?: boolean }) => Promise.resolve())
   const fakeSelf = {
     addEventListener: (kind: string, fn: (e: unknown) => void) => { listeners[kind] = fn },
     location: { origin: 'https://dash.example' },
@@ -50,7 +50,12 @@ async function workerTag(notification: Record<string, unknown>): Promise<string 
   })
   await pending
   expect(showNotification).toHaveBeenCalledTimes(1)
-  return showNotification.mock.calls[0][1].tag
+  return showNotification.mock.calls[0][1]
+}
+
+/** The tag sw.js's push handler shows for `notification`. */
+async function workerTag(notification: Record<string, unknown>): Promise<string | undefined> {
+  return (await workerOptions(notification)).tag
 }
 
 /** Run the tab hook for `note` while the window is away; return the tag it posts. */
@@ -114,5 +119,14 @@ describe('one tag for the tab toast and the Web Push banner', () => {
     expect(tabA).not.toBe(tabB)
     expect(swA).not.toBe(swB)
     expect([tabA, tabB]).toEqual([swA, swB])
+  })
+})
+
+describe('the Web Push banner of a no_sound note (payload `silent`)', () => {
+  it('shows without a sound, and an ordinary note keeps its sound', async () => {
+    const silent = await workerOptions({ title: 'Cron: watcher (repeat)', body: 'b', tag: 't1', silent: true })
+    const ordinary = await workerOptions({ title: 'Cron: watcher', body: 'b', tag: 't2' })
+    expect(silent.silent).toBe(true)
+    expect(ordinary.silent).toBeUndefined()
   })
 })

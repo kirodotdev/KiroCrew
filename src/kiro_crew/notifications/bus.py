@@ -45,7 +45,8 @@ SYSTEM_CHANNELS: dict[str, str] = {
     "system.taskrunner": _DEFAULT_PRIORITY,
     # A staged skill candidate is invisible until a human approves it, so the
     # note is the ONLY surface that says it exists -- but it blocks no agent
-    # turn, so it is default, not critical.
+    # turn, so it is default, not critical. Its producer marks it ``no_sound``:
+    # it waits for the user without interrupting them.
     "system.skills": _DEFAULT_PRIORITY,
     # Auto-approve lifecycle: notably an expiry that lands while an unattended
     # loop is running, where the note is the only trace that the run stopped being
@@ -166,6 +167,9 @@ _RESERVED_NOTE_KEYS = frozenset(
         # language. Only gateway producers set it, so an app or agent cannot
         # make its note read as one of the gateway's own.
         "i18n",
+        # Whether the note plays a sound; written only when set, so meta could
+        # otherwise supply it. Only gateway producers set it.
+        "no_sound",
         # Sink/frontend-owned status fields: a caller must not be able to
         # pre-suppress or pre-acknowledge a note it is pushing.
         "silenced",
@@ -259,6 +263,12 @@ class NotificationPayload:
     # the dashboard reads a malformed one as no copy and shows the English, and
     # dropping the note over it would lose the alert itself.
     i18n: dict[str, Any] | None = None
+    # True for a note the user need not HEAR, such as a repeat of a failure already
+    # told. It keeps its priority, so its bell row, unread count, in-app banner, OS
+    # toast and Web Push banner are unchanged, but the dashboard plays no sound for
+    # it and the Web Push banner is shown silently. Unlike ``silenced`` (a muted
+    # channel or session) it hides nothing. Set only by gateway producers.
+    no_sound: bool = False
 
     def validate(self) -> None:
         """Raise :class:`NotificationValidationError` on any schema violation."""
@@ -278,6 +288,8 @@ class NotificationPayload:
             raise NotificationValidationError(
                 f"priority must be one of {PRIORITIES}, got {self.priority!r}"
             )
+        if not isinstance(self.no_sound, bool):
+            raise NotificationValidationError("no_sound must be a boolean")
         if self.ttl is not None and (
             not isinstance(self.ttl, int)
             # bool is an int subclass: the sweeper deliberately excludes it,
@@ -566,6 +578,8 @@ class NotificationBus:
         ):
             if value is not None:
                 note[key] = value
+        if payload.no_sound:
+            note["no_sound"] = True
         if payload.meta:
             # Meta keys merge flat into the note (legacy behavior — the
             # frontend reads note.job_id / note.slot / note.session_key

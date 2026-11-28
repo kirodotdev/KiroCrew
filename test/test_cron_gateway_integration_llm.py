@@ -487,8 +487,11 @@ class TestThrottleFallbackCronWiring:
             with pytest.raises(AcpError):
                 await captured_cb(job)
 
-        bodies = [
-            str(c.args[2]) for c in gw.dashboard_state.notify.call_args_list if len(c.args) >= 3
+        # The first alert sounds through notify(); the suppressed repeat is
+        # pushed on the bus with no_sound set.
+        ds = gw.dashboard_state
+        bodies = [str(c.args[2]) for c in ds.notify.call_args_list if len(c.args) >= 3] + [
+            c.args[0].body for c in ds.notification_bus.push.call_args_list if c.args[0].no_sound
         ]
         assert any(
             "primary-m throttled" in b and "fb-1, fb-2 also unavailable" in b for b in bodies

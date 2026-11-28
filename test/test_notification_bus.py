@@ -453,12 +453,34 @@ class TestNoteShape:
         assert "acked" not in note
         assert note["job_id"] == "j1"
 
+    def test_no_sound_drops_only_the_sound_and_meta_cannot_set_it(self):
+        bus, _ = _make_bus()
+        soundless = bus.push(
+            NotificationPayload(
+                source="system", channel="system.cron", title="t", body="b", no_sound=True
+            )
+        )
+        # The priority stays the channel's, so the badge and banner are unchanged.
+        assert (soundless["no_sound"], soundless["priority"]) == (True, "default")
+        plain = bus.push(
+            NotificationPayload(
+                source="system", channel="system.cron", title="t", body="b", meta={"no_sound": True}
+            )
+        )
+        assert "no_sound" not in plain
+
+    def test_non_boolean_no_sound_rejected(self):
+        with pytest.raises(NotificationValidationError):
+            NotificationPayload(
+                source="system", channel="system.cron", title="t", body="b", no_sound="yes"  # type: ignore[arg-type]
+            ).validate()
+
     def test_optional_fields_omitted_when_unset(self):
         bus, _ = _make_bus()
         note = bus.push(
             NotificationPayload(source="system", channel="system.cron", title="t", body="b")
         )
-        for key in ("group_key", "actions", "url", "icon", "ttl"):
+        for key in ("group_key", "actions", "url", "icon", "ttl", "no_sound"):
             assert key not in note
 
     def test_optional_fields_present_when_set(self):

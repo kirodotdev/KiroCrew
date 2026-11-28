@@ -186,8 +186,11 @@ async def _run_message_callback_raising(gw, job, exc):
 
 
 def _bodies(gw) -> list[str]:
-    """Every notification body pushed during the run."""
-    return [str(c) for c in gw.dashboard_state.notify.call_args_list]
+    """Every notification body pushed during the run, sounding or not."""
+    ds = gw.dashboard_state
+    return [str(c) for c in ds.notify.call_args_list] + [
+        c.args[0].body for c in ds.notification_bus.push.call_args_list
+    ]
 
 
 class TestScriptFailureReachesTheUser:
@@ -416,9 +419,11 @@ class TestAlertNoiseControl:
         await _run_script(gw, job, {"status": "error", "error": CONFLICT})
         # The DM is the noisy surface, so it is the one withheld on a repeat.
         gw.slack.post_message.assert_awaited_once()
-        # The local bell still rings, marked as a repeat, so a user watching the
-        # feed can see the job is still down.
-        assert any("suppressed" in b for b in _bodies(gw))
+        # The local bell still records it, marked as a repeat and without a sound,
+        # so a user watching the feed can see the job is still down.
+        (repeat,) = [c.args[0] for c in gw.dashboard_state.notification_bus.push.call_args_list]
+        assert "suppressed" in repeat.body
+        assert (repeat.no_sound, repeat.priority) == (True, None)
         # Suppression is time-boxed, not permanent.
         job.last_failure_at -= _FAILURE_REMINDER_SECS + 1
         await _run_script(gw, job, {"status": "error", "error": CONFLICT})

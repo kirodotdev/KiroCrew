@@ -164,6 +164,10 @@ def _web_push_payload(note: dict[str, Any]) -> dict[str, Any]:
         # platform would swap a banner still on screen without alerting. Only a
         # keyed note meant to announce reaches Web Push, so each one asks to.
         notification["renotify"] = True
+    if note.get("no_sound") is True:
+        # The producer asked for no sound: the banner still shows, without the
+        # platform's alert sound or vibration (NotificationOptions.silent).
+        notification["silent"] = True
     return {"web_push": 8030, "notification": notification}
 
 

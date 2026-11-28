@@ -787,15 +787,21 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
         meta = None if is_channel_key(key) else self._notif_meta(f"dashboard:{key}")
         state = self.dashboard_state
 
-        def _emit(title: str, body: str, *, merged: bool) -> None:
-            if not merged:
+        def _emit(title: str, body: str, *, merged: bool, no_sound: bool = False) -> None:
+            if not merged and not no_sound:
                 state.notify("agent", title, body, meta=meta, channel=MONITOR_CHANNEL)
                 return
-            # A merge needs nothing from the user, so it lands in the feed without a
-            # banner, sound or unread count. Every other stop keeps the channel's
-            # priority: each one either asks for a decision or reports a goal unmet.
             payload = payload_from_legacy("agent", title, body, meta, channel=MONITOR_CHANNEL)
-            payload.priority = "passive"
+            if merged:
+                # A merge needs nothing from the user, so it lands in the feed without
+                # a banner, sound or unread count. Every other stop keeps the
+                # channel's priority: each one either asks for a decision or reports
+                # a goal unmet, except a goal that reported done.
+                payload.priority = "passive"
+            else:
+                # A goal that reported done keeps its priority, badge and banner but
+                # plays no sound: the user need not hear about it now.
+                payload.no_sound = True
             state.notification_bus.push(payload)
 
         if is_structured_monitor_loop(loop):
@@ -924,7 +930,7 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
                 or ""
             )
         terminal = loop.stopped_reason == MONITOR_TERMINAL_REASON or bool(owed)
-        merged = False
+        merged = no_sound = False
         if not terminal and not capped_out and runtime_budget_exceeded(loop):
             title = "Monitoring loop spent its time budget"
             body = (
@@ -1018,6 +1024,7 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
                     f"The loop stopped after {loop.cycle_count} cycles because its "
                     "goal reported completion. Open the session for the final details."
                 )
+                no_sound = True
         else:
             title = "Monitoring loop hit its cycle cap"
             body = (
@@ -1035,7 +1042,7 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
             body = f"{body}\n\n{watched}"
             body, _ = redact_exfiltration_urls(body)
             body, _ = redact_credentials(body)
-        _emit(title, body, merged=merged)
+        _emit(title, body, merged=merged, no_sound=no_sound)
         return True
     except Exception:
         logger.debug("AutoNudge expiry notification failed", exc_info=True)
