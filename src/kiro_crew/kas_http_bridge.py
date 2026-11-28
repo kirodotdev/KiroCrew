@@ -245,9 +245,6 @@ class Bridge:
     #: Whether a refused ``initialize`` is tried again over the older ``sse``
     #: transport (:func:`_moves_to_sse`).
     falls_back_to_sse = True
-    #: Whether a request the server answered 404 for is sent again once a new
-    #: session is started (:meth:`_post`); the session is started either way.
-    resends_after_renewal = True
 
     def __init__(
         self,
@@ -367,8 +364,7 @@ class Bridge:
             return self._open(request), headers.get(_SESSION_HEADER)
         except _NoAnswer as exc:
             stale = headers.get(_SESSION_HEADER)
-            renewed = retry_forgotten and exc.status == 404 and stale and self._renew(stale)
-            if not (renewed and self.resends_after_renewal):
+            if not (retry_forgotten and exc.status == 404 and stale and self._renew(stale)):
                 raise
         headers = self._request_headers()
         request = urllib.request.Request(self._url, data=body, headers=headers, method="POST")
