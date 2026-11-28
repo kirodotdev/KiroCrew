@@ -276,6 +276,9 @@ class KiroPrerequisiteService:
         self._repair_lock = asyncio.Lock()
         self._last_probe_at = 0.0
         self._has_probed = False
+        # Whether the latest identity probe was skipped (claude backend), so its
+        # ``ready=False`` says nothing about the sign-in. See ``verified_ready``.
+        self._whoami_skipped = False
         self._viable_binary = ""
         # The failed-turn sign-in check (:meth:`signed_out_confirmed`) keeps its
         # own ``whoami`` verdict, apart from ``_status``: it must never rewrite
@@ -569,7 +572,7 @@ class KiroPrerequisiteService:
             try:
                 if self._warm_up_delay > 0:
                     await asyncio.sleep(self._warm_up_delay)
-                await self._probe()
+                await self._probe(skip_whoami_on_claude=True)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -640,11 +643,14 @@ class KiroPrerequisiteService:
             # INSIDE the lock after the winner refreshed the timestamp, drop the
             # queued callers. A human Check again keeps ``force=True`` and still
             # bypasses that cache, so the button never returns a stale answer.
-            await self._probe(force=not coalesce)
+            # That human Check again also runs whoami on a claude default: the
+            # person asked for the sign-in answer, so it is never skipped. Only the
+            # machine poll (``coalesce``) may skip it.
+            await self._probe(force=not coalesce, skip_whoami_on_claude=coalesce)
         elif not self._has_probed:
             # Nothing has resolved yet (warm-up still pending or it failed).
             # One probe here is the boot probe, just arriving late.
-            await self._probe()
+            await self._probe(skip_whoami_on_claude=True)
         elif await self.identity_changed_since_probe():
             # The store now names a different account (or none) than the latch
             # describes. This is the one condition under which an ORDINARY poll
@@ -653,7 +659,9 @@ class KiroPrerequisiteService:
             # "not signed in" after a terminal sign-in for just as long. It stays
             # cheap because the trigger is a local read, not a spawn, and it
             # cannot loop -- the probe stamps the new identity, so the next poll
-            # compares equal.
+            # compares equal. It runs whoami even on a claude default: the latch's
+            # sign-in answer describes the old account, so a skipped probe could
+            # only carry a verdict the current store does not back.
             await self._probe(force=True)
         result = await self._dashboard_snapshot()
 
@@ -849,7 +857,11 @@ class KiroPrerequisiteService:
 
         if self._assume_ready:
             return bool(self._status.ready)
-        if not self._has_probed or self._clock() - self._last_probe_at >= max_age_secs:
+        if (
+            not self._has_probed
+            or self._whoami_skipped
+            or self._clock() - self._last_probe_at >= max_age_secs
+        ):
             try:
                 await self._probe(force=True)
             except Exception:
@@ -911,7 +923,7 @@ class KiroPrerequisiteService:
         full one). ``authenticated`` is the verdict; it fails closed.
         """
 
-        return await self._probe(force=True, login_only=True)
+        return await self._probe(force=True, login_only=True, skip_whoami_on_claude=True)
 
     async def session_ready(self) -> bool:
         """Return the latched readiness. Never probes; never blocks a turn.

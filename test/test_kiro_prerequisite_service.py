@@ -116,7 +116,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_audited_identity_probe": (
         "function",
         True,
-        "(self, executable: 'str', *, isolate_home: 'bool' = True, first_party_fixed_argv: 'bool' = False) -> 'ProcessResult'",
+        "(self, executable: 'str', *, isolate_home: 'bool' = True, first_party_fixed_argv: 'bool' = False, skip_on_claude_backend: 'bool' = False) -> 'ProcessResult'",
     ),
     "_audited_probe": (
         "function",
@@ -131,7 +131,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_probe": (
         "function",
         True,
-        "(self, *, force: 'bool' = False, login_only: 'bool' = False) -> 'PrerequisiteStatus'",
+        "(self, *, force: 'bool' = False, login_only: 'bool' = False, skip_whoami_on_claude: 'bool' = False) -> 'PrerequisiteStatus'",
     ),
     "_probe_acp_support": ("function", True, "(self, executable: 'str') -> 'bool'"),
     "_probe_kas_spec_loading": ("function", True, "(self) -> 'tuple[list[str], str]'"),
