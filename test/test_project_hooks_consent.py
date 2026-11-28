@@ -1408,6 +1408,40 @@ def test_a_persons_turn_reads_a_targets_hooks_from_the_runtimes_folder(layout, t
     assert asyncio.run(person_turn_reprojects(scheduled, "lead", _idle)) is True
 
 
+def test_a_persons_turn_reads_its_targets_in_one_fresh_revision_scope(layout, monkeypatch):
+    """Every spec lookup of one check shares one agents-dir revision scope, and the
+    next check opens its own (``agent_discovery.in_agents_dir_revision_scope``)."""
+    import asyncio
+
+    from kiro_crew.acp import kas_agents
+    from kiro_crew.agent_discovery_parts import dir_revision
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_reprojects
+
+    _home, user, checkout = layout
+    consent.set_choice(checkout, True)
+    _lead_with_target(user)
+    scheduled = _batch(checkout, "cron:job-1", person=False, agent="lead")
+    seen: list[dict | None] = []
+    real_absent = kas_agents.agent_spec_absent
+
+    def absent(agents_dir, name):
+        seen.append(dir_revision._REVISION_SCOPE.get())
+        return real_absent(agents_dir, name)
+
+    monkeypatch.setattr(kas_agents, "agent_spec_absent", absent)
+
+    async def _idle():
+        return False
+
+    scopes = []
+    for _ in range(2):
+        seen.clear()
+        assert asyncio.run(person_turn_reprojects(scheduled, "lead", _idle)) is True
+        assert len(seen) >= 2 and all(s is not None and s is seen[0] for s in seen), seen
+        scopes.append(seen[0])
+    assert scopes[0] is not scopes[1], "a second check reused the first check's scope"
+
+
 def test_a_persons_turn_never_resets_for_a_user_level_agent_of_that_name(layout):
     _home, user, checkout = layout
     consent.set_choice(checkout, True)

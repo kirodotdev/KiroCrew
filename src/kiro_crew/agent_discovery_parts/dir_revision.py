@@ -10,14 +10,17 @@ answer derived from the directory for as long as that revision holds.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import os
 import stat
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Callable, Generic, TypeVar
+from typing import Callable, Generic, Iterator, ParamSpec, TypeVar
 
 from kiro_crew.agent_discovery_parts.spec_reads import _WINDOWS, _fence_refuses, _SpecReadRefused
 from kiro_crew.agent_discovery_parts.spec_snapshot import _iter_spec_entries, spec_cache_generation
@@ -52,6 +55,14 @@ _AGENTS_DIR_MEMO_MAX_KEYS = 256
 # The digest slot of an entry old enough for its metadata alone to pin it.
 _NO_DIGEST = b""
 _DIGEST_CHUNK_BYTES = 64 * 1024
+# One revision per agents directory per resolve: a scope opened by an operation
+# that resolves against the directory more than once (:func:`agents_dir_revision_scope`).
+# Every memo and snapshot inside it reads the revision walked first in that scope,
+# keyed on :func:`spec_cache_generation`, so an in-process write is still seen at
+# once. Outside a scope nothing is shared: every lookup walks for itself.
+_REVISION_SCOPE: ContextVar[dict[str, tuple[int, "AgentsDirRevision | None"]] | None] = ContextVar(
+    "agents_dir_revision_scope", default=None
+)
 
 
 def _young_entry_digest(path: str, st: os.stat_result, limit: int) -> tuple[bytes, int] | None:
@@ -222,6 +233,86 @@ def _revision_pin(revision: AgentsDirRevision) -> bytes:
     return hashlib.sha256(repr(revision).encode("utf-8", "backslashreplace")).digest()
 
 
+@contextmanager
+def agents_dir_revision_scope() -> Iterator[None]:
+    """One walk per agents directory for the resolve inside the block.
+
+    Opened by an operation that resolves against a directory more than once (a
+    KAS spec resolve asks whether a name is absent, then loads it; a crewmate
+    verdict stamps two folders, then reads specs from both). Inside the block,
+    :func:`shared_agents_dir_revision` answers from the revision walked first in
+    the scope, so the memo hits of that one operation cost one walk per directory
+    instead of one each. The scope is a snapshot of the resolve's own start: a
+    write from outside the process that lands during the block is seen by the
+    next operation, as a write landing during one walk is seen by the next walk;
+    an in-process write moves :func:`spec_cache_generation` and is seen inside
+    the block. An enclosing scope is reused, so a nested resolve shares its
+    caller's walk.
+    """
+    if _REVISION_SCOPE.get() is not None:
+        yield
+        return
+    token = _REVISION_SCOPE.set({})
+    try:
+        yield
+    finally:
+        _REVISION_SCOPE.reset(token)
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def in_agents_dir_revision_scope(fn: Callable[_P, _R]) -> Callable[_P, _R]:
+    """*fn*, each call run inside its own :func:`agents_dir_revision_scope`.
+
+    A plain annotated decorator, so a type checker reads its type without inferring
+    the decorated ``agents_dir_revision_scope`` across an import cycle.
+    """
+
+    @functools.wraps(fn)
+    def scoped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with agents_dir_revision_scope():
+            return fn(*args, **kwargs)
+
+    return scoped
+
+
+def fresh_agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
+    """Walk *agents_dir* now; the result is what the open scope serves next.
+
+    The check a memo or snapshot makes AFTER its own read goes through here, never
+    through :func:`shared_agents_dir_revision`: a shared value would always equal
+    the one the read started from, and a write during the read would be stored.
+    """
+    # Read before the walk, so a clear landing during it keys the next lookup past this entry.
+    generation = spec_cache_generation()
+    revision = agents_dir_revision(agents_dir)
+    scope = _REVISION_SCOPE.get()
+    if scope is not None:
+        scope[str(agents_dir)] = (generation, revision)
+    return revision
+
+
+def shared_agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
+    """The revision of *agents_dir* for a lookup, shared where sharing is sound.
+
+    Every memo and snapshot pinned to the directory looks it up here before its
+    own read. Inside an open :func:`agents_dir_revision_scope`, the revision
+    walked earlier in it under the current :func:`spec_cache_generation`; else a
+    fresh walk (:func:`fresh_agents_dir_revision`). With no scope every lookup
+    walks for itself, as before. ``None`` is shared like any answer: it already
+    means "read uncached", and every holder would otherwise re-walk the folder
+    to learn it again.
+    """
+    scope = _REVISION_SCOPE.get()
+    if scope is not None:
+        scoped = scope.get(str(agents_dir))
+        if scoped is not None and scoped[0] == spec_cache_generation():
+            return scoped[1]
+    return fresh_agents_dir_revision(agents_dir)
+
+
 T = TypeVar("T")
 
 
@@ -277,7 +368,7 @@ class AgentsDirMemo(Generic[T]):
         if is_native_skill_alias_name(key):
             return compute()
         dir_key = str(agents_dir)
-        revision = agents_dir_revision(agents_dir)
+        revision = shared_agents_dir_revision(agents_dir)
         if revision is None:
             return compute()
         pin = _revision_pin(revision)
@@ -293,7 +384,7 @@ class AgentsDirMemo(Generic[T]):
             if found is not None and key in found:
                 return found[key]
         answer = compute()
-        if agents_dir_revision(agents_dir) != revision:
+        if fresh_agents_dir_revision(agents_dir) != revision:
             return answer
         with self._lock:
             cached = self._answers.get(dir_key)
@@ -329,7 +420,7 @@ class AgentsDirMemo(Generic[T]):
             answers = prefill()
         except OSError:
             return None
-        if agents_dir_revision(agents_dir) != revision:
+        if fresh_agents_dir_revision(agents_dir) != revision:
             return None
         found = {name: a for name, a in answers.items() if not is_native_skill_alias_name(name)}
         with self._lock:
