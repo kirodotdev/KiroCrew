@@ -320,7 +320,11 @@ class TestDrainNotifications:
         assert len(client._mcp_notifications) == 0
 
     @pytest.mark.asyncio
-    async def test_drains_live_messages(self, tmp_path):
+    async def test_drains_live_messages(self, tmp_path, monkeypatch):
+        # The drain reads the virtual clock, so a slow runner cannot spend the window
+        # before the first read, and a quiet poll costs exactly the time it was asked for.
+        clock = ManualClock(monotonic_start=0.0)
+        clock.install(monkeypatch, acp_client)
         client = AcpClient(work_dir=tmp_path)
         from kiro_crew.acp.types import JsonRpcMessage
 
@@ -332,6 +336,7 @@ class TestDrainNotifications:
             call_count[0] += 1
             if call_count[0] == 1:
                 return live_msg
+            clock.sleep(timeout)
             return None
 
         client._read_message = fake_read
@@ -344,7 +349,9 @@ class TestDrainNotifications:
         # Should have processed the live message without error
 
     @pytest.mark.asyncio
-    async def test_handles_acp_error_during_drain(self, tmp_path):
+    async def test_handles_acp_error_during_drain(self, tmp_path, monkeypatch):
+        # A frozen virtual clock: a slow runner cannot spend the window before the read.
+        ManualClock(monotonic_start=0.0).install(monkeypatch, acp_client)
         client = AcpClient(work_dir=tmp_path)
         client._mcp_notifications = []
         client._read_message = AsyncMock(side_effect=AcpError("process died"))
@@ -380,8 +387,12 @@ class TestDrainNotifications:
         assert client.pop_pending_oauth_requests() == []
 
     @pytest.mark.asyncio
-    async def test_captures_live_mcp_oauth_request(self, tmp_path):
+    async def test_captures_live_mcp_oauth_request(self, tmp_path, monkeypatch):
         """OAuth notifications arriving live during drain are also captured."""
+        # The drain reads the virtual clock, so a slow runner cannot spend the window
+        # before the first read, and a quiet poll costs exactly the time it was asked for.
+        clock = ManualClock(monotonic_start=0.0)
+        clock.install(monkeypatch, acp_client)
         client = AcpClient(work_dir=tmp_path)
         from kiro_crew.acp.types import METHOD_MCP_OAUTH_REQUEST, JsonRpcMessage
 
@@ -397,6 +408,7 @@ class TestDrainNotifications:
             call_count[0] += 1
             if call_count[0] == 1:
                 return oauth_msg
+            clock.sleep(timeout)
             return None
 
         client._read_message = fake_read
