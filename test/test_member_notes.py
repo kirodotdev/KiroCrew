@@ -137,3 +137,30 @@ def test_the_handler_writes_only_the_resolved_crewmates_notes(monkeypatch):
     response = asyncio.run(handler.api_member_self_notes(request))
     assert response.status == 200
     assert members.read_member_briefing("ada") == "From the tool."
+
+
+@_requires_nofollow
+def test_a_notes_write_tells_every_agent_picker_to_re_read(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.dashboard.handlers import member_goals as handler
+
+    async def caller(_request, _operation):
+        return "dashboard_chat-1", "ada", "Ada"
+
+    async def body(_request):
+        return {"text": "From the tool."}
+
+    monkeypatch.setattr(handler, "_agent_member", caller)
+    monkeypatch.setattr(handler, "_agent_body", body)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.guide._audit", lambda *a, **k: None)
+    app = web.Application()
+    state = SimpleNamespace(push_refresh=MagicMock())
+    app["state"] = state
+    request = make_mocked_request("POST", "/api/member/self/notes", app=app)
+    assert asyncio.run(handler.api_member_self_notes(request)).status == 200
+    state.push_refresh.assert_called_once_with("agents")

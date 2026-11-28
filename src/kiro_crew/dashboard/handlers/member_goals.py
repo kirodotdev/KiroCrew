@@ -811,4 +811,11 @@ async def api_member_self_notes(request: web.Request) -> web.Response:
         status = 400 if exc.code in ("invalid_notes", "notes_too_long") else 500
         return _deny(status, exc.code, str(exc))
     _audit(sk, OP_GOAL_WRITE, "ok", "notes")
+    # The agent catalog counts notes as the crewmate's own setup, which decides whether
+    # a picker hides it as covered by its template, so every picker re-reads it.
+    # Best-effort: the write LANDED, and a reconnect re-reads the catalog.
+    try:
+        request.app["state"].push_refresh("agents")
+    except Exception:
+        logger.debug("could not announce the notes write to the agent pickers", exc_info=True)
     return web.json_response({"ok": True, "chars": written})

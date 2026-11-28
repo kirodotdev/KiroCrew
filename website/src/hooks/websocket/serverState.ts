@@ -163,11 +163,16 @@ const NARROW_KINDS: Readonly<Record<string, readonly RefreshTarget[]>> = {
 
 /** Invalidate one cache a frame made stale. The crew registry (and the roster under
  *  it) is marked stale but not read while the tab is hidden: nobody sees it, and the
- *  focus manager re-reads a stale query the moment the tab is shown again. Every other
- *  cache re-reads at once, as before. */
+ *  focus manager re-reads a stale query the moment the tab is shown again. A shown tab
+ *  re-reads it one read at a time (`refreshDashboardReads`): a roster read on a busy
+ *  gateway outlasts the end-of-turn window, and a re-read that abandoned it would leave
+ *  its request running and stack another beside it. Every other cache re-reads at once,
+ *  as before. */
 function invalidateTarget(qc: QueryClient, target: RefreshTarget): void {
   if (target === CREW_TARGET && typeof document !== 'undefined' && document.hidden) {
     qc.invalidateQueries({ ...target, refetchType: 'none' })
+  } else if (target === CREW_TARGET) {
+    refreshDashboardReads(qc, target.queryKey)
   } else {
     qc.invalidateQueries(target)
   }
@@ -250,6 +255,15 @@ const REGISTRY_NEUTRAL_KINDS: readonly string[] = [
  *  frame made entirely of known neutral kinds is ruled out. */
 export function refreshMayChangeRegistry(kinds?: readonly string[]): boolean {
   return !kinds?.length || !kinds.every(kind => REGISTRY_NEUTRAL_KINDS.includes(kind))
+}
+
+/** Whether a `refresh` frame can have changed what the agent catalog lists. A frame
+ *  made only of `turn_end` cannot: the gateway announces what a turn changes there as
+ *  `agents` (a config write through its config watcher, a spec file through its
+ *  end-of-turn check of the agents folders), so the end of a turn re-reads the roster
+ *  and the other caches but not the catalog. */
+export function refreshMayChangeCatalog(kinds?: readonly string[]): boolean {
+  return refreshMayChangeRegistry(kinds) && !(kinds?.length && kinds.every(kind => kind === 'turn_end'))
 }
 
 /** `turn_end` ends a turn; `history` follows a close or a delete. */

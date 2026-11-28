@@ -1088,6 +1088,23 @@ class TestMemberRulesRoutes:
         assert read_member_rules(CREW, CREW) == "Never merge PRs."
 
     @pytest.mark.asyncio
+    async def test_a_rules_write_tells_every_agent_picker_to_re_read(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        app = _make_rules_app()
+        state = SimpleNamespace(push_refresh=MagicMock())
+        app["state"] = state
+        async with TestClient(TestServer(app)) as client:
+            with _patched_handler_config(), _as_owner():
+                resp = await client.put(
+                    f"/api/members/{CREW}/rules",
+                    json={"member": CREW, "rules": "Never merge PRs."},
+                )
+                assert resp.status == 200
+        state.push_refresh.assert_called_once_with("agents")
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("name", ["dr. eggbot", "Cafe\u0301"])
     async def test_free_form_name_round_trips_rules(self, name):
         slug = slug_for_name(name)

@@ -12,7 +12,9 @@ import os
 import threading
 import weakref
 from collections import deque
+from collections.abc import Hashable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
@@ -248,6 +250,9 @@ class DashboardState:
     _published_slot_keys: "frozenset[str]" = frozenset()
     # Whether a slot-set shrink still owes the Older Sessions listing a ``history`` refresh.
     _listing_refresh_owed: bool = False
+    # Each agents folder's signature as the last turn end saw it (dashboard/agent_folders.py).
+    # Replaced, never mutated, so the class default is never shared state.
+    _agent_folder_signatures: "Mapping[tuple[str, str], Hashable]" = MappingProxyType({})
 
     _slots_broadcast_last: float = 0.0
 

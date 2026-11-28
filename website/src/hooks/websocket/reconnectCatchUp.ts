@@ -5,7 +5,7 @@
 import type { MutableRefObject } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
-import { fetchSlots } from '../../store/dashboardSlice'
+import { fetchSlots, triggerRefresh } from '../../store/dashboardSlice'
 import { markGatewayConnected } from './gatewayConnectivity'
 import { fetchNotifications, markBootNotificationsFetched } from '../../store/notificationsSlice'
 import { refreshSlot, warmSlotCache, clearSubagentsForSnapshot, resyncWaitingSideConversations } from '../../store/chatSlice'
@@ -204,6 +204,10 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   // marks it connected (`SocketConnection.noteFrame`).
   if (!socket.awaitsFirstFrame()) markGatewayConnected(dispatch)
   refreshServerStateAfterReconnect(queryClient)
+  // A `refresh` frame pushed while the socket was down reached nobody here, and the
+  // end of a turn does not re-read the agent catalog, so every reader that follows
+  // those frames, the catalog's included, reads again now.
+  dispatch(triggerRefresh())
   ctx.seedAutomations()
   dispatch(fetchNotifications()).then(() => ctx.syncPendingApprovals())
   ctx.syncPendingQuestions()
