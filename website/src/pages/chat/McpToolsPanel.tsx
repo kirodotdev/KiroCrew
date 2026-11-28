@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Zap, ChevronRight, TriangleAlert } from 'lucide-react'
-import ErrorNotice from '../../components/ErrorNotice'
+import ErrorNotice, { ErrorNoticeMenuItem, type ErrorNoticeMenuItemComponent } from '../../components/ErrorNotice'
 import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { mcpToolStatus, type McpToolStatus } from '../../lib/mcpLoadedTools'
@@ -13,6 +13,8 @@ import {
   mcpSessionNeedsRestart,
   mcpSessionServerState,
   type McpSessionServerState,
+  type McpUnusableHow,
+  type McpUnusableServer,
 } from '../../lib/mcpSessionReport'
 import type { McpSessionReport } from '../../types'
 
@@ -62,6 +64,12 @@ const SESSION_LABEL_KEY: Record<McpSessionServerState, string> = {
   awaiting_auth: 'pages.chatPage.mcp_session_awaiting_auth',
   no_report: 'pages.chatPage.mcp_session_no_report',
 }
+const UNUSABLE_LABEL_KEY: Record<McpUnusableHow, string> = {
+  signed_out: 'pages.chatPage.mcp_worker_signed_out',
+  failed: 'pages.chatPage.mcp_worker_failed',
+  awaiting_auth: 'pages.chatPage.mcp_worker_awaiting_auth',
+  no_tools: 'pages.chatPage.mcp_worker_no_tools',
+}
 
 /**
  * The chat session-options dropdown's MCP view: a "MCP Servers (n/m enabled)" header,
@@ -88,6 +96,8 @@ export default function McpToolsPanel({
   toolSearchOn,
   loading,
   sessionReport,
+  workerUnusable = [],
+  menuItem,
 }: {
   servers: McpServerLite[]
   toolsByServer: Record<string, McpToolsInfo>
@@ -95,6 +105,10 @@ export default function McpToolsPanel({
   toolSearchOn: boolean
   loading: boolean
   sessionReport?: McpSessionReport | null
+  /** A Bot chat's worker sessions' servers they could not use (`mcpUnusableServers`). */
+  workerUnusable?: McpUnusableServer[]
+  /** The host menu's item, for the worker notice's sibling hand-off; absent outside a menu. */
+  menuItem?: ErrorNoticeMenuItemComponent
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const toggle = (name: string) =>
@@ -113,6 +127,20 @@ export default function McpToolsPanel({
   const extraNoTools = hasSessionReport
     ? mcpSessionExtraNoTools(servers.map(s => s.name), sessionReport)
     : []
+  const workerNoticeId = useId()
+  const workerLine = (list: McpUnusableServer[]) =>
+    i18nT('pages.chatPage.mcp_worker_unusable', {
+      names: fmtList(
+        list.map(u =>
+          i18nT('pages.chatPage.mcp_worker_unusable_item', { name: u.name, how: i18nT(UNUSABLE_LABEL_KEY[u.how]) }),
+        ),
+        { style: 'narrow' },
+      ),
+    })
+  // Waiting for authorization has not failed, so it is status, not an error.
+  const workerFailed = workerUnusable.filter(u => u.how !== 'awaiting_auth')
+  const workerWaiting = workerUnusable.filter(u => u.how === 'awaiting_auth')
+  const workerMessage = workerLine(workerFailed)
   // Names past the report's cap are counted, not listed: say how many.
   const noToolsOmitted = sessionReport?.no_tools_omitted ?? 0
 
@@ -347,6 +375,28 @@ export default function McpToolsPanel({
           {i18nT('pages.chatPage.mcp_session_no_tools_also', {
             names: fmtList([...extraNoTools, ...(noToolsOmitted > 0 ? [`+${noToolsOmitted}`] : [])], { style: 'narrow' }),
           })}
+        </div>
+      )}
+      {workerFailed.length > 0 && (
+        // A Bot's own servers start only in its worker sessions, so this
+        // session's report never names them: say which the workers could not use.
+        // The chat still works, so partial. Inside the menu the hand-off is a
+        // sibling menu item, which the menu's roving focus reaches; outside one
+        // the notice carries it.
+        <div data-testid="mcp-worker-unusable" className="mt-2">
+          {menuItem ? (
+            <>
+              <ErrorNotice id={workerNoticeId} variant="inline" impact="partial" message={workerMessage} />
+              <ErrorNoticeMenuItem Item={menuItem} message={workerMessage} describedBy={workerNoticeId} />
+            </>
+          ) : (
+            <ErrorNotice variant="inline" impact="partial" message={workerMessage} askAgent />
+          )}
+        </div>
+      )}
+      {workerWaiting.length > 0 && (
+        <div data-testid="mcp-worker-waiting" role="status" className="mt-2 text-[11px] text-warn leading-snug">
+          {workerLine(workerWaiting)}
         </div>
       )}
     </div>

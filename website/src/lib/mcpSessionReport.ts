@@ -102,6 +102,38 @@ export function mcpSessionExtraServers(
   return out
 }
 
+/** How a server a session cannot use failed it, in `mate_capability_catalog.session_unusable`'s words. */
+export type McpUnusableHow = 'signed_out' | 'failed' | 'awaiting_auth' | 'no_tools'
+
+export interface McpUnusableServer {
+  name: string
+  how: McpUnusableHow
+}
+
+/**
+ * The servers any of ``reports`` says its session cannot use, each once, first
+ * report first: a Bot chat's view of its worker sessions, whose servers never
+ * start in the Bot chat's own session. The backend's reading of a report:
+ * a failed server named in `restart_to_load` (and not merely `reload_pending`)
+ * is a sign-in that is missing or expired.
+ */
+export function mcpUnusableServers(reports: (McpSessionReport | null | undefined)[]): McpUnusableServer[] {
+  const out: McpUnusableServer[] = []
+  const seen = new Set<string>()
+  const add = (name: string, how: McpUnusableHow) => {
+    if (seen.has(name)) return
+    seen.add(name)
+    out.push({ name, how })
+  }
+  for (const report of reports) {
+    if (!report) continue
+    for (const name of names(report.failed)) add(name, mcpSessionNeedsRestart(name, report) ? 'signed_out' : 'failed')
+    for (const name of names(report.awaiting_auth)) add(name, 'awaiting_auth')
+    for (const name of names(report.no_tools)) add(name, 'no_tools')
+  }
+  return out
+}
+
 /**
  * True when a report exists at all.
  *
