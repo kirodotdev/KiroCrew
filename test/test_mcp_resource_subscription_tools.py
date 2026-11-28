@@ -1797,6 +1797,8 @@ async def test_a_removal_held_off_by_a_subscribe_is_refused_and_keeps_the_subscr
     assert [r.uris for r in service.records(OTHER)] == [[URI]]
     assert [r.uris for r in service._store.load() if r.session_key == OTHER] == [[URI]]
 
+    # The retry must succeed, so give it a budget no runner pause reaches; 0.3 s is the miss window.
+    monkeypatch.setattr(service, "_unsubscribe_budget", _HANG)
     retried = await finished(
         _call(
             routes.api_resource_unsubscribe,
