@@ -26,6 +26,8 @@ _SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 # its own ``before_promote`` hook (``wheel_apply.memory_snapshot_hook``), tested apart.
 _APPLIER_FILES = (
     "cli_server_update.py",
+    "cli_desktop_update.py",
+    "update_boot_apply.py",
     "dashboard/handlers/updates_apply.py",
     "slack/gateway_runtime/update_apply.py",
     "slack/gateway_runtime/update_schedule.py",
@@ -85,8 +87,11 @@ def _is_provider_apply(node: ast.Call) -> bool:
 
 
 def _is_rewrite(node: ast.Call) -> bool:
-    """A git reset/fast-forward, a policy or provider apply, or the wheel installer."""
+    """A git reset/fast-forward, a policy or provider apply, the wheel installer, or
+    the hand-off of a Windows desktop installer to its helper."""
     if _call_name(node) in _POLICY_APPLY_CALLS or _is_provider_apply(node):
+        return True
+    if _call_name(node) == "hand_off":
         return True
     words = _string_args(node)
     if {"reset", "--hard"} <= words or {"merge", "--ff-only"} <= words:
@@ -152,6 +157,9 @@ def test_the_known_appliers_are_found() -> None:
     assert {
         ("cli_server_update.py", "_update"),
         ("cli_server_update.py", "_update_wheel"),
+        ("cli_desktop_update.py", "update_desktop_install"),
+        ("cli_desktop_update.py", "apply_after_stop"),
+        ("update_boot_apply.py", "_hand_off_desktop_install"),
     } <= found
     # The dashboard's Update only arms and the gateway's unattended paths only notify
     # or stage beside the install (the copy is `wheel_apply`'s), so no site is

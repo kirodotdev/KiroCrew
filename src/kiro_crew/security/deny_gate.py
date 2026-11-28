@@ -1083,29 +1083,35 @@ def _deny_pattern_passes(
     # a destructive needle at any offset within a single un-separated segment is
     # caught here.  In ``is_denied``, ``_is_git_publish`` / the always-on floors
     # also run on the full string before this call.
-    for pattern, is_regex in all_patterns:
-        if _rules._deny_pattern_matches(pattern, lower, is_regex):
-            whole_string_exception_match = _rules._exception_applies(
-                lower, _rules._DENY_EXCEPTIONS.get(pattern, [])
-            )
-            if not whole_string_exception_match and (
-                _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
-                or _nc_redirect_narrows(pattern, text, shipped)
-                or _file_body_narrows(pattern, text, shipped)
-            ):
-                # Same shape as the glob exception above: a whole-string carve-out
-                # only DEFERS to Pass 2, which re-judges each segment on its own,
-                # so an embedded real invocation is still denied there.  The audit
-                # is emitted here and GATES the carve-out.
-                if _emit_deny_exception_event(
-                    tool_name, pattern, _deny_exception_mechanism_for(pattern)
+    #
+    # Windows runs ``curl.exe`` as ``curl``, and a row that spans a separator
+    # (``curl .* \| sh``) is in no segment's view, so the full input is also matched
+    # with its program words unsuffixed, nested shell payloads included, after the raw
+    # string.  The narrowings still read the command as written, as Pass 2 does.
+    for whole in (lower, *_submodule("deny_gate_windows")._unsuffixed_whole_views(lower)):
+        for pattern, is_regex in all_patterns:
+            if _rules._deny_pattern_matches(pattern, whole, is_regex):
+                whole_string_exception_match = _rules._exception_applies(
+                    whole, _rules._DENY_EXCEPTIONS.get(pattern, [])
+                )
+                if not whole_string_exception_match and (
+                    _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
+                    or _nc_redirect_narrows(pattern, text, shipped)
+                    or _file_body_narrows(pattern, text, shipped)
                 ):
-                    whole_string_exception_match = True
-            if not whole_string_exception_match:
-                if waive is not None and waive(pattern):
-                    continue
-                _emit_deny_event(tool_name, pattern, lower)
-                return reason(pattern)
+                    # Same shape as the glob exception above: a whole-string carve-out
+                    # only DEFERS to Pass 2, which re-judges each segment on its own,
+                    # so an embedded real invocation is still denied there.  The audit
+                    # is emitted here and GATES the carve-out.
+                    if _emit_deny_exception_event(
+                        tool_name, pattern, _deny_exception_mechanism_for(pattern)
+                    ):
+                        whole_string_exception_match = True
+                if not whole_string_exception_match:
+                    if waive is not None and waive(pattern):
+                        continue
+                    _emit_deny_event(tool_name, pattern, whole)
+                    return reason(pattern)
 
     # ── Pass 2: per-segment (re-)evaluation ──
     # Split into segments and check each.  This runs UNCONDITIONALLY: besides

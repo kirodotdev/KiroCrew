@@ -401,6 +401,60 @@ describe('the canvas', () => {
     expect(latest().shapes.map(s => s.kind)).toEqual(['sticky'])
   })
 
+  it('double-clicking empty canvas adds nothing and leaves no undo step', () => {
+    const onChange = vi.fn()
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0, 'Idea')] }} onChange={onChange} />)
+    act(() => { fireEvent.doubleClick(canvas(), at(600, 300)) })
+    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.getAllByTestId('canvas-shape')).toHaveLength(1)
+    expect(screen.queryByTestId('canvas-shape-editor')).toBeNull()
+  })
+
+  it('double-clicking a shape opens its text for editing', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0, 'Idea')] }} />)
+    act(() => { fireEvent.doubleClick(canvas(), at(50, 50)) })
+    expect((screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement).value).toBe('Idea')
+  })
+
+  it('a new sticky left empty goes when its edit ends, and leaves no undo step behind', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0, 'Idea')] }} />)
+    fireEvent.click(screen.getByTestId('tool-sticky'))
+    press(600, 300)
+    release(600, 300)
+    expect(latest().shapes.map(s => s.kind)).toEqual(['sticky', 'sticky'])
+    act(() => { (screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement).blur() })
+    expect(latest().shapes.map(s => s.id)).toEqual(['a'])
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes.map(s => s.id)).toEqual(['a'])
+  })
+
+  it('a sticky whose text is cleared goes when its edit ends, and one undo brings it back with its text', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0, 'Idea')] }} />)
+    act(() => { fireEvent.doubleClick(canvas(), at(50, 50)) })
+    const editor = screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement
+    fireEvent.change(editor, { target: { value: '   ' } })
+    act(() => { editor.blur() })
+    expect(latest().shapes).toEqual([])
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes).toEqual([expect.objectContaining({ id: 'a', text: 'Idea' })])
+  })
+
+  it('a duplicated sticky whose text is cleared goes as its own undo step, so undo brings it back with its text', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0, 'Idea')] }} />)
+    press(50, 50)
+    release(50, 50)
+    act(() => { fireEvent.keyDown(canvas(), { key: 'd', metaKey: true }) })
+    expect(latest().shapes).toHaveLength(2)
+    const copy = latest().shapes[1].id
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Enter' }) })
+    const editor = screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement
+    fireEvent.change(editor, { target: { value: '' } })
+    act(() => { editor.blur() })
+    expect(latest().shapes.map(s => s.id)).toEqual(['a'])
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes).toEqual([expect.objectContaining({ id: 'a' }), expect.objectContaining({ id: copy, text: 'Idea' })])
+  })
+
   it('a drag that ends an empty text box\'s edit undoes to a canvas without that box', () => {
     render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0)] }} />)
     fireEvent.click(screen.getByTestId('tool-text'))
@@ -421,15 +475,15 @@ describe('the canvas', () => {
     render(<Harness initial={{ ...emptyCanvas(), shapes: [text] }} />)
     press(10, 10)
     release(10, 10)
-    // The sticky tool from its key, then Enter edits the selected box: the edit
+    // The rectangle tool from its key, then Enter edits the selected box: the edit
     // is still open when the next press lands, since nothing took focus.
-    act(() => { fireEvent.keyDown(canvas(), { key: 's' }) })
+    act(() => { fireEvent.keyDown(canvas(), { key: 'r' }) })
     act(() => { fireEvent.keyDown(canvas(), { key: 'Enter' }) })
     fireEvent.change(screen.getByTestId('canvas-shape-editor'), { target: { value: '' } })
     press(300, 300)
     moveTo(450, 450)
     release(450, 450)
-    expect(latest().shapes.map(s => s.kind)).toEqual(['sticky'])
+    expect(latest().shapes.map(s => s.kind)).toEqual(['rect'])
     act(() => { (screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement).blur() })
     act(() => { fireEvent.keyDown(canvas(), { key: 'z', ctrlKey: true }) })
     expect(latest().shapes).toEqual([])

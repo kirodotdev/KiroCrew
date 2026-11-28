@@ -451,7 +451,7 @@ export default function App() {
     colorTheme, onboarded, markOnboarded, markImportOnboarded, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
-    gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, offlineCoverKind, focusModeExitMsg, focusChromeInert,
+    gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayPaneHeader, offlineCoverKind, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, discoverInRail, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
@@ -460,6 +460,9 @@ export default function App() {
     setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
   } = shell
+  // A relay Crew pane whose desktop app did not ask for a header: an older app,
+  // whose own top bar is the only one in the window.
+  const paneWithoutHeader = relayCrewPane && !relayPaneHeader
   // A calm offline view covers <main> and the docked terminal (see `offlineCover`).
   const contentCovered = offlineCoverKind !== null
   // The first-run sign-in hides this app behind it, so the local layers hide too.
@@ -801,10 +804,10 @@ export default function App() {
             ? `${FOCUS_INSET}px minmax(0,1fr) auto`
             : `${FOCUS_INSET}px minmax(0,1fr)`,
         }),
-        // A relay Crew pane has no header of its own (the desktop app's top bar
-        // sits above it), so the header row takes no height. Last, so it also
-        // wins over focus mode's gutter.
-        ...(relayCrewPane && {
+        // A relay Crew pane that draws no header of its own (the desktop app's
+        // top bar sits above it): the header row takes no height. Last, so it
+        // also wins over focus mode's gutter.
+        ...(paneWithoutHeader && {
           gridTemplateRows: bottomDock ? '0px minmax(0,1fr) auto' : '0px minmax(0,1fr)',
         }),
       }}
@@ -892,13 +895,13 @@ export default function App() {
               text it mounts with, only later changes, which is the case that
               matters (the gateway dropping mid focus mode). Only while the
               header is actually aria-hidden (focusChromeInert). */}
-          {!relayCrewPane && !topChromeShown && focusChromeInert && (
+          {!paneWithoutHeader && !topChromeShown && focusChromeInert && (
             <span role="status" className="sr-only" data-testid="focus-gateway-status">{gatewayStatusAnnounce}</span>
           )}
         </>
       )}
 
-      {relayCrewPane ? (
+      {paneWithoutHeader ? (
         // The header's connection capsule is this page's live region for the
         // gateway state; with no header, this one speaks it instead.
         <span role="status" className="sr-only" data-testid="relay-pane-gateway-status">{gatewayStatusAnnounce}</span>

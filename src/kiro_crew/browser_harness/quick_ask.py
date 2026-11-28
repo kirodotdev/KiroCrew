@@ -1320,11 +1320,10 @@ async def sign_in(
     :data:`STEP_WAIT_S` (the ask stays open: the person can take over). The values
     are this call's arguments only and never leave it but as the insert's.
     """
-    loop = asyncio.get_running_loop()
     user = values.get("username")
     password = values["password"]
     user_done = user is None
-    deadline = loop.time() + STEP_WAIT_S
+    deadline = time.monotonic() + STEP_WAIT_S
     nudge_at = 0.0
     while True:
         if _spent(ask):
@@ -1343,7 +1342,7 @@ async def sign_in(
             await _write(ask, login, login.password, password)
             await _press_enter(ask, probe, login, login.password)
             return
-        now = loop.time()
+        now = time.monotonic()
         if login is not None and login.user:
             if not user_done:
                 await _write(ask, login, login.user, user)  # type: ignore[arg-type]

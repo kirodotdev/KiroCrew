@@ -600,9 +600,8 @@ class TestCrewReadAuthorization(CrewReadsCase):
         tab, a channel thread. Even a worker the OWNER's tab opened is refused: the
         person is in the tab that opened it, not in the worker, and a child that
         needs a peer's history asks its parent. The turn here is user-sent on
-        purpose, because a cron's ``send_to_session`` into its own worker reaches
-        ``chat_send`` as a non-app sender and is stamped user-sent there; the
-        creator arm is what refuses the ordinary worker.
+        purpose, so the creator arm, not the turn's origin, is what refuses the
+        ordinary worker.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
 

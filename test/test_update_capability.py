@@ -371,6 +371,10 @@ class TestDeriveCapability:
         # The derivation is the subject; the path probe underneath it is not. See
         # ``_pin_probe_git`` for why the host's git must not answer here.
         _pin_probe_git(monkeypatch, tmp_path)
+        # These cases are the desktop app hosting its gateway (the app sets this on
+        # the gateway it spawns). Without it, `nsis` on a Windows host is the headless
+        # shape, which offers its own update (test_desktop_installer_update.py).
+        monkeypatch.setenv("KIROCREW_DESKTOP_GATEWAY", "1")
 
     @pytest.mark.parametrize("dist", ["dmg", "appimage", "deb", "rpm", "nsis"])
     def test_desktop_defers_to_its_own_updater(self, dist):

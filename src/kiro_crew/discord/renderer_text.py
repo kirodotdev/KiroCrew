@@ -50,7 +50,12 @@ def _redact_steer(text: str) -> str:
 # SAME in both patterns: the summary is matched at the marker's offset, so a
 # narrower id class there would silently drop the summary.
 _STEER_MARKER_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\]]*)?\]", re.IGNORECASE)
-_STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+\s*:\s*([^\]]*)\]", re.IGNORECASE)
+# The summary opens on a non-space, so ``\s*`` after the colon is its only
+# reader of that whitespace: two quantifiers that can both take it make a frame
+# that never closes quadratic to reject. The captured text is unchanged.
+_STEER_SUMMARY_RE = re.compile(
+    r"\[STEERING\s+steer-[0-9a-f-]+\s*:\s*((?:[^\]\s][^\]]*)?)\]", re.IGNORECASE
+)
 
 
 def _extract_options(text: str) -> tuple[str, list[str]]:

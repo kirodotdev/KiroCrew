@@ -121,11 +121,28 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _TEST_DIR = str(REPO_ROOT / "test")
 
 
+_COLLECT_IGNORE_DEPENDENCIES = frozenset({"pytest", "kiro_crew"})
+
+
 def _collect_ignore() -> ModuleType:
-    """The collector's helper module (one cached object, so a patch on it sticks)."""
+    """The collector's helper module (one cached object, so a patch on it sticks).
+
+    An interpreter without the helper's dependencies cannot run the backend set
+    either, so that is reported as ``SelectionUntrustworthy`` (exit 2, naming the
+    interpreter) rather than as a traceback from inside the selection.
+    """
     if _TEST_DIR not in sys.path:
         sys.path.insert(0, _TEST_DIR)
-    return importlib.import_module("platform_collect_ignore_helpers")
+    try:
+        return importlib.import_module("platform_collect_ignore_helpers")
+    except ModuleNotFoundError as exc:
+        if exc.name not in _COLLECT_IGNORE_DEPENDENCIES:
+            raise
+        raise SelectionUntrustworthy(
+            f"{sys.executable} cannot import {exc.name}, so it cannot select or run the "
+            "backend tests; run the gate with the repository's virtualenv active "
+            "(CONTRIBUTING.md: make build, then activate .venv)"
+        ) from exc
 
 
 # A change to any of these can affect anything, so no reduction is defensible.

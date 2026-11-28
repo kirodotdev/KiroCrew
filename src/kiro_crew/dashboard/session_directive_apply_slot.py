@@ -616,8 +616,8 @@ async def _apply_chat_rename(
     has already admitted only a turn carrying the user-origin mark on a
     user-facing conversation that holds this slot.
 
-    The mark alone does not prove a person sent the turn (a script cron's
-    ``send_to_session`` carries it with actor ``cron``), so the slot checks also
+    The mark alone does not prove a person sent the turn (it is a flag a
+    dispatcher passes), so the slot checks also
     refuse, as ``not_user_turn``, a turn that fails any of main's own person
     checks: a person's actor (``producer_turn_actor`` in
     ``turn_gate._PERSON_ACTORS``), ``slot._turn_user_sent``, which the dashboard

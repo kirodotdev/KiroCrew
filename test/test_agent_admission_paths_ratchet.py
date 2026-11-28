@@ -154,6 +154,10 @@ AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
         "not a kiro-cli spawn: the agent name is an argument to the one idle MCP "
         "gateway stub the footprint probe measures, which serves no backend"
     ),
+    ("mcp_gateway/claim.py", "stub_entry_agents._walk"): (
+        "not a kiro-cli spawn: reads the agent name back out of the MCP gateway "
+        "stub entries a session request already carries"
+    ),
     ("testing/workflow_memory_scenario.py", "respond"): (
         "not a kiro-cli spawn: a test scenario reading its own argv"
     ),

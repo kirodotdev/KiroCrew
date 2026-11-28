@@ -972,10 +972,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # A depth-0 turn that is not a re-run: the only kind counted below.
     _new_turn = _prompt_depth == 0 and not _rerun
     # A person's message: a new turn a human sent from a dashboard or channel
-    # opener. ``_directive_user_origin`` alone is not enough: a script cron's
-    # ``ctx.send_to_session`` reaches /api/chat with it True, so the turn's
-    # structural actor must also be ``user`` (as the attended-turn checks above
-    # require).
+    # opener. ``_directive_user_origin`` alone is not enough: it is a flag a
+    # dispatcher passes, so the turn's structural actor must also be ``user`` (as
+    # the attended-turn checks above require), whoever set the flag.
     _persons_message = (
         _new_turn and turn._directive_user_origin is True and turn._crew_log_actor == "user"
     )

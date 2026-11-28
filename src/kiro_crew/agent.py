@@ -176,6 +176,7 @@ from kiro_crew.agent_parts.spec_lookup import (
     _spec_path_is_safe,
     _spec_path_shape_refusal,
     agent_spec_path,
+    is_installed_agents_dir,
     markdown_spec_for_agent,
     session_agent_spec_path,
 )
@@ -281,6 +282,7 @@ from kiro_crew.config.paths import (
     ambient_agents_dir,
     isolated_agents_dir,
     kiro_agents_dir,
+    project_agents_dir,
     shared_kiro_agents_writable,
 )
 from kiro_crew.env import (

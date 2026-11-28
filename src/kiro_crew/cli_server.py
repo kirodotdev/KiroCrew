@@ -913,8 +913,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.cli_server_restart import (  # noqa: F401
         _POLL_EXITED,
         _POLL_EXPIRED,
+        _POLL_HANDED_OFF,
         _POLL_SERVED,
         _READY_DIED,
+        _READY_HANDED_OFF,
         _READY_OK,
         _READY_TIMEOUT,
         _READY_UNCONFIRMED,
@@ -931,6 +933,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _RESTART_STOP_TIMEOUT,
         _RESTART_TOKEN_TTL,
         _RESTART_TOKEN_WAIT,
+        _desktop_update_log,
         _died_replacement_message,
         _gateway_log_lines_since,
         _gateway_log_mark,

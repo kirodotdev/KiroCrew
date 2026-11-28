@@ -3,9 +3,13 @@
  * as KaTeX math, verbatim source (code, link destinations, raw HTML) stays literal,
  * and pathological input is handled in linear time.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { beforeAll, describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import { loadKatex } from '../components/markdown/lazyKatex'
+
+// KaTeX loads on demand (lazyKatex.ts); these assertions expect it rendered.
+beforeAll(() => loadKatex())
 
 // The same branding stub as MarkdownRenderer.test.tsx: a direct-local session.
 vi.mock('../hooks/useBranding', () => ({

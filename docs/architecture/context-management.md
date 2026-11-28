@@ -392,10 +392,10 @@ after the client is ready.
 
 | What happens | Why the next prompt carries the block again |
 |---|---|
-| the turn that carried it did not complete (cancelled, failed, no answer) | no acknowledgment; the delivery voids the attempt |
+| the turn that carried it did not complete (cancelled, failed, no answer) | no acknowledgment; the delivery voids the attempt, except that a `cancelled` turn on KAS (`keeps_history_on_cancel`) keeps the earlier acknowledgments |
 | a start, a reload, a new provider | the provider's `start` invalidates; a new provider has a new delivery |
 | a new engine session, a fresh conversation on a warm process, a replaced client or process | the acknowledgment names another `context_incarnation` |
-| `/clear`, `/compact`, a compaction Kiro Crew starts, a cancel | invalidated before the send (`prepare_command`, `invalidate`) |
+| `/clear`, `/compact`, a compaction Kiro Crew starts, a cancel (not on KAS) | invalidated before the send (`prepare_command`, `invalidate`) |
 | a native clear, a compaction or an agent switch seen on a turn's stream | `RECEIPT_INVALIDATING_EVENTS` |
 | the rules' text changed | another digest |
 | for `[RUNTIME]` and `[PROJECT]`: another surface or project | another digest |

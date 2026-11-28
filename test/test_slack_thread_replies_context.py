@@ -482,6 +482,105 @@ class TestBounds:
         assert "a harmless line" not in text
 
 
+def _rich_text(text: str) -> dict:
+    return {
+        "type": "rich_text",
+        "elements": [{"type": "rich_text_section", "elements": [{"type": "text", "text": text}]}],
+    }
+
+
+#: A table block as Slack stores a streamed markdown table: raw_text cells.
+_TABLE_BLOCK = {
+    "type": "table",
+    "rows": [
+        [{"type": "raw_text", "text": "Fruit"}, {"type": "raw_text", "text": "Color"}],
+        [{"type": "raw_text", "text": "Apple"}, {"type": "raw_text", "text": "Red"}],
+        [{"type": "raw_text", "text": "Banana"}, {"type": "raw_text", "text": "Yellow"}],
+    ],
+}
+
+
+def _reread(reply: dict) -> str:
+    text = asyncio.run(
+        thread_replies.replies_since_last_turn(
+            _ThreadSlack([reply]),
+            "C123",
+            _THREAD_TS,
+            "1790999999.000000",
+            session_key="s",
+            first_turn=True,
+        )
+    ).text
+    assert text is not None
+    return text
+
+
+class TestReplyText:
+    """A reply's body is Slack's text copy, or its blocks when that copy is incomplete."""
+
+    def test_a_streamed_reply_keeps_its_table_rows_in_place(self):
+        # Slack's text copy of a message with a table block omits the table and
+        # appends ", with interactive elements".
+        reply = _msg(
+            "1790000001.000100",
+            "Here is a small table.\n\n That is the whole table., with interactive elements",
+            bot_id=_OWN_BOT,
+        )
+        reply["blocks"] = [
+            _rich_text("Here is a small table."),
+            _TABLE_BLOCK,
+            _rich_text("That is the whole table."),
+        ]
+
+        text = _reread(reply)
+
+        assert "Fruit | Color" in text
+        assert "Apple | Red" in text
+        assert "Banana | Yellow" in text
+        assert "with interactive elements" not in text
+        assert (
+            text.index("Here is a small table.")
+            < text.index("Fruit | Color")
+            < text.index("That is the whole table.")
+        )
+
+    def test_blocks_that_render_no_text_fall_back_to_the_text_copy(self):
+        reply = _msg("1790000001.000100", "see the picture, with interactive elements")
+        reply["blocks"] = [
+            {"type": "image", "image_url": "https://example.test/a.png", "alt_text": ""}
+        ]
+
+        text = _reread(reply)
+
+        assert "see the picture" in text
+        assert "with interactive elements" not in text
+
+    def test_a_plain_text_reply_is_kept_as_is(self):
+        text = _reread(_msg("1790000001.000100", "plain words, with no blocks at all"))
+
+        assert "plain words, with no blocks at all" in text
+
+    def test_a_reply_without_blocks_keeps_its_own_closing_words(self):
+        text = _reread(_msg("1790000001.000100", "a form, with interactive elements"))
+
+        assert "a form, with interactive elements" in text
+
+    def test_a_card_whose_blocks_render_partly_keeps_its_full_text_copy(self):
+        # Another app's card: a header and section fields the renderer does not
+        # read, and a context footer it does. The text copy is the whole alert.
+        reply = _msg("1790000001.000100", "Incident 123 triggered: DB down", bot_id="B_ALERTS")
+        reply["blocks"] = [
+            {"type": "header", "text": {"type": "plain_text", "text": "Incident 123"}},
+            {"type": "section", "fields": [{"type": "mrkdwn", "text": "*Service*\nDB"}]},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": "via AlertBot"}]},
+        ]
+
+        text = _reread(reply)
+
+        assert "Incident 123 triggered: DB down" in text
+        assert "via AlertBot" not in text
+
+
 class _BoundedMockSlack(MockSlackClient):
     """``MockSlackClient`` that accepts the range bounds the replies read sends."""
 

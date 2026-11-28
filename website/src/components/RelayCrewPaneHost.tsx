@@ -7,15 +7,19 @@
  * list, where a click opens it again. The shell creates every pane hidden, so
  * this is the only place one is shown. Mounted while the shell has the pane
  * calls (lib/relayCrewPanes.ts). While a pane is in front, the local top bar
- * takes that Crew's dark or light mode, unsaved (hooks/themeModeOverride.ts).
+ * takes that Crew's dark or light mode, unsaved (hooks/themeModeOverride.ts),
+ * and, once the shell has confirmed that the pane's page drew a header of its
+ * own, keeps to its tab strip (`relayHeaderInFront`, shell/topbar/shellHeader.tsx).
  * From the click until the Crew's page has loaded (the shell keeps the pane
  * hidden until then), <main> shows the Crew's name and "Connecting…" instead of
- * a blank or black area.
+ * a blank or black area. While the pane hides under a local menu or dialog,
+ * <main> shows the Crew's name the same way, so the window never reads as empty.
  */
 import { useEffect, useState } from 'react'
 import RelayConnectingCover from './RelayConnectingCover'
+import RelayPaneUnderOverlayCover from './RelayPaneUnderOverlayCover'
 import { useAppDispatch, useAppSelector } from '../store'
-import { relayPaneClosed } from '../store/instancesSlice'
+import { relayPaneClosed, relayPaneHeader } from '../store/instancesSlice'
 import { RELAY_PANE_OVERLAY_SELECTOR, RELAY_PANE_WARM_CAP, relayPaneBridge, relayPaneRect } from '../lib/relayCrewPanes'
 import { setThemeModeOverride } from '../hooks/themeModeOverride'
 
@@ -36,11 +40,16 @@ export default function RelayCrewPaneHost() {
   const activeName = useAppSelector(s => s.instances.relayTabs?.find(t => t.id === s.instances.relayActive)?.name ?? null)
   // Panes whose page has loaded; the shell shows a pane only after that.
   const [loaded, setLoaded] = useState<Record<string, true>>({})
+  // Whether the active pane is hidden under a local menu or dialog right now.
+  const [underOverlay, setUnderOverlay] = useState(false)
 
   // endpointId -> whether its page is dark, from the pane's own theme colour.
   const [dark, setDark] = useState<Record<string, boolean>>({})
   useEffect(() => relayPaneBridge()?.onPaneEvent(e => {
     if (e.type === 'closed') dispatch(relayPaneClosed(e.endpointId))
+    // Layout only, and only `true` counts: the page is another Crew's, so what it says
+    // may hide this bar's own controls above its own pane and nothing more.
+    if (e.type === 'header') dispatch(relayPaneHeader({ id: e.endpointId, drawn: e.header === true }))
     if (e.type === 'loaded') setLoaded(prev => ({ ...prev, [e.endpointId]: true }))
     if (e.type === 'closed') setLoaded(({ [e.endpointId]: _gone, ...rest }) => rest)
     if (e.type === 'theme' || e.type === 'closed') {
@@ -81,6 +90,7 @@ export default function RelayCrewPaneHost() {
       const up = overlayUp()
       if (up === last) return
       last = up
+      setUnderOverlay(up)
       void bridge.setPaneOverlay(active, up)
     }
     check()
@@ -94,9 +104,11 @@ export default function RelayCrewPaneHost() {
       ro.disconnect()
       window.removeEventListener('resize', report)
       mo.disconnect()
+      setUnderOverlay(false)
     }
   }, [active, live])
 
   const connecting = opening ?? (active && waitsForLoad && !loaded[active] ? activeName : null)
-  return connecting === null ? null : <RelayConnectingCover name={connecting} />
+  if (connecting !== null) return <RelayConnectingCover name={connecting} />
+  return active && underOverlay && activeName !== null ? <RelayPaneUnderOverlayCover name={activeName} /> : null
 }

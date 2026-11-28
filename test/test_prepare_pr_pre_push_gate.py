@@ -181,6 +181,15 @@ def test_the_base_sha_reaches_a_gate_that_asks_for_it(repo, use_gates) -> None:
     assert gate.main(["pre_push_gate.py"]) == 0
 
 
+@pytest.mark.parametrize("base", ["origin/main", "refs/remotes/origin/main"])
+def test_a_remote_qualified_base_finds_the_same_merge_base(repo, use_gates, capsys, base) -> None:
+    # --base origin/main finds the merge base with origin/main, so a gate that
+    # needs the base sha gets one.
+    use_gates(BASE_GATE)
+    assert gate.main(["pre_push_gate.py", "--base", base]) == 0
+    assert "no merge base" not in capsys.readouterr().out
+
+
 def test_a_gate_whose_paths_match_no_changed_file_does_not_run(repo, use_gates) -> None:
     only_docs = {**BAD_GATE, "id": "docs-only", "paths": [r"\.md$"]}
     use_gates(OK_GATE, only_docs)

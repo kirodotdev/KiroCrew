@@ -41,6 +41,14 @@ const RELAY_HEADER = "Kiro-Relay-Authorization";
 const RELAY_WINDOW_UA_MARKER = "kiroCrewRelayWindow";
 // Added after it on a pane's page only: the page leaves out its own header.
 const RELAY_PANE_UA_MARKER = "kiroCrewRelayPane";
+// Added after that one, and only for a dashboard that asked (`ownHeader`): a
+// page that knows this token draws its header in the pane form (no Crew
+// switcher), and that dashboard keeps to its tab strip above it once this shell
+// has read that the page did (PANE_HEADER_READ). A page that does not know the
+// token sees the pane marker alone and leaves its header out, as before; so
+// does every page under a dashboard that did not ask, which would not know to
+// give up its own bar.
+const RELAY_PANE_HEADER_UA_MARKER = "kiroCrewRelayPaneHeader";
 const NOTICE_FILE = path.join(__dirname, "relay-crew-notice.html");
 const NOTICE_PRELOAD = path.join(__dirname, "relay-crew-notice-preload.js");
 const NOTICE_CHANNEL = "relay-crew-notice:act";
@@ -537,6 +545,25 @@ const PANE_DRAWN = "new Promise((resolve) => { "
 // colour is the palette's background, which says nothing reliable about the mode.
 const PANE_MODE_READ = "document.documentElement.dataset.mode || \"\"";
 
+// Whether the page drew its own header (the page marks it; a page from before
+// the header token has no such element). Read after every load and navigation,
+// PANE_ROOT_PROBE_MS apart at least, and every PANE_HEADER_FRONT_MS while the
+// pane is the tab in front, so a header drawn late, or one the page's crash
+// screen took away with no navigation, is seen within that time.
+// The page is another Crew's and is not trusted: only the literal `true` counts,
+// an error or anything else is `false`, and all the answer may do is let the
+// local top bar leave out its own controls above this one pane. It never
+// carries text and decides nothing about trust, tokens, navigation or windows.
+const PANE_HEADER_READ = "document.querySelector(\"header[data-relay-pane-header]\") !== null";
+// After a load the page draws its header a moment later: this many quick reads.
+const PANE_HEADER_LOAD_READS = Math.ceil(PANE_PAINT_BACKSTOP_MS / PANE_ROOT_PROBE_MS);
+const PANE_HEADER_FRONT_MS = 1000;
+// One document may take its header back this many times; after that the answer
+// stays `false` until the next document, so a page that flips it cannot make
+// the local bar's controls come and go. `false` is the safe side: the local
+// bar is whole.
+const PANE_HEADER_TAKE_BACKS = 3;
+
 // shortcut: one pane per Crew, and none while the Crew is open in a window:
 // both would use the Crew's one partition.
 const openPanes = new Map();
@@ -547,7 +574,7 @@ const openPanes = new Map();
 // the rect, when the pane shows and how many stay warm: a pane starts hidden,
 // and only `setInactive(false)` from the dashboard shows it, so an answer that
 // lands after the person chose something else never paints over it.
-function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent, dashboard, bounds, menuReload, platform = process.platform }, deps) {
+function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent, dashboard, bounds, menuReload, ownHeader = false, platform = process.platform }, deps) {
   const existing = openPanes.get(endpointId);
   if (existing && !existing.isClosed()) return existing;
   const inWindow = openWindows.get(endpointId);
@@ -555,9 +582,11 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   const parts = createRelayCrewView({ endpointId, crewUrl, relayDomain, getToken }, deps);
   const { view } = parts;
   const wc = view.webContents;
-  // Both whole tokens: the page keeps its relay window wording and leaves out
-  // its own header. Layout only, for this page alone; not a credential.
-  wc.setUserAgent(`${parts.session.getUserAgent()} ${RELAY_PANE_UA_MARKER}`);
+  // Whole tokens: the page keeps its relay window wording and leaves out its
+  // own header, or, for a dashboard that asked, draws it in the pane form when
+  // it knows the last token. Layout only, for this page alone; not a credential.
+  const headerAsked = ownHeader === true;
+  wc.setUserAgent(`${parts.session.getUserAgent()} ${RELAY_PANE_UA_MARKER}${headerAsked ? ` ${RELAY_PANE_HEADER_UA_MARKER}` : ""}`);
   let rect = null;
   let shown = false;
   // A local menu or dialog over the pane, and another tab in front of it: either
@@ -577,6 +606,16 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   let loaded = false;
   let backstop = null;
   let probe = null;
+  // The page's own header: the last answer, the document it is about, how often
+  // that document took it back, the quick reads still owed after a load, and
+  // the timer that spaces every read (`readHeader` below).
+  const headerListeners = [];
+  let headerDrawn = false;
+  let headerDoc = 0;
+  let headerTakeBacks = 0;
+  let headerReads = 0;
+  let headerTimer = null;
+  let headerTimerQuick = false;
   // Whether the page has been on screen in this window, and the reveal in
   // progress when it has not (`stage`).
   let drawn = false;
@@ -674,8 +713,8 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     parent.removeListener("closed", close);
     for (const event of dashboardEvents) dashboard.webContents.removeListener(event, close);
     openPanes.delete(endpointId);
-    for (const timer of [backstop, probe, staging && staging.timer]) if (timer) clearTimeout(timer);
-    backstop = probe = staging = null;
+    for (const timer of [backstop, probe, headerTimer, staging && staging.timer]) if (timer) clearTimeout(timer);
+    backstop = probe = headerTimer = staging = null;
     try { parent.contentView.removeChildView(view); } catch { /* mid-teardown */ }
     crew.teardown("pane");
     if (reclaim) handBack();
@@ -695,6 +734,8 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     if (probe) { clearTimeout(probe); probe = null; }
     if (loaded || isClosed()) return;
     loaded = true;
+    // The page has drawn (or will not): its header is there to read by now.
+    if (headerAsked) askHeader();
     // Only a pane the dashboard already asked to show has anything to change.
     if (!inactive) sync();
   };
@@ -717,6 +758,81 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     probeRoot();
   });
   wc.once("did-fail-load", markLoaded);
+  // Whether the page drew its own header (PANE_HEADER_READ), false until read.
+  // Listeners hear a change, never a repeat.
+  const setHeader = (drawn) => {
+    if (drawn === headerDrawn) return;
+    headerDrawn = drawn;
+    crew.notify(headerListeners, drawn);
+  };
+  // Answers come back in the order they were asked, so each one from the
+  // document on screen counts (a busy page answering slowly is not skipped);
+  // one from a document that has since gone does not.
+  const readHeader = () => {
+    const doc = headerDoc;
+    const settle = (answer) => {
+      if (doc !== headerDoc || isClosed()) return;
+      const drawn = answer === true && headerTakeBacks < PANE_HEADER_TAKE_BACKS;
+      if (headerDrawn && !drawn) headerTakeBacks += 1;
+      setHeader(drawn);
+      // It is there: the quick reads a load asked for have their answer.
+      if (headerDrawn) headerReads = 0;
+    };
+    Promise.resolve().then(() => wc.executeJavaScript(PANE_HEADER_READ)).then(settle, () => settle(false));
+  };
+  // One timer spaces every read: quick ones after a load or a navigation, a
+  // slow one while the pane is the tab in front, none otherwise. It never keeps
+  // the process alive by itself.
+  const armHeader = () => {
+    if (!headerAsked || isClosed()) return;
+    const quick = headerReads > 0;
+    if (headerTimer) {
+      // A quick read is due and only the slow one is waiting: bring it forward.
+      // A waiting quick one is left alone, so a page that navigates in a loop
+      // gets one read each PANE_ROOT_PROBE_MS, not none.
+      if (!quick || headerTimerQuick) return;
+      clearTimeout(headerTimer);
+      headerTimer = null;
+    }
+    if (!quick && inactive) return;
+    headerTimerQuick = quick;
+    headerTimer = setTimeout(headerTick, quick ? PANE_ROOT_PROBE_MS : PANE_HEADER_FRONT_MS);
+    if (typeof headerTimer.unref === "function") headerTimer.unref();
+  };
+  const headerTick = () => {
+    headerTimer = null;
+    if (isClosed()) return;
+    // The slow read is for the tab in front only; one that went behind stops here.
+    if (headerReads <= 0 && inactive) return;
+    if (headerReads > 0) headerReads -= 1;
+    readHeader();
+    armHeader();
+  };
+  const askHeader = (reads = 1) => {
+    headerReads = Math.max(headerReads, reads);
+    armHeader();
+  };
+  // A new document, or none: whatever the last one drew is gone, so the local
+  // bar has its controls back before the next page says anything.
+  const dropHeader = () => {
+    headerDoc += 1;
+    headerTakeBacks = 0;
+    headerReads = 0;
+    setHeader(false);
+  };
+  if (headerAsked) {
+    wc.on("did-navigate", dropHeader);
+    wc.on("render-process-gone", dropHeader);
+    // A load that failed may have put an error page in the document's place
+    // with no `did-navigate`; a cancelled one (ERR_ABORTED, -3) left the page be.
+    wc.on("did-fail-load", (_event, code, _description, _url, isMainFrame) => {
+      if (isMainFrame === false || code === -3) return;
+      dropHeader();
+      askHeader();
+    });
+    wc.on("did-finish-load", () => askHeader(PANE_HEADER_LOAD_READS));
+    wc.on("did-navigate-in-page", () => askHeader());
+  }
   // Before the page has drawn, its theme colour is the boot page's dark one.
   // Only the latest read counts, so an earlier answer arriving late cannot win.
   let modeRead = 0;
@@ -748,9 +864,25 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     close,
     setBounds: (next) => { if (!isClosed()) setBounds(next); },
     setOverlay: (active) => { if (isClosed()) return; overlay = active === true; sync(); },
-    setInactive: (value) => { if (isClosed()) return; inactive = value === true; sync(); },
+    setInactive: (value) => {
+      if (isClosed()) return;
+      inactive = value === true;
+      sync();
+      // In front again: what its page draws may have changed while it was not,
+      // and a dashboard that was not yet listening when it was first read hears
+      // the answer now.
+      if (!inactive && headerAsked) {
+        crew.notify(headerListeners, headerDrawn);
+        askHeader();
+      }
+    },
     onChord: (cb) => { chordListeners.push(cb); },
     onThemeDark: (cb) => { themeListeners.push(cb); },
+    // `true` once the page was read to draw its own header, `false` when a later
+    // read, a new document, a failed load or a lost renderer says it does not;
+    // the current answer again each time the pane comes to the front. A boolean
+    // only, and never `true` for a dashboard that did not ask (`ownHeader`).
+    onHeaderDrawn: (cb) => { headerListeners.push(cb); },
     onLoaded: (cb) => { loadedListeners.push(cb); },
     // The page's OS process, for the Settings usage readout; 0 once gone.
     processId: () => {
@@ -797,6 +929,7 @@ module.exports = {
   openRelayCrewWindow,
   paneChordIndex,
   PANE_ROOT_PROBE,
+  PANE_HEADER_READ,
   PANE_DRAWN,
   openRelayCrewPane,
 };
