@@ -47,6 +47,7 @@ def _redact_at(depth: int) -> None:
         pass
 
 
+@pytest.mark.at_recursion_limit
 def test_a_plan_on_a_nearly_full_stack_does_not_poison_later_plans():
     # Sweep the stack limit across every frame a plan runs, so it lands inside
     # _load on some pass whatever the runner's own depth is.

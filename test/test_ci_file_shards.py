@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from scripts import ci_file_shard_pins
+from scripts.ci import coverage_core
 from scripts.ci_file_shards import (
     DEFAULT_WEIGHTS,
     FileShards,
@@ -122,6 +123,10 @@ class TestFileShards(unittest.TestCase):
         env.pop("COV_CORE_SOURCE", None)
         env.pop("COV_CORE_DATAFILE", None)
         env.pop("COVERAGE_PROCESS_START", None)
+        # Nor the outer lane's core and branch setting: these runs ask for
+        # branch arcs, which the sysmon core cannot record on CPython 3.12.
+        for name in coverage_core.SWITCH_ENV:
+            env.pop(name, None)
         env["COVERAGE_FILE"] = str(self.root / ".coverage")
         env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
         env["PYTHONDONTWRITEBYTECODE"] = "1"

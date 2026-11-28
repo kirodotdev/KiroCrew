@@ -1887,6 +1887,9 @@ jobs:
           # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
           # `changes` job). Read by the plugin from the environment only.
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+          # The kill switch for the sysmon core: `off` makes this run measure as a push does
+          # (scripts/ci/coverage_core.py). Unset reaches the script as an empty string.
+          CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
         run: |
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
@@ -2007,13 +2010,34 @@ jobs:
               --file-shard-targets-sha256="$REDUCED_SHA256"
             exit 0
           fi
-          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
+          # The coverage core for this run's event (scripts/ci/coverage_core.py):
+          # a pull-request run measures with coverage.py's sysmon core and records
+          # lines only, which is all Coverage Gate reads; a merge-queue run and a
+          # push keep the C tracer and branch arcs. The script prints the export line
+          # or nothing, so neither variable is ever set to an empty value, and
+          # the two other lanes that feed Coverage Combine make the same call:
+          # line data and branch data do not combine. The check after pytest
+          # fails the step when coverage.py fell back to another core, or when
+          # there is no log to read. `pipefail` keeps a failing pytest red
+          # through the tee.
+          CORE_EXPORTS="$(python scripts/ci/coverage_core.py exports)"
+          eval "$CORE_EXPORTS"
+          # Under sysmon the lane also deselects `at_recursion_limit`: a test that
+          # fills the stack to the recursion limit leaves a sys.monitoring
+          # callback no frame to run in, and a `with` block can then end without
+          # its exit. Those tests run in the step after this one, on the C
+          # tracer. On the C tracer (a push, or the switch off) the script
+          # prints nothing and the expression is the one the other arms use.
+          AT_LIMIT="$(python scripts/ci/coverage_core.py lane-marker)"
+          COVERAGE_LOG="$RUNNER_TEMP/pytest-coverage.log"
+          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv${AT_LIMIT:+ and $AT_LIMIT}" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
             --file-shard-pins scripts/ci_file_shard_pins.txt \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
             --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
-            --cov-report=
+            --cov-report= 2>&1 | tee "$COVERAGE_LOG"
+          python scripts/ci/coverage_core.py check "$COVERAGE_LOG"
         # The shard union plus backend-test-ipv6 retains the full test population.
         # The eleven sandbox files -- the two sandbox suites, the two ops git/gh
         # suites, and the seven auto_improvement suites --
@@ -2035,6 +2059,9 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+          # Read by the script: this pass records lines or branch arcs as the
+          # step above does, so its data file combines with the shard's.
+          CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
         run: |
           python3 scripts/ci_main_red_skip.py measure -q -n0 --dist no --timeout=120 -m "not ipv6_required and not real_venv" \
             --cov=kiro_crew --cov=sage_lib \
@@ -2056,6 +2083,55 @@ jobs:
           path: ${{ runner.temp }}/pytest-progress/*.jsonl
           if-no-files-found: ignore
           retention-days: 7
+
+      # The tests the step above deselects under sysmon, every one of them, on
+      # one shard. They run on the C tracer, which needs no Python frame at the
+      # depth they work at, with branch measurement set as the shards set it so
+      # the data appends to this shard's file and Coverage Gate's totals keep
+      # their lines. Full-suite runs only: a reduced or leaf run measures
+      # nothing and deselects nothing. On a run that deselected nothing (a
+      # push, or the switch off) the script lists no file and the step ends
+      # there. The files come from the marker's own text in the tree; pytest
+      # then selects by the marker, and exits non-zero when it selects no
+      # test, so a marker that names nothing cannot pass.
+      - name: Run the recursion-limit tests on the C tracer
+        if: ${{ matrix.group == 1 && steps.scope.outputs.reduced == 'false' }}
+        shell: /usr/local/bin/ci-shell {0}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          # Node ids red on main, deselected here as in the step that runs the
+          # shard: a marked test that is red on main must not fail this one.
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+          # The kill switch for the sysmon core: `off` makes this run measure as a push does
+          # (scripts/ci/coverage_core.py). Unset reaches the script as an empty string.
+          CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
+        run: |
+          echo "::remove-matcher owner=python::"
+          MARKED="$(python scripts/ci/coverage_core.py deselected-files)"
+          if [ -z "$MARKED" ]; then
+            echo "The shards deselected no at_recursion_limit test on this run; nothing to run here."
+            exit 0
+          fi
+          mapfile -t FILES <<< "$MARKED"
+          CORE_EXPORTS="$(python scripts/ci/coverage_core.py exports --core ctrace)"
+          eval "$CORE_EXPORTS"
+          COVERAGE_LOG="$RUNNER_TEMP/pytest-coverage-recursion-limit.log"
+          rc=0
+          python -m pytest -p scripts.ci_main_red_skip -q -n0 --timeout=120 -m "at_recursion_limit and not ipv6_required and not real_venv" \
+            --cov=kiro_crew --cov=sage_lib \
+            --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
+            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
+            --cov-report= --cov-append ${FILES[@]+"${FILES[@]}"} 2>&1 | tee "$COVERAGE_LOG" || rc=$?
+          # 5 = pytest selected no test. With a main-red skip plan that is the
+          # plan deselecting every marked test, as it does in the shards, and
+          # the step passes. With no plan the marker matched nothing, which is
+          # a fault. Every other status is pytest's own and ends the step.
+          if [ "$rc" = 5 ] && [ -n "$CI_MAIN_RED_SKIP" ]; then
+            echo "Every at_recursion_limit test is deselected as red on main; none ran here."
+          elif [ "$rc" != 0 ]; then
+            exit "$rc"
+          fi
+          python scripts/ci/coverage_core.py check --core ctrace "$COVERAGE_LOG"
 
       - name: Stage shard coverage data
         shell: /usr/local/bin/ci-shell {0}
@@ -2503,6 +2579,9 @@ jobs:
         env:
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
           LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
+          # The kill switch for the sysmon core: `off` makes this run measure as a push does
+          # (scripts/ci/coverage_core.py). Unset reaches the script as an empty string.
+          CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
         run: |
           echo "::remove-matcher owner=python::"
           COVERAGE=(--no-cov)
@@ -2510,7 +2589,12 @@ jobs:
             COVERAGE=(--cov=kiro_crew --cov=sage_lib
               --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging
               --cov=src/kiro_crew/apps/builtins/code_review_sage/tests)
+            # The same coverage core as the Linux shards, whose data this lane's
+            # is combined with (see "Run tests" in backend-test).
+            CORE_EXPORTS="$(python scripts/ci/coverage_core.py exports)"
+            eval "$CORE_EXPORTS"
           fi
+          COVERAGE_LOG="$RUNNER_TEMP/pytest-coverage.log"
           # The bounded IPv6 population always runs, even in reduced scope.
           # Leaf runs repeat it three times; ordinary corpus gates stay once.
           REPEAT=1
@@ -2518,7 +2602,11 @@ jobs:
           for pass in $(seq 1 "$REPEAT"); do
             python -m pytest -q -n0 --timeout=120 -m ipv6_required \
               ${COVERAGE[@]+"${COVERAGE[@]}"} --junitxml="$RUNNER_TEMP/ipv6.xml" \
-              test/test_meetings_providers.py test/test_platform_compat.py test/test_platform_compat_listening_ports.py
+              test/test_meetings_providers.py test/test_platform_compat.py test/test_platform_compat_listening_ports.py \
+              2>&1 | tee "$COVERAGE_LOG"
+            if [ "${COVERAGE[0]}" != "--no-cov" ]; then
+              python scripts/ci/coverage_core.py check "$COVERAGE_LOG"
+            fi
             python - <<'PY'
           import os
           from pathlib import Path
@@ -2591,6 +2679,9 @@ jobs:
           KIROCREW_LOCK_OWNER_STRICT: "1"
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
           LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
+          # The kill switch for the sysmon core: `off` makes this run measure as a push does
+          # (scripts/ci/coverage_core.py). Unset reaches the script as an empty string.
+          CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
         run: |
           echo "::remove-matcher owner=python::"
           test -z "${KIROCREW_LOCK_TEST_ROOT:-}"
@@ -2600,7 +2691,12 @@ jobs:
             COVERAGE=(--cov=kiro_crew --cov=sage_lib
               --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging
               --cov=src/kiro_crew/apps/builtins/code_review_sage/tests)
+            # The same coverage core as the Linux shards, whose data this lane's
+            # is combined with (see "Run tests" in backend-test).
+            CORE_EXPORTS="$(python scripts/ci/coverage_core.py exports)"
+            eval "$CORE_EXPORTS"
           fi
+          COVERAGE_LOG="$RUNNER_TEMP/pytest-coverage.log"
           # Both strict cases always run, even in reduced scope. Leaf runs
           # repeat them three times; ordinary corpus gates stay once.
           REPEAT=1
@@ -2609,7 +2705,11 @@ jobs:
             python -m pytest -q -n0 --timeout=120 \
               ${COVERAGE[@]+"${COVERAGE[@]}"} --junitxml="$RUNNER_TEMP/kernel-lock-owner.xml" \
               "test/test_gateway_lock.py::TestLockHolder::test_live_holder_is_named_and_alive" \
-              "test/test_gateway_lock_diagnosis.py::test_flock_is_held_by_a_fork_orphan"
+              "test/test_gateway_lock_diagnosis.py::test_flock_is_held_by_a_fork_orphan" \
+              2>&1 | tee "$COVERAGE_LOG"
+            if [ "${COVERAGE[0]}" != "--no-cov" ]; then
+              python scripts/ci/coverage_core.py check "$COVERAGE_LOG"
+            fi
             python - <<'PY'
           import os
           from pathlib import Path

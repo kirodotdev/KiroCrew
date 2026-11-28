@@ -20,6 +20,7 @@ import yaml
 from coverage import CoverageData
 
 from conftest import _find_posix_test_shell
+from scripts.ci import coverage_core
 from scripts.ci_file_shards import file_shard
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +99,10 @@ def _env(root):
         "COV_CORE_CONFIG",
         "COVERAGE_PROCESS_START",
         "KIROCREW_HOME",
+        # A nested measured run chooses its own core and branch setting. A lane
+        # that switches to sysmon and lines only would otherwise hand both to
+        # the child, whose branch arcs these tests compare.
+        *coverage_core.SWITCH_ENV,
     ):
         env.pop(key, None)
     env.update(
@@ -455,6 +460,7 @@ def test_real_coverage_combine_preserves_both_routes_and_requires_ipv6(jobs, cov
         (tmp_path / ".coverage").rename(staged / route)
     baseline = CoverageData(basename=str(staged / "baseline"))
     baseline.read()
+    assert baseline.has_arcs(), "without arcs the comparison below compares nothing"
     shutil.copyfile(staged / "fleet", tmp_path / ".coverage.1")
     body = _combine_body(jobs, tmp_path)
     result = _shell(body, tmp_path, env)

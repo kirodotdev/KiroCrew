@@ -47,8 +47,10 @@ pytestmark = pytest.mark.skipif(
 # What stands in for every program a step would start that is not a shell
 # tool: `git` prints the scenario's changed docs, pytest records its arguments
 # (NUL-separated, one file per call), a `python -c` one-liner prints a number
-# (the Windows step sizes its worker count from one), and any other Python
-# script is a selector that prints the scenario's list for this shard.
+# (the Windows step sizes its worker count from one), the coverage-core script
+# exports nothing and passes its check (test_ci_coverage_core.py runs the real
+# one), and any other Python script is a selector that prints the scenario's
+# list for this shard.
 _STAND_IN = r"""#!/bin/bash
 name="$(basename "$0")"
 if [ "$name" = git ]; then
@@ -62,6 +64,9 @@ if [ "$name" = pytest ] || { [ "${1:-}" = -m ] && [ "${2:-}" = pytest ]; }; then
 fi
 if [ "${1:-}" = -c ]; then
   echo 8192
+  exit 0
+fi
+if [ "${1:-}" = scripts/ci/coverage_core.py ]; then
   exit 0
 fi
 list="$STAND_IN_LIST"

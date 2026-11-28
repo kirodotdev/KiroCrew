@@ -83,6 +83,8 @@ MAX_DESELECT = 50
 # read with the same functions `main-red-watch.yml` and `main-red-pr-notice.yml`
 # use, never a second copy.
 _WATCH_SCRIPT = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "main_red_nodeids.py"
+# The module that says whether a shard records lines or branch arcs on this run.
+_COVERAGE_CORE_SCRIPT = Path(__file__).resolve().parent / "ci" / "coverage_core.py"
 
 # A path under test/ or src/: segments start with a letter, digit or underscore,
 # so `..`, `.hidden` and an absolute path cannot match. Then `::name`, at most
@@ -130,6 +132,22 @@ def _watch_module() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _measure_env(env: dict[str, str]) -> dict[str, str]:
+    """The coverage variables the shard's own run has, for a pass on the C tracer.
+
+    The pass's data file is folded into the shard's, and line data does not
+    combine with branch data, so both record the same kind.
+    """
+    spec = importlib.util.spec_from_file_location("coverage_core_for_skip", _COVERAGE_CORE_SCRIPT)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"cannot load {_COVERAGE_CORE_SCRIPT}")
+    core = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(core)
+    kept = {key: value for key, value in env.items() if key not in core.SWITCH_ENV}
+    event = env.get("GITHUB_EVENT_NAME", "")
+    return {**kept, **core.step_env(event, "ctrace", env.get(core.SWITCH_VARIABLE, ""))}
 
 
 def as_watcher_rows(issues: list[Any]) -> list[dict[str, Any]]:
@@ -551,7 +569,7 @@ def cmd_measure(env: dict[str, str], pytest_args: list[str]) -> int:
     nodeids = [without_group(nodeid) for nodeid in plan[1]]
     # Without GITHUB_ACTIONS the suite writes no ::error annotation for them:
     # they are main's reds, not this pull request's.
-    child = {key: value for key, value in env.items() if key != "GITHUB_ACTIONS"}
+    child = {key: value for key, value in _measure_env(env).items() if key != "GITHUB_ACTIONS"}
     child["COVERAGE_FILE"] = MEASURE_DATA
     done = subprocess.run(
         [sys.executable, "-m", "pytest", *pytest_args, *nodeids], env=child, check=False
