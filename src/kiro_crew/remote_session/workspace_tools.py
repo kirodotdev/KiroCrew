@@ -279,10 +279,10 @@ def _run_grouped(
 ) -> "subprocess.CompletedProcess[bytes]":
     """Run ``argv`` in its own session, under coreutils ``timeout`` when present.
 
-    Like ``run_command``, the guest calls no kill primitive: ``timeout`` signals
-    the read's whole process group on expiry and when it is itself terminated,
-    which is how an unwind or a stdout cutoff stops it. Without ``timeout`` only
-    the leader is signalled. An expiry raises ``TimeoutExpired``. A stdout limit
+    Unlike ``run_command``, this read never signals a group itself: ``timeout``
+    signals the read's whole process group on expiry and when it is itself
+    terminated, which is how an unwind or a stdout cutoff stops it. Without
+    ``timeout`` only the leader is signalled. An expiry raises ``TimeoutExpired``. A stdout limit
     keeps only that prefix and stops the read when reached; this intentional
     cutoff reports success. Stderr keeps a bounded tail. On Windows the read
     runs unwrapped: a ``timeout`` there may be System32's unrelated wait
@@ -375,8 +375,8 @@ def _under_timeout(argv: List[str], timeout: float) -> Tuple[List[str], float]:
     """``argv`` under coreutils ``timeout`` when present, and how long to wait for it.
 
     ``timeout`` signals the command's whole process group itself, on expiry and
-    when it is terminated, then KILLs after the grace; the guest calls no kill
-    primitive. The wait covers its expiry and grace.
+    when it is terminated, then KILLs after the grace. Without it ``run_command``
+    signals the group itself (``_unwind``). The wait covers its expiry and grace.
     """
     timer = shutil.which("timeout")
     if not timer:
@@ -390,20 +390,47 @@ def _stop_read(proc: Any) -> None:
         proc.terminate()
 
 
-def _unwind(proc: Any) -> None:
+def _signal_group(proc: Any, sig: int) -> None:
+    """Send ``sig`` to the command's process group, or its leader if that fails.
+
+    The command was started with ``start_new_session=True``, so ``proc.pid`` is
+    also the group id. This guest file ships without ``platform_compat_kill``, so
+    it signals the group itself; ``test_kill_chokepoint_ratchet`` counts the site.
+    A group already gone is not an error. If the group signal is refused (macOS
+    answers EPERM for a group whose only member is an unreaped zombie), the leader
+    is signalled instead.
+    """
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        return
+    except OSError:
+        with contextlib.suppress(OSError):
+            proc.send_signal(sig)
+
+
+def _unwind(proc: Any, *, group: bool = False) -> None:
     """Stop and reap a still-running command; without ``timeout``, the leader only.
 
-    On Windows the whole tree is ended instead: there is no group signal, and
+    ``group=True`` is for a command that has no ``timeout`` above it to signal its
+    group: TERM goes to the whole group, and KILL to it after the grace. On
+    Windows the whole tree is ended instead: there is no group signal, and
     git.exe is a launcher, so stopping the leader would orphan the real git.
     """
+    posix_group = group and sys.platform != "win32"
     if sys.platform == "win32":
         _stop_tree(proc)
+    elif posix_group:
+        _signal_group(proc, signal.SIGTERM)
     else:
         _stop_read(proc)
     try:
         proc.wait(timeout=2 * _KILL_GRACE_SECS)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        if posix_group:
+            _signal_group(proc, signal.SIGKILL)
+        else:
+            proc.kill()
         proc.wait(timeout=10)
 
 
@@ -806,7 +833,7 @@ class Workspace:
             code = None
         finally:
             if proc.returncode is None:
-                _unwind(proc)
+                _unwind(proc, group=True)
             # A detached job holding the pipe keeps only the daemon reader waiting.
             reader.join(_READER_GRACE_SECS)
         output, omitted = tail.snapshot()
