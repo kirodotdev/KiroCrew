@@ -1216,8 +1216,12 @@ async def _get_or_create_impl(
                     # until the pool agent matches: filesystem work, off the
                     # loop like the config load above.
                     if not pool_model:
+                        # A spec spelling its model "" pins nothing, exactly as one
+                        # with no model key: the warm process runs the backend
+                        # default, and the requested model is switched onto it.
                         pool_model = (
                             await asyncio.to_thread(owner._resolve_agent_model, claim_pool_agent)
+                            or model_scope.DEFAULT_MODEL
                             if claim_pool_agent
                             else None
                         )

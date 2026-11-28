@@ -45,7 +45,9 @@ to custom agents, needs an explicit owner decision.
   (`_mirror_worker_skill_resources` in the same file). With none it is a
   whole-catalog template (`WHOLE_CATALOG_TEMPLATES` in
   `src/kiro_crew/agent_discovery_parts/skill_scope.py`) and sees every skill in
-  the catalog, a newly installed one included.
+  the catalog, a newly installed one included. Its triggers fire only over a
+  list its conductor passes (`session_create(skills=...)`), which narrows
+  matching and nothing else ([context-management](context-management.md)).
 
 ## Mate conductor
 

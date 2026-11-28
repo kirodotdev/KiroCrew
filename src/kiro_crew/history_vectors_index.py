@@ -87,6 +87,7 @@ def _usable_model_path() -> Path | None:
     the embedder: a custom path the resolver rejected is not used, and a path the
     sensitive-path gate covers is never handed over.
     """
+    from kiro_crew import embedding_source_governance as source_gov
     from kiro_crew.embeddings_model import (
         _is_sensitive_model_path,
         default_model_path,
@@ -96,6 +97,8 @@ def _usable_model_path() -> Path | None:
 
     spec = resolve_custom_model()
     if spec is not None and spec.error:
+        return None
+    if spec is None and not source_gov.source_permitted(source_gov.BUNDLED):
         return None
     path = spec.path if spec is not None else default_model_path()
     if _is_sensitive_model_path(path) or not model_file_present(path):

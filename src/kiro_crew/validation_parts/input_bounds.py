@@ -69,6 +69,11 @@ MAX_SESSION_STATUS_ROWS = 256
 # text before it enters a retained roster row and, later, a model's context.
 MAX_SESSION_STATUS_TITLE_CHARS = 500
 
+# The most keys a worker's trigger list (``session_create(skills=...)``) holds, and
+# the longest key, shared by the argument schema and ``kiro_crew.worker_trigger_skills``.
+MAX_TRIGGER_SKILLS = 32
+MAX_TRIGGER_SKILL_KEY_LEN = 200
+
 # Seconds ONE broadcast delivery may take before the loop stops waiting for it and
 # moves to the next target. Enforced per delivery, never over the fan-out: the
 # bound exists so a single unresponsive session cannot starve the ones behind it,

@@ -105,6 +105,7 @@ def build_message(
     steering_off: frozenset[str] | None = None,
     skill_bodies_session: str | None = None,
     skill_trigger_text: str | None = None,
+    trigger_skills: tuple[str, ...] | None = None,
     template_dir: str | None = None,
     directive_user_origin: bool = False,
     conversation_reset: bool = False,
@@ -149,6 +150,11 @@ def build_message(
     *text*: the person's own request without the context the caller prefixed,
     or ``""`` for a turn whose text the person did not write, which then
     matches and selects no skill. ``None`` keeps *text*.
+
+    Pass *trigger_skills*, a worker session's conductor-chosen list
+    (:mod:`kiro_crew.worker_trigger_skills`), to run trigger matching for that
+    worker over those keys only, within the session's own scope. ``None`` keeps
+    the default matching.
 
     Pass *template_dir* to name the directory whose ``.kiro/agents`` holds the
     agent's template when the turn has no *project*. It is used only to find
@@ -913,7 +919,11 @@ def build_message(
     # means the person wrote nothing this turn, so Kiro Crew's own words
     # ("do NOT restart from scratch") cannot load a skill.
     trigger_text = text if skill_trigger_text is None else skill_trigger_text
-    if not is_custom and not minimal_context and trigger_text:
+    from kiro_crew import worker_trigger_skills
+
+    # A worker's conductor-chosen list turns matching on for it, over those keys only.
+    listed = worker_trigger_skills.listed_for(agent, trigger_skills)
+    if (not is_custom or listed is not None) and not minimal_context and trigger_text:
         # A skill for a feature the backend did not mount describes tools the turn
         # cannot call. Same per-session reading as the prompt's Computer Use block.
         # A fresh session re-takes it here, since a prompt without the block's
@@ -962,15 +972,29 @@ def build_message(
                 loop=self._decisions_loop,
                 history_source=prior_turns,
                 unusable=unusable,
+                only=listed,
             )
 
-        triggered = self.skills.get_triggered_skills(
-            trigger_text, project_dir=project, select=select, unusable=unusable
-        )
         # The agent's spec is found where its template lives (template_dir for
         # a sub-agent with no project); its mapping only narrows the triggered
         # set, which, like scoped_skills, reads from *project* alone.
         template_root = project or template_dir
+        if listed is not None:
+            # The list lives on a line the worker can write, so it is held to the
+            # session's own scope, as skill_search reads it, before the match and
+            # its audit row.
+            listed = worker_trigger_skills.in_session_scope(
+                self.skills,
+                listed,
+                session_key=session_key or "",
+                agent=agent or "",
+                project_dir=project,
+                scope_root=template_root,
+                provider_type=provider_type,
+            )
+        triggered = self.skills.get_triggered_skills(
+            trigger_text, project_dir=project, select=select, unusable=unusable, only=listed
+        )
         mapped: list[str] = []
         if triggered:
             from kiro_crew.agent_discovery import SkillScopeResolutionError

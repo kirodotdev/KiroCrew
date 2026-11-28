@@ -663,8 +663,16 @@ def _doctor_agent_auth() -> None:
         signs_in_separately,
     )
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_HOST_AUTH_CALLBACK
-    from kiro_crew.agent_sdk.host_auth import for_terminal, sign_in_remedy, signed_out_message
+    from kiro_crew.agent_sdk.host_auth import (
+        for_terminal,
+        pod_kas_login_command,
+        sign_in_remedy,
+        signed_out_message,
+    )
     from kiro_crew.kiro_cli_bundle import spawn_login_command
+
+    # A pod's sign-in command, kept on one line by the wrapping printer below.
+    pod_login = (pod_kas_login_command(os.environ),)
 
     # Read through the facade, as every family does: a second binding here would
     # be one a patch of ``cli_doctor.ACP_BACKEND_KAS`` does not reach.
@@ -774,7 +782,9 @@ def _doctor_agent_auth() -> None:
                 # first prompt will fail with its own "not signed in". The remedy
                 # names Crew's sign-in alone, never ``kiro-cli login``.
                 print(f"  {label.ljust(13)}⏹ Kiro Crew vault; not signed in")
-                render._print_wrapped(kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY)
+                render._print_wrapped(
+                    for_terminal(kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY), keep=pod_login
+                )
                 if vault_detail:
                     render._print_wrapped(f"crew vault: {vault_detail}")
                 continue
@@ -798,7 +808,7 @@ def _doctor_agent_auth() -> None:
                 state = "could not check" if host_signed_in is None else "not signed in"
                 glyph = "⚠  " if host_signed_in is None else "⏹ "
                 print(f"  {label.ljust(13)}{glyph}{source}; {state} (KAS through kiro-cli's relay)")
-                render._print_wrapped(for_terminal(remedy))
+                render._print_wrapped(for_terminal(remedy), keep=pod_login)
             if vault_detail:
                 render._print_wrapped(f"crew vault: {vault_detail}")
             continue

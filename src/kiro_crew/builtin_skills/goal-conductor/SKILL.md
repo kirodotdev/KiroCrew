@@ -182,6 +182,10 @@ bind an existing session to a new item (Patrol step 4), read
 you, opens a pull request, goes to an agent other than `kirocrew-worker`, or
 covers a large multi-phase item, read `<this skill's dir>/references/dispatch.md`.
 
+**Trigger skills (optional).** When the item should load a skill on its own wording
+(a PR or CR procedure, for one), pass `skills: ["<key>", ...]` to `work_dispatch`:
+only those keys can trigger in the worker, and only while `skills.max_triggered` is above 0.
+
 **A seed MUST name the observable outcome or invariant that makes the work
 correct.** A `pr_checks` acceptance verifies only that the delivered PR's checks
 are green; it does not replace that outcome. Give the one repro, then ask the

@@ -811,6 +811,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/session_control_parts/target_authorization.py",
         "dashboard/session_control_parts/model_switch.py",
         "dashboard/session_control_parts/session_create.py",
+        # The create verb's model-pin refusal, moved verbatim out of session_create.py.
+        "dashboard/session_control_parts/session_create_pins.py",
         # The runner's own stream loop scrubs a tool call's id before the id keys a row;
         # the rows reach the browser through the dashboard's sinks.
         "dashboard/chat_runner.py",

@@ -1394,6 +1394,86 @@ class TestNotifyNudgeExpired:
         assert orch._notify_nudge_expired(loop) is True
         assert ds.notify.call_args.args[1] == "Monitoring loop hit its cycle cap"
 
+    @pytest.mark.parametrize(
+        ("stop", "pending", "expected_title"),
+        [
+            (
+                {"max_runtime_secs": 60, "created_ts": 1.0, "stopped_reason": "runtime_budget"},
+                "",
+                "Monitoring loop spent its time budget",
+            ),
+            (
+                {"max_cycles": 4, "cycle_count": 4, "stopped_reason": "cycle_cap"},
+                "",
+                "Monitoring loop hit its cycle cap",
+            ),
+            (
+                {"stopped_reason": CONSECUTIVE_FAILURE_REASON},
+                "",
+                "Monitoring loop stopped — its cycles kept failing",
+            ),
+            (
+                {"max_cycles": 4, "cycle_count": 4, "stopped_reason": "cycle_cap"},
+                "success",
+                "Monitoring loop finished — what it was watching is done",
+            ),
+        ],
+    )
+    def test_a_stop_notice_names_the_pull_request_its_loop_watched(
+        self, stop, pending, expected_title
+    ):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(
+            id="loop-named-subject",
+            slot_key="chat-5",
+            message="watch https://github.com/acme/widgets/pull/42 until green",
+            gate=True,
+            monitor=MonitorState(
+                kind="gh-pr",
+                target="acme/widgets#42",
+                objective="watch until green",
+                created_ts=0.0,
+                terminal_pending=pending,
+            ),
+            **stop,
+        )
+
+        assert orch._notify_nudge_expired(loop) is True
+
+        title, body, _meta, _priority = _monitor_notice(ds)
+        assert title == expected_title
+        assert body.endswith("\n\nacme/widgets#42")
+
+    def test_a_gated_loop_notice_redacts_a_credential_in_its_subject(self):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        subject = "acme/" + _NOTICE_TOKEN + "#7"
+        loop = NudgeLoop(
+            id="loop-credential-subject",
+            slot_key="chat-6",
+            message="watch https://github.com/acme/" + _NOTICE_TOKEN + "/pull/7",
+            max_runtime_secs=60,
+            created_ts=1.0,
+            stopped_reason="runtime_budget",
+            gate=True,
+            monitor=MonitorState(
+                kind="gh-pr",
+                target=subject,
+                objective="watch until green",
+                created_ts=0.0,
+            ),
+        )
+
+        assert orch._notify_nudge_expired(loop) is True
+
+        _title, body, _meta, _priority = _monitor_notice(ds)
+        assert subject not in body
+        assert "ghp_" not in body
+        assert "REDACTED" in body
+
     def test_a_terminal_subject_outranks_the_wall_clock_budget(self):
         """Terminal outranks EVERY early-stop reading, not just the cap.
 

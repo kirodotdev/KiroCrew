@@ -135,6 +135,7 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
     the vault row is the only credential row.
     """
     from kiro_crew.agent_sdk import backend_install, kas_bundle
+    from kiro_crew.agent_sdk.host_auth import for_terminal
 
     installed = kas_bundle.installed_bundle()  # type: ignore[misc]  # checked before kas_bundle
     if installed is None:
@@ -238,10 +239,10 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
             "  crew vault:  ⚠️  signed in through Kiro Crew, but the sign-in may not be usable;"
             " see the line above"
         )
-        print(f"               {kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY}")
+        print(f"               {for_terminal(kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY)}")
     else:
         print("  crew vault:  ⚠️  not signed in; the first prompt will ask for a sign-in")
-        print(f"               {kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY}")
+        print(f"               {for_terminal(kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY)}")
     _report_kas_bundle_spec_permissions(installed.version, issues)
 
 

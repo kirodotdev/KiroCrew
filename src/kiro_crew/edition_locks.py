@@ -304,6 +304,18 @@ def audit_refusal(tool_name: str, scope: str, item: str, reason: str) -> None:
     )
 
 
+def audit_decision(tool_name: str, scope: str, item: str, permitted: bool, reason: str) -> None:
+    """SEL record of a decision the caller already took from :func:`policy_permits`
+    unaudited, written once where it acted on it. Never raises."""
+    _audit_policy_decision(
+        tool_name,
+        scope,
+        item,
+        permitted,
+        SimpleNamespace(rule="policy", layer="policy", reason=reason),
+    )
+
+
 def _audit_policy_decision(
     tool_name: str, scope: str, item: str, permitted: bool, decision: object
 ) -> None:

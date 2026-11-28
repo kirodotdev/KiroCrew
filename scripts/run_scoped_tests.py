@@ -900,6 +900,46 @@ def related_targets(
     return targets, verdict
 
 
+# A whole-tree guard reads `src/` through one of source_corpus's tree readers,
+# walks a root that names `src` or a package module's `__file__`, or declares itself one with the
+# `tree_scan_*` xdist group the suite gives every tree-scanning module (a guard
+# that hands its walk to a helper module is found only that way).
+_TREE_READER = re.compile(
+    r"\b(iter_source_texts|source_texts|iter_candidate_sources|candidate_sources|"
+    r"parsed_candidates|repo_files|repo_files_named|src_root)\b"
+)
+_TREE_WALK = re.compile(r"\.rglob\(|\bos\.walk\(|\.glob\(\s*[\"']\*\*")
+_SRC_ROOT_NAME = re.compile(
+    r"[\"']src[\"']|\b_?SRC(?:_ROOT|_DIR)?\b|\bsrc_dir\b|[\"']kiro_crew[\"']|\w\.__file__\b"
+)
+_TREE_SCAN_GROUP = re.compile(r"xdist_group\(\s*name\s*=\s*[\"']tree_scan")
+
+
+def tree_scan_targets(root: Path = REPO_ROOT) -> list[str]:
+    """Backend test files that scan the whole source tree, read from their text.
+
+    A ratchet or boundary guard (``test_hooks_composition_contract.py``'s "nothing
+    but the facade imports an owner") fails on a new file anywhere under ``src/``,
+    a file whose path and module it never names, so no per-file selection reaches
+    it. The set is recomputed on every call rather than kept as a list, so a new
+    guard joins it the day it lands. It is broad on purpose: a test that walks a
+    fixture tree in a file that also names ``src`` joins too, which costs run time,
+    where a guard the rule missed would cost a CI round trip. Platform-uncollected
+    suites are dropped for the same reason :func:`related_targets` drops them.
+    """
+    out: list[str] = []
+    for rel in _tree_files(root, _BACKEND_TEST_ROOTS, _BACKEND_TEST_NAME):
+        text = _read_text(root, rel)
+        if (
+            _TREE_SCAN_GROUP.search(text)
+            or ("source_corpus" in text and _TREE_READER.search(text))
+            or (_TREE_WALK.search(text) and _SRC_ROOT_NAME.search(text))
+        ):
+            out.append(rel)
+    uncollected = platform_uncollected_targets()
+    return [rel for rel in out if rel not in uncollected]
+
+
 def plan(surface: str, base: str) -> tuple[list[str], str]:
     """Return (targets, verdict). Raises rather than ever answering "everything".
 

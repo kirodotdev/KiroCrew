@@ -818,6 +818,19 @@ def probe_user_bus() -> UserBusProbe:
     return UserBusProbe(USER_BUS_ERROR, sock, detail)
 
 
+#: The next step for an agent session, whose sandboxed shell is the usual caller
+#: that a pod command refuses. The Dev Fleet pod tools run in the gateway, which
+#: holds the host bus and mints the pod token itself. A session lists its tools
+#: when it starts, so one already open when the app is enabled does not get them.
+#: shortcut: names only the tools the adoption-pinned Dev Fleet release declares,
+#: name the newer pod tools here once the app repo ships them and the pin is bumped.
+AGENT_POD_TOOLS_HINT = (
+    "From an agent session, use the pod_up tool instead (pod_status, pod_restart "
+    "and pod_down too). They need the Dev Fleet app turned on in Apps, and they "
+    "appear only in a chat started after it is turned on."
+)
+
+
 def _no_user_manager_remedy() -> str:
     """The remedy for a host with no per-user systemd instance running.
 
@@ -848,7 +861,8 @@ def user_bus_failure_message(result: UserBusProbe) -> str:
         message = (
             f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
             "An outer layer, such as a container or launcher shim, blocks this "
-            "process from reaching the user bus. Run pod commands from a host shell."
+            "process from reaching the user bus. Run pod commands from a host shell.\n"
+            + AGENT_POD_TOOLS_HINT
         )
     elif result.status == USER_BUS_NO_SESSION:
         message = (
@@ -1339,6 +1353,32 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
     return data
 
 
+def _share_host_kas_engines(env: dict[str, str]) -> None:
+    """Let the pod run a KAS engine the host already installed, instead of fetching it.
+
+    The pod's data home starts with no ``engines/kas``, so its first KAS chat would
+    download the pinned engine again (hundreds of MB). ``KIROCREW_BUNDLED_KAS_DIR``
+    is the root ``acp.kas_bundle.installed_bundle`` asks after the pod's own, so
+    pointing it at the host's ``engines/kas`` lets a pod whose pin the host has
+    installed run that copy; any other pin is fetched into the pod's home as before.
+    A root the environment already names (the desktop app's staged engine) is kept.
+
+    This saves a download and is not a boundary: the pod's gateway runs the
+    worktree's code as the operator outside the agent sandbox, so it can write
+    that directory like any other. Only the sandboxed agents inside the pod see
+    the root read-only (``sandbox_tiers``).
+    """
+    from kiro_crew.constants import BUNDLED_KAS_DIR_ENV
+
+    if (env.get(BUNDLED_KAS_DIR_ENV) or "").strip():
+        return
+    from kiro_crew.agent_sdk.kas_bundle import kas_engines_root
+
+    root = kas_engines_root()
+    if root.is_dir():
+        env[BUNDLED_KAS_DIR_ENV] = str(root)
+
+
 def build_pod_env(
     cfg: PodConfig,
     home_dir: Path,
@@ -1497,6 +1537,7 @@ def build_pod_env(
     from kiro_crew.agent_scratch import drop_inherited_scratch_env
 
     drop_inherited_scratch_env(env)
+    _share_host_kas_engines(env)
     if skip_model_download:
         # Set AFTER the scrub loop so no present-or-future scrub pattern can strip
         # the guarantee back out.

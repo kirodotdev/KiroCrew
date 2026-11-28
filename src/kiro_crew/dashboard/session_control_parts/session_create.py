@@ -64,12 +64,14 @@ from kiro_crew.dashboard.session_control_parts.crew_filing import (
 )
 from kiro_crew.dashboard.session_control_parts.session_create_pins import (  # noqa: F401
     _inherited_pin_foreign_to_child,
+    _model_pin_refusal,
 )
 from kiro_crew.dashboard.session_control_parts.session_titles import _clean_new_session_title
 from kiro_crew.dashboard.session_control_parts.target_authorization import (
     _refuse_ineligible_creator,
     _refuse_moved_caller_identity,
 )
+from kiro_crew.dashboard.session_control_parts.worker_skills import trigger_skills_for_child
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     SlotOrigin,
@@ -94,8 +96,8 @@ from kiro_crew.execution_context import (
 from kiro_crew.history import metadata_now_iso
 from kiro_crew.mate_worker_conducts import effective_worker_cap_refusal, holds_conducting_kit
 from kiro_crew.memory_stores import named_store_or_empty
-from kiro_crew.security import redact, refuses
-from kiro_crew.validation import _MODEL_NAME_RE, MAX_ACP_SESSION_ID_LEN, MAX_SHORT_STRING
+from kiro_crew.security import redact
+from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Callable
@@ -151,6 +153,7 @@ async def create_session(
     caller_fenced: bool | None = None,
     dry_run: bool = False,
     backend: str | None = None,
+    trigger_skills: object = None,
 ) -> dict[str, Any]:
     """Open a new session in the caller's workspace, persisted at birth.
 
@@ -256,6 +259,9 @@ async def create_session(
     selection gate as ``backend_override``, so it outranks a Bot's own harness
     pin exactly as ``spawn_run(backend=...)`` does. ``model`` is judged against
     the pick, and a Bot's own worker is refused a pick that cannot carry its kit.
+
+    ``trigger_skills`` is a worker's trigger list (``worker_skills``), checked
+    against the child's scope before the dry-run return and kept on the slot.
 
     ``dry_run`` runs every gate up to the allocation, including the two slot
     ceilings, and returns ``{"dry_run": True}`` instead of minting a slot. It
@@ -840,6 +846,9 @@ async def create_session(
         ) from None
     if bot_member(child_execution):
         await count_restored_workers(state)
+    listed = await trigger_skills_for_child(
+        state, trigger_skills, child_execution, project_dir, backend
+    )
 
     # ONE authorization for the child's PRIVATE binding, at the single point where
     # every branch above has already produced its final route. A per-branch check
@@ -1396,6 +1405,7 @@ async def create_session(
             # On the slot, so the birth record below and every later save write
             # it. The live gate is seeded after that record lands.
             slot.autocompact_pct = pct_override
+        slot.trigger_skills = listed
         if clean_title:
             slot.title = clean_title
             slot._titled = True
@@ -1519,6 +1529,7 @@ async def create_session(
                         # The picked harness, on the same grounds: restore reads it
                         # back, so an idle worker still starts on it after a restart.
                         **({"backend": backend_stored} if backend_stored else {}),
+                        **({"trigger_skills": list(listed)} if listed else {}),
                         # The pinned effort, on the same grounds: the metadata codec
                         # restores `reasoning_effort` from this line, and a canonical
                         # level needs no validated-effort marker to come back.
@@ -1666,6 +1677,7 @@ async def create_session(
         **({"reasoning_effort": effort_name} if effort_name else {}),
         **({"backend": backend_stored} if backend_stored else {}),
         **({"autocompact_pct": pct_override} if pct_override is not None else {}),
+        **({"skills": list(listed)} if listed else {}),
         **({"inherited": inherited_fields} if inherited_fields else {}),
         **({"inherited_model_dropped": True} if inherited_model_dropped else {}),
         **_crew_filing_answer(folder_named=bool(folder_id), in_crew_tree=in_crew_tree),
@@ -1678,30 +1690,6 @@ async def create_session(
         ),
         **({"guidance": CONDUCTOR_GUIDANCE} if via_code_channel else {}),
     }
-
-
-def _model_pin_refusal(model_name: str, backend: str) -> str | None:
-    """Why ``model_name`` may not be pinned on a new session, or ``None`` to allow it.
-
-    The same guard the dashboard's model picker runs (``_model_rejected_reason``),
-    against *backend*, the harness the child runs on, so an id the picker would
-    refuse is refused here too. Length and charset are bounded
-    HERE, not left to the MCP schema: ``SESSION_CREATE_SCHEMA`` runs only in
-    ``mcp_dashboard``, and the HTTP route forwards the body's model string as-is,
-    so without this bound an internal-secret caller could persist, broadcast and
-    audit-log an arbitrarily long or arbitrarily shaped value. A credential-shaped
-    id is refused without being echoed: the reason is stored and broadcast.
-    """
-    if len(model_name) > MAX_SHORT_STRING or not _MODEL_NAME_RE.fullmatch(model_name):
-        return "model id is too long or contains characters outside the model-id charset"
-    # Never persist or broadcast a value the security scrubber classifies.
-    if refuses(model_name, redact):
-        return "model id looks like a credential and was refused"
-    # circular import: chat_handlers imports session_control lazily, and this
-    # module is imported by the dashboard package before chat_handlers loads.
-    from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
-
-    return _model_rejected_reason(model_name, backend or "")
 
 
 def _dispatching_crewmate(

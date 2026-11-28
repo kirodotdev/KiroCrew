@@ -73,6 +73,7 @@ class _ChatSlot:
         "agent",
         "agent_kind",
         "backend",
+        "trigger_skills",
         "crew_mode_agent",
         "app_agent_owner",
         "model",
@@ -466,6 +467,7 @@ class _ChatSlot:
     # Initialised by state_parts/slot_session.py.
     agent_kind: str
     backend: str
+    trigger_skills: tuple[str, ...] | None
     crew_mode_agent: str
     app_agent_owner: str
     _welcomed_agent: str

@@ -19,6 +19,7 @@ import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 import { i18nT } from '../../i18n/t'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useAppSelector, useAppStore } from '../../store'
+import { selectUpdateInstalling } from '../../components/UpdatePill'
 import { fmtRelative } from '../../i18n/format'
 import { InAppUpdateFlow, RestartGatewayButton, copyCommand, useInstalledAndWaiting } from './AboutPanelUpdateFlow'
 import { AboutPanelUpdateChanges } from './AboutPanelUpdateChanges'
@@ -427,7 +428,14 @@ export function AboutPanelGatewayUpdates({
   const offerWaiting = useInstalledAndWaiting(gwTarget)
   const installedWaiting = offerWaiting === 'installed'
   const restartReadyVersion = installedWaiting ? gwTarget : ''
-  const runningDisplay = useAppSelector(s => s.dashboard.status?.version_display) || runningVersion
+  const installing = useAppSelector(selectUpdateInstalling)
+  // The version the In-app Update button names, and whether the step's one
+  // button names a version at all: when it does, the button is the step's
+  // whole statement and no "is available" line repeats it.
+  const armLabelVersion = gwTargetDisplay || gwStatusLatestDisplay || gwTarget || gwStatusLatest
+  const buttonNamesVersion = showManualUpdate
+    ? effectiveGwCanArm && !!armLabelVersion
+    : !!namedTarget
   return (
     <div className="flex flex-col gap-2.5">
       {armedVersion && (
@@ -461,7 +469,10 @@ export function AboutPanelGatewayUpdates({
       )}
       {(showUpdate || channelMovePending) ? (
         <>
-          {showUpdate && !(effectiveGwCanArm && offerWaiting) && (
+          {/* The available step's one line, only where its button names no
+              version (an installer command, a policy-managed install). The
+              installing step has its own progress line in the flow below. */}
+          {showUpdate && !buttonNamesVersion && !(effectiveGwCanArm && (offerWaiting || installing)) && (
             <p className="text-sm text-muted flex items-center gap-1.5">
               {/* Named from the background check too, so the reader learns which
                   version before running a check of their own. */}
@@ -473,20 +484,20 @@ export function AboutPanelGatewayUpdates({
           {showManualUpdate ? (
             effectiveGwCanArm && installedWaiting ? (
               <div className="flex flex-col gap-2" data-testid="in-app-update-installed">
-                <p className="text-sm text-muted flex items-center gap-1.5">
-                  <RefreshCw size={13} className="lucide-inline text-accent" /> {i18nT(
-                    'pages.settings.aboutPanel.update_installed_restart',
-                    { version: gwTargetDisplay || restartReadyVersion, current: runningDisplay })}
-                </p>
                 {restartControls && (
                   <>
                     <div>
+                      {/* The installed step is its one button, which names the
+                          version; what a restart costs is said on the confirm
+                          step, beside it. */}
                       <RestartGatewayButton
                         primary
                         pending={gwRestart.isPending}
                         restarting={restarting}
                         onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
                         testId="gateway-restart-installed"
+                        armedNote={i18nT('pages.settings.aboutPanel.restart_stops_replies')}
+                        label={i18nT('pages.settings.aboutPanel.restart_to_use_version', { version: gwTargetDisplay || restartReadyVersion })}
                       />
                     </div>
                     <ErrorNotice message={applyError} report={gwUpdate.applyErrorReport} askAgent testId="gateway-restart-installed-error" />
@@ -510,9 +521,8 @@ export function AboutPanelGatewayUpdates({
               ) : null
             ) : effectiveGwCanArm ? (
               <InAppUpdateFlow
-                version={gwTargetDisplay || gwStatusLatestDisplay || gwTarget || gwStatusLatest}
+                version={armLabelVersion}
                 rawVersion={gwTarget}
-                manualCommand={effectiveCommand || ''}
                 isChannelMove={gwChannelMovePending}
               />
             ) : gwManagedByCommand ? (

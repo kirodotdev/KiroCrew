@@ -369,13 +369,14 @@ async def handle_pod_up(request: web.Request) -> web.Response:
     ``link_ttl_secs`` and ``session_ttl_secs``: how long the raw token is accepted,
     and how long the session it opens lasts.
 
-    Provisioning is deliberately NOT reachable from here. A cold venv plus an SPA
+    Provisioning is deliberately NOT part of this call. A cold venv plus an SPA
     build is minutes of work, and holding one request -- and one MCP tool call --
     open for that long is a shape that dies to any harness timeout or gateway
-    restart with no way to learn the outcome. The dashboard's Provision button
-    streams the same work under a run id because a browser needs to watch it; an
-    agent has no such channel. Without a built dist the CLI refuses and names the
-    remedy, which is a better answer than a 16-minute call that might not survive.
+    restart with no way to learn the outcome. So it is a run of its own, started by
+    :func:`pod_provision_start_response` and read by
+    :func:`pod_provision_status_response`, as the dashboard's Provision button
+    streams it under a run id. Without a built dist the CLI refuses and names the
+    remedy.
     """
     body, err = await _body(request)
     if err is not None:
@@ -545,6 +546,159 @@ async def pod_list_response() -> web.Response:
             {"ok": False, "code": "pod_list_failed", "error": _error_text(result)}, status=409
         )
     return web.json_response(result)
+
+
+#: Longest request body ``pod_api`` forwards. A test request is small; the bound
+#: only stops an unbounded string reaching the pod.
+_MAX_POD_API_DATA = 256 * 1024
+
+#: Longest request path ``pod_api`` accepts.
+_MAX_POD_API_PATH = 2048
+
+
+def _pod_api_refusal(code: str, error: str) -> web.Response:
+    return web.json_response({"ok": False, "code": code, "error": error}, status=400)
+
+
+async def pod_api_response(body: dict[str, Any]) -> web.Response:
+    """What a ``pod_api`` call answers for *body*, past its caller and enablement gates.
+
+    The request is ``rt.pod_api``'s: the token is minted in this process and spent
+    on one request over the pod's own socket, and the reply is the status and the
+    scrubbed body. A method other than GET/HEAD needs ``allow_write``, and every
+    call is audited.
+
+    This is not a security boundary, so it refuses no route: ``pod_up`` hands the
+    agent a token for the same pod, which reaches every route. The boundary is
+    the operator turning Dev Fleet on (``app.json``'s description says what that
+    grants).
+    """
+    from kiro_crew.pod import runtime as rt
+
+    name, err = _clean_name(body.get("worktree"))
+    if err is not None:
+        return err
+    method = body.get("method")
+    if not isinstance(method, str) or method.upper() not in rt.API_METHODS:
+        return _pod_api_refusal(
+            "invalid_method", f"'method' must be one of: {', '.join(rt.API_METHODS)}"
+        )
+    method = method.upper()
+    raw_path = body.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip() or len(raw_path) > _MAX_POD_API_PATH:
+        return _pod_api_refusal(
+            "invalid_path", f"'path' must be a non-empty string of at most {_MAX_POD_API_PATH}"
+        )
+    data = body.get("data", "")
+    if data is None:
+        data = ""
+    if not isinstance(data, str) or len(data) > _MAX_POD_API_DATA:
+        return _pod_api_refusal(
+            "invalid_data", f"'data' must be a string of at most {_MAX_POD_API_DATA} characters"
+        )
+    allow_write = body.get("allow_write") is True
+    try:
+        path = rt.api_path(raw_path)
+    except rt.PodError as exc:
+        return _pod_api_refusal("invalid_path", str(exc))
+    target = f"name={name} method={method} path={path.split('?', 1)[0][:200]}"
+    if method not in rt.API_READ_METHODS and not allow_write:
+        _audit("pod_api", target, "denied", error="write without allow_write")
+        return web.json_response(
+            {
+                "ok": False,
+                "code": "pod_api_write_not_allowed",
+                "error": (
+                    f"pod_api sends only {', '.join(rt.API_READ_METHODS)} unless "
+                    "allow_write is true; retry with allow_write: true to send "
+                    f"{method}"
+                ),
+            },
+            status=403,
+        )
+    result = await _run_op(
+        functools.partial(_ops()._pod_api, name, method, path, data, allow_write=allow_write)
+    )
+    refusal = _repo_refusal(result)
+    if refusal is not None:
+        return refusal
+    status = result.get("status")
+    _audit(
+        "pod_api",
+        f"{target} status={status}" + ("" if method in rt.API_READ_METHODS else " write=1"),
+        "granted" if result.get("ok") else "failed",
+        error=str(result.get("error") or ""),
+    )
+    if not result.get("ok"):
+        return web.json_response(
+            {"ok": False, "code": "pod_api_failed", "error": _error_text(result)}, status=409
+        )
+    return web.json_response(
+        {"ok": True, "status": status, "method": method, "path": path, "body": result["body"]}
+    )
+
+
+async def pod_provision_start_response(body: dict[str, Any]) -> web.Response:
+    """Start provisioning a worktree (venv + SPA build) in the background.
+
+    The Dev Fleet page's own Provision run (``worktree_ops._pod_provision``), started
+    here in the gateway and answered at once with its run id: the build takes
+    minutes, longer than one tool call should be held, so its progress is read
+    with :func:`pod_provision_status_response`.
+    """
+    name, err = _clean_name(body.get("worktree"))
+    if err is not None:
+        return err
+    result = await _run_op(functools.partial(_ops()._pod_provision, name))
+    refusal = _repo_refusal(result)
+    if refusal is not None:
+        return refusal
+    _audit(
+        "pod_provision",
+        name,
+        "granted" if result.get("ok") else "failed",
+        error=str(result.get("error") or ""),
+    )
+    if not result.get("ok"):
+        # A run already in flight is named, so the caller can follow it instead.
+        running = result.get("run_id")
+        suffix = f" (run_id: {running})" if isinstance(running, str) else ""
+        return web.json_response(
+            {"ok": False, "code": "pod_provision_failed", "error": _error_text(result) + suffix},
+            status=409,
+        )
+    return web.json_response({"ok": True, "run_id": result["run_id"]})
+
+
+async def pod_provision_status_response(body: dict[str, Any]) -> web.Response:
+    """The state of the provision run *run_id* for *worktree*: running or how it ended.
+
+    Only the run this gateway started for that worktree answers, so a run id from
+    another worktree or another process reads as unknown.
+    """
+    name, err = _clean_name(body.get("worktree"))
+    if err is not None:
+        return err
+    run_id = body.get("run_id")
+    if not isinstance(run_id, str) or not run_id or len(run_id) > 64:
+        return web.json_response(
+            {"ok": False, "code": "invalid_run_id", "error": "'run_id' must name a provision run"},
+            status=400,
+        )
+    snap = await _ops()._pod_provision_status(name, run_id)
+    if snap is None:
+        return web.json_response(
+            {
+                "ok": False,
+                "code": "unknown_run",
+                "error": (
+                    f"no provision run {run_id!r} for {name!r} in this gateway; "
+                    "start one with pod_provision_start"
+                ),
+            },
+            status=404,
+        )
+    return web.json_response({"ok": True, "run_id": run_id, **snap})
 
 
 def register_routes(app: web.Application) -> None:

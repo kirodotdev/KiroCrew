@@ -57,7 +57,7 @@ def _frontend_toolchain_present(gate, _floor_monkeypatch):
 
 
 def _args(**overrides):
-    defaults = {"base": "origin/main", "dry_run": True, "full": False}
+    defaults = {"base": "origin/main", "dry_run": True, "full": False, "tree_scans": False}
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
@@ -1120,3 +1120,75 @@ def test_a_windows_excluded_suite_is_not_re_enabled_by_the_related_set(
     monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset())
     targets, _verdict = selector.related_targets("backend", [rel])
     assert rel in targets
+
+
+# ---------------------------------------------------------------------------
+# the --tree-scans tier: guards that scan the whole source tree
+# ---------------------------------------------------------------------------
+
+
+def test_the_tree_scan_set_is_read_from_how_a_test_reads_the_tree(tmp_path, monkeypatch, collect_ignore_helpers) -> None:
+    """A test reading ``src/`` through source_corpus or walking a ``src`` root is a
+    whole-tree guard; a test that reads one named file is not."""
+    selector = importlib.import_module("run_scoped_tests")
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset())
+    root = tmp_path / "repo"
+    tests = {
+        "test/test_corpus_guard.py": "from source_corpus import iter_source_texts\n",
+        "test/test_walk_guard.py": "SRC = ROOT / 'src'\nfiles = sorted(SRC.rglob('*.py'))\n",
+        "test/test_one_file.py": "TEXT = (ROOT / 'src' / 'kiro_crew' / 'a.py').read_text()\n",
+        "test/test_module_root_guard.py": (
+            "import kiro_crew\nroot = Path(kiro_crew.__file__).parent\nfiles = list(root.rglob('*.py'))\n"
+        ),
+        "test/test_marked_guard.py": (
+            "import pytest\nfrom scan_helpers import offenders\n"
+            "pytestmark = pytest.mark.xdist_group(name=\"tree_scan_marked\")\n"
+        ),
+    }
+    for rel, text in tests.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    assert selector.tree_scan_targets(root) == [
+        "test/test_corpus_guard.py",
+        "test/test_marked_guard.py",
+        "test/test_module_root_guard.py",
+        "test/test_walk_guard.py",
+    ]
+
+
+def test_a_guard_that_hands_its_walk_to_a_helper_is_in_the_tree_scan_set(
+    monkeypatch, collect_ignore_helpers
+) -> None:
+    """``test_core_auto_research_decoupling.py`` scans ``src/`` through
+    ``core_app_independence``, so its own text neither walks nor reads the corpus;
+    its ``tree_scan_*`` xdist group is what names it a whole-tree guard."""
+    selector = importlib.import_module("run_scoped_tests")
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset())
+    assert "test/test_core_auto_research_decoupling.py" in selector.tree_scan_targets()
+
+
+def test_a_src_change_brings_the_import_boundary_guard_into_the_tree_scan_tier(
+    gate, monkeypatch, collect_ignore_helpers
+) -> None:
+    """The reported shape, on the real tree: a new import in
+    ``cron_script_mcp.py`` broke ``test_hooks_composition_contract.py``, which scans
+    every source file and names none of them. With ``--tree-scans`` any ``src/``
+    change runs it; without the flag the plan is unchanged."""
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset())
+    guard = "test/test_hooks_composition_contract.py"
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/cron_script_mcp.py"])
+    plan = gate.build_plan(_args(tree_scans=True))
+    tier = [cmd for label, cmd, _cwd in plan.commands if label == "backend (tree scans)"]
+    related = [cmd for label, cmd, _cwd in plan.commands if label == "backend (related)"]
+    assert any(guard in cmd for cmd in tier + related)
+    assert not any(guard in cmd for cmd in related), "the guard is not expected in the related set"
+    plain = gate.build_plan(_args())
+    assert not any(label == "backend (tree scans)" for label, _cmd, _cwd in plain.commands)
+
+
+def test_the_tree_scan_tier_adds_nothing_without_a_src_change(gate, monkeypatch) -> None:
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["docs/README.md"])
+    plan = gate.build_plan(_args(tree_scans=True))
+    assert not any(label == "backend (tree scans)" for label, _cmd, _cwd in plan.commands)
+    assert "tree scans: no src/ change, none needed" in plan.notes

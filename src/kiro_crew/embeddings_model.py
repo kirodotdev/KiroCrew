@@ -468,6 +468,17 @@ def resolve_custom_model() -> "CustomModelSpec | None":
         dim = raw_dim
     configured_id = str(memory_cfg.get("embed_model_id", "") or "").strip()
 
+    from kiro_crew import embedding_source_governance as source_gov
+
+    if not source_gov.source_permitted(source_gov.CUSTOM):
+        # Refused before the file is read or hashed: it takes the broken-path
+        # branch everywhere (keyword search), never another source.
+        error = source_gov.refused_reason(source_gov.CUSTOM)
+        _log_custom_model_error(error)
+        return CustomModelSpec(
+            Path(raw).expanduser(), "custom:unavailable", dim, error, source_gov.LOCKED_CODE
+        )
+
     path, error, code = validate_custom_model_path(raw, origin)
     if (not configured_id or configured_id.split(":sha256:", 1)[0] == _CUSTOM_LABEL) and Path(
         str(memory_cfg.get("embed_model_path", "") or "").strip()

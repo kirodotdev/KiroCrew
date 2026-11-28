@@ -999,6 +999,26 @@ before any other check, so nothing is created. Only creation is gated: a slot
 already carrying a pick keeps running on it and hands it to its spawns, and
 `spawn_run(backend=...)` and a Bot's own harness pin work either way.
 
+`session_create` and `work_dispatch` also take an optional `skills`: up to 32
+skill keys whose triggers may fire in the new worker
+(`kiro_crew.worker_trigger_skills`). Only `kirocrew-worker` and a Bot's own worker
+take one; any other child is refused `skills_not_for_agent`. Each key is checked
+before the dry-run return against the scope the child will have
+(`worker_skills.trigger_skills_for_child`, through `child_skill_globs`, which
+reads a Bot's worker from that Bot's kit by member id). While that scope's catalog
+is still loading, validation refuses `skills_catalog_building` (503) and asks the
+caller to retry shortly, with nothing created. Once complete, an unknown key is
+refused `unknown_skills`, naming it, with nothing created. With no explicit
+`backend` the scope is read as on a harness that lends no inherited skill trees,
+so an unmapped Bot worker that runs on Kiro CLI can accept a key it cannot load;
+that key never triggers. An empty list, a non-list and an over-long key are
+refused (`invalid_skills`, `invalid_field_type`). An accepted list is set on the
+slot (`slot.trigger_skills`) and rides the birth metadata line as
+`trigger_skills`, a codec row that is set once and never cleared, like `backend`,
+so restore brings it back. With `crew` the remote create refuses it as a
+local-only field. What the list does at each turn is in
+[context-management](../../architecture/context-management.md).
+
 ### `session_fork`: a created child that carries a transcript
 
 `session_create` opens an empty session, and the case it cannot serve is the
@@ -3313,6 +3333,11 @@ goes to its owner, and the owners import each other lowest layer first, in this 
   conductor mode tree, and the `folder_ignored` / `crew_mode` reply keys.
 - `src/kiro_crew/dashboard/session_control_parts/session_create.py`: `session_create` and
   the spawn record a created or forked child gets.
+- `src/kiro_crew/dashboard/session_control_parts/session_create_pins.py`: the model-pin
+  checks `session_create` runs: the refusal of an explicit pin, and whether an inherited
+  pin can follow the child onto its harness.
+- `src/kiro_crew/dashboard/session_control_parts/worker_skills.py`: the create route's
+  check of a worker's trigger list (`skills`).
 - `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,
   `session_adopt` and `session_release`, the tree-mutation lock and append fence, and
   the transcript notice adopt, release and handoff write.

@@ -51,6 +51,7 @@ _ALLOWED_STDLIB = frozenset(
         "os",
         "os.path",
         "pathlib",
+        "shlex",
         "sys",
         "types",
         "typing",
@@ -1065,3 +1066,59 @@ def test_a_host_vault_harness_names_the_config_surface_that_feeds_it() -> None:
     for declaration in declarations:
         for text in (declaration.sign_in_remedy, declaration.signed_out_message):
             assert "Secrets" in text, declaration.backend
+
+
+def test_terminal_kas_sign_in_names_the_pod_home_inside_a_pod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pod's Crew sign-in lives in its own data home, so the command carries it.
+
+    The bare ``kirocrew kas login`` run from a host shell signs in the host's home
+    and leaves the pod signed out. The dashboard sentence stays as it is.
+    """
+    sentence = host_auth.signed_out_message(ACP_BACKEND_KAS, route=None)
+    monkeypatch.delenv("KIROCREW_POD", raising=False)
+    assert host_auth.KAS_TERMINAL_SIGN_IN in host_auth.for_terminal(sentence)
+
+    home = "/home/u/.kiro/crew/pods/my pod"
+    monkeypatch.setenv("KIROCREW_POD", "1")
+    monkeypatch.setenv("KIROCREW_HOME", home)
+    with monkeypatch.context() as posix:
+        posix.setattr(host_auth.os, "name", "posix")
+        text = host_auth.for_terminal(sentence)
+    assert "`KIROCREW_HOME='/home/u/.kiro/crew/pods/my pod' kirocrew kas login`" in text
+    assert "this pod's dashboard" in text
+    # PowerShell reads a POSIX ``NAME=value`` prefix as a command.
+    monkeypatch.setenv("KIROCREW_HOME", "C:\\pods\\it's")
+    with monkeypatch.context() as nt:
+        nt.setattr(host_auth.os, "name", "nt")
+        windows = host_auth.for_terminal(sentence)
+    assert (
+        "`$prev=$env:KIROCREW_HOME; $env:KIROCREW_HOME='C:\\pods\\it''s'; "
+        "try { kirocrew kas login } finally { $env:KIROCREW_HOME=$prev }`"
+    ) in windows
+    monkeypatch.setenv("KIROCREW_HOME", home)
+    # The doctor's bundle remedy is already in terminal form and gets the same swap.
+    from kiro_crew.agent_sdk import kas_bundle
+
+    assert "KIROCREW_HOME=" in host_auth.for_terminal(kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY)
+    # The sentence a dashboard matches is untouched.
+    assert host_auth.signed_out_message(ACP_BACKEND_KAS, route=None) == sentence
+
+    monkeypatch.setenv("KIROCREW_POD", "0")
+    assert host_auth.KAS_TERMINAL_SIGN_IN in host_auth.for_terminal(sentence)
+
+
+def test_doctor_keeps_the_pod_sign_in_command_on_one_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Split across lines, the home assignment and the login run apart."""
+    home = "/home/u/.kiro/crew/pods/" + "a-long-worktree-name-" * 3
+    env = {"KIROCREW_POD": "1", "KIROCREW_HOME": home}
+    assert host_auth.pod_kas_login_command({}) == ""
+    with monkeypatch.context() as posix:
+        posix.setattr(host_auth.os, "name", "posix")
+        command = host_auth.pod_kas_login_command(env)
+    assert command == f"KIROCREW_HOME={home} kirocrew kas login"
+    render._print_wrapped(f"This is a pod: sign it in with `{command}` (or not)", keep=(command,))
+    assert any(command in line for line in capsys.readouterr().out.splitlines())

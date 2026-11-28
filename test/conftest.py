@@ -394,6 +394,9 @@ from conftest_resets_computer_use import (  # noqa: E402,F401 -- bound for pytes
 from conftest_resets_connected_computers import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_connected_computers_state,
 )
+from conftest_resets_crew_mode import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_crew_mode_conductor,
+)
 from conftest_resets_crewmate import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_crewmate_worker_slots,
 )
@@ -430,6 +433,9 @@ from conftest_resets_sandbox import (  # noqa: E402,F401 -- bound for pytest and
 from conftest_resets_search import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_chat_search_cache_stores,
     _reset_search_shown_text_memo,
+)
+from conftest_resets_session_control import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_session_control_replays,
 )
 from conftest_resets_shared_crew import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_ssm_invite_store,

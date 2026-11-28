@@ -55,16 +55,22 @@ Dashboard apply handlers load that resolver before an update can replace the
 running install tree and pass it to the restart helper. A plain restart loads
 the resolver when invoked.
 The service-unit and macOS-launcher rewrites remain separate. The in-app Apply
-now ships WITH its OQ7 step-up: the SPA's
-Update button arms a pending request (`POST /api/update/arm`; single-use
+now ships WITH its OQ7 step-up, narrowed as OQ7 records: a newer release of
+the running build's own channel, from the official update CDN, armed by the
+dashboard owner on a host whose policy allows unattended installs, installs
+with that click (`POST /api/update/arm` runs the approval's checks, lock,
+audit and shadow apply, minus the nonce). Every other arm (a channel move, a
+downgrade, a `KIROCREW_CDN_BASE` override, a policy-managed host, a caller
+other than the owner) records a pending request (single-use
 nonce, TTL 10 min, written owner-only to the data home and never returned to
 the SPA), and `kirocrew update approve` on the gateway host presents the
 nonce back (`POST /api/update/approve`, loopback + unix-socket preferred),
 upon which the gateway removes the nonce before accepting the approval, fails
 closed if that removal does not succeed, and serializes that read-validate-remove
 against a concurrent re-arm so the request it removes is always the request it
-validated, then runs the shadow apply itself and
-restarts. The full drain lease (§5) and hash-pinned dependency constraints
+validated, then runs the shadow apply itself and stages the promoted tree for
+the next restart a person chooses (it never restarts a running gateway). The
+full drain lease (§5) and hash-pinned dependency constraints
 remain open. pipx installs keep the installer re-run.
 
 `platform/wheel_engine.py` is the engine's import path and patch surface, a
@@ -685,9 +691,9 @@ instead of by the channel.
 in-app Apply button and `kirocrew update` in a terminal both qualify, and since
 the backend can invoke the install helper it can serve both — which is why
 `wheel` carries `can_apply: true` after Phase 2. They are **not equivalent in
-authority**, however: the in-app path additionally requires the host-local
-step-up resolved in Open Question 7, because a dashboard session is weaker
-authority than a shell on the host. What is ruled out for the CLI shape is the
+authority**, however: outside the same-channel case Open Question 7 narrows,
+the in-app path additionally requires the host-local step-up resolved there,
+because a dashboard session is weaker authority than a shell on the host. What is ruled out for the CLI shape is the
 *silent* path: no background download-and-swap, no apply without the user asking
 for it in one of those two places.
 
@@ -989,11 +995,30 @@ see §4.
    enter §5's drain-then-swap. The audit record gains the approval's origin
    and outcome; an expired or unapproved request decays without side effects.
 
-   **What this rules out and keeps.** One-click remote apply is deliberately
-   ruled out in Phase 2. A future policy key could relax the step-up for
-   fleets that accept the reduced posture, but it is not part of this design
-   and would need its own review. `kirocrew update` run in a terminal on the
-   host already *is* the step-up, so the CLI path needs no extra ceremony.
+   **What this rules out and keeps.** `kirocrew update` run in a terminal on
+   the host already *is* the step-up, so the CLI path needs no extra ceremony.
+
+   **Narrowed 2026-11-26** (decision entry
+   `docs/decisions/2026-11-26-a-same-channel-signed-update-installs-with-one-click.md`).
+   The same dashboard session can turn on "Update the gateway automatically"
+   (`POST /api/update/auto` is owner-gated, nothing more), which installs a
+   newer release of the followed channel from the official CDN with no
+   approval at all. For that case the step-up protects nothing, so the owner's
+   click installs it: `POST /api/update/arm` runs the approval's preflight,
+   memory readiness, update lock, restart guard, release grammar, minimum
+   version, channel pin, audit-or-deny SEL record (`update.one_click`) and
+   shadow apply, minus the nonce, and still never restarts the gateway. The
+   step-up stays for everything automatic updates never take: a channel move
+   (a pending move, a switch the channel file records in `channel-moved-from`
+   until an approved install from the followed channel is promoted, which
+   survives a restart, or a build stamp that is not on the target channel), a
+   downgrade, an overridden
+   update source (`KIROCREW_CDN_BASE`), a host whose policy turns unattended
+   installs off or names a command provider, and every caller other than the
+   owner's own dashboard session (an agent presenting `X-Internal-Secret` can
+   still only ask). Telling a local browser from a remote one is not part of
+   the rule: forwarded ports reach the gateway from loopback, so the peer
+   address cannot.
 
 ## Provenance
 

@@ -60,6 +60,9 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     # KAS is also the LTS floor (``acp_backends.governance_floor_backend``),
     # so it is never submitted to this scope; the row records the minimal set.
     "agent_backend": {"mode": "allow", "allow": ["kas"]},
+    # The bundled model only (RFC D13): a custom file or an Ollama server needs an
+    # ``embedding_model_use`` rule.
+    "memory.embedding_sources": {"mode": "allow", "allow": ["bundled"]},
     "capabilities.browse": _CAPABILITY_OFF,
     "capabilities.script_hooks": _CAPABILITY_OFF,
     "capabilities.messaging": _CAPABILITY_OFF,

@@ -933,11 +933,14 @@ def _worker_scope_key(session_key: str) -> str:
     return f"dashboard:{session_key}"
 
 
-def mate_service_scope_spec(agent: str, session_key: str) -> tuple[dict | None, Path] | None:
+def mate_service_scope_spec(
+    agent: str, session_key: str, *, member_id: str | None = None
+) -> tuple[dict | None, Path] | None:
     """``(spec or None when unreadable, path)`` the crewmate conductor's or worker's
     skill scope and Crew-fired spec hooks read, else ``None``: their specs live in
     the crewmate folder, which the roster does not list. A worker's is its session's
-    merged spec; the conductor's is the stock spec."""
+    merged spec, or *member_id*'s for a worker whose session is not opened yet; the
+    conductor's is the stock spec."""
     from kiro_crew.agent_sdk import agent_specs
     from kiro_crew.config import paths as paths_mod
 
@@ -946,7 +949,9 @@ def mate_service_scope_spec(agent: str, session_key: str) -> tuple[dict | None, 
     path = paths_mod.mate_agents_dir() / f"{agent}.json"
     try:
         spec = agent_specs.load_agent_spec(path.parent, agent)
-        if agent == MATE_WORKER_AGENT:
+        if agent == MATE_WORKER_AGENT and member_id is not None:
+            spec = resolve_worker_spec({**spec, "prompt": ""}, member_id)
+        elif agent == MATE_WORKER_AGENT:
             spec = worker_session_spec({**spec, "prompt": ""}, session_key)
     except (agent_specs.AgentSpecUnreadable, WorkerKitUnreadable):
         return None, path

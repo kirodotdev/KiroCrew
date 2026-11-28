@@ -526,6 +526,15 @@ def _read_backend(r: _Read) -> None:
         members_mod.note_session_backend_pick(r.slot.key, value)
 
 
+def _read_trigger_skills(r: _Read) -> None:
+    # The worker's conductor-chosen trigger list. A malformed value reads as no
+    # list; the trigger path holds a well-formed one to the session's own scope.
+    # Lazy, as `_read_backend`'s import is: only a restore pays for it.
+    from kiro_crew.worker_trigger_skills import META_KEY, restored_trigger_skills
+
+    r.slot.trigger_skills = restored_trigger_skills(r.meta.get(META_KEY))
+
+
 def _read_crew_mode_agent(r: _Read) -> None:
     # The conductor the chat runs in Crew Mode: it marks the chat as Crew Mode until
     # the migration moves it onto ``agent.crew_mode_agent`` (``crew_mode.runs_crew_mode``).
@@ -1118,6 +1127,15 @@ FIELDS: tuple[Field, ...] = (
         read=_read_backend,
     ),
     Field(
+        "trigger_skills",
+        _ALL,
+        attr="trigger_skills",
+        # Set once at creation and never cleared, as ``backend`` is: not slot-owned.
+        line=_truthy(lambda s: list(s.trigger_skills or ())),
+        merge=_truthy(lambda s: list(s.trigger_skills or ())),
+        read=_read_trigger_skills,
+    ),
+    Field(
         "crew_mode_agent",
         _ALL,
         attr="crew_mode_agent",
@@ -1613,6 +1631,7 @@ LINE_ORDER: tuple[str, ...] = (
     "memory_store",
     "agent_kind",
     "backend",
+    "trigger_skills",
     "crew_mode_agent",
     "app_agent_owner",
     "project",
@@ -1684,6 +1703,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "memory_store",
     "agent_kind",
     "backend",
+    "trigger_skills",
     "crew_mode_agent",
     "app_agent_owner",
     "project",

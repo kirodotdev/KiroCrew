@@ -102,8 +102,9 @@ describe('AboutPanel gateway update target', () => {
       update_latest_version_display: '0.12.2', update_last_checked_at: 200,
     })
     expect(await screen.findByTestId('in-app-update-action')).toHaveTextContent('Update to v0.12.2')
-    expect(screen.getByText('Kiro Crew 0.12.2 is available.')).toBeInTheDocument()
-    const link = within(await screen.findByTestId('update-changes-empty')).getByRole('link')
+    // The button names the version, so no line repeats it.
+    expect(screen.queryByText('Kiro Crew 0.12.2 is available.')).toBeNull()
+    const link = await screen.findByTestId('update-changes-empty')
     expect(link).toHaveAttribute('href', 'https://github.com/kirodotdev/KiroCrew/releases/tag/v0.12.2')
     expect(screen.queryByRole('button', { name: /Update to v0\.12\.1/ })).toBeNull()
   })

@@ -749,6 +749,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "agent": ("value", "''"),
     "agent_kind": ("value", "''"),
     "backend": ("value", "''"),
+    "trigger_skills": ("value", "None"),
     "crew_mode_agent": ("value", "''"),
     "app_agent_owner": ("value", "''"),
     "channel_origin": ("value", "False"),
