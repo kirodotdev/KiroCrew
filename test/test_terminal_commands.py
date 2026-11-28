@@ -963,9 +963,17 @@ def _sandbox_backend_available() -> bool:
     actually run, so they are skipped there rather than asserting a degradation
     they are not about. `TestProbeWithoutASandbox` covers that degradation and
     runs everywhere.
+
+    It runs at collection, before the isolation floor clears the sandbox markers a
+    Kiro Crew agent session exports. With them set the wrapper passes through as
+    a nested child and the probe says yes on a host where every test then fails,
+    so it clears them too.
     """
     try:
-        _, _, cleanup = tc.sandboxed_spawn_argv(["/bin/true"], "strict")
+        with patch.dict(os.environ):
+            for marker in ("KIROCREW_SANDBOX_ACTIVE", "KIROCREW_SANDBOX_LEVEL"):
+                os.environ.pop(marker, None)
+            _, _, cleanup = tc.sandboxed_spawn_argv(["/bin/true"], "strict")
     except Exception:
         return False
     if cleanup:
@@ -1059,6 +1067,24 @@ class TestProbeWithoutASandbox:
         await tc._run_probe(["/bin/echo", "x"], None)
         assert "thread" in seen, "sandbox prep was never reached"
         assert seen["thread"] != threading.current_thread().name
+
+
+def test_the_collection_probe_does_not_see_an_agent_sessions_sandbox_markers(monkeypatch):
+    monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+    monkeypatch.setenv("KIROCREW_SANDBOX_LEVEL", "standard")
+    seen = []
+
+    def record(*_a, **_kw):
+        seen.append(
+            (os.environ.get("KIROCREW_SANDBOX_ACTIVE"), os.environ.get("KIROCREW_SANDBOX_LEVEL"))
+        )
+        return [], None, None
+
+    monkeypatch.setattr(tc, "sandboxed_spawn_argv", record)
+    assert _sandbox_backend_available()
+    assert seen == [(None, None)]
+    assert os.environ["KIROCREW_SANDBOX_ACTIVE"] == "1"
+    assert os.environ["KIROCREW_SANDBOX_LEVEL"] == "standard"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="probes are POSIX-only")
