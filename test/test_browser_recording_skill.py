@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from loopback_servers import LoopbackHTTPServer
 
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.links import make_dir_link
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -197,6 +198,108 @@ class TestRecordedLineContainment:
         assert run_with_marker(lambda out_dir: victim) == 2
         assert "outside the output dir" in capsys.readouterr().err
         assert victim.read_bytes() == b"do not move me"
+
+
+class _FakePopen:
+    """A ``Popen`` whose ``communicate`` answers from a script, recording each call."""
+
+    def __init__(self, answers, events):
+        self.args, self.pid, self.returncode = ["node"], UNALLOCATABLE_PID, None
+        self._answers, self.events = list(answers), events
+
+    def communicate(self, input=None, timeout=None):
+        self.events.append(("communicate", timeout))
+        answer = self._answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        self.returncode = 3
+        return answer
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self):
+        return self.returncode
+
+
+class TestDriverTimeout:
+    """The driver call returns at its bound on Windows even while a pipe holder lives."""
+
+    def _windows_arm(self, monkeypatch, answers, kill_secs: float = 0.0):
+        """The Windows arm on a frozen clock, where the tree kill takes *kill_secs*."""
+        mod = _load_runner()
+        events: list = []
+        clock = [100.0]
+        monkeypatch.setattr(mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(mod, "monotonic", lambda: clock[0])
+
+        def kill_tree(proc, budget):
+            events.append(("kill_tree", proc.pid, budget))
+            clock[0] += kill_secs
+
+        monkeypatch.setattr(mod, "_kill_tree", kill_tree)
+
+        def popen(argv, **kw):
+            events.append(("popen", kw["encoding"], kw["stdout"], kw["stderr"]))
+            return _FakePopen(answers, events)
+
+        monkeypatch.setattr(mod.subprocess, "Popen", popen)
+        return mod, events
+
+    def test_windows_arm_returns_the_drivers_result(self, monkeypatch, tmp_path: Path) -> None:
+        mod, events = self._windows_arm(monkeypatch, [("RECORDED x\n", "é")])
+        proc = mod._run_driver(["node"], str(tmp_path), 600)
+        assert (proc.returncode, proc.stdout, proc.stderr) == (3, "RECORDED x\n", "é")
+        pipe = subprocess.PIPE
+        assert events == [("popen", "utf-8", pipe, pipe), ("communicate", 600)]
+
+    def test_windows_arm_kills_the_tree_and_reraises(self, monkeypatch, tmp_path: Path) -> None:
+        timeout = subprocess.TimeoutExpired(["node"], 600)
+        mod, events = self._windows_arm(monkeypatch, [timeout, ("", "")])
+        with pytest.raises(subprocess.TimeoutExpired) as info:
+            mod._run_driver(["node"], str(tmp_path), 600)
+        assert info.value is timeout
+        assert events[1:] == [
+            ("communicate", 600),
+            ("kill_tree", UNALLOCATABLE_PID, 5),
+            ("communicate", 5.0),
+        ]
+
+    @pytest.mark.parametrize("kill_secs, drain_secs", [(3.0, 2.0), (7.0, 0.0)])
+    def test_kill_and_drain_share_one_deadline_past_the_timeout(
+        self, monkeypatch, tmp_path: Path, kill_secs: float, drain_secs: float
+    ) -> None:
+        """A slow tree kill leaves the drain only what remains of the 5 s; a holder the kill
+        misses keeps a pipe open, the drain times out and the first raise stands."""
+        timeout = subprocess.TimeoutExpired(["node"], 600)
+        drain = subprocess.TimeoutExpired(["node"], drain_secs)
+        mod, events = self._windows_arm(monkeypatch, [timeout, drain], kill_secs=kill_secs)
+        with pytest.raises(subprocess.TimeoutExpired) as info:
+            mod._run_driver(["node"], str(tmp_path), 600)
+        assert info.value is timeout
+        assert events[1:] == [
+            ("communicate", 600),
+            ("kill_tree", UNALLOCATABLE_PID, 5),
+            ("communicate", drain_secs),
+        ]
+
+    def test_kill_tree_runs_taskkill_on_the_tree_then_kills(self, monkeypatch) -> None:
+        mod = _load_runner()
+        calls = []
+
+        class FakeProc:
+            pid = UNALLOCATABLE_PID
+            returncode = None
+
+            def kill(self) -> None:
+                calls.append("kill")
+
+        monkeypatch.setattr(
+            mod.subprocess, "run", lambda argv, **kw: calls.append((argv, kw["timeout"]))
+        )
+        mod._kill_tree(FakeProc(), 2.5)
+        taskkill = ["taskkill", "/T", "/F", "/PID", str(UNALLOCATABLE_PID)]
+        assert calls == [(taskkill, 2.5), "kill"]
 
 
 class TestConversionRecipe:
