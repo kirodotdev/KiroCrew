@@ -107,6 +107,43 @@ def _has_table(text: str) -> bool:
     )
 
 
+_HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+\S", re.MULTILINE)
+
+
+def _has_heading(text: str) -> bool:
+    """True if *text* has an ATX markdown heading line (``# x`` .. ``###### x``).
+
+    The legacy HTML subset can only show a heading as bold text; Rich Markdown
+    renders it at heading size, so a heading picks the rich transport like a table.
+    """
+    return bool(_HEADING_RE.search(text or ""))
+
+
+def _has_malformed_table(text: str) -> bool:
+    """True if a pipe-bearing line sits on a separator row whose cell count differs.
+
+    The rich server flattens such rows into one paragraph with literal pipes, which
+    is why they take the monospace seal instead (``_has_table`` rejects them).
+    """
+    lines = text.split("\n")
+    return any(
+        "|" in header
+        and _is_table_separator(sep)
+        and _row_cell_count(header) != _row_cell_count(sep)
+        for header, sep in zip(lines, lines[1:])
+    )
+
+
+def _wants_rich(text: str) -> bool:
+    """True when *text* needs Rich Markdown to render: a pipe table or a heading.
+
+    A heading alone does not pick rich when the text also carries a malformed
+    table: the rich server would flatten those rows, and the monospace seal keeps
+    each on its own line.
+    """
+    return _has_table(text) or (_has_heading(text) and not _has_malformed_table(text))
+
+
 def _table_blocks(text: str) -> list[tuple[bool, list[str]]]:
     """Partition *text* into alternating ``(is_table, lines)`` blocks.
 

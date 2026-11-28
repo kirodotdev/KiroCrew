@@ -38,6 +38,7 @@ from kiro_crew.telegram.client import (
 )
 from kiro_crew.telegram.renderer import _split_markdown_bounded, md_to_telegram_html_safe
 from kiro_crew.telegram.renderer_display import _utf16_chunks, _utf16_len
+from kiro_crew.telegram.renderer_tables import _wants_rich
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,21 @@ def prompt_safe_handle(raw: str) -> str:
     if not set(handle) <= _HANDLE_CHARS:
         return ""
     return f"@{handle}"
+
+
+def _rich_refused(err: dict[str, Any]) -> bool:
+    """True when a failed ``send_rich_message`` provably posted nothing.
+
+    That is the latch skipping the call, or the Bot API's own JSON answer with a
+    4xx code (the call was refused). A timeout, a transport error, a 5xx or a
+    non-JSON reply from a proxy is not proof: the message may be in the chat.
+    """
+    if err.get("rich_unsupported"):
+        return True
+    code = err.get("error_code")
+    return (
+        err.get("body_is_json", True) is not False and isinstance(code, int) and 400 <= code < 500
+    )
 
 
 def _coerce_id_set(value: object, cast: Callable[[Any], Any]) -> frozenset | None:
@@ -373,10 +389,26 @@ class TelegramTransport(MessagingTransport):
                 if not last:
                     return ""
             return last
+        thread = int(thread_id) if thread_id else None
+        if _wants_rich(content):
+            # A heading or table only renders through Rich Markdown. The plain send
+            # below is the fallback only when nothing was posted: rich is latched
+            # off, or the Bot API refused the call (4xx). After a timeout, a
+            # transport error or a non-JSON reply the rich copy may already be in
+            # the chat, so report unconfirmed rather than post a second copy --
+            # the same rule send_markdown follows.
+            rich_err: dict[str, Any] = {}
+            mid = await self._client.send_rich_message(
+                int(conversation_id), content, message_thread_id=thread, err_out=rich_err
+            )
+            if mid:
+                return str(mid)
+            if not _rich_refused(rich_err):
+                return ""
         mid = await self._client.send_message(
             int(conversation_id),
             content,
-            message_thread_id=int(thread_id) if thread_id else None,
+            message_thread_id=thread,
         )
         return str(mid or "")
 
