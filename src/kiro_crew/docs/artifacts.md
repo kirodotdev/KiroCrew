@@ -57,6 +57,12 @@ unambiguous instruction ("fix this typo") and did so. For anything that is a
 judgement call it marks the thread for review instead, so you get to check.
 Comments synced from an external provider cannot be deleted by the agent at all.
 
+## Saving a copy as a Word file
+
+On a markdown or text artifact, **More** > **Download as .docx** saves the version on
+screen: headings styled, every other line one paragraph as typed. Text over 20,000 lines
+or 1,000,000 characters is not written.
+
 ## Publishing one
 
 A saved web artifact can be deployed to a public HTTPS URL on your own AWS

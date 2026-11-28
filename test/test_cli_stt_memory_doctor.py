@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from cli_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     _doctor_reads_current_tz_data,
+    _doctor_reads_no_installed_service,
     _doctor_reads_the_warm_probe_cache,
     _healthy_agent_file,
     _noop_probe_server,
@@ -129,6 +130,9 @@ class TestDoctorStt:
         # is a note. The desktop arm is pinned by the bundled tests below, the
         # Windows arm in ``TestDoctor::test_doctor_stt_marker_arms_match_platform``.
         _floor_monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", False)
+        # A source install whose interpreter has pip, so the install hints print.
+        # Left real, a test interpreter without pip (a uv venv) drops them.
+        _floor_monkeypatch.setattr(_doc, "pip_install_channel_available", lambda: True)
         # Unconfined: run from an agent's shell, a macOS miss would read as a skip.
         _floor_monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: False)
         # Left real, this prepends to the process PATH for every later test.

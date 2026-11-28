@@ -395,7 +395,7 @@ def test_meta_prefixes_match_the_owning_modules() -> None:
         "member_lesson_dedup": "memory_lesson_dedup",
         "dream": "memory_dream",
     }
-    sources = {s.name: s.source for s in msr.STAGES}
+    sources = {s.name: s.source for s in msr.STAGES if s.name not in msr._RECEIPT_STAGES}
     assert set(sources) == set(owners)
     for stage, module in owners.items():
         owner = importlib.import_module(f"kiro_crew.{module}")
@@ -611,3 +611,139 @@ def test_no_renderer_reads_memory_meta_or_a_log_module(renderer: str) -> None:
     for module in _LOG_MODULES:
         short = module.rsplit(".", 1)[1]
         assert f"import {short}" not in text and f"{module} import" not in text, module
+
+
+#: Eighteen UTC dates with two skipped: sixteen days of follow-up turns, two of
+#: them after the stage's 14-day sample window has closed.
+_PER_TURN_DAYS = [date(2026, 11, d) for d in range(1, 19) if d not in (5, 12)]
+
+
+def _write_per_turn(home: Path, *, recall_session: str, turn_store: str = "") -> None:
+    """Receipt lines for the per-message-lesson stage, written through ``write_line``.
+
+    The real caps apply. Sessions ``s0..s199`` start on the sixteen days; one
+    follow-up turn a day runs in *turn_store*, and the first day's would have been
+    sent ``lesson.need``. One recall, in *recall_session*, names that lesson.
+    """
+    from kiro_crew import injection_receipts as ir
+
+    ctrl = [f"lesson.ctrl{i:02d}" for i in range(40)]
+
+    def at(day: date, hour: int) -> datetime:
+        return datetime(day.year, day.month, day.day, hour, tzinfo=timezone.utc)
+
+    def write(receipts: dict, *, session: str, phase: str, store: str, now) -> None:
+        line = ir.build_line(
+            receipts,
+            session_key=session,
+            turn_index=1,
+            user_msg_id="",
+            model="m",
+            agent="a",
+            phase=phase,
+            store=store,
+            now=now,
+        )
+        ir.write_line(line)
+
+    for n in range(200):
+        receipts = {ir.LESSONS: {"ids": ctrl, "omitted": 0}}
+        day = _PER_TURN_DAYS[n % len(_PER_TURN_DAYS)]
+        write(receipts, session=f"s{n}", phase="session_start", store="", now=at(day, 9))
+    for index, day in enumerate(_PER_TURN_DAYS):
+        need = ["lesson.need"] if index == 0 else []
+        with ir.collect() as sink:
+            ir.record_stage(
+                ir.INJECT_LESSONS_PER_TURN,
+                mode="shadow",
+                policy=ir.INJECT_LESSONS_PER_TURN_POLICY,
+                would_add=need,
+                chars=180 if need else 0,
+                lessons=[
+                    {"key": k, "tier": "legacy", "source": "user_explicit", "created_at": "x"}
+                    for k in need
+                ],
+            )
+        write(sink, session=f"s{index}", phase="turn", store=turn_store, now=at(day, 10))
+    outcome = ir.build_outcome_line(
+        ir.RECALL,
+        session_key=recall_session,
+        store="",
+        ids=["lesson.need"],
+        now=at(_PER_TURN_DAYS[1], 11),
+    )
+    ir.write_line(outcome)
+
+
+@pytest.mark.parametrize(
+    ("recall_session", "missed", "verdict", "reason"),
+    [("s0", 1, "pass", ""), ("s7", 0, "fail", "no would-add lesson was needed")],
+)
+def test_the_per_message_lessons_row_counts_days_past_the_sample_window(
+    home: Path, capsys, recall_session: str, missed: int, verdict: str, reason: str
+) -> None:
+    _config(home, inject_lessons_per_turn="shadow")
+    _write_per_turn(home, recall_session=recall_session)
+
+    card = _card(_run(capsys, json=True), "inject_lessons_per_turn")
+
+    # Sixteen counted days although samples stopped after the 14-day window.
+    assert (card["mode"], card["policy"], card["days"], card["sessions"]) == (
+        "shadow",
+        1,
+        16,
+        200,
+    )
+    assert (card["base"], card["changed"]) == (16, 1)
+    sampled = card["would_inject"]
+    assert (sampled["turns"], sampled["turns_with_block"], sampled["chars"]) == (12, 1, 180)
+    assert sampled["legacy_user_explicit"] == 1
+    assert (card["miss"]["items"], card["miss"]["missed"]) == (1, missed)
+    assert card["control"]["items"] > 0 and card["control"]["missed"] == 0
+    assert (card["verdict"], card["verdict_reason"]) == (verdict, reason)
+    text = _run(capsys, stage="inject_lessons_per_turn")
+    assert "would inject inject_lessons_per_turn:" in text
+    assert "legacy user_explicit=1" in text
+
+
+def test_another_stores_shadow_days_do_not_count(home: Path, capsys) -> None:
+    _config(home, inject_lessons_per_turn="shadow")
+    _write_per_turn(home, recall_session="s0", turn_store="other")
+
+    card = _card(_run(capsys, json=True), "inject_lessons_per_turn")
+
+    assert (card["days"], card["base"], card["data"]) == (0, 0, False)
+    assert card["verdict"] == "wait"
+
+
+def _add_card(miss: tuple[int, int], ctrl: tuple[int, int]) -> dict:
+    return {
+        "mode": "shadow",
+        "days": msr.DAYS_BAR,
+        "sessions": msr.SESSIONS_BAR,
+        "miss": {"missed": miss[0], "items": miss[1]},
+        "control": {"missed": ctrl[0], "items": ctrl[1]},
+    }
+
+
+@pytest.mark.parametrize(
+    ("miss", "ctrl", "verdict", "reason"),
+    [
+        ((1, 10), (3, 10), "fail", "needed 10.00% < control 30.00%"),
+        ((0, 10), (0, 10), "fail", "no would-add lesson was needed"),
+        ((0, 0), (1, 10), "wait", "no lesson would be added"),
+        ((3, 10), (3, 10), "pass", ""),
+    ],
+)
+def test_the_add_verdict_past_the_bar(miss, ctrl, verdict, reason) -> None:
+    assert msr._add_verdict(_add_card(miss, ctrl), outcomes_in_window=1) == (verdict, reason)
+
+
+def test_the_per_message_lessons_row_is_off_for_a_stored_false(home: Path, capsys) -> None:
+    (home / "config.json").write_text(
+        json.dumps({"memory": {"inject_lessons_per_turn": False}}), encoding="utf-8"
+    )
+
+    card = _card(_run(capsys, json=True), "inject_lessons_per_turn")
+
+    assert (card["mode"], card["verdict"], card["data"]) == ("off", "off", False)

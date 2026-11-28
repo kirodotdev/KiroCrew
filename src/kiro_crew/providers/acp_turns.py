@@ -320,7 +320,12 @@ async def stream(
         send = functools.partial(send, timeout=timeout)
     try:
         async with aclosing(
-            self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
+            self.essential_delivery.stream(
+                message,
+                send,
+                lambda: self.context_incarnation,
+                cancel_keeps_history=lambda: self.capabilities.keeps_history_on_cancel,
+            )
         ) as events:
             async for e in events:
                 yield self._to_llm_event(e)
@@ -489,7 +494,8 @@ async def cancel(self: AcpProvider, *, wait_ack_timeout: float = 0.0) -> CancelO
     if not self._client.has_active_turn():
         logger.debug("provider.cancel: no active turn, skip")
         return "no_turn"
-    self.essential_delivery.invalidate()
+    if not self.capabilities.keeps_history_on_cancel:
+        self.essential_delivery.invalidate()
     try:
         # Pass the ack budget so the client's read-grace window matches how
         # long we will actually wait below — otherwise a budget above the

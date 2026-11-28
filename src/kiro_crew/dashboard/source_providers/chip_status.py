@@ -68,6 +68,9 @@ _check_forced_at: dict[str, float] = {}
 # ``_refresh_check_status`` issues exactly one follow-up forced read so the
 # post-turn state is actually observed instead of waiting out the TTL.
 _check_force_pending: set[str] = set()
+# When a chip read last learned its URL is not a pull request (``runner.NOT_A_CHANGE``).
+# ``chip_refresh`` starts no read of such a URL until the answer ages out.
+_check_not_a_change: dict[str, float] = {}
 # Status-delta sinks receive {"url", "ci"?, "state"?} whenever a URL's cached
 # chip status CHANGES, so owner dashboards can invalidate the matching
 # pull-request detail query immediately instead of waiting out a poll interval.
@@ -500,6 +503,8 @@ def _trim_check_cache() -> None:
             del _check_generations[url]
     while len(_check_forced_at) > _CHECK_CACHE_MAX:
         del _check_forced_at[min(_check_forced_at, key=lambda key: _check_forced_at[key])]
+    while len(_check_not_a_change) > _CHECK_CACHE_MAX:
+        del _check_not_a_change[min(_check_not_a_change, key=_check_not_a_change.__getitem__)]
     # Flap-tracking state is only meaningful while a URL is live in the cache;
     # drop entries for evicted URLs so these maps cannot outgrow the cache.
     if len(_check_flap) > _CHECK_CACHE_MAX:
@@ -704,6 +709,8 @@ def record_full_payload_status(url: str, payload: dict[str, Any]) -> None:
     # the chip cache already knew.
     status = _keep_known_merge_state(status, previous[1] if previous else None)
     _check_cache[url] = (time.monotonic(), status)
+    # The full read found a pull request, so a "not a pull request" answer is stale.
+    _check_not_a_change.pop(url, None)
     _trim_check_cache()
     if previous is None or previous[1] != status:
         # A full-payload write is an independent, authoritative status change —

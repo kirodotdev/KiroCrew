@@ -1467,6 +1467,7 @@ def _invalidate_iter_cache(loader: SkillsLoader) -> None:
     loader._disabled_apps_cache = None
     loader._released_apps_cache = None
     loader._visible_memo.clear()
+    loader._shipped_root_memo.clear()
     with loader._catalog_lock:
         # Moved BEFORE the drop: it fences every walk already in flight, and it
         # turns the snapshot tier off (`_snapshot_trusted_locked`) until the drop

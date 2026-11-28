@@ -1256,6 +1256,11 @@ def main() -> None:
             kept_grants.run_user_stop(
                 lambda: _stop(args.port, expect_pid=args.expect_pid), via="cli"
             )
+            # A headless Windows desktop install installs an update armed for it
+            # once a person stops the gateway; on every other install this is a no-op.
+            from kiro_crew.cli_desktop_update import apply_after_stop
+
+            apply_after_stop()
     elif args.command == "restart":
         if args.max_wait is not None and not args.when_idle:
             print("❌ --max-wait applies only with --when-idle.", file=sys.stderr)

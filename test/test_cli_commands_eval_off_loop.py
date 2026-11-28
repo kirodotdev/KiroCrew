@@ -54,7 +54,7 @@ def calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str,
         monkeypatch.setattr(Path, method, scoped)
     runner = MagicMock()
     runner.run_scenarios = AsyncMock(
-        return_value=[SimpleNamespace(passed=True, sessions=[], summary=lambda: {})]
+        return_value=[SimpleNamespace(passed=True, status="PASS", sessions=[], summary=lambda: {})]
     )
     with (
         patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()),

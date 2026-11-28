@@ -66,7 +66,12 @@ from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
 from kiro_crew.agent_sdk.project_mcp_holds import hold_project_servers
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
 from kiro_crew.config import live
-from kiro_crew.mcp_gateway.claim import mint_stub_session_token, send_claim
+from kiro_crew.mcp_gateway.claim import (
+    mint_stub_session_token,
+    send_agent_binding,
+    send_claim,
+    stub_entry_agents,
+)
 from kiro_crew.mcp_gateway.mate_overlays import MATE_WORKER_AGENT
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
@@ -1107,6 +1112,13 @@ async def _own_stub_session(
     entries = attach_stub_session_token(entries, token)
     if session_key:
         await asyncio.to_thread(publish_session_token, token, session_key)
+    if entries and self._mcp_gateway_socket and self.pid:
+        # Before the claim and before ``session/new``, and for a session whose
+        # key is not known yet too: the stubs ``session/new`` starts are served
+        # their agent's declared env only when gatewayd already holds this.
+        await send_agent_binding(
+            self._mcp_gateway_socket, self.pid, token, stub_entry_agents(entries)
+        )
     if entries and self._mcp_gateway_socket and session_key and self.pid:
         await send_claim(
             self._mcp_gateway_socket,

@@ -95,6 +95,7 @@ if TYPE_CHECKING:
         _notice_crew_left_out_mcp,
         _notice_unresolved_control_plane,
         _publish_session_mcp_report,
+        _watch_mcp_consent_between_turns,
         _watch_session_mcp_report,
     )
     from kiro_crew.dashboard.chat_turn.model_fallback import (
@@ -1766,6 +1767,8 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     try:
         _publish_session_mcp_report(state, slot, client)
         _watch_session_mcp_report(state, slot, client)
+        # A KAS sign-in link the engine sends after this turn ends is drawn at once.
+        _watch_mcp_consent_between_turns(state, slot, client)
     except Exception:  # pragma: no cover
         logger.warning("Failed to publish the session MCP report", exc_info=True)
 

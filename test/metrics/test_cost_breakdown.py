@@ -335,7 +335,7 @@ class TestAppAttribution:
         # still sum to the card total.
         store([
             _row(slot="radar-a", credits=2.0, app="radar"),
-            _row(slot="radar-a", credits=1.0, app="radar", surface="bg:auto_title"),
+            _row(slot="radar-a", credits=1.0, app="radar", surface="bg:chat_nav"),
             _row(slot="cron:default:nightly", credits=4.0),
         ])
         d = usage_mod.cost_breakdown(7)
@@ -612,7 +612,7 @@ class TestSpendByPurpose:
     def test_credits_split_into_turn_helper_automation(self, store):
         store([
             _row(slot="chat-1-1700000000", credits=10.0),
-            _row(slot="chat-1-1700000000", credits=2.0, surface="bg:auto_title"),
+            _row(slot="chat-1-1700000000", credits=2.0, surface="bg:chat_nav"),
             _row(slot="_hb", credits=3.0, surface="heartbeat"),
             _row(slot="", credits=1.0),
         ])
@@ -643,13 +643,81 @@ class TestSpendByPurpose:
 
     def test_a_purpose_row_carries_the_period_delta(self, store):
         store([
-            _row(slot="chat-1-1700000000", credits=2.0, surface="bg:auto_title"),
-            _row(slot="chat-1-1700000000", credits=8.0, surface="bg:auto_title", age_days=9.0),
+            _row(slot="chat-1-1700000000", credits=2.0, surface="bg:chat_nav"),
+            _row(slot="chat-1-1700000000", credits=8.0, surface="bg:chat_nav", age_days=9.0),
             _row(slot="chat-1-1700000000", credits=5.0),
         ])
         by = {r["name"]: r for r in usage_mod.cost_breakdown(7)["by_purpose"]}
         assert by["helper"]["delta_pct"] == -75.0
         assert by["turn"]["delta_pct"] is None
+
+    def test_a_helper_row_is_split_by_kind(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=1.0, surface="bg:chat_title"),
+            _row(slot="telegram_555", credits=2.0, surface="bg:telegram_auto_title"),
+            _row(slot="chat-1-1700000000", credits=4.0, surface="bg:session_summary"),
+            _row(slot="_bg", credits=8.0, surface="bg:consolidation"),
+            _row(slot="_bg", credits=16.0, surface="bg:skill_dedupe"),
+            _row(slot="_bg", credits=32.0, surface="bg:skill_merge"),
+            _row(slot="chat-1-1700000000", credits=64.0, surface="bg:folder_suggest"),
+            _row(slot="chat-1-1700000000", credits=128.0),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        by = {r["name"]: r["credits"] for r in out["by_purpose"]}
+        assert by == {
+            "turn": 128.0,
+            "helper": 64.0,
+            "helper_memory": 56.0,
+            "helper_summary": 4.0,
+            "helper_title": 3.0,
+        }
+        assert sum(by.values()) == out["credits"]
+
+    def test_a_row_written_before_the_task_names_stays_in_the_helper_remainder(self, store):
+        """Rows from before titles and summaries were stamped carry the default
+        ``bg:bg_oneliner``; they are not guessed into a kind."""
+        store([
+            _row(slot="chat-1-1700000000", credits=3.0, surface="bg:bg_oneliner"),
+            _row(slot="chat-1-1700000000", credits=1.0, surface="bg:chat_title"),
+        ])
+        by = {r["name"]: r["credits"] for r in usage_mod.cost_breakdown(7)["by_purpose"]}
+        assert by == {"helper": 3.0, "helper_title": 1.0}
+
+    def test_a_bg_surface_is_a_helper_on_a_background_slot_too(self, store):
+        """The prefix is read before the slot: a ``bg:`` row on the background slot
+        is a helper kind, never ``automation``, and an unknown task is ``helper``."""
+        store([
+            _row(slot="_bg", credits=4.0, surface="bg:memory"),
+            _row(slot="_bg", credits=2.0, surface="bg:consolidation"),
+            _row(slot="_bg", credits=1.0, surface="heartbeat"),
+        ])
+        by = {r["name"]: r["credits"] for r in usage_mod.cost_breakdown(7)["by_purpose"]}
+        assert by == {"helper": 4.0, "helper_memory": 2.0, "automation": 1.0}
+
+    def test_a_task_name_outside_a_bg_surface_cannot_move_a_row(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=5.0, surface="chat_title"),
+            _row(slot="chat-1-1700000000", credits=6.0, surface="x:bg:session_summary"),
+        ])
+        by = {r["name"]: r["credits"] for r in usage_mod.cost_breakdown(7)["by_purpose"]}
+        assert by == {"turn": 11.0}
+
+    def test_a_subagent_row_with_a_helper_kind_reaches_no_purpose(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=10.0),
+            _row(slot="subagent:0000abcd", credits=5.0, surface="bg:chat_title"),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert [r["name"] for r in out["by_purpose"]] == ["turn"]
+        assert sum(r["credits"] for r in out["by_purpose"]) == out["credits"]
+
+    def test_a_helper_kind_carries_the_period_delta(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=2.0, surface="bg:chat_title"),
+            _row(slot="chat-1-1700000000", credits=8.0, surface="bg:chat_title", age_days=9.0),
+        ])
+        by = {r["name"]: r for r in usage_mod.cost_breakdown(7)["by_purpose"]}
+        assert by["helper_title"]["delta_pct"] == -75.0
 
     def test_the_dollar_view_carries_by_purpose(self, store):
         store([

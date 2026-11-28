@@ -125,12 +125,34 @@ def test_consecutive_windows_are_disjoint(probe) -> None:
     Overlapping windows would double-count a single stall across two recorder
     rows, so a reader diffing the series would see contention persist after it
     had ended.
+
+    The probe is stopped before either read, so the ring cannot change under
+    them. A live probe could append a reading after a read had closed its
+    window, and on a coarse clock (Windows ticks about every 15.6 ms) stamp it
+    exactly on that boundary: no window counts it, yet a later snapshot of the
+    ring would. With the ring frozen, each window is checked against the
+    readings' own stamps and the boundaries each read left behind, never
+    against the other window's size.
     """
     _await_probe_ticks(5, since=dt._probe._window_from)
+    ticking = dt._probe._thread
+    dt.stop_probe()
+    assert ticking is not None and not ticking.is_alive()
+    opened = dt._probe._window_from
     first = dt.window_stats()["gil_wait"]
+    between = dt._probe._window_from
     second = dt.window_stats()["gil_wait"]
+    closed = dt._probe._window_from
+    with dt._probe._lock:
+        stamps = [ts for ts, _ in dt._probe._readings]
+
+    def taken_in(after: float, until: float) -> int:
+        return sum(1 for ts in stamps if after < ts <= until)
+
     assert first["samples"] > 0
-    assert second["samples"] < first["samples"]
+    assert first["samples"] == taken_in(opened, between)
+    assert second["samples"] == taken_in(between, closed)
+    assert first["samples"] + second["samples"] == taken_in(opened, closed)
 
 
 def test_a_reading_at_the_window_boundary_is_counted_once() -> None:

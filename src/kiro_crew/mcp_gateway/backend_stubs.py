@@ -103,6 +103,19 @@ async def attach_stub(self: Backend, stub_uuid: str, *, agent: str = "") -> "asy
     return inbox
 
 
+async def _relabel_stub(backend: Backend, stub_uuid: str, agent: str) -> None:
+    """Record *agent* for a stub ALREADY attached to *backend* (``Backend.agent_for_stub``).
+
+    For a stub whose declaring agent became known after it attached. Under the
+    inbox lock, like :meth:`detach_stub`, so a stub detached meanwhile is not
+    given a label again. A plain function rather than a ``Backend`` method: its
+    one caller is the connection handler.
+    """
+    async with backend._inbox_lock:
+        if agent and stub_uuid in backend._stub_inboxes:
+            backend._stub_agents[stub_uuid] = agent
+
+
 async def detach_stub(self: Backend, stub_uuid: str) -> int:
     """Drop ``stub_uuid``'s inbox and clean up any pending requests
     owned by it. Returns the remaining refcount so the caller can

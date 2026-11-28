@@ -81,6 +81,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "coder/remote_worker.py::run_collect",
         # The fixed coder ssh attach argv plus a numeric port; stdin is framed bytes.
         "remote_session/client.py::dial",
+        # asyncio.run drives the desktop update's feed read and download in-process;
+        # it is not a child spawn (the helper it hands off to is audited apart).
+        "cli_desktop_update.py::apply_after_stop",
+        "cli_desktop_update.py::update_desktop_install",
         # asyncio.run drives the CLI loop in-process; it is not a child spawn.
         "remote_session/client.py::main",
         "remote_session/worker.py::main",
@@ -1431,6 +1435,20 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # and tree-killed on timeout or cancel. It is the operator's own update
         # command; sandboxing it would block the install it exists to run.
         "update_boot_apply.py::_run_apply_child",
+        # A headless Windows desktop install's update. `read_signature` runs
+        # System32 PowerShell (platform_compat.trusted_system_bin) with a fixed
+        # -Command; the file path travels in an environment variable, and the
+        # file is the installer this process downloaded into its own data home.
+        # `_spawn_detached` starts that same PowerShell with an -EncodedCommand
+        # this module renders from fixed text and validated literals (feed sha512,
+        # pinned signer, install dir, the gateway's own argv). `desktop_app_running`
+        # runs that PowerShell with a fixed -Command counting the app's processes;
+        # the install's own executable paths travel in an environment variable.
+        # None takes agent input, and a sandbox would stop the installer replacing
+        # the install.
+        "platform/desktop_installer_update.py::desktop_app_running",
+        "platform/desktop_installer_update.py::read_signature",
+        "platform/desktop_installer_update.py::_spawn_detached",
         # Pluggable update provider: CommandProvider runs operator-configured
         # shell commands from security_policy.json or config.json (sensitive
         # home dirs the agent cannot write). The check command probes for a

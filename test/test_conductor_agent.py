@@ -1130,6 +1130,7 @@ class TestAcceptEvaluatorInvariant:
         mod = _load_evaluator()
         seen = []
         mod._pr_is_draft = lambda pr, repo=None: False
+        mod._pr_head = lambda pr, repo=None: None
         mod._run = lambda argv, cwd=None: (seen.append((argv, cwd)), ("pass", "ok"))[1]
         verdict, _ = mod._evaluate(
             {"accept": {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}}
@@ -1338,6 +1339,8 @@ class TestDraftPullRequest:
         seen = []
 
         def _fake_run(argv, **kwargs):
+            if "headRefOid" in argv:  # the head probes: test_accept_eval_binding.py
+                return _proc(0, "a" * 40, "")
             seen.append(list(argv))
             return _proc(*script[len(seen) - 1])
 

@@ -243,6 +243,7 @@ async def test_each_surface_and_minimal_conversation_gets_its_own_receipt(env, s
     ],
 )
 async def test_each_changed_source_refreshes_complete_snapshot_once(env, source):
+    """Every source but the briefing re-sends the whole snapshot once."""
     target = provider(env.project)
     await send(target, build(env, target, fresh=True))
     body = "UPDATED_SOURCE_中文"
@@ -283,6 +284,15 @@ async def test_each_changed_source_refreshes_complete_snapshot_once(env, source)
         assert all(body not in message for message in target.client.messages)
         assert "your briefing file is NOT injected" in target.client.messages[0]
         assert "You are writer." in target.client.messages[0]
+        env.forbidden.assert_not_called()
+        return
+    if source == "briefing":
+        # The briefing is acknowledged apart from the rest of the snapshot: an
+        # edit sends the [CURRENT ASSIGNMENT] section alone, once.
+        assert [m.count(HEADER) for m in target.client.messages] == [1, 0, 0]
+        assert [m.count(body) for m in target.client.messages] == [0, 1, 0]
+        assert "[CURRENT ASSIGNMENT" in target.client.messages[1]
+        assert "You are writer." not in target.client.messages[1]
         env.forbidden.assert_not_called()
         return
     assert [m.count(HEADER) for m in target.client.messages] == [1, 1, 0]

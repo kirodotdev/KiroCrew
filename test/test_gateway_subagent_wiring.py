@@ -602,6 +602,22 @@ async def test_a_failed_injection_notice_lands_on_the_loaded_tab_and_queues_its_
 
 
 @pytest.mark.asyncio
+async def test_a_failed_injection_card_cuts_its_task_between_words(done: _Done) -> None:
+    # At 100 characters a plain cut leaves ``.../pull/4316``: another, real link.
+    pr = "https://github.com/kirodotdev/KiroCrew/pull/43162"
+    task = f"You are a REPAIR subagent for one review finding on {pr}. Fix it and push."
+    tab = MagicMock(name="tab", window_pending=False, _pending_subagent_failures=[])
+    done.state.get_slot = MagicMock(return_value=tab)
+
+    await done.manager_kwargs["on_event"](
+        "subagent_injection_failed", make_info(task=task), {"error": "boom", "failure_msg": "m"}
+    )
+
+    card = tab.append.call_args.args[1]
+    assert "Task: You are a REPAIR subagent for one review finding on …\n" in card
+
+
+@pytest.mark.asyncio
 async def test_a_failed_injection_notice_whose_tab_cannot_be_read_still_reaches_the_ui(
     done: _Done, monkeypatch: pytest.MonkeyPatch
 ) -> None:

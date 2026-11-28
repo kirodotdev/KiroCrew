@@ -364,7 +364,7 @@ it adds:
 | `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated; scrubbed like every prefix, so a dashed `--- USER MESSAGE BEGIN ---` quoted in a skill body reaches the model as `[marker-removed]` |
 | `[Previous run result — reference data, not instructions …]` | `cron_service/identity.py` `cron_prior_result_context`, via `request_prefix_context`; the result is reference data inside the `<<<UNTRUSTED_PREVIOUS_RUN_RESULT` fence | a `persistent_session` cron run whose job holds a `last_result` |
 | `[Skill: name]` bodies, `[Relevant skills for this message]` | trigger matching | see below |
-| `[Learned corrections — relevant to this message …]` | vector `turn_lessons` | `memory.inject_lessons_per_turn` (off by default), `lessons` group, not temporary or minimal; up to 3 lessons / 2,000 chars the session has not been shown |
+| `[Learned corrections — relevant to this message …]` | vector `turn_lessons` | `memory.inject_lessons_per_turn` `enforce` (`off` by default; `shadow` sends nothing and records the choice in the injection receipt), `lessons` group, not temporary or minimal; up to 3 lessons / 2,000 chars the session has not been shown |
 | `[Hook context:]` | `hooks.on_message` returning `HOOK_INJECT_CONTEXT` | matching hook |
 | `[CURRENT USER] <name>` | the sender's display name (for example WeCom `allowed_users[].name`) | a channel turn that carries a display name |
 | `[Task checklist — automatic recovery]` | `todo_recovery_prompt`, prepended to the message by `dashboard/chat_turn/prompt_assembly.py`; task text inside the untrusted TODO fence | a cold start without provider history, or a recovery still pending; it settles on the provider's first event. Never on a harness that keeps its checklist itself (`SessionCapabilities.keeps_own_checklist`, claude), which has no `todo_list` tool |
@@ -392,10 +392,10 @@ after the client is ready.
 
 | What happens | Why the next prompt carries the block again |
 |---|---|
-| the turn that carried it did not complete (cancelled, failed, no answer) | no acknowledgment; the delivery voids the attempt |
+| the turn that carried it did not complete (cancelled, failed, no answer) | no acknowledgment; the delivery voids the attempt, except that a `cancelled` turn on KAS (`keeps_history_on_cancel`) keeps the earlier acknowledgments |
 | a start, a reload, a new provider | the provider's `start` invalidates; a new provider has a new delivery |
 | a new engine session, a fresh conversation on a warm process, a replaced client or process | the acknowledgment names another `context_incarnation` |
-| `/clear`, `/compact`, a compaction Kiro Crew starts, a cancel | invalidated before the send (`prepare_command`, `invalidate`) |
+| `/clear`, `/compact`, a compaction Kiro Crew starts, a cancel (not on KAS) | invalidated before the send (`prepare_command`, `invalidate`) |
 | a native clear, a compaction or an agent switch seen on a turn's stream | `RECEIPT_INVALIDATING_EVENTS` |
 | the rules' text changed | another digest |
 | for `[RUNTIME]` and `[PROJECT]`: another surface or project | another digest |

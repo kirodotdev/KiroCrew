@@ -11,6 +11,7 @@ names the other route modules; the shared helpers live in
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import shutil
@@ -203,6 +204,62 @@ class TestUpdateApp:
             assert resp.status == 400
             assert (await resp.json())["error"] == "clone failed"
         assert calls == ["install"], calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "source", ["a\x00b", "~no-such-user-42342/app"], ids=["nul-byte", "unknown-user-home"]
+    )
+    async def test_a_folder_update_from_a_path_that_does_not_resolve_restores_the_app(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+    ) -> None:
+        # update_app's resolve() raised after the backend was stopped: a 500 with no
+        # restore. It is a path that is not a directory, like any other.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
+        monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/update", json={"source": source})
+            assert resp.status == 400
+            assert (await resp.json())["error"].startswith("source is not a directory: ")
+        assert calls == ["stop", "deregister (agents kept)", "register", "start"], calls
+
+    @pytest.mark.asyncio
+    async def test_a_folder_update_from_a_folder_it_cannot_stat_restores_the_app(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # update_app stats the source after the backend is stopped; on Python 3.12 an
+        # EACCES there is a folder it cannot use, so the restore runs. Patched for this
+        # one path so it holds as root and on Windows.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        src = tmp_path / "no-stat-app"
+        src.mkdir()
+        denied, real_is_dir = src.resolve(), Path.is_dir
+
+        def _is_dir(self: Path, *args: Any, **kwargs: Any) -> bool:
+            if self == denied:
+                raise PermissionError(errno.EACCES, "Permission denied", str(self))
+            return real_is_dir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "is_dir", _is_dir)
+        calls: list[str] = []
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
+        monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/update", json={"source": str(src)})
+            assert resp.status == 400
+            assert (await resp.json())["error"].startswith("source is not a directory: ")
+        assert calls == ["stop", "deregister (agents kept)", "register", "start"], calls
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

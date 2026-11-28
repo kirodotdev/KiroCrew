@@ -25,12 +25,17 @@ def audit_log(app_name: str | None = None) -> AuditSDK:
     Raises ``LookupError`` when no name is given and the variable is unset or
     blank, so a writer that would attribute rows to nobody is refused when it is
     built rather than dropping every row silently.
+
+    Its ``record_or_raise`` (seam level 17), the fail-closed form of ``record``,
+    writes only under the name the gateway set: with no *app_name*, or with the same
+    name as ``KIROCREW_APP_NAME``. A writer for any other *app_name* refuses it with
+    ``LookupError``; an in-process backend uses ``ctx.audit.record_or_raise``.
     """
-    name = app_name if app_name is not None else os.environ.get(APP_NAME_ENV, "")
-    name = name.strip()
+    spawned_as = os.environ.get(APP_NAME_ENV, "").strip()
+    name = (app_name if app_name is not None else spawned_as).strip()
     if not name:
         raise LookupError(
             f"no app name: pass app_name, or call this from a backend the gateway "
             f"spawned (it sets {APP_NAME_ENV})"
         )
-    return AuditSDK(name)
+    return AuditSDK(name, named_by_gateway=name == spawned_as)

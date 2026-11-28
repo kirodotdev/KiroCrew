@@ -483,7 +483,14 @@ class TestEventOwnershipReachesTheReport:
             "def _record_session_mcp_event(\n"
         )
         assert calls == 3, f"expected 3 call sites, found {calls} — re-point this guard"
-        forwarded = src.count("fanout_no_owner=event.runtime_global")
+        # The OAuth draw is shared by the mid-turn arm and the between-turns
+        # link, so it forwards its own parameter and the arm hands it the event's.
+        helper_forwards = src.count("fanout_no_owner=runtime_global,")
+        assert helper_forwards == 1, "re-point this guard at the shared OAuth draw"
+        assert (
+            "        runtime_global=event.runtime_global,\n" in src
+        ), "the mid-turn OAuth arm does not hand the event's ownership to the draw"
+        forwarded = src.count("fanout_no_owner=event.runtime_global") + helper_forwards
         assert forwarded == calls, (
             "a _record_session_mcp_event call site does not forward the event's "
             "ownership, so that MCP kind still contaminates every co-tenant's report"

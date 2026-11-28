@@ -614,15 +614,15 @@ class TestToSlackMrkdwnKeepTables:
         from kiro_crew.slack.format import to_slack_mrkdwn
 
         escaped = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| a \\| b | or |")
-        assert escaped == "• *op:* a | b | *meaning:* or"
+        assert escaped == "*op | meaning*\n• *a | b:* or"
         code = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| `a|b` | or |")
-        assert code == "• *op:* `a|b` | *meaning:* or"
+        assert code == "*op | meaning*\n• *`a|b`:* or"
 
     def test_an_empty_row_keeps_its_place(self):
         from kiro_crew.slack.format import to_slack_mrkdwn
 
         out = to_slack_mrkdwn("| a | b |\n|---|---|\n| 1 | 2 |\n|  |  |\n| 3 | 4 |")
-        assert out == "• *a:* 1 | *b:* 2\n• —\n• *a:* 3 | *b:* 4"
+        assert out == "*a | b*\n• *1:* 2\n• —\n• *3:* 4"
 
     def test_keep_tables_still_converts_headings(self):
         from kiro_crew.slack.format import to_slack_mrkdwn
@@ -639,6 +639,108 @@ class TestToSlackMrkdwnKeepTables:
         result = to_slack_mrkdwn(text, keep_tables=True)
         assert "| Model | Cost |" in result
         assert "```mermaid" not in result
+
+
+class TestFlattenedTableShape:
+    """A flattened table names each column once and leads each row with its first cell."""
+
+    @staticmethod
+    def _flat(table: str) -> str:
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        return to_slack_mrkdwn(table)
+
+    def test_two_columns_read_as_first_cell_then_second(self):
+        table = (
+            "| What | Detail |\n"
+            "|---|---|\n"
+            "| Kind | One looping GIF, shown here in Slack |\n"
+            "| Shows | Start, Bot turns, pauses, approvals, end, PR cut |\n"
+            "| Source | Plan v5 only |\n"
+            '| Your open picks | Tagged "your call" (P1 to P13) |\n'
+            "| Time | About 45 minutes |"
+        )
+        assert self._flat(table) == (
+            "*What | Detail*\n"
+            "• *Kind:* One looping GIF, shown here in Slack\n"
+            "• *Shows:* Start, Bot turns, pauses, approvals, end, PR cut\n"
+            "• *Source:* Plan v5 only\n"
+            '• *Your open picks:* Tagged "your call" (P1 to P13)\n'
+            "• *Time:* About 45 minutes"
+        )
+
+    def test_a_header_is_written_once_however_many_rows_follow(self):
+        rows = "\n".join(f"| r{i} | v{i} |" for i in range(6))
+        out = self._flat(f"| Before | After |\n|---|---|\n{rows}")
+        assert out.count("Before") == 1 and out.count("After") == 1
+        assert out.split("\n")[1:] == [f"• *r{i}:* v{i}" for i in range(6)]
+
+    def test_three_columns_follow_the_first_cell_in_column_order(self):
+        table = "| PR | Status | Owner |\n|---|---|---|\n| 12 | merged | Ann |\n| 13 | open | Bo |"
+        assert self._flat(table) == (
+            "*PR | Status | Owner*\n• *12:* merged | Ann\n• *13:* open | Bo"
+        )
+
+    def test_five_columns(self):
+        table = (
+            "| Name | Role | Team | Site | Since |\n"
+            "|---|---|---|---|---|\n"
+            "| Ann | Dev | Core | SEA | 2024 |"
+        )
+        assert self._flat(table) == (
+            "*Name | Role | Team | Site | Since*\n• *Ann:* Dev | Core | SEA | 2024"
+        )
+
+    def test_an_empty_cell_keeps_the_later_cells_in_their_columns(self):
+        table = "| a | b | c |\n|---|---|---|\n| 1 |  | 3 |\n| 4 | 5 |  |"
+        assert self._flat(table) == "*a | b | c*\n• *1:* — | 3\n• *4:* 5 | —"
+
+    def test_an_empty_first_cell_leaves_the_row_without_a_bold_lead(self):
+        table = "| a | b | c |\n|---|---|---|\n|  | 2 | 3 |"
+        assert self._flat(table) == "*a | b | c*\n• — | 2 | 3"
+        assert self._flat("| a | b |\n|---|---|\n|  | 2 |") == "*a | b*\n• — | 2"
+
+    def test_a_single_column_is_a_plain_list_under_its_header(self):
+        assert self._flat("| Item |\n|---|\n| one |\n| two |") == "*Item*\n• one\n• two"
+
+    @pytest.mark.parametrize(
+        ("first_cell", "lead"),
+        [
+            ("**Kind**", "*Kind:*"),
+            ("`kind`", "*`kind`:*"),
+            ("[doc](https://example.com/x)", "*<https://example.com/x|doc>:*"),
+            ("Kind:", "*Kind:*"),
+            ("2001:db8::", "*2001:db8::*"),
+            ("std::", "*std::*"),
+            ("a \\| b", "*a | b:*"),
+        ],
+    )
+    def test_a_first_cell_with_its_own_markup_is_still_one_bold_lead(self, first_cell, lead):
+        out = self._flat(f"| What | Detail |\n|---|---|\n| {first_cell} | value |")
+        assert out == f"*What | Detail*\n• {lead} value"
+
+    def test_a_bold_header_cell_is_not_bold_twice(self):
+        assert self._flat("| **A** | B |\n|---|---|\n| 1 | 2 |") == "*A | B*\n• *1:* 2"
+
+    def test_an_all_empty_header_writes_no_header_line(self):
+        assert self._flat("|  |  |\n|---|---|\n| a | b |") == "• *a:* b"
+
+    def test_one_empty_header_cell_keeps_its_column(self):
+        table = "|  | Mon | Tue |\n|---|---|---|\n| Ann | in | out |"
+        assert self._flat(table) == "*— | Mon | Tue*\n• *Ann:* in | out"
+
+    def test_a_short_and_a_long_row_keep_every_cell(self):
+        table = "| a | b |\n|---|---|\n| 1 |\n| 2 | 3 | 4 |"
+        assert self._flat(table) == "*a | b*\n• *1:*\n• *2:* 3 | 4"
+
+    def test_two_tables_in_one_reply_each_get_their_own_header(self):
+        text = (
+            "First:\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+            "Second:\n\n| c | d | e |\n|---|---|---|\n| 3 | 4 | 5 |\n\nDone."
+        )
+        assert self._flat(text) == (
+            "First:\n\n*a | b*\n• *1:* 2\n\nSecond:\n\n*c | d | e*\n• *3:* 4 | 5\n\nDone."
+        )
 
 
 class TestToSlackMrkdwnImages:

@@ -170,10 +170,18 @@ async def test_a_script_context_lists_creates_opens_and_seeds_a_session(
             assert receipt.get("slot") == slot_key
             # The seed is the session's first user row, recorded by the gateway.
             rows = list(slot.messages)
-            assert any(
-                r.get("role") == "user" and "Triage tonight's queue." in str(r.get("content"))
+            seeds = [
+                r
                 for r in rows
-            ), json.dumps(rows)[:800]
+                if r.get("role") == "user" and "Triage tonight's queue." in str(r.get("content"))
+            ]
+            assert seeds, json.dumps(rows)[:800]
+            # Nobody typed the seed, so it does not carry the person's marker.
+            from kiro_crew.history import HUMAN_TURN_META_KEY
+
+            assert all(
+                (r.get("meta") or {}).get(HUMAN_TURN_META_KEY) is not True for r in seeds
+            ), json.dumps(seeds)[:800]
 
 
 async def _assert_switched_off_refusal(resp) -> None:

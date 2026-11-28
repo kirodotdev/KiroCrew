@@ -493,7 +493,7 @@ class TestBotList:
 
     def test_the_list_says_which_bot_the_thread_is_on(self, bots, audit):
         slack, _sessions = _run(_first("!bot research"), _reply("!bot"))
-        assert "This thread runs as Bot *research*." in _posts(slack)[-1]
+        assert "This thread runs as Bot *Research Bot*." in _posts(slack)[-1]
 
     def test_an_unknown_name_is_an_error_that_lists_the_bots(self, bots, audit):
         slack, sessions = _run(_first("!bot nope"), _reply("hello"))
@@ -693,3 +693,27 @@ class TestDashboardNames:
         assert channel_crew.resolve_bot_name("mia") == "mate"
         assert channel_crew.resolve_bot_name("bot") is None
         assert "`mate` (Mia)" in channel_crew.bots_text()
+
+    @pytest.mark.parametrize(
+        ("typed", "shown"),
+        [("mate", "Bot"), ("research", "Research Bot"), ("web-frontend", "web-frontend")],
+    )
+    def test_a_reply_that_names_one_bot_uses_the_dashboard_name(
+        self, first_crewmate, audit, typed, shown
+    ):
+        slack, _sessions = _run(_first(f"!bot {typed}"), _reply("!bot"))
+
+        switched, listed = _posts(slack)
+        assert f"🤖 This thread now runs as Bot *{shown}*." in switched
+        assert listed.startswith(f"This thread runs as Bot *{shown}*.\n")
+        assert f"`{typed}`" in listed
+
+    def test_a_name_a_bot_gave_itself_cannot_page_the_channel(self, first_crewmate, audit):
+        # ``update_self`` lets a Bot choose its display name; Slack reads ``<!channel>``
+        # in message text as a broadcast, so the label is escaped at the Slack seam.
+        first_crewmate.agents["mate"].display_name = "<!channel>"
+        slack, _sessions = _run(_first("!bot mate"), _reply("!bot"))
+
+        assert all("<!channel>" not in post for post in _posts(slack))
+        assert "Bot *&lt;!channel&gt;*." in _posts(slack)[0]
+        assert "`mate` (&lt;!channel&gt;)" in _posts(slack)[1]

@@ -477,6 +477,9 @@ class TestChannelEndpoint:
             resp = asyncio.run(updates.api_update_channel(_request({"channel": "insider"})))
         assert resp.status == 409
         assert not (_isolated_channel_home / "channel").exists()
+        # A Windows desktop install's channel has one writer, the app's Settings.
+        error = json.loads(resp.body)["error"]
+        assert ("desktop app's Settings" in error) == (kind == "nsis")
 
     def test_refuses_a_command_managed_install(self, _isolated_channel_home):
         """A policy-pinned provider never reads the channel file — refuse, don't lie.

@@ -21,6 +21,7 @@ from typing import Any, cast
 
 import pytest
 
+from kiro_crew import _process_group_supervisor as process_group_supervisor
 from kiro_crew import kiro_cli
 from kiro_crew import kiro_prerequisite as probe_facade
 from kiro_crew import kiro_prerequisite_process as probe_runner
@@ -1614,7 +1615,10 @@ class TestTheProbeRunsTheSpawnBinary:
             return  # killed before it forked, so there is no child to outlive the probe
         child = int(recorded)
         try:
-            fd = os.pidfd_open(child)
+            # The supervisor's opener, not os.pidfd_open: a python-build-standalone
+            # CPython (what releases bundle) has no os.pidfd_open, and the opener
+            # falls back to the raw syscall there.
+            fd = process_group_supervisor._pidfd_open(child)
         except ProcessLookupError:
             return  # already reaped
         except OSError as exc:

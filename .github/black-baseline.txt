@@ -137,7 +137,6 @@ src/kiro_crew/dashboard/slowloris.py
 src/kiro_crew/dashboard/tailnet_serve.py
 src/kiro_crew/dashboard/terminal_commands.py
 src/kiro_crew/dashboard/theme_validate.py
-src/kiro_crew/dashboard/ws_event_scope.py
 src/kiro_crew/deploy/engine.py
 src/kiro_crew/deploy/handlers.py
 src/kiro_crew/deploy/pricing.py
@@ -174,7 +173,6 @@ src/kiro_crew/knowledge/watcher.py
 src/kiro_crew/mcp_gateway/app_call.py
 src/kiro_crew/mcp_gateway/apps.py
 src/kiro_crew/mcp_gateway/breaker.py
-src/kiro_crew/mcp_gateway/claim.py
 src/kiro_crew/mcp_gateway/evaluate.py
 src/kiro_crew/mcp_gateway/hazards.py
 src/kiro_crew/mcp_gateway/image_budget.py

@@ -31,6 +31,27 @@ Level 15 adds ``permissions.browserRecipes``: fixed clicks on CSS selectors the 
 runs on the app's own agent's tab, through ``POST /api/browser/media`` (``action:
 "recipe"``, the SDK's ``useBrowserMedia().runRecipe``) and, for a ``watch`` recipe, by
 itself while the app's media plays.
+Level 16 adds the SDK's ``useKeepAlive``: a routed page stays mounted, hidden, while
+the app says it is busy, and the dashboard names it on every page with Open and Stop.
+
+Level 17 adds backend SDK names, one batch: ``iter_credential_matches`` and
+``CREDENTIAL_PLACEHOLDER``, the gateway's credential scan over text an app holds and
+the text its redactor writes; ``contains_exfiltration_url``, its exfiltration-URL
+check, answered as a bool; ``DENIED_ROOT_PARTS``, the credential directory names
+refused at any depth of a picked folder; ``minimal_env``, the location-hints-only
+environment; ``git_hook_disable_args``, ``git_hook_disable_args_async`` and
+``GitHookScanError``, the overrides that turn off a repository's config-defined git
+hooks, listed by a sandboxed git; ``max_output_bytes`` on ``run_sandboxed_async`` with
+``OutputLimitExceeded``; and ``record_or_raise`` on the audit writer (``ctx.audit``
+and ``audit_log``), the fail-closed row, written only under the name the gateway
+gave the app.
+
+Level 18 adds backend SDK names, one batch: ``trusted_git_bin``,
+``trusted_system_bin``, ``uv_executable`` and ``nvm_version_bin_dirs``, the gateway's
+own lookups for the tools it runs; ``agent_template_host_values``, the values it
+renders for the agent-template placeholders that name no app;
+``address_covers_loopback``, the bind-address predicate; and ``extra_hidden_dirs`` on
+the spawn names, more paths hidden from a child and nothing lifted.
 """
 
-APP_SDK_LEVEL = 15
+APP_SDK_LEVEL = 18

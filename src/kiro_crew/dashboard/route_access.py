@@ -138,6 +138,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ),
     # Gateway auth middleware: 403 without a token (tips.api_tips_exploratory); reads only.
     ("GET", "/api/tips/exploratory"): RouteAccess("tips.exploratory.read", UNSTABLE),
+    # Gateway auth middleware, as the artifact detail route (artifacts_parts/library_reads.py);
+    # builds a Word file from one artifact's shown text, writes nothing.
+    ("GET", "/api/artifacts/{slug}/docx"): RouteAccess("artifacts.export_docx", UNSTABLE),
     # Owner dashboard or Shared Crew teammate only: 404 for an app token, 403 for an
     # internal caller (dashboard/handlers/member_held_limits.py).
     ("GET", "/api/members/{slug}/held-limits"): RouteAccess("members.held_limits.read", UNSTABLE),

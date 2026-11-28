@@ -5330,7 +5330,12 @@ sends it once on success, through `_announce_app_ui_changed`: `handle_install_ap
 both branches of `handle_update_app` (`kirocrew app update` and the Sync button),
 `handle_registry_install` and `handle_registry_install_stream`. The dev-mode
 watcher sends the same frame on a `ui/` edit. A failed install or update replaced
-nothing and sends nothing. A mounted host reloads at once. A document that
+nothing and sends nothing. A mounted host on screen reloads at once, unless another
+app's page is kept hidden (below): then it shows the reload notice instead, so the
+reload does not end the hidden page's work unasked. Every host under the kept-page
+provider reads that hold itself (`keptAppReloadHold.ts`), a routed page and a chat
+side-panel tab alike; `appHostRenderSites.test.ts` lists each render site. A hidden kept host is released
+instead of reloading. A document that
 imported the app's bundle earlier and hears the announcement while no host shows
 the app records it, and the next host that mounts that app reloads the window
 instead of importing, because the import would return the module the page already
@@ -5348,6 +5353,25 @@ Apart from those views, an announcement for an app the document never imported
 changes nothing.
 The boot-time adoption swap (§33) sends no frame: it runs
 before any route is registered, so no dashboard socket is open to hear one.
+
+**Kept pages.** Every routed installed-app page, `AppPage` and an adopted former
+built-in in `InstalledAppSurface` alike, renders through one shell layer
+(`website/src/components/KeptAppPages.tsx`): the route lends only a slot, and the
+page's host is portalled into an element that moves between that slot and a hidden
+park, so leaving the route never unmounts a page whose app is busy (`useKeepAlive`,
+level 16). Each portalled page has its own `ErrorBoundary`, since the route's is not
+above it. The store (`keptAppPagesStore.ts`) keeps one holder per `useKeepAlive`
+call; an app is busy while any holder is, and the release after the last holder
+lets go waits for the end of the commit, so a caller that remounts keeps the page.
+A hidden page's host passes `active=false`, and the SDK's paths to shared dashboard
+state wait on it: `navigate` (and so `openChat` and `useChatSession`) does nothing,
+`openChat` leaves no launch intent, and `ChatPanel`'s `useOwnSlotChat` neither
+activates nor switches back to its session and mounts no chat until shown. Its
+overlays and key handlers are off screen (`OffScreenOverlayScope`), and an embed's
+read marks already wait on `active`; the app's own work keeps running.
+At most two apps hold a keep-alive. A hidden page is released when its last holder
+lets go, when the person presses Stop, when the app throws, is turned off or
+uninstalled, or when its files are replaced. A page reload keeps nothing.
 
 Shared host capability reaches an app through `@kirocrew/app-sdk`, which the host
 provides rather than publishing to npm — the SDK lives in the dashboard bundle, so
@@ -8188,11 +8212,20 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 SDK names, one batch: `canonical_file_path`, `vet_public_url`, `UrlRejectedError`,
 `address_is_not_public`, `sniff_raster_mime` and `RASTER_SNIFF_BYTES`, and the
 descriptor-pinned path walk and copy (§40); level 15 adds
-`permissions.browserRecipes` and `useBrowserMedia().runRecipe` (§45). Several seams
+`permissions.browserRecipes` and `useBrowserMedia().runRecipe` (§45); level 16 adds the
+SDK's `useKeepAlive` (below); level 17 adds a
+second batch of backend SDK names: the credential scan and placeholder, the
+exfiltration-URL check, `DENIED_ROOT_PARTS`, `minimal_env`, the git hook overrides,
+`max_output_bytes` on `run_sandboxed_async` and the audit writer's `record_or_raise`
+(§40); level 18 adds a third batch: the trusted tool lookups, the host agent-template
+values, the bind-address predicate and `extra_hidden_dirs` on the spawn names (§40). Several seams
 share level 7, three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
-batch shares level 14, so an app that needs one
+batches share levels 14, 17 and 18, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
+
+Level 16 adds the SDK's `useKeepAlive`, which keeps a routed page mounted, hidden, while the
+app says it is busy. An app detects it by the export, as for every level.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
 `_route_fields`: an `AppRoute`, or any object whose `method` is a str naming GET, POST,
@@ -8825,8 +8858,13 @@ backend_sdk`, an attribute of an imported parent and a string lookup alike. Once
 such file names the package, each name of `backend_sdk._EXPORT_LEVELS` that any such
 file holds as a word counts at its own level (`canonical_file_path`, `vet_public_url`,
 `UrlRejectedError`, `address_is_not_public`, the pinned path names such as `pin_parent`
-and `copy_file_pinned`, level 14), so a
-shim's lookup in one file and its caller in another still count. A level below the highest one found
+and `copy_file_pinned`, level 14; `iter_credential_matches`, `minimal_env` and the other
+level-17 names), and so does each keyword of `backend_sdk._KEYWORD_LEVELS`
+(`max_output_bytes`, level 17), so a
+shim's lookup in one file and its caller in another still count. A method of
+`audit_sdk.METHOD_LEVELS` (`record_or_raise`, level 17) counts wherever such a file
+holds it as a word, whether or not the tree names the package, because an in-process
+app reaches it as `ctx.audit.record_or_raise`. A level below the highest one found
 is refused, naming what was found, by `compute` and `verify` alike, so a tree that
 feature-detects a seam and degrades still pins at that seam's level, and a host
 without it keeps the wheel copy. The scan errs wide: a false hit only asks for a
@@ -9474,7 +9512,10 @@ of a built-in's state out of a layout core created, is a core row keyed on the a
   is the one host tool `{HOST_PATH}` carries off `PATH`, because the core locates it
   for its own file-panel slide previews (`soffice_discovery`, below); a host tool the
   core does not itself use is the app's to find. A value the
-  host cannot compute (no `uv`, an empty `{HOST_PATH}`) is left out. Every value is
+  host cannot compute (no `uv`, an empty `{HOST_PATH}`) is left out. The three that
+  name no app come from one function, `agent_template_values.host_values`, which the
+  renderer and the backend SDK's `agent_template_host_values` (level 18, §40) both
+  call, so an app that states the contract reads what is rendered. Every value is
   computed in the gateway and none is read from a file, and rendering grants nothing:
   the rendered config passes through the same MCP policy, tool ceiling and
   auto-approve strip as one naming no placeholder. A built-in may also ship
@@ -10495,14 +10536,21 @@ that wants one helper does not pay for the security stack.
 | Group | Public name | Delegates to |
 |---|---|---|
 | Sensitive paths | `is_sensitive_path(path)`, `contains_sensitive_path(directory)` | `security.is_sensitive_path`, `security.path_contains_sensitive` |
+| Sensitive paths (level 17) | `DENIED_ROOT_PARTS` | `security.DENIED_ROOT_PARTS`, bound when `backend_sdk.paths` is imported |
 | Files | `read_bytes_nofollow(path, *, within_root, max_bytes, within_root_is_canonical)`, `FileTooLargeError` | `hooks.safe_read_file_bytes_nolink`, `hooks.FileTooLargeError` |
 | Files (level 14) | `canonical_file_path(path)` | `hooks.validate_file_path`, called with the path alone |
 | Files | `atomic_write(path, content, *, fsync, mode, newline, restrict_to_owner)`, `ensure_owner_only_dir(path)` | `atomic_write.atomic_write`, `owner_only_files.ensure_directory` |
 | Pinned paths (level 14) | `supports_pinned_walk()`, `is_reparse_point(path)`, `pin_parent(resolved_parent, *, what)`, `copy_file_pinned(src, dst, *, dir_fd, name, force_mode, max_bytes, expected_src_ident, on_skip, on_created)`, `fd_real_path(fd)`, `PinnedPathRefusal` | the `pinned_fs` names of the same spelling |
 | Redaction | `scrub_outbound(text)`, `ScrubResult` | `apps.scrub_sdk.ScrubSDK.outbound` (the `ctx.scrub` pass) |
-| Audit | `audit_log(app_name=None)` | `apps.audit_sdk.AuditSDK` (the `ctx.audit` writer) |
+| Content checks (level 17) | `iter_credential_matches(text)`, `CREDENTIAL_PLACEHOLDER`, `contains_exfiltration_url(text)` | `security.iter_credential_matches`; `security.REDACTED_CREDENTIAL_TAG`, bound when `backend_sdk.content` is imported; `security.scan_exfiltration_urls`, answered as a bool |
+| Audit | `audit_log(app_name=None)`; its `record_or_raise` (level 17), which is `ctx.audit`'s too | `apps.audit_sdk.AuditSDK` (the `ctx.audit` writer); `record_or_raise` is `sel.log_api_access` with `critical=True` |
 | Sandboxed children | `run_sandboxed`, `run_sandboxed_async`, `sandboxed_argv`, `sandboxed_argv_async`, `SandboxUnavailableError` | `sandbox.sandboxed_spawn_argv` then `sandbox.run_limited`; `sandbox.sandboxed_spawn_argv_async` then `sandbox.create_subprocess_limited`; the two preparations alone; `sandbox.SandboxUnavailableError` |
+| Sandboxed children (level 17) | `run_sandboxed_async(..., max_output_bytes=None)`, `OutputLimitExceeded`, `minimal_env(**extra)` | the same spawn with each pipe drained under the cap; `minimal_env` of the `apps.registry` facade, read from its owner `apps.registry_pipeline.subprocess_env` |
+| Sandboxed children (level 18) | `extra_hidden_dirs` on `sandboxed_argv`, `sandboxed_argv_async`, `run_sandboxed` and `run_sandboxed_async` | the chokepoint's own `extra_hidden_dirs`, each entry made absolute once in `spawn._normalized_hidden_dirs`; refused when it overlaps `sandbox._CREW_READONLY_TARGETS` or `sandbox._relocated_crew_targets(_CREW_READONLY_LEAVES)`, or when `sandbox.credential_mask_applies` is `False` |
+| Git hooks (level 17) | `git_hook_disable_args(cwd, *, mode, env)`, `git_hook_disable_args_async(cwd, *, mode, env)`, `GitHookScanError` | `git_config_hooks.config_hook_disable_args_sandboxed` and its `_async` form, with `sandbox.sandboxed_spawn_argv` as the spawner; `git_config_hooks.ConfigHookScanError` |
 | Process and locks | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX`, `kill_and_reap`, `is_link_or_junction`, `first_linked_ancestor`, `rmtree_force`, `file_lock` | the `platform_compat` names of the same spelling |
+| Process and locks (level 18) | `address_covers_loopback(address)` | `platform_compat.address_covers_loopback` |
+| Host tools (level 18) | `trusted_git_bin()`, `trusted_system_bin(name)`, `uv_executable()`, `nvm_version_bin_dirs()`, `agent_template_host_values()` | `platform_compat.trusted_git_bin` and `trusted_system_bin`; `env.resolve_uv`; `env.nvm_version_bin_dirs`; `apps.agent_template_values.host_values` |
 | Outbound URLs (level 14) | `vet_public_url(url)`, `UrlRejectedError`, `address_is_not_public(address)` | `link_unfurl.vet_unfurl_url`, `link_unfurl.UnfurlRejected`, `link_unfurl.address_is_not_public` |
 | Media type (level 14) | `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | `messaging.raster.sniff_raster_mime`, `messaging.raster.SNIFF_BYTES` |
 
@@ -10531,13 +10579,61 @@ not widen what the app takes (the `messaging/raster.py` contract in
 with it carries no hand-copied window. An app that names the package and still defines
 its own shim function spelled `sniff_raster_mime` is counted at level 14 as well
 (§33), which only asks for a higher `--min-sdk-level`.
+The content checks answer about text the caller already holds and rewrite nothing.
+`iter_credential_matches` yields the gateway's credential pattern scan as matches on
+that text, so an app refuses a file or an upload that carries one. It matches more
+than the redactor masks: an AWS access key ID is a match, and the redactor leaves it
+standing as an identifier. `contains_exfiltration_url` is the exfiltration-URL scan answered as a
+bool: the private scan returns warning strings that quote the flagged URL's domain and
+up to 60 characters of its path and query, which is where a token that escaped the
+credential patterns sits, so the warnings are not offered, for the same reason
+`ScrubResult` carries counts (security.md, the `ctx.scrub` seam). It reads the
+edition's exempt hosts and raises when they cannot be read, and the app refuses on a
+raise. `CREDENTIAL_PLACEHOLDER` and `DENIED_ROOT_PARTS` are bound from the gateway's own
+values when their submodule is imported, so an app carries no hand-copied
+`[REDACTED: credential]` or directory list. Neither check is a redaction pass:
+`scrub_outbound` stays the one way text leaves, and `security.redact_credentials` and
+`security.redact_exfiltration_urls` stay unoffered alone, as on `ctx.scrub`.
+`minimal_env` keeps only the location hints of this process's own environment (the
+`registry_pipeline.subprocess_env` allowlist) and adds the caller's `extra`, so it
+removes variables and reads nothing the process did not already have.
+The tool lookups (level 18) answer with a path or `None` from the lookup the gateway
+runs for its own children, in the caller's process: `trusted_git_bin` and
+`trusted_system_bin` read only the fixed system directories (and Git for Windows' fixed
+roots), never `PATH`, so a shim planted on `PATH` is not what the app runs; `uv_executable`
+is `env.resolve_uv` (the `uv` wheel's locator, then an absolute `PATH` hit), the `uv` the
+renderer puts in `{UV_BIN}`, published under a new spelling because a current pin that
+names the package already spells `resolve_uv`; `nvm_version_bin_dirs` is the nvm
+share of the gateway's Node search. `agent_template_host_values` is
+`agent_template_values.host_values`, the function the renderer itself calls, so it
+answers `{UV_BIN}`, `{HOST_PATH}` and `{PATH_SEP}` as they are rendered, with a value the
+host cannot compute left out. `{APP_ROOT}` and `{APP_DATA}` are not in it: computing
+them takes an app name, and another app's directory is a path outside the caller's own
+data; the app holds its own checkout and `ctx.data_dir`. `address_covers_loopback` is a
+predicate over a bind-address string the caller holds. None of these opens, lists or
+enumerates anything a same-user process could not read itself.
 
 **No widening knob.** A public signature carries only the parameters the apps use, and
 never one that adds reach. `sandboxed_argv` accepts the `standard` and `strict` tiers
 and refuses any other value (`off` included) with `ValueError` before anything is
-prepared; the private chokepoint's `extra_*_dirs`, `first_party_fixed_argv` and
-`is_kiro_cli` lift a mask, open a write window in a sealed parent or reclassify the
-child, which is the gateway's decision for its own spawns, so they are not offered.
+prepared; the private chokepoint's `extra_visible_dirs`, `extra_private_dirs`,
+`extra_writable_dirs`, `first_party_fixed_argv` and `is_kiro_cli` lift a mask, open a
+window or a write window in a sealed parent or reclassify the child, which is the
+gateway's decision for its own spawns, so they are not offered. `extra_hidden_dirs`
+(level 18) is offered because it only adds masks: with none of those options beside
+it, an added mask cannot cancel one the tier applies (a cancellation needs a visible
+path, `sandbox_plan.hidden_path_contains_visible_path`), so the data home's secret
+floor stays hidden whatever an app passes. Each entry is made absolute once, against
+the process's working directory, and that one spelling is checked and forwarded. An
+entry that is, holds or sits in one of the data home's read-only leaves is refused with
+`ValueError`: those are the ceilings and gateway records in-sandbox code reads, and
+hiding a ceiling from the process that enforces it reads as the permissive default, so
+that mask would remove the ceiling rather than protect it (the keystone note in
+`sandbox_leaves.py`). A spawn `sandbox.credential_mask_applies` says would not carry the
+masks (no backend, or a spawn already inside a Kiro Crew sandbox) raises
+`SandboxUnavailableError` rather than start the child with the paths readable. The
+checks resolve paths and can probe the backend, so the async forms run them on a worker
+thread, and every refusal comes before anything is prepared.
 The read has no `admit_hardlinked` or `canonical_gate`. The path gate takes the path
 alone, so neither `canonical_gate` nor `classify_sensitive` is offered: how the check is
 bounded is the gateway's choice. Its answer judges a NAME, so the bytes come from
@@ -10578,7 +10674,32 @@ descendant that `setsid()`-ed away is outside the group. `run_sandboxed` kills t
 child on a timeout, its whole tree on Windows, but not a POSIX descendant that
 outlives it; its docstring and the api-reference row point such a child at the
 async form. The private limited spawners, which run whatever argv they are
-handed, are not offered. Nothing here is gated by a
+handed, are not offered. `max_output_bytes` only lowers what the async run returns:
+`None` keeps the uncapped read, and anything but a positive int raises `ValueError`
+before anything is prepared. With a cap, both pipes are drained at once in 64 KiB steps
+(no deadlock on a full pipe) and at most the cap is kept of each; once either passes
+it, the child is stopped and `OutputLimitExceeded`, a `subprocess.SubprocessError`,
+carries the kept bytes and the cap but no argv in its message. No exit of a capped run
+reads a pipe without a bound. Past the cap, on a timeout and on a cancel its cleanup
+(`spawn._stop_capped`) sends the uncapped run's signals (the group read while the child
+lived, the tree, the child), then drains both pipes in 64 KiB reads it discards and
+reaps the child (`platform_compat._discard_output_until_exit`), under
+`REAP_TIMEOUT_SECS`, in the same shielded task as `kill_and_reap`. `kill_and_reap`
+itself reaps through `communicate()`, which would keep everything a descendant that
+`setsid()`-ed out of the group still writes to the pipes it inherited; past the reap
+deadline nothing reads such a writer's pipes, so the pipe's flow control, not this
+process's memory, holds it back. The uncapped run (`max_output_bytes=None`) keeps
+`communicate()` and `kill_and_reap` unchanged. The git hook names are listed by a
+git that runs inside the sandbox at the caller's tier, through `sandboxed_spawn_argv`
+read at call time: `git_config_hooks`' unsandboxed default runner and its `runner`,
+`spawn_argv` and `git` parameters each pick what runs outside that chokepoint, so none
+is offered, and the listing reaches nothing a `run_sandboxed` git could not. A relative
+`cwd` is joined to the process's working directory once, in
+`config_hook_disable_args_sandboxed`, and that one path is both the listing git's
+working directory and its `-C` target, so the scan reads the repository the caller's git
+call runs in rather than `<cwd>/<cwd>`. Its answer
+is argv entries (`-c hook.<name>.enabled=false` per name, then the submodule-recursion
+pins), and a refusal is the gateway's own `ConfigHookScanError`. Nothing here is gated by a
 permission because nothing adds reach: the controls only refuse, redact, record or
 confine (the URL check's one `getaddrinfo` is a lookup any backend can make, and a
 pinned copy writes nothing a plain copy by the same process could not), and an
@@ -10591,6 +10712,20 @@ so rows are never attributed to nobody, and `record` itself still never raises. 
 attribution is cooperative, as it is for `ctx.audit`. The SEL log is written
 cross-process under its chain lock (`sel_chain_lock`), so a spawned backend's row and
 the gateway's own interleave safely.
+`record_or_raise` (level 17) is the fail-closed form, for an action that must not run
+unrecorded: the row `record` writes (`app:<name>`, `<name>.<operation>`, source `app`,
+`api_access`), written synchronously with `critical=True`, so the write's own error
+propagates and the app refuses the action. It takes no `caller`, `source`, `agent`,
+`session_key` or tool field, so it cannot write a row that reads as the gateway's or as
+a tool invocation, and it writes only under the name the gateway gave the app:
+`ctx.audit` is built with the manifest name (`AuditSDK(..., named_by_gateway=True)` in
+`apps/context.py`), and `audit_log()` counts as gateway-named only when its name is the
+`KIROCREW_APP_NAME` the gateway set. A writer for a name the app chose refuses it with
+`LookupError` before writing, so no public spelling writes a fail-closed row as another
+app (constructing `AuditSDK` directly, or reaching `sel()`, stays outside what an
+in-process API prevents). A spawned backend whose process cannot open the log gets that
+error, which is the fail-closed answer; `POST /api/apps/<name>/_sel` with `critical:
+true` (`apps/sel_routes.py`) is the gateway-written form of the same row.
 
 **Pinned paths.** For a file a person named by path, which anything running as the
 same user can swap for a link between a check and the open. The caller refuses the
@@ -10614,7 +10749,17 @@ change, all sharing the level: `canonical_file_path`, `vet_public_url`,
 `UrlRejectedError`, `address_is_not_public`, `sniff_raster_mime` and
 `RASTER_SNIFF_BYTES`, and the descriptor-pinned path names `supports_pinned_walk`,
 `is_reparse_point`, `pin_parent`, `copy_file_pinned`, `fd_real_path` and
-`PinnedPathRefusal`. A host from level 7 to 13 has the
+`PinnedPathRefusal`. Level 17 is a second batch: `iter_credential_matches`,
+`CREDENTIAL_PLACEHOLDER`, `contains_exfiltration_url`, `DENIED_ROOT_PARTS`,
+`minimal_env`, `git_hook_disable_args`, `git_hook_disable_args_async`,
+`GitHookScanError` and `OutputLimitExceeded`, plus a keyword and a method that are not
+package attributes: `max_output_bytes` on `run_sandboxed_async`
+(`_KEYWORD_LEVELS`) and `record_or_raise` on the audit writer
+(`audit_sdk.METHOD_LEVELS`). Level 18 is a third batch: `trusted_git_bin`,
+`trusted_system_bin`, `uv_executable`, `nvm_version_bin_dirs`,
+`agent_template_host_values` and `address_covers_loopback`, plus the keyword
+`extra_hidden_dirs` on the four spawn names (`_KEYWORD_LEVELS`). A host from level 7
+to 13 has the
 package without the name, so an app feature-detects the name with `getattr` and keeps its
 own refusal, and the pin tool counts a tree that names the package and the name as a use
 of the name's level (§33), so a host below it keeps the wheel copy.
@@ -10624,22 +10769,60 @@ private and keep their `_host.py` gap: chat slot and auto-nudge internals (they 
 to the app-owned chat slot seam of ruling item 4),
 `link_unfurl.pinned_connector` and `PinnedResolver`, `asset_downloader.download_to`,
 `executors.subprocess_executor`,
-`apps.registry.minimal_env`, `config.loader.config_dir` and `KiroCrewConfig`,
-`security.redact_local_paths`, `security.iter_credential_matches`,
+`config.loader.config_dir` and `KiroCrewConfig`, `platform.boot_platform`,
+`security.redact_local_paths`,
 `atomic_write.read_bytes_with_retry`, `owner_only_files.mkdirs_owner_only` and
 `owner_only_opener_for`, `sandbox.effective_sandbox_mode`, and the domain modules
 (`crew_log`, `knowledge`, `deploy`, `transcribe`, `vector_memory`, `cron`,
-`notifications.bus`).
+`notifications.bus`). `platform.boot_platform` was vetted for level 17 and left out: it
+is no predicate, constant or argv builder but the edition's composition root, which
+reads the operator's config, runs companion discovery and the companion's code,
+registers ACP backends and speech providers and installs the whole platform context,
+its identity and credential providers included, as the calling process's global. What
+the spawned backends that call it need is for the SDK's own spawn and scrub names to
+resolve a context on a non-standalone edition, which is a gap to close inside the SDK,
+not a name to offer.
+Vetted for level 18 and left out: `platform_compat.find_port_listeners`, `get_ppid` and
+`kill_process_tree` (and its async form). Each takes any port or pid, so it lists or
+signals processes the app did not start, the gateway's own and, on Windows, other
+users' included, and a parent-pid check cannot tell an in-process app's child from the
+gateway's. The safe shape answers only about a child the SDK itself started: a
+long-lived sandboxed child handle whose stop kills that child's tree and whose answer
+names the loopback ports that tree listens on. The SDK starts no long-lived child yet
+(that is the open `popen_limited` ruling), so neither shape ships. The uploads root
+(`<data home>/uploads`, which `/api/upload/file` writes) is left out too: it holds every
+picture a person pasted into any chat, so a path to it is a path outside the app's own
+data. An app that keeps work files there moves them to `ctx.data_dir`; reading a file
+the person handed to the app is a call that resolves that one upload, not a directory.
+A verified download, the public form of `asset_downloader.download_to`, was vetted for
+level 18 and deferred to its own change. Its shape: the sha256 and a size cap required,
+the url through `vet_public_url` with every connection dialing only the vetted
+addresses and verifying TLS, no redirect off the host, and the file written only into
+the app's own data directory, through a pinned folder and a staging file of its own. It
+stays out while one finding is open: two fetches to the same destination race, and the
+first one's post-rename identity check, seeing the second one's installed file, removes
+the destination and with it the second fetch's good file. The narrowing it needs is a
+single writer per destination: one exclusive `file_lock` on `.<dest>.kc-dl.lock` in the
+pinned folder, held for the whole fetch, so a refusal's cleanup can only ever remove
+the inode the same transfer installed.
 
 Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 `apps/backend_sdk/files.py`, `apps/backend_sdk/redaction.py`,
 `apps/backend_sdk/audit.py`, `apps/backend_sdk/spawn.py`,
 `apps/backend_sdk/process.py`, `apps/backend_sdk/urls.py`, `apps/backend_sdk/media.py`,
-`apps/backend_sdk/pinned.py`, `apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
-`scripts/adoption_pin.py` (`_seam_level_uses`, `_BACKEND_SDK_LATER_NAMES`).
+`apps/backend_sdk/pinned.py`, `apps/backend_sdk/content.py`,
+`apps/backend_sdk/git_hooks.py`, `apps/backend_sdk/tools.py`, `apps/audit_sdk.py`
+(`record_or_raise`, `METHOD_LEVELS`), `apps/context.py` (the gateway-named
+`ctx.audit`), `apps/agent_template_values.py` (`host_values`),
+`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
+`scripts/adoption_pin.py` (`_seam_level_uses`, `_BACKEND_SDK_LATER_NAMES`,
+`_AUDIT_METHOD_LEVELS`).
 Pinned by `test/test_app_backend_sdk.py`, `test/test_app_backend_sdk_file_gate.py`,
 `test/test_app_backend_sdk_urls.py`, `test/test_app_backend_sdk_media.py`,
-`test/test_app_backend_sdk_pinned.py` and
+`test/test_app_backend_sdk_pinned.py`, `test/test_app_backend_sdk_content.py`,
+`test/test_app_backend_sdk_git_hooks.py`, `test/test_app_backend_sdk_output_cap.py`,
+`test/test_app_backend_sdk_tools.py`, `test/test_app_backend_sdk_hidden_dirs.py`,
+`test/test_audit_sdk.py` and
 `test/test_builtin_adoption_pins.py`.
 App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 

@@ -25,6 +25,16 @@ rows the stage keeps, is scored the same way. Verdict: ``wait`` until the bar (:
 :data:`SESSIONS_BAR` session starts), a control sample and at least one outcome
 line in the window exist; then ``pass`` when the miss rate is at
 most :data:`MISS_BAR` and at most the control's, else ``fail``.
+
+``inject_lessons_per_turn`` adds rather than drops, and records on the receipts,
+not in the store: its days, seen and changed come from the named store's counters
+in the receipts' ``stage-log.json``, which keep counting past the sample caps;
+its tallies and scorecard come from the sampled follow-up lines. Its *miss* is a lesson ``enforce`` would
+have added that a later outcome of the SAME session named (recalled or re-taught):
+a lesson ``off`` withheld that the session needed. Its control is a hashed sample
+of the session-start lessons (``lessons`` on ``session_start`` lines), scored the
+same way. A high miss rate argues for the stage, so it passes when at least one
+would-add lesson was needed and its rate is at least the control's.
 """
 
 from __future__ import annotations
@@ -86,10 +96,25 @@ STAGES: Final[tuple[Stage, ...]] = (
     Stage("fact_origin_gate", "memory_fact_origin_log:", _modes.fact_origin_gate_mode_from),
     Stage("member_lesson_dedup", "memory_dedup_log:", _modes.member_lesson_dedup_mode_from),
     Stage("dream", "memory_dream:", _modes.dream_mode_from),
+    Stage(
+        "inject_lessons_per_turn",
+        "receipts:inject_lessons_per_turn",
+        _modes.inject_lessons_per_turn_mode_from,
+        bias=(
+            "seen = sampled follow-up turns, changed = lessons enforce would add, "
+            "rate = sampled turns that would get a block; miss = would-add lessons "
+            "the same session later recalled or re-taught (needed, withheld by off), "
+            "ctrl = the same for session-start lessons; passes when miss > 0 and >= ctrl"
+        ),
+    ),
 )
 STAGE_NAMES: Final[tuple[str, ...]] = tuple(s.name for s in STAGES)
 #: Stages with no outcome trace yet: Dreaming proposes but records nothing to join.
 _UNTRACED: Final = frozenset({"dream"})
+#: Stages that record on the injection receipts instead of the store's ``memory_meta``.
+_RECEIPT_STAGES: Final = frozenset({"inject_lessons_per_turn"})
+_PER_TURN: Final = "inject_lessons_per_turn"
+_STAGE_LOG_NAME: Final = "stage-log.json"
 #: Outcome receipt kinds, as :mod:`kiro_crew.injection_receipts` names them.
 _OUTCOMES: Final = ("recall", "learn_add")
 
@@ -152,7 +177,7 @@ def read_receipts(receipt_dir: Path, since: datetime | None) -> list[dict]:
     Shards are named by local day, so a shard one day before *since* is still read
     and each line is filtered on its own ``ts``.
     """
-    keep = ("ts", "session_key", "sk", "phase", "memory_store", *_OUTCOMES)
+    keep = ("ts", "session_key", "sk", "phase", "memory_store", "lessons", _PER_TURN, *_OUTCOMES)
     floor = (since.date() - timedelta(days=1)).isoformat() if since else ""
     lines: list[dict] = []
     try:
@@ -191,6 +216,8 @@ def read_meta(db_path: Path | None) -> dict[str, str]:
         return {}
     patterns: list[str] = []
     for stage in STAGES:
+        if stage.name in _RECEIPT_STAGES:
+            continue
         patterns.append(stage.source + "counts:*")
         patterns.append(stage.source + "rules_changed_at")
         patterns.append(stage.source + "rules_version")
@@ -223,7 +250,7 @@ def read_trace(db_path: Path | None) -> list[tuple[str, str, dict]]:
         return []
     patterns: list[str] = []
     for stage in STAGES:
-        if stage.name in _UNTRACED:
+        if stage.name in _UNTRACED or stage.name in _RECEIPT_STAGES:
             continue
         patterns.append(f"{stage.source}ids:*")
         patterns.append(f"{stage.source}control:*")
@@ -292,10 +319,14 @@ def _score(
     units: dict[tuple[str, str], datetime],
     outcomes: dict[str, list[tuple[datetime, str]]],
 ) -> dict:
-    """Of *units* (``("", key) -> first time``), how many a later outcome names."""
+    """Of *units* (``(session tag, key) -> first time``), how many a later outcome names.
+
+    A unit with an empty tag counts an outcome of any session; one with a tag
+    counts only an outcome of that session.
+    """
     missed = 0
-    for (_, key), at in units.items():
-        missed += any(ts > at for ts, _sk in outcomes.get(key, ()))
+    for (tag, key), at in units.items():
+        missed += any(ts > at and (not tag or sk == tag) for ts, sk in outcomes.get(key, ()))
     total = len(units)
     return {"items": total, "missed": missed, "rate": round(missed / total, 4) if total else None}
 
@@ -514,6 +545,125 @@ def _card(stage, policy, start, by_day, base, changed, detail, lines, store) -> 
     }
 
 
+def _per_turn_units(lines: list[dict], store: str, start) -> tuple[dict, dict, dict]:
+    """Would-add units, control units and the sampled lines' tallies for the per-turn stage."""
+    from kiro_crew.memory_shadow_trace import control_keys, session_tag
+
+    added: dict = {}
+    control: dict = {}
+    tally = {"turns": 0, "turns_with_block": 0, "chars": 0, "legacy_user_explicit": 0}
+    tiers: dict[str, int] = {}
+    sources: dict[str, int] = {}
+    for line in lines:
+        if not _store_matches(line, store) or (start is not None and line["ts"] < start):
+            continue
+        tag = session_tag(line.get("session_key"))
+        if line.get("phase") == _SESSION_START:
+            for key in control_keys(line.get("session_key"), _dict_list(line.get("lessons"))):
+                _first_seen(control, (tag, key), line["ts"])
+        field = _dict(line.get(_PER_TURN))
+        if field.get("mode") != _SHADOW_MODE:
+            continue
+        keys = [k for k in field.get("would_add") or () if isinstance(k, str) and k]
+        tally["turns"] += 1
+        tally["turns_with_block"] += bool(keys)
+        tally["chars"] += _count(field.get("chars"))
+        for key in keys:
+            _first_seen(added, (tag, key), line["ts"])
+        for lesson in field.get("lessons") or ():
+            lesson = _dict(lesson)
+            tier, source = str(lesson.get("tier") or "-"), str(lesson.get("source") or "-")
+            tiers[tier] = tiers.get(tier, 0) + 1
+            sources[source] = sources.get(source, 0) + 1
+            tally["legacy_user_explicit"] += tier == "legacy" and source == "user_explicit"
+    return added, control, {**tally, "tiers": tiers, "sources": sources}
+
+
+def _dict_list(raw: object) -> list:
+    return raw if isinstance(raw, list) else []
+
+
+def read_stage_log(receipt_dir: Path) -> dict:
+    """The receipts' ``stage-log.json`` (per-day stage counters and windows), or ``{}``."""
+    try:
+        return _dict(json.loads((receipt_dir / _STAGE_LOG_NAME).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return {}
+
+
+def _receipt_stage(stage: Stage, stage_log: dict, lines: list[dict], store: str, since) -> dict:
+    """The per-turn stage's card: days, seen and changed from the stage log's counters.
+
+    The counters move on every follow-up turn, past every sample cap and after the
+    sample window closes, and count lines by memory store, so only *store*'s own
+    days reach its bar. The would-inject tallies and the scorecard read the
+    sampled lines, which stop at the caps.
+    """
+    window = _dict(_dict(stage_log.get("stages")).get(stage.name))
+    raw_policy = window.get("policy")
+    policy = raw_policy if _count(raw_policy) else None
+    by_day: dict[str, dict] = {}
+    for day, kinds in _dict(stage_log.get("counts")).items():
+        shadow = _dict(_dict(_dict(kinds).get(stage.name)).get(_SHADOW_MODE))
+        mine = _dict(_dict(shadow.get("stores")).get(store))
+        if _day(day) is not None and _count(mine.get("lines")):
+            by_day[day] = {
+                "turns": _count(mine.get("lines")),
+                "lessons": _count(mine.get("would_add")),
+            }
+    start = _window_start(_first_day(by_day), since)
+    if start is not None:
+        by_day = {d: v for d, v in by_day.items() if d >= start.date().isoformat()}
+    total: dict[str, int] = {}
+    for fields in by_day.values():
+        _sum_into(total, fields)
+    card = _card(
+        stage,
+        policy,
+        start,
+        by_day,
+        total.get("turns", 0),
+        total.get("lessons", 0),
+        total,
+        lines,
+        store,
+    )
+    added, control, sampled = _per_turn_units(lines, store, start)
+    card["rate"] = (
+        round(sampled["turns_with_block"] / sampled["turns"], 4) if sampled["turns"] else None
+    )
+    card["would_inject"] = sampled
+    card["units"] = (added, control)
+    return card
+
+
+def _add_verdict(card: dict, outcomes_in_window: int) -> tuple[str, str]:
+    """A stage that adds lessons passes when what it adds is needed at least as often as the control."""
+    if card["mode"] == "off":
+        return VERDICT_OFF, ""
+    if card["days"] < DAYS_BAR or card["sessions"] < SESSIONS_BAR:
+        return (
+            VERDICT_WAIT,
+            f"{card['days']}/{DAYS_BAR} days, {card['sessions']}/{SESSIONS_BAR} sessions",
+        )
+    miss, ctrl = card["miss"], card["control"]
+    if not ctrl["items"]:
+        return VERDICT_WAIT, "no control sample"
+    if not outcomes_in_window:
+        return VERDICT_WAIT, "no outcome trace in window"
+    if not miss["items"]:
+        return VERDICT_WAIT, "no lesson would be added"
+    if not miss["missed"]:
+        return VERDICT_FAIL, "no would-add lesson was needed"
+    if _over(ctrl["missed"], ctrl["items"], miss["missed"], miss["items"]):
+        return (
+            VERDICT_FAIL,
+            f"needed {miss['missed'] / miss['items']:.2%} < "
+            f"control {ctrl['missed'] / ctrl['items']:.2%}",
+        )
+    return VERDICT_PASS, ""
+
+
 def build_report(
     *,
     store: str,
@@ -525,6 +675,7 @@ def build_report(
 ) -> dict[str, Any]:
     """The report as plain data: one scorecard per stage, ids-free."""
     lines = read_receipts(receipt_dir, since)
+    stage_log = read_stage_log(receipt_dir)
     meta = read_meta(db_path)
     trace = read_trace(db_path)
     outcomes = _outcomes(lines, store)
@@ -532,7 +683,10 @@ def build_report(
     for s in STAGES:
         if stage is not None and s.name != stage:
             continue
-        card = _meta_stage(s, meta, lines, store, since)
+        if s.name in _RECEIPT_STAGES:
+            card = _receipt_stage(s, stage_log, lines, store, since)
+        else:
+            card = _meta_stage(s, meta, lines, store, since)
         card["quotes"] = _quote_summary(s, card["detail"], card["policy"])
         if s.name in _QUOTE_STAGES and card["quotes"] is None and card["data"]:
             card["bias"] = (
@@ -548,7 +702,10 @@ def build_report(
         else:
             card["status"] = STATUS_WAITING
         start = _instant(card["window_start"])
-        dropped, control = _write_units(s, trace, start)
+        if s.name in _RECEIPT_STAGES:
+            dropped, control = card.pop("units")
+        else:
+            dropped, control = _write_units(s, trace, start)
         # A unit the stage also drops (a dedup vector fold of a row first kept) is
         # not a kept row, so it leaves the control.
         control = {u: t for u, t in control.items() if u not in dropped}
@@ -561,7 +718,8 @@ def build_report(
             and _store_matches(line, store)
             and (start is None or line["ts"] >= start)
         )
-        card["verdict"], card["verdict_reason"] = _verdict(card, in_window)
+        verdict = _add_verdict if s.name in _RECEIPT_STAGES else _verdict
+        card["verdict"], card["verdict_reason"] = verdict(card, in_window)
         cards.append(card)
     return {
         "store": store,
@@ -607,6 +765,17 @@ def _quote_line(card: dict) -> str:
     )
 
 
+def _would_inject_line(card: dict) -> str:
+    w = card["would_inject"]
+    tiers = " ".join(f"{k}={v}" for k, v in sorted(w["tiers"].items())) or "-"
+    sources = " ".join(f"{k}={v}" for k, v in sorted(w["sources"].items())) or "-"
+    return (
+        f"would inject {card['stage']}: sampled turns={w['turns']} "
+        f"with block={w['turns_with_block']} chars={w['chars']}  tier {tiers}  "
+        f"source {sources}  legacy user_explicit={w['legacy_user_explicit']}"
+    )
+
+
 def _row(cells: Iterable[str]) -> str:
     return "  ".join(str(c).ljust(w) for c, (_, w) in zip(cells, _COLUMNS)).rstrip()
 
@@ -645,6 +814,10 @@ def render_text(report: dict[str, Any]) -> list[str]:
     if quoted:
         out.append("")
         out.extend(_quote_line(c) for c in quoted)
+    adding = [c for c in report["stages"] if c.get("would_inject") and c["data"]]
+    if adding:
+        out.append("")
+        out.extend(_would_inject_line(c) for c in adding)
     out.append("")
     out.append(
         "seen = items the stage looked at; "

@@ -42,6 +42,7 @@ import { desktopWindowBridge, desktopWindowTarget } from './desktopWindow/deskto
 import { ensureCatalog, i18next, initI18n, isCatalogChunkError } from './i18n/lazy'
 import { isSpeculativeTerminalChunkError } from './components/terminalSessions'
 import { isSpeculativeAppRegistryChunkError } from './components/appRegistryPrefetch'
+import { isKatexChunkError } from './components/markdown/lazyKatex'
 import { DEFAULT_LANGUAGE } from './i18n/languages'
 import { LanguageProvider } from './i18n/LanguageProvider'
 import { AppMotionConfig } from './AppMotionConfig'
@@ -62,7 +63,6 @@ import {
   reconcileNewDurableKeys,
   startUiPrefsSync,
 } from './lib/uiPrefs'
-import 'katex/dist/katex.min.css'
 import './index.css'
 import './styles/cli-mode.css'
 import './styles/message-font-size.css'
@@ -130,6 +130,8 @@ window.addEventListener('vite:preloadError', (event) => {
   // Nor is a hover or startup-mount load of the app registry (appRegistryPrefetch.ts).
   // Cancelled so Vite does not rethrow it; the load sees the failure itself.
   if (isSpeculativeAppRegistryChunkError(preloadError)) { event.preventDefault(); return }
+  // Nor is KaTeX: math stays TeX source and the next math block retries (lazyKatex.ts).
+  if (isKatexChunkError(preloadError)) { event.preventDefault(); return }
   const AT_KEY = 'vite-preload-reloaded-at'
   const N_KEY = 'vite-preload-reload-count'
   const COOLDOWN_MS = 10_000

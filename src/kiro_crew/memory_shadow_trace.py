@@ -103,7 +103,7 @@ def observing(memory_config: object = None) -> bool:
     ``degraded_sections``, which keeps every earlier read's failure for the life of
     the process.
     """
-    from kiro_crew.memory_shadow_report import STAGES
+    from kiro_crew.memory_shadow_report import _RECEIPT_STAGES, STAGES
 
     guessed = False
     if memory_config is None:
@@ -120,7 +120,13 @@ def observing(memory_config: object = None) -> bool:
         except Exception:
             logger.debug("Could not read the memory stage flags", exc_info=True)
             return False
-    on = any(s.mode_from(getattr(memory_config, s.name, None)) != "off" for s in STAGES)
+    # A receipt stage is observed only in shadow: its ``enforce`` is what a stored
+    # ``true`` reads as, which never asked for outcome lines.
+    on = False
+    for s in STAGES:
+        mode = s.mode_from(getattr(memory_config, s.name, None))
+        if mode != "off" and not (s.name in _RECEIPT_STAGES and mode == "enforce"):
+            on = True
     if guessed and not on:
         logger.info(
             "memory shadow trace: no receipt recorded; this config load could not "

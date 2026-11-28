@@ -415,7 +415,7 @@ function categoryLabel(name: string): string {
 }
 
 /**
- * The Purpose rows are the backend's four fixed names, so each gets a translated
+ * The Purpose rows are the backend's fixed names, so each gets a translated
  * label; a name this build does not know renders as itself.
  */
 function purposeLabel(name: string): string {
@@ -424,6 +424,12 @@ function purposeLabel(name: string): string {
       return i18nT('pages.telemetryPanel.purpose_turn')
     case 'helper':
       return i18nT('pages.telemetryPanel.purpose_helper')
+    case 'helper_title':
+      return i18nT('pages.telemetryPanel.purpose_helper_title')
+    case 'helper_summary':
+      return i18nT('pages.telemetryPanel.purpose_helper_summary')
+    case 'helper_memory':
+      return i18nT('pages.telemetryPanel.purpose_helper_memory')
     case 'automation':
       return i18nT('pages.telemetryPanel.purpose_automation')
     case 'unknown':

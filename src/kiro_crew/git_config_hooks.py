@@ -382,9 +382,17 @@ def config_hook_disable_args_sandboxed(
     (:func:`kiro_crew.sandbox.sandboxed_spawn_argv`) at the caller's ``mode``/``env`` and spawned,
     so the scan is confined like the call it protects and a test that stubs the caller's
     ``spawn_argv`` answers the scan. Fail-closed like :func:`config_hook_disable_args`.
+
+    A relative ``cwd`` is resolved once, against this process's working directory, and that
+    one path is both the scan's working directory and its ``git -C`` argument: either used
+    alone as given would resolve it a second time, inside itself. It is joined, not
+    normalized, so a ``..`` is still resolved by the kernel exactly as the real call's is.
     """
-    runner = _sandboxed_runner(spawn_argv, mode=mode, env=env, cwd=os.fspath(cwd))
-    return config_hook_disable_args(cwd, git="git", env=env, runner=runner)
+    path = os.fspath(cwd)
+    if not os.path.isabs(path):
+        path = os.path.join(os.getcwd(), path)
+    runner = _sandboxed_runner(spawn_argv, mode=mode, env=env, cwd=path)
+    return config_hook_disable_args(path, git="git", env=env, runner=runner)
 
 
 async def config_hook_disable_args_sandboxed_async(

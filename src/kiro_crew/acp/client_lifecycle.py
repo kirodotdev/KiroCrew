@@ -69,7 +69,7 @@ from kiro_crew.acp.transport_errors import (
 )
 from kiro_crew.acp.transport_framing import settle_drain
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.mcp_gateway.claim import schedule_claim
+from kiro_crew.mcp_gateway.claim import forget_agent_binding, schedule_claim
 from kiro_crew.sandbox import (
     BoundWorkspaceMismatch,
     release_bound_agent_workspace,
@@ -992,6 +992,10 @@ async def _registration_throttle_line(self: AcpClient) -> str | None:
 
 async def shutdown(self: AcpClient) -> None:
     """Gracefully stop the ACP process."""
+    # This session is ending for good (a rekey reuses the runtime and never
+    # calls shutdown), so drop its agent binding: the cache then holds only
+    # live sessions and a long-lived one is never pushed out by newer ones.
+    forget_agent_binding(getattr(self, "_stub_session_token", ""))
     if self._process is not None:
         self._process_tree_confirmed_dead = False
     # Tear down an in-flight entitlement probe first: its throwaway client

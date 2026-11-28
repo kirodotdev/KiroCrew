@@ -4363,8 +4363,8 @@ app "proves nothing about who it runs for".
 cleared by its own agent or lost across a restart; the opener of the turn that is
 making the call cannot be invented, and the gateway holds it for exactly the turn's
 duration. The creator arm refuses the ordinary worker cheaply (a cron's
-`send_to_session` into its own worker reaches `chat_send` as a non-app sender and is
-stamped user-sent there, so the creator is what refuses it), and the one chain it
+`send_to_session` into its own worker is not user-sent either, since `chat_send` reads
+the attested `cron:` key into `_person_send`, so both arms refuse it), and the one chain it
 cannot see, a worker whose restored attribution was cleared, is closed by the
 user-sent arm on its own: `cron_creator_admission` fences a cron to slots that still
 carry its `_created_by` (a blank one "matches no caller", `_created_by_other`), so the

@@ -455,6 +455,9 @@ class SkillsLoader:
             int,
             tuple[list[tuple[str, Path, str | None]], tuple[frozenset[str], frozenset[str]], list],
         ] = {}
+        #: ``(path, fingerprint) -> resolves into a shipped root``; see
+        #: ``skills_selection._is_user_authored``.
+        self._shipped_root_memo: dict[tuple[str, str], bool] = {}
         # (canonical key, allowed) pairs already audited, so the enforcement
         # record is written on first use rather than once per message.
         self._audited_projects: set[tuple[str, bool]] = set()

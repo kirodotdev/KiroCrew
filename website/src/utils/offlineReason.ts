@@ -13,11 +13,24 @@ export function isRelayCrewWindow(ua: string = typeof navigator === 'undefined' 
 
 /** True when this page is a remote Crew shown inside the desktop app's main
  *  window, below the app's own top bar. The page then leaves out its own header,
- *  so the window does not show two bars. Layout only: the marker is the whole
+ *  so the window does not show two bars, unless the app also asked for it
+ *  (`isRelayCrewPaneHeader`). Layout only: the marker is the whole
  *  user-agent token `kiroCrewRelayPane`, which any page could claim, so it must
  *  never decide what the page trusts. */
 export function isRelayCrewPane(ua: string = typeof navigator === 'undefined' ? '' : navigator.userAgent): boolean {
   return ua.split(' ').includes('kiroCrewRelayPane')
+}
+
+/** True when the desktop app showing this pane asked the page to draw its own
+ *  header, in the pane form (no Crew switcher). The whole user-agent token
+ *  `kiroCrewRelayPaneHeader`, sent after `kiroCrewRelayPane` by a desktop app
+ *  that keeps only its tab strip above a pane whose page drew one. An older
+ *  desktop app sends the pane token alone, so the page leaves its header out
+ *  as before; an older page does not know this token and does the same.
+ *  Layout only, like the pane token: it must never decide what the page trusts. */
+export function isRelayCrewPaneHeader(ua: string = typeof navigator === 'undefined' ? '' : navigator.userAgent): boolean {
+  const tokens = ua.split(' ')
+  return tokens.includes('kiroCrewRelayPane') && tokens.includes('kiroCrewRelayPaneHeader')
 }
 
 /** True when a relay Crew window's dropped connection is still being retried:

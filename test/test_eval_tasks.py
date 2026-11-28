@@ -246,6 +246,31 @@ def test_a_run_env_keeps_only_its_homes_base_keys_and_its_arm_sign_in(tmp_path):
     assert oct(dirs.home.stat().st_mode & 0o777) == "0o700"
 
 
+def test_a_run_kiro_home_is_the_one_its_gateway_writes_agent_specs_into(tmp_path, monkeypatch):
+    """The eval sides run from linked git worktrees; their gateway must still own its specs.
+
+    The shared-agent-home guard lets an instance whose checkout is a linked
+    worktree write only into ``<KIROCREW_HOME>/kiro/agents``. Anywhere else it
+    writes nothing, ``kirocrew-conductor`` never resolves, and every conductor
+    run's chat is refused with 409 ``agent_choice_unavailable``.
+    """
+    from kiro_crew import agent
+
+    dirs = tasks.RunDirs(tmp_path / "r")
+    env = tasks.run_env(dirs, ARMS["crew-conductor"], {"PATH": "/bin"})
+    # The suite's per-test agents dir defers to a KIRO_HOME the test sets.
+    monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", None)
+    # The guard compares against the default data home; never the operator's real one.
+    monkeypatch.setattr(
+        "kiro_crew.config.paths._resolve_default_home", lambda: tmp_path / "default"
+    )
+    for key in ("KIROCREW_HOME", "KIRO_HOME"):
+        monkeypatch.setenv(key, env[key])
+    monkeypatch.setattr(agent, "_in_linked_git_worktree", lambda path: True)
+    assert agent._decline_shared_agent_home(audit=False) is None
+    assert (dirs.kiro / "settings").is_dir()
+
+
 # ---------- scoring ----------
 @pytest.mark.parametrize(
     ("outcome", "passed", "wall", "audit", "verdict"),

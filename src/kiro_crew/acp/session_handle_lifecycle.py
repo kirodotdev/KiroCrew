@@ -14,7 +14,7 @@ Instance fields written: ``_abandoned_steering``, ``_awaited_responses``,
 
 Instance fields read: ``_pending_elicitations``, ``_prompt_or_tool_seen``, ``_queue``,
 ``_runtime``, ``_session_id``, ``_steering_settled``, ``delete_delay_secs``,
-``keep_transcript``, ``memory_mode``.
+``keep_transcript``, ``memory_mode``, ``stub_session_token``.
 """
 
 from __future__ import annotations
@@ -286,6 +286,15 @@ async def destroy(self: AcpSessionHandle) -> None:
     # of these files, and every survivor is permanent: nothing else deletes
     # an ephemeral session's transcript.
     self._cancel_hook_tasks()
+    # This session's agent binding leaves with it. On a shared runtime the pid
+    # outlives the session, so the dead-pid eviction never fires for it; without
+    # this, ``_BOUND_AGENTS`` would grow for every ephemeral session the runtime
+    # hosts over its lifetime. A no-op when the session carried no stub token.
+    _stub_token = getattr(self, "stub_session_token", "")
+    if _stub_token:
+        from kiro_crew.mcp_gateway.claim import forget_agent_binding
+
+        forget_agent_binding(_stub_token)
     # Answers this session will never read again must not stay registered on a
     # runtime that outlives it. ``getattr``: a handle can be torn down before
     # (or without) ``__init__`` having run, and teardown must not raise then.

@@ -265,8 +265,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         slot._turn_channel_narrowed = False
         slot._turn_channel_origin = bool(_directive_channel_origin)
         slot._turn_user_sent = bool(_directive_user_origin) and not _directive_channel_origin
-        # A retry or continuation the runner queued, and a script cron's
-        # `ctx.send_to_session`, carry user origin but are not a new message.
+        # A retry or continuation the runner queued carries user origin but is
+        # not a new message; a cron's turn is never counted, whatever it carries.
         if slot._turn_user_sent and not _synthetic_recovery_turn and _turn_actor != "cron":
             Stats().inc_message_admitted()
         # The owner mark comes from THIS turn's own call (`_directive_owner_origin`,

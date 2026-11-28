@@ -297,6 +297,10 @@ def _outside_batch_spans(buf: str, cut: int, context: str = "") -> int:
     after ``context``, the raw text already sent, as the committed window is read: a
     value whose label went out earlier is still a span.
     """
+    # No span starts before the buffer, so a cut at its start stays without reading
+    # the plan; a held unit reports that cut on every feed until it is decided.
+    if cut <= 0:
+        return cut
     with _submodule(_SEAM).look_behind(context, buf):
         spans = [(start, end) for start, end in _batch_spans(buf) if start < cut]
     # One walk from the last span back. A move only lowers ``cut`` to at most the start

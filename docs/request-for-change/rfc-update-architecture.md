@@ -530,7 +530,13 @@ capability check it never had.
 ### §3 One engine per shape
 
 - **desktop** — electron-updater, unchanged. Owns signed artifact download and
-  bundle swap.
+  bundle swap. One exception, decided after this RFC (decision entry
+  `2026-11-26-a-headless-windows-desktop-install-updates-from-its-gateway.md`):
+  the Windows desktop bundle whose gateway runs without the app
+  (`KIROCREW_DESKTOP_GATEWAY` unset) has no electron-updater running, so its
+  gateway reads the same feed, verifies the same signed installer against the
+  publisher the app pins, and hands it to a helper at a restart or stop a person
+  causes. An app-hosted gateway keeps deferring.
 - **wheel** — new. Resolve the channel feed, **verify the wheel's signed build
   provenance against a trust root pinned in the client** (not merely its
   checksum), then perform the pipx replacement **from an external helper

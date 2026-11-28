@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
-import { isRelayCrewPane, isRelayCrewWindow, offlineCover, offlineReason } from '../utils/offlineReason'
+import { isRelayCrewPane, isRelayCrewPaneHeader, isRelayCrewWindow, offlineCover, offlineReason } from '../utils/offlineReason'
 import { useHostOfflineCover } from './useHostOfflineCover'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
@@ -278,6 +278,9 @@ export function useAppShell() {
   // A relay Crew shown inside the desktop app's main window: that window's own
   // top bar is the only one, so App leaves this page's header out.
   const relayCrewPane = useRef(isRelayCrewPane()).current
+  // ...unless that window asked for it: then the page draws its header in the
+  // pane form, and the window keeps only its tab strip above it.
+  const relayPaneHeader = useRef(isRelayCrewPaneHeader()).current
   // The calm view over the content area while the connection is down (the
   // relay window's reconnecting view, or the host's "not running" view): the
   // one gate that hides every panel's own fetch error behind a single state.
@@ -1134,7 +1137,7 @@ export function useAppShell() {
   return {
     tabTitle,
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, gatewayConnecting, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
-    gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying, offlineCoverKind,
+    gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayPaneHeader, relayRetrying, offlineCoverKind,
     focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, getActiveSlotProject, terminalPosition, navigate, mayLeaveForNavigation,

@@ -335,13 +335,15 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     # Whether a PERSON typed this send: not an app token, nor a hub conductor's send
-    # marked agent-origin (`agent_origin`, the `crew` actor's turn). Every person-only
-    # grant below reads `_person_send`; app-scope checks read `request_app`.
+    # marked agent-origin (`agent_origin`, the `crew` actor's turn), nor a script
+    # cron's `send_to_session`, whose `cron:` key the transport attests. Every
+    # person-only grant below reads `_person_send`; app-scope checks read `request_app`.
     from kiro_crew.dashboard.agent_origin import note_person_send, send_is_agent_origin
     from kiro_crew.dashboard.headless_marker import apply as _headless
 
     _agent_origin = send_is_agent_origin(body)
-    _person_send = not request.get("app", "") and not _agent_origin
+    cron_creator = await cron_slot_creator(request)
+    _person_send = not request.get("app", "") and not _agent_origin and not cron_creator
     note_person_send(state, _person_send)
     from kiro_crew.embeddings_shared import warm_embedder_for_person_soon as _warm  # no focus frame
 
@@ -584,7 +586,6 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             {"error": "the remote turn relay is retired", "code": "remote_relay_retired"},
             status=410,
         )
-    cron_creator = await cron_slot_creator(request)
     if cron_creator:
         refusal, _, _ = await cron_creator_admission(request, state, slot_name, cron_creator)
         if refusal is not None:
@@ -625,7 +626,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # Human request-layer path: a person sending a chat message. The
             # origin conjunct in state_parts/slot_directory.py still excludes app-token callers. A
             # slot an attested cron opens is not a person's and is not counted.
-            count_user_session=not cron_creator and _person_send,
+            count_user_session=_person_send,
         )
     except ValueError as exc:
         sel().log_api_access(
@@ -1630,7 +1631,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         elif not card_origin:
             # The queued path stamps the same actor on its entry, which the drain
             # unions onto the row; the title counter reads it off either row.
-            _user_row_meta[TURN_ACTOR_META_KEY] = "app" if request_app else "crew"
+            _user_row_meta[TURN_ACTOR_META_KEY] = (
+                "app" if request_app else ("cron" if cron_creator else "crew")
+            )
         if card_origin:
             # NOT a human turn: the words are a page's, and a page can arm its own
             # send (RFC section 4.1), so the row must not advance the stamp for

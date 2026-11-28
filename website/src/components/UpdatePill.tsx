@@ -2,7 +2,8 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Download, RefreshCw } from 'lucide-react'
 
-import { useAppSelector } from '../store'
+import { useAppDispatch, useAppSelector } from '../store'
+import { setActiveId } from '../store/instancesSlice'
 import { i18nT } from '../i18n/t'
 import { settingsPath } from './settingsPath'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
@@ -47,7 +48,15 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
   // form) without the same confirm every other leave gets.
   const guardedLeave = useGuardedLeave()
   const target = settingsPath({ tab: 'about' })
-  const openAbout = () => guardedLeave(() => navigate(target), target)
+  // The pill stays in the bar above a relay Crew tab, and Settings is the local
+  // Crew's page under that pane: bring the local Crew forward first, as a rail
+  // row does (shell/nav/navRow.tsx), so the click is not a navigation nobody sees.
+  const dispatch = useAppDispatch()
+  const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
+  const openAbout = () => guardedLeave(() => {
+    if (relayCovered) dispatch(setActiveId(null))
+    navigate(target)
+  }, target)
   // `update_restart_ready`: an update is installed, or the served bundle is gone,
   // and only a restart a person chooses is left (the gateway never restarts
   // itself). It lights the pill even when no newer build is on offer.
