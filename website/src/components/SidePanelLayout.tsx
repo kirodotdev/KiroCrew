@@ -16,16 +16,24 @@ import { safeGetSessionItem, safeSetSessionItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
 import { Glass } from './Glass'
+/** A Settings icon-tile hue. Each names a `--tile-<hue>` fill and the
+ *  `--tile-<hue>-fg` ink of the glyph on it (`styles/liquid-glass.css`). */
+export type SidePanelTileHue = 'gray' | 'blue' | 'teal' | 'green' | 'indigo' | 'orange' | 'pink' | 'purple' | 'red'
+
+const tileStyle = (hue: SidePanelTileHue): React.CSSProperties => ({
+  background: `var(--tile-${hue})`,
+  color: `var(--tile-${hue}-fg)`,
+})
+
 export interface SidePanelTab {
   key: string
   label: string
   icon: React.ReactNode
-  /** Background of a coloured rounded tile drawn behind `icon` (a `--tile-*`
-   *  token), the way System Settings marks each section. Omitted: the bare icon
-   *  in `--muted`, as every other host of this layout renders it. The tile
-   *  sizes a Lucide `svg` and a masked brand glyph (`BrandGlyph`'s `span`, whose
-   *  inline size it overrides) alike. */
-  tile?: string
+  /** Hue of a coloured rounded tile drawn behind `icon`, the way System Settings
+   *  marks each section. Omitted: the bare icon in `--muted`, as every other host
+   *  of this layout renders it. The tile sizes a Lucide `svg` and a masked brand
+   *  glyph (`BrandGlyph`'s `span`, whose inline size it overrides) alike. */
+  tile?: SidePanelTileHue
   description?: string
   /** The pane draws its own visible header (Settings > Kiro account's centered
    *  account header), so the layout's title row with `label`, `description`
@@ -549,7 +557,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                     onClick={() => setTab(t.key)}
                   >
                     {t.tile
-                      ? <span className="w-[30px] h-[30px] shrink-0 flex items-center justify-center rounded-[8px] text-[color:var(--tile-fg)] [&_svg]:w-4 [&_svg]:h-4 [&>span]:!w-4 [&>span]:!h-4" style={{ background: t.tile }}>{t.icon}</span>
+                      ? <span className="w-[30px] h-[30px] shrink-0 flex items-center justify-center rounded-[8px] [&_svg]:w-4 [&_svg]:h-4 [&>span]:!w-4 [&>span]:!h-4" style={tileStyle(t.tile)}>{t.icon}</span>
                       : <span className="w-5 h-5 shrink-0 flex items-center justify-center text-muted">{t.icon}</span>}
                     <span className="flex-1 min-w-0 truncate">{t.label}</span>
                     {t.dot && <span className="w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={t.dotLabel ?? i18nT('components.sidePanelLayout.update_available')} />}
@@ -645,7 +653,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                 onClick={() => setTab(t.key)}
               >
                 {t.tile
-                  ? <span className="w-5 h-5 shrink-0 flex items-center justify-center rounded-[5px] text-[color:var(--tile-fg)] [&_svg]:w-3 [&_svg]:h-3 [&>span]:!w-3 [&>span]:!h-3" style={{ background: t.tile }}>{t.icon}</span>
+                  ? <span className="w-5 h-5 shrink-0 flex items-center justify-center rounded-[5px] [&_svg]:w-3 [&_svg]:h-3 [&>span]:!w-3 [&>span]:!h-3" style={tileStyle(t.tile)}>{t.icon}</span>
                   : <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${tab === t.key ? 'text-accent' : 'text-muted'}`}>
                       {t.icon}
                     </span>}
