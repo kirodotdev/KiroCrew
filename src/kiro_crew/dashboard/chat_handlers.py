@@ -467,6 +467,7 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     CHAT_BANNER_META_KEY,
+    SOUND_AUTOMATION_META_KEY,
     STEER_REQUEUED,
     STEER_STEERED,
     TURN_ACTOR_META_KEY,
@@ -871,6 +872,8 @@ RESERVED_ROW_META_KEYS = frozenset(
         "decisions_strip",
         HUMAN_TURN_META_KEY,
         TURN_ACTOR_META_KEY,
+        # Server-only sound provenance: a client must not mark its own send quiet.
+        SOUND_AUTOMATION_META_KEY,
         "slack_sender",
         "slack_request",
         CHAT_BANNER_META_KEY,

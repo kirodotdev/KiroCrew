@@ -9,11 +9,13 @@ import json
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.crew_log.emit_turn import TURN_SOUND_AUTOMATION_ACTORS
 from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY, batch_prompt_on_channel
 from kiro_crew.dashboard.chat_delivery import (
     BACKGROUND_START_TASKS,
     EXPANSIONS_OFF_META_KEY,
     MIRROR_REPLY_ONLY_META_KEY,
+    SOUND_AUTOMATION_META_KEY,
     START_BACKGROUND_META_KEY,
 )
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -1537,11 +1539,24 @@ async def _start_next_queued_turn(
             if inspect.isawaitable(result):
                 await result
 
+    # Sound provenance reduces independently per entry. The actor helper returns
+    # the first mapped actor for a batch, so using it on the whole list would let
+    # one cron or peer silence a person's message merged beside it. A person's
+    # queue edit stamps False, which wins over that entry's unchanged actor.
+    _sound_automation = bool(consumed) and all(
+        (item.get("meta") or {}).get(SOUND_AUTOMATION_META_KEY) is True
+        or (
+            (item.get("meta") or {}).get(SOUND_AUTOMATION_META_KEY) is not False
+            and _actor_for_queue_items([item]) in TURN_SOUND_AUTOMATION_ACTORS
+        )
+        for item in consumed
+    )
     _run_kwargs: dict[str, Any] = {
         "_current_message": current_row,
         "_synthetic_payload": synthetic_payload,
         "_directive_user_origin": directive_user_origin,
         "_directive_channel_origin": directive_channel_origin,
+        "_sound_automation": _sound_automation,
     }
     # Every channel a consumed entry was typed in, so admission checks the batch
     # against each one's configured agent. Set only when an entry carries one.

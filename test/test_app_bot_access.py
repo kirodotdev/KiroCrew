@@ -395,8 +395,23 @@ def wake_world(monkeypatch):
     monkeypatch.setattr(bot_grants, "app_bot_scopes", lambda _a: frozenset({"wake"}))
     monkeypatch.setattr(bot_grants, "app_granted_bots", lambda _a: (SLUG,))
 
-    def _dispatch(_state, _slot, prompt, *, human_seen, actor="gateway"):
-        dispatched.append({"prompt": prompt, "actor": actor, "human_seen": human_seen})
+    def _dispatch(
+        _state,
+        _slot,
+        prompt,
+        *,
+        human_seen,
+        actor="gateway",
+        sound_automation=None,
+    ):
+        dispatched.append(
+            {
+                "prompt": prompt,
+                "actor": actor,
+                "human_seen": human_seen,
+                "sound_automation": sound_automation,
+            }
+        )
         return True
 
     monkeypatch.setattr("kiro_crew.dashboard.mate_welcome.dispatch_hidden_turn", _dispatch)
@@ -542,10 +557,12 @@ async def test_a_waiting_worker_report_goes_before_the_app_wakes(wake_world):
     await _flushed(state, slot, "the turn-end flush")
     # The report's turn runs first, as the gateway; the refs stay held.
     assert [d["actor"] for d in dispatched] == ["gateway"]
+    assert dispatched[0]["sound_automation"] is True
     assert mate_thread_wakes.app_wakes(state) == {slot.key: {APP: ["a"]}}
     mate_thread_wakes.note_turn_end(state, slot, "read the report")
     await _flushed(state, slot, "the flush after the report's turn")
     assert [d["actor"] for d in dispatched] == ["gateway", "app"]
+    assert [d["sound_automation"] for d in dispatched] == [True, None]
     assert dispatched[1]["prompt"] == app_bot_wake.wake_prompt({APP: ["a"]})
 
 

@@ -502,6 +502,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_mirror_reply_only",
         "_slack_voice",
         "_turn_actor",
+        "_sound_automation",
         "_agent_started",
         "regenerate_hint",
         "_on_consumed",

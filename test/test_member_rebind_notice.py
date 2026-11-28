@@ -188,7 +188,16 @@ def surfaced(monkeypatch):
 def dispatched(monkeypatch):
     calls: list[tuple[str, str]] = []
 
-    def dispatch(state, slot, prompt, *, human_seen, heartbeat=False):
+    def dispatch(
+        state,
+        slot,
+        prompt,
+        *,
+        human_seen,
+        heartbeat=False,
+        sound_automation=None,
+    ):
+        assert sound_automation is None
         calls.append((slot.key, prompt))
 
     monkeypatch.setattr("kiro_crew.dashboard.mate_welcome.dispatch_hidden_turn", dispatch)

@@ -1143,6 +1143,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 # earns a requeued entry the exemption from the drain's LINKED drop.
                 # Stated rather than defaulted, because the default fails closed.
                 user_origin=_person_send,
+                automation_origin=bool(cron_creator),
                 owner_origin=_owner_sent,
                 # Captured HERE, before the RPC suspends, for the same reason the peer
                 # path captures it: the requeue runs in the turn's teardown and a slot

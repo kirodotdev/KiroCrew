@@ -214,6 +214,24 @@ describe('conversation attention sounds', () => {
     expect(kinds).toEqual(['turn'])
   })
 
+  it('an automation-started run finishes quietly, unless it stops on a question or an error', async () => {
+    const ws = await connect()
+    ws.frame('chat_done', { slot: SLOT, continuing: false, automation_started: true })
+    expect(kinds).toEqual([])
+    ws.frame('chat_done', { slot: SLOT, continuing: false, needs_input: true, automation_started: true })
+    expect(kinds).toHaveLength(1)
+    ws.frame('chat_message', { slot: SLOT, role: 'error', content: 'x', ts: '2026-11-28T00:00:01Z' })
+    ws.frame('chat_done', { slot: SLOT, continuing: false, automation_started: true })
+    expect(kinds).toHaveLength(2)
+  })
+
+  it('a run without a positive automation mark sounds when it finishes', async () => {
+    const ws = await connect()
+    ws.frame('chat_done', { slot: SLOT, continuing: false, automation_started: false })
+    ws.frame('chat_done', { slot: SLOT, continuing: false })
+    expect(kinds).toEqual(['turn', 'turn'])
+  })
+
   it('preserves approval and unrelated notification sounds', async () => {
     const ws = await connect()
     ws.frame('chat_done', { slot: SLOT, continuing: true })

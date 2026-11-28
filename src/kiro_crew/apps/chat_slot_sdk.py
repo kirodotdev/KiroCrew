@@ -374,7 +374,10 @@ class ChatSlotSDK:
         it is already there. *user_origin* says a person sent this text (so a
         session directive in it may act on the user's behalf) and *typed* that
         they typed it rather than composed it from a template; both default to
-        the cautious answer. *on_consumed* and *on_irreversibly_consumed* are the
+        the cautious answer. A person's message (*user_origin*, typed or not)
+        finishes with the turn-complete chime even though the turn's actor stays
+        the app; this marks the sound only, never the actor or the authority.
+        *on_consumed* and *on_irreversibly_consumed* are the
         chat runner's own consumption callbacks, passed through. A slot restored as
         a sidebar row must come through :meth:`open` or :meth:`restore` first, which
         read its rows in off the event loop; one that has not raises
@@ -386,7 +389,14 @@ class ChatSlotSDK:
         if reservation is not None and getattr(slot, "task", None) is reservation:
             slot.task = None
         if getattr(slot, "running", False):
-            self._queue(state, slot, message, meta=meta, user_origin=user_origin and typed)
+            self._queue(
+                state,
+                slot,
+                message,
+                meta=meta,
+                user_origin=user_origin and typed,
+                person_sent=user_origin,
+            )
             return None
         run_chat = _host("kiro_crew.dashboard.chat_runner", "_run_chat")
         spawn = _host("kiro_crew.dashboard.turn_dispatch", "spawn_guarded_turn")
@@ -409,6 +419,8 @@ class ChatSlotSDK:
             _directive_user_origin=user_origin,
             _message_is_typed=typed,
             _turn_actor=_APP_TURN_ACTOR,
+            # False can only add the chime; None lets the app actor keep it quiet.
+            _sound_automation=False if user_origin else None,
             _on_consumed=on_consumed,
             _on_irreversibly_consumed=on_irreversibly_consumed,
         )
@@ -435,6 +447,7 @@ class ChatSlotSDK:
         *,
         meta: dict[str, Any] | None,
         user_origin: bool,
+        person_sent: bool,
     ) -> None:
         try:
             # An app slot is scoped, so an UNSTAMPED entry would fail the drain's
@@ -442,12 +455,17 @@ class ChatSlotSDK:
             # at admission, as every plain queue producer does.
             containment_meta = _host("kiro_crew.dashboard.session_control", "containment_meta")
             actor_key = _host("kiro_crew.dashboard.chat_delivery", "TURN_ACTOR_META_KEY")
+            sound_key = _host("kiro_crew.dashboard.chat_delivery", "SOUND_AUTOMATION_META_KEY")
+            # Sound only, after the caller's meta: a person's words chime when the
+            # drain runs them, while the entry keeps the app actor.
+            sound = {sound_key: False} if person_sent else {}
             slot.queue_append(
                 message,
                 meta={
                     **(meta or {}),
                     **containment_meta(state, slot),
                     actor_key: _APP_TURN_ACTOR,
+                    **sound,
                 },
                 directive_user_origin=user_origin,
             )

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         RESTORED_QUEUE_KEY,
         RESTORED_SEND_CHOSEN_KEY,
+        SOUND_AUTOMATION_META_KEY,
         DashboardState,
         _app_cancel_denied,
         _ChatSlot,
@@ -1335,6 +1336,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             slot,
             queue_id,
             {"slot": name, "queue_id": queue_id},
+            person_selected=not bool(request.get("app", "")),
             replaced=_replaced,
             reauthorize=_reauthorize,
             refuse=lambda error, code: web.json_response(
@@ -1444,6 +1446,14 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         # so mark it chosen; it keeps its restored provenance otherwise.
         promoted = slot.queue_promote_by_id(queue_id)
         if promoted:
+            # Keep actor and authority provenance unchanged. False is a
+            # sound-only override that can add a chime but cannot silence one.
+            if not request.get("app", ""):
+                meta = slot._queue[0].get("meta")
+                if not isinstance(meta, dict):
+                    meta = {}
+                    slot._queue[0]["meta"] = meta
+                meta[SOUND_AUTOMATION_META_KEY] = False
             # The person's choice outranks one an agent made earlier.
             clear_run_now_choice(slot)
         if promoted and slot._queue[0].get(RESTORED_QUEUE_KEY):
@@ -1580,6 +1590,7 @@ async def _dispatch_run_now_idle(
     queue_id: str,
     metadata: dict[str, Any],
     *,
+    person_selected: bool = False,
     replaced: Callable[[], Any],
     reauthorize: Callable[[], Any],
     refuse: Callable[[str, str], Any],
@@ -1589,9 +1600,11 @@ async def _dispatch_run_now_idle(
     The Run now dispatch shared by the queue card's route and
     ``session_run_queued``. Under ``slot._lock`` it asks *replaced*, re-reads
     the two states either await could have changed, asks *reauthorize* and
-    dispatches. *replaced* and *reauthorize* return a refusal or ``None`` (or
-    raise); *refuse* builds one from ``(error, code)``. Returns the refusal, or
-    ``None`` once the entry started.
+    dispatches. *person_selected* adds only the sound override to that entry;
+    its actor and authority provenance stay unchanged. *replaced* and
+    *reauthorize* return a refusal or ``None`` (or raise); *refuse* builds one
+    from ``(error, code)``. Returns the refusal, or ``None`` once the entry
+    started.
     """
     async with slot._lock:
         refusal = replaced()
@@ -1604,6 +1617,14 @@ async def _dispatch_run_now_idle(
         refusal = reauthorize()
         if refusal is not None:
             return refusal
+        if person_selected:
+            entry = next((item for item in slot._queue if item.get("id") == queue_id), None)
+            if entry is not None:
+                meta = entry.get("meta")
+                if not isinstance(meta, dict):
+                    meta = {}
+                    entry["meta"] = meta
+                meta[SOUND_AUTOMATION_META_KEY] = False
         started = await _start_next_queued_turn(
             state,
             slot,

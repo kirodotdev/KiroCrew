@@ -526,7 +526,25 @@ async def _send_chat_done(
     if payload is None:
         payload = await chat_done_payload(state, slot, continuing=continuing, ends_turn=ends_turn)
     _report_run_seconds(slot, payload)
+    _report_run_automation(slot, payload)
     state.broadcast_ws("chat_done", payload)
+
+
+def _report_run_automation(slot: _ChatSlot, payload: dict[str, Any]) -> None:
+    """Report sound provenance only on the frame that reports ``run_seconds``.
+
+    The run boundary is :func:`_report_run_seconds`'s. ``automation_started`` is
+    true only when every turn and steer was positively established as automation.
+    Missing or unknown provenance therefore fails toward the chime. The flag
+    resets at every terminal run boundary, including one with no duration field,
+    so the next run cannot inherit the prior verdict.
+    """
+    if "turn" not in payload or (payload.get("continuing") and not payload.get("needs_input")):
+        return
+    automation_started = slot._run_automation_started
+    slot._run_automation_started = True
+    if "run_seconds" in payload:
+        payload["automation_started"] = automation_started
 
 
 def _report_run_seconds(slot: _ChatSlot, payload: dict[str, Any]) -> None:

@@ -524,16 +524,16 @@ class TestPeer:
         from kiro_crew.history import HUMAN_TURN_META_KEY
 
         slot = state.get_or_create_slot("idle")
-        ran: list[str] = []
+        ran: list[tuple[str, bool]] = []
 
-        async def _fake_run_chat(_state, _slot, prompt, **_kw):
-            ran.append(prompt)
+        async def _fake_run_chat(_state, _slot, prompt, **kwargs):
+            ran.append((prompt, kwargs.get("_sound_automation") is True))
 
         with patch("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat):
             out = await sd.deliver(state, slot, "peer text", sd.peer(steer=False))
             await slot.task
         assert out == sd.DELIVERED_TURN
-        assert ran == ["peer text"]
+        assert ran == [("peer text", True)]
         rows = [m for m in slot.messages if m.get("content") == "peer text"]
         assert [r["role"] for r in rows] == ["user"]
         assert HUMAN_TURN_META_KEY not in (rows[0].get("meta") or {})
@@ -561,6 +561,7 @@ class TestPeer:
         steer.assert_not_awaited()
         assert slot._queue[0]["content"] == "later"
         assert slot._queue[0]["meta"]["sendOrigin"] == "x"
+        assert slot._queue[0]["meta"][sd.SOUND_AUTOMATION_META_KEY] is True
 
     @pytest.mark.asyncio
     async def test_a_running_slot_steers_a_peer_send_as_a_user_row(self, state):
@@ -577,6 +578,7 @@ class TestPeer:
         assert [r["role"] for r in rows] == ["user"]
         assert rows[0]["meta"]["steer"] is True
         assert "nudge" not in rows[0]["meta"]
+        assert slot._run_automation_started is True
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -590,6 +592,7 @@ class TestPeer:
             out = await sd.deliver(state, slot, "now", sd.peer(steer=True), admission={"a": 1})
         assert out == expected
         assert steer.await_args.kwargs["user_origin"] is False
+        assert steer.await_args.kwargs["automation_origin"] is True
         assert steer.await_args.kwargs["admission"] == {"a": 1}
         assert "nudge_meta" not in steer.await_args.kwargs
 

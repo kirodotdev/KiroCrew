@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.chat_delivery import (
     EXPANSIONS_OFF_META_KEY,
     MIRROR_REPLY_ONLY_META_KEY,
+    SOUND_AUTOMATION_META_KEY,
     attachment_meta,
 )
 from kiro_crew.dashboard.chat_utils import RecoveryPayload
@@ -204,6 +205,11 @@ def _queue_recovery(
         from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
 
         _recovery_meta[CARD_ORIGIN_META_KEY] = True
+    if turn._sound_automation is not None:
+        # A queue batch's explicit verdict and a peer's server mark survive a
+        # retry. True keeps the peer quiet; False tells the drain not to fall
+        # back to an unchanged automation actor. Restore trusts only False.
+        _recovery_meta[SOUND_AUTOMATION_META_KEY] = turn._sound_automation
     if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
         # ORIGINAL replays must preserve the triggering row's attachment
         # lists. The provider prompt already carries the full markers, but

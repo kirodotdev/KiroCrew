@@ -24,6 +24,7 @@ import pytest
 from kiro_crew.apps import chat_slot_sdk
 from kiro_crew.apps.chat_slot_sdk import QUEUED_TEXT_WITHHELD, ChatSlotRefused, ChatSlotSDK
 from kiro_crew.apps.context import build_app_context
+from kiro_crew.dashboard.chat_delivery import SOUND_AUTOMATION_META_KEY
 from kiro_crew.testing.synthetic_credentials import github_classic
 
 APP = "slot-probe"
@@ -402,6 +403,8 @@ def test_send_starts_a_bounded_turn_with_the_callers_provenance(runner):
     assert call["_directive_user_origin"] is True and call["_message_is_typed"] is False
     # The app's turn, as an app's own /api/chat send is: automation, never a person.
     assert call["_turn_actor"] == "app"
+    # A person sent it, so its run chimes: a sound-only mark, not an actor.
+    assert call["_sound_automation"] is False
     assert call["_on_consumed"] == consumed.append
     # Started through the gateway's guarded start, as /api/chat starts a turn.
     assert runner.spawned == [(state, slot)] and state.pushes == 1
@@ -436,6 +439,8 @@ def test_send_defaults_to_the_cautious_provenance_and_can_skip_the_user_row(runn
     assert slot.rows == []
     assert runner.calls[0]["_directive_user_origin"] is False
     assert runner.calls[0]["_message_is_typed"] is True
+    # The app's own send: its actor decides the sound, so the run stays quiet.
+    assert runner.calls[0]["_sound_automation"] is None
 
 
 def test_a_restored_note_hold_is_delivered_above_the_user_row(runner, monkeypatch):
@@ -549,21 +554,39 @@ def test_a_message_sent_while_a_turn_runs_is_queued_stamped_and_redacted(monkeyp
 
     async def _go():
         slot.task = asyncio.get_running_loop().create_future()  # type: ignore[assignment]
-        # A caller's own actor stamp never outranks the app's.
-        meta = {"files": ["a"], "turnActor": "user"}
+        # A caller's own actor or sound stamp never outranks the app's.
+        meta = {"files": ["a"], "turnActor": "user", SOUND_AUTOMATION_META_KEY: True}
         assert _sdk().send(state, slot, secret, meta=meta, user_origin=True) is None
         slot.task.cancel()
 
     _run(_go())
-    assert slot.queued == [(secret, {"files": ["a"], **stamp, "turnActor": "app"}, True)]
+    assert slot.queued == [
+        (
+            secret,
+            {"files": ["a"], **stamp, "turnActor": "app", SOUND_AUTOMATION_META_KEY: False},
+            True,
+        )
+    ]
     ((role, text, _),) = slot.rows
     assert role == "queued" and "ghp_" not in text and text
     assert state.pushes == 1
 
 
-@pytest.mark.parametrize("typed, kept", [(True, True), (False, False)])
-def test_a_queued_message_keeps_the_persons_origin_only_when_typed(monkeypatch, typed, kept):
-    """The drain runs every queue entry as typed, so a composed one cannot carry the origin."""
+@pytest.mark.parametrize(
+    "user_origin, typed, kept, sound",
+    [
+        (True, True, True, {SOUND_AUTOMATION_META_KEY: False}),
+        (True, False, False, {SOUND_AUTOMATION_META_KEY: False}),
+        (False, True, False, {}),
+    ],
+)
+def test_a_queued_message_keeps_the_persons_origin_only_when_typed(
+    monkeypatch, user_origin, typed, kept, sound
+):
+    """The drain runs every queue entry as typed, so a composed one cannot carry the origin.
+
+    Whether a person sent it decides only the sound: their message chimes either way.
+    """
     monkeypatch.setattr(
         "kiro_crew.dashboard.session_control.containment_meta", lambda state, slot: {}
     )
@@ -571,11 +594,11 @@ def test_a_queued_message_keeps_the_persons_origin_only_when_typed(monkeypatch, 
 
     async def _go():
         slot.task = asyncio.get_running_loop().create_future()  # type: ignore[assignment]
-        _sdk().send(_State(slot), slot, "decided", user_origin=True, typed=typed)
+        _sdk().send(_State(slot), slot, "decided", user_origin=user_origin, typed=typed)
         slot.task.cancel()
 
     _run(_go())
-    assert slot.queued == [("decided", {"turnActor": "app"}, kept)]
+    assert slot.queued == [("decided", {"turnActor": "app", **sound}, kept)]
 
 
 def test_a_queued_row_is_withheld_when_redaction_fails(monkeypatch):

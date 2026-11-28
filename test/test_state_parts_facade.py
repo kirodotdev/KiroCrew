@@ -724,6 +724,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_restored_turn_marker": ("value", "None"),
     "_run_started_at": ("value", "None"),
     "_run_started_turns": ("value", "-1"),
+    "_run_automation_started": ("value", "True"),
     "_task_started_at": ("value", "None"),
     "_turn_owner_sent": ("value", "False"),
     "_turn_agent_started": ("value", "False"),

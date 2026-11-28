@@ -452,6 +452,7 @@ async def steer_into_running_turn(
     delivery_id: str | None = None,
     responsive: bool = False,
     nudge_meta: dict | None = None,
+    automation_origin: bool = False,
     banner: str = "",
     relay_meta: dict | None = None,
     author: dict | None = None,
@@ -561,6 +562,11 @@ async def steer_into_running_turn(
     never merges into a person's queued text. Absent for every other caller,
     which keeps their rows unchanged.
 
+    ``automation_origin`` is a sound-only fact established by the server. A peer
+    session's ``session_send`` and a script cron's steer pass it explicitly;
+    ``nudge_meta`` and ``app_actor`` imply it. Any other steer makes the run chime.
+    It does not grant authority or change the steer row's actor.
+
     ``app_label`` stamps ``meta.appLabel`` on the persisted row (and on a requeued
     steer's drained row), the attribution pill an app inject row uses. The
     app-facing ``/question/steer`` route passes the authenticated app's identity
@@ -581,6 +587,7 @@ async def steer_into_running_turn(
     be "/clear"), so a requeued app steer drains as plain text, never a run
     command -- the same treatment a channel steer's requeue gets.
     """
+    automation_origin = bool(automation_origin or nudge_meta is not None or app_actor)
     if nudge_meta is not None:
         user_origin = False
     # Only api_chat's owner/member gate grants this mode. Keep the wire prefix
@@ -745,6 +752,9 @@ async def steer_into_running_turn(
     # Same lockstep again: the requeue reads this for the entry's
     # ``directive_owner_origin`` and a definite False is what fails it closed.
     slot._steer_owner_origin[message] = bool(owner_origin)
+    # Sound is fail-open toward the person: one steer not established as
+    # automation makes the run chime, and later automation cannot silence it.
+    slot._run_automation_started = slot._run_automation_started and automation_origin
     # Any text steered in, from anyone, ends "one shared user asked for this
     # turn": its tool prompts go back to the owner alone. Before the RPC, as below.
     forget_turn_requester(slot)
@@ -1308,6 +1318,12 @@ async def steer_into_running_turn(
 #: the stamp and the drain that reads it share one definition instead of a literal
 #: spelled in two places.
 TURN_ACTOR_META_KEY = "turnActor"
+
+#: Sound-only queue provenance. True marks a peer session's ``session_send``;
+#: False marks words a person edited and overrides any unchanged automation actor.
+#: Request metadata cannot set it. Queue restore drops True and may keep False,
+#: because False can add a chime but cannot silence one.
+SOUND_AUTOMATION_META_KEY = "_session_send_sound_automation"
 
 #: Entry meta key marking a queued payload as turn CONTENT: the drain hands it to
 #: the model as literal text and never reads its first word as a dashboard command.

@@ -9,17 +9,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from chat_test_helpers import _make_state
 
+from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard import session_control as session_control
+from kiro_crew.dashboard import session_control_run_queued as session_run_queued
 from kiro_crew.dashboard.chat import api_chat_slot_interrupt
+from kiro_crew.dashboard.chat_delivery import (
+    SOUND_AUTOMATION_META_KEY,
+    TURN_ACTOR_META_KEY,
+)
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 
 def _make_app(state: DashboardState) -> web.Application:
     app = web.Application()
     app["state"] = state
-    app.router.add_post(
-        "/api/chat/slots/{slot}/interrupt", api_chat_slot_interrupt
-    )
+    app.router.add_post("/api/chat/slots/{slot}/interrupt", api_chat_slot_interrupt)
     return app
 
 
@@ -394,6 +400,104 @@ class TestChatSlotInterrupt:
             assert slot._queue[0]["id"] == q2
             assert slot._queue[1]["id"] == q1
             assert slot._queue[2]["id"] == q3
+
+    @pytest.mark.asyncio
+    async def test_person_run_now_marks_peer_entry_for_chime(self, _patch_sel, tmp_path):
+        """A person's selection overrides a peer entry's quiet sound mark."""
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("test")
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        state.subagents = None
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        slot.task = mock_task
+        slot.queue_append("first")
+        peer_meta = {
+            TURN_ACTOR_META_KEY: "peer",
+            SOUND_AUTOMATION_META_KEY: True,
+        }
+        peer = slot.queue_append("peer message", meta=peer_meta)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/interrupt",
+                json={"queue_id": peer},
+            )
+
+        assert resp.status == 200
+        assert slot._queue[0]["id"] == peer
+        assert peer_meta == {
+            TURN_ACTOR_META_KEY: "peer",
+            SOUND_AUTOMATION_META_KEY: False,
+        }
+
+        mock_task.done.return_value = True
+        slot._stop_state = "idle"
+        state.subagents = None
+        state.memory_startup_task = None
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load") as load,
+            patch.object(
+                chat_runner,
+                "spawn_guarded_turn",
+                return_value=MagicMock(),
+            ),
+            patch.object(
+                chat_runner,
+                "_run_chat",
+                new=MagicMock(return_value=MagicMock()),
+            ) as run,
+        ):
+            load.return_value.dashboard.merge_queued_messages = False
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        assert run.call_args.kwargs["_sound_automation"] is False
+
+    @pytest.mark.asyncio
+    async def test_session_run_queued_keeps_peer_entry_quiet(self, _patch_sel):
+        """An automated run-now selection keeps the peer entry's True mark."""
+        slot = _ChatSlot("test")
+        peer_meta = {
+            TURN_ACTOR_META_KEY: "peer",
+            SOUND_AUTOMATION_META_KEY: True,
+        }
+        peer = slot.queue_append("peer message", meta=peer_meta)
+        state = _mock_state(slot)
+
+        with (
+            patch.object(session_run_queued, "sel", return_value=MagicMock()),
+            patch(
+                "kiro_crew.dashboard.chat_handlers._start_next_queued_turn",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(
+                session_control,
+                "prewarm_enabled_check",
+                new=AsyncMock(),
+            ),
+            patch.object(session_control, "caller_slot_key", return_value=""),
+            patch.object(session_control, "authorize_target", return_value=slot),
+            patch.object(session_control, "_outside_reach", return_value=False),
+            patch.object(
+                session_run_queued,
+                "_queue_entry_from",
+                return_value=session_run_queued.QUEUE_FROM_CALLER,
+            ),
+            patch.object(session_control, "_audit"),
+        ):
+            result = await session_run_queued.run_queued_target(
+                state,
+                caller_session_key="caller-session",
+                target="test",
+                queue_id=peer,
+            )
+
+        assert result["outcome"] == "started"
+        assert slot._queue[0]["id"] == peer
+        assert peer_meta == {
+            TURN_ACTOR_META_KEY: "peer",
+            SOUND_AUTOMATION_META_KEY: True,
+        }
 
     @pytest.mark.asyncio
     async def test_interrupt_with_unknown_queue_id_preserves_order(self, _patch_sel):

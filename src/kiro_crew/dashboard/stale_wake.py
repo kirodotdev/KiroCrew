@@ -342,6 +342,7 @@ async def _wake_one(
             slot,
             with_language(wake_prompt(line), language, in_thread=True),
             human_seen=False,
+            sound_automation=True,
         )
     if started is False:
         # Put the saved row back; if that fails too, this period goes unwoken,

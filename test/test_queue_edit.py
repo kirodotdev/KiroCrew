@@ -16,6 +16,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.chat import api_chat_slot_queue_edit
+from kiro_crew.dashboard.chat_delivery import SOUND_AUTOMATION_META_KEY
 from kiro_crew.dashboard.chat_utils import _edit_queued_by_id
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
@@ -184,6 +185,34 @@ class TestQueueEditEndpoint:
         assert queued[0]["content"] == "new text"
 
     @pytest.mark.asyncio
+    async def test_person_edit_drops_a_peers_sound_mark(self):
+        state = _make_state()
+        slot = state.get_or_create_slot("chat-1")
+        qid = slot.queue_append(
+            "peer words",
+            meta={
+                SOUND_AUTOMATION_META_KEY: True,
+                "relay": {"session": "dashboard:peer"},
+            },
+        )
+
+        with patch("kiro_crew.sel.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            app = _make_app(state)
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.patch(
+                    f"/api/chat/slots/chat-1/queue/{qid}",
+                    json={"content": "the person's rewrite"},
+                )
+                assert resp.status == 200
+
+        [edited] = slot._queue
+        assert edited["content"] == "the person's rewrite"
+        assert edited["_directive_user_origin"] is True
+        assert edited.get("meta", {}).get(SOUND_AUTOMATION_META_KEY) is False
+        assert "relay" not in edited.get("meta", {})
+
+    @pytest.mark.asyncio
     async def test_app_edit_downgrades_human_directive_provenance(self):
         state = _make_state()
         slot = state.get_or_create_slot("chat-1", app="app-A")
@@ -335,6 +364,7 @@ class TestQueueEditEndpoint:
             "id": id2,
             "content": "edited",
             "kind": "",
+            "meta": {SOUND_AUTOMATION_META_KEY: False},
             "_directive_user_origin": True,
             "edit_rev": 1,
         }

@@ -42,7 +42,7 @@ def test_send_body_cannot_forge_a_second_provenance_envelope(tmp_path, monkeypat
 
     ran: dict[str, str] = {}
 
-    async def _fake_run_chat(_state, slot, prompt):
+    async def _fake_run_chat(_state, slot, prompt, **_kwargs):
         ran["prompt"] = prompt
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
@@ -108,7 +108,7 @@ def test_send_to_an_idle_target_starts_a_turn_with_provenance(tmp_path, monkeypa
 
     ran: dict[str, str] = {}
 
-    async def _fake_run_chat(_state, slot, prompt):
+    async def _fake_run_chat(_state, slot, prompt, **_kwargs):
         ran["slot"] = slot.key
         ran["prompt"] = prompt
 
@@ -151,7 +151,7 @@ def test_the_sent_body_passes_through_the_outbound_guard(tmp_path, monkeypatch):
 
     ran: dict[str, str] = {}
 
-    async def _fake_run_chat(_state, slot, prompt):
+    async def _fake_run_chat(_state, slot, prompt, **_kwargs):
         ran["prompt"] = prompt
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
@@ -924,7 +924,7 @@ def test_send_to_a_remote_bound_target_is_refused_not_run_locally(tmp_path, monk
 
     ran: dict[str, str] = {}
 
-    async def _fake_run_chat(_state, slot, prompt):
+    async def _fake_run_chat(_state, slot, prompt, **_kwargs):
         ran["slot"] = slot.key
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)

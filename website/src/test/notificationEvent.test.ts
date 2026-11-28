@@ -24,6 +24,24 @@ describe('shouldChimeOnTurnDone', () => {
     expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: true })).toBe(false)
   })
 
+  it('an automation-started run finishes quietly', () => {
+    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: false, continuing: false, automationStarted: true })).toBe(false)
+  })
+
+  it('an automation-started run still sounds on a question or a terminal error', () => {
+    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: false, automationStarted: true, needsInput: true })).toBe(true)
+    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: false, automationStarted: true, errored: true })).toBe(true)
+  })
+
+  it('a run without a positive automation mark sounds as before', () => {
+    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: false, automationStarted: false })).toBe(true)
+    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: false, automationStarted: undefined })).toBe(true)
+  })
+
+  it('an error does not override work that continues', () => {
+    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: false, continuing: true, automationStarted: true, errored: true })).toBe(false)
+  })
+
   it('never chimes for slot-less events', () => {
     expect(shouldChimeOnTurnDone({ slot: undefined, reconnecting: false })).toBe(false)
     expect(shouldChimeOnTurnDone({ slot: null, reconnecting: false })).toBe(false)

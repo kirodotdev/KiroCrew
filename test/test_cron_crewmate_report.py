@@ -52,11 +52,12 @@ def woken(monkeypatch):
     from kiro_crew.dashboard import mate_welcome
 
     monkeypatch.setattr(mate_welcome, "app_is_stopping", lambda state: False)
-    monkeypatch.setattr(
-        mate_welcome,
-        "dispatch_hidden_turn",
-        lambda state, slot, prompt, human_seen: turns.append((slot.key, prompt)),
-    )
+
+    def _dispatch(state, slot, prompt, *, human_seen, sound_automation=None):
+        assert sound_automation is True
+        turns.append((slot.key, prompt))
+
+    monkeypatch.setattr(mate_welcome, "dispatch_hidden_turn", _dispatch)
     # The Dashboard line reads the page off the loop; these tests pin the wake alone.
     monkeypatch.setattr(wakes, "page_line", lambda slug: "", raising=False)
     monkeypatch.setattr(

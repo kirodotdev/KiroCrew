@@ -1014,6 +1014,10 @@ async def _run_chat(
     # crew log's whole premise is that a reader takes it as fact. Empty means no
     # dispatch claimed it, which the crew log records as ``user``.
     _turn_actor: str = "",
+    # Sound-only server provenance for a queued batch or a peer session's
+    # ``session_send``. ``None`` lets the structural actor decide; a queue drain
+    # passes True or False because its per-entry all() outranks the batch actor.
+    _sound_automation: bool | None = None,
     # The agent started this turn itself between prompts (``agent_started``): the
     # turn sends no prompt and reads the session's pending turn instead. Set only
     # by ``agent_started._on_agent_turn``, with an empty *message*.
@@ -1059,6 +1063,7 @@ async def _run_chat(
         _mirror_reply_only=_mirror_reply_only,
         _slack_voice=_slack_voice,
         _turn_actor=_turn_actor,
+        _sound_automation=_sound_automation,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
         _on_irreversibly_consumed=_on_irreversibly_consumed,

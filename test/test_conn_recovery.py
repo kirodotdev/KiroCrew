@@ -137,6 +137,7 @@ async def test_queue_dispatch_preserves_recovery_provenance(
         "_synthetic_payload": expected_recovery,
         "_directive_user_origin": False,
         "_directive_channel_origin": False,
+        "_sound_automation": False,
         "_directive_owner_origin": False,
     }
     if expected_recovery:
@@ -260,6 +261,7 @@ async def test_dispatch_classifies_the_payload_not_the_recovery(
         _synthetic_recovery_turn=True,
         _directive_user_origin=False,
         _directive_channel_origin=False,
+        _sound_automation=False,
         _directive_owner_origin=False,
     )
     # Provenance is unchanged by the split: either payload still renders as an

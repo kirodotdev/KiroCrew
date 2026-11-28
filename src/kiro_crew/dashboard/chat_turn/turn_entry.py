@@ -13,6 +13,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk.drivers.acp_vocab import EngineFallbackWalk
+from kiro_crew.crew_log.emit_turn import TURN_SOUND_AUTOMATION_ACTORS
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.relay_archive import is_cron_run_read_only
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
@@ -129,6 +130,35 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     state = turn.state
     turn_exit = turn.turn_exit
     turn_exit.depth = _prompt_depth
+    # Who caused this turn, for the session ledger. Bound COMPLETELY here, before
+    # anything that can fail: ``_queue_recovery`` stamps this value, and the
+    # handlers that call it also serve failures raised during pre-turn setup --
+    # an ACP cold start that dies, for one. A value refined later would have those
+    # recoveries record whatever it held at the time, so an autonudge whose
+    # backend died would be retried as a user turn.
+    #
+    # Structural sources only. ``_directive_self_wake`` is set by
+    # ``_fire_dashboard_nudge`` alone, and ``_turn_actor`` comes from a consumed
+    # queue entry's enqueue-time kind or from an injector that dispatched this turn
+    # itself; a dispatch that named an actor outranks the self-wake flag, since the
+    # flag says how the turn was woken and the argument says who it belongs to. A
+    # turn no dispatch claimed is a user turn -- never a guess read off the
+    # message, which the user writes.
+    _crew_log_actor = _turn_actor or ("autonudge" if _directive_self_wake else "user")
+    turn._crew_log_actor = _crew_log_actor
+    # Sound provenance is deliberately narrower than authority. Every turn must
+    # be positively known automation, either by its structural actor or the
+    # queue/peer/hidden-turn sound mark. A queue's explicit False beats its
+    # first-entry actor. Applied here, before the turn's first exit, so a turn
+    # that ends early (a local command, a refusal at admission or at the
+    # dispatch gates) counts too. One unknown or person turn makes the whole run
+    # chime, at any prompt depth or retry, and later automation cannot undo it.
+    _turn_is_automation = (
+        turn._sound_automation
+        if turn._sound_automation is not None
+        else _crew_log_actor in TURN_SOUND_AUTOMATION_ACTORS
+    )
+    slot._run_automation_started = slot._run_automation_started and _turn_is_automation
     from kiro_crew.dashboard import responsive_chat, steer_retract
 
     if _prompt_depth == 0:
@@ -319,22 +349,6 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     _session_stop_gen_at_entry = _session_stop_generation(turn)
     turn._session_stop_gen_at_entry = _session_stop_gen_at_entry
 
-    # Who caused this turn, for the session ledger. Bound COMPLETELY here, before
-    # anything that can fail: ``_queue_recovery`` stamps this value, and the
-    # handlers that call it also serve failures raised during pre-turn setup --
-    # an ACP cold start that dies, for one. A value refined later would have those
-    # recoveries record whatever it held at the time, so an autonudge whose
-    # backend died would be retried as a user turn.
-    #
-    # Structural sources only. ``_directive_self_wake`` is set by
-    # ``_fire_dashboard_nudge`` alone, and ``_turn_actor`` comes from a consumed
-    # queue entry's enqueue-time kind or from an injector that dispatched this turn
-    # itself; a dispatch that named an actor outranks the self-wake flag, since the
-    # flag says how the turn was woken and the argument says who it belongs to. A
-    # turn no dispatch claimed is a user turn -- never a guess read off the
-    # message, which the user writes.
-    _crew_log_actor = _turn_actor or ("autonudge" if _directive_self_wake else "user")
-    turn._crew_log_actor = _crew_log_actor
     # Who started this turn, for a backend session the turn opens: the session
     # start reads it (metrics.sessions.record_session_started). Same mapping the
     # turn's own completion sample uses, so the two cannot disagree.
