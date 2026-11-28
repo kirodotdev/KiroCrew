@@ -1,4 +1,8 @@
-"""Mention asks a wake carried, kept on disk until the model CONSUMES the turn.
+"""Mention asks (and pickup-due and item-signal reasons) a wake carried, kept on disk
+until the model CONSUMES the turn. A returned pickup clears that crew's pickup state,
+so it is woken again (``crew_runtime_pickup.return_pickup``); a returned item signal
+refunds the turn it was charged (``crew_runtime_signal_hold.return_turns``), which
+reads and settles those rows itself. Everything below describes asks.
 
 ``wake_crew`` reports success when it schedules a turn, but the turn still waits
 for a background-turn permit and for the runner's own preparation, and a cancel, a
@@ -102,7 +106,10 @@ def carry(
         for _at, a in spare[: max(0, len(rows) + len(fresh) - _MAX_PER_CREW)]:
             rows.pop(a, None)
         room = max(0, _MAX_PER_CREW - len(rows))
-        took = [a for a in dict.fromkeys(asks) if a in rows] + fresh[:room]
+        # A row a turn still carries is not taken again: an uncarry of this wake would
+        # delete it, and that turn's return with it (two pickups can share a reason).
+        again = [a for a in dict.fromkeys(asks) if a in rows and not _live(rows[a])]
+        took = again + fresh[:room]
         if took:
             rows.update({a: f"{BOOT} {int(time.time())}" for a in took})
             _write(owner, repo, root, doc)
@@ -129,6 +136,20 @@ def review(owner: str, repo: str, root: Path | None, cid: str) -> tuple[list[str
         rows = _read(owner, repo, root).get(cid, {})
     back = [a for a, stamp in rows.items() if not _live(stamp) and not _done(stamp)]
     return back, set(rows) - set(back)
+
+
+def turns(owner: str, repo: str, root: Path | None) -> dict[str, tuple[list[str], set[str]]]:
+    """Per crew, ``(returned, live)``, read only: the carried reasons a turn handed
+    back (or an earlier process carried), and the ones a turn still carries."""
+    with _LOCK:
+        doc = _read(owner, repo, root)
+    return {
+        cid: (
+            [a for a, s in rows.items() if not _live(s) and not _done(s)],
+            {a for a, s in rows.items() if _live(s)},
+        )
+        for cid, rows in doc.items()
+    }
 
 
 def requeue(mentions: dict[str, Any], cid: str, back: list[str], held: set[str]) -> None:

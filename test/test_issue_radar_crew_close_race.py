@@ -44,6 +44,9 @@ async def test_issue_radar_arm_queued_behind_final_retirement_is_refused(
         "compose_turn_prompt_async",
         AsyncMock(return_value="replacement arm"),
     )
+    # The loop gap is a ledger read on a worker thread; pinning it keeps the arm
+    # inside the ten loop ticks this test gives it to reach admission.
+    monkeypatch.setattr(crew_runtime, "crew_loop_gap", AsyncMock(return_value=300))
     write_entered = threading.Event()
     release_write = threading.Event()
     original_write = svc._write_state

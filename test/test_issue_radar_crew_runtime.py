@@ -20,7 +20,6 @@ import contextlib
 import inspect
 import os
 import re
-import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -168,7 +167,18 @@ class TestSeedingSurvivesABriefLogLock:
 # ── brief injection ─────────────────────────────────────────────────────────
 
 
-class TestBriefInjection(unittest.TestCase):
+class _TmpPathCase:
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        Background writers (the crew-log fold, the store's ``mkdir`` on read) can
+        re-create a self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+
+class TestBriefInjection(_TmpPathCase, unittest.TestCase):
     def test_brief_carries_the_sentinel(self):
         self.assertTrue(cr.brief_text().startswith(cr.BRIEF_SENTINEL))
 
@@ -227,61 +237,47 @@ class TestBriefInjection(unittest.TestCase):
             self.assertNotIn(word, lowered)
 
     def test_turn_prompt_carries_the_brief_only_on_a_miss(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            crew = _crew(root)
-            slot = _FakeSlot()
-            first = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
-            self.assertIn(cr.BRIEF_SENTINEL, first)
-            # The carrying message is brief + nudge, so it satisfies its own guard.
-            slot.append("user", first)
-            second = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
-            self.assertNotIn(cr.BRIEF_SENTINEL, second)
-            self.assertIn("[crew turn]", second)
+        root = self._tmp_path
+        crew = _crew(root)
+        slot = _FakeSlot()
+        first = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
+        self.assertIn(cr.BRIEF_SENTINEL, first)
+        # The carrying message is brief + nudge, so it satisfies its own guard.
+        slot.append("user", first)
+        second = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
+        self.assertNotIn(cr.BRIEF_SENTINEL, second)
+        self.assertIn("[crew turn]", second)
 
     def test_extra_prompt_follows_the_brief_on_every_turn(self):
         """The operator's Additional prompt is sent after the brief, never instead."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            extra = "Ask the requester when an issue needs a product decision."
-            crew = _crew(root, extra_prompt=extra)
-            slot = _FakeSlot()
-            first = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
-            self.assertTrue(first.startswith(cr.BRIEF_SENTINEL))
-            self.assertIn(extra, first)
-            self.assertLess(first.index(cr.BRIEF_SENTINEL), first.index(extra))
-            self.assertLess(first.index(extra), first.index("[crew turn]"))
-            # The carrying message still satisfies the brief's own presence guard.
-            slot.append("user", first)
-            self.assertTrue(cr.brief_is_present(slot))
-            # A later turn has no brief but still carries the extra prompt.
-            second = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
-            self.assertNotIn(cr.BRIEF_SENTINEL, second)
-            self.assertIn(extra, second)
-            self.assertLess(second.index(extra), second.index("[crew turn]"))
+        root = self._tmp_path
+        extra = "Ask the requester when an issue needs a product decision."
+        crew = _crew(root, extra_prompt=extra)
+        slot = _FakeSlot()
+        first = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
+        self.assertTrue(first.startswith(cr.BRIEF_SENTINEL))
+        self.assertIn(extra, first)
+        self.assertLess(first.index(cr.BRIEF_SENTINEL), first.index(extra))
+        self.assertLess(first.index(extra), first.index("[crew turn]"))
+        # The carrying message still satisfies the brief's own presence guard.
+        slot.append("user", first)
+        self.assertTrue(cr.brief_is_present(slot))
+        # A later turn has no brief but still carries the extra prompt.
+        second = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
+        self.assertNotIn(cr.BRIEF_SENTINEL, second)
+        self.assertIn(extra, second)
+        self.assertLess(second.index(extra), second.index("[crew turn]"))
 
     def test_blank_extra_prompt_adds_nothing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            plain = _crew(root, name="Andromeda")
-            blank = _crew(root, name="Bode", extra_prompt="  \n\t ")
-            for crew in (plain, blank):
-                slot = _FakeSlot()
-                prompt = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
-                self.assertNotIn("Additional instructions", prompt)
-                nudge = cr.compose_nudge(cr.build_snapshot(OWNER, REPO, crew, root))
-                self.assertEqual(prompt, cr.brief_text() + "\n\n---\n\n" + nudge)
-
-
-class _TmpPathCase:
-    @pytest.fixture(autouse=True)
-    def _per_test_dirs(self, tmp_path):
-        """Hand ``setUp`` pytest's per-test directory for the radar store root.
-
-        Background writers (the crew-log fold, the store's ``mkdir`` on read) can
-        re-create a self-removed directory after cleanup; pytest owns ``tmp_path``.
-        """
-        self._tmp_path = tmp_path
+        root = self._tmp_path
+        plain = _crew(root, name="Andromeda")
+        blank = _crew(root, name="Bode", extra_prompt="  \n\t ")
+        for crew in (plain, blank):
+            slot = _FakeSlot()
+            prompt = cr.compose_turn_prompt(slot, OWNER, REPO, crew, root)
+            self.assertNotIn("Additional instructions", prompt)
+            nudge = cr.compose_nudge(cr.build_snapshot(OWNER, REPO, crew, root))
+            self.assertEqual(prompt, cr.brief_text() + "\n\n---\n\n" + nudge)
 
 
 # ── nudge composition ───────────────────────────────────────────────────────
@@ -301,8 +297,8 @@ class TestNudge(_TmpPathCase, unittest.TestCase):
 
         self.assertIn("Andromeda", nudge)
         self.assertIn(f"{OWNER}/{REPO}", nudge)
-        self.assertIn(cid, nudge)                       # crew id, not just the name
-        self.assertIn("bug, area:cli", nudge)           # label scope
+        self.assertIn(cid, nudge)  # crew id, not just the name
+        self.assertIn("bug, area:cli", nudge)  # label scope
         self.assertIn("Open 2/3", nudge)
         self.assertIn("#2201 implementing", nudge)
         self.assertIn("add the Windows branch", nudge)  # the `next` of every open item
@@ -484,9 +480,7 @@ class TestProviderVocabulary(_TmpPathCase, unittest.TestCase):
     def test_the_snapshot_carries_the_provider(self):
         crew = _crew(self.root)
         key = provider.key_from_parts(OWNER, REPO, "azure")
-        self.assertEqual(
-            cr.build_snapshot(OWNER, REPO, crew, self.root, key)["provider"], "azure"
-        )
+        self.assertEqual(cr.build_snapshot(OWNER, REPO, crew, self.root, key)["provider"], "azure")
 
     def test_every_prompt_path_forwards_the_key(self):
         """A path that drops ``key`` silently renders GitHub's vocabulary, which is
@@ -516,7 +510,7 @@ class TestProviderVocabulary(_TmpPathCase, unittest.TestCase):
 # ── provider scoping of the crew ledger ─────────────────────────────────────
 
 
-class TestCrewStoreScoping(unittest.TestCase):
+class TestCrewStoreScoping(_TmpPathCase, unittest.TestCase):
     """Every crew-ledger path is provider-separated ONLY by its ``root=``.
 
     No ``crew_store`` signature carries a provider, so scoping is a CALLER discipline.
@@ -542,9 +536,7 @@ class TestCrewStoreScoping(unittest.TestCase):
                 continue
             if fn.attr in self._ROOTLESS:
                 continue
-            scoped = any(
-                self._is_scope(arg) for arg in node.args
-            ) or any(
+            scoped = any(self._is_scope(arg) for arg in node.args) or any(
                 kw.arg in {"root", "scope"} for kw in node.keywords
             )
             if not scoped:
@@ -586,27 +578,34 @@ class TestCrewStoreScoping(unittest.TestCase):
         indexes are independent; handed the same root they are ONE index, and the
         second crew reads the first's decision as its own repository's.
         """
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            gh = store_mod.provider_root(root=base, provider="github", host="github.com")
-            gl = store_mod.provider_root(root=base, provider="gitlab", host="gitlab.example")
-            self.assertNotEqual(cs.crews_dir(OWNER, REPO, gh), cs.crews_dir(OWNER, REPO, gl))
+        base = self._tmp_path
+        gh = store_mod.provider_root(root=base, provider="github", host="github.com")
+        gl = store_mod.provider_root(root=base, provider="gitlab", host="gitlab.example")
+        self.assertNotEqual(cs.crews_dir(OWNER, REPO, gh), cs.crews_dir(OWNER, REPO, gl))
 
-            crew = _crew(gh)
-            cs.commit_work_progress(
-                OWNER, REPO, crew["id"], 7, {"phase": "skipped"}, "skip", "architecture call",
-                skip_reason="architecture call", skip_scope="architecture",
-                root=gh, session_id=_unit_for(crew["id"]),
-            )
-            # The index is a fold across the crews UNDER A ROOT, so the scoped roots
-            # are independent indexes.
-            self.assertEqual(cs.read_skips(OWNER, REPO, gl), {})
-            self.assertIn("7", cs.read_skips(OWNER, REPO, gh))
+        crew = _crew(gh)
+        cs.commit_work_progress(
+            OWNER,
+            REPO,
+            crew["id"],
+            7,
+            {"phase": "skipped"},
+            "skip",
+            "architecture call",
+            skip_reason="architecture call",
+            skip_scope="architecture",
+            root=gh,
+            session_id=_unit_for(crew["id"]),
+        )
+        # The index is a fold across the crews UNDER A ROOT, so the scoped roots
+        # are independent indexes.
+        self.assertEqual(cs.read_skips(OWNER, REPO, gl), {})
+        self.assertIn("7", cs.read_skips(OWNER, REPO, gh))
 
-            # The same call with the scope forgotten. It cannot raise and cannot be
-            # detected downstream: for public GitHub the scoped root and the base
-            # data dir are the same path.
-            self.assertEqual(cs.crews_dir(OWNER, REPO, base), cs.crews_dir(OWNER, REPO, gh))
+        # The same call with the scope forgotten. It cannot raise and cannot be
+        # detected downstream: for public GitHub the scoped root and the base
+        # data dir are the same path.
+        self.assertEqual(cs.crews_dir(OWNER, REPO, base), cs.crews_dir(OWNER, REPO, gh))
 
 
 # ── session launch / trust ──────────────────────────────────────────────────
@@ -700,9 +699,7 @@ class TestSession(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         # The slot still names the scope — the record still says unattended — and
         # that must not be enough on its own.
         self.assertEqual(slot._trust_scope, cr.autoapprove_scope(crew["id"]))
-        with mock.patch.object(
-            type(safety_override()), "is_scope_active", return_value=False
-        ):
+        with mock.patch.object(type(safety_override()), "is_scope_active", return_value=False):
             self.assertFalse(_effectively_trusted(slot))
 
     async def test_a_grant_whose_audit_fails_is_never_usable(self):
@@ -710,9 +707,7 @@ class TestSession(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         a SEL that cannot be written must leave the crew untrusted rather than
         auto-approving tools with no record that it was ever allowed to."""
         crew = _crew(self.root, unattended=True)
-        with mock.patch(
-            "kiro_crew.safety_override.sel", side_effect=OSError("SEL unavailable")
-        ):
+        with mock.patch("kiro_crew.safety_override.sel", side_effect=OSError("SEL unavailable")):
             slot = await cr.ensure_crew_session(_FakeState(), OWNER, REPO, crew)
         self.assertFalse(_effectively_trusted(slot))
         self.assertEqual(slot._trust_scope, "")
@@ -752,15 +747,13 @@ class TestSession(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         # wrapper, not ``_run_chat`` itself — see :class:`TestTurnDispatch` in
         # ``test_issue_radar_crew_runtime_sweep.py``.
         with mock.patch.object(cr, "_run_chat", runner):
-            started = await cr.wake_crew(
-                state, OWNER, REPO, crew, "#2201 ci-changed", self.root
-            )
+            started = await cr.wake_crew(state, OWNER, REPO, crew, "#2201 ci-changed", self.root)
         self.assertTrue(started)
         self.assertEqual(slot.runners, [cr._capped_run_chat])
         self.assertEqual(len(slot.prompts), 1)
         prompt = slot.prompts[0]
         self.assertIn("[crew wake: #2201 ci-changed]", prompt)
-        self.assertIn(cr.BRIEF_SENTINEL, prompt)     # first turn — brief injected
+        self.assertIn(cr.BRIEF_SENTINEL, prompt)  # first turn — brief injected
         self.assertIn("#2201 awaiting-ci", prompt)
         settings = cs.read_settings(OWNER, REPO, self.root)
         self.assertIn(cr.never_block(cr.writable_labels(settings)), prompt)
@@ -779,13 +772,36 @@ class TestSession(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(started)
         self.assertEqual(slot.prompts, [])
 
+    async def test_wake_stamps_the_dispatch_after_the_last_await(self):
+        """The held-signal bound charges a turn from this stamp, so it is taken with
+        nothing awaited between it and the dispatch: a step the previous turn wrote
+        during the wake is older than it."""
+        crew = _crew(self.root, unattended=True)
+        state = _FakeState()
+        await cr.ensure_crew_session(state, OWNER, REPO, crew)
+        stamps: list[float] = []
+        seen: list[int] = []
+        real_dispatch = cr.dispatch_crew_turn
+
+        def dispatch(*args: Any) -> bool:
+            seen.append(len(stamps))  # the stamp is already there, nothing in between
+            return real_dispatch(*args)
+
+        with (
+            mock.patch.object(cr, "_run_chat", mock.AsyncMock()),
+            mock.patch.object(cr, "dispatch_crew_turn", dispatch),
+        ):
+            started = await cr.wake_crew(
+                state, OWNER, REPO, crew, "ci-changed", self.root, dispatched_at=stamps
+            )
+        self.assertTrue(started)
+        self.assertEqual((len(stamps), seen), (1, [1]))
+
     async def test_wake_without_a_session_is_not_a_crash(self):
         crew = _crew(self.root)
         state = _FakeState()
         with mock.patch.object(cr, "_rehydrate", return_value=None):
-            self.assertFalse(
-                await cr.wake_crew(state, OWNER, REPO, crew, "signal", self.root)
-            )
+            self.assertFalse(await cr.wake_crew(state, OWNER, REPO, crew, "signal", self.root))
 
     # ── the snapshot never runs on the event loop ──────────────────────────
 
@@ -869,11 +885,14 @@ class TestSession(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         state = _FakeState()  # no resident slot, as a restart leaves it
         revived = _FakeSlot(slot_key)
         svc = _FakeNudge([_FakeLoop("nl_0", slot_key, active=True)])
-        with mock.patch.object(cr, "_autonudge_instance", lambda: svc), mock.patch.object(
-            cr,
-            "rehydrate_slot_from_history_async",
-            new=mock.AsyncMock(return_value=revived),
-        ) as rehydrate:
+        with (
+            mock.patch.object(cr, "_autonudge_instance", lambda: svc),
+            mock.patch.object(
+                cr,
+                "rehydrate_slot_from_history_async",
+                new=mock.AsyncMock(return_value=revived),
+            ) as rehydrate,
+        ):
             await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
         rehydrate.assert_awaited_once()
         self.assertTrue(_effectively_trusted(revived))
@@ -888,8 +907,11 @@ class TestSession(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         slot_key = f"crew-{crew['id']}"
         state = _FakeState()
         svc = _FakeNudge([_FakeLoop("nl_0", slot_key, active=True)])
-        with mock.patch.object(cr, "_autonudge_instance", lambda: svc), mock.patch.object(
-            cr, "rehydrate_slot_from_history_async", new=mock.AsyncMock(return_value=None)
+        with (
+            mock.patch.object(cr, "_autonudge_instance", lambda: svc),
+            mock.patch.object(
+                cr, "rehydrate_slot_from_history_async", new=mock.AsyncMock(return_value=None)
+            ),
         ):
             await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
         self.assertIn(slot_key, state.slots)
@@ -905,10 +927,13 @@ class TestSession(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         state = _FakeState()
         revived = _FakeSlot(slot_key)
         svc = _FakeNudge([_FakeLoop("nl_0", slot_key, active=False)])
-        with mock.patch.object(cr, "_autonudge_instance", lambda: svc), mock.patch.object(
-            cr,
-            "rehydrate_slot_from_history_async",
-            new=mock.AsyncMock(return_value=revived),
+        with (
+            mock.patch.object(cr, "_autonudge_instance", lambda: svc),
+            mock.patch.object(
+                cr,
+                "rehydrate_slot_from_history_async",
+                new=mock.AsyncMock(return_value=revived),
+            ),
         ):
             await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
         self.assertTrue(_effectively_trusted(revived))
@@ -923,9 +948,12 @@ class TestSession(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
             OWNER, REPO, crew["id"], {"paused_reason": "operator paused"}, self.root
         )
         svc = _FakeNudge([_FakeLoop("nl_0", f"crew-{crew['id']}", active=True)])
-        with mock.patch.object(cr, "_autonudge_instance", lambda: svc), mock.patch.object(
-            cr, "rehydrate_slot_from_history_async", new=mock.AsyncMock()
-        ) as rehydrate:
+        with (
+            mock.patch.object(cr, "_autonudge_instance", lambda: svc),
+            mock.patch.object(
+                cr, "rehydrate_slot_from_history_async", new=mock.AsyncMock()
+            ) as rehydrate,
+        ):
             await cr.watchdog_cycle(_FakeState(), OWNER, REPO, [retired], self.root)
         rehydrate.assert_not_awaited()
         self.assertEqual(svc.updates, [("nl_0", {"active": False})])
@@ -969,11 +997,14 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         slot_key = f"crew-{crew['id']}"
         revived = _FakeSlot(slot_key)
         state = _FakeState()  # no resident slot, as a closed tab leaves it
-        with mock.patch.object(
-            cr,
-            "rehydrate_slot_from_history_async",
-            new=self._pause_mid_flight(crew["id"], revived),
-        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+        with (
+            mock.patch.object(
+                cr,
+                "rehydrate_slot_from_history_async",
+                new=self._pause_mid_flight(crew["id"], revived),
+            ),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
+        ):
             started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
         self.assertFalse(started)
         self.assertEqual(revived.prompts, [])  # and nothing was queued either
@@ -995,9 +1026,10 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
             cs.set_crew_paused(OWNER, REPO, crew["id"], True, "operator paused", self.root)
             return await real(*a, **kw)
 
-        with mock.patch.object(
-            cr, "compose_turn_prompt_async", new=_pause_then_compose
-        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+        with (
+            mock.patch.object(cr, "compose_turn_prompt_async", new=_pause_then_compose),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
+        ):
             started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
         self.assertFalse(started)
         self.assertEqual(slot.prompts, [])
@@ -1013,18 +1045,17 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         crew = _crew(self.root, unattended=True)
         state = _FakeState()
         slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
-        paused = cs.set_crew_paused(
-            OWNER, REPO, crew["id"], True, "operator paused", self.root
-        )
+        paused = cs.set_crew_paused(OWNER, REPO, crew["id"], True, "operator paused", self.root)
         real = cr.compose_turn_prompt_async
 
         async def _resume_then_compose(*a: Any, **kw: Any) -> str:
             cs.set_crew_paused(OWNER, REPO, crew["id"], False, "", self.root)
             return await real(*a, **kw)
 
-        with mock.patch.object(
-            cr, "compose_turn_prompt_async", new=_resume_then_compose
-        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+        with (
+            mock.patch.object(cr, "compose_turn_prompt_async", new=_resume_then_compose),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
+        ):
             started = await cr.wake_crew(state, OWNER, REPO, paused, "ci-changed", self.root)
         self.assertTrue(started)
         self.assertEqual(len(slot.prompts), 1)
@@ -1047,8 +1078,9 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
             cs.set_crew_paused(OWNER, REPO, crew["id"], True, "operator paused", self.root)
             return real(slot_arg, crew_arg)
 
-        with mock.patch.object(cr, "sync_trust", _pause_then_sync), mock.patch.object(
-            cr, "_run_chat", mock.Mock()
+        with (
+            mock.patch.object(cr, "sync_trust", _pause_then_sync),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
         ):
             started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
         self.assertFalse(started)
@@ -1083,9 +1115,12 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         state = _FakeState()
         slot = await cr.ensure_crew_session(state, OWNER, REPO, crew)
         slot.running = True
-        with mock.patch.object(
-            cr, "sync_trust", self._pause_and_revoke_inside_sync_trust(crew["id"])
-        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+        with (
+            mock.patch.object(
+                cr, "sync_trust", self._pause_and_revoke_inside_sync_trust(crew["id"])
+            ),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
+        ):
             started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
         self.assertFalse(started)
         self.assertEqual(slot.prompts, [])
@@ -1107,11 +1142,13 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         # The pause (and its revocation) lands inside the grant's thread hop, so the
         # grant is genuinely resurrected — and THEN the wake fails, before any exit
         # that re-checks. Without the finally the resurrected grant is what remains.
-        with mock.patch.object(
-            cr, "sync_trust", self._pause_and_revoke_inside_sync_trust(crew["id"])
-        ), mock.patch.object(
-            cr, "compose_turn_prompt_async", new=_raise
-        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+        with (
+            mock.patch.object(
+                cr, "sync_trust", self._pause_and_revoke_inside_sync_trust(crew["id"])
+            ),
+            mock.patch.object(cr, "compose_turn_prompt_async", new=_raise),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
+        ):
             with self.assertRaises(RuntimeError):
                 await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
         self.assertEqual(slot.prompts, [])
@@ -1136,9 +1173,10 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
             cs.update_crew(OWNER, REPO, crew["id"], {"unattended": False}, self.root)
             return await real(*a, **kw)
 
-        with mock.patch.object(
-            cr, "compose_turn_prompt_async", new=_downgrade_then_compose
-        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+        with (
+            mock.patch.object(cr, "compose_turn_prompt_async", new=_downgrade_then_compose),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
+        ):
             started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
         # The crew is still LIVE, so it legitimately gets its turn — attended.
         self.assertTrue(started)
@@ -1205,13 +1243,12 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         def _pause() -> None:
             # Exactly what the route does before it answers: write, then revoke.
             cs.set_crew_paused(OWNER, REPO, crew["id"], True, "operator paused", self.root)
-            asyncio.get_running_loop().create_task(
-                cr.revoke_crew_execution(state, crew, "paused")
-            )
+            asyncio.get_running_loop().create_task(cr.revoke_crew_execution(state, crew, "paused"))
 
-        with mock.patch.object(
-            cr, "sync_trust", self._stop_inside_the_grant(state, crew, _pause)
-        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+        with (
+            mock.patch.object(cr, "sync_trust", self._stop_inside_the_grant(state, crew, _pause)),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
+        ):
             started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
         self.assertFalse(started)
         self.assertEqual(slot.prompts, [])
@@ -1228,11 +1265,14 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         slot._app = cr.APP_NAME
         state._slots = {slot.key: slot}
 
-        with mock.patch.object(
-            cr,
-            "sync_trust",
-            self._stop_inside_the_grant(state, crew, lambda: cr.revoke_crew_grants(state)),
-        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
+        with (
+            mock.patch.object(
+                cr,
+                "sync_trust",
+                self._stop_inside_the_grant(state, crew, lambda: cr.revoke_crew_grants(state)),
+            ),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
+        ):
             started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
         self.assertFalse(started)
         self.assertEqual(slot.prompts, [])
@@ -1246,10 +1286,13 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         slot._app = cr.APP_NAME
         state._slots = {slot.key: slot}
         svc = _FakeNudge([_FakeLoop("nl_0", slot.key, active=True)])
-        with mock.patch.object(cr, "_autonudge_instance", lambda: svc), mock.patch.object(
-            cr,
-            "sync_trust",
-            self._stop_inside_the_grant(state, crew, lambda: cr.revoke_crew_grants(state)),
+        with (
+            mock.patch.object(cr, "_autonudge_instance", lambda: svc),
+            mock.patch.object(
+                cr,
+                "sync_trust",
+                self._stop_inside_the_grant(state, crew, lambda: cr.revoke_crew_grants(state)),
+            ),
         ):
             await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
         self.assertFalse(_effectively_trusted(slot))
@@ -1267,8 +1310,9 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         state._slots = {slot.key: slot}
         cr.revoke_crew_grants(state)  # the disable, in full, BEFORE the wake
         self.assertFalse(_effectively_trusted(slot))
-        with mock.patch.object(cr, "is_app_enabled", return_value=False), mock.patch.object(
-            cr, "_run_chat", mock.Mock()
+        with (
+            mock.patch.object(cr, "is_app_enabled", return_value=False),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
         ):
             started = await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root)
         self.assertFalse(started)
@@ -1311,9 +1355,13 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
             cs.update_crew(OWNER, REPO, crew["id"], {"unattended": False}, self.root)
             return created
 
-        with mock.patch.object(cr, "_autonudge_instance", lambda: svc), mock.patch.object(
-            cr, "rehydrate_slot_from_history_async", new=mock.AsyncMock(return_value=None)
-        ), mock.patch.object(cr, "ensure_crew_session", _create_then_downgrade):
+        with (
+            mock.patch.object(cr, "_autonudge_instance", lambda: svc),
+            mock.patch.object(
+                cr, "rehydrate_slot_from_history_async", new=mock.AsyncMock(return_value=None)
+            ),
+            mock.patch.object(cr, "ensure_crew_session", _create_then_downgrade),
+        ):
             await cr.watchdog_cycle(state, OWNER, REPO, [crew], self.root)
         self.assertIn(slot_key, state.slots)
         self.assertFalse(_effectively_trusted(state.slots[slot_key]))
@@ -1387,10 +1435,13 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         slot_key = f"crew-{crew['id']}"
         revived = _FakeSlot(slot_key)
         svc = _FakeNudge([_FakeLoop("nl_0", slot_key, active=False)])
-        with mock.patch.object(cr, "_autonudge_instance", lambda: svc), mock.patch.object(
-            cr,
-            "rehydrate_slot_from_history_async",
-            new=self._pause_mid_flight(crew["id"], revived),
+        with (
+            mock.patch.object(cr, "_autonudge_instance", lambda: svc),
+            mock.patch.object(
+                cr,
+                "rehydrate_slot_from_history_async",
+                new=self._pause_mid_flight(crew["id"], revived),
+            ),
         ):
             await cr.watchdog_cycle(_FakeState(), OWNER, REPO, [crew], self.root)
         self.assertFalse(_effectively_trusted(revived))
@@ -1443,12 +1494,13 @@ class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
         crew = _crew(self.root, unattended=True)
         slot_key = f"crew-{crew['id']}"
         revived = _FakeSlot(slot_key)
-        with mock.patch.object(
-            cr, "rehydrate_slot_from_history_async", new=mock.AsyncMock(return_value=revived)
-        ), mock.patch.object(cr, "_run_chat", mock.Mock()):
-            started = await cr.wake_crew(
-                _FakeState(), OWNER, REPO, crew, "ci-changed", self.root
-            )
+        with (
+            mock.patch.object(
+                cr, "rehydrate_slot_from_history_async", new=mock.AsyncMock(return_value=revived)
+            ),
+            mock.patch.object(cr, "_run_chat", mock.Mock()),
+        ):
+            started = await cr.wake_crew(_FakeState(), OWNER, REPO, crew, "ci-changed", self.root)
         self.assertTrue(started)
         self.assertEqual(len(revived.prompts), 1)
         self.assertTrue(_effectively_trusted(revived))
@@ -1543,9 +1595,7 @@ class TestAStoodDownLoopStaysDown(_TmpPathCase, unittest.IsolatedAsyncioTestCase
         from kiro_crew.autonudge import CONSECUTIVE_FAILURE_REASON
 
         await self._stand_down("consecutive_failed_cycles")
-        self.assertEqual(
-            self.svc._loops[self.loop_id].stopped_reason, CONSECUTIVE_FAILURE_REASON
-        )
+        self.assertEqual(self.svc._loops[self.loop_id].stopped_reason, CONSECUTIVE_FAILURE_REASON)
 
         await self._watchdog()
 
@@ -1566,9 +1616,7 @@ class TestAStoodDownLoopStaysDown(_TmpPathCase, unittest.IsolatedAsyncioTestCase
         from kiro_crew.autonudge import SESSION_START_FAILURE_REASON
 
         await self._stand_down("consecutive_start_failures")
-        self.assertEqual(
-            self.svc._loops[self.loop_id].stopped_reason, SESSION_START_FAILURE_REASON
-        )
+        self.assertEqual(self.svc._loops[self.loop_id].stopped_reason, SESSION_START_FAILURE_REASON)
 
         await self._watchdog()
 
