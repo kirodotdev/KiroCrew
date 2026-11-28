@@ -490,7 +490,12 @@ describe('AboutPanel gateway restart', () => {
     mountWeb()
 
     const row = await screen.findByTestId('gateway-restart-row')
-    expect(row).toBeTruthy()
+    // The restart execs in place, so a person who checks the PID afterwards
+    // must not read the unchanged number as a restart that never happened.
+    // Only POSIX keeps the PID: Windows' execv starts a new process.
+    expect(row.textContent).toContain(
+      'On macOS and Linux it starts fresh in the same process, so its process ID stays the same',
+    )
     // No update card at all in this state.
     expect(screen.queryByTestId('manual-update-command')).toBeNull()
 

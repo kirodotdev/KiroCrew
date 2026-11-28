@@ -20301,7 +20301,7 @@
         "restart_confirm": "Clique novamente para reiniciar",
         "restart_failed": "Falha ao reiniciar",
         "restart_gateway": "Reiniciar o gateway",
-        "restart_row_note": "Reinicia o processo do gateway sem atualizar. As sessões ativas desconectam brevemente.",
+        "restart_row_note": "Reinicia o gateway sem atualizar. No macOS e no Linux, ele recomeça do zero no mesmo processo, por isso o ID do processo continua o mesmo. As sessões ativas desconectam brevemente.",
         "desktop_restart_row_note": "Reinicia o gateway que este app executa neste computador, sem atualizar. As respostas em andamento param, e o app se reconecta quando o gateway voltar.",
         "desktop_restart_unavailable": "O app não pode reiniciar o gateway agora. Espere a conexão terminar e tente de novo.",
         "upcoming_update_title": "Próxima atualização",
