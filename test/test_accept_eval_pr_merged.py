@@ -139,7 +139,9 @@ def test_pr_merged_passes_owner_name_or_host_owner_name_verbatim(monkeypatch, go
     seen = _wire(mod, monkeypatch, [_Proc(0, _view("MERGED"))])
     verdict, evidence = mod._evaluate({"accept": {"kind": "pr_merged", "pr": 42, "repo": good}})
     assert verdict == "pass", evidence
-    assert seen == [["gh", "pr", "view", "42", "--repo", good, "--json", "state,headRefOid,mergeCommit"]]
+    assert seen == [
+        ["gh", "pr", "view", "42", "--repo", good, "--json", "state,headRefOid,mergeCommit"]
+    ]
 
 
 @pytest.mark.parametrize(
