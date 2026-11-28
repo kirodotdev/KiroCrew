@@ -69,6 +69,13 @@ interface ModalProps {
    *  restore is `<body>`. Pass the menu's `openerRef` (`useMenuOpensDialog`);
    *  see `useDialogFocusTrap`'s `returnFocusTo`. */
   returnFocusTo?: React.RefObject<HTMLElement | null>
+  /** Blur the page behind the backdrop (default true). Off for a dialog whose
+   *  page re-renders while it is open on a phone: each re-render re-blurs the
+   *  whole backdrop and costs frames. */
+  backdropBlur?: boolean
+  /** Move focus into the dialog a frame after it opens (default false), so the
+   *  opening tap paints first. See `useDialogFocusTrap`'s `deferFocus`. */
+  deferInitialFocus?: boolean
   /** Modal content */
   children: React.ReactNode
 }
@@ -86,7 +93,7 @@ const SPRING = { type: 'spring' as const, stiffness: 500, damping: 35 }
  * therefore capture the restore target at page load and move focus into a
  * dialog that is not on screen.
  */
-function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, guideTrustRoot: trustRootProp = false, returnFocusTo, children }: ModalDialogProps) {
+function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, guideTrustRoot: trustRootProp = false, returnFocusTo, deferInitialFocus = false, children }: ModalDialogProps) {
   // Asked for, or opened from inside a trust-root region (it portals out of it).
   const trustRoot = useGuideTrustRoot() || trustRootProp
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -102,7 +109,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   // consume it with preventDefault before the outer dialog decides to close.
   // The trap is one facet of interaction: an inert panel (a nested portaled
   // dialog is the active layer) must not pull Tab back into itself either.
-  useDialogFocusTrap(dialogRef, dismiss, { handleEscape: false, enabled: !interactionDisabled, returnFocusTo })
+  useDialogFocusTrap(dialogRef, dismiss, { handleEscape: false, enabled: !interactionDisabled, returnFocusTo, deferFocus: deferInitialFocus })
   useEffect(() => {
     if (dialogRef.current) dialogRef.current.inert = interactionDisabled
   }, [interactionDisabled])
@@ -212,7 +219,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   return trustRoot ? <GuideTrustRootProvider>{dialog}</GuideTrustRootProvider> : dialog
 }
 
-export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, layer = 'dialog', ...rest }: ModalProps) {
+export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, layer = 'dialog', backdropBlur = true, ...rest }: ModalProps) {
   const top = layer === 'top'
   /** Backdrop + Escape only. Suppressed while the caller guards unsaved input
    *  and while every dismissal is refused. */
@@ -253,7 +260,8 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
       {open && (
         <>
           <motion.div
-            className={`fixed inset-0 bg-bg/60 backdrop-blur-md ${top ? 'z-[10000]' : 'z-[100]'}`}
+            data-testid="modal-backdrop"
+            className={`fixed inset-0 bg-bg/60 ${backdropBlur ? 'backdrop-blur-md' : ''} ${top ? 'z-[10000]' : 'z-[100]'}`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

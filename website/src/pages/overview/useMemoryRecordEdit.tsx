@@ -38,7 +38,8 @@ export function useMemoryRecordSelection() {
   const [selected, setSelected] = useState<Map<string, MemoryRecord>>(new Map())
   const [all, setAll] = useState<QuerySelection | null>(null)
   const count = all ? all.count : selected.size
-  const isSelected = (row: MemoryRecord) => all ? !all.exclude.has(recordIdentity(row)) : selected.has(recordIdentity(row))
+  // Stable while the picks stay the same, so a memoized row list can skip re-rendering.
+  const isSelected = useCallback((row: MemoryRecord) => all ? !all.exclude.has(recordIdentity(row)) : selected.has(recordIdentity(row)), [all, selected])
   // Stable, so a list can clear its picks from an effect keyed on what it lists.
   const clear = useCallback(() => { setSelected(new Map()); setAll(null) }, [])
   const toggle = (row: MemoryRecord) => {
@@ -52,7 +53,7 @@ export function useMemoryRecordSelection() {
   }
   const selectAll = (query: MemoryRecordQuery, matched: number) => { setAll({ query, count: matched, exclude: new Map() }); setSelected(new Map()) }
   /** Whether a row's checkbox can change: a limit reached keeps it as it is. */
-  const lockedRow = (row: MemoryRecord) => !row.revision || (!all && !isSelected(row) && count >= MANUAL_LIMIT) || (!!all && isSelected(row) && all.exclude.size >= MANUAL_LIMIT)
+  const lockedRow = useCallback((row: MemoryRecord) => !row.revision || (!all && !isSelected(row) && count >= MANUAL_LIMIT) || (!!all && isSelected(row) && all.exclude.size >= MANUAL_LIMIT), [all, isSelected, count])
   const forEdit: MemoryEditSelection = {
     count,
     current: () => all ? { query: all.query, exclude: [...all.exclude.values()].map(({ kind, id }) => ({ kind, id })) }

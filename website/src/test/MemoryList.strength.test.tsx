@@ -83,7 +83,8 @@ describe('strength on the memory list', () => {
     expect(within(rows).getByText('Strength 0.26')).toBeVisible()
     expect(within(rows).getByText('Strength 0.85')).toBeVisible()
     const rail = await screen.findByRole('complementary', { name: 'Filters' })
-    const group = within(rail).getByRole('region', { name: 'Strength · experiences' })
+    // The rail's counts render at transition priority, a moment after the rows.
+    const group = await within(rail).findByRole('region', { name: 'Strength · experiences' })
     expect(within(group).getAllByRole('checkbox').map(box => box.getAttribute('aria-label'))).toEqual(['Strong', 'Faded'])
     const chart = within(group).getByTestId('store-fade-chart')
     // The day comes from the live rate: 0.03 a day puts importance 0.5 under the line on day 40.

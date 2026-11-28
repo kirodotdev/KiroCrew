@@ -37,11 +37,13 @@ export const notSaved = (code: string) => isRefusal(code) || code === 'injection
 export const eventLabel = (code: string) => LABEL_KEYS[code] ? i18nT(LABEL_KEYS[code]) : code
 export const eventWhy = (code: string) => WHY_KEYS[code] ? i18nT(WHY_KEYS[code]) : ''
 
-/** Red for a refusal or a block, amber for a skip, green for every write that landed. */
+/** Red for a refusal or a block, amber for a skip, green for every write that landed.
+ *  The text is mixed toward the body text so it holds 4.5:1 on its tinted fill in
+ *  dark palettes, whose --ok / --danger alone fall to about 3:1 there. */
 export function eventTone(code: string): string {
-  if (isRefusal(code) || code === 'injection_blocked' || code === REFUSED) return 'bg-danger-subtle text-danger-text'
+  if (isRefusal(code) || code === 'injection_blocked' || code === REFUSED) return 'bg-danger-subtle text-[var(--danger-body)]'
   if (code === 'conflict_skip') return 'bg-warn-subtle text-warn-text'
-  return 'bg-ok-subtle text-ok-text'
+  return 'bg-ok-subtle text-[color-mix(in_srgb,var(--ok-text)_60%,var(--text))]'
 }
 
 /** The rail's Event values: one Refused item in place of the refusal codes, with their sum. */
