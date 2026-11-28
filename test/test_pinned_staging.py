@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tarfile
 from collections.abc import Callable
 from pathlib import Path
@@ -759,7 +760,9 @@ def test_the_import_path_passes_its_staging_decision_to_both_branches() -> None:
         "except PinnedPathRefusal" not in source
     ), "the refusal is being swallowed again; a returned summary reads as success"
     assert "rejected_replace" not in source
-    assert "_do_replace(snap, mc, None, allow_unpinned=not staging_pinned)" in source, (
+    assert re.search(
+        r"_do_replace\(\s*snap,\s*mc,\s*None,\s*allow_unpinned=not staging_pinned", source
+    ), (
         "the replace branch does not receive the entry decision, so it will re-gate and "
         "refuse on a platform that cannot pin"
     )

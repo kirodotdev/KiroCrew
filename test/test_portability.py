@@ -1419,7 +1419,7 @@ class TestImportReplace:
 
             with patch("kiro_crew.portability.config_dir", return_value=target):
                 with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
-                    apply_import_zip(zip_path, mode="replace")
+                    apply_import_zip(zip_path, mode="replace", include_settings=True)
 
             # Config should be replaced
             data = json.loads((target / "config.json").read_text(encoding="utf-8"))

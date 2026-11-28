@@ -586,6 +586,43 @@ async def test_memory_only_import_passes_the_flag(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("mode=replace", False),
+        ("mode=replace&include_settings=0", False),
+        ("mode=replace&include_settings=true", False),
+        ("mode=replace&include_settings=1", True),
+        ("mode=merge&include_settings=1", False),
+    ],
+)
+async def test_only_an_explicit_pick_under_replace_reaches_the_import(
+    monkeypatch, query, expected
+) -> None:
+    """An absent or other value keeps this install's config.json, config.local.json, hooks.json."""
+    module = _handler_module()
+    seen: list[bool] = []
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "validate_import_zip", lambda p: (True, "", {"version": 2}))
+
+    def apply(zip_path, mode, *, include_settings=False, **_kw):
+        seen.append(include_settings)
+        return {"items": []}
+
+    monkeypatch.setattr(module, "apply_import_zip", apply)
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            f"/api/portability/import?{query}",
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+
+    assert response.status == 200
+    assert seen == [expected]
+
+
+@pytest.mark.asyncio
 async def test_a_validated_memory_manifest_scopes_the_import(monkeypatch) -> None:
     """Without ?components the validated declaration alone turns the filter on."""
     module = _handler_module()

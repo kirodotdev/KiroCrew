@@ -510,6 +510,11 @@ _CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
     }
 )
 
+#: The settings documents a running gateway applies within seconds of their installation.
+#: A Replace leaves a live copy of these alone unless the user picks them by name
+#: (``--include-config``, the import dialog's checkbox); a missing live file is still filled.
+SETTINGS_PICK_FILES: tuple[str, ...] = ("config.json", "config.local.json", "hooks.json")
+
 #: Files a MERGE deliberately never installs from the bundle, even when this install has
 #: no copy. Kept beside the component tables so the pre-flight validator and the merge
 #: driver cannot disagree about whether one of these files can reach a live consumer.

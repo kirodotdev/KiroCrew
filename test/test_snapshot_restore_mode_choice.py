@@ -136,7 +136,8 @@ class TestNoModeOnTerminal:
     def test_replace_answer_runs_replace(self, home, bundle, monkeypatch):
         stdin = _Tty("replace\n")
         out = _terminal(monkeypatch, "", stdin=stdin)
-        rc = snap.restore_main([str(bundle), *unpinnable_argv()])
+        # --include-config: a Replace keeps the live settings documents unless they are picked.
+        rc = snap.restore_main([str(bundle), "--include-config", *unpinnable_argv()])
         assert rc == 0, out.getvalue()
         assert stdin.read() == "", "the answer was never asked for"
         assert (home / "config.json").read_bytes() == ARCHIVED
