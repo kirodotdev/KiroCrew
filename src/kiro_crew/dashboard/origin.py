@@ -282,6 +282,41 @@ def is_https_request(request: web.Request) -> bool:
     return False
 
 
+# One or more ``/segment`` parts of URL-path-safe characters, no ``.``/``..``
+# segment, no trailing slash: what a proxy's ``X-Forwarded-Prefix`` names.
+# Checked one segment at a time, so the match stays linear in the header.
+_PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9._~-]+")
+_PATH_PREFIX_MAX_LEN = 256
+
+
+def public_path_prefix(request: web.Request) -> str:
+    """Return the sub-path a prefix-stripping reverse proxy serves us under.
+
+    A proxy that publishes the dashboard at ``https://host/kirocrew`` and strips
+    ``/kirocrew`` before forwarding names the stripped part in
+    ``X-Forwarded-Prefix`` (Traefik's ``stripPrefix`` sets it on its own). A
+    cookie scoped to a path below ``/`` must carry that prefix, or the browser
+    never sends it back on ``/kirocrew/api/auth/...``.
+
+    Honoured from a loopback peer only, on the same reasoning as
+    ``is_https_request``; a spoofed value only scopes the spoofer's own cookie
+    elsewhere. Returns ``""`` (served at the root) for an absent, untrusted or
+    malformed header, so the cookie keeps its root path.
+    """
+    raw = request.headers.get("X-Forwarded-Prefix", "").strip().rstrip("/")
+    if not raw or len(raw) > _PATH_PREFIX_MAX_LEN:
+        return ""
+    if not is_loopback(request.remote or ""):
+        return ""
+    leading, *segments = raw.split("/")
+    if leading or not segments:
+        return ""
+    for segment in segments:
+        if segment in (".", "..") or not _PATH_SEGMENT_RE.fullmatch(segment):
+            return ""
+    return raw
+
+
 # ---------------------------------------------------------------------------
 # Per-request origin check
 # ---------------------------------------------------------------------------
