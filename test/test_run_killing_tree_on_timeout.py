@@ -102,6 +102,16 @@ def test_a_timeout_kills_the_tree_then_drains_under_a_bound(windows) -> None:
     assert caught.value.stdout == b"partial"
 
 
+def test_an_error_other_than_timeout_kills_the_tree(windows) -> None:
+    """A ``communicate`` interrupted otherwise ends the tree, not only the child."""
+    _FakePopen.script = [PermissionError("sharing violation on the pid file")]
+    with pytest.raises(PermissionError):
+        platform_compat.run_killing_tree_on_timeout(
+            _ARGV, capture_output=True, timeout=FALLBACK_TIMEOUT_SECS
+        )
+    assert windows[0].events == ["communicate", "kill_tree"]
+
+
 def test_a_drain_that_also_times_out_still_raises_the_caller_s_timeout(windows) -> None:
     """Something outside the tree holds a pipe: the call returns at the drain bound."""
     _FakePopen.script = [
