@@ -56,6 +56,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import PurePath
 
+from kiro_crew.platform_compat_links import strip_extended_length_prefix
 from kiro_crew.subprocess_utf8 import utf8_path_stdout
 
 logger = logging.getLogger(__name__)
@@ -259,7 +260,13 @@ def repo_root(path: str) -> str | None:
 
 
 def _contains(parent: str, child: str) -> bool:
-    """Whether *child* is *parent* or inside it; paths on different drives are not."""
+    r"""Whether *child* is *parent* or inside it; paths on different drives are not.
+
+    Both lose Windows' extended-length prefix first, lexically, so ``\\?\C:\w\t``
+    and ``C:\w\t`` are one folder.
+    """
+    parent = strip_extended_length_prefix(parent)
+    child = strip_extended_length_prefix(child)
     try:
         return os.path.commonpath([parent, child]) == parent
     except ValueError:

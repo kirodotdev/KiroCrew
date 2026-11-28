@@ -33,7 +33,7 @@ from kiro_crew import skill_trust
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dep_sync import normalize as normalize_distribution_name
-from kiro_crew.platform_compat_links import is_link_or_junction
+from kiro_crew.platform_compat_links import is_link_or_junction, strip_extended_length_prefix
 from kiro_crew.release_channel import distribution_name
 from kiro_crew.security import is_sensitive_path, is_sensitive_resolved_path
 
@@ -416,11 +416,16 @@ def _recorded_bytes_match(path: str, data: bytes) -> bool:
 
 
 def _within_any(candidate: str, roots: tuple[str, ...]) -> bool:
-    """True when the already-resolved *candidate* equals one of *roots* or sits under it."""
-    cand = Path(candidate)
+    r"""True when the already-resolved *candidate* equals one of *roots* or sits under it.
+
+    Both sides lose Windows' extended-length prefix first, lexically, so a data
+    home spelled ``\\?\C:\...`` is the same root as its plain spelling.
+    """
+    cand = Path(strip_extended_length_prefix(candidate))
     for root in roots:
+        plain_root = Path(strip_extended_length_prefix(root))
         try:
-            if cand == Path(root) or cand.is_relative_to(root):
+            if cand == plain_root or cand.is_relative_to(plain_root):
                 return True
         except (OSError, ValueError):
             continue

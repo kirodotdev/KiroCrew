@@ -670,6 +670,13 @@ def test_paths_on_different_drives_are_not_contained(monkeypatch):
     assert cw._contains("C:\\repo", "D:\\ws") is False
 
 
+def test_the_extended_spelling_of_a_folder_is_that_folder(tmp_path):
+    parent = str(tmp_path / "w" / "t")
+    assert cw._contains(parent, "\\\\?\\" + os.path.join(parent, "src")) is True
+    assert cw._contains("\\\\?\\" + parent, parent) is True
+    assert cw._contains(parent, "\\\\?\\" + str(tmp_path / "w" / "tx")) is False
+
+
 # ── job 3: removal with the crewmate ──
 
 
