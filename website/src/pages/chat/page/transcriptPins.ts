@@ -401,6 +401,14 @@ export function useTranscriptPins({
   const handleUnpinById = useCallback((id: string) => {
     void unpinById(id).catch(() => {})
   }, [unpinById])
+  // A row's pinned mark opens the list of every pin in this session. It is an
+  // explicit ask, so unlike a first pin's reveal above it brings the panel up
+  // during a search and below the mobile breakpoint too.
+  const handleShowPins = useCallback(() => {
+    if (!activeSlot) return
+    openPanelView(activeSlot, 'pins')
+    dispatch(openActivityPanel())
+  }, [activeSlot, dispatch])
   // Split by kind. `pinError` is something that FAILED — a refused page load,
   // a pin/unpin request the server rejected (useChatPins keeps that state, so
   // the `.catch(() => {})` at the call sites is not a swallow). `pinStatus` is
@@ -428,6 +436,6 @@ export function useTranscriptPins({
 
   return {
     messageToDisplayIdx, navigateToTurn, chatNav, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
-    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, quoteJumpFor, quoteMark,
+    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, handleShowPins, pinError, pinStatus, dismissPinStatus, quoteJumpFor, quoteMark,
   }
 }

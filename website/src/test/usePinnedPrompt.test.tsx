@@ -637,6 +637,35 @@ describe('usePinnedPrompt leaves a tall bubble in place, then pins it at rest', 
     expect(h.result.current.pinned).toMatchObject({ idx: 2, stripUncovered: false })
   })
 
+  it('keeps the mark while the pinned mark below the strip still shows below the card', () => {
+    const h = renderPin()
+    const g = mountGeometry(5)
+    // The strip (124..150) is wholly under the card's resting bottom (164), but
+    // the row's pinned mark rendered after it (150..170) still shows 6px.
+    setRect(g.rows[2], -250, 420)
+    const { root, bubble, strip } = mountUserRow(g.rows[2])
+    const mark = document.createElement('button')
+    mark.setAttribute('data-pinned-mark', '')
+    root.append(mark)
+    setRect(bubble, -246, 366)
+    setRect(strip, 124, 26)
+    setRect(mark, 150, 20)
+    setRect(g.rows[3], 170, 40)
+    setRect(g.rows[4], 900, 40)
+    setRect(g.card, 104, 60)
+    wire(h, g)
+    // The covered strip stays hidden; only the mark is re-shown.
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, stripUncovered: false, markUncovered: true })
+    // 20px on, the mark (130..150) is under the card too.
+    setRect(g.rows[2], -270, 420)
+    setRect(bubble, -266, 366)
+    setRect(strip, 104, 26)
+    setRect(mark, 130, 20)
+    setRect(g.rows[3], 150, 40)
+    act(() => { h.result.current.updatePinnedPrompt() })
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, stripUncovered: false, markUncovered: false })
+  })
+
   it('measures only the row\'s own strip and editing marker, never nodes inside the bubble', () => {
     const h = renderPin()
     const g = mountGeometry(5)

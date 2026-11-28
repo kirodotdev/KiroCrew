@@ -649,6 +649,13 @@ export interface PinnedPromptState {
    * state only changes at the two edges where the marker flips.
    */
   stripUncovered?: boolean
+  /**
+   * The same test for the row's pinned mark (`data-pinned-mark`), which sits
+   * below the strip and so stays uncovered for a mark's height of scroll after
+   * the strip is under the card. Kept apart so that stretch re-shows the mark
+   * alone, never the covered strip's buttons.
+   */
+  markUncovered?: boolean
 }
 
 /** What the scroll recompute knows before any derivation is done. */
@@ -668,6 +675,8 @@ export interface PinnedPromptInput {
   maxH?: number
   /** See `PinnedPromptState.stripUncovered`. Recomputed every scroll frame. */
   stripUncovered?: boolean
+  /** See `PinnedPromptState.markUncovered`. Recomputed every scroll frame. */
+  markUncovered?: boolean
 }
 
 /**
@@ -687,16 +696,17 @@ export function nextPinnedPromptState(
   prev: PinnedPromptState | null,
   input: PinnedPromptInput,
 ): PinnedPromptState {
-  const { idx, ts, raw, pastes, meta, push, bannerH, liveH, maxH, stripUncovered } = input
+  const { idx, ts, raw, pastes, meta, push, bannerH, liveH, maxH, stripUncovered, markUncovered } = input
   const sameMsg = prev !== null && prev.idx === idx && prev.raw === raw && prev.ts === ts
   if (sameMsg && prev.push === push && prev.bannerH === bannerH && prev.liveH === liveH
-    && prev.maxH === maxH && prev.stripUncovered === stripUncovered) return prev
+    && prev.maxH === maxH && prev.stripUncovered === stripUncovered
+    && prev.markUncovered === markUncovered) return prev
   // `liveH` DOES move every frame — that is the fold. It is carried on the
   // same-message path for exactly that reason, unlike `push`/`bannerH` which only
   // change when the geometry does. `stripUncovered` flips on a later frame of
   // the same pin (the strip slides under the resting card), so it rides here too,
   // as does `maxH`, which moves when the pane or the dock does.
-  if (sameMsg) return { ...prev, push, bannerH, liveH, maxH, stripUncovered }
+  if (sameMsg) return { ...prev, push, bannerH, liveH, maxH, stripUncovered, markUncovered }
   const { text, body: full, images } = derivePinnedPromptText(raw, pastes, meta)
   return {
     idx,
@@ -714,6 +724,7 @@ export function nextPinnedPromptState(
     liveH,
     maxH,
     stripUncovered,
+    markUncovered,
   }
 }
 
