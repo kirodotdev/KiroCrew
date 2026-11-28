@@ -66,6 +66,10 @@ test('the link-preview frame cannot read the dashboard', async ({ page }) => {
     Object.assign(a.style, { position: 'fixed', left: '200px', top: '200px', zIndex: '2147483646' })
     scope.append(a)
   })
+  // The layer loads lazily and listens only once the app list has resolved; a
+  // hover before that is a pointerover nobody hears, and a resting pointer never
+  // fires another. Wait for the layer to say it is listening.
+  await expect(page.locator('html')).toHaveAttribute('data-link-preview-listening', '', { timeout: 10_000 })
   await page.locator('#lp-probe-link').hover()
 
   const frame = page.locator(`iframe[data-link-preview-frame="${APP}:cards"]`)
