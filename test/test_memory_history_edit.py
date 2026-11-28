@@ -37,10 +37,16 @@ _HIDDEN = github_classic(seed=171)
 async def test_private_history_read_edit_save_keeps_prior_days_once(
     env, monkeypatch, has_today, line_ending
 ):
+    # One frozen instant for both clocks the read, save and aggregate paths read, so
+    # every visit addresses the day seeded below even when the run crosses midnight.
+    clock = ManualClock()
+    clock.install(monkeypatch, vector_memory, time=False, datetime=True)
+    clock.install(monkeypatch, memory_store_module, time=False, datetime=True)
+    day = clock.now().astimezone().date()
     store = await document_store(env, "member-alice")
     tier = env.tiers["member-alice"]
-    today = date.today().isoformat()
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    today = day.isoformat()
+    yesterday = (day - timedelta(days=1)).isoformat()
     older_bytes = b"# Prior day\nRetained yesterday sentinel.\n"
 
     def seed_day(day, content):
