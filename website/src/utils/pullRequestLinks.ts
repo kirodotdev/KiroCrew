@@ -33,6 +33,10 @@ export interface PullRequestLink {
   number: number
   repo: string
   kind: SourceLinkKind
+  /** A self-managed GitLab's relative URL root (`gitlab` for
+   *  `https://host/gitlab/group/project/...`). Present only for such a link; it is
+   *  part of `url` but not of the project path. */
+  urlRoot?: string
 }
 
 /** Minimum shape needed to extract a project path or host from a link URL.
@@ -40,6 +44,7 @@ export interface PullRequestLink {
 export interface SourceLinkRef {
   url: string
   provider: PullRequestProvider
+  urlRoot?: string
 }
 
 /** Split one extraction result into its two kinds, preserving first-seen order. */
@@ -383,14 +388,47 @@ const URL_CANDIDATE_RE = /https:\/\/[A-Za-z0-9!#$%&*+,.\/:;=?@_~-]+/g
  * Entries arrive from dashboard config (already `host[:port]`), never from chat
  * content, and are matched exactly — the backend re-validates every URL before
  * a provider CLI runs, so this only decides which links become source tabs.
+ * An entry may carry the instance's relative URL root (`host/gitlab`). The set
+ * then holds both the bare `host[:port]` and the full `host[:port]/root` entry;
+ * `gitlabUrlRoot` reads the root back out of it.
  * An explicit `:443` is dropped to match the URL API (and the backend), which
  * omits the default HTTPS port. */
+function gitlabHostLookup(hosts: readonly string[] | undefined): ReadonlySet<string> {
+  const out = new Set<string>()
+  for (const entry of hosts ?? []) {
+    const text = entry.trim()
+    const cut = text.indexOf('/')
+    const authority = (cut < 0 ? text : text.slice(0, cut)).toLowerCase().replace(/:443$/, '')
+    if (!authority) continue
+    out.add(authority)
+    let root = cut < 0 ? '' : text.slice(cut + 1)
+    while (root.startsWith('/')) root = root.slice(1)
+    while (root.endsWith('/')) root = root.slice(0, -1)
+    if (root) out.add(`${authority}/${root}`)
+  }
+  return out
+}
+
+/** The configured self-hosted GitLab instances served at the root, normalized
+ * like {@link gitlabHostLookup}. An entry carrying a relative URL root
+ * (`host/gitlab`) is left out, for callers such as Issue Radar's instance
+ * picker that build URLs and glab calls without one. */
 export function gitlabHostSet(hosts: readonly string[] | undefined): ReadonlySet<string> {
-  return new Set(
-    (hosts ?? [])
-      .map(host => host.trim().toLowerCase().replace(/:443$/, ''))
-      .filter(Boolean),
-  )
+  return gitlabHostLookup((hosts ?? []).filter(host => !host.includes('/')))
+}
+
+/** The URL root configured for `authority` that `path` sits under: '' when the
+ *  instance has none, null when it has one and `path` is outside it (the backend
+ *  refuses such a link too). */
+function gitlabUrlRoot(hosts: ReadonlySet<string>, authority: string, path: string): string | null {
+  let rooted = false
+  for (const entry of hosts) {
+    if (!entry.startsWith(`${authority}/`)) continue
+    rooted = true
+    const root = entry.slice(authority.length + 1)
+    if (path.startsWith(`/${root}/`)) return root
+  }
+  return rooted ? null : ''
 }
 
 /** Normalize the configured Jira hosts to a lookup set.
@@ -440,12 +478,14 @@ const GITLAB_MARKERS: ReadonlyArray<{ marker: string; kind: SourceLinkKind }> = 
   { marker: '/-/work_items/', kind: 'issue' },
 ]
 
-function gitlabLink(origin: string, path: string): PullRequestLink | null {
+function gitlabLink(origin: string, path: string, urlRoot = ''): PullRequestLink | null {
+  // Under a URL root the project path starts after it, as the backend parses it.
+  const projectPath = urlRoot ? path.slice(urlRoot.length + 1) : path
   for (const { marker, kind } of GITLAB_MARKERS) {
-    const idx = path.lastIndexOf(marker)
+    const idx = projectPath.lastIndexOf(marker)
     if (idx <= 0) continue
-    const project = path.slice(1, idx)
-    const number = path.slice(idx + marker.length)
+    const project = projectPath.slice(1, idx)
+    const number = projectPath.slice(idx + marker.length)
     if (!project || !/^\d+$/.test(number)) continue
     // A group-level work item (an epic, /groups/<g>/-/work_items/<n>) is not a
     // project issue: the project issues API can never fetch it.
@@ -456,6 +496,7 @@ function gitlabLink(origin: string, path: string): PullRequestLink | null {
       number: Number(number),
       repo: project.split('/').at(-1) || project,
       kind,
+      ...(urlRoot ? { urlRoot } : {}),
     }
   }
   return null
@@ -568,7 +609,10 @@ function parseCandidate(
   // GitHub Enterprise first, matching the backend's order; config load refuses
   // a host listed under two providers.
   if (anyGithubHost || githubHosts.has(hostWithPort)) return githubLink(hostWithPort, path)
-  if (anyGitlabHost || gitlabHosts.has(hostWithPort)) return gitlabLink(hostWithPort, path)
+  if (anyGitlabHost || gitlabHosts.has(hostWithPort)) {
+    const urlRoot = gitlabUrlRoot(gitlabHosts, hostWithPort, path)
+    return urlRoot === null ? null : gitlabLink(hostWithPort, path, urlRoot)
+  }
   // Bitbucket Server is recognized only through its allowlist, after GitHub
   // Enterprise and GitLab, matching the backend's order.
   if (anyBitbucketServerHost || bitbucketServerHosts.has(hostWithPort)) return bitbucketServerLink(hostWithPort, path)
@@ -693,7 +737,7 @@ export function parseSourceLinkUrl(
 ): PullRequestLink | null {
   return parseCandidate(
     url,
-    gitlabHostSet(gitlabHosts),
+    gitlabHostLookup(gitlabHosts),
     false,
     jiraHostSet(jiraHosts),
     false,
@@ -820,6 +864,8 @@ function projectPathFromUrl(link: SourceLinkRef): string | null {
     return parts.slice(cIndex + 1, plusIndex).join('/')
   }
   // GitLab: the project path is everything before the /-/ marker.
+  const rootPrefix = link.urlRoot ? `/${link.urlRoot}` : ''
+  if (rootPrefix && path.startsWith(`${rootPrefix}/`)) path = path.slice(rootPrefix.length)
   for (const { marker } of GITLAB_MARKERS) {
     const idx = path.lastIndexOf(marker)
     if (idx <= 0) continue
@@ -869,7 +915,7 @@ export function extractPullRequestLinks(
   bitbucketServerHosts: readonly string[] = [],
   gerritHosts: readonly string[] = [],
 ): PullRequestLink[] {
-  const hosts = gitlabHostSet(gitlabHosts)
+  const hosts = gitlabHostLookup(gitlabHosts)
   const jHosts = jiraHostSet(jiraHosts)
   const ghHosts = githubHostSet(githubHosts)
   const bbsHosts = bitbucketServerHostSet(bitbucketServerHosts)
@@ -927,14 +973,14 @@ export class PullRequestLinkIndex {
     // An operator adding a self-managed host mid-session must retro-detect the
     // MRs already in the transcript, so a changed allowlist forces a full
     // rescan rather than only applying to future messages.
-    const hostsKey = [...gitlabHostSet(gitlabHosts)].sort().join(',')
+    const hostsKey = [...gitlabHostLookup(gitlabHosts)].sort().join(',')
       + '|' + [...jiraHostSet(jiraHosts)].sort().join(',')
       + '|' + [...githubHostSet(githubHosts)].sort().join(',')
       + '|' + [...bitbucketServerHostSet(bitbucketServerHosts)].sort().join(',')
       + '|' + [...gerritHostSet(gerritHosts)].sort().join(',')
     if (hostsKey !== this.hostsKey) {
       this.hostsKey = hostsKey
-      this.hosts = gitlabHostSet(gitlabHosts)
+      this.hosts = gitlabHostLookup(gitlabHosts)
       this.jHosts = jiraHostSet(jiraHosts)
       this.ghHosts = githubHostSet(githubHosts)
       this.bbsHosts = bitbucketServerHostSet(bitbucketServerHosts)
