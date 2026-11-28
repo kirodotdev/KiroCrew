@@ -1,5 +1,7 @@
 # Dynamic Workflows Module
 
+<!-- docs-lint: defines recovered_floor -->
+
 ## Overview
 
 A **dynamic workflow** is one LLM-authored Python module that orchestrates several

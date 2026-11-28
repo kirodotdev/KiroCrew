@@ -311,3 +311,12 @@ supportedModels
 
 # mimo fork permission routing (harness-onboarding.md)
 decideAskRouting
+
+# AWS CloudWatch API actions (ops-mission-control.md)
+DescribeAlarmHistory
+
+# The separate Crew Tunnels app package (dashboard-token-auth.md)
+PdebieKiroCrewTunnelDist
+
+# KAS session log tombstone kinds (providers.md)
+checkpoint_revert

@@ -1,5 +1,8 @@
 ## Browser Module
 
+<!-- docs-lint: defines last_due -->
+<!-- docs-lint: wrong-on-purpose browser_event -->
+
 The agent browses through one driver, and the person watches it in the chat.
 [Browser Harness](https://github.com/browser-use/browser-harness) (MIT) drives a
 Chromium-family browser over CDP; the gateway pins it, runs its daemon, holds the

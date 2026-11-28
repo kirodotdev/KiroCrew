@@ -1,5 +1,7 @@
 # Crews
 
+<!-- docs-lint: wrong-on-purpose CrewCapabilitiesPane, crew_chat -->
+
 A **crew** is a named entry in the config's `agents` map. It binds a kiro-cli
 agent template plus a workspace, a memory store, a model and a reasoning effort,
 and it carries free-text `triggers` that decide whether the orchestrator may
