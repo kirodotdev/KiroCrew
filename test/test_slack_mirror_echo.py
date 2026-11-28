@@ -1048,8 +1048,8 @@ class TestAScriptCronSendIsTheCrons:
         await async_wait_until(lambda: chat_run.await_count or chat_run.call_count, timeout=5)
         kwargs = chat_run.call_args.kwargs
         assert kwargs.get("_turn_actor") == actor
-        # Authority is unchanged: only who the turn is filed under moves.
-        assert kwargs["_directive_user_origin"] is True
+        # Nobody typed a cron's send, so it carries no user-origin directive either.
+        assert kwargs["_directive_user_origin"] is (not creator)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("creator, actor", [("cron:job-1", "cron"), ("", None)])
