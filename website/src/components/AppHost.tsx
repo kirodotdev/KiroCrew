@@ -28,7 +28,7 @@ import { errMessage } from '../utils/thunkError'
 import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription } from './appstore/appManifest'
 import { withBase } from '@/lib/basePath'
-import { useAppSlotPush } from '../utils/appSlotPush'
+import { grantedEvents, useAppSlotPush } from '../utils/appSlotPush'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -40,6 +40,9 @@ export interface AppHostProps {
     frameSourcesGrant?: { approved: string[]; staged: string[] }
     /** `permissions.browser` verbs the owner approved; published to the page as `info.permissions.browser`. */
     browserGrant?: { approved: string[] }
+    /** The owner-approved grant set; absent when none is stored, which grants
+     *  every declared entry. */
+    approvedGrants?: { events?: string[] }
     name: string
     version?: string
     displayName?: string
@@ -419,8 +422,11 @@ function AppHostInner({ app, entry: entryOverride, active = true, keepAlive, onC
   }, [])
 
   const navigateFn = useCallback((path: string) => navigate(path), [navigate])
-  // Own-slot change signals from the dashboard socket (appSlotPush.ts).
-  const slotPush = useAppSlotPush(app.name)
+  // Signals only the slots the app's APPROVED event declarations admit.
+  const slotPush = useAppSlotPush(
+    app.name,
+    grantedEvents(allowedEvents, app.approvedGrants ? (app.approvedGrants.events ?? []) : null),
+  )
 
   // Kept explicit rather than relying on the SDK's default, which is byte-identical:
   // `AppHostCoverage` asserts this bridge's behaviour at the surface that owns it,

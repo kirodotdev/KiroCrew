@@ -98,6 +98,7 @@ import { retireSendTail, sendTailProof, hostProofBaseline, calmLineHolds, isOwnU
 import { embedReadPath, isEmbedCursor, mergeEmbedRead, type EmbedCursor } from './embedIncrementalRead'
 import { useSlotPush } from './slotPush'
 import { useEmbedSlotRead } from './embedSlotRead'
+import { useEmbedReadReport, type ChatEmbedRead } from './embedReadReport'
 import type { ChatMessage } from '../types'
 import type { ChatEmbedHideKey } from './chatEmbedHide'
 import type { MessageRenderer } from './messageRenderers'
@@ -231,7 +232,18 @@ export interface ChatEmbedProps {
    * Omitted, only the built-in prose tags wrap.
    */
   proseFences?: readonly string[]
+  /**
+   * Called once for each read of the slot that lands, from a push signal or a
+   * poll, and never for a failed read. `at` is when the read landed (epoch ms,
+   * the query's `dataUpdatedAt`); `running` is the read's own running flag. A
+   * page this embed shows from cache on mount reports that page's own, older
+   * `at`. The root carries the newest landed `at` as `data-read-at`. A host
+   * uses it to hold a card until a read newer than the moment it opened.
+   */
+  onRead?: (read: ChatEmbedRead) => void
 }
+
+export type { ChatEmbedRead }
 
 /** Stable empty transcript. A fresh `[]` fallback would be a new identity on every
  *  render, so `deriveFollowUpOptions` below would re-run (and hand FollowUpBar a new
@@ -442,6 +454,7 @@ function ChatEmbed({
   hide,
   renderers,
   proseFences,
+  onRead,
 }: ChatEmbedProps) {
   const api = useAppApi()
   const hidden = (key: ChatEmbedHideKey) => hide?.includes(key) === true
@@ -613,6 +626,8 @@ function ChatEmbed({
   }, [slotPush, slotKey, queryClient])
   // The host tab coming back sends the read held while it was hidden.
   useEffect(() => { if (hostActive) flushHiddenRef.current() }, [hostActive])
+
+  const readAt = useEmbedReadReport({ slotKey, limit, data: slotData, isPlaceholderData, dataUpdatedAt }, onRead)
 
   // The last SETTLED page for this slot. A placeholder covers the in-flight
   // window of a widen, but a REJECTED widen leaves the wider key with no data
@@ -1393,6 +1408,7 @@ function ChatEmbed({
     <div
       className={`flex flex-col h-full min-h-0 overflow-hidden ${frameless ? '' : 'border border-border rounded-lg bg-bg'}`}
       style={{ '--mc-message-font-size': `${messageFontSize}px` } as React.CSSProperties}
+      data-read-at={readAt || undefined}
     >
       {!frameless && !hidden('header') && (
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">

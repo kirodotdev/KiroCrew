@@ -8,12 +8,16 @@
  *  that its slot changed.
  *
  *  The permission boundary lives here. This socket is the dashboard user's, so
- *  it carries every slot's frames; an app is signalled only for a slot whose
- *  owning app (`ChatSlot.app`) is that app -- the set the gateway's own event
- *  gate (`ws_event_scope._slot_visible`) admits for an app token with no
- *  `slots:*` declaration. Ownership is read again at every delivery, so a slot
- *  that changes hands stops signalling at once. The signal carries nothing: no
- *  frame payload, no slot key beyond the one the app asked to watch. The app
+ *  it carries every slot's frames; an app is signalled only for a slot the
+ *  gateway's own event gate (`ws_event_scope._slot_visible`) admits for that
+ *  app's declared `permissions.events`: a slot it owns (`ChatSlot.app`), any
+ *  slot under `slots:all` (or the legacy `*`), and a user-origin slot
+ *  (`ChatSlot.origin === 'user'`) under `slots:user`. `slots:app:<name>` is not
+ *  mirrored: it also needs `<name>`'s `exposeToApps` opt-in, which this tab
+ *  does not hold, so those slots keep the poll. Owner and origin are read again
+ *  at every delivery, so a slot that changes hands stops signalling at once.
+ *  The signal carries nothing: no frame payload, no slot key beyond the one
+ *  the app asked to watch. The app
  *  re-reads through its own scoped client, as `mc:app:slots` already does for
  *  the session list (hooks/websocket/slotList.ts). It sits outside
  *  hooks/websocket/ so app hosts can import it: that directory is reached only
@@ -54,7 +58,30 @@ const SLOT_ROW_FIELDS = ['messages', 'running', 'stopping', 'queue_depth', 'pend
 
 type RowFacts = Partial<Pick<ChatSlot, typeof SLOT_ROW_FIELDS[number]>>
 
-interface Entry { app: string; watcher: SlotPushWatcher }
+/** The slot scopes one app declared, as `_slot_visible` reads them. */
+interface SlotScopes { all: boolean; user: boolean }
+
+/** The scopes in a raw `permissions.events` list. Exact names, as the gateway's
+ *  set holds them; `*` expands to `slots:all` (`build_allowed_event_set`). */
+function slotScopes(events: readonly string[] | undefined): SlotScopes {
+  const declared = new Set(events ?? [])
+  return { all: declared.has('slots:all') || declared.has('*'), user: declared.has('slots:user') }
+}
+
+/** The declared `permissions.events` entries the gateway grants: an update's
+ *  added entries stay out until the owner approves them (`staged_app_grants`).
+ *  *approved* is the app row's `approvedGrants.events`; with no stored set
+ *  (`approvedGrants` absent) every declared entry is granted, as there. */
+export function grantedEvents(declared: readonly string[] | undefined, approved: readonly string[] | undefined | null): string[] {
+  const list = declared ?? []
+  if (approved == null) return [...list]
+  const ok = new Set(approved)
+  return list.filter(e => ok.has(e))
+}
+
+interface Grant { app: string; scopes: SlotScopes }
+
+interface Entry extends Grant { watcher: SlotPushWatcher }
 
 const watchers = new Map<string, Set<Entry>>()
 /** The watched fields last seen for each watched slot. */
@@ -81,6 +108,9 @@ function watchedSlotsChanged(): void {
 /** The owning app of a listed slot, or null when unowned or not listed. */
 type OwnerOf = (slotKey: string) => string | null
 
+/** The origin of a listed slot (`SlotOrigin`), or null when absent or not listed. */
+type OriginOf = (slotKey: string) => string | null
+
 /** This tab's slot-list row for a slot, or null when it is not listed. */
 type ListedRowOf = (slotKey: string) => RowFacts | null
 
@@ -88,19 +118,29 @@ const storeRowOf = (slotKey: string): ChatSlot | null =>
   store.getState().dashboard.slots.find(s => s.key === slotKey) ?? null
 
 const storeOwnerOf: OwnerOf = (slotKey) => storeRowOf(slotKey)?.app || null
+const storeOriginOf: OriginOf = (slotKey) => storeRowOf(slotKey)?.origin || null
 
 let ownerOf: OwnerOf = storeOwnerOf
+let originOf: OriginOf = storeOriginOf
 let listedRowOf: ListedRowOf = storeRowOf
 
-/** Tell the app embeds that own and watch *slot* to re-read it. Content-free
- *  and gated on ownership; the `chunk_watch_ack` catch-up calls it too. */
+/** Whether the gateway's event gate admits *slotKey* for this grant, in
+ *  `_slot_visible`'s order. A slot with no recorded origin is not a user slot,
+ *  as there. */
+function admits(grant: Grant, slotKey: string): boolean {
+  const owner = ownerOf(slotKey)
+  if (owner && owner === grant.app) return true
+  if (grant.scopes.all) return true
+  return grant.scopes.user && originOf(slotKey) === 'user'
+}
+
+/** Tell the app embeds the gate admits for *slot* to re-read it. Content-free;
+ *  the `chunk_watch_ack` catch-up calls it too. */
 export function noteAppSlotChanged(slot: string): void {
   const set = watchers.get(slot)
   if (!set || set.size === 0) return
-  const owner = ownerOf(slot)
-  if (!owner) return
   for (const e of [...set]) {
-    if (e.app === owner) e.watcher.onChange()
+    if (admits(e, slot)) e.watcher.onChange()
   }
 }
 
@@ -147,23 +187,26 @@ export function noteAppSlotRows(rows: ReadonlyArray<Partial<ChatSlot>> | undefin
 export function setAppSlotPushConnected(value: boolean): void {
   connected = value
   for (const [slotKey, set] of [...watchers.entries()]) {
-    for (const e of [...set]) e.watcher.onConnection(liveFor(e.app, slotKey))
+    for (const e of [...set]) e.watcher.onConnection(liveFor(e, slotKey))
   }
 }
 
 /** The channel is live for one app's watch on one slot only while the socket
- *  is up AND the slot is that app's: a slot it does not own is never signalled,
- *  so its embed must keep the full poll cadence instead of the backstop. */
-function liveFor(app: string, slotKey: string): boolean {
-  return connected && ownerOf(slotKey) === app
+ *  is up AND the gate admits the slot: a slot it does not admit is never
+ *  signalled, so its embed must keep the full poll cadence instead of the
+ *  backstop. */
+function liveFor(grant: Grant, slotKey: string): boolean {
+  return connected && admits(grant, slotKey)
 }
 
-/** The `SlotPush` one app receives. */
-export function createAppSlotPush(app: string): SlotPush {
+/** The `SlotPush` one app receives. *events* is the app's declared
+ *  `permissions.events`; omitted, only the app's own slots are signalled. */
+export function createAppSlotPush(app: string, events?: readonly string[]): SlotPush {
+  const grant: Grant = { app, scopes: slotScopes(events) }
   return {
-    connected: (slotKey) => liveFor(app, slotKey),
+    connected: (slotKey) => liveFor(grant, slotKey),
     watch(slotKey, watcher) {
-      const entry: Entry = { app, watcher }
+      const entry: Entry = { ...grant, watcher }
       let set = watchers.get(slotKey)
       if (!set) {
         set = new Set()
@@ -189,17 +232,24 @@ export function createAppSlotPush(app: string): SlotPush {
   }
 }
 
-/** One stable `SlotPush` per app name, for a host to pass to its provider. */
-export function useAppSlotPush(app: string): SlotPush {
-  return useMemo(() => createAppSlotPush(app), [app])
+/** One stable `SlotPush` per app name and slot scope, for a host to pass to
+ *  its provider. */
+export function useAppSlotPush(app: string, events?: readonly string[]): SlotPush {
+  const { all, user } = slotScopes(events)
+  return useMemo(
+    () => createAppSlotPush(app, [...(all ? ['slots:all'] : []), ...(user ? ['slots:user'] : [])]),
+    [app, all, user],
+  )
 }
 
 /** Forget every watcher, every baseline row and the connection flag; optionally
- *  replace the owner and listed-row lookups (the store by default). For tests. */
-export function resetAppSlotPushForTests(owner?: OwnerOf, listedRow?: ListedRowOf): void {
+ *  replace the owner, listed-row and origin lookups (the store by default).
+ *  For tests. */
+export function resetAppSlotPushForTests(owner?: OwnerOf, listedRow?: ListedRowOf, origin?: OriginOf): void {
   watchers.clear()
   lastRows.clear()
   connected = false
   ownerOf = owner ?? storeOwnerOf
   listedRowOf = listedRow ?? storeRowOf
+  originOf = origin ?? storeOriginOf
 }

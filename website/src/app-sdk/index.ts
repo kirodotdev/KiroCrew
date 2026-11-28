@@ -645,6 +645,7 @@ export * from './protocol'
 export { default as ChatEmbed } from './ChatEmbed'
 // The keys `ChatEmbed`'s `hide` prop accepts; any other string is a type error.
 export type { ChatEmbedHideKey } from './chatEmbedHide'
+export type { ChatEmbedRead } from './ChatEmbed'
 export { default as ChatMessageList } from './ChatMessageList'
 // The dashboard's pull-request panel. An external app's panel reaches only the
 // source endpoints its `permissions.api` declares (see ./PullRequestPanel).

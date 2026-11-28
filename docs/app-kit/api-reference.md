@@ -350,6 +350,33 @@ scrolled out of view, or in a host tab that is not active) reads nothing.
 | `hide` | `readonly ChatEmbedHideKey[]` | none | Parts of the embed not to mount (see [Hiding parts](#hiding-parts)). |
 | `renderers` | `readonly MessageRenderer[]` | none | Transcript row renderers, handed to the embed's `ChatMessageList` and merged over the built-ins (see [Restyling rows](#restyling-rows)). |
 | `proseFences` | `readonly string[]` | none | Fence tags the transcript draws wrapped, as it draws `markdown` and `text` fences. The tag is the first word of the info string, matched without regard to case. Use it for a fence your app defines for prose or a record, such as a proposed reply. Other fences keep their horizontal scroll. |
+| `onRead` | `(read: ChatEmbedRead) => void` | none | Called once for each read of the session that lands, from a push signal or a poll, and never for a failed read (see [Knowing a read landed](#knowing-a-read-landed)). |
+
+### Knowing a read landed
+
+A host that keeps embeds mounted but hidden, and shows one when a card opens,
+can tell whether what the embed shows is newer than the moment the card opened.
+`onRead` receives `{ at, running }` for each read that lands: `at` is when the
+read landed, in epoch milliseconds, and `running` is that read's own running
+flag. A failed read reports nothing, so the last `at` stays the time of the
+newest page on screen. A page the embed shows from cache when it mounts reports
+that page's own, older `at`. The embed's root element carries the newest landed read's
+time as `data-read-at`, absent until the first read lands. While a wider page
+of history loads, or after that load fails, it keeps the time of the page still
+on screen.
+
+```tsx
+const openedAt = useRef(Date.now())
+const [fresh, setFresh] = useState(false)
+
+<ChatEmbed
+  slotKey={slotKey}
+  onRead={({ at }) => { if (at >= openedAt.current) setFresh(true) }}
+/>
+```
+
+The embed calls `onRead` once per read, whatever callback identity the host
+passes on a later render.
 
 ### Restyling rows
 
@@ -602,12 +629,22 @@ described below.
 The signal carries no rows and no text, so the transcript read stays the only
 way content reaches the app and its `permissions.api` grant and the gateway's
 slot checks still apply. The dashboard's hosts (`AppHost` and the builtin
-pages) pass one that signals only for slots the app owns -- the slots an app
-token receives slot events for with no `slots:*` declaration. A slot the app
-does not own, such as one the generic `POST /api/chat` created, is not signalled
-and the embed keeps polling it at the full pace: `connected(slotKey)` is
-`false` for such a slot even while the socket is up. An app needs no new
-permission for this.
+pages) pass one that signals the slots the gateway sends the app's token slot
+events for:
+
+| Slot | Signalled when |
+|---|---|
+| One the app owns | always; no declaration needed |
+| A person's own tab (origin `user`) | the app's approved `permissions.events` holds `slots:user` |
+| Any slot | the approved events hold `slots:all` (or `*`) |
+
+A `slots:*` entry an app update added counts only once the owner approves it.
+`slots:app:<name>` is not signalled, because it also needs `<name>`'s
+`exposeToApps` opt-in, which the dashboard page does not hold. Any slot not in
+the table, such as one the generic `POST /api/chat` created for another app, is
+not signalled, and the embed keeps polling it at the full pace:
+`connected(slotKey)` is `false` for such a slot even while the socket is up.
+An app needs no new permission for its own slots.
 
 ```ts
 interface SlotPush {
