@@ -218,6 +218,20 @@ export function isGitlab(ref?: Pick<RepoRef, 'provider'>): boolean {
   return providerKeyOf(ref) === 'gitlab'
 }
 
+/** The review verdicts the ref's provider records, for the bars that offer them.
+ *
+ * The backend's clients refuse the rest (their `PR_REVIEW_EVENTS`): GitLab has no
+ * "request changes" review, and Azure DevOps records neither verdict, because its
+ * reviewer vote attaches to the pull request rather than to a revision. A plain
+ * comment review works on all three, so it needs no entry here. */
+export function reviewVerdicts(ref?: Pick<RepoRef, 'provider'>): {
+  approve: boolean
+  requestChanges: boolean
+} {
+  const provider = providerKeyOf(ref)
+  return { approve: provider !== 'azure', requestChanges: provider === 'github' }
+}
+
 /** The ref's host, defaulting to the provider's public host for legacy records. */
 function hostOf(ref: RepoRef): string {
   return ref.host || descriptorOf(ref).defaultHost
