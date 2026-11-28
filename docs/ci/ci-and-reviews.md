@@ -378,7 +378,10 @@ Three structural facts explain most of the rest:
   before. A run off the fleet has no budget for the pass and skips it.
 - **A shard can retry its few failed tests once, and records each flaky pass.**
   `scripts/ci_shard_retry.py` is a pytest plugin (`-p scripts.ci_shard_retry`)
-  that no workflow loads yet. It does nothing unless `CI_SHARD_RETRY=1` and
+  that the Windows backend shards load (`backend-test-windows` in `ci.yml`), on
+  every pytest invocation of their "Run tests" step. The Linux and macOS shards
+  do not load it: their runs collect coverage, which the retry pass drops. It
+  does nothing unless `CI_SHARD_RETRY=1` and
   `CI_SHARD_RETRY_EVENT=pull_request`, so main keeps every flaky red. When 1 to 5
   tests failed in setup, call or teardown, one fresh serial pytest pass with the
   session's own arguments runs only those tests; the job turns green only if all
@@ -392,8 +395,11 @@ Three structural facts explain most of the rest:
   `outcome` is `passed` for a test that passed only on retry and `failed` for one
   that did not pass it, and `CI_SHARD_RETRY_SHARD` and `CI_SHARD_RETRY_HEAD_SHA`
   fill the last two. `python scripts/ci_shard_retry.py summary` writes both
-  counts and one job summary line per retried test.
-  `test/test_ci_shard_retry.py` pins each case.
+  counts and one job summary line per retried test. Each Windows shard runs that
+  command and uploads its record as the artifact `windows-shard-retry-<group>`,
+  both from a red shard too; removing the `CI_SHARD_RETRY: "1"` line from the
+  step turns the retry off. `test/test_ci_shard_retry.py` pins each case of the
+  plugin and `test/test_ci_windows_shard_retry.py` the wiring.
 - **Do not merge a feature PR past a non-green `PR Readiness`.** The ruleset's
   bypass actors can, and a `pending` readiness is not a judgement about a red
   lane: it skips lanes that have not reported yet. #11947 merged 14 s after its

@@ -452,6 +452,10 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "scripts/ci_test_selection_step.py",
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
+        # Prints what a Windows shard's retry did (`summary`) from the record
+        # that shard wrote. It judges no code and returns 0 whatever it reads;
+        # the record exists only on a runner.
+        "scripts/ci_shard_retry.py",
         # Decides whether a pull request is docs-only, and so which lanes run
         # and which tests read the changed docs; not itself a gate.
         "scripts/docs_only.py",
