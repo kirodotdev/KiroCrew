@@ -318,6 +318,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         FILE_WRITE_SCHEMA,
         HOOK_CREATE_SCHEMA,
         HOOK_UPDATE_SCHEMA,
+        _refuse_verbatim_only_path,
         _reject_null_enabled,
         _validate_hook_create,
         _validate_hook_has_action,
