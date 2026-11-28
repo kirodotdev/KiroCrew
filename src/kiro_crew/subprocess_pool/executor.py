@@ -213,7 +213,12 @@ def proc_syscall(pid: int) -> bytes | None:
     """First token of ``/proc/<pid>/syscall``, or ``None`` where it cannot be read.
 
     A thread id works too: Linux exposes every task under ``/proc/<tid>``.
+    Off Linux the file never exists, so no open is attempted: the sample is taken
+    on the caller's thread, which can be the event loop, and a failing open there
+    is still a filesystem wait on a host with slow file scanning.
     """
+    if not sys.platform.startswith("linux"):
+        return None
     try:
         with open(f"/proc/{pid}/syscall", "rb") as fh:
             head = fh.read().split()

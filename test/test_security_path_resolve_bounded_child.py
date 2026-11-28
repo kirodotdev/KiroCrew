@@ -105,6 +105,25 @@ def test_the_discriminator_reads_a_running_thread_as_not_blocked() -> None:
     assert _REAL_BLOCKED_IN_FILESYSTEM(proc_syscall(2**31 - 1)) is True
 
 
+def test_sampling_a_child_off_linux_opens_no_file(monkeypatch) -> None:
+    # The sample is taken on the caller's thread at the deadline, which can be the
+    # event loop.  Only Linux has /proc/<pid>/syscall; elsewhere the open can only
+    # fail, and on a host with slow file scanning that failing open is one more
+    # filesystem wait on the loop after the budget is already spent.
+    from kiro_crew.subprocess_pool import executor
+
+    opened: list[object] = []
+
+    def _no_open(path, *args, **kwargs):
+        opened.append(path)
+        raise OSError(errno.ENOENT, "no such file")
+
+    monkeypatch.setattr(executor.sys, "platform", "win32")
+    monkeypatch.setattr(executor, "open", _no_open, raising=False)
+    assert proc_syscall(os.getpid()) is None
+    assert opened == []
+
+
 def test_a_saturated_pool_refuses_without_charging_or_tracking(caplog, monkeypatch) -> None:
     # THE QUEUED ARM, end to end on the real pool.  kirodotdev/KiroCrew#9482:
     # simultaneous cron fires lease both children, so a third resolution times
