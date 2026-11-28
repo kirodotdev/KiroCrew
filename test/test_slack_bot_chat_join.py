@@ -33,6 +33,7 @@ from kiro_crew.testing.wait import await_until
 # The shared fixtures, bound by assignment rather than import: pyflakes reads a test's
 # ``bots`` / ``audit`` parameter as a redefinition of an imported name, not of a global.
 bots = _switch.bots
+first_crewmate = _switch.first_crewmate
 audit = _switch.audit
 
 _SECOND_TS = "1700000900.000100"
@@ -133,6 +134,25 @@ class TestJoin:
 
         assert ds.get_linked_slot(_MSG_TS) is slot
         assert "already talks to Bot *web-frontend*" in _posts(slack)[-1]
+
+    def test_the_replies_name_the_bot_as_the_dashboard_does(
+        self, first_crewmate, audit, ds, run_chat
+    ):
+        # The first crewmate, never renamed, is "Bot" on the Bots page, not ``mate``.
+        _bot_chat(ds, "mate")
+        slack, _ = _run(
+            _first("!bot mate"),
+            _reply("!bot mate", n=201),
+            _first("!bot mate", ts=_SECOND_TS),
+            _reply("!bot off", n=202),
+        )
+
+        joined, again, held, left = _posts(slack)
+        assert joined.startswith("🤖 This thread now talks to Bot *Bot* in its own chat")
+        assert again == "🤖 This thread already talks to Bot *Bot*."
+        assert held.startswith("❌ Bot *Bot*'s chat is already talking to")
+        assert left == "👋 This thread left Bot *Bot*'s chat."
+        assert not any("*mate*" in p for p in _posts(slack))
 
 
 class TestNearbyInputs:

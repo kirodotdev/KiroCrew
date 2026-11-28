@@ -37,6 +37,10 @@ export interface OwnSlotChatOptions {
   /** The embedded chat has its own sessions rail: once the session has opened,
    *  a session the user picks there is shown instead of switched away from. */
   followsNavigation?: boolean
+  /** Whether the host surface is on screen. While it is not (a kept app page the
+   *  person left), the hook neither makes the session active nor switches back to
+   *  it, and shows no chat; it makes the session active again once shown. */
+  active?: boolean
 }
 
 export interface OwnSlotChat {
@@ -49,7 +53,7 @@ export interface OwnSlotChat {
 }
 
 export function useOwnSlotChat({
-  slotKey, onSessionGone, onSessionReplaced, followsNavigation = false,
+  slotKey, onSessionGone, onSessionReplaced, followsNavigation = false, active = true,
 }: OwnSlotChatOptions): OwnSlotChat {
   const dispatch = useAppDispatch()
   const activeSlot = useAppSelector(state => state.chat.activeSlot)
@@ -104,7 +108,8 @@ export function useOwnSlotChat({
     // A new session starts a new run of switch-backs; a re-run for the same
     // session (a switch-back, `retry`) keeps the run, so the cap holds.
     if (switchBacksRef.current.key !== slotKey) switchBacksRef.current = { key: slotKey, count: 0, at: 0 }
-    if (!slotKey) return
+    // A hidden host leaves the active slot to the chat the person is using.
+    if (!slotKey || !active) return
     seenInListRef.current = false
     closeSeenRef.current = false
     const ready = () => setReadyKey(slotKey)
@@ -130,7 +135,7 @@ export function useOwnSlotChat({
         else setFailure(errMessage(err) || i18nT('store.chatSlice.session_open_error'))
       })
     return () => { current = false }
-  }, [slotKey, attempt, dispatch, onSessionGone])
+  }, [slotKey, attempt, active, dispatch, onSessionGone])
 
   // While the session is shown, watch what the embedded chat does to the
   // active slot. Only a memory-mode switch may move it to another session:
@@ -146,7 +151,7 @@ export function useOwnSlotChat({
   // back is a transition: React renders it together with the route change,
   // which the router also makes a transition, and the host is gone first.
   useEffect(() => {
-    if (followsNavigation || !slotKey || readyKey !== slotKey || switchingElsewhere) return
+    if (!active || followsNavigation || !slotKey || readyKey !== slotKey || switchingElsewhere) return
     const switchAgain = () => startTransition(() => setAttempt(n => n + 1))
     const replacement = replacementOf(slotKey)
     const listed = slots.some(s => s.key === slotKey)
@@ -190,13 +195,15 @@ export function useOwnSlotChat({
       return
     }
     switchAgain()
-  }, [followsNavigation, switchingElsewhere, slots, activeSlot, slotKey, readyKey, closePhase, listPartial, onSessionGone, onSessionReplaced])
+  }, [active, followsNavigation, switchingElsewhere, slots, activeSlot, slotKey, readyKey, closePhase, listPartial, onSessionGone, onSessionReplaced])
 
   // The chat renders the ACTIVE slot, so it is shown only while that slot is
   // the session or its memory-mode replacement -- or, with a sessions rail,
   // once the session has opened.
   const replacement = slotKey ? replacementOf(slotKey) : undefined
-  const showChat = slotKey !== null && readyKey === slotKey && (followsNavigation
+  // A hidden host shows no chat: the embedded chat renders the ACTIVE slot, which is
+  // the person's own chat by then, and would sync its URL, read state and title.
+  const showChat = active && slotKey !== null && readyKey === slotKey && (followsNavigation
     || activeSlot === slotKey || (replacement !== undefined && activeSlot === replacement))
 
   return {

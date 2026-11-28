@@ -59,9 +59,14 @@ Usage
     scripts/local-gate.py --dry-run        # print the plan, run nothing
     scripts/local-gate.py --full           # both surfaces' FULL suites (human-requested)
     scripts/local-gate.py --no-reuse       # run every command, even one that passed on this tree
+    scripts/local-gate.py --fail-fast      # stop at the first failing command
+
+Every selected command runs even after one fails, so one run lists every failing
+batch; the summary names each one. ``--fail-fast`` stops at the first instead.
 
 Exit status is the gate's: 0 when every selected command passed (or nothing was
-related), 2 when the diff could not be read, non-zero otherwise. ``--dry-run``
+related), 2 when the diff could not be read, otherwise the first failing
+command's exit code (127 when it could not start). ``--dry-run``
 exits 0 after printing the plan. pytest runs as ``-n auto`` with
 ``PYTEST_XDIST_AUTO_NUM_WORKERS`` capped at ``min(max(cpu_count // 3, 2), 12)``,
 so the root ``xdist_budget.py`` still applies its memory clamp and shared slots
@@ -504,6 +509,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-reuse", action="store_true",
                         help="run every selected command even when it already passed on "
                              "this exact tree")
+    parser.add_argument("--fail-fast", action="store_true",
+                        help="stop at the first failing command instead of running the rest")
     args = parser.parse_args(argv)
 
     try:
@@ -528,6 +535,7 @@ def main(argv: list[str] | None = None) -> int:
     # (harmless to npm/vitest) and the i18n base ref; see gate_env.
     env = gate_env(args.base)
     proofs = open_proofs(env)
+    failures: list[tuple[str, int]] = []
     for label, cmd, cwd in plan.commands:
         age = None if proofs is None else proofs.age(cmd, cwd)
         if age is not None and not args.no_reuse:
@@ -539,14 +547,27 @@ def main(argv: list[str] | None = None) -> int:
             proc = subprocess.run(_resolve_command(cmd), cwd=cwd, env=env)
         except OSError as exc:
             print(f"local-gate: [{label}] FAILED to start: {exc}", file=sys.stderr)
-            return 127
+            failures.append((label, 127))
+            if args.fail_fast:
+                break
+            continue
         if proc.returncode != 0:
             print(f"local-gate: [{label}] FAILED (rc={proc.returncode})", file=sys.stderr)
             if proofs is not None:
                 proofs.forget(cmd, cwd)
-            return proc.returncode
+            failures.append((label, proc.returncode))
+            if args.fail_fast:
+                break
+            continue
         if proofs is not None:
             proofs.record(cmd, cwd)
+    if failures:
+        print(
+            f"local-gate: {len(failures)} of {len(plan.commands)} command(s) failed: "
+            + ", ".join(f"[{label}] rc={rc}" for label, rc in failures),
+            file=sys.stderr,
+        )
+        return failures[0][1]
     if plan.skipped:
         print(
             "local-gate: every runnable gate passed; "

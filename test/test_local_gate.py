@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -25,6 +26,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from kiro_crew.testing.wait import default_timeout
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "local-gate.py"
@@ -813,6 +816,67 @@ def test_missing_node_launcher_fails_cleanly(gate, monkeypatch, capsys) -> None:
     assert "not found on PATH" in err
 
 
+def _three_batch_plan(gate):
+    plan = gate.Plan("test plan")
+    for index in (1, 2, 3):
+        plan.add(f"backend (related) {index}/3", [gate.sys.executable, "-m", "pytest", f"t{index}"],
+                 gate._REPO_ROOT)
+    return plan
+
+
+def _fake_batch_runs(gate, monkeypatch, exit_codes: dict[str, int]) -> list[str]:
+    """Answer each batch's pytest run with its exit code and record which ran."""
+    ran: list[str] = []
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "git":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        ran.append(cmd[-1])
+        return subprocess.CompletedProcess(cmd, exit_codes.get(cmd[-1], 0))
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    monkeypatch.setattr(gate, "open_proofs", lambda _env: None)
+    return ran
+
+
+def test_a_failing_batch_does_not_stop_the_later_ones(gate, monkeypatch, capsys) -> None:
+    """A host where the first batch always fails must still run the rest, and the
+    summary names every failing batch so one run shows them all."""
+    monkeypatch.setattr(gate, "build_plan", lambda _args: _three_batch_plan(gate))
+    ran = _fake_batch_runs(gate, monkeypatch, {"t1": 1, "t3": 5})
+
+    assert gate.main([]) == 1
+    assert ran == ["t1", "t2", "t3"]
+    err = capsys.readouterr().err
+    assert "2 of 3 command(s) failed: [backend (related) 1/3] rc=1, [backend (related) 3/3] rc=5" in err
+
+
+def test_fail_fast_stops_at_the_first_failing_batch(gate, monkeypatch) -> None:
+    monkeypatch.setattr(gate, "build_plan", lambda _args: _three_batch_plan(gate))
+    ran = _fake_batch_runs(gate, monkeypatch, {"t1": 1})
+
+    assert gate.main(["--fail-fast"]) == 1
+    assert ran == ["t1"]
+
+
+def test_scoped_runner_runs_every_batch_after_a_failure(monkeypatch, capsys) -> None:
+    """``run_scoped_tests.py --surface`` is the profile's per-surface gate; it must
+    not stop at the first red batch either."""
+    scoped = importlib.import_module("run_scoped_tests")
+    monkeypatch.setattr(scoped, "plan", lambda _surface, _base: (["t1", "t2", "t3"], "related"))
+    monkeypatch.setattr(scoped, "argv_batches", lambda _build, targets: [["pytest", t] for t in targets])
+    ran: list[str] = []
+
+    def fake_batch(cmd, _cwd):
+        ran.append(cmd[-1])
+        return 2 if cmd[-1] == "t2" else 0
+
+    monkeypatch.setattr(scoped, "_run_batch", fake_batch)
+    assert scoped.main(["--surface", "backend"]) == 2
+    assert ran == ["t1", "t2", "t3"]
+    assert "1 of 3 batch(es) failed: batch 2 rc=2" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # End-to-end dry run against the real repo (no tests executed)
 # ---------------------------------------------------------------------------
@@ -940,23 +1004,71 @@ def test_an_empty_platform_list_drops_nothing(
     assert "not collected" not in verdict
 
 
-def test_the_leaf_selector_imports_without_pytest_or_kiro_crew() -> None:
-    """CI's ``changes`` job runs ``leaf_test_scope.py`` with no dependencies
-    installed, and it imports this selector; the collector helper (which needs
-    pytest and kiro_crew) must load on first use, not at import."""
-    probe = (
-        "import sys; sys.path.insert(0, 'scripts'); import leaf_test_scope; "
-        "assert 'platform_collect_ignore_helpers' not in sys.modules"
-    )
+_BARE_INTERPRETER_GROUP = "local_gate_bare_interpreter"
+
+# Every case that needs an interpreter without site-packages is answered by this
+# one probe, so a single child is started for all of them. Each case records its
+# own verdict and a failure in one never hides another.
+_BARE_INTERPRETER_PROBE = """\
+import json, sys, traceback
+sys.path.insert(0, 'scripts')
+verdicts = {}
+try:
+    import leaf_test_scope
+    assert 'platform_collect_ignore_helpers' not in sys.modules
+    verdicts['leaf_import'] = {'error': ''}
+except BaseException:
+    verdicts['leaf_import'] = {'error': traceback.format_exc()}
+try:
+    import run_scoped_tests as selector
+    try:
+        selector.platform_uncollected_targets()
+    except selector.SelectionUntrustworthy as exc:
+        verdicts['fail_closed'] = {'message': str(exc), 'error': ''}
+    else:
+        verdicts['fail_closed'] = {
+            'message': '',
+            'error': 'the selector loaded the helper without pytest',
+        }
+except BaseException:
+    verdicts['fail_closed'] = {'message': '', 'error': traceback.format_exc()}
+print(json.dumps(verdicts))
+"""
+
+
+@pytest.fixture(scope="module")
+def bare_interpreter_verdicts() -> dict[str, dict[str, str]]:
     # -S: no site-packages, so neither pytest nor an installed kiro_crew is importable.
     result = subprocess.run(
-        [sys.executable, "-S", "-c", probe],
+        [sys.executable, "-S", "-c", _BARE_INTERPRETER_PROBE],
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
         encoding="utf-8",
+        timeout=default_timeout(),
     )
     assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@pytest.mark.xdist_group(name=_BARE_INTERPRETER_GROUP)
+def test_the_leaf_selector_imports_without_pytest_or_kiro_crew(bare_interpreter_verdicts) -> None:
+    """CI's ``changes`` job runs ``leaf_test_scope.py`` with no dependencies
+    installed, and it imports this selector; the collector helper (which needs
+    pytest and kiro_crew) must load on first use, not at import."""
+    assert bare_interpreter_verdicts["leaf_import"]["error"] == ""
+
+
+@pytest.mark.xdist_group(name=_BARE_INTERPRETER_GROUP)
+def test_an_interpreter_without_pytest_fails_closed_with_its_name(bare_interpreter_verdicts) -> None:
+    """A fresh worktree with no virtualenv runs the gate under a bare python3.
+    Backend selection needs the collector helper, which needs pytest, so the gate
+    must stop at exit 2 naming the interpreter, not crash with a traceback."""
+    verdict = bare_interpreter_verdicts["fail_closed"]
+    assert verdict["error"] == ""
+    assert sys.executable in verdict["message"]
+    assert "cannot import pytest" in verdict["message"]
+    assert ".venv" in verdict["message"]
 
 
 def test_the_selector_subtracts_exactly_what_the_hook_ignores(

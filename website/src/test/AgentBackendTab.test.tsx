@@ -264,7 +264,7 @@ describe('AgentBackendTab list', () => {
     // policy, and that policy is read once when the gateway starts.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    expect(screen.getByText(/decided when the gateway starts/)).toBeInTheDocument()
+    expect(screen.getByText(/This list is set when .* starts/)).toBeInTheDocument()
   })
 })
 
@@ -939,6 +939,10 @@ describe('AgentBackendTab status strip', () => {
       expect(detail().textContent).toContain('Kiro Agent is installed and ready to use.'),
     )
     expect(panel().getByText('Recommended')).toBeInTheDocument()
+    // Each Kiro-or-Claude row says what it is and which sign-in it uses.
+    expect(detail().textContent).toContain(
+      "Kiro Agent is Kiro's newest agent. It signs in with your Kiro account.",
+    )
     expect(detail().textContent).not.toContain('Default.')
     expect(panel().queryByText('Experimental')).toBeNull()
     expect(document.getElementById('agent-backend-row-status-kas')?.textContent).toBe(
@@ -951,7 +955,7 @@ describe('AgentBackendTab status strip', () => {
       expect(detail().textContent).toContain('Kiro CLI is installed and ready to use.'),
     )
     expect(detail().textContent).not.toContain('Recommended')
-    expect(detail().textContent).toContain("Uses the kiro-cli installed on this machine, with kiro-cli's own sign-in.")
+    expect(detail().textContent).toContain('Kiro CLI is the kiro-cli program on this computer. It uses the sign-in you made with kiro-cli login.')
     expect(panel().queryByText('Experimental')).toBeNull()
     const kiroStatus = document.getElementById('agent-backend-row-status-kiro')?.textContent ?? ''
     expect(kiroStatus).not.toMatch(/Recommended|Experimental/)
@@ -959,6 +963,9 @@ describe('AgentBackendTab status strip', () => {
     // Any other harness is still Experimental.
     highlight('Claude Code')
     await waitFor(() => expect(panel().getByText('Experimental')).toBeInTheDocument())
+    expect(detail().textContent).toContain(
+      'Claude Code runs on this computer. It uses your Claude sign-in, not your Kiro account.',
+    )
     expect(detail().textContent).not.toContain('Recommended')
     expect(document.getElementById('agent-backend-row-status-claude')?.textContent).toBe(
       'Experimental',

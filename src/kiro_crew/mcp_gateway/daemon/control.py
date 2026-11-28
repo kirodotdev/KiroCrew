@@ -23,15 +23,18 @@ from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.daemon import identity as _identity
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.audit import (
+    _audit_agent_binding,
     _audit_caller_claimed,
     _audit_owner_port,
     _audit_stand_down,
 )
 from kiro_crew.mcp_gateway.daemon.identity import (
     _CONN_INDEX,
+    _bind_agents,
     _bind_token,
     _caller_from_register,
     _pid_live_tenants,
+    _refresh_bound_agents,
     _session_mounts,
     _session_mounts_complete,
 )
@@ -509,6 +512,78 @@ async def _apply_abort(frame: dict[str, Any], pool: "BackendPool") -> dict[str, 
     return {"type": "aborted", "cancelled": total_cancelled, "stubs": len(affected_stubs)}
 
 
+async def _owner_sender_refusal(writer: asyncio.StreamWriter) -> tuple[Optional[int], str]:
+    """``(peer pid, why the sender is not this daemon's owner)``; ``""`` when it is.
+
+    The rule every frame only the owning gateway may send is held to: the
+    daemon is owned (``_OWNER_PID > 0``), the kernel reports the sender's pid
+    (``socketsec.get_peer_pid``), and that pid is the owner or the owner is an
+    exec supervisor of it (``platform_compat.is_exec_supervisor_of``), the
+    successor an in-app restart through a supervising launcher leaves running.
+    Every connection already passed the same-uid peer gate, which any process at
+    this uid passes too, so that gate alone does not say who sent a frame.
+    """
+    owner = facade._OWNER_PID
+    peer_pid = socketsec.get_peer_pid(writer)
+    if owner <= 0:
+        return peer_pid, (
+            "this daemon was started without --owner-pid, so no gateway can prove it owns it"
+        )
+    if peer_pid is None:
+        return None, (
+            "the sender's pid cannot be read (this host's socket layer reports no peer pid)"
+        )
+    if peer_pid != owner and not await asyncio.to_thread(
+        platform_compat.is_exec_supervisor_of, owner, peer_pid
+    ):
+        return peer_pid, f"pid {peer_pid} is neither owner pid {owner} nor its exec successor"
+    return peer_pid, ""
+
+
+async def _apply_agent_binding(
+    frame: dict[str, Any], writer: asyncio.StreamWriter
+) -> dict[str, Any]:
+    """Record which agents one session token's stubs run (the ``agent-binding`` frame).
+
+    The gateway sends it when it hands a session its stub entries, before
+    ``session/new``, so a stub registering under that token is served the
+    declared env of an agent the gateway named rather than of whatever agent
+    its Register frame names (``connection._handle_connection``). Accepted only
+    from this daemon's owner (:func:`_owner_sender_refusal`); a refused frame
+    leaves every binding as it was. ``pid`` is the runtime the session runs in,
+    checked against the kernel-attested host chain of each registering stub
+    exactly as a claim's pid is (``identity._token_agents``).
+    """
+    token = frame.get("stub_session_token")
+    raw_pid = frame.get("pid")
+    pid = raw_pid if isinstance(raw_pid, int) and not isinstance(raw_pid, bool) else 0
+    raw_agents = frame.get("agents")
+    if (
+        not isinstance(token, str)
+        or not token
+        or pid <= 1
+        or not isinstance(raw_agents, list)
+        or not all(isinstance(a, str) and a for a in raw_agents)
+    ):
+        reason = "malformed agent binding: needs a stub_session_token, a pid and an agent list"
+        logger.warning("gatewayd: agent binding refused: %s", reason)
+        _audit_agent_binding(socketsec.get_peer_pid(writer), "denied", raw_agents, reason)
+        return {"type": "agent-binding-rejected", "reason": reason}
+    _peer_pid, reason = await _owner_sender_refusal(writer)
+    if reason:
+        logger.warning("gatewayd: agent binding refused: %s", reason)
+        _audit_agent_binding(_peer_pid, "denied", sorted(set(raw_agents)), reason)
+        return {"type": "agent-binding-rejected", "reason": reason}
+    raw_start = frame.get("pid_start_id")
+    _bind_agents(
+        token, frozenset(raw_agents), pid, raw_start if isinstance(raw_start, str) else None
+    )
+    refreshed = _refresh_bound_agents(token, pid)
+    facade._wake_agent_binding_waiters()
+    _audit_agent_binding(_peer_pid, "allowed", sorted(set(raw_agents)))
+    return {"type": "agent-bound", "agents": len(set(raw_agents)), "connections": refreshed}
+
+
 async def _apply_owner_port(
     frame: dict[str, Any], writer: asyncio.StreamWriter, pool: BackendPool
 ) -> dict[str, Any]:
@@ -557,27 +632,13 @@ async def _apply_owner_port(
     """
     raw_port = frame.get("port")
     port = raw_port if _is_port_number(raw_port) else 0
-    owner = facade._OWNER_PID
-    peer_pid = socketsec.get_peer_pid(writer)
-    reason = ""
-    if owner <= 0:
-        reason = (
-            "this daemon was started without --owner-pid, so no gateway can prove "
-            "it owns it; pooled Kiro Crew backends bind from the daemon's environment"
-        )
-    elif peer_pid is None:
-        # No sender can be verified, so the daemon binds from its environment, as main does.
-        reason = (
-            "the sender's pid cannot be read (this host's socket layer reports no "
-            "peer pid), so no owner port can be accepted; pooled Kiro Crew "
-            "backends bind from the daemon's environment"
-        )
-        facade._set_owner_port_unverifiable(True)
-    elif peer_pid != owner and not await asyncio.to_thread(
-        platform_compat.is_exec_supervisor_of, owner, peer_pid
-    ):
-        reason = f"pid {peer_pid} is neither owner pid {owner} nor its exec successor"
-    elif port == 0:
+    peer_pid, reason = await _owner_sender_refusal(writer)
+    if reason and (peer_pid is None or facade._OWNER_PID <= 0):
+        reason += "; pooled Kiro Crew backends bind from the daemon's environment"
+        if facade._OWNER_PID > 0:
+            # No sender can be verified, so the daemon binds from its environment, as main does.
+            facade._set_owner_port_unverifiable(True)
+    elif not reason and port == 0:
         reason = f"not a port number: {repr(raw_port)[:32]}"
     if reason:
         logger.warning("gatewayd: owner-port announce refused: %s", reason)
@@ -750,6 +811,15 @@ async def _serve_control_frame(
     # ``_apply_claim``.
     if register.get("type") == "claim":
         await _write_json_line(writer, await _apply_claim(register, pool))
+        return True
+
+    # Agent-binding short-circuit (one-shot control connection from the owning
+    # gateway): which agents one session token's stubs run. Unlike a claim it is
+    # held to the owner check, because what it decides is whose declared env a
+    # private backend is started with. Validation lives in
+    # ``_apply_agent_binding``.
+    if register.get("type") == "agent-binding":
+        await _write_json_line(writer, await _apply_agent_binding(register, writer))
         return True
 
     # Abort-push short-circuit (one-shot control connection from the main

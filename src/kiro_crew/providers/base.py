@@ -1154,6 +1154,13 @@ class LLMProvider(ABC):
         """
         return None
 
+    def set_mcp_consent_hook(self, hook: Callable[[dict[str, str]], bool]) -> None:
+        """Have *hook* given each MCP consent link that reaches this session between turns.
+
+        Only a KAS session receives a consent link this way; any other provider ignores this.
+        """
+        return None
+
     def mcp_sign_in_ended(self, server_name: str) -> bool:
         """Whether the MCP sign-in Crew started for *server_name* has already ended.
 

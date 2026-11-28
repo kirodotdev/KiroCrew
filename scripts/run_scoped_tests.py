@@ -121,11 +121,28 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _TEST_DIR = str(REPO_ROOT / "test")
 
 
+_COLLECT_IGNORE_DEPENDENCIES = frozenset({"pytest", "kiro_crew"})
+
+
 def _collect_ignore() -> ModuleType:
-    """The collector's helper module (one cached object, so a patch on it sticks)."""
+    """The collector's helper module (one cached object, so a patch on it sticks).
+
+    An interpreter without the helper's dependencies cannot run the backend set
+    either, so that is reported as ``SelectionUntrustworthy`` (exit 2, naming the
+    interpreter) rather than as a traceback from inside the selection.
+    """
     if _TEST_DIR not in sys.path:
         sys.path.insert(0, _TEST_DIR)
-    return importlib.import_module("platform_collect_ignore_helpers")
+    try:
+        return importlib.import_module("platform_collect_ignore_helpers")
+    except ModuleNotFoundError as exc:
+        if exc.name not in _COLLECT_IGNORE_DEPENDENCIES:
+            raise
+        raise SelectionUntrustworthy(
+            f"{sys.executable} cannot import {exc.name}, so it cannot select or run the "
+            "backend tests; run the gate with the repository's virtualenv active "
+            "(CONTRIBUTING.md: make build, then activate .venv)"
+        ) from exc
 
 
 # A change to any of these can affect anything, so no reduction is defensible.
@@ -958,10 +975,15 @@ def main(argv: list[str]) -> int:
         return 0
 
     cwd = REPO_ROOT / "website" if args.surface == "frontend" else REPO_ROOT
-    for cmd in cmds:
-        rc = _run_batch(cmd, cwd)
-        if rc != 0:
-            return rc
+    # Every batch runs even after one fails, so one run shows every failing batch.
+    failed = [(index, rc) for index, cmd in enumerate(cmds, start=1) if (rc := _run_batch(cmd, cwd)) != 0]
+    if failed:
+        print(
+            f"run_scoped_tests[{args.surface}]: {len(failed)} of {len(cmds)} batch(es) failed: "
+            + ", ".join(f"batch {index} rc={rc}" for index, rc in failed),
+            file=sys.stderr,
+        )
+        return failed[0][1]
     return 0
 
 

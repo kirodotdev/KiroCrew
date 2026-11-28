@@ -21,6 +21,7 @@ import { updateAffordance } from '../utils/updateAffordance'
 import { settingsPath } from './settingsPath'
 import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord, type UpdateNudgeVerdict } from '../utils/updateNudge'
 import { foldStableStamp } from '../utils/displayVersion'
+import { stagedConsumesOffer } from '../utils/releaseVersion'
 import { editionOwnsUpdatePrompts, type UpdateState } from '../hooks/useUpdateSubscription'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { reportForError } from '../utils/errorReport'
@@ -116,6 +117,15 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   // The unattended paths never restart a running gateway: a staged update waits
   // for the person's restart, and this is where they take it.
   const gwRestartReady = useAppSelector(s => s.dashboard.status?.update_restart_ready === true)
+  const gwRestartReadyVersion = useAppSelector(s => s.dashboard.status?.update_restart_ready_version) || ''
+  // A versionless note covers assets_gone and older gateways. A versioned note
+  // counts only when the staged version is the raw offer: a restart reaches it
+  // then. Any other staged version keeps the install action: an older one
+  // because a restart would start it instead of the offer, a newer one because
+  // it was staged from another lane and a restart would skip the switch
+  // (`stagedConsumesOffer`).
+  const gwRestartReadyForOffer = gwRestartReady
+    && (!gwRestartReadyVersion || stagedConsumesOffer(gwRestartReadyVersion, gwVersion))
   // The person armed the update: it applies at the next start, never while the
   // gateway runs. Only their own restart (or quit) brings it in.
   const gwArmedVersion = useAppSelector(s => s.dashboard.status?.update_armed_version) || ''
@@ -194,7 +204,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
         source: 'gateway', version: gwVersion,
         displayVersion: gwVersionDisplay || gwVersion,
         sameAsRunning: gwVersion === runningVersion,
-        affordance: gwRestartReady || (afford === 'apply' && !!gwArmedVersion) ? 'restart' : afford,
+        affordance: gwRestartReadyForOffer || (afford === 'apply' && !!gwArmedVersion) ? 'restart' : afford,
         command: gwCommand,
       }
     }
@@ -675,7 +685,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
           {restarting && <p className="mt-2 text-[12px] text-muted">{i18nT('components.updateFoundModal.updating_and_restarting')}</p>}
           {candidate.affordance === 'restart' && !restarting && (
             <p data-testid="update-restart-ready-note" className="mt-2 text-[12px] text-muted">
-              {gwArmedVersion && !gwRestartReady
+              {gwArmedVersion && !gwRestartReadyForOffer
                 ? i18nT('components.updateFoundModal.update_armed_note')
                 : i18nT('components.updateFoundModal.update_installed_restart_note')}
               {gwArmedVersion && (

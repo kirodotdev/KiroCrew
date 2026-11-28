@@ -2,8 +2,10 @@
  * Relay Crews as tabs in this window: the desktop shell shows the Crew as a
  * native pane over <main>, under the local top bar, instead of in a window of
  * its own. Only the endpoint ID, the pane's rect and on/off flags cross the
- * bridge; the Crew's own page has no preload and sends nothing. A shell without
- * the pane calls still opens a window.
+ * bridge; the Crew's own page has no preload and sends nothing. The shell reads
+ * two things from it, each narrowed in main to a fixed value: its dark or light
+ * mode, and whether it drew its own header. A shell without the pane calls
+ * still opens a window.
  *
  * The shell creates every pane hidden; only RelayCrewPaneHost shows the active
  * one, so what fills <main> is decided here, in the instances slice, alone.
@@ -18,6 +20,9 @@ import { noteCrewOpened, relayCrewKey } from './crewWarmSet'
  *  Which ones stay is the shared warm set's call (hooks/useCrewWarmKeeper.ts), so this bounds only an
  *  explicit `instances.warm_set_cap` above it. */
 export const RELAY_PANE_WARM_CAP = 10
+/** What every pane open tells the shell: this dashboard's top bar keeps to its tab strip above
+ *  a pane whose page drew its own header (`relayHeaderInFront`), so the page may draw one. */
+export const PANE_OWN_HEADER = true
 /** The Preview panel's overlays, plus menus and lists (the switcher's own menu drops over the pane) and the relay-only marker on the notification sheet, banner cards and update overlay. */
 export const RELAY_PANE_OVERLAY_SELECTOR = [OVERLAY_SELECTOR, '[role="menu"],[role="listbox"],[data-relay-pane-overlay]'].join(',')
 
@@ -26,17 +31,24 @@ type Viewport = { width: number; height: number }
 /** `window`: the Crew is shown in another window (its own, or the main window when another
  *  dashboard window asked), which came forward instead; no pane exists in this one. */
 type OpenResult = { ok: boolean; error?: string; window?: boolean }
-/** `dark` comes with a `theme` event: whether the Crew's page is dark, or null when unknown. */
-export type RelayPaneEvent = { type: string; endpointId: string; index: number; dark?: boolean | null }
+/** `dark` comes with a `theme` event: whether the Crew's page is dark, or null when unknown.
+ *  `header` comes with a `header` event: `true` only when the shell read, from that pane's
+ *  page, that it drew its own header; anything else means it did not. It is the one other
+ *  value read from the page, a strict boolean, and all it may decide is whether the local
+ *  top bar keeps to its tab strip above that pane (`relayHeaderInFront`). */
+export type RelayPaneEvent = { type: string; endpointId: string; index: number; dark?: boolean | null; header?: boolean }
 export type RelayPaneBridge = {
-  openPane: (endpointId: string, rect: Rect, viewport: Viewport) => Promise<OpenResult>
+  /** `ownHeader` (PANE_OWN_HEADER): this dashboard gives up its own bar's controls above a pane
+   *  whose page drew a header, so the shell may ask that page to draw one. A shell from before
+   *  it ignores the argument, and a dashboard from before it never sends it. */
+  openPane: (endpointId: string, rect: Rect, viewport: Viewport, ownHeader?: boolean) => Promise<OpenResult>
   setPaneBounds: (endpointId: string, rect: Rect, viewport: Viewport) => Promise<unknown>
   setPaneOverlay: (endpointId: string, active: boolean) => Promise<unknown>
   setPaneInactive: (endpointId: string, inactive: boolean) => Promise<unknown>
   closePane: (endpointId: string) => Promise<unknown>
   /** Load a pane hidden for the warm set; the main window's dashboard only, and never for a Crew
    *  open anywhere (ALREADY_OPEN). Absent from an older shell. */
-  prewarmPane?: (endpointId: string, rect: Rect, viewport: Viewport) => Promise<OpenResult>
+  prewarmPane?: (endpointId: string, rect: Rect, viewport: Viewport, ownHeader?: boolean) => Promise<OpenResult>
   onPaneEvent: (cb: (event: RelayPaneEvent) => void) => () => void
   /** The shell keeps a new pane hidden until its page loads and says so with a `loaded` event. */
   paneLoadEvents?: boolean
@@ -77,7 +89,7 @@ export async function openRelayPane(bridge: RelayPaneBridge, tab: RelayTab, disp
   const at = relayPaneRect() ?? [{ x: 0, y: 0, ...viewport }, viewport]
   let res: OpenResult = { ok: false, error: 'UNAVAILABLE' }
   try {
-    res = await bridge.openPane(tab.id, ...at)
+    res = await bridge.openPane(tab.id, ...at, PANE_OWN_HEADER)
   } catch { /* stays UNAVAILABLE */ }
   if (res.ok && !res.window) {
     // A click's open counts for the warm set even when answered after another pick, and it is

@@ -316,7 +316,7 @@ async def test_permission_denial_is_sel_logged_even_without_sel_source(monkeypat
             SimpleNamespace(kind=EVENT_COMPLETE, text=""),
         ]
     )
-    # No sel_source passed — mirrors chat_title / _summarize_one call sites.
+    # No sel_source passed: the generic default applies.
     out = await run_bg_oneliner(_FakeSessions(sess), "p")
     assert out == ""
     assert sess.rejected == ["r1"]

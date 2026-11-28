@@ -456,14 +456,23 @@ class RunDirs:
     out: Path = field(init=False)
 
     def __post_init__(self) -> None:
+        from kiro_crew.config.paths import isolated_agents_dir
         from kiro_crew.owner_only_files import mkdirs_owner_only
 
-        for name in ("home", "crew", "kiro", "tmp", "out"):
+        for name in ("home", "crew", "tmp", "out"):
             path = self.root / name
             if path.exists():
                 raise FileExistsError(path)  # a run directory is always fresh
             mkdirs_owner_only(path)
             setattr(self, name, path)
+        # KIRO_HOME is the one place under the data home whose agents dir the
+        # gateway counts as its own. Anywhere else, a gateway running from a
+        # linked git worktree refuses to write its agent specs, and every
+        # conductor chat is refused for want of its agent. ``settings/`` exists
+        # up front, as for a pod: a sandboxed kiro-cli locks a file there and
+        # does not create the folder itself.
+        self.kiro = isolated_agents_dir(self.crew).parent
+        mkdirs_owner_only(self.kiro / "settings")
         self.repo = self.root / "repo"
         self.origin = self.root / "origin.git"
 

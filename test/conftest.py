@@ -400,6 +400,11 @@ from conftest_resets_crewmate import (  # noqa: E402,F401 -- bound for pytest an
 from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_decision_provider_error_warnings,
 )
+
+# MCP-gateway per-test resets, split from conftest_resets for the file-line cap.
+from conftest_resets_gateway import (  # noqa: E402,F401 -- bound for pytest and importers
+    _forget_stub_agent_bindings,
+)
 from conftest_resets_managed_env import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_managed_env_shared_client,
 )
@@ -418,6 +423,9 @@ from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytes
 )
 from conftest_resets_remote_dispatch import (  # noqa: E402,F401 -- bound for pytest and importers
     _forget_remote_crew_versions,
+)
+from conftest_resets_sandbox import (  # noqa: E402,F401 -- bound for pytest and importers
+    _forget_sandbox_exec_failure,
 )
 from conftest_resets_search import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_chat_search_cache_stores,

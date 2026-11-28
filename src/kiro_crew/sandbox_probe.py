@@ -1069,14 +1069,34 @@ def is_docker_container() -> bool:
         return False
 
 
+# Why the most recent ``_probe_sandbox_exec()`` call failed, ``None`` after a pass
+# or before any darwin probe. ``detect_backend`` reports it as the probe detail on
+# macOS, where the namespace probe can only ever say "not Linux".
+_last_sandbox_exec_failure: str | None = None
+
+
+def _sandbox_exec_failed(reason: str) -> bool:
+    """Record why the sandbox-exec probe failed and return ``False``."""
+    global _last_sandbox_exec_failure
+    _last_sandbox_exec_failure = reason
+    return False
+
+
+def sandbox_exec_failure_reason() -> str:
+    """Why the last ``_probe_sandbox_exec()`` failed, or ``""`` when it did not."""
+    return _last_sandbox_exec_failure or ""
+
+
 def _probe_sandbox_exec() -> bool:
     """Return True if macOS ``sandbox-exec`` actually works.
 
     Uses a file-based profile with fixed system paths for both
     ``sandbox-exec`` and its ``/usr/bin/true`` target. The probe tests with an
     ``(allow default)`` profile to detect kernel-level rejection, not merely
-    executable presence.
+    executable presence. A failure's reason is kept for
+    :func:`sandbox_exec_failure_reason`.
     """
+    global _last_sandbox_exec_failure
     if sys.platform != "darwin":
         return False
     # Decide empirically — do NOT hard-code a macOS version cutoff. A
@@ -1093,7 +1113,7 @@ def _probe_sandbox_exec() -> bool:
     # Rather than hard-coding version checks, we probe empirically below.
     sb = "/usr/bin/sandbox-exec"
     if not os.path.exists(sb):
-        return False
+        return _sandbox_exec_failed(f"sandbox-exec probe: {sb} not found")
     # Probe with a file-based (allow default) profile against a TRUSTED, fixed
     # system binary. We deliberately do NOT probe the (user-writable) kiro-cli
     # binary: the probe runs under (allow default) with Kiro Crew's credentials,
@@ -1102,7 +1122,7 @@ def _probe_sandbox_exec() -> bool:
     # accepts sandbox_apply, which /usr/bin/true validates safely.
     target = "/usr/bin/true"
     if not os.path.exists(target):
-        return False
+        return _sandbox_exec_failed(f"sandbox-exec probe: {target} not found")
     fd, profile_path = tempfile.mkstemp(suffix=".sb", prefix="kirocrew_probe_")
     try:
         os.write(fd, b"(version 1)(allow default)")
@@ -1140,10 +1160,14 @@ def _probe_sandbox_exec() -> bool:
                     r.returncode,
                     detail,
                 )
-        return r.returncode == 0
+            return _sandbox_exec_failed(
+                f"sandbox-exec probe exited {r.returncode}: {detail or 'no stderr'}"
+            )
+        _last_sandbox_exec_failure = None
+        return True
     except Exception as exc:
-        logger.debug("sandbox-exec probe failed: %s", exc)
-        return False
+        logger.warning("sandbox-exec probe failed: %s", exc)
+        return _sandbox_exec_failed(f"sandbox-exec probe failed: {exc}")
     finally:
         try:
             os.unlink(profile_path)

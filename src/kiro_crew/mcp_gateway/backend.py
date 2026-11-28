@@ -1019,6 +1019,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_gateway.backend_stubs import (  # noqa: F401
         _STUB_INBOX_MAXSIZE,
         _TOOL_SURFACE_PROBE_TIMEOUT_SECS,
+        _relabel_stub,
     )
     from kiro_crew.mcp_gateway.backend_wire import (  # noqa: F401
         _JSONRPC_SERVER_ERROR,

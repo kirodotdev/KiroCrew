@@ -5,6 +5,8 @@ user-first order and the bounds it is rendered under.
 Each function here whose first parameter is ``self`` is a ``SkillsLoader`` method: the class
 binds it by name.
 
+Instance fields written: ``_shipped_root_memo``.
+
 Instance fields read: ``_edition_extra_paths``, ``_max_triggered``.
 """
 
@@ -70,6 +72,12 @@ _INDEX_HEAD_SLOTS = 8
 # Fewer than all of them, so a shipped skill with real usage keeps a name even
 # under a large user tree — the mirror of the empty-ledger case this guards.
 _INDEX_USER_SLOTS = 6
+
+
+#: Most ``(path, fingerprint)`` answers ``_is_user_authored`` keeps for its path
+#: tests. A new entry appears only when a skill file changes, so churn reaches
+#: the bound, never catalog size alone; reaching it empties the memo.
+_SHIPPED_ROOT_MEMO_MAX = 32_768
 
 
 # The "[Skills:]" opener and "[End of skills]" closer wrapping the whole block.
@@ -331,17 +339,42 @@ def _is_user_authored(self, s: dict) -> bool:
     A confined project row answers before any filesystem call: resolving its
     path would reintroduce the link probe the confined walker exists to
     prevent, and a project skill is never shipped anyway.
+
+    The startup index asks this for every row on every build, so the two path
+    tests (an edition root, a ``realpath`` into a provider root) are kept per
+    ``(path, fingerprint)``: together they cost about a quarter of a
+    millisecond a row with the GIL held, most of a 1,000-skill build, and
+    overlapping session starts queue behind each other on them. The fingerprint
+    is a stat of the file the path resolves to (device and inode included), so
+    a replaced file, or a link pointed at another file, is resolved again, and
+    every catalog invalidation empties the memo. The marker check stays live:
+    the builtin sync can record provenance beside an unchanged ``SKILL.md``. A
+    row without a fingerprint is resolved every time.
+
+    shortcut: a directory moved across a link with its files untouched keeps
+    its fingerprint, so its row keeps its old answer (an index position, not
+    access) until the file changes or the catalog is invalidated; key on the
+    parent's ``realpath`` if that case ever matters.
     """
     if s.get("confine_root"):
         return True
     if str(s["key"]) in _packaged_skill_names():
         return False
-    path = Path(str(s["path"]))
-    if any(path.is_relative_to(root) for root in self._edition_extra_paths):
+    path = str(s["path"])
+    if os.path.lexists(os.path.join(os.path.dirname(path), _PROVENANCE_MARKER)):
         return False
-    if os.path.lexists(path.parent / _PROVENANCE_MARKER):
-        return False
-    return not _within_any(os.path.realpath(path), _trusted_skill_roots())
+    fingerprint = str(s.get("fingerprint") or "")
+    token = (path, fingerprint)
+    shipped = self._shipped_root_memo.get(token) if fingerprint else None
+    if shipped is None:
+        shipped = any(
+            Path(path).is_relative_to(root) for root in self._edition_extra_paths
+        ) or _within_any(os.path.realpath(path), _trusted_skill_roots())
+        if fingerprint:
+            if len(self._shipped_root_memo) >= _SHIPPED_ROOT_MEMO_MAX:
+                self._shipped_root_memo.clear()
+            self._shipped_root_memo[token] = shipped
+    return not shipped
 
 
 def _user_first(self, ranked: list[dict]) -> list[dict]:

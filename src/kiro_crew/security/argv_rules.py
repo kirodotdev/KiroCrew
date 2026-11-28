@@ -29,6 +29,7 @@ from ..trust_patterns import ENV_ASSIGNMENT_RE
 from . import rm_floor as _rm
 from . import shell_normalizer as _shell
 from .denied_rules import BUILTIN_DENIED_RULES
+from .shell_normalizer import _strip_win_program_suffix
 
 #: Programs that run another command from their arguments, as
 #: ``wrapper -> (options that take a value, positional words before the command)``:
@@ -275,10 +276,6 @@ def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
     if i is None:
         return None
     return _shell._program_basename(tokens[i]), tokens[i + 1 :]
-
-
-def _strip_win_program_suffix(word: str) -> str:
-    return next((word[:-4] for s in (".exe", ".cmd", ".bat") if word.endswith(s)), word)
 
 
 def _cmd_line_args(args: "list[str]") -> "list[str] | None":

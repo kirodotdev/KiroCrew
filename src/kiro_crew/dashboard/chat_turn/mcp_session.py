@@ -1,7 +1,8 @@
 """The session MCP report, the session-start notice for Kiro Crew's own servers a session
 lacks, the session-init OAuth drain, the MCP OAuth banner lifecycle, the scrub of the ACP
-strings it shows, and the stream's MCP arms (``_on_mcp_oauth_request``,
-``_on_mcp_server_initialized``, ``_on_mcp_server_init_failure``)."""
+strings it shows, the stream's MCP arms (``_on_mcp_oauth_request``,
+``_on_mcp_server_initialized``, ``_on_mcp_server_init_failure``), and the consent link
+that reaches a chat between turns (``_watch_mcp_consent_between_turns``)."""
 
 from __future__ import annotations
 
@@ -34,10 +35,12 @@ from kiro_crew.security import sanitized_oauth_endpoint, sanitized_oauth_endpoin
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
+        EVENT_MCP_OAUTH_REQUEST,
         DashboardState,
         SessionMcpReport,
         _ChatSlot,
         _is_safe_oauth_url,
+        _log_task_exception,
         append_and_surface,
         capabilities_of,
         effective_session_key,
@@ -1037,11 +1040,12 @@ def _expire_ended_mcp_oauth_banners(
 def _watch_mcp_sign_in_ends(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """Have *client* retire this chat's Authorize links whose sign-in attempt ended.
 
-    Called by the mid-turn arm before it draws a link, the only path a sign-in
-    Crew starts reaches the chat by. An attempt that ends before that row exists
-    (its link queued behind a prompt, or the arm still awaiting discovery) finds
-    nothing to retire, so the arm asks ``client.mcp_sign_in_ended`` once the row
-    is appended.
+    Called by :func:`_show_mcp_oauth_request` before it draws a link, on the two
+    paths a sign-in Crew starts reaches the chat by: a turn's event and a link
+    that lands between turns. An attempt that ends before that row exists (its
+    link queued behind a prompt, or the draw still awaiting discovery) finds
+    nothing to retire, so the draw asks ``client.mcp_sign_in_ended`` once the
+    row is appended.
     """
     client.set_mcp_sign_in_ended_hook(
         functools.partial(_expire_ended_mcp_oauth_banners, state, slot)
@@ -1246,42 +1250,101 @@ def _mark_mcp_oauth_completed(
     )
 
 
-async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
-    """An MCP server's OAuth request."""
-    client = turn.client
-    slot = turn.slot
-    state = turn.state
-    # kiro-cli emits this notification when an MCP server's token
-    # has expired or never existed. Surface as an inline banner —
-    # kiro-cli's local callback handles the rest of the OAuth flow.
-    # kiro-cli retries a signed-out server's sign-in on every turn, so this arm
-    # sees a carded provider on every turn of every session. It is tagged
-    # exactly as the session-init drain tags it, or the render layer cannot drop
-    # a prompt the Connections card already shows.
-    server_name = event.server_name or ""
+async def _show_mcp_oauth_request(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    client: Any,
+    server_name: str,
+    oauth_url: str,
+    *,
+    runtime_global: bool = False,
+    between_turns: bool = False,
+) -> None:
+    """Draw one MCP server's consent link in this chat as its Authorize banner.
+
+    The one pipeline a link takes, whether a turn yielded it or it reached the
+    chat between turns (:func:`_watch_mcp_consent_between_turns`); it needs no
+    turn. A request for a server a Connections card owns is tagged exactly as the
+    session-init drain tags it, or the render layer cannot drop a prompt the card
+    already shows: kiro-cli retries a signed-out server's sign-in on every turn,
+    so a carded provider reaches this on every turn of every session.
+    """
+    name = server_name or ""
     _watch_mcp_sign_in_ends(state, slot, client)
-    managed = (
-        await asyncio.to_thread(_connections_managed_mcp_names) if server_name else frozenset()
-    )
-    await _approve_discovered_mcp_oauth_endpoint(event.server_name, event.oauth_url)
+    managed = await asyncio.to_thread(_connections_managed_mcp_names) if name else frozenset()
+    await _approve_discovered_mcp_oauth_endpoint(server_name, oauth_url)
+    card_owned = await _card_owns_sign_in(client, name, managed)
+    if between_turns and (
+        state._slots.get(slot.key) is not slot
+        or state.sessions.get_provider(effective_session_key(slot)) is not client
+    ):
+        return  # no turn held the session: the chat closed or its session was reset meanwhile
     _emit_mcp_oauth_request(
         state,
         slot,
-        event.server_name,
-        event.oauth_url,
-        card_owned=await _card_owns_sign_in(client, server_name, managed),
+        server_name,
+        oauth_url,
+        card_owned=card_owned,
         minted_by=str(getattr(client, "process_instance", "") or ""),
         session_id=_provider_session_id(client),
     )
-    if client.mcp_sign_in_ended(server_name):
-        _expire_ended_mcp_oauth_banners(state, slot, server_name)
+    if client.mcp_sign_in_ended(name):
+        _expire_ended_mcp_oauth_banners(state, slot, name)
     _record_session_mcp_event(
         state,
         slot,
         client,
-        event.kind,
+        EVENT_MCP_OAUTH_REQUEST,
+        server_name,
+        fanout_no_owner=runtime_global,
+    )
+
+
+def _watch_mcp_consent_between_turns(
+    state: "DashboardState", slot: "_ChatSlot", client: Any
+) -> None:
+    """Have *client* hand this chat each consent link that reaches it while no turn reads.
+
+    A KAS sign-in starts at turn start, and the engine's discovery often sends
+    its link after that turn ended; the provider then gives it here instead of
+    queueing it for a turn that may come too late. The link is drawn by
+    :func:`_show_mcp_oauth_request` in a task the gateway holds, since the
+    provider's caller cannot wait; a draw that fails is logged, and one whose chat
+    closed or whose session was reset meanwhile draws nothing. Called at turn
+    admission; a provider that receives no such link ignores it.
+    """
+
+    def deliver(request: dict[str, str]) -> bool:
+        task = asyncio.get_running_loop().create_task(
+            _show_mcp_oauth_request(
+                state,
+                slot,
+                client,
+                request["serverName"],
+                request["oauthUrl"],
+                between_turns=True,
+            )
+        )
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+        task.add_done_callback(_log_task_exception)
+        return True
+
+    client.set_mcp_consent_hook(deliver)
+
+
+async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
+    """An MCP server's OAuth request a turn yielded."""
+    # kiro-cli emits this notification when an MCP server's token
+    # has expired or never existed. Surface as an inline banner —
+    # kiro-cli's local callback handles the rest of the OAuth flow.
+    await _show_mcp_oauth_request(
+        turn.state,
+        turn.slot,
+        turn.client,
         event.server_name,
-        fanout_no_owner=event.runtime_global,
+        event.oauth_url,
+        runtime_global=event.runtime_global,
     )
 
 

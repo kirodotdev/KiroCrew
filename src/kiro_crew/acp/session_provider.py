@@ -72,6 +72,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
     STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_END_TURN,
+    JsonRpcMessage,
 )
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER
@@ -155,6 +156,9 @@ class AcpSessionProvider(LLMProvider):
     _kas_unconfirmed_runtime: Any = None
     #: Saved on an unconfirmed KAS close: the session_id to retry the remote close for.
     _kas_unconfirmed_session_id: str | None = None
+    #: The chat's consent hook (``set_mcp_consent_hook``), installed again on the
+    #: runtime after an MCP re-injection reload. None: no chat follows.
+    _mcp_consent_hook: Callable[[dict[str, str]], bool] | None = None
 
     # Applying a dashboard MCP config change to this live session by re-sending
     # its projection: ``kiro_crew.acp.session_provider_mcp_reinject``.
@@ -565,6 +569,33 @@ class AcpSessionProvider(LLMProvider):
     def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None]) -> None:
         """See LLMProvider. Installed on the runtime for this provider's current session."""
         self._runtime.set_mcp_sign_in_ended_hook(self._handle.session_id, hook)
+
+    def set_mcp_consent_hook(self, hook: Callable[[dict[str, str]], bool]) -> None:
+        """See LLMProvider. Kept here, so an MCP re-injection reload installs it again."""
+        self._mcp_consent_hook = hook
+        self._install_mcp_consent_hook()
+
+    def _install_mcp_consent_hook(self) -> None:
+        """Offer the current session's consent frames to the chat while no turn reads them.
+
+        A frame a turn would read goes on the queue as before. Any other takes the
+        dispatch loop's own checks (``_accept_oauth_request``): one they drop is
+        handled and not queued; one they pass goes to the chat's hook.
+        """
+        hook = self._mcp_consent_hook
+        if hook is None:
+            return
+        handle = self._handle
+
+        def deliver(frame: JsonRpcMessage) -> bool:
+            if handle.is_turn_active:
+                return False
+            accepted = handle._accept_oauth_request(frame)
+            if accepted is None:
+                return True
+            return hook(accepted) is True
+
+        self._runtime.set_mcp_consent_hook(handle.session_id, deliver)
 
     def mcp_sign_in_ended(self, server_name: str) -> bool:
         """See LLMProvider. The runtime holds a sign-in's slot until its attempt ends.

@@ -196,7 +196,8 @@ the runner refuses to start when neither holds.
 <eval root>/<run id>/
   home/           HOME for every process of the run
   crew/           KIROCREW_HOME (Crew arms)
-  kiro/           KIRO_HOME (Crew and kiro-cli arms)
+    kiro/         KIRO_HOME (Crew and kiro-cli arms): the one agents dir a
+                  gateway running from a linked git worktree may write into
   codex/          CODEX_HOME (Codex arm)
   repo/           the built task repo with a local origin
   out/            transcripts, ledger, counters copied out
@@ -582,9 +583,13 @@ without it, `kirocrew chat` is unchanged.
   "agent": {"name": "...", "source": "default | config | fallback | flag", "configured": "..."},
   "approval_mode": "trust | none", "slot": "...", "transcript": "<path to the session jsonl>",
   "items": {"total": 0, "terminal": 0, "open": 0}, "cwd": "...", "error": "",
-  "unclosed": []
+  "unclosed": [], "started": true
 }
 ```
+
+`started` is true once the agent answered: a reply in the root chat, or any
+spend. A run that ends without one never started (the chat was refused, the
+agent was missing).
 
 `unclosed` names any run chat the gateway refused to close at exit (for example a
 history write still pending); its automation, turn and background agents
@@ -613,7 +618,7 @@ when the configured name was used, `fallback` when `set_unusable` replaced it
 
 A run refuses to start (exit 1, no chat opened) while `work_ledger.remote_dispatch` is on: a worker placed on a remote crew can only be reached through the conductor's own session tools, so the CLI could not stop it on a timeout or budget exit.
 
-The eval runner maps 0 to "check next", 3/4/5/9 to FAILED, 6/7/8 to VOID.
+The eval runner maps 0 to "check next", 3/4/5/9 to FAILED, 6/7/8 to VOID, and 1 to VOID when `started` is false, else FAILED.
 
 ## 13. Case collection: merged PRs become standing cases
 

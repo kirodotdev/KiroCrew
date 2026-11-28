@@ -136,7 +136,12 @@ _STEER_MARKER_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\]]*)?\]",
 # The dashboard renders this summary as its "Steered — …" chip; we prefer it
 # for the Telegram chip too (the user's own words are already on screen as
 # their message — the summary is the only NEW information).
-_STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+\s*:\s*([^\]]*)\]", re.IGNORECASE)
+# The summary opens on a non-space, so ``\s*`` after the colon is its only
+# reader of that whitespace: two quantifiers that can both take it make a frame
+# that never closes quadratic to reject. The captured text is unchanged.
+_STEER_SUMMARY_RE = re.compile(
+    r"\[STEERING\s+steer-[0-9a-f-]+\s*:\s*((?:[^\]\s][^\]]*)?)\]", re.IGNORECASE
+)
 
 
 def _strip_steering(text: str) -> str:

@@ -856,6 +856,7 @@ async def _generate_title_via_kiro(
         crew_log_kind="title",
         crew_log_session_key=session_key,
         memory_gate=memory_gate,
+        sel_source="chat_title",
     )
     title = _validate_title_reply(text)
     if not title:
@@ -891,6 +892,7 @@ async def _generate_refreshed_title(
         timeout=_TITLE_TIMEOUT_SECS,
         crew_log_kind="title",
         crew_log_session_key=session_key,
+        sel_source="chat_title",
     )
     title = _validate_title_reply(text)
     if not title:

@@ -154,6 +154,22 @@ def test_a_version_a_restart_would_not_start_is_left_offered(monkeypatch, feed, 
     assert lock["calls"] == []
 
 
+def test_a_tree_newer_than_the_offer_is_not_marked_as_the_offer(monkeypatch, feed, lock):
+    """The note only ever names the version on offer. A tree holding a NEWER
+    version (a terminal's ``kirocrew update`` reached a release the cached offer
+    does not know yet, or installed from another lane) is left unnoted until a
+    check offers that version, so the dashboard never sees a staged version
+    newer than the offer from this gateway: the update dialog and the About card
+    rest on that when they treat only the offered version itself as installed."""
+    _reaches(monkeypatch, {"0.1.4rc1"})
+
+    asyncio.run(updates._do_update_check())
+
+    assert updates.get_update_info()["update_available"] is True
+    assert update_restart_ready.current() is None
+    assert update_restart_ready.status_fields()["update_restart_ready_version"] == ""
+
+
 def test_a_found_install_is_confirmed_under_the_update_lock(monkeypatch, feed, lock):
     _reaches(monkeypatch, {"0.1.3rc2"})
 

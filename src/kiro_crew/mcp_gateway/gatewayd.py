@@ -133,9 +133,11 @@ from kiro_crew.mcp_gateway.daemon.admission_protocol import (  # noqa: F401
 )
 from kiro_crew.mcp_gateway.daemon.audit import (  # noqa: F401
     _audit_abort_applied,
+    _audit_agent_binding,
     _audit_agent_socket_decision,
     _audit_caller_claimed,
     _audit_caller_rekey,
+    _audit_declaring_agent_denied,
     _audit_disconnect_cancel,
     _audit_owner_port,
     _audit_peer_allowed,
@@ -160,17 +162,22 @@ from kiro_crew.mcp_gateway.daemon.cli import (  # noqa: F401
 )
 from kiro_crew.mcp_gateway.daemon.connection import (  # noqa: F401
     REGISTERED_CAPABILITIES,
+    _await_declaring_agent,
+    _declaring_agent,
     _handle_connection,
     _teardown_connection,
+    _warn_no_declared_env,
 )
 from kiro_crew.mcp_gateway.daemon.control import (  # noqa: F401
     _RECYCLE_SERVER_NAME_MAX,
     _apply_abort,
+    _apply_agent_binding,
     _apply_claim,
     _apply_owner_port,
     _apply_recycle_server,
     _apply_set_spawn_capacity,
     _apply_stand_down,
+    _owner_sender_refusal,
     _pong_payload,
     _serve_control_frame,
     _session_mounts_reply,
@@ -198,6 +205,7 @@ from kiro_crew.mcp_gateway.daemon.diagnostics import (  # noqa: F401
     _zombie_diagnostic_path,
 )
 from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
+    _AGENT_BINDINGS,
     _CONN_INDEX,
     _MAX_EVICTED_KEYS,
     _MAX_MOUNT_SESSIONS,
@@ -211,6 +219,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
     _TOKEN_BINDINGS,
     _apply_recaller,
     _attested_session_key,
+    _bind_agents,
     _bind_token,
     _caller_from_register,
     _conn_index_add,
@@ -219,6 +228,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
     _peer_admitted,
     _pid_live_tenants,
     _record_session_mount,
+    _refresh_bound_agents,
     _register_pids,
     _resolve_peer_identity,
     _resolve_register_identity,
@@ -227,6 +237,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
     _session_mounts_complete,
     _store_mount_entry,
     _StubConn,
+    _token_agents,
     _token_caller,
     _token_is_unbound,
 )
@@ -502,6 +513,40 @@ def _owner_port_event() -> asyncio.Event:
 _OWN_START_TIME: str = ""
 
 
+#: ``(loop, event)`` woken whenever an agent binding is recorded, so a stub that
+#: registered a private backend before its binding arrived (a warm-pool race, or
+#: a reconnect to a restarted daemon) can re-check and pick its declaring agent
+#: up. The mirror of :data:`_OWNER_PORT_EVENT`; made for the running loop on
+#: first use.
+_AGENT_BINDING_EVENT: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = None
+
+
+def _wake_agent_binding_waiters() -> None:
+    """Pulse the agent-binding event, so every private-backend wait re-checks."""
+    global _AGENT_BINDING_EVENT
+    if _AGENT_BINDING_EVENT is None:
+        return
+    try:
+        current = asyncio.get_running_loop()
+    except RuntimeError:
+        current = None
+    if _AGENT_BINDING_EVENT[0] is current:
+        event = _AGENT_BINDING_EVENT[1]
+        event.set()
+        event.clear()
+    else:
+        _AGENT_BINDING_EVENT = None
+
+
+def _agent_binding_event() -> asyncio.Event:
+    """The event pulsed on each recorded agent binding. Made for the running loop."""
+    global _AGENT_BINDING_EVENT
+    loop = asyncio.get_running_loop()
+    if _AGENT_BINDING_EVENT is None or _AGENT_BINDING_EVENT[0] is not loop:
+        _AGENT_BINDING_EVENT = (loop, asyncio.Event())
+    return _AGENT_BINDING_EVENT[1]
+
+
 #: Number of stub writers currently inside their write+drain critical section
 #: (see :func:`_drain_inbox_to_stub`). A frame there has been dequeued but not
 #: yet flushed, so it is invisible to BOTH the inbox depth and the pending map.
@@ -638,9 +683,10 @@ async def run_gatewayd(
     path) propagate so the caller can surface a clear error.
     """
     # Published for the ping reply before anything can connect.
-    global _OWNER_PID, _OWNER_PORT_EVENT
+    global _OWNER_PID, _OWNER_PORT_EVENT, _AGENT_BINDING_EVENT
     _OWNER_PID = int(owner_pid) if owner_pid > 0 else 0
     _OWNER_PORT_EVENT = None
+    _AGENT_BINDING_EVENT = None
     # Before anything can connect too: a stub that registers first must find the
     # port a respawn after the bind was given, not wait for an announce.
     _set_owner_port(owner_port if _OWNER_PID > 0 and _is_port_number(owner_port) else 0)
@@ -1169,7 +1215,8 @@ async def _acquire_backend(
     connection (no reuse, no pool capacity budget, released when the
     connection ends); ``was_spawned`` is then always ``True``.
 
-    ``declaring_agent`` is the agent named on this connection's Register frame.
+    ``declaring_agent`` is the agent the daemon resolved for this connection
+    (``connection._declaring_agent``), not the bare name its Register carries.
     It is NOT part of pool identity -- it never reaches ``pool_key`` -- and is
     used for exactly one thing: selecting the declared-env sidecar of a
     connection-PRIVATE backend, the one read that returns rotating secrets

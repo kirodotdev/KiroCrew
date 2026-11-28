@@ -119,7 +119,7 @@ class TestWithSteerAndBotJoin:
         slack, _ = _run(
             ("!bot off", A_TS, "1700000100.000900"), ("now for the channel", A_TS, C_TS)
         )
-        assert any("left Bot *research*'s chat" in text for text, _ in _posts(slack))
+        assert any("left Bot *Research Bot*'s chat" in text for text, _ in _posts(slack))
         assert not research._slack_linked and ds.get_linked_slot(A_TS) is handler_chat
         assert _user_rows(handler_chat)[-1] == "now for the channel"
 

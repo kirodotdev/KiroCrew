@@ -65,36 +65,51 @@ type NewChatConfig = { default_memory_mode?: unknown; new_chat_crew_mode?: unkno
  * patched onto that row (`updateSlot`): a socket that drops before the switch
  * broadcast would otherwise leave the row showing the plain agent.
  */
-async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | undefined, publish: (patch: Partial<ChatSlot> & { key: string }) => void): Promise<void> {
-  if (!slot?.key || (crewModeEnabled() === false && featurePreviewLockKnown())) return
+// Resolves `true` only when the switch to the conductor was sent and refused (it
+// rejected, or answered no agent) and the caller asked for it outright
+// (`requested`), so that caller can say conductor mode did not start. Every exit
+// before the switch is sent (not eligible, no edition lock, no catalog) leaves
+// the chat plain and resolves `false`, as the New chat default does.
+async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | undefined, publish: (patch: Partial<ChatSlot> & { key: string }) => void, requested = false): Promise<boolean> {
+  if (!slot?.key || (crewModeEnabled() === false && featurePreviewLockKnown())) return false
+  let conductor: string | null
   try {
-    const cfg = config ?? await api.dashboardConfig() as NewChatConfig
-    if (cfg?.new_chat_crew_mode !== true) return
+    // `requested`: the caller asked for conductor mode itself (a
+    // `?new=1&conductor=1` link), so the New-chat default setting is not read.
+    if (!requested) {
+      const cfg = config ?? await api.dashboardConfig() as NewChatConfig
+      if (cfg?.new_chat_crew_mode !== true) return false
+    }
     // One-shot: the page's first chat can be made before the edition lock is known.
     await whenFeaturePreviewLockKnown()
-    if (!crewModeEnabled()) return
+    if (!crewModeEnabled()) return false
     if (!crewModeCatalogKnown()) {
       const catalog = await api.agentCatalog(slot.key)
       setCrewModeCatalog(catalog.crew_mode_agent, catalog.conductor_agents, catalog.default_agent)
     }
-    const conductor = newChatCrewModeAgent(slot)
-    if (!conductor) return
-    const switched = await api.chatSlotAgent(slot.key, conductor, 'template')
-    if (switched?.agent) {
-      slot.agent = switched.agent
-      slot.agent_kind = switched.agent_kind || 'template'
-      if (switched.workspace) slot.workspace = switched.workspace
-      publish({ key: slot.key, agent: slot.agent, agent_kind: slot.agent_kind, ...(switched.workspace ? { workspace: slot.workspace } : {}) })
-    }
+    conductor = newChatCrewModeAgent(slot)
   } catch {
     // The plain chat the person asked for is already made; it stays plain.
+    return false
+  }
+  if (!conductor) return false
+  try {
+    const switched = await api.chatSlotAgent(slot.key, conductor, 'template')
+    if (!switched?.agent) return requested
+    slot.agent = switched.agent
+    slot.agent_kind = switched.agent_kind || 'template'
+    if (switched.workspace) slot.workspace = switched.workspace
+    publish({ key: slot.key, agent: slot.agent, agent_kind: slot.agent_kind, ...(switched.workspace ? { workspace: slot.workspace } : {}) })
+    return false
+  } catch {
+    return requested
   }
 }
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; projectAtCreate?: boolean; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; startModeDefault?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
-  { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean } }
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; projectAtCreate?: boolean; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; startModeDefault?: boolean; conductor?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
+  { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean; conductorFailed?: boolean } }
 >(
   'chat/createSlot',
   async (opts, { getState, dispatch, fulfillWithValue }) => {
@@ -162,7 +177,12 @@ export const createSlot = createAsyncThunk<
     // `crewModeDefault` is OPT-IN like `defaultFolder`: only the person's own New
     // chat entry points pass it, so an app's launch or a hand-off never lands on
     // the conductor.
-    if (typeof opts === 'object' && opts.crewModeDefault === true) await startNewChatInCrewMode(slot, config, patch => dispatch(updateSlot(patch)))
+    // `conductor: true` asks for conductor mode outright, on the gateway's
+    // configured conductor (`newChatCrewModeAgent`), with the same eligibility.
+    // `conductorFailed` rides the fulfilled meta so that caller can tell the person.
+    const conductorFailed = typeof opts === 'object' && (opts.crewModeDefault === true || opts.conductor === true)
+      ? await startNewChatInCrewMode(slot, config, patch => dispatch(updateSlot(patch)), opts.conductor === true)
+      : false
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.
@@ -266,7 +286,7 @@ export const createSlot = createAsyncThunk<
     // caller can fall back to another channel.
     const prefill = typeof opts === 'string' ? undefined : opts?.prefill
     const prefillStaged = !!prefill && writePrefill(slot.key, prefill)
-    return fulfillWithValue(slot, { ...originMeta(origin), activate, prefillStaged, automatic })
+    return fulfillWithValue(slot, { ...originMeta(origin), activate, prefillStaged, automatic, conductorFailed })
   },
 )
 

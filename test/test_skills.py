@@ -822,6 +822,62 @@ class TestLazyLoadContext:
         # A confined project row is the user's without touching its path.
         assert loader._is_user_authored({"key": "x", "path": "/nonexistent", "confine_root": "/p"})
 
+    def test_an_unchanged_skill_is_resolved_once_across_index_builds(self, tmp_path, monkeypatch):
+        # The regression guard for the startup index's cost: every build ranks
+        # every row through _is_user_authored, and resolving each row's path on
+        # every build cost ~0.28 s of a 1,000-skill build. Counted, not timed.
+        import kiro_crew.skills as skills_mod
+
+        loader = self._shipped_and_user(tmp_path, n_shipped=4, n_user=3)
+        real_roots = skills_mod._trusted_skill_roots
+        calls: list[int] = []
+
+        def counting_roots() -> tuple[str, ...]:
+            calls.append(1)
+            return real_roots()
+
+        monkeypatch.setattr(skills_mod, "_trusted_skill_roots", counting_roots)
+        rows = loader.scoped_skills()
+        assert all(r["fingerprint"] for r in rows)
+        loader._user_first(rows)
+        first = len(calls)
+        assert first > 0
+        loader._user_first(rows)
+        loader.get_context(budget=100_000)
+        assert len(calls) == first
+
+    def test_the_resolved_answer_follows_the_fingerprint_and_the_marker(
+        self, tmp_path, monkeypatch
+    ):
+        import kiro_crew.skills as skills_mod
+
+        skills_dir = tmp_path / "skills"
+        _create_skill(skills_dir, "mine", "---\nname: mine\ndescription: d\n---\n")
+        skill_file = skills_dir / "mine" / "SKILL.md"
+        provider = str(skills_dir.resolve())
+        loader = _settled(SkillsLoader(skills_path=skills_dir, install_builtins=False))
+        row = {"key": "mine", "path": str(skill_file), "fingerprint": "1:1:1:1:1"}
+        monkeypatch.setattr(skills_mod, "_trusted_skill_roots", lambda: ())
+        assert loader._is_user_authored(row) is True
+        # Same fingerprint: the kept answer, not a new resolution.
+        monkeypatch.setattr(skills_mod, "_trusted_skill_roots", lambda: (provider,))
+        assert loader._is_user_authored(row) is True
+        # A new fingerprint (the file was replaced or relinked) resolves again,
+        # and so does a row that carries none.
+        assert loader._is_user_authored({**row, "fingerprint": "1:2:1:1:1"}) is False
+        assert loader._is_user_authored({**row, "fingerprint": ""}) is False
+        # A catalog invalidation (a skill or an app link changed through Kiro
+        # Crew) empties the memo, so the kept row resolves again.
+        loader._invalidate_iter_cache()
+        assert loader._is_user_authored(row) is False
+        # The builtin sync can record provenance beside an unchanged SKILL.md,
+        # so the marker is read on every call even for a kept row.
+        monkeypatch.setattr(skills_mod, "_trusted_skill_roots", lambda: ())
+        loader._invalidate_iter_cache()
+        assert loader._is_user_authored(row) is True
+        (skills_dir / "mine" / ".builtin-skill-provenance").write_text("2:x")
+        assert loader._is_user_authored(row) is False
+
     def test_short_desc_truncated(self, tmp_path):
         loader = self._make(tmp_path, n_on_demand=1)
         # Description truncation applies only on the opt-in (integer-budget) path.
