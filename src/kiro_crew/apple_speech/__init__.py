@@ -74,6 +74,10 @@ _SWIFTC_FIXED_PATHS = (
     "XcodeDefault.xctoolchain/usr/bin/swiftc",
 )
 
+#: Where `xcode-select` records the active developer directory. root:wheel in a
+#: root:wheel directory, so it cannot be repointed without sudo.
+_XCODE_SELECT_LINK = "/var/db/xcode_select_link"
+
 #: SDK locations to stat when `xcrun` cannot be consulted, in the same fixed
 #: layout as the toolchains above.
 _SDK_FIXED_PATHS = (
@@ -252,10 +256,34 @@ def _swiftc_fast() -> str | None:
     inside Command Line Tools or Xcode — both fixed — so consulting PATH buys no
     real install and costs the trust boundary.
     """
-    for candidate in _SWIFTC_FIXED_PATHS:
-        if os.path.isfile(candidate) and _is_trusted_toolchain(candidate):
+    usable = [
+        candidate
+        for candidate in _SWIFTC_FIXED_PATHS
+        if os.path.isfile(candidate) and _is_trusted_toolchain(candidate)
+    ]
+    # With both toolchains installed, take the one `xcode-select` points at:
+    # `_sdk_path` asks `xcrun`, which follows the same link, and a compiler
+    # cannot read the standard library of a newer toolchain's SDK.
+    active = _active_developer_dir()
+    for candidate in usable:
+        if active and os.path.realpath(candidate).startswith(active + os.sep):
             return candidate
-    return None
+    return usable[0] if usable else None
+
+
+def _active_developer_dir() -> str:
+    """The developer directory `xcode-select` points at, or ``""``. Spawns nothing.
+
+    Read from the system link `xcrun` itself follows once the environment
+    overrides are stripped (see :func:`_build_env`). The answer only orders
+    candidates that already passed the trust check; it never adds one.
+    """
+    try:
+        if not os.path.islink(_XCODE_SELECT_LINK):
+            return ""
+        return os.path.realpath(_XCODE_SELECT_LINK)
+    except OSError:
+        return ""
 
 
 def _swiftc() -> str | None:
