@@ -1,5 +1,7 @@
 # Crew Log Projections
 
+<!-- docs-lint: wrong-on-purpose prHolders -->
+
 ## 1. Purpose
 
 A session's crew log is an append-only file (`crew-log-core.md`). Every view of it

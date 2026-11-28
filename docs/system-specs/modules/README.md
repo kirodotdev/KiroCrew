@@ -1,5 +1,7 @@
 # Module specs
 
+<!-- docs-lint: defines EvidenceReceipt -->
+
 One spec per backend subsystem. **These are change-control contracts:** read the
 spec for the subsystem you are touching before you change it, and update it in the
 same commit when you change what it documents.

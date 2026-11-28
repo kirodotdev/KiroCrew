@@ -1,5 +1,8 @@
 # Memory, Skills & Hooks Modules
 
+<!-- docs-lint: defines model_window_tokens, SessionTagsChanged -->
+<!-- docs-lint: wrong-on-purpose has_email -->
+
 ## Overview
 
 Memory V2 is a development-stage replacement with one stable `member_id` mapped
