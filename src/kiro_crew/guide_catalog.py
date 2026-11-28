@@ -196,6 +196,8 @@ _EXCLUDED_SETTING_IDS = frozenset(
     {
         "developer.chat-on-a-crew",
         "skills.require-approval-before-generated-skills-go-live",
+        # Reads by default: every plain New chat auto-approves read-only tools.
+        "chat.approval-mode-for-new-chats",
     }
 )
 

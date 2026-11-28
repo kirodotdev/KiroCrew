@@ -122,11 +122,11 @@ import { createTestStore } from './helpers'
 
 const LS_KEY = 'mc-chat-config'
 
-function wrap(sub = 'transcript', opts: { onCommit?: () => void } = {}) {
+function wrap(sub = 'transcript', opts: { onCommit?: () => void; store?: ReturnType<typeof createTestStore> } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const view = render(
     <MemoryRouter initialEntries={[`/settings?tab=chat&sub=${sub}`]}>
-    <Provider store={createTestStore()}>
+    <Provider store={opts.store ?? createTestStore()}>
     <QueryClientProvider client={qc}>
       {/* `onRender` runs in the commit phase, after the DOM is written and before
           passive effects, so a probe there sees exactly what one commit shows. */}
@@ -594,6 +594,48 @@ describe('ChatPanel — Messages', () => {
     expect(sw).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(sw)
     await waitFor(() => expect(storedChat().sidePanelSwipe).toBe(false))
+  })
+
+  it('offers Approval Mode for New Chats as Normal or Reads and saves the pick', async () => {
+    wrap('sessions')
+    const opts = await openSelect('Approval Mode for New Chats')
+    expect(opts.map(o => o.textContent)).toEqual(['Normal', 'Reads'])
+    fireEvent.click(opts[1])
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ default_approval_mode: 'trust_reads' })
+    )
+  })
+
+  it('marks Approval Mode for New Chats and its portalled choices as a trust root no guide points at', async () => {
+    wrap('sessions')
+    const opts = await openSelect('Approval Mode for New Chats')
+    expect(opts[1].closest('[data-guide-trust-root]')).not.toBeNull()
+  })
+
+  it('refuses a second Approval Mode for New Chats pick until the first save settles', async () => {
+    let settle!: (value: unknown) => void
+    updateDashboardConfigMock.mockImplementationOnce(
+      () => new Promise(resolve => { settle = resolve }) as never,
+    )
+    const view = wrap('sessions')
+    await pickOption('Approval Mode for New Chats', 1)
+    await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledTimes(1))
+    const trigger = screen.getByRole('combobox', { name: 'Approval Mode for New Chats' })
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-busy', 'true'))
+    fireEvent.click(trigger)
+    expect(updateDashboardConfigMock).toHaveBeenCalledTimes(1)
+    await act(async () => { settle({}) })
+    view.unmount()
+  })
+
+  it('disables Approval Mode for New Chats with the policy reason when the policy denies Reads', async () => {
+    const store = createTestStore()
+    store.dispatch({ type: 'dashboard/sseStatus', payload: { disabled_approval_modes: ['trust_reads'] } })
+    wrap('sessions', { store })
+    const trigger = await screen.findByRole('combobox', { name: 'Approval Mode for New Chats' })
+    expect(trigger).toHaveAttribute('data-disabled')
+    const row = document.querySelector('[data-setting-key="dashboard.default_approval_mode"]') as HTMLElement
+    expect(within(row).getByText(i18nT('components.approvalModePicker.mode_disabled_by_policy'))).toBeInTheDocument()
   })
 
   it('offers Start New Chats in conductor mode with no preview turned on, and persists it', async () => {

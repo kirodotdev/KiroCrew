@@ -649,6 +649,14 @@
       "configKey": "dashboard.folder_suggestions_auto_apply"
     },
     {
+      "id": "chat.approval-mode-for-new-chats",
+      "label": "Approval Mode for New Chats",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.default_approval_mode",
+      "hint": "Applies to chats you start from the dashboard. Crewmates, channels, schedules and agents keep their own settings.",
+      "configKey": "dashboard.default_approval_mode"
+    },
+    {
       "id": "chat.auto-compact-threshold",
       "label": "Auto-Compact Threshold",
       "tab": "chat",

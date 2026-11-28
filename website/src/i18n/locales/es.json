@@ -20615,6 +20615,9 @@
         "agent_model_pin_overrides_default": "El agente <agent/> fija su propio modelo <model/>. Solo los chats que se ejecutan como este agente y sin su propia elección de modelo usan ese modelo fijado. El botón «Nuevo chat» no. Más tarde puedes fijar otro modelo desde el selector de modelo del chat.",
         "agent_template_pin_overrides_default": "Los chats nuevos en el agente <agent/> usan <model/>, que viene de su plantilla de agente o del valor predeterminado del backend, no de este ajuste. Este agente no fija un modelo por sí mismo, así que aquí no hay nada que quitar. Para elegir uno, abre el selector de modelo del chat y fija un modelo en este agente.",
         "discovery": "Descubrir",
+        "default_approval_mode": "Modo de aprobación de chats nuevos",
+        "default_approval_mode_reads": "Lecturas ejecuta sin preguntar los comandos y búsquedas de solo lectura. Normal pregunta antes.",
+        "default_approval_mode_hint": "Se aplica a los chats que inicias desde el panel. Los crewmates, canales, programaciones y agentes conservan su propia configuración.",
         "new_chat_crew_mode": "Iniciar chats nuevos en Conductor mode",
         "new_chat_crew_mode_description": "Con Conductor mode, cada tarea se ejecuta en su propio chat e informa en el Tablero del chat nuevo. Puedes desactivarlo en cualquier chat nuevo antes del primer mensaje.",
         "new_chat_crew_mode_hint": "No se aplica a los chats Incógnito o Temporal, ni a los chats con otro agente.",
@@ -24847,7 +24850,8 @@
       "session_gone_open_failed_named": "«{{name}}» se eliminó y no se puede abrir.",
       "truncated_chars": "…({{count}} caracteres truncados: vuelve a abrir la sesión para ver la salida completa)",
       "truncated": "…(truncado)",
-      "session_folder_unavailable": "Este chat no pudo obtener su propia carpeta, así que se abrió en tu carpeta de proyecto predeterminada. Revisa Carpetas de sesión nuevas en Configuración."
+      "session_folder_unavailable": "Este chat no pudo obtener su propia carpeta, así que se abrió en tu carpeta de proyecto predeterminada. Revisa Carpetas de sesión nuevas en Configuración.",
+      "default_mode_refused": "La política de tu organización mantiene los chats nuevos en Normal, que pregunta antes de cada herramienta, así que este no empezó en Lecturas."
     }
   },
   "utils": {

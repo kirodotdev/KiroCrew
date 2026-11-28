@@ -1150,6 +1150,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.folder_suggestions_auto_apply"
   },
   {
+    "id": "chat.approval-mode-for-new-chats",
+    "label": "Approval Mode for New Chats",
+    "labelKey": "pages.settings.chatPanel.default_approval_mode",
+    "hint": "Applies to chats you start from the dashboard. Crewmates, channels, schedules and agents keep their own settings.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.default_approval_mode"
+  },
+  {
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "labelKey": "pages.settings.chatPanel.auto_compact_threshold",

@@ -48,6 +48,8 @@ import { useModelsAuthRequired, useModelsDegradedReason } from '../../providers/
 import { KiroCliSignInButton, useKiroCliCanRunHere, useKiroCliSignInInTerminal } from '../../components/KiroCliSignInInTerminal'
 import ErrorNotice from '../../components/ErrorNotice'
 import { parseWholeNumber } from '../../utils/wholeNumber'
+import { useAppSelector } from '../../store'
+import { GuideTrustRootProvider } from '../../guide/trustRoot'
 
 export type { LinkPatternRule, LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
 export { LinkPatternsEditor } from './ChatPanelLinkPatternsEditor'
@@ -56,6 +58,13 @@ export { LinkPatternsEditor } from './ChatPanelLinkPatternsEditor'
  *  under it, or the lead alone when that error carries no text. */
 const loadFailure = (lead: string, reason: string | undefined) =>
   reason ? { title: lead, message: reason, messagePlacement: 'below' as const } : { message: lead }
+
+/** `dashboard.default_approval_mode`'s values, in the picker's order, and their picker names. */
+const DEFAULT_APPROVAL_MODE_OPTIONS = ['normal', 'trust_reads']
+const defaultApprovalModeLabels = () => [
+  i18nT('components.approvalModePicker.normal_label'),
+  i18nT('components.approvalModePicker.reads_label'),
+]
 
 export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   const qc = useQueryClient()
@@ -332,6 +341,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     })
   }, [])
 
+  // The `approval_modes` policy denies Reads: the start-mode row is disabled.
+  const readsDenied = useAppSelector(s => s.dashboard.status?.disabled_approval_modes)?.includes('trust_reads') ?? false
   const setDash = (patch: Partial<DashboardConfig>) => {
     dashMut.mutate(patch)
   }
@@ -1198,6 +1209,27 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             disabled={dashDisabled || defaultModeMut.isPending}
             configKey="dashboard.default_memory_mode"
           />
+          {/* The mode the owner's plain New chat opens on. Trust is not offered
+              (rfc-default-approval-mode, section 6); a policy that denies Reads
+              disables the row with the composer picker's own reason. A trust
+              root like the composer picker: no guide points at it or at its
+              portalled choices (the row itself is excluded by id, SENSITIVE_IDS). */}
+          <GuideTrustRootProvider>
+            <SettingsSelect
+              label={i18nT('pages.settings.chatPanel.default_approval_mode')}
+              description={readsDenied ? i18nT('components.approvalModePicker.mode_disabled_by_policy') : i18nT('pages.settings.chatPanel.default_approval_mode_reads')}
+              hint={i18nT('pages.settings.chatPanel.default_approval_mode_hint')}
+              value={!readsDenied && dashCfg.default_approval_mode === 'trust_reads' ? 'trust_reads' : 'normal'}
+              options={DEFAULT_APPROVAL_MODE_OPTIONS}
+              optionLabels={defaultApprovalModeLabels()}
+              onChange={v => setDash({ default_approval_mode: v === 'trust_reads' ? 'trust_reads' : 'normal' })}
+              disabled={dashDisabled || readsDenied}
+              // One save at a time: a pick made while an earlier one is still on
+              // its way could land first and leave the older choice stored.
+              busy={dashMut.isPending}
+              configKey="dashboard.default_approval_mode"
+            />
+          </GuideTrustRootProvider>
           {crewModeOffered && (
             <SettingsToggle label={i18nT('pages.settings.chatPanel.new_chat_crew_mode')} description={i18nT('pages.settings.chatPanel.new_chat_crew_mode_description')} hint={i18nT('pages.settings.chatPanel.new_chat_crew_mode_hint')} configKey="dashboard.new_chat_crew_mode" checked={dashCfg.new_chat_crew_mode ?? false} onChange={v => setDash({ new_chat_crew_mode: v })} disabled={dashDisabled} />
           )}

@@ -144,6 +144,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
 
   // Chat
   'chat.apply-folder-suggestions-automatically': ['auto file sessions', 'auto sort chats into folders', 'move chats into folders automatically'],
+  'chat.approval-mode-for-new-chats': ['default approval mode', 'start new chats on reads', 'stop asking for read-only commands', 'approval mode for new chats', 'trust reads by default'],
   'chat.auto-compact-threshold': ['context window', 'compaction', 'memory', 'conversation length', 'auto compact', 'compact at percent', 'context is full', 'summarize old messages', 'compacts too early'],
   'chat.auto-open-board-in-side-panel': ['open the board automatically', 'board side panel', 'show board on start'],
   'chat.auto-open-git-in-side-panel': ['open the git panel automatically', 'git side panel', 'show git changes'],
