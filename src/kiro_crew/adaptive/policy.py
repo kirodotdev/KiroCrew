@@ -332,6 +332,9 @@ class AdaptivePolicy:
             "paused": self._paused,
             "probing": self._probing,
             "last_cut": dict(self._last_cut) if self._last_cut else None,
+            "last_exec_pressure_t": (
+                None if self._last_exec_pressure_at == _NEVER else self._last_exec_pressure_at
+            ),
             "decisions": self._decisions,
             "last": self._last.as_dict() if self._last else None,
         }

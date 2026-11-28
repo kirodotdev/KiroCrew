@@ -268,6 +268,35 @@ def _start_caps() -> tuple[int | None, int | None]:
         return None, None
 
 
+#: How long after the controller's last pressure cut the chip still says the
+#: host is under load. Past it a cap still below its start is a limit that has
+#: not grown back: the policy regrows it only on demand at the cap or on idle,
+#: so steady work below the cap keeps it low with no pressure left.
+RECENT_CUT_SECS = 600.0
+
+
+def _cut_recent(state: Mapping[str, Any]) -> bool:
+    """Whether the last pressure cut, or exec pressure since, is within :data:`RECENT_CUT_SECS`.
+
+    Pressure that finds the cap at its floor or inside the cooldown cuts
+    nothing, so ``exec_pressure_age_secs`` keeps the load named while it lasts.
+    A cut whose age the snapshot does not carry counts as recent, so a reading
+    that cannot tell keeps naming the load.
+    """
+
+    def _age(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if math.isfinite(value) else None
+
+    cut = state.get("last_cut")
+    age = _age(cut.get("age_secs")) if isinstance(cut, Mapping) else None
+    if age is None:
+        return True
+    pressure = _age(state.get("exec_pressure_age_secs"))
+    return min(age, age if pressure is None else pressure) <= RECENT_CUT_SECS
+
+
 def throttle_view(
     state: Mapping[str, Any] | None,
     *,
@@ -283,8 +312,11 @@ def throttle_view(
     ``gate_start`` only a pause reads as a gate cut.
 
     ``queued`` is the work the controller's last sample saw waiting for an
-    execution slot. A missing, disabled or ``fixed``-mode controller (which pins
-    both caps) answers ``{"cut": False}`` and nothing else.
+    execution slot and ``running`` the work it saw holding one, so a cap is
+    never read as occupancy. ``recent_cut`` says whether the last pressure cut
+    is recent (:func:`_cut_recent`): a cap still lowered past that window is a
+    limit that has not regrown, not a sign of load. A missing, disabled or ``fixed``-mode controller (which
+    pins both caps) answers ``{"cut": False}`` and nothing else.
     """
     if not state or not state.get("enabled") or state.get("mode") == "fixed":
         return {"cut": False}
@@ -296,11 +328,14 @@ def throttle_view(
     gate_cut = paused or (gate_cap is not None and gate_start is not None and gate_cap < gate_start)
     last = state.get("last_sample")
     queued = _count(last.get("queued")) if isinstance(last, Mapping) else None
+    running = _count(last.get("running")) if isinstance(last, Mapping) else None
     return {
         "cut": exec_cut or gate_cut,
         "exec": {"cap": exec_cap, "configured": exec_configured, "cut": exec_cut},
         "gate": {"cap": gate_cap, "configured": gate_start, "cut": gate_cut, "paused": paused},
         "queued": queued or 0,
+        "running": running or 0,
+        "recent_cut": _cut_recent(state),
     }
 
 

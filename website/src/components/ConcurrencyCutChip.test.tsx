@@ -44,6 +44,8 @@ const execCut: ThrottleView = {
   exec: { cap: 2, configured: 8, cut: true },
   gate: { cap: 4, configured: 4, cut: false, paused: false },
   queued: 5,
+  running: 3,
+  recent_cut: true,
 }
 const gateOnly: ThrottleView = {
   cut: true,
@@ -82,12 +84,39 @@ describe('throttleChipKey', () => {
 
   it('names the reduced execution cap and its queue', () => {
     expect(throttleChipKey(execCut)).toEqual({
-      key: 'components.concurrencyCutChip.exec_reduced_queued', values: { cap: '2', configured: '8', queued: '5' },
+      key: 'components.concurrencyCutChip.exec_reduced_queued', values: { cap: '2', configured: '8', running: '3', queued: '5' },
     })
-    expect(throttleChipKey({ ...execCut, queued: 0 })?.key).toBe('components.concurrencyCutChip.exec_reduced')
+    expect(throttleChipKey({ ...execCut, queued: 0 })).toEqual({
+      key: 'components.concurrencyCutChip.exec_reduced_running', values: { cap: '2', configured: '8', running: '3' },
+    })
     expect(throttleChipKey(execCut, { withQueue: false })?.key).toBe('components.concurrencyCutChip.exec_reduced')
-    expect(throttleChipLabel(execCut)).toBe(plain('exec_reduced_queued', { ...EXEC, queued: 5 }))
+    // An older gateway sends the queue but no running count: the queue still shows.
+    const older = { ...execCut, running: undefined, recent_cut: undefined }
+    expect(throttleChipKey(older)?.key).toBe('components.concurrencyCutChip.exec_reduced_queue_only')
+    expect(throttleChipLabel(older)).toBe('Under load: up to 2 agents at once per lane, down from 8 · 5 queued')
+    expect(throttleChipKey({ ...older, queued: 0 })?.key).toBe('components.concurrencyCutChip.exec_reduced')
+    expect(throttleChipKey(older, { withQueue: false })?.key).toBe('components.concurrencyCutChip.exec_reduced')
+    expect(throttleChipLabel(execCut)).toBe(plain('exec_reduced_queued', { ...EXEC, running: 3, queued: 5 }))
     expect(throttleShortCap(execCut)).toBe('2/8')
+  })
+
+  it('names the cap as a limit beside the running count, never as occupancy', () => {
+    const label = throttleChipLabel({ ...execCut, exec: { cap: 30, configured: 32, cut: true }, running: 8, queued: 0 })
+    expect(label).toBe('Under load: up to 30 agents at once per lane, down from 32 · 8 running in all')
+  })
+
+  it('drops the load lead once the last pressure cut is outside the recent window', () => {
+    const stale = { ...execCut, recent_cut: false }
+    expect(throttleChipKey(stale)?.key).toBe('components.concurrencyCutChip.exec_lowered_queued')
+    expect(throttleChipKey({ ...stale, queued: 0 })?.key).toBe('components.concurrencyCutChip.exec_lowered_running')
+    expect(throttleChipKey(stale, { withQueue: false })?.key).toBe('components.concurrencyCutChip.exec_lowered')
+    expect(part('exec_lowered', 'lead', EXEC)).not.toBe(part('exec_reduced', 'lead', EXEC))
+    expect(throttleChipLabel({ ...stale, exec: { cap: 30, configured: 32, cut: true }, running: 8, queued: 0 }))
+      .toBe('Lowered limit: up to 30 agents at once per lane, down from 32 · 8 running in all')
+    // The narrow form keeps its pair of numbers.
+    expect(throttleShortCap(stale)).toBe('2/8')
+    // An older gateway that sends no recency keeps naming the load.
+    expect(throttleChipKey({ ...execCut, recent_cut: undefined })?.key).toBe('components.concurrencyCutChip.exec_reduced_queued')
   })
 
   it('names new agents starting when only the spawn gate is cut', () => {
@@ -106,8 +135,11 @@ describe('throttleChipKey', () => {
   })
 
   it('leads every sentence with the outcome', () => {
-    for (const key of ['exec_reduced', 'exec_reduced_queued', 'gate_reduced', 'gate_paused']) {
-      expect(part(key, 'lead', { ...EXEC, queued: 1 })).toBe(part('exec_reduced', 'lead', EXEC))
+    for (const key of ['exec_reduced', 'exec_reduced_running', 'exec_reduced_queued', 'exec_reduced_queue_only', 'gate_reduced', 'gate_paused']) {
+      expect(part(key, 'lead', { ...EXEC, running: 1, queued: 1 })).toBe(part('exec_reduced', 'lead', EXEC))
+    }
+    for (const key of ['exec_lowered_running', 'exec_lowered_queued']) {
+      expect(part(key, 'lead', { ...EXEC, running: 1, queued: 1 })).toBe(part('exec_lowered', 'lead', EXEC))
     }
   })
 
@@ -188,17 +220,29 @@ describe('ConcurrencyCutChip', () => {
     expect(link.getAttribute('title')).toBe(hint)
     expect(link.querySelector('[data-chip-part="lead"]')?.textContent).toBe(part('exec_reduced', 'lead', EXEC))
     expect(link.querySelector('[data-chip-part="detail"]')?.textContent)
-      .toBe(part('exec_reduced_queued', 'detail', { ...EXEC, queued: 5 }))
+      .toBe(part('exec_reduced_queued', 'detail', { ...EXEC, running: 3, queued: 5 }))
     // The sentence stays the link's name; the hint is a visually hidden
     // description, not an aria-label that would replace the name.
     expect(link.getAttribute('aria-label')).toBeNull()
-    expect(link).toHaveAccessibleName(expect.stringContaining(plain('exec_reduced_queued', { ...EXEC, queued: 5 })))
+    expect(link).toHaveAccessibleName(expect.stringContaining(plain('exec_reduced_queued', { ...EXEC, running: 3, queued: 5 })))
     expect([...link.querySelectorAll('.sr-only')].map(n => n.textContent)).toContain(hint)
     // A visible cue that the chip opens something.
     expect(link.querySelector('svg.lucide-chevron-right')).not.toBeNull()
     // The live region names the cut without the queued count, which moves on
     // every read and would otherwise be re-announced each time.
     expect(screen.getByRole('status').textContent).toBe(plain('exec_reduced', EXEC))
+  })
+
+  it('describes a lowered limit without naming current load', async () => {
+    answer({ ...execCut, recent_cut: false })
+    renderWithProviders(<ConcurrencyCutChip />)
+    const hint = i18nT('components.concurrencyCutChip.hint_lowered')
+    const link = await findChip()
+    expect(link.querySelector('[data-chip-part="lead"]')?.textContent).toBe(part('exec_lowered', 'lead', EXEC))
+    expect(link.getAttribute('title')).toBe(hint)
+    const described = [...link.querySelectorAll('.sr-only')].map(n => n.textContent)
+    expect(described).toContain(hint)
+    expect(described).not.toContain(i18nT('components.concurrencyCutChip.hint'))
   })
 
   it('steps down to the lead and the cap, then the cap alone, as the header row narrows', async () => {
@@ -213,7 +257,7 @@ describe('ConcurrencyCutChip', () => {
     expect(link.querySelector('[data-chip-part="short-cap"]')?.textContent).toBe('2/8')
     // The narrow forms are drawn for the eye only; the sentence stays readable.
     expect(short.querySelector('[aria-hidden]')).not.toBeNull()
-    expect(short.querySelector('.sr-only')?.textContent).toBe(plain('exec_reduced_queued', { ...EXEC, queued: 5 }))
+    expect(short.querySelector('.sr-only')?.textContent).toBe(plain('exec_reduced_queued', { ...EXEC, running: 3, queued: 5 }))
   })
 
   it('steps down sooner on a row the channel-link chip also holds', async () => {
@@ -225,7 +269,7 @@ describe('ConcurrencyCutChip', () => {
     // Narrowest of all, the gauge alone: the sentence stays the link's name.
     expect(link.querySelector('[data-chip-part="short-cap"]')?.className).toContain('hidden @[32rem]/chathead:inline')
     expect(link.querySelector('svg.lucide-chevron-right')?.getAttribute('class')).toContain('hidden @[32rem]/chathead:inline')
-    expect(link).toHaveAccessibleName(expect.stringContaining(plain('exec_reduced_queued', { ...EXEC, queued: 5 })))
+    expect(link).toHaveAccessibleName(expect.stringContaining(plain('exec_reduced_queued', { ...EXEC, running: 3, queued: 5 })))
   })
 
   it('keeps the whole sentence at every width when there is no cap to shorten to', async () => {
@@ -388,7 +432,7 @@ describe('phone top bar', () => {
     answer(execCut)
     renderWithProviders(<><ConcurrencyCutMenuItem Item={Item} /><Where /></>, { route: '/chat' })
     const row = await screen.findByTestId('concurrency-cut-menu-item')
-    expect(screen.getByTestId('concurrency-cut-menu-label').textContent).toBe(plain('exec_reduced_queued', { ...EXEC, queued: 5 }))
+    expect(screen.getByTestId('concurrency-cut-menu-label').textContent).toBe(plain('exec_reduced_queued', { ...EXEC, running: 3, queued: 5 }))
     fireEvent.click(row.closest('button')!)
     expect(screen.getByTestId('where').textContent).toBe(CAPACITY_CARD_PATH)
   })

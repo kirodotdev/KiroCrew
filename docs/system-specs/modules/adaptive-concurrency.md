@@ -459,8 +459,13 @@ is on record: a gate cut or pause lowers no exec cap.
 (below) returns, beside the snapshot, a `throttle` reading
 (`dashboard/handlers/spawn_resume.py::throttle_view`): whether a cut is in force,
 the execution cap and the spawn gate each as `{cap, configured, cut}` (the gate
-also carries `paused`), and `queued`, the work the last sample saw waiting for an
-execution slot. A cut is a cap below the value a fresh process starts it at --
+also carries `paused`), `queued`, the work the last sample saw waiting for an
+execution slot, `running`, the work it saw holding one, and `recent_cut`, whether
+the last pressure cut (`last_cut.age_secs`), or the last exec pressure
+(`exec_pressure_age_secs`, which pressure at the floor or inside the cooldown
+still moves though it cuts nothing), is within `RECENT_CUT_SECS` (10 minutes, a
+display window, not a policy interval; a cut age the snapshot does not carry
+counts as recent). A cut is a cap below the value a fresh process starts it at --
 the execution cap below the policy's `exec_start` (the user's ceiling), the gate
 paused or below `gate_start` (`spawn_concurrency_initial`). A gate below its
 ceiling is not a cut, because the gate starts at its initial capacity and grows
@@ -470,9 +475,18 @@ value: `/api/tasks/summary` publishes it as the gate lane's `start`
 gate between its start value and its ceiling is cut on neither surface. A disabled controller and
 `fixed` mode answer `{"cut": false}`. The
 dashboard's chat header (`components/ConcurrencyCutChip.tsx`) polls it every
-15 s and, while `cut` holds, shows one chip naming the reduced cap and the queue,
-linked to the Tasks & capacity card, with a polite live region that announces
-the cut and not each move of the queued count. Next to it the open session gets a
+15 s and, while `cut` holds, shows one chip naming the reduced cap as a limit
+("up to 2 agents at once per lane, down from 8") beside the running count and
+the queue, so the cap never reads as occupancy; the subagent manager and the
+runner lane each hold to the cap on their own while `running` is their sum, so
+the count reads "in all", linked to the Tasks & capacity card, with a
+polite live region that announces the cut and not each move of the running or
+queued count. The cap regrows only on demand at the cap or on idle, so steady
+work below it keeps it lowered with no pressure left: once `recent_cut` is false
+an execution-cap sentence leads with "Lowered limit" instead of "Under load",
+and its hover title and screen-reader description (`hint_lowered`) name the
+earlier load and how the limit regrows, not current load (the cap and the cut
+verdict are unchanged). Next to it the open session gets a
 marker when its own subagent starts wait for a slot under a cut execution cap; a
 memory wait keeps the sidebar's memory wording instead. Both read the title row
 as a container (`@container/chathead`), so they step down with the pane, not the

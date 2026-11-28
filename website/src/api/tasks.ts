@@ -151,6 +151,12 @@ export interface ThrottleView {
   gate?: { cap: number | null; configured: number | null; cut: boolean; paused: boolean }
   /** Work the controller's last sample saw waiting for an execution slot. */
   queued?: number
+  /** Work the controller's last sample saw holding an execution slot. */
+  running?: number
+  /** Whether the last pressure cut is recent; a cap still lowered past that
+   *  window is a limit that has not regrown, not a sign of load. Absent from
+   *  an older gateway. */
+  recent_cut?: boolean
 }
 
 /** `GET /api/spawn/adaptive`. `throttle` is absent from an older gateway. */
