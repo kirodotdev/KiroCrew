@@ -57,6 +57,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.dashboard.side_readonly_spec import _home_relative
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.metrics.events import CHILD_PERMISSION_ROUTED, emit_counter
 
@@ -117,7 +118,8 @@ def _oversize_frame_message(size: int) -> str:
     return (
         f"The agent backend's reply was {size:,} bytes, over Kiro Crew's "
         f"{_STDOUT_BUFFER_LIMIT:,}-byte frame limit, so it was dropped. On kiro-cli, a "
-        "session/new or session/load reply lists every agent in ~/.kiro/agents with its "
+        "session/new or session/load reply lists every agent in "
+        f"{_home_relative(kiro_agents_dir())} with its "
         "description and welcomeMessage, so an agent package whose specs carry very large "
         "welcomeMessage text is the usual cause: trim those fields, or remove agents you "
         "do not use."

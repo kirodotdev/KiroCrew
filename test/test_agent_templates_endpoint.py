@@ -37,6 +37,7 @@ from kiro_crew.dashboard.handlers.agents import (
     api_default_agent,
     default_template_eligible,
 )
+from kiro_crew.dashboard.side_readonly_spec import _home_relative
 from kiro_crew.webhooks import token_store
 
 # An AWS key ID is an Identifier with the structured detectors on, so the
@@ -583,11 +584,11 @@ async def test_create_revalidates_the_source_identity_under_the_lock(agents_dir,
     payload = await _body(resp)
     assert payload["code"] == "ambiguous_template_name"
     # The locked re-check names what it found, the late claimant included.
+    d = _home_relative(agents_dir)
     assert payload["error"] == (
-        "'atlas' matches more than one template file in ~/.kiro/agents/ "
-        "(SomePkg-atlas.json, atlas.json); rename one first."
+        "'atlas' matches more than one template file "
+        f"({d}/SomePkg-atlas.json, {d}/atlas.json); rename one first."
     )
-    assert str(agents_dir) not in payload["error"]
     assert not (agents_dir / "mine.json").exists()
 
 
@@ -668,11 +669,11 @@ async def test_create_from_an_ambiguous_name_is_a_409_not_a_500(agents_dir):
     assert resp.status == 409, resp.text
     payload = await _body(resp)
     assert payload["code"] == "ambiguous_template_name"
+    d = _home_relative(agents_dir)
     assert payload["error"] == (
-        "'atlas' matches more than one template file in ~/.kiro/agents/ "
-        "(SomePkg-atlas.json, atlas.json); rename one first."
+        "'atlas' matches more than one template file "
+        f"({d}/SomePkg-atlas.json, {d}/atlas.json); rename one first."
     )
-    assert str(agents_dir) not in payload["error"]
     assert not (agents_dir / "mine.json").exists()
 
 
@@ -1265,11 +1266,11 @@ async def test_delete_refuses_a_name_that_reaches_two_files(agents_dir):
     assert resp.status == 409, resp.text
     payload = await _body(resp)
     assert payload["code"] == "ambiguous_template_name"
+    d = _home_relative(agents_dir)
     assert payload["error"] == (
-        "'bar' matches more than one template file in ~/.kiro/agents/ "
-        "(bar.json, foo.json); rename one first."
+        "'bar' matches more than one template file "
+        f"({d}/bar.json, {d}/foo.json); rename one first."
     )
-    assert str(agents_dir) not in payload["error"]
     assert (agents_dir / "bar.json").exists() and (agents_dir / "foo.json").exists()
 
 
@@ -1309,11 +1310,11 @@ async def test_delete_revalidates_ambiguity_under_the_spec_lock(agents_dir, monk
     assert resp.status == 409, resp.text
     payload = await _body(resp)
     assert payload["code"] == "ambiguous_template_name"
+    d = _home_relative(agents_dir)
     assert payload["error"] == (
-        "'bar' matches more than one template file in ~/.kiro/agents/ "
-        "(Pkg-bar.json, bar.json); rename one first."
+        "'bar' matches more than one template file "
+        f"({d}/Pkg-bar.json, {d}/bar.json); rename one first."
     )
-    assert str(agents_dir) not in payload["error"]
     assert (agents_dir / "bar.json").exists() and (agents_dir / "Pkg-bar.json").exists()
 
 
@@ -1392,12 +1393,12 @@ async def test_patch_definition_refuses_an_ambiguous_name(agents_dir):
         assert resp.status == 409, resp.text
         payload = await _body(resp)
         assert payload["code"] == "ambiguous_template_name"
-        # The refusal names both claimants by file name, never the absolute path.
+        # The refusal names both claimants by their folder and file name.
+        d = _home_relative(agents_dir)
         assert payload["error"] == (
-            "'atlas' matches more than one template file in ~/.kiro/agents/ "
-            "(SomePkg-atlas.json, atlas.json); rename one first."
+            "'atlas' matches more than one template file "
+            f"({d}/SomePkg-atlas.json, {d}/atlas.json); rename one first."
         )
-        assert str(agents_dir) not in payload["error"]
     for f in ("atlas.json", "SomePkg-atlas.json"):
         spec = json.loads((agents_dir / f).read_text(encoding="utf-8"))
         assert spec["prompt"] != "rewritten" and "model" not in spec
@@ -1426,7 +1427,8 @@ async def test_patch_revalidates_ambiguity_under_the_write_lock(agents_dir, monk
     payload = await _body(resp)
     assert payload["code"] == "ambiguous_template_name"
     # The locked re-check names what it found, the late claimant included.
-    assert "(SomePkg-atlas.json, atlas.json)" in payload["error"]
+    d = _home_relative(agents_dir)
+    assert f"({d}/SomePkg-atlas.json, {d}/atlas.json)" in payload["error"]
     assert json.loads((agents_dir / "atlas.json").read_text(encoding="utf-8"))["prompt"] == "mine"
 
 
@@ -1436,6 +1438,46 @@ def test_ambiguous_refusal_text_without_scanned_paths():
 
     assert _AmbiguousTemplateName("atlas").refusal_text() == (
         "'atlas' matches more than one template file; rename one first."
+    )
+
+
+def test_ambiguous_refusal_text_names_each_claimant_by_its_own_folder(tmp_path):
+    """Claimants come from the agents folder and the crewmate folder, and
+    ``KIRO_HOME`` can put the agents folder outside the home, as a pod gateway
+    does: each claimant is named by its own folder, home-relative under the home
+    and absolute outside it."""
+    from kiro_crew.dashboard.handlers.agents import _AmbiguousTemplateName
+
+    home = tmp_path / "home"
+    pod_agents = tmp_path / "pod" / "kiro" / "agents"
+    mates = home / ".kiro" / "mates" / "agents"
+    with patch("pathlib.Path.home", return_value=home):
+        text = _AmbiguousTemplateName(
+            "atlas", (mates / "atlas.json", pod_agents / "SomePkg-atlas.json")
+        ).refusal_text()
+
+    assert text == (
+        "'atlas' matches more than one template file "
+        f"({pod_agents}/SomePkg-atlas.json, ~/.kiro/mates/agents/atlas.json); "
+        "rename one first."
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_ambiguity_refusal_names_the_agents_folder_outside_the_home(
+    agents_dir, tmp_path
+):
+    """The delete names its claimants from the agents folder it scanned, which
+    ``KIRO_HOME`` can put outside the home, as a pod gateway does."""
+    _write(agents_dir, "bar.json", name="baz")
+    _write(agents_dir, "foo.json", name="bar")
+    with patch("pathlib.Path.home", return_value=tmp_path / "home"):
+        _seed_config()
+        resp = await api_agent_template_delete(_request("DELETE", "bar"))
+    assert resp.status == 409, resp.text
+    assert (await _body(resp))["error"] == (
+        "'bar' matches more than one template file "
+        f"({agents_dir}/bar.json, {agents_dir}/foo.json); rename one first."
     )
 
 
