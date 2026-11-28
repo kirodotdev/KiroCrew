@@ -12871,6 +12871,7 @@
       "discard_unsaved_changes": "बिना सहेजे गए बदलाव छोड़ दें?",
       "document_type": "दस्तावेज़ प्रकार",
       "download": "डाउनलोड",
+      "download_docx": ".docx के रूप में डाउनलोड करो",
       "edit_content": "सामग्री संपादित करें",
       "edited": "संपादित",
       "failed_to_load_artifact": "आर्टिफ़ैक्ट लोड करने में विफल",

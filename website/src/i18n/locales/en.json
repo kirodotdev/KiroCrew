@@ -7201,6 +7201,7 @@
       "created": "Created",
       "discard_unsaved_changes": "Discard unsaved changes?",
       "download": "Download",
+      "download_docx": "Download as .docx",
       "edit_content": "Edit content",
       "failed_to_load_artifact": "Failed to load artifact",
       "focus_popped_out_window": "Focus popped-out window",

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         api_artifact_delete,
         api_artifact_delete_comment,
         api_artifact_detail,
+        api_artifact_docx,
         api_artifact_edit_comment,
         api_artifact_events,
         api_artifact_folder_create,
@@ -870,6 +871,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)
     app.router.add_get("/api/artifacts/{slug}", api_artifact_detail)
     app.router.add_get("/api/artifacts/{slug}/asset", api_artifact_asset)
+    app.router.add_get("/api/artifacts/{slug}/docx", api_artifact_docx)
     app.router.add_patch("/api/artifacts/{slug}", api_artifact_update)
     app.router.add_delete("/api/artifacts/{slug}", api_artifact_delete)
     app.router.add_post("/api/artifacts/{slug}/settle", api_artifact_settle_blank)

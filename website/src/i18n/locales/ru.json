@@ -13457,6 +13457,7 @@
       "discard_unsaved_changes": "Отменить несохранённые изменения?",
       "document_type": "Тип документа",
       "download": "Скачать",
+      "download_docx": "Скачать как .docx",
       "edit_content": "Редактировать содержимое",
       "edited": "Изменено",
       "failed_to_load_artifact": "Не удалось загрузить артефакт",

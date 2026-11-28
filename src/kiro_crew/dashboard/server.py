@@ -97,6 +97,7 @@ from kiro_crew.dashboard.handlers.artifacts import (  # noqa: F401
     api_artifact_delete,
     api_artifact_delete_comment,
     api_artifact_detail,
+    api_artifact_docx,
     api_artifact_edit_comment,
     api_artifact_events,
     api_artifact_folder_create,

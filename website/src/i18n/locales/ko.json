@@ -12578,6 +12578,7 @@
       "discard_unsaved_changes": "저장하지 않은 변경 내용을 버리시겠습니까?",
       "document_type": "문서 유형",
       "download": "다운로드",
+      "download_docx": ".docx로 다운로드",
       "edit_content": "콘텐츠 편집",
       "edited": "편집됨",
       "failed_to_load_artifact": "아티팩트를 불러오지 못했습니다",

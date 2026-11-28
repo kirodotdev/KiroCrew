@@ -12871,6 +12871,7 @@
       "discard_unsaved_changes": "অসংরক্ষিত পরিবর্তনগুলি বাতিল করবেন?",
       "document_type": "নথির ধরন",
       "download": "ডাউনলোড করুন",
+      "download_docx": ".docx হিসেবে ডাউনলোড করো",
       "edit_content": "কনটেন্ট সম্পাদনা করুন",
       "edited": "সম্পাদিত",
       "failed_to_load_artifact": "আর্টিফ্যাক্ট লোড করা যায়নি",
