@@ -265,6 +265,35 @@ def test_install_ps1_runs_pip_through_the_resolved_interpreter():
     assert not offenders, "these calls bypass the resolved interpreter:\n" + "\n".join(offenders)
 
 
+# Windows PowerShell 5.1 reads a BOM-less script in the ANSI code page, where a
+# UTF-8 em dash ends in a right double quote that closes a string early. The
+# .github/ script is left out: Actions runs it under pwsh 7, which reads UTF-8.
+_PS1_SCRIPTS = sorted(
+    {*REPO.glob("*.ps1"), *(REPO / "scripts").glob("*.ps1"), *(REPO / "skills").glob("**/*.ps1")}
+)
+
+
+@pytest.mark.parametrize("script", _PS1_SCRIPTS, ids=lambda p: str(p.relative_to(REPO)))
+def test_ps1_scripts_parse_in_windows_powershell_5_1(script):
+    """A .ps1 a user runs is ASCII-only or carries a UTF-8 byte-order mark."""
+    raw = script.read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return
+    offenders = [
+        f"{number}: {line.decode('utf-8', 'replace').strip()}"
+        for number, line in enumerate(raw.splitlines(), start=1)
+        if any(byte > 0x7F for byte in line)
+    ]
+    assert not offenders, (
+        f"{script.name} has non-ASCII bytes and no BOM, so Windows PowerShell 5.1 "
+        "misreads it:\n" + "\n".join(offenders)
+    )
+
+
+def test_the_ps1_guard_covers_install_ps1():
+    assert INSTALL_PS1 in _PS1_SCRIPTS
+
+
 # dep_sync: the in-process editable reinstall also reuses the venv
 
 

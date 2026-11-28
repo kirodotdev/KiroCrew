@@ -80,6 +80,7 @@ describe('the protocol surface apps import', () => {
       'parseOptions',
       'deriveFollowUpOptions',
       'extractSteeringAcks',
+      'isStatusRow',
       'stripPartialOptionMarker',
     ]) {
       expect(surface, `protocol must export ${name}`).toHaveProperty(name)

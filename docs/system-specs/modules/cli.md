@@ -1822,11 +1822,11 @@ runtime that still ships the API keeps the mitigation. Without that guard the
 Linux pidfd branch raised `AttributeError` and `kirocrew gateway` died before
 binding its port, while every other subcommand kept working.
 
-### Gateway stdout is line-buffered off a terminal
+### Gateway and doctor stdout is line-buffered off a terminal
 
 `platform_compat.ensure_line_buffered_stdout()` runs once on the **`gateway`
-command path only**, as the first statement of the dispatch branch, before the
-first status line prints. The gateway's `👻` status lines (`Checking for
+command path** (and on `doctor`'s, below), as the first statement of the
+dispatch branch, before the first status line prints. The gateway's `👻` status lines (`Checking for
 updates…`, `Probing MCP servers…`, `Kiro Crew gateway running — press Ctrl+C to stop`, the
 update-check outcome, `Shutting down…`) are plain `print()` calls. CPython
 line-buffers `sys.stdout` only when it is a terminal; a pipe or a file gets a
@@ -1870,6 +1870,14 @@ Pinned by `test_platform_compat.py::TestLineBufferedStdout` (a non-tty
 not reconfigured; a stream without `reconfigure` does not raise) and
 `test_cli_main_entry.py::TestSeedDispatch::test_gateway_dispatch_line_buffers_stdout_before_the_gateway_starts`
 (the dispatch calls the seam once, before the gateway coroutine exists).
+
+`kirocrew doctor` takes the same seam, first in its dispatch branch, for a
+different reason: its rows are `print()` calls while its probes log `WARNING`
+records to stderr, which is written at once. Captured (`kirocrew doctor 2>&1 |
+tee`, a file), a block-buffered stdout let a record land inside a half-written
+row; line by line, a record falls only between rows. It does not take records
+off doctor's terminal. Pinned by
+`test_cli_main_entry.py::TestSeedDispatch::test_doctor_dispatch_line_buffers_stdout_before_the_first_row`.
 
 ### The startup and restart sign-in links print to a terminal only
 

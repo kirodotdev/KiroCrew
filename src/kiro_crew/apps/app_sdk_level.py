@@ -30,7 +30,8 @@ also adds the descriptor-pinned path walk and copy: ``supports_pinned_walk``,
 Level 15 adds ``permissions.browserRecipes``: fixed clicks on CSS selectors the gateway
 runs on the app's own agent's tab, through ``POST /api/browser/media`` (``action:
 "recipe"``, the SDK's ``useBrowserMedia().runRecipe``) and, for a ``watch`` recipe, by
-itself while the app's media plays.
+itself while the app's media plays; and the SDK's ``isStatusRow``, the chat's verdict
+on a row the gateway wrote.
 Level 16 adds the SDK's ``useKeepAlive``: a routed page stays mounted, hidden, while
 the app says it is busy, and the dashboard names it on every page with Open and Stop.
 
@@ -54,6 +55,11 @@ renders for the agent-template placeholders that name no app;
 the spawn names, more paths hidden from a child and nothing lifted.
 Level 19 adds the page's ``FileTree``: the dashboard's project file tree, behind the
 app's declared ``/api/project/tree``.
+
+Level 20 adds the verified download: ``ctx.verified_download`` in-process and the
+backend SDK's ``verified_download`` and ``VerifiedDownloadError`` in a spawned backend.
+One https file, pinned by its sha256 and exact size, into the app's own data
+directory, with one fetch per destination folder at a time.
 """
 
-APP_SDK_LEVEL = 19
+APP_SDK_LEVEL = 20

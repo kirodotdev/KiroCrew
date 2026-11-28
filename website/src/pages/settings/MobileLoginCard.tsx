@@ -5,6 +5,7 @@ import { Copy, Smartphone } from 'lucide-react'
 import { api } from '../../api/client'
 import { Btn, Card, CardTitle, Input } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useMobileConnectMethods } from '../../components/mobileConnectMethods'
 import { useAppSelector } from '../../store'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -48,8 +49,14 @@ const MOBILE_LINK_ERROR_KEYS = {
     'components.mobileConnect.phone_connection_is_disabled_by_policy_on_this_dep',
 } as const
 
+/** The connect method a mint of this card's link is governed under
+ *  (`mint_denied_reason("login_link")` in `handlers/auth_mobile.py`). */
+const LOGIN_LINK_METHOD = 'login_link'
+
 export function MobileLoginCard() {
   const { t } = useTranslation()
+  const methods = useMobileConnectMethods()
+  const offered = (methods.data?.methods ?? []).some(m => m.id === LOGIN_LINK_METHOD)
   const [link, setLink] = useState('')
   const [expiresIn, setExpiresIn] = useState<number | null>(null)
   const [copied, setCopied] = useState(false)
@@ -87,7 +94,33 @@ export function MobileLoginCard() {
     setCopyFailed(!ok)
   }
 
+  // A failed read is reported with a retry. The hand-off is on: nothing is
+  // typed here, so it cannot destroy a draft.
+  const readFailed = methods.isError ? (
+    <ErrorNotice
+      askAgent
+      className="mb-3"
+      impact="partial"
+      report={findReport(methods.error?.message)}
+      message={t('components.mobileConnect.dialog_load_failed')}
+      actions={
+        <button type="button" disabled={methods.isFetching} onClick={() => void methods.refetch()}>
+          {t('components.mobileConnect.try_again')}
+        </button>
+      }
+    />
+  ) : null
+  // The gateway refuses the mint where the deployment, or its policy, does not
+  // offer a sign-in link, so the card is drawn only where the method is listed.
+  // A first read that failed says nothing about what is offered, so it is
+  // reported. A refresh that failed after an answer without the link is not:
+  // nothing is on screen for the error to explain.
+  if (!offered) return methods.data ? null : readFailed
+
   return (
+    <>
+    {/* The card shows the last answer, which a failed refresh may have left stale. */}
+    {readFailed}
     <Card>
       <CardTitle>
         <Smartphone className="lucide-inline" aria-hidden="true" />
@@ -168,5 +201,6 @@ export function MobileLoginCard() {
         />
       )}
     </Card>
+    </>
   )
 }

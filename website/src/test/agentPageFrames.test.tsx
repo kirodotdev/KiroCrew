@@ -118,7 +118,8 @@ describe.each(surfaces)('the %s frame', (_label, ui, route) => {
     frameInputs.clear()
     renderWithProviders(ui(), route ? { route } : undefined)
     const frame = await frameOf()
-    const frameWindow = {} as Window
+    // A window the frame's alive ping can reach: a real one always has postMessage.
+    const frameWindow = { postMessage: vi.fn() } as unknown as Window
     Object.defineProperty(frame, 'contentWindow', { configurable: true, value: frameWindow })
     // Focus came into this frame straight from the dashboard.
     focusEntry.frame = frame
@@ -144,7 +145,8 @@ describe.each(surfaces)('the %s frame', (_label, ui, route) => {
     frameInputs.clear()
     renderWithProviders(ui(), route ? { route } : undefined)
     const frame = await frameOf()
-    const frameWindow = {} as Window
+    // A window the frame's alive ping can reach: a real one always has postMessage.
+    const frameWindow = { postMessage: vi.fn() } as unknown as Window
     Object.defineProperty(frame, 'contentWindow', { configurable: true, value: frameWindow })
     // Focus reached this frame from another frame, which the dashboard cannot see.
     focusEntry.frame = null

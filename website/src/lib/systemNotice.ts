@@ -1,3 +1,5 @@
+import type { ChatMessage } from '../types'
+
 /**
  * Assistant-role system notices the backend injects into the feed -- status
  * reports (auto-compaction, session reload confirmations, session-switch
@@ -20,4 +22,17 @@ const SYSTEM_NOTICE_KINDS: ReadonlySet<string> = new Set([
 
 export function isSystemNoticeKind(kind: string | undefined): boolean {
   return !!kind && SYSTEM_NOTICE_KINDS.has(kind)
+}
+
+/** The tag lives on `kind` for a row that arrived live over the websocket and
+ *  on `meta.kind` for one reloaded from disk. */
+export function noticeKindOf(m: Pick<ChatMessage, 'kind' | 'meta'>): string | undefined {
+  return m.kind ?? (m.meta?.kind as string | undefined)
+}
+
+/** Any assistant-role system notice the gateway injects (compaction, session
+ *  reload). One predicate shared with the last-real-message scans, so a kind
+ *  those scans skip can never fall through to the reply bubble. */
+export function isSystemNoticeRow(m: Pick<ChatMessage, 'role' | 'kind' | 'meta'>): boolean {
+  return m.role === 'assistant' && isSystemNoticeKind(noticeKindOf(m))
 }

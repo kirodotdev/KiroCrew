@@ -1,10 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
-import WorkflowCompletionCard, {
-  isWorkflowCompletionMessage,
-  parseWorkflowCompletion,
-} from '../pages/chat/WorkflowCompletionCard'
+import WorkflowCompletionCard from '../pages/chat/WorkflowCompletionCard'
+import { isWorkflowCompletionMessage, parseWorkflowCompletion } from '../lib/workflowCompletion'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 

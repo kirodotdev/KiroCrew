@@ -452,7 +452,10 @@ with this page's class name, `no-reader`; `goose.py`'s reason says no channel is
 advertised for them. A new session of a custom agent on a backend whose mirror
 rules `resources` `withheld` or `no-channel` gets one notice row naming the spec's
 `file://` entries (`spec_steering_read_nowhere` in
-`src/kiro_crew/agent_sdk/spec_hooks.py`). The default agent gets no row. On
+`src/kiro_crew/agent_sdk/spec_hooks.py`) that match at least one file, anchored as
+kiro-cli anchors them (`entries_matching_a_file` in `src/kiro_crew/steering_plan.py`):
+an entry matching nothing loads nothing anywhere, so no row names it. The default
+agent gets no row. On
 `claude` and `codex` Crew's load sends its steering, and on the other harnesses
 folder steering or member essentials can carry it. Injecting a custom agent's
 steering is a separate, open decision. The ruling stays

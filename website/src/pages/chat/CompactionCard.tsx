@@ -6,7 +6,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
-import { isSystemNoticeKind } from '../../lib/systemNotice'
+import { noticeKindOf } from '../../lib/systemNotice'
 import CompactionKeepLine from './CompactionKeepLine'
 import { decisionStripFieldOf, readCompactionKeepRecord } from './decisionRecord'
 import MarkdownDisclosureCard from './MarkdownDisclosureCard'
@@ -117,20 +117,6 @@ export function parseCompactionNotice(content: string): ParsedCompaction {
     text: raw.replace(STATUS_LEAD_RE, ''),
     stopCaused: STOP_LEAD_RE.test(raw),
   }
-}
-
-/** The tag lives on `kind` for a row that arrived live over the websocket and
- *  on `meta.kind` for one reloaded from disk — the same split systemNotice.ts /
- *  completedTurns.ts already read. */
-function noticeKindOf(m: Pick<ChatMessage, 'kind' | 'meta'>): string | undefined {
-  return m.kind ?? (m.meta?.kind as string | undefined)
-}
-
-/** Any assistant-role system notice the gateway injects (compaction, session
- *  reload). One predicate shared with the last-real-message scans, so a kind
- *  those scans skip can never fall through to the reply bubble here. */
-export function isSystemNoticeRow(m: Pick<ChatMessage, 'role' | 'kind' | 'meta'>): boolean {
-  return m.role === 'assistant' && isSystemNoticeKind(noticeKindOf(m))
 }
 
 /**

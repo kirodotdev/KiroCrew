@@ -34,12 +34,12 @@
  * Both are pure functions over the transcript so they can be unit-tested and
  * reused by a reply-thread footer without dragging the pane along.
  */
-import { isSystemNoticeRow } from '../../pages/chat/CompactionCard'
-import { isWorkflowCompletionMessage } from '../../pages/chat/WorkflowCompletionCard'
-import { isSubagentCompletionMessage } from '../../pages/chat/subagentCompletion'
+import { isWorkflowCompletionMessage } from '../../lib/workflowCompletion'
+import { isSubagentCompletionMessage } from '../../lib/subagentCompletion'
 import { REASONING_ROLES } from '../../pages/chat/groupDisplayItems'
 import { isPendingTransientNotice } from '../../pages/chat/gatewayNotice'
 import type { ChatMessage } from '../../types'
+import { isStatusRow } from '../../app-sdk/protocol'
 import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 
 /** Where a message sits in a run of consecutive crewmate messages. */
@@ -91,22 +91,19 @@ function isRunTransparent(m: ChatMessage): boolean {
 
 /** The crewmate speaking: an assistant row with visible words, or the live
  *  streaming row. A say-nothing assistant row (the bare U+200B a quiet patrol
- *  ends on), a gateway system notice written under the assistant role
- *  (compaction, session reload), an injected workflow completion and a
- *  sub-agent completion envelope written under the assistant role are status,
- *  not speech. Together with the user's own rows this is the twin of the
+ *  ends on) is not speech, and neither is a row the gateway wrote under the
+ *  assistant role (`isStatusRow`: a system notice, an injected workflow
+ *  completion, a sub-agent completion envelope). Together with the user's own rows this is the twin of the
  *  backend's `is_speech_row` (`dashboard/system_notices.py`), which decides
  *  what the Crew Members roster quotes; the two are pinned to one verdict per
  *  row by `test/fixtures/crewmate_speech_rows.json`, read by both test suites. */
 export function isCrewmateSpeech(m: ChatMessage): boolean {
   if (m.role === 'streaming') return true
   if (m.role !== 'assistant') return false
-  // A sub-agent completion envelope also reaches the transcript under the
-  // assistant role (the Slack gateway's delivery-timeout and orphan variants).
   // This chat draws neither file chips nor the Steered chip, so a row whose
   // only content is one of those (a quiet turn that only wrote files, a reply
   // that is only a steering note) says nothing here.
-  return !isHiddenInvisibleAssistantRow(m, { fileChips: false, steerChip: false }) && !isSystemNoticeRow(m) && !isWorkflowCompletionMessage(m) && !isSubagentCompletionMessage(m)
+  return !isHiddenInvisibleAssistantRow(m, { fileChips: false, steerChip: false }) && !isStatusRow(m)
 }
 
 /** Whether a row is drawn in a crewmate's chat at all. */

@@ -245,6 +245,24 @@ class TestSeedDispatch:
         line_buffer.assert_called_once_with()
         assert order == ["line-buffer", "gateway"]
 
+    def test_doctor_dispatch_line_buffers_stdout_before_the_first_row(self, monkeypatch):
+        """Captured doctor output is written line by line, so a stderr log
+        record can fall only between its rows."""
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "doctor"])
+        order: list[str] = []
+        with (
+            patch(
+                "kiro_crew.platform_compat.ensure_line_buffered_stdout",
+                side_effect=lambda: order.append("line-buffer"),
+            ) as line_buffer,
+            patch("kiro_crew.cli._doctor", side_effect=lambda **_kw: order.append("doctor")),
+        ):
+            from kiro_crew.cli import main
+
+            main()
+        line_buffer.assert_called_once_with()
+        assert order == ["line-buffer", "doctor"]
+
     @pytest.mark.parametrize(
         "extra_argv, expect_replace",
         [

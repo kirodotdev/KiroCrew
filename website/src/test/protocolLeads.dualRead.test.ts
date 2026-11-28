@@ -17,7 +17,7 @@ import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
 import { parseNotice } from '../pages/chat/NoticeCard'
 import { parseCompactionNotice } from '../pages/chat/CompactionCard'
 import { resolveGatewayNotice, stripNoticeLead } from '../pages/chat/gatewayNotice'
-import { parseSubagentCompletion } from '../pages/chat/subagentCompletion'
+import { parseSubagentCompletion } from '../lib/subagentCompletion'
 import { approvalToolTitle } from '../pages/ChannelPage'
 
 const tool = (content: string, meta?: Record<string, unknown>): ChatMessage =>

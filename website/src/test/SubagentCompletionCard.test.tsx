@@ -6,7 +6,7 @@ import {
   isSubagentCompletionMessage,
   parseSubagentCompletion,
   isModelDowngrade,
-} from '../pages/chat/subagentCompletion'
+} from '../lib/subagentCompletion'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 

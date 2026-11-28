@@ -5,7 +5,8 @@ check, the file path gate, a no-follow read, outbound redaction, a credential or
 exfiltration-URL check on text it holds, an audit row, a sandboxed child and the
 environment, hidden paths and git hook overrides it runs with, a process or file-lock
 helper, the trusted location of a host tool, the public-address check for a URL it
-fetches, a media-type sniff, a descriptor-pinned path walk and copy) otherwise looks
+fetches, a verified download of a pinned file, a media-type sniff, a descriptor-pinned
+path walk and copy) otherwise looks
 up a private ``kiro_crew`` name by string. Those
 names move between releases, so each lookup is a gap that keeps a wheel copy alive.
 This package is the stable spelling of the most-used of them.
@@ -23,7 +24,8 @@ reach: a spawn is wrapped in the same OS sandbox and can only keep or tighten it
 tier, a read or a pinned copy refuses exactly what the private one refuses, the URL
 check only refuses (it opens no connection), the content checks only answer about
 text the caller already holds, a tool lookup only stops a ``PATH``-planted binary,
-and an audit row is attributed to the app the gateway named.
+a verified download writes only into the app's own data directory, and an audit row
+is attributed to the app the gateway named.
 
 **Level-gated.** ``SDK_LEVEL`` is the App Kit seam level of this build
 (``ctx.sdk_level`` for an in-process app); the package exists from level 7. A name
@@ -49,6 +51,10 @@ if TYPE_CHECKING:
         CREDENTIAL_PLACEHOLDER,
         contains_exfiltration_url,
         iter_credential_matches,
+    )
+    from kiro_crew.apps.backend_sdk.download import (  # noqa: F401
+        VerifiedDownloadError,
+        verified_download,
     )
     from kiro_crew.apps.backend_sdk.files import (  # noqa: F401
         FileTooLargeError,
@@ -123,6 +129,8 @@ _LAZY_EXPORTS: dict[str, str] = {
     "CREDENTIAL_PLACEHOLDER": "content",
     "contains_exfiltration_url": "content",
     "iter_credential_matches": "content",
+    "VerifiedDownloadError": "download",
+    "verified_download": "download",
     "FileTooLargeError": "files",
     "atomic_write": "files",
     "canonical_file_path": "files",
@@ -203,6 +211,8 @@ _EXPORT_LEVELS: dict[str, int] = {
     "trusted_git_bin": 18,
     "trusted_system_bin": 18,
     "uv_executable": 18,
+    "VerifiedDownloadError": 20,
+    "verified_download": 20,
 }
 
 #: Keyword -> the App Kit seam level that publishes it, for a keyword added to a name

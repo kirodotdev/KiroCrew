@@ -22,9 +22,9 @@
  * ask "does this render as a card?" without pulling a React component (and its
  * markdown renderer) into a pure module.
  */
-import type { ChatMessage } from '../../types'
-import { normalizeModelKey } from '../../lib/model'
-import { canonicalKey } from '../../providers/modelRegistry'
+import type { ChatMessage } from '../types'
+import { normalizeModelKey } from './model'
+import { canonicalKey } from '../providers/modelRegistry'
 
 const SINGLE_PREFIX = '[Subagent completion event]'
 const BATCH_PREFIX = '[Subagent batch completion event]'

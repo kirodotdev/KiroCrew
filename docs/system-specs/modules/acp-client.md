@@ -3788,14 +3788,17 @@ with `reason: "api_failure"` arms a checkpoint `GOVERNED_SETTLE_SECS` (6s)
 later. The host sends it when its governance read failed and it fail-closed
 MCP: it then lists no servers for the session. If by the checkpoint the host
 has named none of the required servers for this session in any status entry or
-MCP tag, startup terminates with `AcpRuntimeError` naming the transient
-governance read failure, instead of waiting out the budget. If the host names a
-required server before then (a re-read turned MCP back on), the ordinary wait
-continues and a server that connects still starts the session. The failed start
-evicts the session, and the next start re-reads governance. With registry mode
-on, the registry checkpoint below still decides, as it does for a registry
-drop. `admin_disabled`, other reasons, another session's frame and no frame
-keep the ordinary wait. Read from the KAS 3.4.0 engine: it emits the frame at
+MCP tag, startup terminates with `KasGovernanceOffError` instead of waiting out
+the budget. The chat shows its text (`_governance_off_message`) as is, so it is
+in plain words with no internal names, and it names the Kiro sign-in and the
+organization's MCP settings as what to check when sending again fails the same
+way; the gateway log names the session at info. If the host names a required
+server before then (a re-read turned MCP back on), the ordinary wait continues
+and a server that connects still starts the session. The failed start evicts
+the session, and the next start re-reads governance. With registry mode on, the
+registry checkpoint below still decides, as it does for a registry drop.
+`admin_disabled`, other reasons, another session's frame and no frame keep the
+ordinary wait. Read from the KAS 3.4.0 engine: it emits the frame at
 session start as `{sessionId, reason}` while its governance setting turns MCP
 off, `reason` being `api_failure` when the read failed and `admin_disabled`
 otherwise; a later governance change re-mounts the session's MCP and sends a

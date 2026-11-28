@@ -1,6 +1,6 @@
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
-import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { isSubagentCompletionMessage } from '../lib/subagentCompletion'
 import { mdImageDestToPath } from './fileTokens'
 import { pathBasename } from './pathBasename'
 import { type PasteBlock, expandAll } from './pasteTokens'

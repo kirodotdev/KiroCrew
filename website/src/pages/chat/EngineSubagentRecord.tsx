@@ -10,7 +10,7 @@ import { useAppDispatch, useAppSelector } from '../../store'
 import { isActiveSubagent, openActivityToTab, selectSubagent } from '../../store/chatSlice'
 import type { SubagentActivity } from '../../types'
 import { CARD_CHIP, CompletionCardFrame } from './SubagentCompletionCard'
-import type { ParsedBatchCompletion, ParsedSubagentCompletion } from './subagentCompletion'
+import type { ParsedBatchCompletion, ParsedSubagentCompletion } from '../../lib/subagentCompletion'
 
 /** How one engine sub-agent ended, as the engine reported it, or `not_reported` when
  *  the turn ended before the engine said. */

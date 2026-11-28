@@ -141,6 +141,20 @@ def _fresh_released_sessions_warning(_floor_monkeypatch):
 
 
 @per_test_guard
+def _fresh_orphan_scan_skip_warning(_floor_monkeypatch):
+    """Start every test with the skipped-orphan-scan line not yet given.
+
+    ``_our_orphan_pids`` says once per process that the Windows orphan scan does not
+    run, so a test that reaches it with ``IS_WINDOWS`` set would otherwise silence it
+    for every later test on the same worker. Set through the facade, which writes the
+    value into the owner that reads it.
+    """
+    session_pid = sys.modules.get("kiro_crew.session_pid")
+    if session_pid is not None:
+        _floor_monkeypatch.setattr(session_pid, "_orphan_scan_skip_logged", False)
+
+
+@per_test_guard
 def _fresh_harness_floor_warnings():
     """Clear the bad ``agent.harness_sandbox`` warn-once set before and after each test.
 

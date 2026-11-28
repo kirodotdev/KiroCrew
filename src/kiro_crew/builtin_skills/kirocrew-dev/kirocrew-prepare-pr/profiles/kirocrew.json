@@ -3,7 +3,8 @@
   "base_branch": "main",
   "single_commit": true,
   "setup": [
-    "(cd website && node ./node_modules/playwright/cli.js install chromium)"
+    "(cd website && node ./node_modules/playwright/cli.js install chromium)",
+    "(cd website/electron && { [ -d node_modules ] || ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --no-audit --no-fund; })"
   ],
   "gates": [
     "python3 -c 'import sys; print(\"Gate Python:\", sys.version, \"executable:\", sys.executable); sys.exit(0 if sys.version_info >= (3, 12) else \"Gate checks require Python >=3.12; activate a supported interpreter.\")'",

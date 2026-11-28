@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 
 vi.mock('../../api/client', () => ({
-  api: { mobileLoginLink: vi.fn() },
+  api: { mobileLoginLink: vi.fn(), mobileConnectMethods: vi.fn() },
 }))
 
 import { api } from '../../api/client'
@@ -15,9 +15,73 @@ import {
 } from '../../utils/errorReport'
 import { MobileLoginCard } from './MobileLoginCard'
 
+const METHODS_KEY = ['mobile-connect-methods']
+const READ_FAILED =
+  "The ways to connect your phone couldn't load. Check the connection to the gateway, then try again."
+const offers = (...ids: string[]) =>
+  (api.mobileConnectMethods as ReturnType<typeof vi.fn>).mockResolvedValue({
+    methods: ids.map(id => ({ id, kind: id })),
+  })
+
 describe('MobileLoginCard', () => {
+  beforeEach(() => {
+    offers('login_link')
+  })
+
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('is not drawn where the deployment does not offer a sign-in link', async () => {
+    offers('tailnet_qr')
+    const { container, queryClient } = renderWithProviders(<MobileLoginCard />)
+    await waitFor(() => expect(queryClient.getQueryState(METHODS_KEY)?.status).toBe('success'))
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('says so when the offered methods cannot be read, and reads them again on Try again', async () => {
+    ;(api.mobileConnectMethods as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))
+    renderWithProviders(<MobileLoginCard />)
+    expect(await screen.findByText(READ_FAILED)).toBeInTheDocument()
+    expect(screen.queryByText('Sign in on mobile')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+
+    offers('login_link')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Sign in on mobile')).toBeInTheDocument()
+    expect(screen.queryByText(READ_FAILED)).not.toBeInTheDocument()
+  })
+
+  it('keeps the card and says so when a later read fails', async () => {
+    const { queryClient } = renderWithProviders(<MobileLoginCard />)
+    expect(await screen.findByText('Sign in on mobile')).toBeInTheDocument()
+    ;(api.mobileConnectMethods as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))
+    await act(() => queryClient.invalidateQueries({ queryKey: METHODS_KEY }))
+    expect(await screen.findByText(READ_FAILED)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create mobile sign-in link' })).toBeEnabled()
+
+    offers('login_link')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(screen.queryByText(READ_FAILED)).not.toBeInTheDocument())
+    expect(screen.getByText('Sign in on mobile')).toBeInTheDocument()
+  })
+
+  it('stays hidden when a later read fails where no sign-in link was offered', async () => {
+    offers('tailnet_qr')
+    const { container, queryClient } = renderWithProviders(<MobileLoginCard />)
+    await waitFor(() => expect(queryClient.getQueryState(METHODS_KEY)?.status).toBe('success'))
+    ;(api.mobileConnectMethods as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))
+    await act(() => queryClient.invalidateQueries({ queryKey: METHODS_KEY }))
+    await waitFor(() => expect(queryClient.getQueryState(METHODS_KEY)?.status).toBe('error'))
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('goes away when a later read no longer offers a sign-in link', async () => {
+    const { queryClient } = renderWithProviders(<MobileLoginCard />)
+    expect(await screen.findByText('Sign in on mobile')).toBeInTheDocument()
+    offers()
+    await act(() => queryClient.invalidateQueries({ queryKey: METHODS_KEY }))
+    await waitFor(() => expect(screen.queryByText('Sign in on mobile')).not.toBeInTheDocument())
   })
 
   it('shows the API-provided expiry and keeps a create-new action after minting a link', async () => {
@@ -30,7 +94,7 @@ describe('MobileLoginCard', () => {
     vi.spyOn(navigator.clipboard, 'writeText').mockImplementation(writeText)
 
     renderWithProviders(<MobileLoginCard />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create mobile sign-in link' }))
 
     const link = await screen.findByLabelText('Mobile sign-in link')
     expect(link).toHaveValue(mobileLink)
@@ -48,7 +112,7 @@ describe('MobileLoginCard', () => {
     ;(api.mobileLoginLink as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))
 
     renderWithProviders(<MobileLoginCard />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create mobile sign-in link' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Could not create a sign-in link. Try again.',
@@ -62,7 +126,7 @@ describe('MobileLoginCard', () => {
     ))
 
     renderWithProviders(<MobileLoginCard />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create mobile sign-in link' }))
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(
@@ -78,7 +142,7 @@ describe('MobileLoginCard', () => {
     ))
 
     renderWithProviders(<MobileLoginCard />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create mobile sign-in link' }))
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(
@@ -94,7 +158,7 @@ describe('MobileLoginCard', () => {
     ))
 
     renderWithProviders(<MobileLoginCard />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create mobile sign-in link' }))
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(
@@ -115,7 +179,7 @@ describe('MobileLoginCard', () => {
     ))
 
     renderWithProviders(<MobileLoginCard />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create mobile sign-in link' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Could not create a sign-in link. Try again.',
@@ -132,7 +196,7 @@ describe('MobileLoginCard', () => {
     ))
 
     renderWithProviders(<MobileLoginCard />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create mobile sign-in link' }))
 
     const alert = await screen.findByRole('alert')
     expect(alert).not.toHaveTextContent('Try again')
@@ -159,7 +223,7 @@ describe('MobileLoginCard', () => {
     ))
 
     renderWithProviders(<MobileLoginCard />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create mobile sign-in link' }))
     await screen.findByRole('alert')
     fireEvent.click(screen.getByRole('button', { name: 'Ask the agent' }))
 
@@ -183,7 +247,7 @@ describe('MobileLoginCard', () => {
     })
 
     renderWithProviders(<MobileLoginCard />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create mobile sign-in link' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create mobile sign-in link' }))
     await screen.findByLabelText('Mobile sign-in link')
     fireEvent.click(screen.getByRole('button', { name: 'Copy sign-in link' }))
 

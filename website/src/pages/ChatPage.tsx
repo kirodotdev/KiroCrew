@@ -102,7 +102,7 @@ import { allToolCallsReturned, transcriptActivityKey, turnSentHere } from './cha
 import { TOGGLE_RECT } from './chat/SessionFlyout'
 
 
-import type { ParsedSubagentCompletion } from './chat/subagentCompletion'
+import type { ParsedSubagentCompletion } from '../lib/subagentCompletion'
 import { sessionTitleRoster } from '../utils/sessionRoster'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
