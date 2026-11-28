@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp import session_handle_dispatch
 from kiro_crew.acp.liveness import (
     VERDICT_DEAD,
     VERDICT_UNKNOWN,
@@ -40,6 +41,7 @@ from kiro_crew.dashboard.state import (
     build_tool_stall_recovery_prompt,
     extract_log_redirect_target,
 )
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 # Tight windows for tests: consult the oracle almost immediately and act on
@@ -311,13 +313,23 @@ def test_build_stale_recovery_prompt_says_continue_not_restart():
 
 
 class _SilentQueue:
-    """Queue that always times out, so every poll is a watchdog tick."""
+    """Queue that always times out, so every poll is a watchdog tick.
 
-    def __init__(self, tick: float = 0.02) -> None:
+    With a ``clock`` installed on the dispatch module, each poll advances that
+    clock by ``tick`` instead of sleeping, so the watchdog's idle clocks count
+    polls and a slow runner cannot stretch one tick past a window.
+    """
+
+    def __init__(self, tick: float = 0.02, clock: ManualClock | None = None) -> None:
         self._tick = tick
+        self._clock = clock
 
     async def get(self):
-        await asyncio.sleep(self._tick)
+        if self._clock is None:
+            await asyncio.sleep(self._tick)
+        else:
+            self._clock.advance(self._tick)
+            await asyncio.sleep(0)
         raise asyncio.TimeoutError
 
     def qsize(self) -> int:
@@ -432,11 +444,14 @@ async def test_stuck_input_verdict_flagged_in_evidence():
 
 
 @pytest.mark.asyncio
-async def test_unknown_tool_verdict_waits_for_suspect_window():
+async def test_unknown_tool_verdict_waits_for_suspect_window(
+    manual_clock: ManualClock, monkeypatch: pytest.MonkeyPatch
+):
     """UNKNOWN tool verdicts stay in the timeout-governed class: no cancel
     before tool_stall_suspect_secs, cancel after."""
     from kiro_crew.acp.liveness import ToolCallState
 
+    manual_clock.install(monkeypatch, session_handle_dispatch)
     wd = WatchdogSettings(
         check_after_secs=0.01, tool_stall_suspect_secs=0.2, tool_stall_hard_cap_secs=999.0
     )
@@ -444,7 +459,7 @@ async def test_unknown_tool_verdict_waits_for_suspect_window():
     handle._stale_eligible = False
     handle._tool_dispatched = True
     handle._inflight_tool = ToolCallState(title="mystery", command="", is_shell=False)
-    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._queue = _SilentQueue(clock=manual_clock)  # type: ignore[assignment]
     handle._oracle.check_tool = lambda pid, tool: ("unknown", "mcp subtree flat")
 
     # Below the suspect window: no action.

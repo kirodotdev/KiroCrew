@@ -23,7 +23,7 @@ from test_acp_stale_recovery import _SilentQueue
 
 from conftest import requires_symlinks
 from kiro_crew import platform_compat
-from kiro_crew.acp import liveness
+from kiro_crew.acp import liveness, session_handle_dispatch
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
     EVIDENCE_REMOTE_FLAT,
@@ -46,6 +46,7 @@ from kiro_crew.acp.session_handle import (
 )
 from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
 from kiro_crew.config.loader import WatchdogConfig
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 # ── Oracle: /proc ────────────────────────────────────────────────────────────
@@ -813,7 +814,7 @@ def test_remote_flat_narrowing_is_off_by_default():
 # ── Watchdog window ──────────────────────────────────────────────────────────
 
 
-def _handle(wd: WatchdogSettings, verdicts) -> AcpSessionHandle:
+def _handle(wd: WatchdogSettings, verdicts, clock: ManualClock | None = None) -> AcpSessionHandle:
     rt = MagicMock()
     rt._last_activity = time.monotonic()
     rt.pid = None
@@ -824,7 +825,7 @@ def _handle(wd: WatchdogSettings, verdicts) -> AcpSessionHandle:
     handle._stale_eligible = False
     handle._tool_dispatched = True
     handle._inflight_tool = ToolCallState(title="ReadInternalWebsites", command="{}")
-    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._queue = _SilentQueue(clock=clock)  # type: ignore[assignment]
     handle._oracle.check_tool = verdicts
     return handle
 
@@ -885,9 +886,12 @@ async def test_plain_flat_is_not_narrowed_by_the_remote_window():
 
 
 @pytest.mark.asyncio
-async def test_intermittent_movement_restarts_the_remote_quiet_clock():
+async def test_intermittent_movement_restarts_the_remote_quiet_clock(
+    manual_clock: ManualClock, monkeypatch: pytest.MonkeyPatch
+):
     """A stream that moves bytes on every other probe is never cut off, even
     though each flat probe in between carries the remote_flat tag."""
+    manual_clock.install(monkeypatch, session_handle_dispatch)
     wd = WatchdogSettings(
         check_after_secs=0.01,
         tool_stall_suspect_secs=999.0,
@@ -902,7 +906,7 @@ async def test_intermittent_movement_restarts_the_remote_quiet_clock():
             return VERDICT_WORKING, "mcp subtree active (io +10B cpu +0t)"
         return _REMOTE
 
-    handle = _handle(wd, alternate)
+    handle = _handle(wd, alternate, clock=manual_clock)
 
     events = await _drain(handle, timeout=0.8)
 

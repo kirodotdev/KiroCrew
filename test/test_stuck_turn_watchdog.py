@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_crew.acp import session_handle_dispatch
+from kiro_crew.acp import session_handle_dispatch, session_handle_turn
 from kiro_crew.acp.session_handle import AcpSessionHandle, WatchdogSettings
 from kiro_crew.acp.types import (
     METHOD_REQUEST_PERMISSION,
@@ -33,6 +33,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_TOOL_STALL,
     JsonRpcMessage,
 )
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import default_timeout
 
 # Windows tight enough that a park of a few hundred ms is many multiples of the
@@ -192,8 +193,26 @@ async def test_park_state_does_not_carry_across_turns():
 # ── The idle clocks must not charge consumer time to the backend ─────────────
 
 
+class _ClockedSilentQueue:
+    """Always empty: each poll advances ``clock`` by ``tick`` and times out."""
+
+    def __init__(self, clock: ManualClock, tick: float) -> None:
+        self._clock = clock
+        self._tick = tick
+
+    async def get(self) -> JsonRpcMessage:
+        self._clock.advance(self._tick)
+        await asyncio.sleep(0)
+        raise asyncio.TimeoutError
+
+    def qsize(self) -> int:
+        return 0
+
+
 @pytest.mark.asyncio
-async def test_a_long_consumer_park_does_not_trip_the_tool_stall_arm():
+async def test_a_long_consumer_park_does_not_trip_the_tool_stall_arm(
+    manual_clock: ManualClock, monkeypatch: pytest.MonkeyPatch
+):
     """A park many times the suspect window must not read as backend silence.
 
     Without the correction this is the "cancelled moments after the human
@@ -203,9 +222,15 @@ async def test_a_long_consumer_park_does_not_trip_the_tool_stall_arm():
     Windows are chosen so the test DISCRIMINATES. The park (1.0s) is longer than
     the suspect window (0.9s) so an uncorrected clock acts, while the genuine
     post-park silence (~0.4s, bounded by the prompt deadline) stays under it so a
-    corrected clock does not. Both margins are ~0.5s, so a sleep overrunning on a
-    loaded runner cannot flip the verdict either way.
+    corrected clock does not. Both sides run on one virtual clock, so a loaded
+    runner cannot stretch either interval and flip the verdict.
     """
+    # One virtual clock for both sides of the park: the dispatch loop's idle
+    # clocks and the consumer-side park accounting in ``prompt()``. A runner
+    # stall between two polls then moves neither, so only the park and the
+    # polls below are measured.
+    manual_clock.install(monkeypatch, session_handle_dispatch)
+    manual_clock.install(monkeypatch, session_handle_turn)
     wd = WatchdogSettings(
         check_after_secs=0.05,
         stale_window_secs=0.9,
@@ -222,14 +247,17 @@ async def test_a_long_consumer_park_does_not_trip_the_tool_stall_arm():
     assert handle._tool_dispatched is True, "precondition: the tool clock is armed"
     assert "make test" in ev.tool_input
 
-    await asyncio.sleep(1.0)  # park, longer than tool_stall_suspect_secs
+    # The backend stays silent for the rest of the turn: each empty poll
+    # advances the clock by one tick, up to the prompt deadline.
+    handle._queue = _ClockedSilentQueue(manual_clock, tick=0.05)  # type: ignore[assignment]
+    manual_clock.advance(1.0)  # park, longer than tool_stall_suspect_secs
 
     async for later in agen:
         stop_reasons.append(later.stop_reason)
 
-    assert STOP_REASON_TOOL_STALL not in stop_reasons, (
-        "the consumer's park was charged to the backend as silence"
-    )
+    assert (
+        STOP_REASON_TOOL_STALL not in stop_reasons
+    ), "the consumer's park was charged to the backend as silence"
     handle._runtime.send_notification.assert_not_awaited()  # no probe cancel
 
 
@@ -253,9 +281,9 @@ async def test_backend_silence_without_a_park_still_trips_the_arm(monkeypatch):
     # interval is pure backend silence.
     events = [ev async for ev in handle._dispatch_events(1, timeout=default_timeout())]
 
-    assert any(ev.stop_reason == STOP_REASON_TOOL_STALL for ev in events), (
-        "a genuine tool stall must still be caught"
-    )
+    assert any(
+        ev.stop_reason == STOP_REASON_TOOL_STALL for ev in events
+    ), "a genuine tool stall must still be caught"
 
 
 # ── Waiting on a human is a distinct state, not a stall ─────────────────────
