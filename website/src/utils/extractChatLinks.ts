@@ -51,7 +51,7 @@ function isDuplicate(url: string, seen: Set<string>): boolean {
 // Match markdown links: [text](url)
 const MD_LINK_RE = /\[([^\]]{1,100})\]\((https?:\/\/[^)]+)\)/g
 // Match bare URLs not inside markdown link syntax (strip trailing punctuation)
-const BARE_URL_RE = /https?:\/\/[\w][\w.-]*\.[a-z]{2,}(?:[\w/._?&#=-]*[\w/&#=-])?/g
+const BARE_URL_RE = /https?:\/\/[\w][\w.-]*\.[a-z]{2,}(?::\d{1,5})?(?:[\w/._?&#=%+~:@-]*[\w/&#=-])?/g
 
 export function extractChatLinks(messages: ChatMessage[]): ExtractedLink[] {
   const seen = new Set<string>()
