@@ -17992,6 +17992,8 @@
         "on_demand": "온디맨드",
         "on_demand_skills_loaded_when_the_agent_determine": "온디맨드 스킬은 에이전트가 관련이 있다고 판단할 때 로드됩니다.",
         "package": "패키지",
+        "organization": "조직",
+        "your_account": "내 계정",
         "pending_review_count": "검토 대기 ({{count}})",
         "new_candidate": "신규",
         "newer_update_exists": "더 새로운 업데이트 있음",

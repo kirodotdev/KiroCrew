@@ -18980,6 +18980,8 @@
         "on_demand": "sob demanda",
         "on_demand_skills_loaded_when_the_agent_determine": "Habilidades sob demanda, carregadas quando o agente determina que são relevantes.",
         "package": "Pacote",
+        "organization": "Organização",
+        "your_account": "Sua conta",
         "pending_review_count": "Aguardando revisão ({{count}})",
         "new_candidate": "Nova",
         "newer_update_exists": "Existe uma atualização mais recente",

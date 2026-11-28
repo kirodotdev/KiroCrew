@@ -18486,6 +18486,8 @@
         "on_demand": "ऑन-डिमांड",
         "on_demand_skills_loaded_when_the_agent_determine": "ऑन-डिमांड स्किल, जो एजेंट को प्रासंगिक लगने पर लोड होती हैं।",
         "package": "पैकेज",
+        "organization": "संगठन",
+        "your_account": "तुम्हारा खाता",
         "pending_review_count": "समीक्षा लंबित ({{count}})",
         "new_candidate": "नया",
         "newer_update_exists": "नया अपडेट मौजूद है",

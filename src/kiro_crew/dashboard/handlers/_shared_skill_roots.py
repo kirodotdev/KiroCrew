@@ -377,6 +377,8 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
     - ``utils/tiny-url`` → ``~/.kiro/crew/skills/utils/tiny-url``
     - ``package/<skill>`` → resolved via _resolve_package_skill_path() lookup
     - ``kiro-user/<skill>`` → ``~/.kiro/skills/<skill>``
+    - ``kiro-org/<skill>``, ``kiro-cloud/<skill>`` → Kiro cloud's replica
+      (:func:`kiro_crew.kiro_cloud_skills.replica_skill_roots`)
     - ``kiro-workspace/<skill>`` → ``<project>/.kiro/skills/<skill>``
 
     *session_key* scopes ``kiro-workspace/`` to the requesting chat slot's
@@ -389,6 +391,8 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
     exception is a ``kiro-user/`` leaf symlink; see
     :data:`LEAF_SYMLINK_PREFIX`.
     """
+    from kiro_crew.kiro_cloud_skills import REPLICA_KEY_PREFIXES, replica_skill_roots
+
     if not name or ".." in name or name.startswith("/"):
         return None
     # Only the edition-install prefix may resolve to a leaf outside its root.
@@ -396,6 +400,21 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
     if name.startswith("kiro-user/"):
         rel = name[len("kiro-user/") :]
         root = Path.home() / ".kiro" / "skills"
+    elif name.startswith(REPLICA_KEY_PREFIXES):
+        # Kiro cloud's skills, read-only (``kiro_cloud_skills``). No tree while KAS
+        # syncs the replica or its state is unreadable: then the key resolves to
+        # nothing, as an uninstalled skill's does.
+        cloud = next(
+            (
+                (name[len(source) + 1 :], tree)
+                for source, tree in replica_skill_roots()
+                if name.startswith(f"{source}/")
+            ),
+            None,
+        )
+        if cloud is None:
+            return None
+        rel, root = cloud
     elif name.startswith("kiro-workspace/"):
         rel = name[len("kiro-workspace/") :]
         # NOT trust-gated, deliberately: reading a SKILL.md is how the operator

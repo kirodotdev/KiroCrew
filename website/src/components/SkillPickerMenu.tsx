@@ -5,7 +5,7 @@ import { Lock, Sparkles } from 'lucide-react'
 import { usePickerSource } from './dashboardPickerSource'
 import ErrorNotice from './ErrorNotice'
 import { pickerQueryKey } from '../chat-core/composer/pickerSource'
-import { unwrapSkills } from '../lib/skillsPayload'
+import { isListOnlySkill, unwrapSkills } from '../lib/skillsPayload'
 import type { SkillsPayload } from '../lib/skillsPayload'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { useAnchorTracking } from '../hooks/useAnchorTracking'
@@ -169,7 +169,11 @@ export default function SkillPickerMenu({
   // keyboard-release gate reads the SAME render's match set — a gate derived
   // from the `results` state would lag one effect flush behind and could
   // release Enter while matches exist.
-  const matched = useMemo(() => rankSkills(items, query).slice(0, 50), [items, query])
+  // Kiro cloud rows are list-only (isListOnlySkill): Crew cannot expand their $token.
+  const matched = useMemo(
+    () => rankSkills(items.filter((s) => !isListOnlySkill(s)), query).slice(0, 50),
+    [items, query],
+  )
 
   // "Settled and genuinely empty": only then does the menu have no claim on
   // Enter/Tab — release them so the composer's own Enter action still works

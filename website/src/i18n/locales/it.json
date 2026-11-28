@@ -18980,6 +18980,8 @@
         "on_demand": "su richiesta",
         "on_demand_skills_loaded_when_the_agent_determine": "Skill on demand, caricate quando l’agente le ritiene pertinenti.",
         "package": "Pacchetto",
+        "organization": "Organizzazione",
+        "your_account": "Il tuo account",
         "pending_review_count": "In attesa di revisione ({{count}})",
         "new_candidate": "Nuova",
         "newer_update_exists": "Esiste un aggiornamento più recente",

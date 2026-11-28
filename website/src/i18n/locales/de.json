@@ -18486,6 +18486,8 @@
         "on_demand": "bei Bedarf",
         "on_demand_skills_loaded_when_the_agent_determine": "Bedarfsgesteuerte Skills, die geladen werden, wenn der Agent sie für relevant hält.",
         "package": "Paket",
+        "organization": "Organisation",
+        "your_account": "Dein Konto",
         "pending_review_count": "Überprüfung ausstehend ({{count}})",
         "new_candidate": "Neu",
         "newer_update_exists": "Neueres Update vorhanden",

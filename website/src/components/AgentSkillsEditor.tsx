@@ -12,6 +12,7 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { i18nT } from '../i18n/t'
 import { compareText } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
+import { isListOnlySkill } from '../lib/skillsPayload'
 /** A row from `GET /api/skills` — only the fields this editor needs. */
 export interface CatalogSkill {
   key: string
@@ -253,6 +254,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
     () => catalogFailed
       ? []
       : catalog
+        .filter(s => !isListOnlySkill(s))
         .filter(s => !skills.includes(s.key) && !(s.aliases ?? []).some(a => skills.includes(a)))
         .sort((a, b) => compareText(a.name, b.name)),
     [catalog, skills, catalogFailed],

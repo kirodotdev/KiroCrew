@@ -19474,6 +19474,8 @@
         "on_demand": "по требованию",
         "on_demand_skills_loaded_when_the_agent_determine": "Навыки по требованию, загружаются, когда агент решит, что они нужны.",
         "package": "Пакет",
+        "organization": "Организация",
+        "your_account": "Твой аккаунт",
         "pending_review_count": "Ожидают проверки ({{count}})",
         "new_candidate": "Новый",
         "newer_update_exists": "Есть более новое обновление",

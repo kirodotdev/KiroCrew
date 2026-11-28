@@ -146,13 +146,14 @@ const DOLLAR_TOKEN = /^[a-z0-9][a-z0-9/_-]*$/
 // a project row is `kiro-workspace/<rel>` so the dashboard can tell it from a
 // same-named global skill, a row from the native `~/.kiro/skills` folder is
 // `kiro-user/<rel>`, and an edition-contributed row is `package/<rel>` (or
-// `package/<16hex>:<rel>` when two edition roots ship the same path)
+// `package/<16hex>:<rel>` when two edition roots ship the same path), and a
+// skill Kiro cloud syncs is `kiro-org/<rel>` or `kiro-cloud/<rel>`
 // (_shared_skill_listing.py, _shared_skill_catalog.py, _shared_skill_roots.py).
 // `resolve_dollar_skills` matches the loader's own keys only, so these
 // prefixes are presentation and never part of a resolvable token. The
 // dashboard reserves the spellings (READONLY_SKILL_KEY_PREFIXES refuses to
 // create a managed skill under them), so no managed key starts with one.
-const DISPLAY_PREFIXES = ['kiro-workspace/', 'kiro-user/', 'package/']
+const DISPLAY_PREFIXES = ['kiro-workspace/', 'kiro-user/', 'package/', 'kiro-org/', 'kiro-cloud/']
 
 const WORKSPACE_PREFIX = 'kiro-workspace/'
 

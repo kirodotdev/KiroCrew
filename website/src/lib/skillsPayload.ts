@@ -39,3 +39,12 @@ export function unwrapSkills<T>(
   }
   return { items: [], agentScoped: false, scopedAgent: '' }
 }
+
+/** Whether a row is one the Skills page lists for reading only: a skill Kiro
+ *  cloud syncs for the organization (`kiro-org`) or the user (`kiro-cloud`).
+ *  KAS loads those itself; Crew cannot map one to an agent or a hook, nor expand
+ *  its `$token`, so every picker leaves them out rather than offer a choice that
+ *  is refused or does nothing. */
+export function isListOnlySkill(s: { source?: string } | null | undefined): boolean {
+  return s?.source === 'kiro-org' || s?.source === 'kiro-cloud'
+}

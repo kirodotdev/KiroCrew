@@ -17992,6 +17992,8 @@
         "on_demand": "按需",
         "on_demand_skills_loaded_when_the_agent_determine": "按需技能，在代理判断相关时加载。",
         "package": "包",
+        "organization": "组织",
+        "your_account": "你的账户",
         "pending_review_count": "待审阅（{{count}}）",
         "new_candidate": "新",
         "newer_update_exists": "有更新的版本",
