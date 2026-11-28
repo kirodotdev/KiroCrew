@@ -8,8 +8,10 @@ regular file at ``trust`` reproduces the same ``FileExistsError`` on Linux.
 from __future__ import annotations
 
 import asyncio
+import errno
 import io
 import logging
+import os
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -195,3 +197,41 @@ def test_a_critical_audit_raises_an_error_that_cannot_be_copied(
         sel_mod.sel().log_api_access(caller="mcp", operation="probe", outcome="ok", critical=True)
 
     assert raised.value is error
+
+
+def test_a_masked_trust_dir_still_gets_the_stand_in(tmp_path_factory, monkeypatch, caplog):
+    """The credential mask shows a healthy trust dir as mkdir=EEXIST with stat
+    denied. The error that names the mask must stay an OSError, so sel() still
+    drops a non-critical event instead of raising it at the caller."""
+    home = tmp_path_factory.mktemp("sel-masked")
+    (home / "trust").mkdir(mode=0o700)
+    denied = os.path.realpath(home / "trust")
+    real_stat = os.stat
+    real_mkdir = os.mkdir
+
+    def _stat(path, *args, **kwargs):
+        if not isinstance(path, int) and os.path.realpath(os.fspath(path)) == denied:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        return real_stat(path, *args, **kwargs)
+
+    def _mkdir(path, *args, **kwargs):
+        if os.path.realpath(os.fspath(path)) == denied:
+            raise FileExistsError(errno.EEXIST, "File exists", os.fspath(path))
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(sel_mod, "_default_dir", lambda: home)
+    monkeypatch.setattr(sel_mod, "_unavailable_warned", False, raising=False)
+    monkeypatch.setattr(sel_mod, "_unavailable_dropped", 0, raising=False)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(os, "stat", _stat)
+    monkeypatch.setattr(os, "mkdir", _mkdir)
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.sel"):
+        try:
+            sel_mod.sel().log_api_access(caller="mcp", operation="probe", outcome="ok")
+        except Exception as exc:  # noqa: BLE001 - any escape is the failure
+            pytest.fail(f"a non-critical audit under the mask raised {exc!r}")
+
+    warnings = [r for r in caplog.records if "security event log is unavailable" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "credential mask" in warnings[0].getMessage()
