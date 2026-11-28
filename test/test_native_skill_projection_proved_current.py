@@ -10,6 +10,7 @@ file still gets the full check and a republish.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import native_skill_projection_helpers
 import pytest
@@ -28,12 +29,11 @@ _end_projections_before_tmp_path_goes = (
 
 @pytest.fixture
 def reads(monkeypatch):
-    """Track currency-check reads with fingerprint memoization enabled on every OS.
+    """Track currency-check reads.
 
     The age floor is lifted so a file this test just wrote can be remembered;
     ``test_a_just_written_view_is_not_remembered`` puts it back.
     """
-    monkeypatch.setattr(view_ownership, "_fingerprints_show_writes", lambda: True, raising=False)
     monkeypatch.setattr(view_ownership, "_PROVED_CURRENT_MIN_AGE_NS", 0, raising=False)
     seen: list[str] = []
     real = projection.safe_read_file_bytes
@@ -99,15 +99,25 @@ def test_a_sidecar_edited_in_place_is_checked_again(native_tree, reads):
     assert rewritten[view_ownership._MANAGED_CREW_HOME] != "/some/other/home"
 
 
-def test_windows_always_runs_the_full_check(native_tree, reads, monkeypatch):
-    """Windows reports creation time as ctime, so the fingerprint cannot see an edit."""
-    monkeypatch.setattr(view_ownership, "_fingerprints_show_writes", lambda: False, raising=False)
+def test_windows_remembers_an_unchanged_view_too(native_tree, reads, monkeypatch):
+    """A burst of Windows starts must not re-read every agent's view under the lock."""
+    monkeypatch.setattr(view_ownership.platform_compat, "IS_WINDOWS", True)
     agents, project, proved = _published(native_tree)
     reads.clear()
 
     projection.prepare_native_skill_projection(project)
 
-    assert str(_alias_file(agents, proved)) in reads
+    assert str(_alias_file(agents, proved)) not in reads
+    assert str(_metadata_file(agents, proved)) not in reads
+
+
+def test_windows_fingerprint_leaves_out_creation_time(monkeypatch):
+    """Windows reports creation time as ctime, which no write moves."""
+    info = SimpleNamespace(st_dev=3, st_ino=7, st_size=42, st_mtime_ns=2_000, st_ctime_ns=3_000)
+    monkeypatch.setattr(view_ownership.platform_compat, "IS_WINDOWS", True)
+    assert view_ownership._fingerprint(info) == (3, 7, 42, 2_000)
+    monkeypatch.setattr(view_ownership.platform_compat, "IS_WINDOWS", False)
+    assert view_ownership._fingerprint(info) == (3, 7, 42, 2_000, 3_000)
 
 
 def test_a_just_written_view_is_not_remembered(native_tree, reads, monkeypatch):

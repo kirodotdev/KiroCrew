@@ -603,7 +603,14 @@ and the view content, so every spawn from that home that derives the same view
 an existing alias that already SAYS the same spec with this home's sidecar: the
 two are compared parsed, so a launcher that re-serializes every file in the
 agents directory does not force a rewrite of every alias under the shared lock,
-while every value, env values included, still counts. Each MCP server env value is in that
+while every value, env values included, still counts. A view this process already
+proved current is not read again while the stat fingerprints of the alias and its
+sidecar are unchanged and both files are older than 2 s (`_PROVED_CURRENT`, cleared
+whole at 4,096 entries). The fingerprint is device, inode, size, mtime and ctime;
+on Windows, where `st_ctime_ns` is creation time, it is device, file index, size
+and mtime. There a same-size in-place edit that puts the mtime back is seen only at
+the next ordinary change or gateway restart; Kiro Crew's own writes replace the file.
+Each MCP server env value is in that
 digest as a digest of its own, except the values of `volatile_env_keys()`: keys a
 launcher re-stamps with a per-launch nonce (default `AIM_CREDS_AGENT_INJECTION`,
 extended by `KIROCREW_SKILL_VIEW_VOLATILE_ENV`). Leaving those in would name a new
