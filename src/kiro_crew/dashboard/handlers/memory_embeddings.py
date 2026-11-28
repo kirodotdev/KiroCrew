@@ -469,6 +469,8 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     Owner-gated first: an apply rewrites the owner's config and re-embeds the
     owner's whole vector store.
     """
+    from kiro_crew import embedding_source_governance as _source_gov
+
     owner_denied = await require_owner_dashboard_request(request, "memory.embedding_model")
     if owner_denied is not None:
         return owner_denied
@@ -496,6 +498,19 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     # truthiness it has always been read with.
     raw_validate_only = body.get("validate_only")
     validate_only = _coerce_bool(raw_validate_only, bool(raw_validate_only))
+
+    # An LTS policy decides which source may be loaded at all; refuse before the
+    # file is probed, so a refused model is never opened. Always permitted on oss.
+    source = _source_gov.CUSTOM if raw else _source_gov.BUNDLED
+    if not _source_gov.source_permitted(source, audit=True):
+        return web.json_response(
+            {
+                "ok": False,
+                "error": _source_gov.refused_reason(source),
+                "code": _source_gov.LOCKED_CODE,
+            },
+            status=409,
+        )
 
     # Validate BEFORE writing, so a typo never lands in config.
     size_bytes = 0
@@ -649,6 +664,8 @@ def _embedding_repair_status(state: object, generation: str) -> dict[str, object
 
 async def api_memory_embedding_status(request: web.Request) -> web.Response:
     """GET /api/memory/embedding-status — embedding system status + setup progress."""
+    from kiro_crew import embedding_source_governance as _source_gov
+
     embedder = get_shared_embedder()
     mgr = model_download_manager()
     step = str(mgr.status["step"])
@@ -707,7 +724,21 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     inherited = bool(
         custom is not None and legacy_embedding_ids(memory_config.get("embed_model_legacy_ids"))
     )
-    if ollama and setup_error:
+    # The bundled model's file may be present while the policy refuses it; custom
+    # and Ollama refusals already arrive as their own setup error.
+    bundled_refused = (
+        not ollama and custom is None and not _source_gov.source_permitted(_source_gov.BUNDLED)
+    )
+    if bundled_refused:
+        can_retry = False
+        error_code = _source_gov.LOCKED_CODE
+        setup_error = _source_gov.refused_reason(_source_gov.BUNDLED)
+    elif ollama and setup_error in (
+        _source_gov.refused_reason(_source_gov.OLLAMA),
+        _source_gov.EGRESS_REASON,
+    ):
+        error_code = _source_gov.LOCKED_CODE
+    elif ollama and setup_error:
         error_code = "ollama_config_invalid"
     elif custom is not None and setup_error:
         error_code = custom.error_code or "model_path_unreadable"
@@ -784,6 +815,7 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
                 (model_present or embedder.is_ready())
                 and not (custom is not None and custom.error)
                 and not runtime_failed
+                and not bundled_refused
             ),
             "needs_docker": False,
             "docker_available": True,
@@ -894,6 +926,28 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
     ollama_refusal = await _ollama_provider_refusal()
     if ollama_refusal is not None:
         return ollama_refusal
+    # Setup downloads the bundled model when no model file is present, whatever a
+    # custom path says, and an LTS policy may refuse that source.
+    from kiro_crew import edition_locks
+    from kiro_crew import embedding_source_governance as _source_gov
+
+    if not _source_gov.source_permitted(_source_gov.BUNDLED) and not (
+        await asyncio.to_thread(model_file_present)
+    ):
+        edition_locks.audit_refusal(
+            "embedding_source:bundled",
+            _source_gov.SCOPE,
+            _source_gov.BUNDLED,
+            _source_gov.refused_reason(_source_gov.BUNDLED),
+        )
+        return web.json_response(
+            {
+                "ok": False,
+                "error": _source_gov.refused_reason(_source_gov.BUNDLED),
+                "code": _source_gov.LOCKED_CODE,
+            },
+            status=409,
+        )
 
     # Allow retry — reset any previous error state
     if _embedding_setup_status["step"] == "error":

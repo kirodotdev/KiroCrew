@@ -95,6 +95,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import yaml  # type: ignore[import-untyped]
 
+from kiro_crew import embedding_source_governance
 from kiro_crew.platform.governance import _ORDINAL_SCALES, MODE_ALLOW, MODE_DENY
 from kiro_crew.platform.governance_parts.baseline import BASELINE_CONTROLS
 from kiro_crew.platform.governance_parts.catalog import SCOPE_CATALOG
@@ -443,6 +444,8 @@ def _install(extension: str, convert: Callable[[str, str], List[str]] = _single_
 
 #: The policy language's closed ``harnessId`` list, and Crew's floor on it.
 _HARNESSES = ("kas", "kiro", "claude")
+#: The policy language's closed ``embeddingModelId`` list.
+_EMBEDDING_SOURCES = embedding_source_governance.SOURCES
 
 #: Each capability Kiro Crew governs from enterprise management, and where it lands.
 MANAGED: Mapping[str, Managed] = MappingProxyType(
@@ -518,6 +521,14 @@ MANAGED: Mapping[str, Managed] = MappingProxyType(
             GATE,
             matcher=SCOPE_CATALOG["capabilities.script_hooks"].scope_matchers["events"],
             inner="events",
+        ),
+        # The closed ``embeddingModelId`` list of sources, with no floor: an allow's
+        # match list is the whole allowed set. A deny alone narrows the baseline.
+        "embedding_model_use": Managed(
+            ("memory", "embedding_sources"),
+            convert=_closed(_EMBEDDING_SOURCES),
+            values=_EMBEDDING_SOURCES,
+            baseline=tuple(cast(List[str], BASELINE_CONTROLS["memory.embedding_sources"]["allow"])),
         ),
     }
 )

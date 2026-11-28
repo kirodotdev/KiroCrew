@@ -595,7 +595,10 @@ in an oss build). One fetch is the Kiro control plane's
   registered harness and a deny of `kas` has no effect. `app_use` (`<app>@<version>`)
   lands in `app_versions` as written and in `apps` by app name; only a deny of every
   version (`<app>@*`, or a bare name) takes the app away. `script_hook` lands in
-  `capabilities.script_hooks` (its `events` list). `skill`, `mcp` and `subagent` also
+  `capabilities.script_hooks` (its `events` list). `embedding_model_use` lands in
+  `memory.embedding_sources` over the closed list `bundled` / `custom` / `ollama`
+  with no floor; its LTS baseline is `bundled`, and a deny alone narrows that
+  baseline. `skill`, `mcp` and `subagent` also
   land in the one `capabilities.extension_install` gate, by kind (`skill:`, `mcp:`,
   `agent:`): a scope-less allow, or an `allow all` / `allow builtin` copied onto them,
   grants install of that kind (D13); an `mcp` grant installs a whole server only
@@ -4694,6 +4697,11 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   both-directions audit), driven from `platform/bootstrap.py::bootstrap_context`
   at each process boot. Runtime ceiling installs deliberately leave the registry
   unchanged until the next start.
+- `embedding_source_governance.py` — the `memory.embedding_sources` scope:
+  `source_permitted` and `egress_permitted`, both `True` on `oss` before any
+  policy read. Asked by `embeddings_model.resolve_custom_model`,
+  `embeddings_ollama.resolve_ollama_settings`, the embedder factory and its cached
+  re-check in `embeddings_shared`, and the dashboard model apply and status routes.
 - `acp_backends.py` — the selectable registry the scope narrows:
   `GOVERNANCE_FLOOR_BACKEND`, `POLICY_ID_BY_BACKEND`, the baseline/effective
   split (`registered_backends` / `selectable_backends`) and

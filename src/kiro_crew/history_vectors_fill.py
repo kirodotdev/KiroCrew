@@ -82,6 +82,10 @@ def fill_batch(
     embedder = embeddings.get_shared_embedder()
     if not embeds_on_this_host(embedder):
         return {"filled": 0, "pending": store.pending_count()}
+    if getattr(embedder, "_policy_allowed", True) is False:
+        # An LTS policy refused this source: its identity is not a model change,
+        # so the stored vectors stay until a permitted backend is back.
+        return {"filled": 0, "pending": store.pending_count()}
     # The space of the embedder this batch runs on, not of whichever one is
     # active by now: a swap in between must not label old vectors as new.
     signature = embeddings.embedding_space_signature(embedder.model_id, embedder.dim)
