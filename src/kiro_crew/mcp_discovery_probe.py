@@ -617,6 +617,12 @@ async def probe_server(
             server.error = _unresolved_error(server.command, reported_path)
             _warn_unresolvable_once(server.name, server.command, reported_path)
             return server
+        if not os.path.isabs(resolved):
+            # A command with a directory part (``./bin/srv``), or one found through
+            # a relative PATH entry, comes back as spelled: ``which`` checked it
+            # against this process's cwd, so pin it there. The child starts in
+            # its own scratch below and would not find the relative name.
+            resolved = os.path.abspath(resolved)
 
         # The command resolved, so forget any prior "not found" report — keyed on
         # resolvability, NOT on handshake health. Clearing this at the end of the
@@ -857,6 +863,15 @@ async def probe_server(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                # The child starts in its own scratch, never in the gateway's
+                # working directory (usually the home): a server that walks
+                # its cwd on start would otherwise pay for the whole home tree
+                # on every probe and drift toward the timeout. The scratch is
+                # already carved writable out of the sandbox seal and lives
+                # until the outer ``finally`` sweeps it. With no managed
+                # scratch (declared temp, or allocation failed) the spawn
+                # inherits the gateway's cwd as before.
+                cwd=str(probe_scratch) if probe_scratch is not None else None,
                 # The gateway's per-line ceiling, so a server it can serve
                 # does not probe as an error on a large ``tools/list``.
                 limit=resolve_read_buffer_limit(),
