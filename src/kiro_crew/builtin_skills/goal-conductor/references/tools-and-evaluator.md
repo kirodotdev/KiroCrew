@@ -24,6 +24,13 @@ from a spec**: it builds every argv from a fixed template (`pr_checks` becomes
 approved wrapper a general way to run one, which the denied-command floor cannot
 see inside. Widening means a purpose-built kind, never an accepted argv.
 
+Each check is bounded by `TIMEOUT_SECS`, and a check that runs past it is an
+`error` verdict. Inside the gateway the argv runs through
+`platform_compat.run_killing_tree_on_timeout`, so on Windows a timeout also ends
+a launcher's descendants (a `.cmd` shim's child, the real `git.exe` behind
+Git for Windows' launcher) and the verdict arrives on time. Run as a bare file
+with no `kiro_crew` importable, the script falls back to plain `subprocess.run`.
+
 ## What prompts
 
 **What prompts.** Granted by name, so a patrol wake with nobody at the keyboard

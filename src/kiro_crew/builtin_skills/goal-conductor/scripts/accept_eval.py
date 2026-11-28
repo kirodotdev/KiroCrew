@@ -225,6 +225,27 @@ def _tail(text: str) -> str:
     return text[-EVIDENCE_TAIL_CHARS:] if len(text) > EVIDENCE_TAIL_CHARS else text
 
 
+def _run_bounded(args, **kwargs):
+    """``subprocess.run``, except that on Windows a timeout also ends the child's tree.
+
+    CPython's Windows timeout kills only the direct child and then waits, with no
+    bound, for every holder of the output pipes, so a launcher's descendant (Git
+    for Windows' ``cmd\\git.exe``, a ``.cmd`` shim's child) holds the call past
+    ``TIMEOUT_SECS``. ``platform_compat.run_killing_tree_on_timeout`` ends the
+    tree and re-raises the same ``TimeoutExpired``. Run as a bare file with no
+    ``kiro_crew`` importable, this is plain ``subprocess.run``, so the script
+    stays stdlib-only.
+    """
+    try:
+        # Imported here, not at the top: a standalone run has no kiro_crew.
+        from kiro_crew import platform_compat
+
+        run = getattr(platform_compat, "run_killing_tree_on_timeout", subprocess.run)
+    except ImportError:
+        run = subprocess.run
+    return run(args, **kwargs)  # noqa: S603 - argv array, no shell, script-built
+
+
 def _exec(argv, cwd=None):
     """Run one SCRIPT-BUILT argv without a shell; return ``(problem, proc)``.
 
@@ -248,7 +269,7 @@ def _exec(argv, cwd=None):
             None,
         )
     try:
-        proc = subprocess.run(  # noqa: S603 - argv array, no shell, script-built
+        proc = _run_bounded(
             [str(a) for a in argv],
             cwd=cwd or None,
             env=_git_env() if raw == "git" else None,
