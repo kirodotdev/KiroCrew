@@ -4,7 +4,7 @@
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
-import { messageAuthor } from '../../api/sharedCrewUi'
+import { messageAuthor, queueEntryAuthor } from '../../api/sharedCrewUi'
 import { quoteBlock } from '../../chat-core/composer/messageQuote'
 import { isUnsafeKey, queueEntryAttachments, queueEntryBanner, queueEntryDecisionStrip, queueEntryKnowledgeEnvelope, queueEntryPastes, queueEntryQuote, queueEntryRelay, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
 import type { PasteBlock } from '../../utils/pasteTokens'
@@ -330,7 +330,7 @@ export const queueReducers = {
       // `durable: false` too: the card's "won't survive a restart" label, and
       // `written`, so a requeued send whose row is written offers only Send now.
       const tags = (meta ?? {}) as Record<string, unknown>
-      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.automationSteer === true ? { automationSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...(tags.written === true ? { written: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.automationSteer === true ? { automationSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...(tags.written === true ? { written: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryAuthor(meta), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }

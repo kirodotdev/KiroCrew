@@ -73,6 +73,7 @@ function drawn(index = 0) {
 
 const OWN = { band: 'end', clip: 'end', bubble: 'filled', ring: 'plain' }
 const OTHER = { band: 'start', clip: 'start', bubble: 'outlined', ring: 'strong' }
+const HELD = { band: 'end', clip: 'end', bubble: 'outlined', ring: 'strong' }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -98,6 +99,15 @@ describe('the pinned card takes its sender\'s side', () => {
     mount({ author: OWNER }, { author: ANA })
     await waitFor(() => expect(drawn(1)).toEqual(OTHER), { timeout: CHAIN_TIMEOUT_MS })
     expect(drawn(0)).toEqual(OWN)
+  })
+
+  it('a stamped prompt nobody can place yet keeps the end side, outlined and unnamed', () => {
+    // Neither read answers: the page knows neither the Crew's mode nor the viewer.
+    vi.mocked(api.sharedCrewCapabilities).mockReturnValue(new Promise(() => {}))
+    vi.mocked(api.sharedCrewViewer).mockReturnValue(new Promise(() => {}))
+    mount({ author: OWNER }, { author: ANA })
+    expect([drawn(0), drawn(1)]).toEqual([HELD, HELD])
+    expect(screen.queryByTestId('message-byline')).toBeNull()
   })
 
   it('a prompt with no author stamp stays on the end side and reads no Shared Crew state', () => {

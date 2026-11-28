@@ -1745,9 +1745,21 @@ from, so that frame carries the entry's server-stamped author too
 until a reload. A send steered into a running turn carries the author the same way:
 on its row, on its `steer_push` frame and on the entry a requeue drains
 (`chat_delivery.steer_into_running_turn`'s `author`, set by `chat_send` for a
-person's send). Until the viewer read lands, the session's recorded creator stands in
-for the viewer (`sharedCrewUi.bylineSelfId`); with neither known nothing is
-labelled. A single-operator transcript is unchanged, and a personal Crew, one with
+person's send). A send still waiting in the queue carries it as well: the
+`queue_push` frame and the queue listing name the entry's server-stamped author,
+so a teammate's waiting message is not drawn as the reader's own before it drains.
+Nobody stands in for the viewer (`sharedCrewUi.bylineSelfId`): until the viewer
+read lands, a Crew known to attribute names every stamped message, the session
+creator's included. While it is not yet known whether the Crew attributes, a
+stamped message is drawn apart, unnamed, once the viewer is known not to be its
+sender (`MessageByline.otherSender`). With neither known (both reads pending, or
+failed with no answer) a stamped message is held: outlined rather than filled,
+left on the end side every user row starts on, unnamed, and spoken by its
+stamp's name, never "You". It is then neither claimed as the reader's own nor
+moved across as a teammate's, and either read answering ends it. The bubble, the
+pinned card, the byline, the offscreen heading, the live-region speaker and the
+find panel's sender label all read that one rule. A message with no stamp is
+unchanged, and a personal Crew, one with
 the preview off or one nobody else has joined shows no bylines at all. An Unknown author reads as Unknown.
 A message an app sent is the exception: in every mode, and on a steered row too,
 it reads "Sent by the <app> app" (`MessageByline.AppSenderByline`, the

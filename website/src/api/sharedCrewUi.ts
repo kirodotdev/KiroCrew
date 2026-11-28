@@ -272,6 +272,14 @@ export function messageAuthor(meta: Record<string, unknown> | undefined): Public
   }
 }
 
+/** A queue entry's server-stamped author as row meta (`{ author }`), from its
+ *  `queue_push` frame or slot-detail listing; `{}` when it carries none. A chat
+ *  that draws a waiting send as a bubble reads it like a sent row's stamp. */
+export function queueEntryAuthor(meta: unknown): { author?: PublicPrincipal } {
+  const author = messageAuthor(meta && typeof meta === 'object' ? meta as Record<string, unknown> : undefined)
+  return author ? { author } : {}
+}
+
 /** The app that sent a user row, or `null` when no app did. The gateway stamps
  *  `meta.turnActor: "app"` on every send an app token makes. The app's id comes
  *  from `meta.author`, the app's system principal labelled `app:<name>` (the
@@ -288,26 +296,21 @@ export function appSender(meta: Record<string, unknown> | undefined): { name: st
 
 /** The id whose messages carry no byline: the verified viewer, so a reader's
  *  own messages stay unlabelled and everyone else's, the session creator's
- *  included, are named. Until the viewer read lands it is the session's
- *  recorded creator, so a creator's messages are not labelled as someone
- *  else's in the meantime. Empty when neither is known yet. */
-export function bylineSelfId(
-  viewer: PublicPrincipal | null | undefined,
-  attribution: SessionAttribution | null | undefined,
-): string {
-  if (viewer && !isUnknownPrincipal(viewer)) return viewer.id
-  const creator = attribution?.creator
-  if (creator && !isUnknownPrincipal(creator)) return creator.id
-  return ''
+ *  included, are named. Empty until the viewer read answers with a known
+ *  principal: nobody stands in for the viewer, because a teammate reading the
+ *  creator's session would then see the creator's messages drawn as their own. */
+export function bylineSelfId(viewer: PublicPrincipal | null | undefined): string {
+  return viewer && !isUnknownPrincipal(viewer) ? viewer.id : ''
 }
 
 /** The sender a user message is labelled with, or `null` for no label. The
- *  message's own writer (`selfId`, from `bylineSelfId`) needs no label; any
- *  other participant, an Unknown author included, is named. Nothing is
- *  labelled until `selfId` is known. */
+ *  reader's own message (`selfId`, from `bylineSelfId`) needs no label; any
+ *  other participant, an Unknown author included, is named. While `selfId` is
+ *  not known every stamped message is named: a message is drawn as the
+ *  reader's own only once the server said who the reader is. */
 export function bylineFor(author: PublicPrincipal | null, selfId: string): PublicPrincipal | null {
-  if (!author || !selfId) return null
-  return author.id === selfId ? null : author
+  if (!author) return null
+  return selfId && author.id === selfId ? null : author
 }
 
 /** Rows that carry state rather than a message and draw on no surface: a run of

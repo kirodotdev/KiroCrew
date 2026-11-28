@@ -46,6 +46,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
 from kiro_crew.dashboard.steer_supersedes_approval import reject_approvals_superseded_by_steer
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew.attribution import message_author
 from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
 from kiro_crew.slack.turn_requester import forget_turn_requester
 
@@ -1559,6 +1560,10 @@ def queue_for_next_turn(
         push.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         push.setdefault("meta", {}).update(knowledge)
+    if author:
+        # Another open tab draws this send from the frame: without its author a
+        # teammate's waiting message reads as the reader's own until it drains.
+        push.setdefault("meta", {}).update(queue_author_meta(meta))
     # Accepted, and possibly not persisted: the write ceilings refuse an entry
     # past the count cap or the byte budget and the send is still accepted, so
     # that case is logged at WARNING and drawn on the card this frame makes.
@@ -1802,6 +1807,21 @@ def attachment_meta(user_meta: dict | None) -> dict[str, list[str]]:
     return {k: v for k, v in redacted.items() if isinstance(v, list)}
 
 
+def queue_author_meta(meta: Any) -> dict[str, Any]:
+    """A queue entry's server-derived author (``attribution.author_meta``), for its
+    ``queue_push`` frame and its slot-detail listing; ``{}`` when it carries none.
+
+    A surface that draws a waiting send as a message bubble (a crewmate's chat)
+    reads it to tell a teammate's send from the reader's own. Never a client
+    claim: the entry's author is stamped by the server when the send is accepted.
+    Read through ``message_author`` as the drain's ``queue_pop`` reads it, so the
+    waiting card and the drained row name the same public, bounded principal.
+    """
+    if not isinstance(meta, dict) or not isinstance(meta.get(MESSAGE_AUTHOR_META_KEY), dict):
+        return {}
+    return {MESSAGE_AUTHOR_META_KEY: message_author(meta).to_public_dict()}
+
+
 def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     """The wire form of one queue entry: ``id``, ``content``, and ``meta``
     holding its attachment lists when it carries any.
@@ -1846,6 +1866,8 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
         view.setdefault("meta", {}).update(banner)
     if knowledge := knowledge_meta(item.get("meta")):
         view.setdefault("meta", {}).update(knowledge)
+    if author := queue_author_meta(item.get("meta")):
+        view.setdefault("meta", {}).update(author)
     # The structural kind tag rides in ``meta`` so the queue card can classify
     # a system entry (an MCP-App message, for one) without parsing its text —
     # the same enqueue-time source the server's own drain reads, and the same

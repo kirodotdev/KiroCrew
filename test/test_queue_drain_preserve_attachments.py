@@ -196,6 +196,12 @@ def _queue_push_frames(state) -> list[dict]:
     return [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_push"]
 
 
+def _frame_meta(frame):
+    """A ``queue_push`` frame's meta without the sender stamp a person's send
+    carries (``test_queue_author_meta.py`` covers that stamp)."""
+    return {k: v for k, v in (frame.get("meta") or {}).items() if k != "author"}
+
+
 class TestQueuePushFrameCarriesTheLists:
     """Every producer's ``queue_push`` frame names the entry's attachment lists.
 
@@ -214,7 +220,7 @@ class TestQueuePushFrameCarriesTheLists:
         (frame,) = _queue_push_frames(state)
         assert frame["queue_id"] == receipt["queue_id"]
         assert frame["content"] == _WIRE
-        assert frame["meta"] == {"files": [_PATH], "dirs": [_DIR]}
+        assert _frame_meta(frame) == {"files": [_PATH], "dirs": [_DIR]}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("send_id", [None, "s-2"])
@@ -225,9 +231,9 @@ class TestQueuePushFrameCarriesTheLists:
         await _post_busy(state, "busy-chat", "plain text", {"sendId": send_id})
         (frame,) = _queue_push_frames(state)
         if send_id:
-            assert frame["meta"] == {"sendId": send_id}
+            assert _frame_meta(frame) == {"sendId": send_id}
         else:
-            assert "meta" not in frame
+            assert _frame_meta(frame) == {}
 
     @pytest.mark.asyncio
     async def test_sub_agent_hold_frame(self, tmp_path, monkeypatch):
@@ -250,7 +256,7 @@ class TestQueuePushFrameCarriesTheLists:
         receipt = await _post_busy(state, "busy-chat", _WIRE, {"files": [_PATH]})
         (frame,) = _queue_push_frames(state)
         assert frame["queue_id"] == receipt["queue_id"]
-        assert frame["meta"] == {"files": [_PATH]}
+        assert _frame_meta(frame) == {"files": [_PATH]}
 
     @pytest.mark.asyncio
     async def test_requeued_steer_frame(self, tmp_path, monkeypatch):
@@ -275,7 +281,7 @@ class TestQueuePushFrameCarriesTheLists:
         (frame,) = _queue_push_frames(state)
         entry = next(i for i in slot._queue if i["content"] == _WIRE)
         assert frame["queue_id"] == entry["id"]
-        assert frame["meta"] == {"files": [_PATH], "dirs": [_DIR], "requeuedSteer": True}
+        assert _frame_meta(frame) == {"files": [_PATH], "dirs": [_DIR], "requeuedSteer": True}
 
 
 class TestDrainedRow:

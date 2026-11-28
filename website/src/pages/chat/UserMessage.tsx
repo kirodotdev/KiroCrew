@@ -560,7 +560,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
   // Every branch's row sits under the same `OtherSenderBubble`, so a steer
   // settling into its note or a bubble opening its editor keeps the one row
   // element. `other` decides the row's side (see the last return).
-  const sideOf = (draw: (other: boolean) => ReactNode) => (
+  const sideOf = (draw: (other: boolean, held: boolean) => ReactNode) => (
     <OtherSenderBubble meta={meta} slotKey={slotKey}>{draw}</OtherSenderBubble>
   )
   // Quote's done state. The quote lands in the composer, which can sit far
@@ -772,10 +772,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
     ...(canEditResend && !standIn ? [{ id: 'edit', label: i18nT('pages.chat.userMessage.edit_resend'), icon: <Pencil size={14} />, onSelect: startEdit }] : []),
   ] : []
 
-  // `other`: a Shared Crew teammate wrote this (`OtherSenderBubble`, the byline's
-  // own rule), so the bubble is outlined rather than filled and reads apart from
-  // the viewer's. It wins over the accent fill; a steer keeps its own surface.
-  const bubble = (other: boolean) => (
+  // `outlined`: a Shared Crew teammate wrote this, or it is not known yet whose
+  // it is (`OtherSenderBubble`'s `other` and `held`, the byline's own rule), so
+  // the bubble is outlined rather than filled and reads apart from the viewer's.
+  // It wins over the accent fill; a steer keeps its own surface.
+  const bubble = (outlined: boolean) => (
     // 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md
     // `max-w-full`, not a pixel cap: the bubble's maximum is the content column
     // the transcript row clamps to --mc-content-width, so Settings → Chat →
@@ -790,7 +791,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
     // Disable is safe: the keyboard-accessible edit path is the aria-labelled
     // pencil button in the action row below, not this bubble.
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-    <div ref={userRef} data-hl-scope="" onCopy={handleCopy} onDoubleClick={dblClickEdits ? handleDoubleClick : undefined} onAnimationEnd={landedFlash ? endLandedFlash : undefined} data-landed-from-steer={landedFlash ? '' : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${carriedQuote ? 'min-w-64' : ''} ${landedFlash ? 'animate-steer-landed' : ''} ${isSteer ? 'bg-accent-subtle text-text' : other ? 'user-bubble user-bubble-other text-text ring-1 ring-inset ring-border-strong forced-colors:border' : tone === 'accent' ? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
+    <div ref={userRef} data-hl-scope="" onCopy={handleCopy} onDoubleClick={dblClickEdits ? handleDoubleClick : undefined} onAnimationEnd={landedFlash ? endLandedFlash : undefined} data-landed-from-steer={landedFlash ? '' : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${carriedQuote ? 'min-w-64' : ''} ${landedFlash ? 'animate-steer-landed' : ''} ${isSteer ? 'bg-accent-subtle text-text' : outlined ? 'user-bubble user-bubble-other text-text ring-1 ring-inset ring-border-strong forced-colors:border' : tone === 'accent' ? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
       {/* `messageTs` FIRST, `clientTs` only as a fallback. The opposite order is
           correct for the audio key above, which wants the optimistic bubble's own
           identity, but this value is COMPARED against server-clock slot mint
@@ -812,7 +813,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
                 // A link at rest, not only on hover: underlined, and in the accent
                 // colour except on the accent-filled bubble, where it keeps the
                 // bubble's own text colour so it stays readable.
-                className={`inline max-w-full break-all text-left normal-case tracking-normal bg-transparent border-none p-0 font-semibold cursor-pointer underline underline-offset-2 hover:decoration-2 focus-visible:decoration-2 ${tone === 'accent' && !isSteer && !other ? '' : 'text-accent'}`}
+                className={`inline max-w-full break-all text-left normal-case tracking-normal bg-transparent border-none p-0 font-semibold cursor-pointer underline underline-offset-2 hover:decoration-2 focus-visible:decoration-2 ${tone === 'accent' && !isSteer && !outlined ? '' : 'text-accent'}`}
                 onClick={() => onSessionOpen(relay.senderKey)}
                 title={i18nT('pages.chat.sessionMessageCard.open_session', { name: senderTitle })}
                 aria-label={i18nT('pages.chat.sessionMessageCard.open_session', { name: senderTitle })}
@@ -852,9 +853,9 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
   // The right-click menu wraps the bubble only when Quote is offered (the
   // menu's reason to exist) on a pointer device; otherwise `MessageContextMenu`
   // renders the bubble bare.
-  const bubbleWithMenu = (other: boolean) => (
+  const bubbleWithMenu = (outlined: boolean) => (
     <QuoteJumpCtx.Provider value={quoteJumpFor}>
-      <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble(other)}</MessageContextMenu>
+      <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble(outlined)}</MessageContextMenu>
     </QuoteJumpCtx.Provider>
   )
 
@@ -863,8 +864,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
   // start side with the agent's replies, its byline, actions and timestamp
   // with it. `data-user-side` lets the transcript's row wrappers, which align
   // every user row to the end, follow (`has-[[data-user-side=start]]`). A chat
-  // only one person writes to never sets it.
-  return sideOf(other => (
+  // only one person writes to never sets it. A `held` row (nobody knows yet
+  // whose it is) keeps the end side every user row starts on and is outlined,
+  // so it is not moved before its sender is known and never reads as the
+  // viewer's own.
+  return sideOf((other, held) => (
     // Every box between the content column and the bubble is a fit-content flex
     // item, so a percentage cap only bites once ALL of them carry one.
     <div data-role="user" data-user-side={other ? 'start' : undefined} className={`group/msg flex flex-col ${other ? 'items-start' : 'items-end'} max-w-full`}>
@@ -907,7 +911,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.32, ease: 'easeOut' }}
           >
-            {bubbleWithMenu(other)}
+            {bubbleWithMenu(other || held)}
             {playSteer && (
               <motion.div
                 aria-hidden="true"
@@ -1035,7 +1039,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
               arm wraps its bubble in an animated box, and a line inside that box
               would slide in with it as though it were part of the message. */}
           {steerDecision && <SteerDecisionLine record={steerDecision} ownMessage={steerOwnMessage} />}
-          {bubbleWithMenu(other)}
+          {bubbleWithMenu(other || held)}
         </>
       )}
       {/* Where the pointer cannot hover the footer is always visible and its

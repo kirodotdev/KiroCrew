@@ -220,10 +220,11 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
 export default function PinnedPrompt({ meta, slotKey, ...card }: PinnedPromptProps) {
   return (
     <OtherSenderBubble meta={meta ?? undefined} slotKey={slotKey}>
-      {other => (
+      {(other, held) => (
         <PinnedPromptCard
           {...card}
           other={other}
+          held={held}
           // The transcript's own byline, so the card names its sender with the
           // text and the look of the row it stands in for. Not `continuesRun`:
           // the card is on its own, with no named row above it to lean on.
@@ -239,10 +240,12 @@ export default function PinnedPrompt({ meta, slotKey, ...card }: PinnedPromptPro
  * with the outlined bubble, as that person's row does in the transcript
  * (UserMessage), so a filled card on the end side is always the reader's own.
  * `byline` names that sender above the box, as the row's byline does.
+ * `held`: nobody knows yet whose prompt it is. The card keeps the end side and
+ * takes the outline with no name, as the held row does.
  */
 function PinnedPromptCard({
-  text, fullText, images, bodyBeyondPreview, pushUp, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy, promptKey, other, byline,
-}: Omit<PinnedPromptProps, 'meta' | 'slotKey'> & { other: boolean; byline: ReactNode }) {
+  text, fullText, images, bodyBeyondPreview, pushUp, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy, promptKey, other, held, byline,
+}: Omit<PinnedPromptProps, 'meta' | 'slotKey'> & { other: boolean; held: boolean; byline: ReactNode }) {
   const textRef = useRef<HTMLParagraphElement | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
   // The byline's own height (its line plus the gap under it), 0 without one.
@@ -833,7 +836,8 @@ function PinnedPromptCard({
           // through.
           // It also sits under that person's name, which can be the wider of
           // the two, so it hugs its own text (`w-fit`) up to the same cap.
-          className={`message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl ring-1 ring-inset forced-colors:border shadow-sm px-4 py-2 text-sm ${other ? 'user-bubble-other text-text ring-border-strong w-fit max-w-full' : 'bg-card text-card-fg ring-border'}`}
+          // A held prompt takes the outline alone: no name sits above it.
+          className={`message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl ring-1 ring-inset forced-colors:border shadow-sm px-4 py-2 text-sm ${other ? 'user-bubble-other text-text ring-border-strong w-fit max-w-full' : held ? 'user-bubble-other text-text ring-border-strong' : 'bg-card text-card-fg ring-border'}`}
           // The ceiling is measured from the card's top, and the byline has
           // taken its height off the top of that room.
           style={maxH != null ? { maxHeight: Math.max(0, maxH - bylineH) } : undefined}

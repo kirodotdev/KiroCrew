@@ -453,6 +453,10 @@ class TestDropped:
         (row,) = _steer_rows(harness.slot)
         assert row["meta"]["steerState"] == STEER_STATE_RETRACTED
         assert row["meta"][steer_retract.RETRACT_ACTION_META] == "queue"
+        # Still the same person's send: the entry and its frame name the steer's author.
+        assert row["meta"]["author"]["id"]
+        assert entry["meta"].get("author") == row["meta"]["author"]
+        assert (push.get("meta") or {}).get("author") == row["meta"]["author"]
 
     @pytest.mark.asyncio
     async def test_queue_instead_keeps_the_steers_banner(self, harness):
