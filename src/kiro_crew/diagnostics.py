@@ -143,6 +143,10 @@ class BundleResult:
     #: not a secret -- folding it into the secret tally would overstate
     #: "N secret(s) auto-redacted" in the issue body.
     path_collapses: int = 0
+    #: member name -> occurrences of the OS login the scrub left in it, for the
+    #: warning the issue body and ``kirocrew doctor --bundle`` print (only members
+    #: that hold one).
+    login_residuals: dict[str, int] = field(default_factory=dict)
     github_issue_url: str = ""
     #: The ONE release-provenance resolution this bundle was written from.
     #: :func:`collect_bundle` takes it before the first member and hands it to
@@ -378,6 +382,13 @@ def _scrub_bundle(text: str) -> tuple[str, int, int]:
     text, replaced = diagnostics_host_name.replace_host_names(text, names, joined)
     text, logins = diagnostics_login.replace_logins(text, _login_homes(str(Path.home())))
     return text, secrets, collapses + replaced + logins
+
+
+def _tally_login_residuals(result: BundleResult, member: str, clean: str) -> None:
+    """Record how many OS logins :func:`_scrub_bundle` left in *member*'s text."""
+    left = diagnostics_login.count_logins(clean, _login_homes(str(Path.home())))
+    if left:
+        result.login_residuals[member] = left
 
 
 def _kiro_log_dirs() -> list[Path]:
@@ -1340,6 +1351,11 @@ def _issue_url(result: BundleResult, note: str, *, prefill: bool = True) -> str:
                     else ""
                 )
                 + " before packaging.",
+                *(
+                    [diagnostics_login.residual_warning(result.login_residuals)]
+                    if result.login_residuals
+                    else []
+                ),
                 "",
                 f"kiro-cli: `{_kiro_cli_version()}`",
                 f"Host: `{platform.platform()}`",
@@ -1585,6 +1601,7 @@ def collect_bundle(
         result.included.append("versions.txt")
         result.redaction_summary["versions.txt"] = versions_secrets
         result.path_collapses += versions_collapses
+        _tally_login_residuals(result, "versions.txt", versions)
 
         # Who holds the memory right now: host total and the biggest processes,
         # names and RSS only (memory_snapshot never writes a command line).
@@ -1597,6 +1614,7 @@ def collect_bundle(
         result.included.append("memory.txt")
         result.redaction_summary["memory.txt"] = memory_secrets
         result.path_collapses += memory_collapses
+        _tally_login_residuals(result, "memory.txt", memory)
 
         for member, src, _gated in text_sources:
             try:
@@ -1622,6 +1640,7 @@ def collect_bundle(
             result.included.append(member)
             result.redaction_summary[member] = secrets
             result.path_collapses += collapses
+            _tally_login_residuals(result, member, clean)
 
         # Manifest last so it reflects the final included/skipped/redaction state.
         # Its provenance keys are the machine-readable twin of ``versions.txt``,

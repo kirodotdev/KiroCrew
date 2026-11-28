@@ -1117,6 +1117,7 @@ def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
         included=["a", "b"],
         total_redactions=3,
         skipped=["gateway.log"],
+        login_residuals={},
     )
     collected: list[dict] = []
     _pin_bundle_alignment(monkeypatch)
@@ -1135,6 +1136,26 @@ def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
     assert code is None
     assert host.calls == []
     assert collected == [{"version_alignment": "aligned (1.2.3)", "outside_gateway": True}]
+
+
+def test_bundle_mode_warns_about_a_login_the_scrub_left(host, capsys, monkeypatch) -> None:
+    result = cli_doctor.diagnostics.BundleResult(
+        zip_path=host.tmp / "diag.zip", filename="diag.zip", login_residuals={"gateway.log": 1}
+    )
+    _pin_bundle_alignment(monkeypatch)
+    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda **_: result)
+    monkeypatch.setattr(
+        cli_doctor.diagnostics, "terminal_issue_url", lambda r: "https://example.invalid/issues/new"
+    )
+
+    out, _ = host.run(capsys, bundle=True)
+
+    assert (
+        "     0 file(s) · 0 secret(s) redacted\n"
+        "  ⚠️  1 login occurrence(s) left in 1 file(s) (gateway.log):"
+        " search the zip for your login before posting it.\n"
+        "\n  Open a GitHub issue (then drag the zip in):\n"
+    ) in out
 
 
 def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(

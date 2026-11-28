@@ -683,6 +683,8 @@ def _doctor(
         )
         if result.skipped:
             print(f"     skipped (not found): {', '.join(result.skipped)}")
+        if result.login_residuals:
+            print(f"  ⚠️  {diagnostics.diagnostics_login.residual_warning(result.login_residuals)}")
         issue_url = diagnostics.terminal_issue_url(result)
         if issue_url:
             print("\n  Open a GitHub issue (then drag the zip in):")

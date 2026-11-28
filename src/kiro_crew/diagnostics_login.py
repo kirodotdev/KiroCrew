@@ -6,7 +6,8 @@ word of its own anywhere else: the user of a ``<login>@<host>`` target, a
 ``user=<login>`` field, a folder of another path, a line of serialized output. A
 character that continues the segment on either side makes it part of another name,
 so a sibling login such as ``jo.doe``, ``ann.jo`` or ``jo2``, or a host name such as
-``dev-jo-box``, is left as written.
+``dev-jo-box``, is left as written. :func:`count_logins` counts what that leaves
+which still ends like the login, so the bundle can say so before it is posted.
 """
 
 from __future__ import annotations
@@ -29,14 +30,9 @@ def replace_logins(text: str, homes: list[str]) -> tuple[str, int]:
     The segment ends where ``diagnostics._PREFIX_BOUNDARY`` says, as for the home
     collapse, and starts where :func:`_starts_word` says.
     """
-    from kiro_crew.diagnostics import _PREFIX_BOUNDARY
-
-    segments = (re.split(r"[\\/]+", h.rstrip("\\/"))[-1] for h in homes)
-    logins = {login.lower(): login for login in segments}.values()
-    if not logins:
+    pattern = _login_pattern(homes)
+    if pattern is None:
         return text, 0
-    alternation = "|".join(re.escape(login) for login in sorted(logins, key=len, reverse=True))
-    pattern = re.compile("(?:" + alternation + ")" + _PREFIX_BOUNDARY, re.IGNORECASE)
     count = 0
 
     def replace(m: re.Match[str]) -> str:
@@ -47,6 +43,43 @@ def replace_logins(text: str, homes: list[str]) -> tuple[str, int]:
         return "<user>"
 
     return pattern.sub(replace, text), count
+
+
+def count_logins(text: str, homes: list[str]) -> int:
+    """How many logins of *homes* are still in *text* after :func:`replace_logins`.
+
+    One that ends where the replacement's boundary says but does not start a word
+    of its own, as in ``dev-<login>`` or ``ann.<login>``, was left by design and is
+    counted here, so the bundle can warn about it instead of rewriting another name.
+    The ``<user>`` the replacement writes is never counted, even for a login ``user``.
+    """
+    pattern = _login_pattern(homes)
+    if pattern is None:
+        return 0
+    return len(pattern.findall(text.replace("<user>", "<>")))
+
+
+def residual_warning(residuals: dict[str, int]) -> str:
+    """The line that tells the user which bundle members still hold the login."""
+    if not residuals:
+        return ""
+    return (
+        f"{sum(residuals.values())} login occurrence(s) left in {len(residuals)} file(s)"
+        f" ({', '.join(residuals)}): search the zip for your login before posting it."
+    )
+
+
+def _login_pattern(homes: list[str]) -> re.Pattern[str] | None:
+    """The logins of *homes*, longest first, ending at the home collapse's boundary."""
+    # circular import: diagnostics imports this module at its top.
+    from kiro_crew.diagnostics import _PREFIX_BOUNDARY
+
+    segments = (re.split(r"[\\/]+", h.rstrip("\\/"))[-1] for h in homes)
+    logins = {login.lower(): login for login in segments}.values()
+    if not logins:
+        return None
+    alternation = "|".join(re.escape(login) for login in sorted(logins, key=len, reverse=True))
+    return re.compile("(?:" + alternation + ")" + _PREFIX_BOUNDARY, re.IGNORECASE)
 
 
 def _starts_word(text: str, start: int, end: int) -> bool:
