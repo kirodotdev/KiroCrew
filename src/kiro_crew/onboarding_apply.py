@@ -37,7 +37,7 @@ from typing import Any, Iterator
 # The module, not its names: the patch seams read from it here (``_is_link_like``)
 # live only in that module, so each is read off it at call time and a patch on
 # ``onboarding_import.<name>`` reaches this module too.
-from kiro_crew import onboarding_scan
+from kiro_crew import onboarding_scan, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import write_provenance
 from kiro_crew.config.loader import ConfigReadError, update_config_locked
@@ -545,7 +545,13 @@ def _install_skill_tree(destination: Path, files: dict[str, str], data_home: Pat
             return "rejected"
         if destination.exists() or onboarding_scan._is_link_like(destination):
             return "conflict"
-        os.replace(staging, destination)
+        # No-replace publish: a racer that took the name after the check above keeps
+        # it. On Windows a scanner or indexer still holding a freshly written file
+        # refuses the folder rename, and the publish retries that brief hold.
+        try:
+            platform_compat.publish_dir_noreplace(staging, destination)
+        except FileExistsError:
+            return "conflict"
         return "imported"
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -643,7 +649,7 @@ def _write_skill(
                 # 99 leftovers means something is badly wrong; refuse rather than
                 # delete someone else's copy.
                 return _WriteOutcome("conflict")
-            os.replace(destination, retired)
+            platform_compat.publish_dir_noreplace(destination, retired)
         except OSError:
             logger.warning(
                 "Could not move the skill being replaced out of the way; " "refusing to overwrite",
@@ -655,7 +661,7 @@ def _write_skill(
             # Put the original back so a failed replace is a no-op, not data loss.
             with contextlib.suppress(OSError):
                 if not destination.exists():
-                    os.replace(retired, destination)
+                    platform_compat.publish_dir_noreplace(retired, destination)
 
         try:
             status = _install_skill_tree(destination, files, data_home)

@@ -775,7 +775,13 @@ These are load-bearing. Changing any of them requires a security review.
 4. **Symlink components are re-checked immediately before every write**, not
    only at plan time (TOCTOU).
 5. **Skill packages land atomically** — staged in a sibling temp dir, then
-   `os.replace`; failure leaves nothing partial.
+   renamed into place; failure leaves nothing partial. That rename, and the
+   overwrite's move-aside and restore, go through
+   `platform_compat.publish_dir_noreplace`, which never replaces an existing
+   destination: a name taken after the last check makes the install a conflict.
+   On Windows a scanner or indexer holding a freshly staged file refuses the
+   folder rename, and `atomic_write.rename_with_retry` rides out that brief hold.
+   On POSIX it is one no-replace rename.
 6. **`is_sensitive_path` gates workspace registration**, and the data home may
    never be registered as a workspace.
 7. **No command rules.** Neither a foreign allow-list nor a foreign deny-list is imported.
