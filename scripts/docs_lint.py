@@ -407,10 +407,6 @@ _UNRESOLVABLE_REF_OK: frozenset[str] = frozenset(
         "dist/acp-agent.js",
         # playwright-core's own browser registry, inside the npm dependency.
         "playwright-core/browsers.json",
-        # Relative to ENGINE_ROOT -- `engine_root()` is
-        # ~/.kiro/crew/apps/pptx-maker/data/vendor/sdpm, a checkout `provision.py`
-        # installs at runtime. Two backend comments cite it the same way.
-        "skill/sdpm/api.py",
         #
         # -- ANOTHER REPOSITORY.
         #
@@ -432,6 +428,11 @@ _UNRESOLVABLE_REF_OK: frozenset[str] = frozenset(
 _CODE_REF_IGNORE_SUBSTRINGS: tuple[str, ...] = (
     # Electron's own repository layout, cited to explain an accelerator string.
     "docs/api/accelerator.md",
+    # PPTX Maker's spec, which left core with its wheel copy. Papyrus's wheel copy
+    # (`backend/tectonic.py`) still cites it for the no-system-package decision, which
+    # PPTX Maker's own repository now records. That copy changes only after its app
+    # repository does, and it leaves core with Papyrus's own deletion; drop this then.
+    "docs/system-specs/modules/pptx-maker.md",
 )
 _CODE_REF_IGNORE_PATH_PARTS: tuple[str, ...] = (
     # Review-bot fixtures embed arbitrary diff paths as test DATA.

@@ -89,7 +89,6 @@ _KNOWN: dict[str, str] = {
     "kiro_crew/apps/builtins/ops_mission_control/backend/ledger_index.py::import_pending": (
         "union write: an empty base re-checks ids on the next import (see _read_cursor)"
     ),
-    "kiro_crew/apps/builtins/pptx_maker/backend/routes.py::_write_deck_root": _UNAUDITED,
     "kiro_crew/apps/builtins/spec_builder/backend/repository.py::_forget_deleted": _UNAUDITED,
     "kiro_crew/apps/dependency_ledger.py::record_uninstall": _FOUND_ONLY,
     "kiro_crew/apps/dev_mode.py::remove_dev_app": _FOUND_ONLY,

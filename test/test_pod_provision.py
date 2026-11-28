@@ -243,8 +243,9 @@ class TestProvisionBuildPaths:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Pod provisioning resolves uv through ``kiro_crew.env.resolve_uv`` — the
-        one ladder pptx-maker also consumes — so the declared wheel wins over
-        PATH and a systemd/launchd gateway with a minimal PATH still finds it."""
+        one ladder the backend SDK's ``uv_executable`` also answers — so the declared
+        wheel wins over PATH and a systemd/launchd gateway with a minimal PATH still
+        finds it."""
         monkeypatch.setenv(prov.USE_UV_ENV, "1")
         wheel_uv = tmp_path / "site" / "uv"
         wheel_uv.parent.mkdir()

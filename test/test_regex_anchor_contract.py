@@ -57,8 +57,6 @@ from kiro_crew.apps.builtins.mochi import appearance_store, petdex_import
 from kiro_crew.apps.builtins.mochi import settings as mochi_settings
 from kiro_crew.apps.builtins.papyrus import backend as papyrus_backend
 from kiro_crew.apps.builtins.papyrus.backend import gitops, store
-from kiro_crew.apps.builtins.pptx_maker import backend as pptx_maker_backend
-from kiro_crew.apps.builtins.pptx_maker.backend import paths as pptx_maker_paths
 from kiro_crew.apps.builtins.spec_builder import backend as spec_builder_backend
 from kiro_crew.apps.builtins.spec_builder.backend import parsers as spec_builder_parsers
 from kiro_crew.cloud import config as cloud_config
@@ -78,7 +76,6 @@ _REQUEST_PATH_PACKAGES = (
     skill_providers,
     crew_log,
     mochi,
-    pptx_maker_backend,
     meetings_backend,
     design_tweak_backend,
     spec_builder_backend,
@@ -131,7 +128,6 @@ _VALIDATORS = (
     pytest.param(appearance_store._SAFE_ID, "idle", id="mochi-pack-id-or-slot"),
     pytest.param(petdex_import._SLUG_RE, "space-cat.v2", id="mochi-petdex-slug"),
     pytest.param(mochi_settings._LANGUAGE_TAG_RE, "zh-Hant-TW", id="mochi-language-tag"),
-    pytest.param(pptx_maker_paths.SEGMENT_RE, "deck-1", id="pptx-maker-path-segment"),
     pytest.param(meetings_store._SAFE_ID_RE, "sprint-standup", id="meetings-meeting-id"),
     pytest.param(meetings_store._SAFE_AGENT_ID_RE, "note-taker", id="meetings-agent-id"),
     pytest.param(

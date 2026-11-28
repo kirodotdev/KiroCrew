@@ -734,7 +734,6 @@ detail; this table is only an index.
 | Papyrus app (LaTeX authoring) | `src/kiro_crew/apps/builtins/papyrus/` | [papyrus.md](../system-specs/modules/papyrus.md) |
 | Persistent agent channels | `src/kiro_crew/channel.py` | [persistent-agent-channels.md](../system-specs/modules/persistent-agent-channels.md) |
 | Platform context (CPP seam) | `src/kiro_crew/platform/` | [platform-context.md](../system-specs/modules/platform-context.md) |
-| PPTX Maker app | `src/kiro_crew/apps/builtins/pptx_maker/` | [pptx-maker.md](../system-specs/modules/pptx-maker.md) |
 | Providers (LLMProvider ABC + ACP provider) | `src/kiro_crew/providers/` | [providers.md](../system-specs/modules/providers.md) |
 | Security controls (deny rules, paths, auth) | `src/kiro_crew/security/` | [security.md](../system-specs/modules/security.md) |
 | Security Event Log | `src/kiro_crew/sel.py` | [sel.md](../system-specs/modules/sel.md) |

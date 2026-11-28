@@ -214,6 +214,38 @@ _SHIPPED_PINS = [
         "archiveSha256": "64855155051d5b27a71dbcef864bb6e83ffdb591621e97e4d5e6993d04e58f2d",
         "minAppSdkLevel": 20,
         "legacyNav": {"route": "/pptx-maker", "icon": "Presentation"},
+        # ``adoption_pin.py freeze pptx-maker``: the copy at the parent of the commit
+        # that deleted it.
+        "deletedCopy": {
+            "permissions": {
+                "api": ["/api/apps/pptx-maker", "/api/apps/pptx-maker/*"],
+                "mcpTools": [
+                    "@sdpm/analyze_template",
+                    "@sdpm/apply_style",
+                    "@sdpm/code_to_slide",
+                    "@sdpm/generate_pptx",
+                    "@sdpm/grid",
+                    "@sdpm/import_attachment",
+                    "@sdpm/init_presentation",
+                    "@sdpm/list_asset_sources",
+                    "@sdpm/list_guides",
+                    "@sdpm/list_styles",
+                    "@sdpm/list_templates",
+                    "@sdpm/list_workflows",
+                    "@sdpm/measure_slides",
+                    "@sdpm/pptx_to_json",
+                    "@sdpm/read_examples",
+                    "@sdpm/read_guides",
+                    "@sdpm/read_workflows",
+                    "@sdpm/run_python",
+                    "@sdpm/run_style_python",
+                    "@sdpm/search_assets",
+                ],
+                "network": True,
+                "storage": True,
+            },
+            "grants": {"api": ["/api/apps/pptx-maker", "/api/apps/pptx-maker/*"]},
+        },
     },
     {
         "name": "issue-radar",

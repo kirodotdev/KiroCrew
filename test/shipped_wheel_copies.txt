@@ -22,6 +22,5 @@ meetings
 mochi
 ops-mission-control
 papyrus
-pptx-maker
 spec-builder
 workflows

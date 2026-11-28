@@ -1,7 +1,7 @@
 /**
  * Screenshots for the apps-3 batch of the error-state sweep
  * (capture/error-notice-apps-3.html): ops-mission-control / papyrus /
- * pptx-maker / workflows failure surfaces before (hand-written) and after
+ * workflows failure surfaces before (hand-written) and after
  * (shared ErrorNotice), side by side.
  *
  * Self-checking: the AFTER column must render exactly four `role="alert"`

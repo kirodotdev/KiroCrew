@@ -278,24 +278,6 @@ export default [
       'src/apps/design-critique/styles.ts',
       'src/apps/file-explorer/styles.ts',
       'src/apps/md-notebook/styles.ts',
-      // The PPTX Maker board-preview builder — the same category as
-      // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
-      // rather than a shared glob. Every literal in it is handed to a PARSER: the
-      // preview iframe's egress-denying CSP directives, the `<style>` reset that
-      // neutralizes the engine's own page zoom, and two `class="slide"` match
-      // patterns. Translating any of them would silently WEAKEN the policy or
-      // blank the preview, not change a word anyone reads.
-      //
-      // Verified copy-free rather than assumed: the module imports no `i18nT` /
-      // `useTranslation` and every remaining literal is a CSS length, a union-type
-      // tag or a regex. Its user-visible siblings (`BoardFrame.tsx`,
-      // `LibraryPanel.tsx`, `DeckViewer.tsx`) stay fully gated, so copy added to
-      // the app still has to go through the catalog.
-      //
-      // Stated as a false-negative class, per this file's own convention: any
-      // user-visible copy ever added to THIS path will not be reported — keep the
-      // module parser-facing only.
-      'src/apps/pptx-maker/lib.ts',
       // Emits runnable shell text, not copy: the output is pasted into a terminal
       // and executed, so translating a `curl` invocation, an `openssl` flag or a
       // header name would produce a snippet that fails. Exempted by exact path;
@@ -1072,15 +1054,6 @@ export default [
               // (utils/remoteEditorUrl.ts `REMOTE_EDITORS`): a product name, the same in
               // every language. Whole-value-anchored like the entries above.
               '^(VS Code|Kiro)$',
-              // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
-              // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
-              // the modifier-key caps below: the agent prompts parse this literal
-              // spelling, so translating either word would render a token the agent
-              // does not recognise — the do-not-translate case `website/AGENTS.md`
-              // states ("a literal token the user must type must never be a catalog
-              // value"). Two exact words cannot match ordinary copy, and no other file
-              // changes count (measured).
-              '^(Style|Template)$',
               // Physical modifier key caps, chosen by platform (`isMac ? '⌘' : 'Ctrl'`).
               // The glyph half is already exempt for having no letters; this exempts the
               // spelled half on the same do-not-translate grounds `en.context.json`

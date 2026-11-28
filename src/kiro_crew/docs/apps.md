@@ -2,7 +2,7 @@
 
 An **app** is a feature that ships as its own unit: it brings its own pages in the
 dashboard, and it may also bring agents, skills, MCP tools, scheduled jobs and a
-backend process. Nineteen apps ship inside the Kiro Crew package (Meetings,
+backend process. Eighteen apps ship inside the Kiro Crew package (Meetings,
 Papyrus, Mochi, Dev Fleet, Notes and the rest), and almost all of them are **off
 until you turn them on**. The App Store is where you turn them on, and where you
 install apps that did not ship with your build.
@@ -79,7 +79,6 @@ Each line below is drawn from the app's own manifest description.
 | App | What it does |
 |---|---|
 | **Papyrus** (`papyrus`) | A LaTeX paper editor with live PDF preview and an AI co-author. |
-| **PPTX Maker** (`pptx-maker`) | Describe the deck you want in chat and get a real `.pptx` back. |
 | **Notes** (`md-notebook`) | A markdown notebook that lives in a git repository, so your notes are versioned and readable by any other editor. |
 | **Meetings** (`meetings`) | An AI meeting assistant: live transcription, structured notes, and action items you review before filing. |
 
@@ -123,7 +122,7 @@ Enabling an app can add to your **agent picker** and your skill list, because an
 may ship its own. Registration happens on enable and is undone on disable.
 
 - **Agents.** Meetings ships three (a note taker, a sketch artist, a task
-  extractor), PPTX Maker four, Mochi two and Auto-Improvement four. They are
+  extractor), Mochi two and Auto-Improvement four. They are
   registered under the app's own namespace, so two apps can ship an agent with the
   same name without colliding.
 - **Skills.** Code Review Sage, Design Critique, Design Tweak, Spec Builder,
@@ -187,8 +186,8 @@ and the start after that makes it.
 After the switch the app updates and uninstalls like any App Store app, and once
 uninstalled it stays uninstalled.
 
-A later release stops shipping the built-in copy; Personal Shopper and Create
-Folders From Project no longer ship one.
+A later release stops shipping the built-in copy; Personal Shopper, Create
+Folders From Project and PPTX Maker no longer ship one.
 On that release a machine that already switched keeps running the app from its
 own copy, as before. A machine that has not switched yet keeps the app's data, but
 there is no built-in left to run, so the app is missing until the switch: Kiro

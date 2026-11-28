@@ -1,9 +1,9 @@
 """The repository's one ``soffice`` discovery and install hint (``kiro_crew.soffice_discovery``).
 
 The file panel's slide previews depend on these, so they are a core capability that
-must hold with no app installed; PPTX Maker imports the same helpers. The hint is shown
-as "install it with: <command>", so its first executable must exist on this host and
-its package name must resolve there. The apt family is decided by lineage. The rpm
+must hold with no app installed. The hint is shown as "install it with: <command>",
+so its first executable must exist on this host and its package name must resolve
+there. The apt family is decided by lineage. The rpm
 family carries ``dnf``, ``yum`` or ``microdnf`` depending on the generation, so the
 manager is probed the way the browser installer probes it
 (``os_release.rpm_package_manager``). Amazon Linux 2023 reports ``ID_LIKE=fedora`` but

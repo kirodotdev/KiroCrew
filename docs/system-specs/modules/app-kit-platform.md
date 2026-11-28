@@ -8742,8 +8742,8 @@ gateway's own entries (`installed.json`, the `app.json` copy, `.app_secret`,
 `data/`, the `approved-grants.json` the protected store imported once and never
 reads again, and `app-crons.json`, which the next registration rewrites from the
 manifest) and every name the pinned tree ships at its root, which the swap
-replaces as an update does: pptx-maker renders `agents/` and `prompts/` from its
-package beside `app.json`, and its repository ships both. The record keeps
+replaces as an update does: PPTX Maker's built-in rendered `agents/` and `prompts/`
+from its package beside `app.json`, and its repository ships both. The record keeps
 running the built-in, whose startup hook moves the file, and the next start
 adopts. A user who never started the release carrying that hook loses nothing.
 Research Lab's campaigns database is the worked case (knowledge.md § 7).
@@ -9009,7 +9009,8 @@ restart after a staged fetch swaps it in place, keeping `data/`, `.app_secret`, 
 approved grants and `enabled`. D12 compares no version. Dropping the row as well makes
 a still-pending record an orphan. Pinned by `test/test_builtin_adoption_no_wheel_copy.py`,
 which deletes the fixture app's wheel package and keeps its row. Personal Shopper was
-the first app shipped this way, and Create Folders From Project the second. The accepted cost is availability on a host that never adopted:
+the first app shipped this way, Create Folders From Project the second and PPTX Maker
+the third. The accepted cost is availability on a host that never adopted:
 the app is missing from the first boot of that release until STAGE fetches the
 pinned commit and the next restart applies it, and a host that cannot fetch keeps
 the record and its data but stays without the app until it can.
@@ -9054,8 +9055,8 @@ both paths and compares their grants, `test_a_pin_that_declares_more_than_the_fr
 `test_a_shipped_row_carries_a_deleted_copy_exactly_when_its_wheel_copy_is_gone`,
 `test_a_grant_family_registered_later_is_frozen_with_no_change`,
 `test_a_frozen_copy_stands_for_the_record_registering_that_copy_writes` and the
-`freeze` and `verify` tests). Personal Shopper's and Create Folders From Project's rows
-each carry the copy frozen from the parent of the commit that deleted it.
+`freeze` and `verify` tests). Personal Shopper's, Create Folders From Project's and PPTX
+Maker's rows each carry the copy frozen from the parent of the commit that deleted it.
 
 **The row freezes the limit inputs too.** Rows 1 to 4 and 9 of the table below are
 limits whose input only the wheel copy supplied, so with the copy deleted each failed
@@ -9626,25 +9627,28 @@ of a built-in's state out of a layout core created, is a core row keyed on the a
   that is not a `{"{NAME}": str}` mapping is refused whole. While its wheel copy is the
   one registering, every value is taken. For a released name (§33) the module is
   imported only when a template names a placeholder outside the host set, and only
-  those names are taken from it: a tree adopted at an earlier pin (pptx-maker at
-  `8fa8a42`, whose agents name the built-in's own `{ENGINE_ROOT}` family) keeps its
-  agents while the wheel ships the package, and a tree naming the host set alone
-  never imports it, so it keeps registering once the package leaves core. A
-  placeholder neither source computes leaves the template unrendered and the agent
-  unregistered. App authors: `docs/app-kit/manifest-reference.md`
-  "Host paths in an agent file".
+  those names are taken from it, and a tree naming the host set alone never imports
+  it, so it keeps registering once the package leaves core. No shipped built-in has
+  the module today: PPTX Maker's, the one that did, left core with its package. Its
+  adopted tree names the host set alone; a tree adopted at its earlier pin `8fa8a42`
+  (pinned on main for under a day, in no release tag) names the built-in's own
+  `{ENGINE_ROOT}` family, which nothing computes now, so those agents are not
+  registered until the app updates. A placeholder neither source computes leaves the
+  template unrendered and the agent unregistered. Tests:
+  `test/test_app_bridges_agent_configs.py` (`TestABuiltinsOwnPlaceholderModule`, on a
+  fixture package). App authors: `docs/app-kit/manifest-reference.md` "Host paths in
+  an agent file".
 
 A capability the core itself offers lives in the core, and an app that needs it too
-imports it there rather than the other way round: the file panel's slide previews and
-PPTX Maker both find `soffice` (and its install hint) through
-`kiro_crew.soffice_discovery`, the only copy in the repository.
+reaches it there rather than the other way round: the file panel's slide previews find
+`soffice` (and its install hint) through `kiro_crew.soffice_discovery`, the only copy
+in the repository.
 `test/test_core_dev_fleet_pptx_maker_decoupling.py` fails, through the shared scan in
 `test/core_app_independence.py`, on any core module or script that imports Dev Fleet
 or PPTX Maker.
 
 Writers: `apps/builtin_host_grants.py`, `apps/bridges_agents.py`,
-`apps/agent_template_values.py`, `apps/builtins/dev_fleet/host_grants.py`,
-`apps/builtins/pptx_maker/agent_placeholders.py`. Tests:
+`apps/agent_template_values.py`, `apps/builtins/dev_fleet/host_grants.py`. Tests:
 `test/test_app_agent_template_values.py`.
 
 ## 35. Desktop window host: app-declared windows and shortcuts, no app code in the shell

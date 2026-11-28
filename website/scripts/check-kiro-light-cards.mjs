@@ -99,7 +99,6 @@ const ROUTES = [
   { path: '/issue-radar', name: 'app-issue-radar', ready: 'Welcome to Issue Radar' },
   { path: '/meetings', name: 'app-meetings', ready: 'Live notes, diagrams, and action items' },
   { path: '/papyrus', name: 'app-papyrus', ready: 'LaTeX papers with a live PDF preview' },
-  { path: '/pptx-maker', name: 'app-pptx-maker', ready: 'Quarterly review' },
   { path: '/ops-mission-control', name: 'app-ops-mission-control', ready: 'Checkout latency above budget' },
   { path: '/design-critique', name: 'app-design-critique', ready: 'Point me at a screen' },
   { path: '/crew-companion', name: 'app-crew-companion', ready: 'Set your break rhythm' },
@@ -185,15 +184,6 @@ const APP_FIXTURES = new Map([
     { name: 'README.md', path: `${PROJECT}/README.md`, type: 'file', size: 2048, mtime: 1767225600 },
   ] }],
   ['/apps/file-explorer/api/git-status', null],
-  ['/api/apps/pptx-maker/engine', { ready: true, clone: true, venv: true, pinnedTag: 'v1.0.0', provision: { state: 'done', log: '', elapsed: 0 } }],
-  ['/api/apps/pptx-maker/deps', { labels: {}, present: {}, managed: {}, missing: [], hints: {} }],
-  ['/api/apps/pptx-maker/decks', { decks: [{ deckId: 'quarterly-review', name: 'Quarterly review', slideCount: 6, thumbnailUrl: null, pptxUrl: null, brief: '' }] }],
-  ['/api/apps/pptx-maker/deck', {
-    deckId: 'quarterly-review', name: 'Quarterly review', defsUrl: null, pptxUrl: null, dirPath: '/home/user/decks/quarterly-review',
-    pptxPath: null, specs: { brief: 'Results and plans for the quarter.' }, updatedAt: {}, slides: [],
-  }],
-  ['/api/apps/pptx-maker/styles', { styles: [] }],
-  ['/api/apps/pptx-maker/templates', { templates: [] }],
   ['/api/apps/ops-mission-control/state', {
     incidents: [INCIDENT], counts: { investigating: 1 }, providers: [], webhook_queue: 0,
     rotation: { on_shift: false, who: '', until: '', unknown: false, roster: null },

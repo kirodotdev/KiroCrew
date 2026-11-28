@@ -1,6 +1,6 @@
 """GATE: Kiro Crew core imports no code from the Dev Fleet and PPTX Maker apps.
 
-Both apps are to move out of this repository intact, so no module under
+Both apps move out of this repository intact (PPTX Maker already has), so no module under
 ``src/kiro_crew`` outside ``apps/builtins/``, and no script under ``scripts/``, may
 import either package: ``import``, ``from ... import`` (relative ones resolved),
 ``from kiro_crew.apps.builtins import <app>``, ``importlib.import_module`` and

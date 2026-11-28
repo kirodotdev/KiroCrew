@@ -268,7 +268,6 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     # _format_acp_error's scrubbed-content warning, in the same gateway process as
     # the client owners' sites.
     "acp/transport_errors.py": 1,
-    "apps/builtins/pptx_maker/backend/routes.py": 1,
     "dashboard/chat_nav.py": 1,
     "dashboard/chat_title.py": 1,
     # The native sub-agent card sync's gate-side log, moved out of chat_runner.py with

@@ -25,12 +25,12 @@ So the gate reads computed styles on rendered pages.
 2. Opens each route in `ROUTES` in kiro-light: the chat page, Settings (Overview,
    Chat, Display / Theme, Security), Schedule, Artifacts, Knowledge, the Apps
    library, Members, every built-in app page in
-   `website/src/apps/builtinRegistry.ts` (19 pages, from `/worlds` to
+   `website/src/apps/builtinRegistry.ts` (18 pages, from `/worlds` to
    `/design-tweak`), and the two core pop-out pages in
    `website/src/pages/corePopoutPages.tsx` (`/channels` and `/projects`). App pages that index straight into a response shape
    the generic `[]` / `{}` fallback cannot satisfy get their answers from
-   `APP_FIXTURES` in the script: AWS Control, File Explorer, PPTX Maker,
-   Mission Control, Notes (`/md-notebook`) and Mochi. Each of those fixtures
+   `APP_FIXTURES` in the script: AWS Control, File Explorer, Mission Control,
+   Notes (`/md-notebook`) and Mochi. Each of those fixtures
    carries one populated row where the page has a list, and the route's `ready`
    text is that row, so the gate checks the page with content on it rather than
    its empty or error state. A route that never renders, renders an error boundary,

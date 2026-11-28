@@ -50,8 +50,8 @@ def _isolate_xdg_config_home(_xdg_config_root, _floor_monkeypatch):
     Redirecting the variable fixes the whole class rather than one call site,
     because the production code already honours it (its docstring notes a literal
     ``~/.config`` would be the wrong directory on a host that sets XDG). It is
-    also not dev-fleet-specific: ``pptx_maker/backend/paths.py`` resolves against
-    the same variable, so its tests stop touching the real config dir too.
+    also not dev-fleet-specific: any module that resolves against the same
+    variable stops touching the real config dir in its tests too.
 
     A test that wants its own value still wins — it sets XDG later, and reverts
     independently.

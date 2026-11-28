@@ -1077,7 +1077,7 @@ step needs before using them, so provisioning a **fresh** worktree (no
   whose entry conditions are that RFC accepted with a non-draft status and
   Phase 1 exercised beyond the author's host) and `_find_uv` locates `uv`
   (`kiro_crew.env.resolve_uv`: `uv.find_uv_bin()` from the declared `uv` wheel
-  first, then `PATH` — the one ladder pptx-maker's `resolve_uv` also consumes),
+  first, then `PATH` — the one ladder the backend SDK's `uv_executable` answers),
   it runs
   `uv venv --seed --allow-existing --link-mode clone --python <py3.12> .venv` then `uv pip install --link-mode clone
   --python .venv/bin/python --project <checkout> --editable <checkout> --group

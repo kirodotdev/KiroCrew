@@ -89,9 +89,9 @@ class TestSharedSpellings:
 
         The point of the consolidation, enforced across the WHOLE tree rather than
         the two original homes: five sites in ``security.py``, the redaction floor,
-        the pptx-maker data-URI scan, the metrics privacy scrub and the SEL
-        any-case audit net all read their prefixes from here, so a sixth copy
-        pasted anywhere reds here instead of becoming a new drift pair.
+        the metrics privacy scrub and the SEL any-case audit net all read their
+        prefixes from here, so another copy pasted anywhere reds here instead of
+        becoming a new drift pair.
 
         Matched on the regex-literal form ``(?:AKIA`` so prose that merely mentions
         an ``AKIA...`` key, and ``AWS_KEY_ID_PREFIXES`` itself, do not trip it.

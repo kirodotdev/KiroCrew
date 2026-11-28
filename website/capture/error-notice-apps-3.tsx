@@ -1,15 +1,14 @@
 /**
  * Isolated capture entry for the apps-3 batch of the error-state sweep
- * (ops-mission-control, papyrus, pptx-maker, spec-builder, workflows, mochi,
+ * (ops-mission-control, papyrus, spec-builder, workflows, mochi,
  * TrustAppModal, Library page).
  *
  * WHY ISOLATED: these failure states only appear once a request against a
  * provider or the gateway fails; booting the full SPA for that needs the app
  * shell, a gateway and per-app backends. `WorkflowRunTree` is prop-driven, so
  * its failed state renders directly with the value the app would hand it; the
- * hook-driven views (ops-mission-control board, papyrus workspace, pptx
- * library) are shown as the exact `ErrorNotice` call this branch
- * makes at each site.
+ * hook-driven views (ops-mission-control board, papyrus workspace) are shown
+ * as the exact `ErrorNotice` call this branch makes at each site.
  *
  * Two columns per frame:
  *   BEFORE — the hand-written surfaces reconstructed verbatim from origin/main

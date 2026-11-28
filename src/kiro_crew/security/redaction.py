@@ -58,9 +58,9 @@ from .redaction_patterns import _might_contain_credential  # noqa: F401
 _REDACTED_CREDENTIAL_TAG = "[REDACTED: credential]"
 
 # Public alias for modules that must emit the SAME tag rather than duplicate the
-# literal — e.g. the pptx-maker preview, which excises a credential-bearing bitmap
-# itself because this module's redactor recognises a narrower token set than that
-# scan matches.
+# literal — e.g. an app preview that excises a credential-bearing bitmap itself
+# because this module's redactor recognises a narrower token set than that scan
+# matches. Apps read it as the backend SDK's ``CREDENTIAL_PLACEHOLDER``.
 REDACTED_CREDENTIAL_TAG = _REDACTED_CREDENTIAL_TAG
 
 #: Replacement tag for pass 2 (a base64-encoded credential). DISTINCT from
