@@ -216,6 +216,158 @@ class TestPublishFloorNestedPayloads:
         for cmd in ("(git push origin main)", "(git push origin 'main')"):
             assert is_denied(cmd) is not None, cmd
 
+    def test_windows_program_spellings_of_git_are_git(self) -> None:
+        """Windows runs ``git.exe`` and a full path to it as git.
+
+        The detector and the push-target reader read the program word as Windows
+        does, so a Windows spelling of a protected push gets the same refusal as
+        ``git push origin main``.
+        """
+        from kiro_crew.security import argv_floor_git as fg
+        from kiro_crew.security import is_denied
+
+        # The refusal's first line names the rule; the diagnostic after it carries the span.
+        expected = (is_denied("git push origin main") or "").splitlines()[0]
+        assert expected.endswith("git-publish-push-protected-branch-name")
+        for cmd in (
+            "git.exe push origin main",
+            "Git.EXE push origin main",
+            "git.cmd push origin main",
+            "& 'C:\\Program Files\\Git\\cmd\\git.exe' push origin main",
+            '"C:\\Program Files\\Git\\cmd\\git.exe" push origin main',
+            "git.exe -C repo push origin HEAD:main",
+            "git.exe push origin feature && git.exe push origin main",
+        ):
+            assert fg._is_git_publish(cmd.lower()), cmd
+            assert (is_denied(cmd) or "").splitlines()[:1] == [expected], cmd
+
+        # A feature-branch push and a non-push stay allowed; near-names are not git.
+        for cmd in (
+            "git.exe push origin feature",
+            '"C:\\Program Files\\Git\\cmd\\git.exe" push origin feature',
+            "git.exe status",
+            "gitx.exe push origin main",
+            "git.exe.bak push origin main",
+        ):
+            assert is_denied(cmd) is None, cmd
+
+    def test_an_unquoted_backslash_path_to_git_is_git_on_windows(self, monkeypatch) -> None:
+        """PowerShell keeps ``\\`` in ``C:\\Git\\cmd\\git.exe``; a POSIX shell drops it.
+
+        The detector reads the program word both ways on Windows, so the Windows
+        spelling is refused there, and on POSIX the escaped word stays not-git.
+        """
+        from kiro_crew import platform_compat
+        from kiro_crew.security import argv_floor_git as fg
+        from kiro_crew.security import is_denied
+
+        expected = (is_denied("git push origin main") or "").splitlines()[0]
+        protected = (
+            "C:\\Git\\cmd\\git.exe push origin main",
+            "& C:\\Git\\cmd\\git.exe push origin main",
+            ".\\git.exe push origin main",
+            "echo x; C:\\Git\\cmd\\git.exe -C C:\\repo push origin main",
+            # PowerShell passes a quoted subcommand or flag unquoted.
+            'C:\\Git\\cmd\\git.exe "push" origin main',
+            "C:\\Git\\cmd\\git.exe 'push' origin main",
+            '.\\git.exe "push" origin main',
+            'C:\\Git\\cmd\\git.exe "-C" repo push origin main',
+            # git.exe by path is git wherever it runs: a block, a dot-sourced block, cmd /c.
+            "if ($true) { C:\\Git\\cmd\\git.exe push origin main }",
+            "if ($true) { .\\git.exe push origin main }",
+            ". { C:\\Git\\cmd\\git.exe push origin main }",
+            "cmd /c C:\\Git\\cmd\\git.exe push origin main",
+            # A bare ``\git`` as a command word, after ``&`` or ``{``.
+            "& C:\\Git\\cmd\\git push origin main",
+            "if ($true) { C:\\Git\\cmd\\git push origin main }",
+        )
+        allowed = (
+            "C:\\Git\\cmd\\git.exe push origin feature",
+            'C:\\Git\\cmd\\git.exe "push" origin feature',
+            "if ($true) { C:\\Git\\cmd\\git.exe push origin feature }",
+            "cmd /c C:\\Git\\cmd\\git.exe push origin feature",
+            "C:\\Git\\cmd\\git.exe status",
+            "C:\\Tools\\legit.exe push origin main",
+            # A path ARGUMENT ending in ``\git`` is data; only the command word is git.
+            "Get-ChildItem C:\\src\\git push",
+        )
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        for cmd in protected:
+            assert fg._is_git_publish(cmd.lower()), cmd
+            assert (is_denied(cmd) or "").splitlines()[:1] == [expected], cmd
+        for cmd in allowed:
+            assert is_denied(cmd) is None, cmd
+        # Windows runs ``C:git`` as git from that drive, so the target reader anchors there.
+        assert fg._git_push_args("c:git push origin feature") == ["origin", "feature"]
+
+        # A POSIX shell runs ``C:Gitcmdgit.exe``, which is not git: unchanged there.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        for cmd in protected + allowed:
+            assert not fg._is_git_publish(cmd.lower()), cmd
+
+    def test_windows_trailing_backslashes_do_not_join_arguments(self, monkeypatch) -> None:
+        """A Windows path's trailing separator cannot consume the next argument."""
+        from kiro_crew import platform_compat
+        from kiro_crew.security import argv_floor_git as fg
+        from kiro_crew.security import is_denied
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        for directory in ("C:\\repo\\", '"C:\\my repo\\"', "'C:\\my repo\\'"):
+            command = f"C:\\Git\\cmd\\git.exe -C {directory} push origin"
+            assert is_denied(command + " main") is not None, command
+            assert fg._git_push_args(command + " main") == ["origin", "main"]
+            assert is_denied(command + " feature") is None, command
+
+        # The same split must preserve a backslash in an argument after the verb.
+        assert fg._git_push_args(r"C:\Git\cmd\git.exe push C:\repo\ main") == [
+            "C:\\repo\\",
+            "main",
+        ]
+        for command in (
+            r"C:\Git\cmd\git.exe push origin feature",
+            r"C:\Git\cmd\git.exe status",
+            r"C:\Tools\legit.exe push origin main",
+            r"Get-ChildItem C:\src\git push",
+        ):
+            assert is_denied(command) is None, command
+
+    def test_windows_judges_refspecs_as_bash_reads_them_too(self, monkeypatch) -> None:
+        """Bash also runs on Windows, and there ``\\`` escapes a quote.
+
+        The quote-only split reads ``x\\' main`` as one word, while bash reads
+        ``main`` as its own refspec, so both readings are judged.
+        """
+        from kiro_crew import platform_compat
+        from kiro_crew.security import is_denied
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        protected = (
+            "git push origin HEAD:x\\' main",
+            "git push origin feature\\' main",
+            'git push origin \\" main \\"',
+            "C:\\Git\\cmd\\git.exe push origin feature\\' main",
+            "C:\\Git\\cmd\\git.exe -C C:\\repo\\ push origin main",
+        )
+        allowed = (
+            "C:\\Git\\cmd\\git.exe -C C:\\repo\\ push origin feature",
+            "C:\\Git\\cmd\\git.exe push origin feature",
+            "C:\\Git\\cmd\\git.exe status",
+            "C:\\Tools\\legit.exe push origin main",
+            "Get-ChildItem C:\\src\\git push",
+        )
+        assert [c for c in protected if is_denied(c) is None] == []
+        assert [c for c in allowed if is_denied(c) is not None] == []
+
+    def test_windows_push_args_fall_back_to_the_bash_reading(self, monkeypatch) -> None:
+        """A line only bash can read (an ANSI-C quote) still yields its arguments."""
+        from kiro_crew import platform_compat
+        from kiro_crew.security import argv_floor_git as fg
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        command = "git push origin feature > >(echo $'a\\'b') main"
+        assert fg._git_push_args(command) == ["origin", "feature", "main"]
+
     def test_obfuscation_with_no_payload_still_fails_closed(self) -> None:
         """The deferral is NOT a general escape hatch.
 

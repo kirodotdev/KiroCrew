@@ -14,6 +14,7 @@ and one sentinel the rule catalog owns, and imports no other part of the argv fl
 
 from __future__ import annotations
 
+import ntpath
 import os
 import re
 
@@ -141,6 +142,25 @@ def _is_git_publish(text_lower: str) -> bool:
 _GIT_ARG_FLAGS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
 
 
+def _is_git_program_word(word: str) -> bool:
+    """True when *word* names the git program as a POSIX or a Windows shell runs it.
+
+    Windows runs ``git.exe``, ``Git.EXE``, ``git.cmd`` and ``C:\\...\\cmd\\git.exe`` as
+    git, so the last ``/`` or ``\\`` part is compared in any case and without a trailing
+    ``.exe``/``.cmd``/``.bat``. A superset of the exact and basename tests, so it only
+    widens detection (fail-closed); a program named ``GIT`` or ``git.cmd`` on POSIX is
+    read as git too, and the push target still decides the verdict.
+    """
+    from kiro_crew import platform_compat
+
+    # ``ntpath`` also drops a drive prefix: Windows runs ``C:git`` as git from that drive.
+    if platform_compat.IS_WINDOWS:
+        name = ntpath.basename(word).lower()
+    else:
+        name = re.split(r"[\\/]", word)[-1].lower()
+    return name == "git" or (name[:3] == "git" and name[3:] in (".exe", ".cmd", ".bat"))
+
+
 def _is_git_push_via_normalizer(text_lower: str) -> bool:
     """Normalizer-based git push detection (second pass).
 
@@ -158,6 +178,84 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
     except Exception:
         return False
 
+    if _has_git_push_word_pair(tokens):
+        return True
+    # The view above reads ``\`` as a POSIX escape, so an unquoted Windows path
+    # (``c:\git\cmd\git.exe``, ``.\git.exe``) reaches it with its separators gone.
+    # PowerShell and cmd keep ``\`` as a separator, so on Windows the words are also
+    # read with it kept (``_windows_words_hold_git_push``). It only adds detection.
+    from kiro_crew import platform_compat
+
+    # Without a ``\`` the escaped view lost no separator, so the walk is skipped and
+    # the common path costs what it did.
+    if not platform_compat.IS_WINDOWS or "\\" not in text_lower:
+        return False
+    try:
+        return any(
+            _windows_words_hold_git_push(_split_git_words(segment))
+            for segment in _split_push_command_segments(text_lower)
+        )
+    except Exception:
+        return False
+
+
+def _split_git_words(segment: str) -> list[str]:
+    """Keep raw quoting, with literal backslashes in the Windows word view."""
+    from kiro_crew import platform_compat
+
+    if not platform_compat.IS_WINDOWS:
+        return _split_shell_words(segment)
+    words: list[str] = []
+    quote = ""
+    start = 0
+    for i, char in enumerate(segment):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char.isspace():
+            if start < i:
+                words.append(segment[start:i])
+            start = i + 1
+    if start < len(segment):
+        words.append(segment[start:])
+    return words
+
+
+def _windows_words_hold_git_push(words: list[str]) -> bool:
+    """True when PowerShell or cmd *words*, ``\\`` kept, run git with subcommand ``push``.
+
+    Quotes and glued operators are stripped without touching ``\\``, so ``"push"`` and
+    ``"-C"`` read as PowerShell passes them. ``git.exe``/``.cmd``/``.bat`` by any path is
+    git at every position, as the escaped view already reads ``git.exe`` (``cmd /c``, a
+    ``{ }`` block). A bare ``...\\git`` is git only as a command word -- first, or after
+    ``&``, ``(`` or ``{`` -- so a path ARGUMENT (``Get-ChildItem C:\\src\\git push``) is data.
+    """
+    view = [_cut_at_operator(word).strip("'\"") for word in words]
+    for i, word in enumerate(view):
+        if not _is_git_program_word(word):
+            continue
+        command_word = i == 0 or view[i - 1] in ("", "{", "(")
+        if not command_word and ntpath.basename(word) == "git":
+            continue
+        j = i + 1
+        while j < len(view):
+            if not view[j].strip():
+                j += 1
+            elif view[j] in _GIT_ARG_FLAGS:
+                j += 2
+            elif view[j].startswith("-"):
+                j += 1
+            else:
+                break
+        if j < len(view) and view[j] == "push":
+            return True
+    return False
+
+
+def _has_git_push_word_pair(tokens: list[str]) -> bool:
+    """True when *tokens* hold a git program word whose subcommand is ``push``."""
     if not tokens:
         return False
 
@@ -178,6 +276,8 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
     def _resolves_to(token: str, word: str) -> bool:
         for candidate in (token, _cut_at_operator(token)):
             if candidate == word or os.path.basename(candidate) == word:
+                return True
+            if word == "git" and _is_git_program_word(candidate):
                 return True
         return False
 
@@ -331,9 +431,29 @@ def _git_push_args(segment: str) -> list[str] | None:
     may take (e.g. ``-C <path>``) — but never swallows ``push`` itself. A
     skipped word carrying an unquoted expansion leads the returned tokens.
     """
+    return next((args for _, args in _git_push_views(segment) if args is not None), None)
+
+
+def _git_push_views(segment: str) -> list[tuple[bool, list[str] | None]]:
+    """``_git_push_view`` of every word reading a shell may give *segment*.
+
+    Windows runs PowerShell and cmd, which keep ``\\`` literal, and also bash
+    (Claude Code's Bash tool), which reads ``\\`` as an escape. One split cannot
+    serve both: ``origin feature\\' main`` is one word to the first and two to
+    bash. So both readings are judged there; on POSIX the two splits are one.
+    """
+    from kiro_crew import platform_compat
+
+    views = [_git_push_view(_split_git_words(segment))]
+    if platform_compat.IS_WINDOWS:
+        views.append(_git_push_view(_split_shell_words(segment)))
+    return views
+
+
+def _git_push_view(raw_tokens: list[str]) -> tuple[bool, list[str] | None]:
+    """``(push anchored, args)`` for one word split; args None when unreadable."""
     # Strip glued shell operators for the same reason as ``_dequote_token``:
     # ``(git`` IS the git program to bash, and ``main)&`` IS the ref ``main``.
-    raw_tokens = _split_shell_words(segment)
     tokens = [_cut_at_operator(t) for t in raw_tokens]
     # Anchoring compares against a DEQUOTED view, because a quoted ``"git"`` is
     # still the git program to bash. Matching the raw token missed it and
@@ -364,13 +484,13 @@ def _git_push_args(segment: str) -> list[str] | None:
         # without cutting so a quoted absolute path still resolves.
         raw = raw_tokens[index]
         for candidate in (anchors[index], raw, raw.strip("'\"")):
-            if candidate == "git" or os.path.basename(candidate) == "git":
+            if _is_git_program_word(candidate):
                 return True
         return False
 
     start = next((k for k in range(len(anchors)) if _anchor_is_git(k)), None)
     if start is None:
-        return None
+        return False, None
     i = start + 1
     while i < len(anchors) and anchors[i].startswith("-"):
         i += 1  # skip the flag
@@ -455,7 +575,7 @@ def _git_push_args(segment: str) -> list[str] | None:
                 # )``) to be read as argv, where the ``#`` truncates the real
                 # refspecs. Whatever bash makes of
                 # the spelling, this gate cannot read it: fail CLOSED.
-                return None
+                return True, None
             k += 1
             if not consumes_next or k >= len(raw_args):
                 continue
@@ -509,7 +629,7 @@ def _git_push_args(segment: str) -> list[str] | None:
                 if _process_substitution_word_is_opaque(
                     raw_args[k], state, ansi, first=k == opener
                 ):
-                    return None
+                    return True, None
                 walk = _shell_quote_walk(raw_args[k], state=state, ansi=ansi)
                 depth += walk.paren_delta
                 state, ansi = walk.end_state, walk.end_ansi
@@ -518,9 +638,9 @@ def _git_push_args(segment: str) -> list[str] | None:
                     proven = True
                     break
             if not proven:
-                return None
-        return args
-    return None
+                return True, None
+        return True, args
+    return False, None
 
 
 #: bash reserved words. Any of them as an UNQUOTED word inside a
@@ -1049,8 +1169,9 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
         if _AMBIGUOUS_EXPANSION_RE.search(command):
             tags.add(_GIT_PUBLISH_UNGATED)
             continue
-        args = _git_push_args(command)
-        if args is None:
+        views = _git_push_views(command)
+        parsed = [args for _, args in views if args is not None]
+        if not parsed:
             # Detected as a push but not cleanly parseable. That normally means
             # OBFUSCATION (``git$(echo ' ')push``) -> ungated deny.
             #
@@ -1093,7 +1214,13 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
             if not defer_to_payload:
                 tags.add(_GIT_PUBLISH_UNGATED)
             continue
-        tags |= _push_segment_targets_protected(args)
+        # Every reading that anchors the push is judged, and one that anchors it
+        # but cannot read it fails closed. A reading with no push anchor runs no
+        # push in that shell, so it adds nothing (``-C C:\repo\ push`` to bash).
+        if len(parsed) < sum(anchored for anchored, _ in views):
+            tags.add(_GIT_PUBLISH_UNGATED)
+        for args in parsed:
+            tags |= _push_segment_targets_protected(args)
     if not saw_push:
         # A push was detected upstream (e.g. glue-evasion ``git_push``) but no
         # clean ``push`` segment survived splitting — deny to be safe.

@@ -127,12 +127,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SHELL_RESERVED_WORDS,
         _git_publish_floor_tags,
         _git_push_args,
+        _git_push_view,
+        _git_push_views,
+        _has_git_push_word_pair,
+        _is_git_program_word,
         _is_git_publish,
         _is_git_push_via_normalizer,
         _is_push_to_protected_branch,
         _normalize_ref,
         _process_substitution_word_is_opaque,
         _push_segment_targets_protected,
+        _split_git_words,
+        _windows_words_hold_git_push,
     )
     from kiro_crew.security.argv_floor_git_grammar import (  # noqa: F401
         _GIT_LOCAL_ONLY_VERBS,
