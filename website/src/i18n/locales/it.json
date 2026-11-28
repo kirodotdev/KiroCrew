@@ -15424,6 +15424,8 @@
       "mcp_session_restart_to_load": "A {{name}} manca una credenziale, oppure è stata rifiutata. Quando la credenziale funziona, avvia una nuova sessione per caricare {{name}}.",
       "mcp_session_started": "Avviato in questa sessione",
       "mcp_sign_in_needed_single": "<name/> (un server MCP che hai aggiunto) richiede che tu acceda prima che i suoi strumenti funzionino in questa chat. Invia un messaggio che nomini <name/>, ad esempio \"Accedi a <name/>\".",
+      "mcp_sign_in_needed_menu": "Accedi",
+      "mcp_sign_in_needed_send": "Accedi a {{name}}",
       "mcp_sign_in_needed_several": "Questi server MCP che hai aggiunto richiedono che tu acceda prima che i loro strumenti funzionino in questa chat: <names/>. Ognuno richiede un proprio accesso. Invia un messaggio che lo nomini, ad esempio \"Accedi a <first/>\".",
       "mcp_sign_in_needed_more_one": "{{count}} altro",
       "mcp_sign_in_needed_more_many": "altri {{count}}",

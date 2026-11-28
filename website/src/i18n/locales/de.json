@@ -15059,6 +15059,8 @@
       "mcp_session_restart_to_load": "{{name}} fehlen Anmeldedaten, oder sie wurden abgelehnt. Sobald die Anmeldedaten funktionieren, starte eine neue Sitzung, um {{name}} zu laden.",
       "mcp_session_started": "In dieser Sitzung gestartet",
       "mcp_sign_in_needed_single": "<name/> (ein MCP-Server, den du hinzugefügt hast) braucht eine Anmeldung, bevor seine Werkzeuge in diesem Chat funktionieren. Sende eine Nachricht, die <name/> nennt, zum Beispiel „Bei <name/> anmelden“.",
+      "mcp_sign_in_needed_menu": "Anmelden",
+      "mcp_sign_in_needed_send": "Bei {{name}} anmelden",
       "mcp_sign_in_needed_several": "Diese MCP-Server, die du hinzugefügt hast, brauchen eine Anmeldung, bevor ihre Werkzeuge in diesem Chat funktionieren: <names/>. Jeder braucht eine eigene Anmeldung. Sende eine Nachricht, die ihn nennt, zum Beispiel „Bei <first/> anmelden“.",
       "mcp_sign_in_needed_more_one": "{{count}} weitere",
       "mcp_sign_in_needed_more_other": "{{count}} weitere",

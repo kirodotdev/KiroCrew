@@ -15424,6 +15424,8 @@
       "mcp_session_restart_to_load": "{{name}} está sem credencial, ou a credencial foi recusada. Quando a credencial funcionar, inicie uma nova sessão para carregar {{name}}.",
       "mcp_session_started": "Iniciado nesta sessão",
       "mcp_sign_in_needed_single": "<name/> (um servidor MCP que você adicionou) precisa que você entre para que as ferramentas dele funcionem neste chat. Envie uma mensagem que cite <name/>, por exemplo \"Entrar em <name/>\".",
+      "mcp_sign_in_needed_menu": "Entrar",
+      "mcp_sign_in_needed_send": "Entrar em {{name}}",
       "mcp_sign_in_needed_several": "Estes servidores MCP que você adicionou precisam que você entre para que as ferramentas deles funcionem neste chat: <names/>. Cada um precisa de um login próprio. Envie uma mensagem que o cite, por exemplo \"Entrar em <first/>\".",
       "mcp_sign_in_needed_more_one": "mais {{count}}",
       "mcp_sign_in_needed_more_many": "mais {{count}}",

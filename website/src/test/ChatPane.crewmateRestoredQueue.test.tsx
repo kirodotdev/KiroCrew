@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, waitFor, fireEvent, within } from '@testing-library/react'
+import { act, render, waitFor, fireEvent, within } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -164,5 +164,25 @@ describe("a held queued message in a mate's chat", () => {
     const bubble = await view.findByText('restored drained words')
     expect(bubble.closest('[data-testid="queue-card"]')).toBeNull()
     expect(view.getAllByTestId('queue-card')).toHaveLength(1)
+  })
+})
+
+describe("a queue-only compose send in a mate's chat (the MCP sign-in notice button)", () => {
+  /** A compose-send press as the notice dispatches it. */
+  function press(text: string, queue: boolean) {
+    const detail: { text: string; slot: string; queue?: boolean; result: string | null; onOutcome: () => void } = { text, slot: SLOT, ...(queue ? { queue } : {}), result: null, onOutcome: () => {} }
+    act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
+    return detail.result
+  }
+  const responsiveOf = (text: string) => (api.sendChat as ReturnType<typeof vi.fn>).mock.calls.find(c => c[0] === text)?.[6]
+
+  it('leaves out responsive, so the text starts a turn of its own', async () => {
+    const view = renderPane()
+    await view.findByText('held words')
+    expect(press('Sign in to notes', true)).toBe('pending')
+    expect(press('plain card text', false)).toBe('pending')
+    await waitFor(() => expect(responsiveOf('plain card text')).toBe(true))
+    await waitFor(() => expect((api.sendChat as ReturnType<typeof vi.fn>).mock.calls.some(c => c[0] === 'Sign in to notes')).toBe(true))
+    expect(responsiveOf('Sign in to notes')).toBeFalsy()
   })
 })

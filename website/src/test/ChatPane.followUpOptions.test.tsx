@@ -432,8 +432,8 @@ describe('ChatPane plan-shaped follow-ups', () => {
 })
 
 /** A discussion card's Start / No thanks, as GrillCard dispatches it. */
-function cardSend(text: string, slot: string, files?: string[]) {
-  const detail: { text: string; slot: string; files?: string[]; result: string | null; onOutcome: (o: string, reason?: string) => void } = { text, slot, ...(files ? { files } : {}), result: null, onOutcome: (o, reason) => { cardOutcomes.push(o); cardReasons.push(reason) } }
+function cardSend(text: string, slot: string, files?: string[], queue?: boolean) {
+  const detail: { text: string; slot: string; files?: string[]; queue?: boolean; result: string | null; onOutcome: (o: string, reason?: string) => void } = { text, slot, ...(files ? { files } : {}), ...(queue ? { queue } : {}), result: null, onOutcome: (o, reason) => { cardOutcomes.push(o); cardReasons.push(reason) } }
   act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
   return detail.result
 }
@@ -527,6 +527,17 @@ describe('ChatPane discussion-card sends (a deliberate press: sent whatever Quic
     expect(cardSend('不用讨论了', 'pane-g3')).toBe('pending')
     await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'pane-g3']]))
     await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+  })
+
+  it('a queue send (the MCP sign-in notice button) never steers a busy pane', async () => {
+    await renderPane('pane-g8', { subagents_running: true })
+    expect(cardSend('Sign in to notes', 'pane-g8')).toBe('pending')
+    expect(cardSend('Sign in to docs', 'pane-g8', undefined, true)).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent', 'sent']))
+    const steerOf = (text: string) => (api.sendChat as ReturnType<typeof vi.fn>).mock.calls.find(c => c[0] === text)?.[5]
+    // The plain card send takes the pane's default busy decision (steer); the queue one does not.
+    expect(steerOf('Sign in to notes')).toBeTruthy()
+    expect(steerOf('Sign in to docs')).toBeFalsy()
   })
 
   it('sends while a chip selection is open, leaving the picked chip in the box', async () => {

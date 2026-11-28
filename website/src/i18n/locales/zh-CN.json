@@ -14694,6 +14694,8 @@
       "mcp_session_restart_to_load": "{{name}} 缺少凭据，或其凭据被拒绝。凭据可用后，开始新会话即可加载 {{name}}。",
       "mcp_session_started": "已在本会话中启动",
       "mcp_sign_in_needed_single": "<name/>（你添加的 MCP 服务器）需要你登录，它的工具才能在此聊天中使用。发送一条提到 <name/> 的消息，例如“登录 <name/>”。",
+      "mcp_sign_in_needed_menu": "登录",
+      "mcp_sign_in_needed_send": "登录 {{name}}",
       "mcp_sign_in_needed_several": "你添加的这些 MCP 服务器需要你登录，它们的工具才能在此聊天中使用：<names/>。每个服务器都要单独登录。发送一条提到该服务器的消息，例如“登录 <first/>”。",
       "mcp_sign_in_needed_more_other": "另外 {{count}} 个",
       "message_queued_until_session_ready": "{{error}}。消息已排队，会在会话就绪后发送 — 但它只保存在此标签页中，因此离开或刷新页面后需要重新输入。",

@@ -40,8 +40,8 @@ interface ChatEventBridgesOptions {
   terminalCfgUnsettledRef: MutableRefObject<boolean>
   terminalCfgReadFailedRef: MutableRefObject<boolean>
   inputRef: MutableRefObject<string>
-  /** A reply card's send (the `[GRILL:]` discussion card): stages `text` for `slot`, or sends it (`pending`, then `onOutcome`); null when this page does not serve `slot`. Stable. */
-  composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void, files?: readonly string[]) => ComposeSendResult | null
+  /** A reply card's send (the `[GRILL:]` discussion card): stages `text` for `slot`, or sends it (`pending`, then `onOutcome`); null when this page does not serve `slot`. `queue`: never steer. Stable. */
+  composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void, files?: readonly string[], queue?: boolean) => ComposeSendResult | null
 }
 
 /**
@@ -183,10 +183,10 @@ export function useChatEventBridges({
   // no result, the card stays open.
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { text?: unknown; slot?: unknown; result?: unknown; onOutcome?: unknown; files?: unknown } | undefined
+      const detail = (e as CustomEvent).detail as { text?: unknown; slot?: unknown; result?: unknown; onOutcome?: unknown; files?: unknown; queue?: unknown } | undefined
       if (!detail || detail.result || typeof detail.text !== 'string' || !detail.text || typeof detail.slot !== 'string' || typeof detail.onOutcome !== 'function') return
       const files = Array.isArray(detail.files) ? detail.files.filter((f): f is string => typeof f === 'string' && !!f) : []
-      detail.result = composeSend(detail.text, detail.slot, detail.onOutcome as (o: ComposeSendOutcome, reason?: string) => void, files)
+      detail.result = composeSend(detail.text, detail.slot, detail.onOutcome as (o: ComposeSendOutcome, reason?: string) => void, files, detail.queue === true)
     }
     window.addEventListener('mc:compose-send', handler)
     return () => window.removeEventListener('mc:compose-send', handler)

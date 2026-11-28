@@ -14694,6 +14694,8 @@
       "mcp_session_restart_to_load": "{{name}}에 자격 증명이 없거나 자격 증명이 거부되었습니다. 자격 증명이 작동하면 새 세션을 시작해 {{name}}을(를) 불러오세요.",
       "mcp_session_started": "이 세션에서 시작됨",
       "mcp_sign_in_needed_single": "<name/>(추가한 MCP 서버)의 도구를 이 채팅에서 쓰려면 로그인해야 합니다. <name/> 이름이 들어간 메시지(예: ‘<name/>에 로그인’)를 보내세요.",
+      "mcp_sign_in_needed_menu": "로그인",
+      "mcp_sign_in_needed_send": "{{name}}에 로그인",
       "mcp_sign_in_needed_several": "추가한 다음 MCP 서버의 도구를 이 채팅에서 쓰려면 로그인해야 합니다: <names/>. 서버마다 따로 로그인해야 합니다. 서버 이름이 들어간 메시지(예: ‘<first/>에 로그인’)를 보내세요.",
       "mcp_sign_in_needed_more_other": "그 밖의 {{count}}개",
       "message_queued_until_session_ready": "{{error}}. 메시지는 대기열에 있으며 세션이 준비되면 전송됩니다 — 다만 이 탭에만 보관되므로 다른 페이지로 이동하거나 새로 고치면 다시 입력해야 합니다.",

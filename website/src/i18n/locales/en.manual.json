@@ -7208,6 +7208,8 @@
       "mcp_session_restart_to_load": "{{name}} is missing a credential, or its credential was rejected. Once the credential works, start a new session to load {{name}}.",
       "mcp_session_started": "Started in this session",
       "mcp_sign_in_needed_single": "<name/> (an MCP server you added) needs you to sign in before its tools work in this chat. Send a message that names <name/>, such as \"Sign in to <name/>\".",
+      "mcp_sign_in_needed_menu": "Sign in",
+      "mcp_sign_in_needed_send": "Sign in to {{name}}",
       "mcp_sign_in_needed_several": "These MCP servers you added need you to sign in before their tools work in this chat: <names/>. Each one needs its own sign-in. Send a message that names it, such as \"Sign in to <first/>\".",
       "mcp_sign_in_needed_more_one": "{{count}} more",
       "mcp_sign_in_needed_more_other": "{{count}} more",
