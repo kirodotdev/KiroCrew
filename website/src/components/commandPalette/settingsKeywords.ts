@@ -235,6 +235,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'chat.subagent-effort': ['worker effort', 'subagent reasoning effort', 'helper agent effort'],
   'chat.subagent-model': ['worker model', 'model for subagents', 'spawned agent model', 'child agent model', 'cheaper model for workers'],
   'chat.swipe-to-open-and-close-side-panel': ['swipe gesture', 'trackpad swipe side panel', 'swipe the panel'],
+  'chat.switch-to-new-chat-tabs': ['ctrl click new chat', 'cmd click new chat', 'new chat opens in background', 'focus the new chat tab', 'open new chat in foreground'],
   'chat.tail-only-fork': ['fork from here', 'fork keeps later messages', 'branch a chat'],
   'chat.technical-comfort': ['beginner', 'expert', 'how technical am i', 'explain simply', 'skill level'],
   'chat.text-link-patterns': ['auto link', 'linkify', 'ticket links', 'custom link rules', 'jira links'],
