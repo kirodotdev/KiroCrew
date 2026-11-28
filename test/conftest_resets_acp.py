@@ -91,3 +91,21 @@ def _reset_kas_skill_facts():
         yield
     finally:
         clear()
+
+
+@per_test_guard
+def _reset_live_requested_auto_clients():
+    """No requested-auto client watched yet: ``client_claude_mode`` keeps them in a weak
+    registry that a trust-denying ceiling reads, so a client one test left uncollected
+    must not be stopped or recorded by a later test's policy install."""
+
+    def clear():
+        module = sys.modules.get("kiro_crew.acp.client_claude_mode")
+        if module is not None:
+            module._live_requested_auto_clients.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
