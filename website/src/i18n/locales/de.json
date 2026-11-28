@@ -5885,6 +5885,8 @@
   },
   "components": {
     "startupModules": {
+      "load_failed": "Startmodule konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
       "failed": "{{name}} konnte nicht gestartet werden.",
       "dismiss": "Starthinweis für {{name}} bis zum Neuladen ausblenden",
       "open_app": "{{name}} öffnen"

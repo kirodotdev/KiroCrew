@@ -4281,6 +4281,8 @@
   },
   "components": {
     "startupModules": {
+      "load_failed": "Startup modules could not load.",
+      "retry": "Retry",
       "failed": "{{name}} failed to start.",
       "dismiss": "Dismiss startup notice for {{name}} until reload",
       "open_app": "Open {{name}}"

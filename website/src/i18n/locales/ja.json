@@ -5714,6 +5714,8 @@
   },
   "components": {
     "startupModules": {
+      "load_failed": "起動モジュールを読み込めませんでした。",
+      "retry": "再試行",
       "failed": "{{name}} を起動できませんでした。",
       "dismiss": "再読み込みまで {{name}} の起動通知を非表示にする",
       "open_app": "{{name}} を開く"
