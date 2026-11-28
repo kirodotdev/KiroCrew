@@ -5512,7 +5512,13 @@ The boundary:
   surface cannot mint a scope. While a reply streams (`textPreviewsPaused`) the
   scope stays but no text is scanned, so the bounded scan cache holds final text
   only. Keys reach a card only when nothing editable has focus, shadow roots
-  included (`utils/editableTarget.ts`).
+  included (`utils/editableTarget.ts`). The layer loads lazily and attaches its
+  pointer listeners only once the app list has resolved with a provider; while
+  they are attached, `<html>` carries `data-link-preview-listening`. A hover is a
+  `pointerover`, fired once as the pointer enters a link, so a pointer already
+  resting on one when the listeners attach is not seen: a test that hovers right
+  after page load waits for that attribute first
+  (`playwright/link-preview-frame-sandbox.spec.ts`).
 - **What the frame gets.** Only `postMessage` traffic: the hovered URL or text, the
   anchor rect, the theme, the modifier keys, and plain key presses while a card
   shows (`linkPreviewProtocol.ts`). Never the chat DOM, a cookie (its requests are

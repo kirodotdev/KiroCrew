@@ -394,6 +394,14 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     expect(MAX_PINNED).toBeGreaterThan(1)
   })
 
+  it('the document says the layer is listening only while it has a provider', async () => {
+    const { mod, qc } = await mount()
+    expect(document.documentElement.hasAttribute(mod.LISTENING_ATTR)).toBe(true)
+    listApps.mockResolvedValue([{ ...APP, enabled: false }])
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['apps'] }) })
+    await waitFor(() => expect(document.documentElement.hasAttribute(mod.LISTENING_ATTR)).toBe(false))
+  })
+
   it('a link outside a chat message never reaches an app', async () => {
     await mount()
     fireEvent.pointerOver(link('https://tickets.example.com/t/TK-9', false))
