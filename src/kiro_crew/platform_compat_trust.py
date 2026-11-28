@@ -86,7 +86,10 @@ def _windows_system_dirs() -> tuple[str, ...]:
     and the conventional install path follow only as fallbacks for the
     unexpected case where the API call fails. PowerShell ships in a versioned
     directory beside the system binaries, not inside it, so it is appended per
-    root rather than assumed to sit alongside ``taskkill``.
+    root rather than assumed to sit alongside ``taskkill``. The inbox OpenSSH client
+    (``ssh``, ``scp``, ``sftp``, ``ssh-keygen``) ships in the ``OpenSSH``
+    subdirectory, owned by TrustedInstaller like the rest, and is appended the same
+    way: derived from the same root, never from the environment.
 
     **The early ``return`` below is what makes "fallback" mean fallback**, and it is
     load-bearing rather than tidy. Appending the environment-derived path alongside a
@@ -110,11 +113,19 @@ def _windows_system_dirs() -> tuple[str, ...]:
             dirs.append(buf.value)
     except Exception:
         pass
+
+    def with_subdirs(roots: list[str]) -> tuple[str, ...]:
+        return (
+            tuple(roots)
+            + tuple(os.path.join(d, "WindowsPowerShell", "v1.0") for d in roots)
+            + tuple(os.path.join(d, "OpenSSH") for d in roots)
+        )
+
     if dirs:
         # The API answered. Adding an environment-derived sibling here would buy
         # nothing (the real directory is already in hand) and would cost the
         # guarantee every caller of this function relies on.
-        return tuple(dirs) + tuple(os.path.join(d, "WindowsPowerShell", "v1.0") for d in dirs)
+        return with_subdirs(dirs)
     root = os.environ.get("SystemRoot") or r"C:\Windows"
     # Case-insensitive dedupe: the conventionally-cased fallback can name the same
     # directory as the environment-derived one and must not be probed twice.
@@ -123,7 +134,7 @@ def _windows_system_dirs() -> tuple[str, ...]:
         if fallback.casefold() not in seen:
             seen.add(fallback.casefold())
             dirs.append(fallback)
-    return tuple(dirs) + tuple(os.path.join(d, "WindowsPowerShell", "v1.0") for d in dirs)
+    return with_subdirs(dirs)
 
 
 #: ``FOLDERID_Documents`` — the Known Folder PowerShell derives ``$PROFILE``
@@ -268,14 +279,21 @@ def trusted_git_bin() -> str | None:
     ``None`` means "do not spawn git at all". Callers MUST treat it as a refusal;
     falling back to a bare ``"git"`` reinstates the hazard.
     """
-    git = trusted_system_bin("git")
-    if git is None and IS_WINDOWS:
+    # The quiet probe first, so a miss is logged only once the Windows fallback
+    # has missed too: logging it up front reports "treated as unavailable" for a
+    # git this function then returns.
+    git = trusted_system_bin_quiet("git")
+    if git is not None:
+        return git
+    if IS_WINDOWS:
         for directory in _WINDOWS_GIT_DIRS:
             candidate = os.path.join(directory, "git.exe")
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 return candidate
+        _log_tool_outside_trusted_dirs("git", _trusted_bin_search()[0] + _WINDOWS_GIT_DIRS)
         return None
-    return git
+    _log_tool_outside_trusted_dirs("git", _trusted_bin_search()[0])
+    return None
 
 
 def trusted_system_bin(name: str) -> str | None:
