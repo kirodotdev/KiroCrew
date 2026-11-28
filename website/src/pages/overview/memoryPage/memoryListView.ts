@@ -96,6 +96,17 @@ export function toggleFilter(filters: MemoryRecordFilters, group: MemoryRecordFa
 }
 
 // The same value as memory_record_facets.SCOPE_UNUSABLE, which the facet counts carry.
+/** Set one bound of the confidence range, clamped to the other bound as it is
+ *  now, so two sliders settling in either order never leave min above max.
+ *  A bound at its end of the scale (0 or 1) is no filter and is removed. */
+export function setConfidenceBound(filters: MemoryRecordFilters, bound: 'conf_min' | 'conf_max', value: number | undefined): MemoryRecordFilters {
+  const out = { ...filters }
+  const next = value === undefined ? undefined : bound === 'conf_min' ? Math.min(value, filters.conf_max ?? 1) : Math.max(value, filters.conf_min ?? 0)
+  if (next === undefined || (bound === 'conf_min' ? next <= 0 : next >= 1)) delete out[bound]
+  else out[bound] = next
+  return out
+}
+
 export const SCOPE_UNUSABLE = ':unusable'
 const CATEGORY_KEYS: Record<string, string> = { knowledge: 'memoryPage.category_knowledge', tool: 'memoryPage.category_tool', preference: 'memoryPage.category_preference' }
 const APPLIES_KEYS: Record<string, string> = { always: 'memoryPage.applies_always', on_topic: 'memoryPage.applies_on_topic', unstated: 'memoryPage.applies_unstated' }

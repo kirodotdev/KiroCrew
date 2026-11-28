@@ -271,8 +271,9 @@ function AuditDetail({ event, phone, onClose }: { event: MemoryAuditEvent; phone
     </section> : <section aria-label={t('memoryAudit.change')} className="pt-1">
       <PanelSectionHeader label={t('memoryAudit.change')} />
       <div className="overflow-hidden rounded-lg font-mono text-[12px] leading-5">
-        <div className="grid gap-3 bg-danger-subtle px-3 py-2 text-danger-text" style={{ gridTemplateColumns: '56px minmax(0,1fr)' }}><span>{t('memoryAudit.before')}</span><span className={VALUE}>{before || '—'}</span></div>
-        <div className="grid gap-3 bg-ok-subtle px-3 py-2 text-ok-text" style={{ gridTemplateColumns: '56px minmax(0,1fr)' }}><span>{t('memoryAudit.after')}</span><span className={VALUE}>{after || '—'}</span></div>
+        {/* The value reads in body text; the tint and the tone-mixed label carry which side it is. */}
+        <div className="grid gap-3 bg-danger-subtle px-3 py-2" style={{ gridTemplateColumns: '56px minmax(0,1fr)' }}><span className="text-[var(--danger-body)]">{t('memoryAudit.before')}</span><span className={`${VALUE} text-text`}>{before || '—'}</span></div>
+        <div className="grid gap-3 bg-ok-subtle px-3 py-2" style={{ gridTemplateColumns: '56px minmax(0,1fr)' }}><span className="text-[color-mix(in_srgb,var(--ok-text)_60%,var(--text))]">{t('memoryAudit.after')}</span><span className={`${VALUE} text-text`}>{after || '—'}</span></div>
       </div>
     </section>}
     {why && <section aria-label={t('memoryAudit.why')}><PanelSectionHeader label={t('memoryAudit.why')} /><p className="text-[13px] leading-5 text-text">{why}</p></section>}

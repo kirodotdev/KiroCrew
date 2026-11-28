@@ -2,7 +2,8 @@
  * The memory list's controls and rows: the kind pills, the sort menu, the
  * filter panel with live counts, the active-filter chips and one record row.
  */
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { useLanguageGeneration } from '../../../i18n/useLanguageGeneration'
+import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import InfoTip from '../../../components/InfoTip'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, ArrowDownUp, Check, ChevronDown, Folder, History, Mail, MoreHorizontal, Plus, Search, Sparkles, X } from 'lucide-react'
@@ -15,7 +16,7 @@ import { rangeLabel } from './MemoryDateRange'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 import { sourceTip } from './memoryTypeTips'
 import type { DateRange } from './memoryDateRanges'
-import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, STRENGTH_STATES, effectiveSort, facetLabel, fmtScore, sourceGroup, lessonFacts, recordTags, recordTitle, type ListView, type SearchMode } from './memoryListView'
+import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, STRENGTH_STATES, effectiveSort, facetLabel, fmtScore, sourceGroup, lessonFacts, recordTags, recordTitle, type KindTab, type ListView, type SearchMode } from './memoryListView'
 import type { MemoryStoreDecay } from '../../../types/memoryEditing'
 import { StoreFadeChart, StrengthChip } from './MemoryStrength'
 import { KindPills, PILL_ON } from './KindPills'
@@ -91,15 +92,26 @@ export function SortControl({ view, onChange, decays = false }: { view: ListView
 /** One rail value: its checkbox, label and count. A `hint` adds a (?) after the
  *  label that explains it; the (?) sits outside the label, so pressing it, by
  *  mouse, key or touch, opens the tip and never ticks the box. */
-export function FacetCheck({ label, count, on, warn, hint, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; hint?: string; onToggle: () => void }) {
+// The (?) does not change with the count, so a recount leaves it alone.
+const FacetTip = memo(function FacetTip(props: ComponentProps<typeof InfoTip>) {
+  useLanguageGeneration()
+  return <InfoTip {...props} />
+})
+
+// Memoized: a facet recount re-renders only the rows whose count or tick changed,
+// when the caller passes a stable `onToggle` (FilterPanel does).
+export const FacetCheck = memo(function FacetCheck({ label, count, on, warn, hint, tipReady = true, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; hint?: string
+  /** False on the frames that first mount the row: the (?) keeps its place and mounts after paint. */
+  tipReady?: boolean; onToggle: () => void }) {
+  useLanguageGeneration()
   const id = useId()
   return <div data-facet-row className="grid min-h-11 items-center gap-x-2 text-[13px] text-text sm:min-h-8" style={{ gridTemplateColumns: `16px minmax(0,1fr)${hint ? ' auto' : ''} 48px` }}>
     <input id={id} type="checkbox" aria-label={label} className="h-4 w-4 cursor-pointer accent-accent" checked={on} onChange={onToggle} />
     <label htmlFor={id} className={`cursor-pointer break-words py-1 [overflow-wrap:anywhere] ${warn ? 'text-warn-text' : ''}`}>{label}</label>
-    {hint && <InfoTip text={hint} />}
+    {hint && (tipReady ? <FacetTip text={hint} /> : <span className="h-4 w-4" aria-hidden="true" />)}
     <label htmlFor={id} className="cursor-pointer text-right text-[12px] tabular-nums text-muted">{fmtNumber(count)}</label>
   </div>
-}
+})
 
 /** A rail group's values, at most 16 rows high; past that the group scrolls, with a
  *  fade and a hint at its foot until the last row is in view. */
@@ -130,9 +142,12 @@ export const RANGE_SETTLE_MS = 250
 /** A slider that shows each step at once but reports only the value it rests on,
  *  so a drag or a run of arrow keys reloads the list once. A value still pending
  *  when the sheet closes is reported then. */
-function SettledSlider({ value, onSettle, ...rest }: Omit<ComponentProps<typeof Slider>, 'onChange'> & { onSettle: (value: number) => void }) {
+function SettledSlider({ value, onSettle, resetKey, ...rest }: Omit<ComponentProps<typeof Slider>, 'onChange'> & { onSettle: (value: number) => void; resetKey?: number }) {
   const [draft, setDraft] = useState<number | null>(null)
   const pending = useRef<number | null>(null)
+  // The range was cleared (Clear all, its chip): a value still pending is dropped, not applied after.
+  const [seenReset, setSeenReset] = useState(resetKey)
+  if (seenReset !== resetKey) { setSeenReset(resetKey); pending.current = null; setDraft(null) }
   const settle = useRef(onSettle)
   settle.current = onSettle
   useEffect(() => {
@@ -144,9 +159,52 @@ function SettledSlider({ value, onSettle, ...rest }: Omit<ComponentProps<typeof 
   return <Slider {...rest} value={draft ?? value} onChange={next => { pending.current = next; setDraft(next) }} />
 }
 
+/** Rows a first render mounts at once: about what a phone screen shows. */
+export const FIRST_ROWS = 8
+// Rendering time a growing list may take per frame, leaving the rest of the
+// 16.7 ms frame for style, layout and paint.
+const FRAME_BUDGET_MS = 6
+// Whole-frame time a batch may take with its style, layout and paint.
+const FRAME_TOTAL_MS = 12
+
+/** For a list that mounts over several frames: how many items the next frame
+ *  may add, from what the last batch cost to render and commit. */
+export function useFrameBudget() {
+  const cost = useRef({ start: 0, added: 0, perItem: 1, floor: 0.05, firstAt: 0, firstAdded: 0, calibrated: false })
+  // Timed from this render, not from the frame callback: the render itself can
+  // run a task later, after the browser has painted that frame.
+  if (cost.current.added && !cost.current.start) cost.current.start = performance.now()
+  useLayoutEffect(() => {
+    const last = cost.current
+    if (!last.added) return
+    if (last.start) last.perItem = Math.max(last.floor, (performance.now() - last.start) / last.added)
+    last.added = 0
+    last.start = 0
+  })
+  // `frameTime` is the animation-frame timestamp. The first batch is also timed
+  // by the real gap to the next frame, which includes style, layout and paint,
+  // and the per-item cost is raised once to fit that. One check, not a loop.
+  return useCallback((frameTime: number) => {
+    const last = cost.current
+    if (last.firstAt && !last.calibrated) {
+      last.calibrated = true
+      // The whole gap, frame baseline included, so a busy device mounts less; at least two items a frame.
+      const perFrameItem = (frameTime - last.firstAt) / last.firstAdded
+      last.floor = Math.min(FRAME_BUDGET_MS / 2, Math.max(0.05, perFrameItem * FRAME_BUDGET_MS / FRAME_TOTAL_MS))
+      last.perItem = Math.max(last.perItem, last.floor)
+    }
+    const add = Math.max(1, Math.floor(FRAME_BUDGET_MS / last.perItem))
+    if (!last.firstAt) { last.firstAt = frameTime; last.firstAdded = add }
+    last.added = add
+    return add
+  }, [])
+}
+
 /** The filter groups with live counts from `facets=1`, and the confidence range.
  *  A box at the top narrows every group's values by label. */
-export function FilterPanel({ view, facets, decay, trailing, capped = false, bot, onToggle, onRange }: {
+/** Memoized: it renders again only when its view, counts or handlers change, and a
+ *  confidence change re-renders the sliders while the value groups below keep theirs. */
+export const FilterPanel = memo(function FilterPanel({ view, facets, decay, trailing, capped = false, bot, onToggle, onRange, rangeReset }: {
   view: ListView; facets?: MemoryRecordFacets
   /** The store's fade rates, drawn above the Strength values; a store that does not fade has none. */
   decay?: MemoryStoreDecay
@@ -157,16 +215,44 @@ export function FilterPanel({ view, facets, decay, trailing, capped = false, bot
   /** The wide rail: each group scrolls inside 16 rows. */
   capped?: boolean
   onToggle: (group: MemoryRecordFacetGroup, value: string) => void
+  /** Each Clear all or chip removal changes it, dropping a slider value still settling. */
+  rangeReset?: number
+  /** Clamps the bound to the other one as it is when applied (setConfidenceBound). */
   onRange: (bound: 'conf_min' | 'conf_max', value: number | undefined) => void
 }) {
+  useLanguageGeneration()
   const { t } = useTranslation()
   const [find, setFind] = useState('')
   const needle = find.trim().toLocaleLowerCase()
-  const groups = FACET_GROUPS.filter(group => view.kind === 'all' || GROUP_KINDS[group].includes(view.kind))
+  // One stable handler per value, calling the latest onToggle, so a recount
+  // leaves the memoized rows whose count did not change alone.
+  const toggleRef = useRef(onToggle)
+  useLayoutEffect(() => { toggleRef.current = onToggle })
+  const [handlers] = useState(() => new Map<string, () => void>())
+  const handler = useCallback((group: MemoryRecordFacetGroup, value: string) => {
+    const key = `${group}\u0000${value}`
+    let toggle = handlers.get(key)
+    if (!toggle) { toggle = () => toggleRef.current(group, value); handlers.set(key, toggle) }
+    return toggle
+  }, [handlers])
+  // The sheet mounts with no value rows, then a frame budget of them each frame
+  // from the next one, so opening it never lays out the values in its first frame.
+  const [budget, setBudget] = useState(capped ? Infinity : 0)
+  const nextBatch = useFrameBudget()
+  // New counts render at transition priority, between frames: most values'
+  // counts change on every filter change, and the ticks must not wait for them.
+  const counted = useDeferredValue(facets)
   const low = view.filters.conf_min ?? 0
   const high = view.filters.conf_max ?? 1
-  const shown = groups.map(group => {
-    const counts = facets?.[group] || {}
+  // Sorting every group's values is the panel's main cost; each frame that
+  // mounts more rows reuses it.
+  // The groups read the ticked values only, so a confidence change leaves them as they are.
+  const { kind } = view
+  const facetKey = JSON.stringify(Object.entries(view.filters).filter(([key]) => key !== 'conf_min' && key !== 'conf_max'))
+  const filters = useMemo(() => Object.fromEntries(JSON.parse(facetKey)) as MemoryRecordFilters, [facetKey])
+  const shown = useMemo(() => FACET_GROUPS.filter(group => kind === 'all' || GROUP_KINDS[group].includes(kind)).map(group => {
+    const view = { filters }
+    const counts = counted?.[group] || {}
     const ticked = view.filters[group] || []
     // A ticked value stays listed even when the other filters leave it no rows.
     const values = [...new Set([...Object.keys(counts).filter(value => counts[value] > 0), ...ticked])]
@@ -176,8 +262,27 @@ export function FilterPanel({ view, facets, decay, trailing, capped = false, bot
         ? (a, b) => STRENGTH_STATES.indexOf(a as never) - STRENGTH_STATES.indexOf(b as never)
         : (a, b) => Number(ticked.includes(b)) - Number(ticked.includes(a)) || (counts[b] || 0) - (counts[a] || 0) || compareText(a, b))
     return { group, counts, ticked, values }
-  }).filter(item => item.values.length)
-  return <div className="space-y-5">
+  }).filter(item => item.values.length), [counted, kind, filters, needle])
+  const rowCount = shown.reduce((sum, item) => sum + item.values.length, 0)
+  // The (?) tips mount once every row is in and has painted, not in the frames that lay the rows out.
+  const [tipsReady, setTipsReady] = useState(capped)
+  const allMounted = budget >= rowCount
+  useEffect(() => {
+    if (tipsReady || !allMounted) return
+    const frame = requestAnimationFrame(() => setTipsReady(true))
+    return () => cancelAnimationFrame(frame)
+  }, [tipsReady, allMounted])
+  useEffect(() => {
+    if (budget >= rowCount) return
+    const frame = requestAnimationFrame(time => { const add = nextBatch(time); setBudget(old => old + add) })
+    return () => cancelAnimationFrame(frame)
+  }, [budget, rowCount, nextBatch])
+  const mounted = useMemo(() => {
+    let left = budget
+    return shown.map(item => { const values = item.values.slice(0, Math.max(0, left)); left -= values.length; return { ...item, values } }).filter(item => item.values.length)
+  }, [shown, budget])
+  // Layout and style contained: rows mounting into the panel do not restyle the page around it.
+  return <div className="space-y-5 [contain:layout_style]">
     <div className="flex items-center">
       <div className="relative min-w-0 flex-1">
         <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
@@ -188,28 +293,38 @@ export function FilterPanel({ view, facets, decay, trailing, capped = false, bot
     {view.kind !== 'episode' && !needle && <section aria-label={t('memoryPage.facet_confidence')}>
       <PanelSectionHeader label={view.kind === 'all' ? t('memoryPage.for_facts_lessons', { group: t('memoryPage.facet_confidence') }) : t('memoryPage.facet_confidence')} />
       <div className="space-y-3 pt-1">
-        <SettledSlider label={t('memoryPage.conf_lowest')} showValue min={0} max={1} step={0.05} value={low} formatValue={fmtScore} onSettle={value => onRange('conf_min', value > 0 ? Math.min(value, high) : undefined)} />
-        <SettledSlider label={t('memoryPage.conf_highest')} showValue min={0} max={1} step={0.05} value={high} formatValue={fmtScore} onSettle={value => onRange('conf_max', value < 1 ? Math.max(value, low) : undefined)} />
+        <SettledSlider label={t('memoryPage.conf_lowest')} showValue min={0} max={1} step={0.05} value={low} formatValue={fmtScore} resetKey={rangeReset} onSettle={value => onRange('conf_min', value)} />
+        <SettledSlider label={t('memoryPage.conf_highest')} showValue min={0} max={1} step={0.05} value={high} formatValue={fmtScore} resetKey={rangeReset} onSettle={value => onRange('conf_max', value)} />
       </div>
     </section>}
     {needle && !shown.length && <p role="status" className="text-[13px] text-muted">{t('memoryV2.no_matches')}</p>}
-    {shown.map(({ group, counts, ticked, values }) => {
-      const heading = view.kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
-      return <section key={group} aria-label={heading}>
-        <PanelSectionHeader label={heading} />
-        {group === 'strength' && decay && <StoreFadeChart decay={decay} />}
-        <GroupScroll capped={capped}>
-          {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : group === 'strength' && STRENGTH_TIPS[value] ? t(STRENGTH_TIPS[value]) : undefined} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={() => onToggle(group, value)} />)}
-        </GroupScroll>
-      </section>
-    })}
+    <FacetGroups mounted={mounted} kind={kind} capped={capped} bot={bot} decay={decay} handler={handler} tipsReady={tipsReady} />
   </div>
-}
+})
+
+type MountedGroup = { group: MemoryRecordFacetGroup; counts: Record<string, number>; ticked: string[]; values: string[] }
+
+/** The value groups, apart from the sliders so a confidence change skips them. */
+const FacetGroups = memo(function FacetGroups({ mounted, kind, capped, bot, decay, handler, tipsReady }: { mounted: MountedGroup[]; kind: KindTab; capped: boolean; bot?: string; decay?: MemoryStoreDecay; handler: (group: MemoryRecordFacetGroup, value: string) => () => void; tipsReady: boolean }) {
+  useLanguageGeneration()
+  const { t } = useTranslation()
+  return <>{mounted.map(({ group, counts, ticked, values }) => {
+    const heading = kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
+    return <section key={group} aria-label={heading}>
+      <PanelSectionHeader label={heading} />
+      {group === 'strength' && decay && <StoreFadeChart decay={decay} />}
+      <GroupScroll capped={capped}>
+        {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : group === 'strength' && STRENGTH_TIPS[value] ? t(STRENGTH_TIPS[value]) : undefined} tipReady={tipsReady} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={handler(group, value)} />)}
+      </GroupScroll>
+    </section>
+  })}</>
+})
 
 /** One removable chip per ticked filter value, and Clear all. */
-export function ActiveFilters({ filters, range, rangeField, onClearRange, onToggle, onRange, onClear, onClearRefs }: { filters: MemoryRecordFilters; onClearRefs?: () => void; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void
+export const ActiveFilters = memo(function ActiveFilters({ filters, range, rangeField, onClearRange, onToggle, onRange, onClear, onClearRefs }: { filters: MemoryRecordFilters; onClearRefs?: () => void; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void
   /** The date range, and the time it filters on. */
   range?: DateRange; rangeField?: 'updated' | 'created'; onClearRange?: () => void }) {
+  useLanguageGeneration()
   const { t } = useTranslation()
   const chips = FACET_GROUPS.flatMap(group => (filters[group] || []).map(value => ({ key: `${group}:${value}`, label: facetLabel(group, value), remove: () => onToggle(group, value) })))
   // A graph selection is one chip: removing it brings the whole list back.
@@ -224,7 +339,7 @@ export function ActiveFilters({ filters, range, rangeField, onClearRange, onTogg
     </button>)}
     <Btn className="min-h-11 border-transparent sm:min-h-8" onClick={onClear}>{t('memoryPage.clear_all')}</Btn>
   </div>
-}
+})
 
 export function ScoreChip({ value, label }: { value: number; label: 'confidence' | 'importance' | 'match' }) {
   const { t } = useTranslation()
@@ -279,13 +394,22 @@ export function RecordMeta({ row, sort, chip, meaning = false, end }: { row: Mem
   </div>
 }
 
-/** One record in the list: text, chips, key, and its actions menu. */
-export function RecordRow({ row, sort, meaning = false, selecting, selected, selectDisabled, open, focus, saved = false, chip, onSelect, onOpen, onEdit, onForget, focusRef }: {
+/** The attributes a windowed list (react-virtuoso) sets on each item it lays out. */
+export type VirtualItemAttrs = { 'data-index'?: number; 'data-item-index'?: number; 'data-known-size'?: number; 'aria-setsize'?: number; 'aria-posinset'?: number }
+
+/** One record in the list: text, chips, key, and its actions menu. Memoized, and
+ *  each handler takes the row, so stable handlers let an unchanged row skip a render. */
+export const RecordRow = memo(function RecordRow({ row, sort, meaning = false, selecting, selected, selectDisabled, open, focus, saved = false, chip, onSelect: select, onOpen: openRow, onEdit: editRow, onForget: forgetRow, focusRef, ...item }: {
   row: MemoryRecord; sort: MemoryRecordSort; meaning?: boolean; selecting: boolean; selected: boolean; selectDisabled: boolean; open: boolean; focus?: boolean; saved?: boolean; chip?: ChipFilter
-  onSelect: () => void; onOpen: () => void; onEdit: () => void; onForget: () => void
+  onSelect: (row: MemoryRecord) => void; onOpen: (row: MemoryRecord) => void; onEdit: (row: MemoryRecord) => void; onForget: (row: MemoryRecord) => void
   focusRef?: React.Ref<HTMLLIElement>
-}) {
+} & VirtualItemAttrs) {
+  useLanguageGeneration()
   const { t } = useTranslation()
+  const onSelect = () => select(row)
+  const onOpen = () => openRow(row)
+  const onEdit = () => editRow(row)
+  const onForget = () => forgetRow(row)
   const body = memoryRecordBody(row)
   const title = recordTitle(row, body)
   const negative = row.kind === 'directive' ? lessonFacts(row).negative : undefined
@@ -304,7 +428,7 @@ export function RecordRow({ row, sort, meaning = false, selecting, selected, sel
   // 1 px border), so the saved and open tints follow the rounded corners. An
   // off-screen row is neither laid out nor painted (`content-visibility`), so a
   // list scrolled thousands of rows deep stays as quick as its first page.
-  return <li ref={focusRef} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b [contain-intrinsic-size:auto_112px] [content-visibility:auto] border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${focus ? ROW_SAVED : open || selected ? ROW_PICKED : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr)${phone ? '' : ' auto'}` }}>
+  return <li ref={focusRef} {...item} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b [contain:layout_style] [contain-intrinsic-size:auto_112px] [content-visibility:auto] border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${focus ? ROW_SAVED : open || selected ? ROW_PICKED : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr)${phone ? '' : ' auto'}` }}>
     {selecting && <span className="pt-1"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_record', { text: body })} checked={selected} disabled={selectDisabled} onChange={onSelect} /></span>}
     <div className="min-w-0 space-y-1.5">
         {focus && saved && <p data-testid="memory-just-saved" className="flex items-center gap-1 text-[12px] font-medium text-ok-text"><Check className="lucide-inline" aria-hidden="true" />{t('memoryPage.just_saved')}</p>}
@@ -319,7 +443,7 @@ export function RecordRow({ row, sort, meaning = false, selecting, selected, sel
     </div>
     {!phone && menu}
   </li>
-}
+})
 
 
 /** Words or Meaning: how the one search box reads what is typed in it. */

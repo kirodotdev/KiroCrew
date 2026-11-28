@@ -1,5 +1,6 @@
 /** The memory kind pills, shared by the Memories list and the Graph tab. */
-import { useEffect, type ReactNode } from 'react'
+import { memo, useEffect, type ReactNode } from 'react'
+import { useLanguageGeneration } from '../../../i18n/useLanguageGeneration'
 import { useTranslation } from 'react-i18next'
 import InfoTip from '../../../components/InfoTip'
 import { fmtNumber } from '../../../i18n/format'
@@ -11,10 +12,12 @@ const KINDS: [KindTab, string][] = [['all', 'memoryV2.filter_all'], ['fact', 'me
 // The picked kind pill: filled with the text colour on both themes (mock S2).
 export const PILL_ON = 'border-text bg-text font-medium text-bg'
 
-/** The kind pills, one row with live counts; a phone scrolls the row sideways, its clipped edges faded. */
-export function KindPills({ kind, counts, onChange, disabled, wrap = false, bot, marks }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean; wrap?: boolean; bot?: string
+/** The kind pills, one row with live counts; a phone scrolls the row sideways, its clipped edges faded.
+ *  Memoized: a new answer with the same kind counts leaves the row as it is. */
+export const KindPills = memo(function KindPills({ kind, counts, onChange, disabled, wrap = false, bot, marks }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean; wrap?: boolean; bot?: string
   /** A small mark per kind, the key to a view that draws kinds apart (the graph's shapes). */
   marks?: Partial<Record<KindTab, ReactNode>> }) {
+  useLanguageGeneration()
   const { t } = useTranslation()
   const total = counts ? (counts.fact || 0) + (counts.directive || 0) + (counts.episode || 0) : undefined
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLDivElement>()
@@ -35,4 +38,4 @@ export function KindPills({ kind, counts, onChange, disabled, wrap = false, bot,
       </span>
     })}
   </div>
-}
+})

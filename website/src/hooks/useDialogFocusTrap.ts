@@ -86,12 +86,17 @@ export interface DialogFocusTrapOptions {
   handleEscape?: boolean
   restoreFocus?: boolean
   returnFocusTo?: RefObject<HTMLElement | null>
+  /** Move focus in on the next animation frame instead of in the open commit,
+   *  so the tap that opens the dialog paints first (`focus()` forces style and
+   *  layout of the whole dialog). Focus still lands inside before the user can
+   *  act on it, unless they already moved it there themselves. Default false. */
+  deferFocus?: boolean
 }
 
 export function useDialogFocusTrap(
   containerRef: RefObject<HTMLElement | null>,
   onEscape: () => void,
-  { enabled = true, handleEscape = true, restoreFocus = true, returnFocusTo }: DialogFocusTrapOptions = {},
+  { enabled = true, handleEscape = true, restoreFocus = true, returnFocusTo, deferFocus = false }: DialogFocusTrapOptions = {},
 ): void {
   // Move focus into the dialog on open, restore it on close, so keyboard users
   // aren't dumped at the top of the document afterwards.
@@ -112,14 +117,21 @@ export function useDialogFocusTrap(
     const active = document.activeElement as HTMLElement | null
     const target = containerRef.current?.contains(active) ? opener : active
     const restoreTo = restoreFocus ? target : null
-    const first = Array.from(containerRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
-      .find((el) => el.tabIndex >= 0)
-    ;(first ?? containerRef.current)?.focus({ preventScroll: true })
+    const focusIn = () => {
+      if (deferFocus && containerRef.current?.contains(document.activeElement)) return
+      const first = Array.from(containerRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
+        .find((el) => el.tabIndex >= 0)
+      ;(first ?? containerRef.current)?.focus({ preventScroll: true })
+    }
+    const frame = deferFocus ? requestAnimationFrame(focusIn) : (focusIn(), 0)
     // Read once, when the dialog opens: the opener is set before the dialog
     // mounts and nothing changes it while the dialog is up.
     const named = returnFocusTo?.current
-    return () => { (named?.isConnected ? named : restoreTo)?.focus?.({ preventScroll: true }) }
-  }, [containerRef, restoreFocus, returnFocusTo, opener])
+    return () => {
+      if (frame) cancelAnimationFrame(frame)
+      ;(named?.isConnected ? named : restoreTo)?.focus?.({ preventScroll: true })
+    }
+  }, [containerRef, restoreFocus, returnFocusTo, opener, deferFocus])
 
   // IME guard for the Tab-cycles-focus path. This listener receives NATIVE
   // KeyboardEvents (window capture), which `useImeGuard`'s synthetic-only

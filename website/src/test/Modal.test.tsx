@@ -70,6 +70,27 @@ describe('Modal — dialog semantics', () => {
     expect(withBody.querySelector('.overflow-y-auto')).not.toBeNull()
   })
 
+  it('blurs the backdrop by default and drops the blur only for a dialog that opts out', async () => {
+    const blurred = renderWithProviders(<Modal open onClose={() => {}} title="Default"><p>body</p></Modal>)
+    await screen.findByRole('dialog')
+    expect(screen.getByTestId('modal-backdrop')).toHaveClass('backdrop-blur-md')
+    blurred.unmount()
+    renderWithProviders(<Modal open onClose={() => {}} title="Plain" backdropBlur={false}><p>body</p></Modal>)
+    await screen.findByRole('dialog')
+    expect(screen.getByTestId('modal-backdrop')).not.toHaveClass('backdrop-blur-md')
+  })
+
+  it('moves focus in on open by default, and a frame later when the dialog defers it', async () => {
+    const plain = renderWithProviders(<Modal open onClose={() => {}} title="Now"><button>Inside now</button></Modal>)
+    const now = await screen.findByRole('dialog')
+    expect(now.contains(document.activeElement)).toBe(true)
+    plain.unmount()
+    renderWithProviders(<Modal open deferInitialFocus onClose={() => {}} title="Later"><button>Inside later</button></Modal>)
+    const later = await screen.findByRole('dialog')
+    // Still lands inside for keyboard and screen-reader users, after the opening frame.
+    await waitFor(() => expect(later.contains(document.activeElement)).toBe(true))
+  })
+
   it('names the dialog from its own title, with no per-call-site opt-in', async () => {
     renderWithProviders(<Harness />)
     await openDialog()

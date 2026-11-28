@@ -114,7 +114,8 @@ describe('the filter sheet', () => {
     renderWithProviders(<List />)
     fireEvent.click(await screen.findByRole('button', { name: 'Filters' }))
     const sheet = await screen.findByRole('dialog', { name: 'Filters' })
-    const find = within(sheet).getByRole('searchbox', { name: 'Search filters' })
+    // The sheet's body renders a frame after its shell.
+    const find = await within(sheet).findByRole('searchbox', { name: 'Search filters' })
     fireEvent.change(find, { target: { value: 'SRC' } })
     await waitFor(() => expect(within(sheet).getByRole('checkbox', { name: 'src/kiro_crew' })).toBeVisible())
     expect(within(sheet).getByRole('checkbox', { name: 'website/src/pages' })).toBeVisible()
@@ -410,12 +411,13 @@ describe('server pages as the list scrolls', () => {
     globalThis.IntersectionObserver = class { constructor(callback: IntersectionObserverCallback) { watched.push(callback) } observe() {} disconnect() {} unobserve() {} takeRecords() { return [] } } as unknown as typeof IntersectionObserver
     try {
       renderWithProviders(<List />)
-      await screen.findByText('Rule 49')
+      await screen.findByText('Rule 49', {}, { timeout: 5000 })
       const pageCalls = () => api.memoryRecords.mock.calls.filter(call => call[3] === 50)
       expect(pageCalls().map(call => call[2])).toEqual([0])
       // The end of the list scrolls near: the next page loads under the first.
       act(() => watched.at(-1)!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver))
-      await screen.findByText('Rule 69')
+      // The next page's rows mount a few per frame.
+      await screen.findByText('Rule 69', {}, { timeout: 5000 })
       expect(screen.getByText('Rule 0')).toBeInTheDocument()
       expect(pageCalls().map(call => call[2])).toEqual([0, 50])
       expect(screen.getByText('1–70 of 70')).toBeInTheDocument()
