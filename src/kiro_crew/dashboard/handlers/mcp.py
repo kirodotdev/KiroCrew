@@ -1293,6 +1293,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.mcp_gateway_stubs import (  # noqa: F401
         _MAX_STUB_BATCH,
+        _apply_deferred_stubs,
         _grant_trust_from_row,
         _launch_already_approved,
         _record_stub_decisions,

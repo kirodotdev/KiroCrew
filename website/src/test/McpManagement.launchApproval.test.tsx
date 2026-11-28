@@ -80,6 +80,8 @@ function mount() {
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  // The one apply the Review dialog sends when it closes.
+  vi.spyOn(api, 'mcpGatewayApplyStubs').mockResolvedValue({ ok: true, applied: true, restart_required: false })
   // The hero's memory read: answered with no figures unless a test says otherwise.
   vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue({ using_now_bytes: null, with_sharing_bytes: null, open_chats: 0, stale_chats: [] } as never)
   answerBatchPreviewsPerName()
@@ -231,7 +233,7 @@ describe('a refused launch', () => {
     fireEvent.click(await screen.findByRole('button', { name: M('review_approve') }, { timeout: 5000 }))
     const review = await screen.findByRole('dialog', undefined, { timeout: 5000 })
     fireEvent.click(within(review).getByRole('button', { name: M('approve_button') }))
-    await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'a:b'), { timeout: 5000 })
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'a:b', false, undefined, false, true), { timeout: 5000 })
     // Approving only clears the refusal; sharing itself is still off, so the
     // same turn-on confirm the table's share action opens must follow.
     expect(await screen.findByRole('button', { name: M('confirm_turn_on') }, { timeout: 5000 })).toBeTruthy()

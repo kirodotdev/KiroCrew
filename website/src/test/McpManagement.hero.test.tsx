@@ -65,8 +65,9 @@ const footprint = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
-function mount() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+
+function mount(qc = newClient()) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
@@ -90,6 +91,8 @@ const findSharing = () => screen.findByRole('switch', { name: M('share_switch_la
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  // The one apply the Review dialog sends when it closes.
+  vi.spyOn(api, 'mcpGatewayApplyStubs').mockResolvedValue({ ok: true, applied: true, restart_required: false })
   // The hero's memory read: answered with no figures unless a test says otherwise.
   vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue({ using_now_bytes: null, with_sharing_bytes: null, open_chats: 0, stale_chats: [] } as never)
   answerBatchPreviewsPerName()
@@ -447,7 +450,7 @@ describe('the Review dialog', () => {
     mount()
     const { button, dialog } = await openDialog()
     fireEvent.click(within(block(dialog, 'search-mcp')).getByRole('button', { name: M('approve_button') }))
-    await waitFor(() => expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown'), { timeout: 5000 })
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown', false, undefined, false, true), { timeout: 5000 })
     const outcome = await within(block(dialog, 'search-mcp')).findByRole('status', undefined, { timeout: 5000 })
     expect(outcome.textContent).toBe(M('review_approved'))
     // The status read is invalidated, so the card shrinks to what still waits,
@@ -491,11 +494,11 @@ describe('the Review dialog', () => {
     fireEvent.click(box)
     fireEvent.click(within(search).getByRole('button', { name: M('approve_button') }))
     await waitFor(
-      () => expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown', false, undefined, true),
+      () => expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown', false, undefined, true, true),
       { timeout: 5000 },
     )
     fireEvent.click(within(block(dialog, 'tickets-mcp')).getByRole('button', { name: M('approve_button') }))
-    await waitFor(() => expect(setStub).toHaveBeenCalledWith('tickets-mcp', true, 'tickets-shown'), { timeout: 5000 })
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('tickets-mcp', true, 'tickets-shown', false, undefined, false, true), { timeout: 5000 })
   })
 
   it('opens the "Always trust changes" tip above the checkbox, off the buttons below it', async () => {
@@ -541,7 +544,11 @@ describe('the Review dialog', () => {
     expect(await within(search).findByRole('alert', undefined, { timeout: 5000 })).toBeTruthy()
     expect(within(search).getByRole('alert').textContent).toContain(M('stub_error_launch_changed', { name: 'search-mcp' }))
     expect(setStub).toHaveBeenCalledTimes(1)
-    expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown')
+    expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown', false, undefined, false, true)
+    // Nothing landed, so closing the dialog applies nothing.
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), { timeout: 5000 })
+    expect(api.mcpGatewayApplyStubs).not.toHaveBeenCalled()
     // Still open and still pending: nothing was approved.
     expect(within(search).queryByRole('status')).toBeNull()
     expect(within(search).getByRole('button', { name: M('approve_button') })).toBeTruthy()
@@ -664,6 +671,95 @@ describe('the Review dialog', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), { timeout: 5000 })
     await waitFor(() => expect(screen.queryByRole('button', { name: M('review_approve') })).toBeNull(), { timeout: 5000 })
     void ctl
+  })
+
+  it('defers each approval and applies them all once, when the dialog closes', async () => {
+    const ctl = mockTwo()
+    const order: string[] = []
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockImplementation((async (name: string) => {
+      order.push(`approve:${name}`)
+      ctl.drop(name)
+      return { ok: true, name, stub: true, applied: false, restart_required: false, apply_deferred: true }
+    }) as never)
+    const apply = vi.mocked(api.mcpGatewayApplyStubs).mockImplementation(async () => {
+      order.push('apply')
+      return { ok: true, applied: true, restart_required: true }
+    })
+    mount()
+    const { dialog } = await openDialog()
+    fireEvent.click(within(block(dialog, 'search-mcp')).getByRole('button', { name: M('approve_button') }))
+    await waitFor(() => expect(within(block(dialog, 'search-mcp')).getByRole('status').textContent).toBe(M('review_approved')), { timeout: 5000 })
+    // One block still waits, so nothing is applied yet.
+    expect(apply).not.toHaveBeenCalled()
+    fireEvent.click(within(block(dialog, 'tickets-mcp')).getByRole('button', { name: M('approve_button') }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), { timeout: 5000 })
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1), { timeout: 5000 })
+    expect(order).toEqual(['approve:search-mcp', 'approve:tickets-mcp', 'apply'])
+    expect(setStub.mock.calls.every(call => call[6] === true)).toBe(true)
+    // The apply's own answer is what the page reports.
+    expect(await screen.findByText(M('stub_restart_required'), undefined, { timeout: 5000 })).toBeTruthy()
+  })
+
+  it('holds the apply for a working-folder answer asked from the dialog, then applies both once', async () => {
+    let refused: Record<string, unknown> = { 'search-mcp': changedSearch, 'tickets-mcp': newTickets }
+    vi.spyOn(api, 'mcpGatewayStatus').mockImplementation((async () =>
+      status({ enabled: true, stub: ['search-mcp', 'tickets-mcp'], launch_refused: refused })) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        server({ name: 'search-mcp', stub: true, in_allowlist: true }),
+        // Not answered yet: its approval asks the working-folder question first.
+        server({ name: 'tickets-mcp', stub: true, in_allowlist: true, cwd_use: null }),
+      ],
+    } as never)
+    const order: string[] = []
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockImplementation((async (name: string) => {
+      order.push(`approve:${name}`)
+      const { [name]: _gone, ...rest } = refused
+      void _gone
+      refused = rest
+      return { ok: true, name, stub: true, applied: false, restart_required: false, apply_deferred: true }
+    }) as never)
+    const apply = vi.mocked(api.mcpGatewayApplyStubs).mockImplementation(async () => {
+      order.push('apply')
+      return { ok: true, applied: true, restart_required: false }
+    })
+    mount()
+    const { dialog } = await openDialog()
+    fireEvent.click(within(block(dialog, 'search-mcp')).getByRole('button', { name: M('approve_button') }))
+    await waitFor(() => expect(within(block(dialog, 'search-mcp')).getByRole('status').textContent).toBe(M('review_approved')), { timeout: 5000 })
+    fireEvent.click(within(block(dialog, 'tickets-mcp')).getByRole('button', { name: M('approve_button') }))
+    fireEvent.click(await screen.findByRole('button', { name: M('cwd_question_share') }, { timeout: 5000 }))
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1), { timeout: 5000 })
+    expect(order).toEqual(['approve:search-mcp', 'approve:tickets-mcp', 'apply'])
+    expect(setStub).toHaveBeenLastCalledWith('tickets-mcp', true, 'tickets-shown', false, 'not_used', false, true)
+  })
+
+  it.each([
+    ['a restart it needs', async () => ({ ok: true, applied: false, restart_required: true }), 'stub_restart_required'],
+    ['a failure', async () => { throw new ApiError(500, 'apply failed', '{"code":"mcp_apply_failed"}') }, 'stub_not_live'],
+  ])('still applies when the page is left with the dialog open, and says %s on the next visit', async (_case, answer, said) => {
+    const ctl = mockTwo()
+    vi.spyOn(api, 'mcpGatewaySetStub').mockImplementation((async (name: string) => {
+      ctl.drop(name)
+      return { ok: true, name, stub: true, applied: false, restart_required: false, apply_deferred: true }
+    }) as never)
+    let settle = () => {}
+    const gate = new Promise<void>(resolve => { settle = resolve })
+    const apply = vi.mocked(api.mcpGatewayApplyStubs).mockImplementation((async () => {
+      await gate
+      return answer()
+    }) as never)
+    const qc = newClient()
+    const first = mount(qc)
+    const { dialog } = await openDialog()
+    fireEvent.click(within(block(dialog, 'search-mcp')).getByRole('button', { name: M('approve_button') }))
+    await waitFor(() => expect(within(block(dialog, 'search-mcp')).getByRole('status').textContent).toBe(M('review_approved')), { timeout: 5000 })
+    first.unmount()
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1), { timeout: 5000 })
+    settle()
+    await waitFor(() => expect(qc.isMutating()).toBe(0), { timeout: 5000 })
+    mount(qc)
+    expect(await screen.findByText(M(said), undefined, { timeout: 5000 })).toBeTruthy()
   })
 })
 

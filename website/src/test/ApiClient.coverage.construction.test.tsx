@@ -565,6 +565,10 @@ describe('request bodies with conditionally-omitted keys', () => {
     expect(call(1).body).toEqual({ name: 'fs', stub: true, expected_launch: 'command-hash:env-hash' })
     await api.mcpGatewaySetStubMany(['fs', 'git'], false)
     expect(call(2).body).toEqual({ names: ['fs', 'git'], stub: false })
+    await api.mcpGatewaySetStub('fs', true, 'command-hash:env-hash', false, undefined, false, true)
+    expect(call(3).body).toEqual({ name: 'fs', stub: true, expected_launch: 'command-hash:env-hash', defer_apply: true })
+    await api.mcpGatewayApplyStubs()
+    expect(call(4).body).toEqual({ apply: true })
   })
 
   it('createTagColumn/updateTagColumn pass the filter mode straight through', async () => {

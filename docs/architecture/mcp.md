@@ -2092,6 +2092,19 @@ reports `sessions_reset`. This applies even when an `mcp.server` card leaves
 refreshes defaults; the card's checked option resets open chats so they pick up
 the new toolset.
 
+The Review dialog batches that apply. Each **Share across chats** in it is still
+its own approval, pinned to the launch its block shows, but sent with
+`defer_apply: true`: the approval and the config write land, the broker is left
+alone, and the answer carries `apply_deferred: true`. An approval that asks the
+working-folder question first is deferred the same way once answered. When the
+dialog is done (every block handled, dismissed, the folder question answered, or
+the page left) it sends `{"apply": true}` alone to the same route, once, after the
+approvals still in flight, and only if one of them landed. Its outcome (restart
+needed, or not live) is kept in the query cache, so a page left before it answers
+shows it on the next visit. That request writes nothing and runs `_apply_mcp_stub(launch_approved=True)`
+under `_MCP_GATEWAY_APPLY_LOCK`, so N approvals cost one broker restart and one
+round of chat resets.
+
 `response_spill_threshold_bytes` is read in the BROKER process
 (`gatewayd`), which runs no config watcher — `config.live.snapshot()` is always
 `None` there — so a per-use read of the live snapshot would be inert and the

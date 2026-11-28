@@ -321,6 +321,43 @@ async def api_mcp_gateway_server_launches(request: web.Request) -> web.Response:
     return web.json_response({"launches": previews, "errors": errors})
 
 
+async def _apply_deferred_stubs(request: web.Request) -> web.Response:
+    """Run, once, the apply that ``defer_apply`` approvals skipped.
+
+    Writes nothing: every approval it covers was already recorded by its own
+    request. Under ``_MCP_GATEWAY_APPLY_LOCK``, so it queues behind an approval
+    still in flight and the restart it runs sees that approval too.
+    """
+    state: DashboardState = request.app["state"]
+    apply = getattr(state, "_mcp_gateway_apply_stub", None)
+    async with _MCP_GATEWAY_APPLY_LOCK:
+        if apply is None:
+            applied: dict[str, Any] = {"applied": False, "restart_required": True}
+        else:
+            try:
+                # The approvals replaced launches, so an unchanged set still restarts.
+                applied = await apply(launch_approved=True)
+            except Exception as exc:
+                sel().log_api_access(
+                    caller=request.get("user", "dashboard"),
+                    operation="mcp_gateway_set_stub",
+                    outcome="error",
+                    source="dashboard",
+                    resources=f"apply_deferred error={exc}",
+                )
+                return web.json_response(
+                    {"error": "apply failed", "code": "mcp_apply_failed"}, status=500
+                )
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="mcp_gateway_set_stub",
+        outcome="ok",
+        source="dashboard",
+        resources="apply_deferred",
+    )
+    return web.json_response({"ok": True, **applied})
+
+
 def _trust_refusal(request: web.Request, name: str, code: str, error: str) -> web.Response:
     sel().log_api_access(
         caller=request.get("user", "dashboard"),
@@ -444,6 +481,12 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     ``expected_entry`` optionally constrains an approval to the command, args and
     env shown on an ``mcp.server`` card. The card middleware binds this field to
     its plan; ``expected_launch`` still independently checks freshness.
+
+    ``defer_apply: true`` (single form, ``stub: true``) records the approval and
+    skips the broker restart and chat reset, answering ``apply_deferred``. A
+    later ``{"apply": true}``, sent alone, runs that apply once for every
+    approval deferred before it, so a dialog approving N servers restarts the
+    broker once instead of N times.
     """
     # Body-scope import, like the sibling gates in this package
     # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
@@ -480,6 +523,13 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    if "apply" in body:
+        if body.get("apply") is not True or set(body) != {"apply"}:
+            return web.json_response(
+                {"error": "apply must be true and sent alone", "code": "apply_invalid"},
+                status=400,
+            )
+        return await _apply_deferred_stubs(request)
     raw_name = body.get("name", "")
     name = str(raw_name).strip()
     # Saved as before (back-compat), but a non-string name is logged: ``null`` or
@@ -602,6 +652,16 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             {
                 "error": "resolve_eligibility must be a boolean",
                 "code": "resolve_eligibility_not_bool",
+            },
+            status=400,
+        )
+
+    defer_apply = body.get("defer_apply", False)
+    if not isinstance(defer_apply, bool) or (defer_apply and (batch or stub is not True)):
+        return web.json_response(
+            {
+                "error": "defer_apply is only valid as a boolean for one stub approval",
+                "code": "defer_apply_invalid",
             },
             status=400,
         )
@@ -1181,6 +1241,9 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             # Only the working-folder answer was written and it routes nothing
             # differently, so the broker is left alone.
             applied = {"applied": True, "restart_required": False}
+        elif defer_apply and not nothing_written:
+            # Recorded now, applied by the caller's later ``{"apply": true}``.
+            applied = {"applied": False, "restart_required": False, "apply_deferred": True}
         elif apply is not None and not nothing_written:
             try:
                 # An answer that adds a routed name restarts the broker even when
