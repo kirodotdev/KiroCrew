@@ -10,6 +10,7 @@ the first one's. ``local_review.py`` reads a review's base-side files through on
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -266,24 +267,22 @@ BLOBS: dict[str, bytes] = {
     "lone-cr.md": b"one\rtwo\r",
     "not-utf8.md": b"caf\xe9 \xff\xfe\n",
     "bom.md": b"\xef\xbb\xbfone\n",
-    "nul.bin": b"a\x00b\n",
+    "zero-byte.bin": b"a\x00b\n",
     "big.md": b"0123456789abcdef" * 20000,
     "with space.md": b"space\n",
     "dir/inner.md": b"inner\n",
     "café.md": b"name\n",
+    "it's.md": b"apostrophe\n",
 }
-# Names git accepts in a tree and a Windows file system does not; the tree is built in the
-# index, so they are only left out where git itself refuses them.
+#: Names a Windows path cannot hold; they are in the tree on every other platform.
+NAMES_NO_WINDOWS_PATH_CAN_HOLD: dict[str, bytes] = {
+    'quo"te.md': b"quote\n",
+    "line\nbreak.md": b"newline in the name\n",
+    "st*r.md": b"glob in the name\n",
+    "back\\slash.md": b"backslash in the name\n",
+}
 if sys.platform != "win32":
-    BLOBS.update(
-        {
-            'quo"te.md': b"quote\n",
-            "it's.md": b"apostrophe\n",
-            "line\nbreak.md": b"newline in the name\n",
-            "st*r.md": b"glob in the name\n",
-            "back\\slash.md": b"backslash in the name\n",
-        }
-    )
+    BLOBS.update(NAMES_NO_WINDOWS_PATH_CAN_HOLD)
 #: What ``git show`` has to answer itself: its exit status and words are git's own.
 NOT_FROM_THE_BATCH = {"dir", "gone.md", "module", "line\nbreak.md", "st*r.md", "back\\slash.md"}
 
@@ -356,21 +355,94 @@ def test_every_base_file_reads_as_git_show_reads_it(base_repo: tuple[Path, str])
     assert len(reads.shows) == 2 * len(set(reads.shows))
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="a file name cannot hold ':' on Windows")
 def test_a_work_tree_file_named_like_the_object_is_left_to_git_show(
-    base_repo: tuple[Path, str], tmp_path: Path
+    base_repo: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``git show`` refuses a name that is both a revision and a file; so does the reader."""
     template, sha = base_repo
     repo = Path(shutil.copytree(template, tmp_path / "repo"))
-    (repo / "{}:plain.md".format(sha)).write_text("in the work tree\n", encoding="utf-8")
+    named_like_the_object = str(repo / "{}:plain.md".format(sha))
+    a_path_can_hold_a_colon = sys.platform != "win32"
+    if a_path_can_hold_a_colon:
+        Path(named_like_the_object).write_text("in the work tree\n", encoding="utf-8")
+    else:
+        # No such file can be made on Windows, so the reader is told there is one.
+        exists = os.path.lexists
+        monkeypatch.setattr(
+            local_review._base_files.os.path,
+            "lexists",
+            lambda path: os.fspath(path) == named_like_the_object or exists(path),
+        )
     reads = _Reads(repo)
     with reads.reader as reader:
         answer = reader.show(sha, "plain.md")
         assert reader.show(sha, "empty.md") == (0, "", "")
-    assert answer == _git_show(repo, sha, "plain.md")
-    assert answer[0] != 0 and "ambiguous" in answer[2]
+    # The reader did not answer it from the batch; what comes back is what git show says.
     assert reads.shows == ["plain.md"]
+    assert answer == _git_show(repo, sha, "plain.md")
+    if a_path_can_hold_a_colon:
+        assert answer[0] != 0 and "ambiguous" in answer[2]
+
+
+class _ScriptedBatch:
+    """Stands in for the batch process: answers, in order, with the lines it was given."""
+
+    def __init__(self, answers: bytes) -> None:
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO(answers)
+        self.waited = 0
+
+    def wait(self) -> int:
+        self.waited += 1
+        return 0
+
+
+def test_a_name_that_is_not_an_object_keeps_the_batch_and_an_unknown_answer_ends_it(
+    tmp_path: Path,
+) -> None:
+    """The one-line answers git documents leave the process in step; any other line ends it.
+
+    ``<id> submodule`` is what a newer git prints for a submodule entry whose commit is not
+    in the repository; an older git prints ``<name> missing`` for the same entry.
+    """
+    sha = "a" * 40
+    shown: list[str] = []
+
+    def run(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
+        shown.append(args[2].partition(":")[2])
+        return 128, "", "git show said so"
+
+    def name(path: str) -> bytes:
+        return "{}:{}".format(sha, path).encode()
+
+    batch = _ScriptedBatch(
+        name("gone.md")
+        + b" missing\n"
+        + name("short")
+        + b" ambiguous\n"
+        + b"1" * 40
+        + b" submodule\n"
+        + b"2" * 40
+        + b" blob 3\nhi\n\n"
+        + b"some other line\n"
+        + b"3" * 40
+        + b" blob 3\nno\n\n"
+    )
+    reader = local_review._base_files.BaseFiles(run, lambda args: (args, None), str(tmp_path))
+    reader._process = batch
+    for path in ("gone.md", "short", "module"):
+        assert reader.show(sha, path) == (128, "", "git show said so"), path
+    assert shown == ["gone.md", "short", "module"]
+    # Still the same process, and still in step: the next answer is the next name's.
+    assert batch.waited == 0
+    assert reader.show(sha, "plain.md") == (0, "hi\n", "")
+    assert shown == ["gone.md", "short", "module"]
+    # A line this reader does not know ends the batch; later reads are git show's.
+    assert reader.show(sha, "odd.md") == (128, "", "git show said so")
+    assert batch.waited == 1
+    assert reader.show(sha, "after.md") == (128, "", "git show said so")
+    assert shown == ["gone.md", "short", "module", "odd.md", "after.md"]
+    assert batch.stdin.closed and batch.stdout.closed
 
 
 def test_a_reader_that_is_closed_or_has_no_repository_still_answers_as_git_show(
