@@ -57,7 +57,9 @@ function addSticky() {
   fireEvent.click(screen.getByTestId('tool-sticky'))
   fireEvent.pointerDown(screen.getByTestId('canvas-editor'), { clientX: 400, clientY: 400, button: 0, pointerId: 1 })
   fireEvent.pointerUp(window, { clientX: 400, clientY: 400, button: 0, pointerId: 1 })
-  act(() => { (screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement).blur() })
+  const editor = screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement
+  fireEvent.change(editor, { target: { value: 'Note' } })
+  act(() => { editor.blur() })
 }
 
 beforeEach(() => {
