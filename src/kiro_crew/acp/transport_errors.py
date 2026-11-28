@@ -70,6 +70,7 @@ from kiro_crew.acp.runtime_models import (
 from kiro_crew.acp.structured_error_data import (
     OVERSIZE_REPLY_DATA,
     _error_kind_from_frame,
+    frame_is_unknown_session,
     provider_data_text,
     structured_data_prose,
 )
@@ -229,6 +230,10 @@ class AcpError(Exception):
         # ``llm_helpers.acp_error_is_session_not_found`` routes it down the
         # reset-and-reload-once path a dropped session takes.
         self.credential_reload: bool = False
+        # Set from the raw frame when the backend holds no session under the id it
+        # was asked for (``structured_error_data.frame_is_unknown_session``); the
+        # same reset-and-reload-once path as a "Session not found" answer.
+        self.session_unknown: bool = False
         # The AWS exception name of a credential rejection (``ExpiredTokenException``),
         # set by :func:`_raise_acp_error` from the raw frame, so a caller compares a code.
         self.auth_error_code: str = ""
@@ -1934,4 +1939,5 @@ def _raise_acp_error(
     if _error_kind_from_frame(error) == "cloud_credential_error":
         err.credential_reload = True
         err.transient = False
+    err.session_unknown = frame_is_unknown_session(error)
     raise err
