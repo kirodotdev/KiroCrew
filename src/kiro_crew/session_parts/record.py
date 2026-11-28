@@ -125,6 +125,11 @@ class _Session:
     # The release that ends a recorded holding clears it in the same step, so it
     # never names a task that has let the permit go.
     turn_owner: Any = None
+    # The task registering this brand-new session, until that task takes the
+    # turn permit above. The allocation awaits between registering the session
+    # and that take, and ``try_acquire`` refuses the permit while this task runs:
+    # the session belongs to the turn starting it, not to whoever asks first.
+    registering_task: Any = None
     # Set by the allocation layer when a claim or registration adopted entries a
     # forced stop parked (``session_lifecycle.adopt_parked_queue``); ``release``
     # reads and clears it to wake those entries' channel drains once the lease

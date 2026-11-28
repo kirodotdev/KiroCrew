@@ -864,7 +864,7 @@ kept, unless the `agent.harness_sandbox` floor of the backend the provider facto
 for that session raises its tier (a floored harness starts sandboxed, so the cwd is judged masked);
 it is kept on native Windows, where a Kiro spawn is delegated to Kiro's own
 sandbox and no scratch-root mask is applied
-(`session_allocation_parts/get_or_create._stored_cwd_is_hidden_scratch`). A scratch
+(`session_allocation_parts/resume_cwd._stored_cwd_is_hidden_scratch`). A scratch
 cwd that no longer exists (the scratch sweep removed or quarantined its tree) is
 dropped as above on every platform, sandbox on or off, with the same notice. The
 cwd may name a different project than the one the capabilities were saved in
@@ -2282,7 +2282,12 @@ against sweep completeness, and are torn down at `close_all`.
   brand-new session the caller just created and registered (no recycle window);
   and `try_acquire` (a non-blocking, no-`await`-suspension atomic take used by
   out-of-band `/compact`, which returns `False` on contention rather than
-  waiting, so it has no stale-while-waiting window).
+  waiting, so it has no stale-while-waiting window). Both creation paths await
+  between registering a brand-new session and taking its permit (the scratch
+  index, the start record), so the record carries `registering_task` until that
+  take, and `try_acquire` returns `False` while that task runs: the session is
+  the starting turn's, and a channel command or a live dashboard config push
+  that took the free permit there would act on it before that turn does.
 - **Agent-model resolution cache** (`_resolve_agent_model`, class-level
   `_agent_model_cache`): the per-agent model pin resolved from agent JSON is
   cached but invalidated on BOTH the agents-dir mtime changing (a new agent

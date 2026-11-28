@@ -353,12 +353,14 @@ from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _CommitToken,
     _record_explicit_agent_selection,
+    _replay_gap_open,
     _reset_slot_session_or_warn,
     _send_writes_persona,
     _slot_replaced_while_queued,
     _subagents_attached_detail,
     _subagents_attached_response,
     _switch_target_busy,
+    _take_turn_lease,
 )
 from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _RESOURCE_SUBSCRIPTION_RETIRE_SECS,

@@ -40,6 +40,8 @@ def _mock_state(slot: _ChatSlot | None = None, provider: object = None) -> Dashb
     # No live AcpProvider by default → handler falls back to session reset
     # (matches prior behaviour for the "no session yet" path).
     state.sessions.get_provider = MagicMock(return_value=provider)
+    # A free turn lease, which the live effort push takes without waiting.
+    state.sessions.try_acquire = AsyncMock(return_value=True)
     if isinstance(provider, MagicMock):
         # A spec double answers every method with a mock; these sessions advertise
         # no ultracode or Fast mode switch.

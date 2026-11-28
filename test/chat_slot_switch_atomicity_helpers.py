@@ -61,4 +61,6 @@ def _mock_state(slot: _ChatSlot, provider: object = None) -> DashboardState:
     # Not a channel-resumed session by default, so a mid-turn pick on a pure
     # dashboard key defers; a bare MagicMock would answer truthy and 409.
     state.sessions.mirror_accepts_inbound = MagicMock(return_value=False)
+    # A free turn lease, which a live effort or model push takes without waiting.
+    state.sessions.try_acquire = AsyncMock(return_value=True)
     return state

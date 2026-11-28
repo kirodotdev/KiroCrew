@@ -505,7 +505,8 @@ async def apply_deferred_model_switch(
     available — no ACP provider, an unrepresentable target, a failed call, or a
     model the account cannot run, where the cold start's withheld-pin handling
     is the surface that tells the user. A session still busy — another alias
-    mid-turn, or a picker transaction holding ``_model_pick_lock`` — keeps the
+    mid-turn, a picker transaction holding ``_model_pick_lock``, or a channel
+    turn holding the session's turn lease — keeps the
     pick deferred for a later boundary; the committed ``slot.model`` is what
     any cold start reads meanwhile, so a restart loses nothing.
 
@@ -538,8 +539,10 @@ async def apply_deferred_model_switch(
     # circular import: chat_handlers imports this module at module level.
     from kiro_crew.dashboard.chat_handlers import (
         AcpModelUnavailable,
+        AcpProvider,
         _broadcast_context_reset,
         _sync_served_model,
+        _take_turn_lease,
         _try_live_model_switch,
         subagents_attached_async,
     )
@@ -589,6 +592,21 @@ async def apply_deferred_model_switch(
         key = slot._deferred_model_switch_key
         model = slot.model or "auto"
         provider = state.sessions.get_provider(session_key)
+        # The live switch holds the session's turn lease until its reply is in
+        # (_take_turn_lease). Neither dashboard boundary holds it (the tail runs
+        # after its turn released it, the admission before its turn takes it), so
+        # a channel turn may hold it now: the pick then waits, and that turn's
+        # release lands it. A channel-turn landing holds the lease itself.
+        lease_key: str | None = None
+        if isinstance(provider, AcpProvider) and not landing_holds_lease(
+            state.sessions._fold_key(session_key)
+        ):
+            lease_key = await _take_turn_lease(state, session_key)
+            if lease_key is None:
+                logger.info(
+                    "Slot %s deferred model switch waits: a turn holds the session", slot.key
+                )
+                return False
         try:
             # The pick as committed, not ``model``: on KAS ``""`` (Inherited) is no
             # Auto pick and lands by the reset, as the idle pick does.
@@ -610,6 +628,9 @@ async def apply_deferred_model_switch(
                 model,
                 exc_info=True,
             )
+        finally:
+            if lease_key is not None:
+                state.sessions.release(lease_key, wake_queue=True)
     if went_live:
         # The tab can rebind to a different session WHILE the set_model RPC
         # above awaits: a cron tab links to its live runtime through
