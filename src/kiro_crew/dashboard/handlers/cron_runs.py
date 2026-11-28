@@ -242,8 +242,14 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 # The tab's own turn time limit is unread for the same reason:
                 # its saves carry the on-disk value until the read below lands.
                 mark_turn_timeout_unread(state, slot)
-                # So is its chips-off switch.
+                # So is its chips-off switch, and its tracked-changes list.
+                from kiro_crew.dashboard.tracked_changes import (
+                    apply_tracked_changes_if_unread,
+                    mark_tracked_changes_unread,
+                )
+
                 _mark_source_links_off_unread(slot)
+                mark_tracked_changes_unread(slot)
                 # The folder the closed tab was filed in, set before the read below
                 # so a flush during it keeps it; dropped when gone or refusing the store.
                 store = str(getattr(slot, "memory_store", "") or "")
@@ -266,6 +272,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                         if slot.linked_session_key == session_key:
                             apply_cron_turn_timeout(slot, _meta)
                             apply_cron_source_links_off(slot, _meta)
+                            apply_tracked_changes_if_unread(slot, _meta)
         else:
             # No session log — fall back to notification body.
             notif = next(

@@ -284,6 +284,11 @@ async def _keep_cleared_turns(turn: _ChatTurn) -> None:
     # registered, which is also true for the session that typed it.
     if turn._this_turn_is_clear and slot.set_todo(None):
         state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
+    if turn._this_turn_is_clear:
+        # The tracked changes go too, on the same gate.
+        from kiro_crew.dashboard.tracked_changes import drop_on_clear
+
+        drop_on_clear(slot)
     append_and_surface(state, slot, "assistant", "🗑️ Conversation cleared.", "msg msg-a")
 
 

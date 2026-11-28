@@ -174,6 +174,7 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
         slot._pending_discard_conversation_key = None
         slot._pending_discard_from_wake = False
         slot._pending_discard_drops_plan = False
+        slot._pending_discard_drops_tracked = False
         logger.warning(
             "Giving up the queue hold on slot %s: the queued conversation discard "
             "was refused or raised on %d attempts with nothing left to wait for",
@@ -560,6 +561,12 @@ async def _consume_pending_reset(
                 slot._pending_discard_drops_plan = False
                 if slot.set_todo(None):
                     state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
+            if slot._pending_discard_drops_tracked:
+                # A queued /clear's discard landed: the tracked changes it drops go now.
+                slot._pending_discard_drops_tracked = False
+                from kiro_crew.dashboard.tracked_changes import drop_on_clear
+
+                drop_on_clear(slot)
             if slot._pending_discard_conversation_key == discard_key:
                 slot._pending_discard_conversation_key = None
                 slot._pending_discard_from_wake = False

@@ -38,6 +38,9 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     read behind that expand, kept off the slots broadcast on purpose: widening
     the budget would put up to ``_MAX_SOURCE_LINKS_PER_SLOT`` links per slot on
     the wire for every row nobody expanded, on every push.
+
+    ``?tracked=1`` returns the session's stored tracked-changes list instead
+    (``dashboard/tracked_changes.py``), in the same ``{links, total}`` shape.
     """
     # circular import: source_providers imports chat state helpers, so a
     # top-level import would close a cycle (same pattern as the owner-only
@@ -107,6 +110,23 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     # the slot's messages -- these URLs are extracted FROM those messages, so
     # gating here would withhold nothing it does not already have.
     owner = is_owner_dashboard_request(request)
+    if request.query.get("tracked") == "1":
+        # The session's stored tracked-changes list instead of the transcript scan.
+        # It reads the slot's own list only, so a sidebar row whose window has not
+        # loaded answers without loading it. Status is gated as below; no refresh
+        # is scheduled, because nothing renders this list yet.
+        from kiro_crew.dashboard.state import _project_source_links
+        from kiro_crew.dashboard.tracked_changes import tracked_changes_view
+
+        links = tracked_changes_view(slot)
+        return web.json_response(
+            {
+                "links": _project_source_links(
+                    links, owner, dashboard_user=bool(request.get("is_dashboard_user"))
+                ),
+                "total": len(links),
+            }
+        )
     payload = slot.source_links_payload(
         include_check_status=owner,
         dashboard_user=bool(request.get("is_dashboard_user")),

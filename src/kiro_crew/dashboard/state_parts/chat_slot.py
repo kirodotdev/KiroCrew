@@ -61,6 +61,8 @@ class _ChatSlot:
         "_dismissed_txn_pending",
         "source_links_off",
         "_source_links_off_hydrated",
+        "_tracked_changes",
+        "_tracked_hydrated",
         "_closing",
         "_close_recorded",
         "credential_evidence",
@@ -206,6 +208,7 @@ class _ChatSlot:
         "_pending_discard_conversation_key",
         "_pending_discard_from_wake",
         "_pending_discard_drops_plan",
+        "_pending_discard_drops_tracked",
         "_pending_model_pick",
         "_deferred_model_switch_key",
         "_eager_spawn_task",
@@ -434,6 +437,8 @@ class _ChatSlot:
     _dismissed_txn_pending: set[str]
     source_links_off: bool
     _source_links_off_hydrated: bool
+    _tracked_changes: dict[str, dict]
+    _tracked_hydrated: bool
     # Initialised by state_parts/slot_transcript.py; see dashboard/slot_row_memo.py.
     _row_summary_memo: tuple[Any, ...] | None
     _row_redacted_memo: tuple[Any, ...] | None
@@ -543,6 +548,7 @@ class _ChatSlot:
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool
     _pending_discard_drops_plan: bool
+    _pending_discard_drops_tracked: bool
     _pending_model_pick: Any
     _deferred_model_switch_key: str
     _eager_spawn_task: asyncio.Task[None] | None

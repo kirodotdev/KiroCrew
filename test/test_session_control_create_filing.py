@@ -608,6 +608,10 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
         # would drop the binding and silently return that session to the global
         # store.
         "memory_store",
+        # Written only while the session tracks a change (or the line already has
+        # the key), so a newborn's line stays as it was before the list existed.
+        # The next test but one pins the merge writing it.
+        "tracked_changes",
     }
     for key in sorted(SLOT_OWNED_META_KEYS - excluded):
         assert key in meta, f"slot-owned field {key!r} missing after an empty-window forced save"
@@ -652,6 +656,28 @@ def test_the_empty_window_merge_keeps_a_named_memory_store(tmp_path):
     meta = state.conversation_log.get_metadata(slot_history_key(child))
     assert not meta.get("memory_store"), meta.get("memory_store")
     assert store_of_session(state.conversation_log, slot_history_key(child)) == ""
+
+
+def test_the_empty_window_merge_keeps_and_clears_the_tracked_changes(tmp_path):
+    """A newborn's tracked change survives the merge, and an emptied list clears it."""
+    from kiro_crew.dashboard import tracked_changes as tc
+    from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+
+    assert tc.record_tracked_change(child, "https://github.com/acme/widgets/pull/7", "created")
+    asyncio.run(save_slot_off_loop(state, child, force=True))
+    meta = state.conversation_log.get_metadata(slot_history_key(child))
+    assert [e["url"] for e in meta["tracked_changes"]] == ["https://github.com/acme/widgets/pull/7"]
+
+    # The merge cannot delete a key, so an emptied list is written as [].
+    assert tc.drop_on_clear(child)
+    asyncio.run(save_slot_off_loop(state, child, force=True))
+    meta = state.conversation_log.get_metadata(slot_history_key(child))
+    assert meta["tracked_changes"] == []
 
 
 def test_the_empty_window_merge_writes_a_forks_parent_identity(tmp_path):

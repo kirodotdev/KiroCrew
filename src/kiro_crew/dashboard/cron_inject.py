@@ -31,6 +31,10 @@ from kiro_crew.dashboard.state import (
     note_crew_log_class,
     row_mid,
 )
+from kiro_crew.dashboard.tracked_changes import (
+    apply_tracked_changes_if_unread,
+    mark_tracked_changes_unread,
+)
 from kiro_crew.history import append_rows_if_absent_off_loop, latest_transcript_ts
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -749,6 +753,8 @@ def _bind_cron_slot(
         # The chips-off switch is on that line too: until
         # restore_cron_turn_timeout's read restores it, saves write the stored value back.
         _mark_source_links_off_unread(slot)
+        # And the tracked-changes list, which that read restores too.
+        mark_tracked_changes_unread(slot)
         if dismissed is not _DISMISSED_UNREAD:
             _restore_dismissed_source_links(slot, dismissed)
         else:
@@ -1325,14 +1331,17 @@ async def restore_cron_turn_timeout(state: DashboardState, job_id: str) -> None:
         return
     # Each apply drops the line when its field was set while the read ran.
     apply_cron_turn_timeout(slot, meta)
+    apply_tracked_changes_if_unread(slot, meta)
     if apply_cron_source_links_off(slot, meta) and slot.source_links_off:
         state.push_slots_update()
 
 
 def _cron_line_unread(slot: Any) -> bool:
     """Whether a bound cron tab still holds a field only its metadata line has."""
-    return not getattr(slot, "_turn_timeout_hydrated", True) or not getattr(
-        slot, "_source_links_off_hydrated", True
+    return (
+        not getattr(slot, "_turn_timeout_hydrated", True)
+        or not getattr(slot, "_source_links_off_hydrated", True)
+        or not getattr(slot, "_tracked_hydrated", True)
     )
 
 

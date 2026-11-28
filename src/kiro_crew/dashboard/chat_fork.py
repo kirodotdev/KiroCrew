@@ -693,6 +693,10 @@ def _shape_fork_child(
     # either one can still be recolored on its own.
     new_slot.color_index = slot.color_index
     new_slot.color_hex = slot.color_hex
+    # The pull requests the parent tracks, less the ones its person unlinked there.
+    from kiro_crew.dashboard.tracked_changes import copy_tracked_for_fork
+
+    copy_tracked_for_fork(new_slot, slot)
     parent_title = slot.title if slot._titled else "Untitled"
     parent_title, _ = redact_exfiltration_urls(parent_title)
     parent_title, _ = redact_credentials(parent_title)

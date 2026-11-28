@@ -19,7 +19,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_model_pick_lock``, ``_model_runtime_pick_gen``, ``_model_withheld``,
 ``_model_withheld_for``, ``_origin``, ``_pending_discard_conversation_key``,
 ``_deferred_model_switch_key``, ``_pending_discard_from_wake``, ``_pending_discard_drops_plan``,
-``_pending_memory_mode``, ``_pending_model_pick``,
+``_pending_discard_drops_tracked``, ``_pending_memory_mode``, ``_pending_model_pick``,
 ``_pending_reset_history_key``, ``_prefetch_ttl_task``, ``_project_hook_files_notice_shown``, ``_reasoning_effort``,
 ``_reports_to_creator``, ``_revived_by``, ``_saved_created_by``, ``_session_notice_marks``,
 ``_session_requested_model``,
@@ -409,6 +409,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     self._pending_discard_from_wake = False
     # True when a /clear's discard waits on a queued completion: its landing drops the plan.
     self._pending_discard_drops_plan = False
+    # True when a queued /clear's discard is waiting, for any reason: its landing
+    # drops the tracked changes (``tracked_changes.drop_on_clear``).
+    self._pending_discard_drops_tracked = False
     # Set by session_set_model on an idle slot; consumed at the start of the
     # next turn (session_control.apply_pending_model_pick), which re-checks
     # the caller's authorization and commits the model in one synchronous
