@@ -24,6 +24,7 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 import type { InstanceDraft, InstanceFormValues } from '../types/instanceForm'
 import type { RemoteCrewAddLink } from '../lib/remoteCrewAddLink'
 import type { PaneRelayCrew } from '../lib/paneRelayCrews'
+import type { CrewIconKey } from '../components/crewIcons'
 
 export interface WarmConn {
   port: number
@@ -62,6 +63,9 @@ export interface HostTab {
   /** How the parent reaches this crew, for the row's "Private · <source>" line.
    *  Absent from an older parent's model, whose rows then show the host alone. */
   transport?: 'ssh' | 'ssm' | 'fargate'
+  /** The crew's icon as the parent stored it (components/crewIcons). Absent from an
+   *  older parent's model, whose tabs then show the bare state mark. */
+  icon?: CrewIconKey
 }
 
 /** The embedded pane's OWN tunnel status, used by its readout capsule (item 1). */

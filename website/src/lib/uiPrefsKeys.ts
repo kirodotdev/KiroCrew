@@ -66,6 +66,9 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   'mc-crews-view',
   'mc-crew-switcher-pinned',
   'mc-crew-switcher-stable-order',
+  // Each remote crew's icon (components/crewIcons.tsx). It is assigned on first
+  // sight, so a cold profile without the backup would draw every crew a new one.
+  'mc-crew-switcher-icons',
   'mc-filter-folders-shelved',
   'mc-flat-hidden-folders',
   'mc-input-height',

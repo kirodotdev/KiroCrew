@@ -68,8 +68,9 @@ describe('pinned chips adapt to their own track', () => {
    */
   it('lets a pinned chip give up name width, down to a legible floor', async () => {
     const t = await tsx()
+    // Off the phone: a phone chip is icon-only and has no name to give up.
     expect(t, 'the pinned row asks for shrinkable chips').toMatch(
-      /shrinkable=\{!entry\.state \|\| entry\.state === 'connected'\}/,
+      /shrinkable=\{!compact && \(!entry\.state \|\| entry\.state === 'connected'\)\}/,
     )
     // The floor has to sit on the CHIP: a flex item's `min-width:auto` resolves to
     // its content-based minimum, which for nowrap text is the full name, so leaving
@@ -77,10 +78,10 @@ describe('pinned chips adapt to their own track', () => {
     // row squeezes the chip past its own content and the name paints outside the
     // border. Both spellings are literal so Tailwind's content scan sees them.
     expect(t, 'a shrinkable chip declares a 5ch-based floor').toMatch(
-      /min-w-\[calc\(5ch\+30px\)\]/,
+      /min-w-\[calc\(5ch\+36px\)\]/,
     )
     expect(t, 'the floor accounts for the unread badge').toMatch(
-      /min-w-\[calc\(5ch\+54px\)\]/,
+      /min-w-\[calc\(5ch\+60px\)\]/,
     )
     expect(t, 'the chip must not be shrinkable below its own content').not.toMatch(
       /shrinkable\s*\?\s*'min-w-0/,

@@ -8,6 +8,7 @@
  * Crewmates page in its "See what it looks like" dialog. A visible change here
  * makes that picture stale — re-shoot with `scripts/capture-feature-previews.mjs`.
  */
+import { useRef } from 'react'
 import { type NavigateFunction, type Location, type SetURLSearchParams } from 'react-router-dom'
 import { ArrowLeft, ChevronRight, Search } from 'lucide-react'
 import { PanelLeftLight, PanelLeftSolid, PanelRightSolid } from '../../components/icons/panels'
@@ -31,6 +32,7 @@ import { type MembersPageDrawers } from './useMembersPageDrawers'
 import { type MembersPageLayout } from './useMembersPageLayout'
 import { type MembersPageNavigation } from './useMembersPageNavigation'
 import { type MembersPageRosterSignals } from './useMembersPageRoster'
+import { useBarStackCap } from './useBarStackCap'
 
 interface MembersPageThreadHeaderProps {
   layout: MembersPageLayout
@@ -130,9 +132,15 @@ export function MembersPageThreadHeader({
   // focus on it and can press it again to close the card.
   const stackStepsOut = headerInBar && overlayUnderBar
   const stackHit = stackStepsOut ? 'pointer-events-none' : 'pointer-events-auto'
+  // In the shell bar the stack is capped by what the two side groups leave
+  // either side of the viewport's centre, measured (see `useBarStackCap`).
+  const barHeaderRef = useRef<HTMLElement>(null)
+  const leadCellRef = useRef<HTMLDivElement>(null)
+  const trailCellRef = useRef<HTMLDivElement>(null)
+  const stackCap = useBarStackCap(headerInBar, barHeaderRef, leadCellRef, trailCellRef)
   const threadHeader = (
     <header
-      ref={headerInBar ? undefined : threadHeaderRef}
+      ref={headerInBar ? barHeaderRef : threadHeaderRef}
       // Phone: the row lives in the shell's one top bar (`#mobile-topbar-slot`,
       // the chat page's single-bar hand-off), so it is a plain flex row
       // there, with no fade. Off the phone the cells align to the top: the
@@ -155,7 +163,7 @@ export function MembersPageThreadHeader({
           stack, so a long name chip can never take a side control's tap. The
           cells span to the middle of the bar, so there they pass input
           through and only their controls catch it, or they would cover the face. */}
-      <div className={`flex items-center justify-start min-w-0 gap-1 [&>*]:pointer-events-auto${headerInBar ? ' relative z-40 pointer-events-none' : ''}`} data-testid="member-thread-header-lead">
+      <div ref={leadCellRef} className={`flex items-center justify-start min-w-0 gap-1 [&>*]:pointer-events-auto${headerInBar ? ' relative z-40 pointer-events-none' : ''}`} data-testid="member-thread-header-lead">
         {/* The roster, folded into one chip (crewmate-panel IA): stacked
             faces and the count; open, a searchable list that switches
             the thread. Hidden below md, where the phone's back button
@@ -269,11 +277,14 @@ export function MembersPageThreadHeader({
         // and the toggle would be unreachable from the keyboard.
         // Fixed and z-30, the button's box sits over the bar's side controls
         // wherever it is wider than its face, so there it is capped to the
-        // middle of the viewport clear of the side clusters (6rem each: the
-        // drawer toggle on one side, the panel opener and bell on the other;
-        // `truncate` shortens the name and activity line) and passes input
-        // through: only the face and the chip catch a tap.
+        // middle of the viewport clear of the side groups' touch targets
+        // (`stackCap`, measured: a remote crew's switcher widens the lead, the
+        // search and panel openers make the trail; `truncate` shortens the name
+        // and activity line), never below the chip's 7rem floor, and passes
+        // input through: only the face and the chip catch a tap. The class cap
+        // holds only until the first measurement.
         className={`group flex flex-col items-center min-w-0 justify-self-center cursor-pointer focus-ring bg-transparent border-none p-0 rounded-2xl ${headerInBar ? `fixed left-1/2 -translate-x-1/2 top-1 z-30 max-w-[calc(100vw-12rem)] pointer-events-none ${stackStepsOut ? 'opacity-0' : ''}` : 'relative max-w-full pointer-events-auto'}`}
+        style={headerInBar && stackCap !== null ? { maxWidth: `max(7rem, ${stackCap}px)` } : undefined}
         title={t('pages.membersPage.profile_card')}
         aria-expanded={!!profile}
         data-testid="member-identity-pill"
@@ -367,7 +378,7 @@ export function MembersPageThreadHeader({
           announcing it taught the user a term for a thing that can
           never be otherwise. The member's edit entry is not a peer of
           this toggle: it is the identity pill in the middle. */}
-      <div className={`flex items-center justify-end gap-1.5 min-w-0 [&>*]:pointer-events-auto${headerInBar ? ' relative z-40 pointer-events-none' : ''}`} data-testid="member-thread-header-trail">
+      <div ref={trailCellRef} className={`flex items-center justify-end gap-1.5 min-w-0 [&>*]:pointer-events-auto${headerInBar ? ' relative z-40 pointer-events-none' : ''}`} data-testid="member-thread-header-trail">
         {/* The activity line for assistive tech: the same text, outside
             the button so it never joins the crewmate's name, and NOT a
             live region — a line that changes several times a turn

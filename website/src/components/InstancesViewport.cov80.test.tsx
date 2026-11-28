@@ -275,6 +275,8 @@ describe('InstancesViewport origin embeddability', () => {
     const url = new URL(href)
     Object.defineProperty(window, 'location', {
       configurable: true,
+      // A spread copies no `Location` getters, so every field the render reads
+      // is set: `useIsMobile` reads `pathname` through `appPathname()`.
       value: {
         ...realLocation,
         href: url.href,
@@ -283,6 +285,9 @@ describe('InstancesViewport origin embeddability', () => {
         host: url.host,
         port: url.port,
         origin: url.origin,
+        pathname: url.pathname,
+        search: url.search,
+        hash: url.hash,
       },
     })
   }

@@ -351,16 +351,21 @@ DropdownMenuItem.displayName = DropdownMenuPrimitive.Item.displayName
  * announce a `menuitemradio` as checked/unchecked, which a plain item cannot
  * convey — so a menu that stands in for a set of mutually exclusive
  * destinations (a switcher) must use this rather than styling alone.
+ *
+ * `tile` makes the row one cell of an option grid (the crew icon picker): its
+ * content centred with no row padding, and the checked cell filled in the accent
+ * tint, because a cell has no room for a check mark. The caller sizes the cell.
  */
 const DropdownMenuRadioItem = React.forwardRef<
   React.ComponentRef<typeof DropdownMenuPrimitive.RadioItem>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem> & { offline?: boolean }
->(({ className, offline, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem> & { offline?: boolean; tile?: boolean }
+>(({ className, offline, tile, ...props }, ref) => (
   <DropdownMenuPrimitive.RadioItem
     ref={ref}
     className={cn(
       'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] outline-hidden transition-colors',
       'focus:bg-bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      tile && 'justify-center px-0 py-0 data-[state=checked]:bg-accent-subtle data-[state=checked]:text-accent',
       className,
       offline && 'text-muted opacity-40'
     )}

@@ -48,6 +48,8 @@ vi.mock('../api/client', () => {
   }
 })
 import { api, ApiError } from '../api/client'
+vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
+import { isEmbeddedPane } from '../lib/embedded'
 
 const ssh = (over: Record<string, unknown>) => ({
   id: 'm1', name: 'dev-box', connection_method: 'ssh' as const, ssh_host: 'dev-box.internal',
@@ -84,6 +86,7 @@ const row = (name: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(isEmbeddedPane).mockReturnValue(false)
   localStorage.clear()
   sessionStorage.clear()
   vi.mocked(api.cloudProvisioners).mockResolvedValue({
@@ -210,6 +213,22 @@ describe('Crew rows', () => {
     expect(within(details).getByRole('button', { name: 'Diagnose build-farm' })).toBeInTheDocument()
     expect(within(details).getByRole('button', { name: /Edit settings/ })).toBeInTheDocument()
     expect(within(details).getByRole('button', { name: 'Remove build-farm' })).toBeInTheDocument()
+    // The icon picker sits behind the `crewIconPicker` chunk's dynamic import, so
+    // this waits for that chunk to load, not for the default 1000ms.
+    expect(
+      await within(details).findByRole('button', { name: /^Change the icon for build-farm/ }, { timeout: 5000 }),
+    ).toBeInTheDocument()
+  })
+
+  it('offers no icon picker inside an embedded pane, whose switcher draws the host\'s icons', async () => {
+    vi.mocked(isEmbeddedPane).mockReturnValue(true)
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
+    const r = await waitFor(() => row('build-farm'))
+    await u.click(within(r).getByRole('button', { name: 'Show details for build-farm' }))
+    const details = within(r).getByTestId('crew-row-details')
+    expect(within(details).getByText('Port')).toBeInTheDocument()
+    expect(within(details).queryByText('Icon')).not.toBeInTheDocument()
   })
 
   it('gives each state one main action: Open, Diagnose, Connect, Sign in, Update', async () => {

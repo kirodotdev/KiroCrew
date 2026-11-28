@@ -26,6 +26,7 @@ import { noteClipboardRelayHost, PANE_CLIPBOARD_VERSION } from '../lib/paneClipb
 import { noteHostCrewPopout, noteHostOrigin, setHostElectronReader } from '../lib/hostRelay'
 import { CREW_POPOUT_VERSION } from '../lib/crewPopout'
 import { parsePaneRelayCrews } from '../lib/paneRelayCrews'
+import { isCrewIconKey } from './crewIcons'
 
 const MAC_INSET_CLASS = 'embedded-mac-inset'
 const WIN_INSET_CLASS = 'embedded-win-inset'
@@ -89,6 +90,9 @@ export function parseHostModel(data: unknown): HostModel | null {
       transport: t.transport === 'ssh' || t.transport === 'ssm' || t.transport === 'fargate'
         ? t.transport as 'ssh' | 'ssm' | 'fargate'
         : undefined,
+      // One of the known icon words or nothing, like `transport`: the bar looks the
+      // word up in its own table, so an unknown one must never reach it.
+      icon: isCrewIconKey(t.icon) ? t.icon : undefined,
     }))
     .filter(t => t.id)
   const rawSelf = d.self && typeof d.self === 'object' ? (d.self as Record<string, unknown>) : null
