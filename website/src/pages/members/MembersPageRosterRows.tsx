@@ -3,7 +3,9 @@
  * crewmate's own `roster` projection (one hook call per row, so a frame
  * re-renders just that row) and draws the row itself through `CrewmateRowBody`
  * (the face, name, status line and markers the switcher's rows share) plus the
- * star (`CrewmateStarButton`, shared with the switcher too). `CrewmateEmptyHero` is the
+ * star (`CrewmateStarButton`, shared with the switcher too). A starred row is
+ * also dragged and moved among the starred rows (rosterStarOrder.tsx).
+ * `CrewmateEmptyHero` is the
  * intentionally-empty roster's one call to action, with the Advanced door.
  * `MembersPageRosterColumn` (MembersPageRoster.tsx) renders both; above md the
  * thread column (MembersPageThread.tsx) carries the hero instead.
@@ -25,6 +27,7 @@ import { ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS } from '../../components/list
 import CrewmateRowBody from './CrewmateRowBody'
 import CrewmateStarButton from './CrewmateStarButton'
 import { type MemberSignals } from './rosterFilter'
+import { useStarredRowDrag } from './rosterStarOrder'
 import { useMemberProjection } from '../../state/useMemberProjection'
 import type { RosterView } from '../../state/memberProjectionTypes'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -52,6 +55,8 @@ export function MemberRow({
   slugCollides,
   indented,
   faceOnStage,
+  reorderable,
+  onStarMove,
 }: {
   m: MemberRosterRow
   activeName: string
@@ -72,7 +77,13 @@ export function MemberRow({
   /** This crewmate's face is centre stage in the first Mate's entrance (#23207):
    *  the row keeps its box and holds the face unpainted until it lands. */
   faceOnStage: boolean
+  /** A starred row on a wide screen: dragged among its group's starred rows. */
+  reorderable: boolean
+  /** A starred row: Alt+ArrowUp / Alt+ArrowDown move it one place among its
+   *  group's starred rows (`useRosterStarOrder`). */
+  onStarMove?: (delta: -1 | 1) => void
 }) {
+  const drag = useStarredRowDrag(m.name, reorderable)
   // Withheld for a colliding slug, exactly as the page's merged list and drawer
   // do: this row shares its slug with another member, so a slug-keyed frame
   // cannot say which of the two it describes.
@@ -126,10 +137,11 @@ export function MemberRow({
   return (
       <motion.li
         key={view.name}
-        {...guidePick(view.name)}
+        {...drag.listeners}
+        {...guidePick(view.name, drag.setNodeRef)}
         layout={reduceMotion ? false : 'position'}
         transition={{ type: 'spring', stiffness: 520, damping: 42 }}
-        className="group/row relative"
+        className={cn('group/row relative', drag.isDragging && 'opacity-40')}
       >
         {/* ChatSidebar's own row recipe (components/listShell), so the
             two conversation lists read as one family; pr-8 widens the
@@ -154,6 +166,20 @@ export function MemberRow({
             view.name === activeName ? ROW_ACTIVE_CLS : ROW_IDLE_CLS,
           )}
           aria-current={view.name === activeName ? 'true' : undefined}
+          // The refocus after an Alt+Arrow move finds the row by this name
+          // (`useRosterStarOrder`).
+          data-member-row={view.name}
+          aria-keyshortcuts={onStarMove ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
+          onKeyDown={onStarMove ? (e) => {
+            if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return
+            if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+            // The chord is the open chat's turn step elsewhere; on a starred
+            // row it moves the row, at either end too, as on the Sessions
+            // sidebar's pinned rows.
+            e.preventDefault()
+            e.stopPropagation()
+            onStarMove(e.key === 'ArrowUp' ? -1 : 1)
+          } : undefined}
         >
           {/* The row itself (face, name, status line, right-edge markers) is
               the switcher's row too: CrewmateRowBody. */}
@@ -175,6 +201,16 @@ export function MemberRow({
           pending={starPending.has(view.name)}
           testId={`member-star-${view.slug}`}
         />
+        {drag.insertion && (
+          <span
+            data-testid="member-reorder-insertion"
+            aria-hidden="true"
+            className={cn(
+              'absolute left-3 right-3 h-0.5 rounded-full bg-accent pointer-events-none z-20',
+              drag.insertion === 'after' ? '-bottom-[1px]' : '-top-[1px]',
+            )}
+          />
+        )}
       </motion.li>
   )
 }
