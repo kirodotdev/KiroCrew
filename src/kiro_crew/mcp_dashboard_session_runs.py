@@ -33,7 +33,7 @@ from kiro_crew.mcp_dashboard_references import (
 from kiro_crew.mcp_tools.dashboard_client import DashboardClient, DashboardError
 from kiro_crew.mcp_tools.table import ToolContext
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.validation import (
+from kiro_crew.validation_parts.input_bounds import (
     BROADCAST_RESPONSE_MARGIN_SECS,
     BROADCAST_TARGET_ALLOWANCE_SECS,
     MAX_BROADCAST_TARGETS,

@@ -86,7 +86,8 @@ from kiro_crew.mcp_guide_tool_list import (  # noqa: F401
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.validation import MCP_GUIDE_SCHEMAS, validate_tool_args
+from kiro_crew.validation_parts.field_engine import validate_tool_args
+from kiro_crew.validation_parts.opt_in_server_schemas import MCP_GUIDE_SCHEMAS
 
 logger = logging.getLogger(__name__)
 

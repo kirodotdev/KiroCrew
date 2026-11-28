@@ -94,6 +94,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Final
 
+from kiro_crew.constants import MAX_SHORT_STRING
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, Entry
 from kiro_crew.crew_log.store import (
@@ -107,7 +108,7 @@ from kiro_crew.crew_log.store import (
     unit_dirs,
 )
 from kiro_crew.session_ledger import _store_name
-from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MAX_SHORT_STRING
+from kiro_crew.validation_parts.input_bounds import MAX_ACP_SESSION_ID_LEN
 
 logger = logging.getLogger(__name__)
 

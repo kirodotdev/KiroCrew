@@ -26,7 +26,7 @@ from typing import Any, Callable, Optional, overload
 from kiro_crew.mcp_caller import INFLIGHT_CAPABILITY_KEY, CallerContext
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import neutralize_markers
-from kiro_crew.validation import ValidationError
+from kiro_crew.validation_parts.field_engine import ValidationError
 
 # Max tools/call requests buffered while a tool worker is busy.
 # Overflow gets an immediate JSON-RPC busy error instead of silence.

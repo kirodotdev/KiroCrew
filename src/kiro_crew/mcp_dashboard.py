@@ -85,7 +85,7 @@ from typing import Any
 from kiro_crew.mcp_instructions import SESSION_CONTROL as _INSTRUCTIONS
 from kiro_crew.mcp_shared import run_mcp_stdio_loop
 from kiro_crew.mcp_tools.table import Tool, ToolContext, ToolTable
-from kiro_crew.validation import MCP_DASHBOARD_SCHEMAS
+from kiro_crew.validation_parts.server_registries import MCP_DASHBOARD_SCHEMAS
 
 logger = logging.getLogger(__name__)
 
@@ -989,7 +989,7 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
     from kiro_crew.mcp_tools.dashboard_client import DashboardClient, DashboardError  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.sel import sel  # noqa: F401
-    from kiro_crew.validation import (  # noqa: F401
+    from kiro_crew.validation_parts.input_bounds import (  # noqa: F401
         BROADCAST_RESPONSE_MARGIN_SECS,
         BROADCAST_TARGET_ALLOWANCE_SECS,
         MAX_BROADCAST_TARGETS,
