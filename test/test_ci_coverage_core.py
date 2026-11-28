@@ -164,15 +164,15 @@ def _env_blocks(node: object):
 
 
 @pytest.fixture(autouse=True)
-def _no_inherited_run(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_inherited_run(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every test with no event and no kill switch from the job that runs it.
 
     The backend step passes the repository variable to pytest, and the runner sets
     the event. A test here says which event and which switch value it means; one
     that read them from the job would change its verdict with the job's settings.
     """
-    monkeypatch.delenv(coverage_core.SWITCH_VARIABLE, raising=False)
-    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    _floor_monkeypatch.delenv(coverage_core.SWITCH_VARIABLE, raising=False)
+    _floor_monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
 
 
 def _option(monkeypatch: pytest.MonkeyPatch, environ: dict[str, str], name: str):
