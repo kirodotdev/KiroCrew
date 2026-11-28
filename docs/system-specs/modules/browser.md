@@ -336,8 +336,8 @@ Kiro's Chromium (`_stop_handle`, `_abandon_start`, and the port launcher's
 own (`relay.request_browser_close`, to the URL in `DevToolsActivePort`) and waits up
 to `_STOP_GRACE_SECS` for the process to exit, so Chromium writes its profile
 (`exit_type` `Normal`) and keeps recent cookies. A browser that ignores the request,
-or has no live port, gets the forced tree kill after that wait. macOS and Linux are
-unchanged. A gateway that exits without this teardown leaves Kiro's Chromium
+or has no live port, gets the forced tree kill after that wait. macOS and Linux send
+no close request. A gateway that exits without this teardown leaves Kiro's Chromium
 running on Windows, and Chromium hands a second browser on the same profile to
 the first one. So before a Windows launch (`earlier_chromium.prepare_profile`) the
 supervisor looks for a browser an earlier run left, and addresses it only when
@@ -346,7 +346,18 @@ endpoint at that file's browser path answers `Browser.getVersion` as Chromium. T
 browser gets `Browser.close`, and the launch waits for its port to close and its
 lock to go, then clears the session files so its tabs do not reopen. A browser that
 still holds its port or lock at the deadline fails the start with a message naming
-it, and its port file is removed. Nothing here signals a process. The gateway also
+it, and its port file is removed. Nothing here signals a process. On macOS and Linux
+the browser dies with the gateway, but Chromium's profile lock can outlive it:
+`SingletonLock` is a symlink to `<host>-<pid>`, and Chromium refuses a profile whose
+lock names another host (exit code 21, "in use on another computer") without checking
+that pid, so a host whose name changes on restart kept its browser down until a person
+removed the lock the sandbox hides. Before a POSIX launch the same `prepare_profile`
+reads the lock (`earlier_chromium.clear_stale_singleton_lock`) and removes it, with the
+`SingletonSocket` and `SingletonCookie` links Chromium recreates anyway, when its host
+is not this one or its pid is gone here (`platform_compat.pid_exists`); it logs one line
+naming the lock and the reason. A lock from this host whose pid is alive stays, as does
+a target that is not `<host>-<pid>` or a regular file at the lock's path: those are
+Chromium's own to judge. The gateway also
 reclaims a stray daemon from a previous life at startup, then runs the startup
 auto-install (see the driver section).
 

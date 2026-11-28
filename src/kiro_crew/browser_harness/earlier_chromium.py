@@ -1,4 +1,4 @@
-"""Windows: close a Kiro's Chromium that an earlier gateway life left on the profile.
+"""Clear what an earlier gateway life left on Kiro's Chromium profile before a launch.
 
 A gateway that exits without its teardown (a crash, an ended process, a power
 loss) leaves Kiro's Chromium running: on Windows it is started in a process group
@@ -15,12 +15,21 @@ the path). Anything less is not proven to be this profile's browser, and the sta
 goes on as it always did. Nothing here signals a process: the proven browser is
 asked to close over CDP, and the start fails with a message naming it when it
 does not.
+
+On macOS and Linux the browser dies with the gateway (it runs on the debugging
+pipe), but its profile lock can outlive it: ``SingletonLock`` is a symlink whose
+target names ``<host>-<pid>``, and Chromium refuses a profile whose lock names
+another host without asking whether that pid is alive. A machine whose host name
+changes on restart (a cloud VM, a container) therefore keeps its browser down until
+someone removes the lock, which the sandbox hides from the agent. So before a POSIX
+launch the lock is read and removed when it is stale (:func:`clear_stale_singleton_lock`).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import time
 from pathlib import Path
 
@@ -32,6 +41,20 @@ logger = logging.getLogger(__name__)
 #: Chromium's Windows profile lock (``chrome::kLockfilename``), opened
 #: delete-on-close, so it exists only while a process holds the profile.
 _CHROMIUM_LOCKFILE = "lockfile"
+
+#: Chromium's POSIX profile lock (``chrome::kSingletonLockFilename``): a symlink to
+#: ``<host>-<pid>``, written by the process that holds the profile and left behind
+#: when that process does not exit cleanly.
+_SINGLETON_LOCK = "SingletonLock"
+
+#: The lock's siblings, symlinks to the holder's socket and its cookie. Chromium
+#: recreates both when it takes the profile; they go with a stale lock so nothing
+#: of the old holder is left pointing into a temp dir that is gone.
+_SINGLETON_SIBLINGS = ("SingletonSocket", "SingletonCookie")
+
+#: Separates host from pid in the lock's target (``kProcessSingletonLockDelimiter``).
+#: A host name can contain it, so the target is split at its last one.
+_SINGLETON_LOCK_DELIMITER = "-"
 
 
 def earlier_chromium_detail(profile: Path) -> str:
@@ -68,7 +91,58 @@ async def prepare_profile(profile: Path) -> None:
     await asyncio.to_thread(platform_compat.make_owner_only_dir, profile)
     if platform_compat.IS_WINDOWS:
         await reclaim_profile(profile)
+    else:
+        await asyncio.to_thread(clear_stale_singleton_lock, profile)
     await asyncio.to_thread(sup._clear_restored_session, profile)
+
+
+def _stale_lock_reason(target: str) -> str | None:
+    """Why the lock whose symlink target is *target* protects no holder.
+
+    ``None`` when a live process on this host may hold it, or when the target is not
+    the ``<host>-<pid>`` Chromium writes: Chromium removes a lock it cannot parse by
+    itself, and a lock from this host is its own to judge once the pid is alive (it
+    checks that the process is a browser, then talks to it). Only the two shapes
+    Chromium refuses or cannot see through are judged here: another host's lock,
+    which it declines without a liveness check, and a gone pid on this host.
+    """
+    host, delimiter, pid_text = target.rpartition(_SINGLETON_LOCK_DELIMITER)
+    if not delimiter or not host:
+        return None
+    if host != socket.gethostname():
+        return f"it was taken on host {host!r}, not this one"
+    if not pid_text.isdigit():
+        return None
+    if not platform_compat.pid_exists(int(pid_text)):
+        return f"the process that took it, pid {pid_text}, is gone"
+    return None
+
+
+def clear_stale_singleton_lock(profile: Path) -> None:
+    """Remove *profile*'s ``SingletonLock``, socket and cookie links when the lock is stale.
+
+    Only a symlink is read: a regular file at the lock's path is not Chromium's and
+    stays. The links are unlinked, never followed, so nothing outside the profile is
+    touched. A link that cannot go is logged and left; the launch goes on and
+    Chromium reports the lock itself.
+    """
+    lock = profile / _SINGLETON_LOCK
+    try:
+        target = lock.readlink()
+    except OSError:
+        return
+    reason = _stale_lock_reason(str(target))
+    if reason is None:
+        return
+    logger.info("browser: removing the stale Chromium lock %s -> %s: %s", lock, target, reason)
+    for name in (_SINGLETON_LOCK, *_SINGLETON_SIBLINGS):
+        path = profile / name
+        if not path.is_symlink():
+            continue
+        try:
+            path.unlink()
+        except OSError as exc:
+            logger.warning("browser: could not remove %s: %s", path, exc)
 
 
 async def _asked_to_close(url: str, bound: float) -> bool:
