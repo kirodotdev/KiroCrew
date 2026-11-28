@@ -1,4 +1,4 @@
-import { memo, useCallback, useContext, useEffect, useId, useRef, useState } from 'react'
+import { memo, useCallback, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { QueryClientContext, useQuery } from '@tanstack/react-query'
 import { motion, useReducedMotion } from 'framer-motion'
 import { ShieldOff } from 'lucide-react'
@@ -17,6 +17,7 @@ import type { BrowserLiveCanvasHandle } from './BrowserLiveCardCanvas'
 import { clearTopOverlay, holdPinnedPromptAside } from './browserLiveClearance'
 import { BrowserLiveAllowView, BrowserLiveDoneRow, BrowserLiveLiveView, BrowserLiveStagedRow, hostOf } from './BrowserLiveCardViews'
 import BrowserLiveSheet from './BrowserLiveSheet'
+import { askUi } from './quickAsk/askUi'
 import { VaultUnsavedNotice } from './quickAsk/QuickAskVault'
 import { mcpIdentityFromTitle } from '../../utils/toolCallTitle'
 import { isToolCallRow, stripToolCallLead } from '../../lib/toolRowContract'
@@ -134,6 +135,8 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
   // keep a later turn's screencast running while that turn's card is scrolled off.
   const turnId = turn?.turnId ?? ''
   const isCurrent = useBrowserLiveIsCurrent(sessionKey, turnId)
+  useSyncExternalStore(askUi.subscribe, askUi.snapshot, askUi.snapshot)
+  const heldSheet = askUi.heldSheet(sessionKey) !== null
   useEffect(() => {
     const el = rootRef.current
     if (!el || !turnId) return
@@ -208,7 +211,9 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
       </div>
     )
   }
-  const view = viewFor(turn)
+  // A sign-in sheet still asking "Save this login?" keeps the live view (its
+  // surface) up past the turn's end, until the person answers.
+  const view = viewFor(turn) === 'done' && isCurrent && heldSheet ? 'live' : viewFor(turn)
   const staged = !!stage && stageTurnId(stage, current?.turnId ?? null) === turn.turnId
   // The card that opened the sheet keeps it, whichever turn the picker shows.
   const hostsSheet = stage?.surface === 'sheet' && (stage.anchor ?? current?.turnId ?? null) === turn.turnId

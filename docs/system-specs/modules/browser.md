@@ -1297,14 +1297,28 @@ moved or deleted since the card was drawn is 409 `vault_unusable`, the ask stays
 open), keeps the password and, where the ask has a place for one, the username,
 checks them with `check_values` like typed values, and fills through the same
 bound, re-verified `fill` / `sign_in`. No fill happens without that click.
-Typing (no match, or **Other account** opened beside one) offers **Save to Secrets store**,
-off by default (`save: true` on the typed answer), so a second account can be saved
-from the card. Only after a fill that landed does the gateway store a NEW login item named after
+Typing (no match, or **Other account** opened beside one) has no save box. After
+**Fill**, a typed login whose username is not one the card offered keeps the
+sheet open on **Signing in…** while the answer route, after settling the ask (the
+agent has its outcome), watches the tab for up to `vault_fill.LAND_WAIT_S` (30 s),
+reading only. The sign-in has landed when the tab leaves the bound site, or when
+the bound site has laid out no password box, locked or not, for `LAND_QUIET_S` (2 s); a new
+document that shows a password box again (as after a wrong password), the time
+running out, another ask or another tab means it has not, and the sheet closes.
+Once landed, the answer carries `save_offer` (`{id, site, username, expires_in_s}`, never the
+password) and the same sheet asks **Save this login?** with the site and username,
+**Not now** and **Save** (primary). Until then and until the answer, the typed
+username and password live only in gateway memory (`vault_fill.hold_offer`, one
+per session): never on disk, dropped on **Not now** or Esc
+(`POST /api/browser/ask/save-offer`, `action: "drop"`), by a newer offer, or after
+`SAVE_OFFER_TTL_S` (120 s). **Save** (`action: "save"`) stores a NEW login item named after
 the host (`github.com`, then `github.com (2)`... on a clash: an existing item is
 never overwritten, and a name the Secrets write route would refuse this caller is
 skipped too: a Connections client secret, the WakaTime OAuth tokens and, for a
 remote caller, a channel credential; `secrets.reserved_name_check`), with the typed username and password and
-`urls = [the bound origin]`. The answer carries `saved` back to the card; a save
+`urls = [the bound origin]`; the sheet shows **Saved to Secrets store** for a moment
+and closes. The save-offer route is owner only (the internal secret refused) and
+answers `{ok, saved}`, or 409 `stale` once the gateway let go of the login. A save
 that failed is said in an `ErrorNotice` after the sheet is gone, by the session's
 current card in every view (live or finished) and by the big view in live and
 replay alike, until the person dismisses it; the turn ending does not hide it. One
@@ -2080,7 +2094,7 @@ modifies it, and the row is silent when the directory is absent.
 | Governance | `capabilities.browse` is checked on every call and a denial never falls back; the gateway asks it again, fail-closed, at every browser route, the engine start and every helper, so a direct POST or a policy pushed mid-session cannot keep a browser running |
 | Page content | treated as untrusted input; a URL, instruction or form target read off a page never decides the next navigation |
 | Agent obtains a vault login through a quick ask | the agent's `ask` and its outcome words are unchanged; the owner's card shows each login's entry name and username, never a password; a vault fill needs the person's click on the owner-only answer route (which refuses the internal secret) and goes through the same bound, re-verified fill; the item is re-read and re-matched against the bound origin at answer time; values never reach a log, the SEL, the replay, the live event, the poll or the tool result |
-| A typed password is kept | only when the person ticked "Save to Secrets store" (off by default) while typing, and only after the fill landed; the save is a new item (never an overwrite) for the bound origin |
+| A typed password is kept | only when the person answers **Save** to "Save this login?", asked only after the sign-in landed; until then it is in gateway memory only, never on disk, and dropped on Not now, a newer offer or after 120 s; the save is a new item (never an overwrite) for the bound origin |
 | A saved login is offered on the wrong site | base-domain match by the bundled Public Suffix List (private section included); exact host and port where there is no registrable domain; never an https login on an http page. **Accepted residual:** every host under one registrable domain is treated as one site, as in 1Password's and Bitwarden's defaults |
 | Preview tab | native view, deny-all partition, no agent channel, local origins only |
 | An app's own agent browses without a card per step | only for a session an app owns, while the app is enabled, trusted and holds owner-approved `permissions.browserSites` (the tool gate's `app-browser-sites` row), except `upload`, `js` and a call of `op_classes.card_only`: `cdp`, `http_get` and `tabs close`, which always ask; the op route holds that session to those pages: a request off them is `site_not_allowed`, a landing off them is blanked (`redirect_refused`). **Accepted residual:** the agent types and clicks unasked in a browser holding the owner's logins on those pages; a stronger sandbox is a follow-up |

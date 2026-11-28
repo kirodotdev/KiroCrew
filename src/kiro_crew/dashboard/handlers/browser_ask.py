@@ -13,16 +13,18 @@ Three legs, three trust classes:
   ``ANSWER_BODY_MAX``, each value at ``VALUE_MAX``. A fill re-checks the binding
   and writes in the gateway; the values go nowhere else: not to a log, the SEL,
   the replay, the card's state or the agent. A credentials answer may instead name a login the card offered
-  (``vault_item``: read from the vault here, then the same fill), or tick
-  ``save`` (the typed login is stored in the vault after the fill lands); see
-  ``browser_harness.vault_fill``.
+  (``vault_item``: read from the vault here, then the same fill). A typed one
+  the vault does not hold is watched until the sign-in lands, and the answer
+  then carries ``save_offer`` (``{id, site, username}``) while the gateway holds
+  the login in memory; see ``browser_harness.vault_fill``.
+* ``POST /api/browser/ask/save-offer`` (owner only, the internal secret refused)
+  -- the sheet's Save or Not now on that offer.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
 from typing import Any
 
 from aiohttp import web
@@ -285,16 +287,14 @@ async def api_browser_ask_answer(request: web.Request) -> web.Response:
     if action not in qa.ACTIONS[ask.spec.kind]:
         return _fail(400, "bad_action")
     picked = body.get("vault_item")
-    save = body.get("save")
-    vault_part = "vault_item" in body or "save" in body
-    if vault_part and (action != "fill" or ask.vault is None):
+    if "vault_item" in body and (action != "fill" or ask.vault is None):
         return _fail(400, "bad_action")
     values: dict[str, str] | None = None
     if action == "fill" and "vault_item" in body:
         # The person's click on a login the card offered: read in the gateway,
         # re-matched against the bound origin now, then the typed answer's path.
         offered = {name for name, _user in ask.vault or []}
-        if not isinstance(picked, str) or picked not in offered or "values" in body or save:
+        if not isinstance(picked, str) or picked not in offered or "values" in body:
             return _fail(400, "bad_action")
         login = await asyncio.to_thread(vault_fill.login_values, picked, ask.origin)
         values = vault_fill.shape(ask, login) if login is not None else None
@@ -304,8 +304,6 @@ async def api_browser_ask_answer(request: web.Request) -> web.Response:
             _vault_audit(vault_fill.OP_FILL, "unusable", picked, ask)
             return _fail(409, "vault_unusable")
     elif action == "fill":
-        if save is not None and save is not True:
-            return _fail(400, "bad_action")
         raw = body.get("values")
         if isinstance(raw, dict) and any(
             isinstance(v, str) and len(v) > qa.VALUE_MAX for v in raw.values()
@@ -314,13 +312,14 @@ async def api_browser_ask_answer(request: web.Request) -> web.Response:
         values = qa.check_values(ask, raw)
         if values is None:
             return _fail(400, "bad_action")
-    reserved = None
-    if save is True:
-        # The names the Secrets route would refuse this caller: a save from the
-        # card never takes one (a channel credential, a Connections or WakaTime entry).
-        from kiro_crew.dashboard.handlers.secrets import reserved_name_check
-
-        reserved = await reserved_name_check(request)
+    # A typed login the vault does not already hold: asked about once it lands.
+    offer_save = (
+        values is not None
+        and "vault_item" not in body
+        and ask.vault is not None
+        and bool(values.get("password"))
+        and values.get("username", "") not in {user for _name, user in ask.vault}
+    )
     async with ask.lock:
         if not ask.outcome and asyncio.get_running_loop().time() >= ask.deadline:
             await _finish(hub, key, ask, "timeout", qa.TIMED_OUT)
@@ -335,8 +334,32 @@ async def api_browser_ask_answer(request: web.Request) -> web.Response:
             str(action),
             values,
             vault_item=picked if isinstance(picked, str) else "",
-            save=reserved,
+            offer_save=offer_save,
         )
+
+
+def _moved_on(hub: LiveHub, key: str, ask: qa.QuickAsk, stream: Any) -> bool:
+    """Whether the tab or the ask differs from the one the save offer watches."""
+    sess = hub.get(key)
+    return (
+        sess is None
+        or sess.stream is not stream
+        or stream.target_id != ask.target_id
+        or (sess.ask is not None and sess.ask is not ask)
+    )
+
+
+def _turn_folded(hub: LiveHub, key: str, ask: qa.QuickAsk, stream: Any) -> bool:
+    """Whether the agent's turn ended on the watched tab (the hub dropped its stream),
+    rather than the person or the agent moving to another tab or ask."""
+    sess = hub.get(key)
+    return (
+        sess is not None
+        and sess.ended
+        and sess.stream is None
+        and stream.target_id == ask.target_id
+        and (sess.ask is None or sess.ask is ask)
+    )
 
 
 async def _act(
@@ -347,7 +370,7 @@ async def _act(
     values: dict[str, str] | None,
     *,
     vault_item: str = "",
-    save: Callable[[str], bool] | None = None,
+    offer_save: bool = False,
 ) -> web.Response:
     if action == "decline":
         await _finish(hub, key, ask, action, qa.DECLINED)
@@ -375,13 +398,19 @@ async def _act(
         return _ok(outcome=qa.PASSED)
     if action == "take_over":
         return await _take_over(hub, key, ask, probe)
-    saved = False
+    # The typed login, kept past the fill only while its landing is watched.
+    held = dict(values) if offer_save and values is not None else None
+    landed = False
+    before_fill: tuple[str, str, str] | None = None
     try:
         async with hub.op_fence(key):
             # The fence may have waited on an agent op: the ask can have ended
             # meanwhile (the turn folded it), and a late write or click must not land.
             if ask.outcome or asyncio.get_running_loop().time() >= ask.deadline:
                 return _fail(409, "stale")
+            if held is not None:
+                # The document before the fill: the landing watch compares later reads with it.
+                before_fill = await vault_fill.read_top(probe)
             if action == "fill" and ask.spec.sign_in_takeover:
                 assert values is not None
                 await qa.sign_in(probe, ask, values, getattr(stream, "frames", None))
@@ -393,13 +422,9 @@ async def _act(
             else:  # confirm: exactly one click, then the ask is spent
                 await qa.click_once(probe, ask)
                 outcome = qa.CONFIRMED
+        landed = True
         if vault_item:
             _vault_audit(vault_fill.OP_FILL, outcome, vault_item, ask)
-        if save is not None and values is not None and not ask.outcome:
-            # Only after a fill that landed, and only because the person ticked it.
-            name = await vault_fill.save_login(ask.origin, values, save)
-            saved = bool(name)
-            _vault_audit(vault_fill.OP_SAVE, "ok" if saved else "failed", name, ask)
     except qa.AskError as exc:
         if vault_item:
             _vault_audit(vault_fill.OP_FILL, exc.code, vault_item, ask)
@@ -425,15 +450,85 @@ async def _act(
     finally:
         if values is not None:
             values.clear()  # the person's values die with this answer
+        if held is not None and not landed:
+            held.clear()
     if ask.outcome:
         # The ask ended while the last dispatch was in flight (Stop folded it): the
         # answer is not reported as done on top of the settled outcome.
+        if held is not None:
+            held.clear()
         return _fail(409, "stale")
     await _finish(hub, key, ask, action, outcome)
-    if save is not None:
-        # The card's own word on the save it asked for; the agent never sees it.
-        return _ok(outcome=outcome, saved=saved)
-    return _ok(outcome=outcome)
+    if held is None:
+        return _ok(outcome=outcome)
+    try:
+        # The agent has its outcome; the sheet's "Signing in…" waits for the page.
+        frames = getattr(stream, "frames", None)
+        if await vault_fill.wait_signed_in(
+            probe,
+            ask,
+            frames,
+            lambda: _moved_on(hub, key, ask, stream),
+            folded=lambda: _turn_folded(hub, key, ask, stream),
+            base=before_fill,
+        ):
+            # The card's own question; the agent never sees it.
+            return _ok(outcome=outcome, save_offer=vault_fill.hold_offer(key, ask.origin, held))
+        return _ok(outcome=outcome)
+    finally:
+        held.clear()
+
+
+#: The sheet's answers to a held save offer.
+SAVE_OFFER_ACTIONS = frozenset({"save", "drop"})
+#: A save-offer answer is a session key, an offer id and one word.
+SAVE_OFFER_BODY_MAX = 1024
+
+
+async def api_browser_ask_save_offer(request: web.Request) -> web.Response:
+    """POST /api/browser/ask/save-offer -- ``{session_key, offer_id, action}``: Save or Not now.
+
+    ``save`` stores the held login as a new item (never over one, never under a
+    name the Secrets route would refuse this caller); ``drop`` forgets it. Either
+    way the gateway lets go of it. ``409 stale`` when it is gone (timed out,
+    replaced). Answers ``{ok, saved}``.
+    """
+    from kiro_crew.dashboard.handlers.browser_live import _owned_session_key
+
+    if request.get("internal_auth") is True:
+        _audit("browser_ask_save_offer", "denied", "internal secret refused")
+        return _fail(403, "not_owner", "internal_secret_required")
+    refusal = await require_owner_dashboard_request(request, "browser_ask_save_offer")
+    if refusal is not None:
+        return _fail(403, "not_owner", "owner_only")
+    body, err = await read_bounded_json(request, max_bytes=SAVE_OFFER_BODY_MAX)
+    if err is not None or body is None:
+        return _fail(400, "bad_action")
+    key = _owned_session_key(request, body)
+    action = body.get("action")
+    offer_id = body.get("offer_id")
+    if key is None or action not in SAVE_OFFER_ACTIONS or not isinstance(offer_id, str):
+        return _fail(400, "bad_action")
+    held = vault_fill.take_offer(key, offer_id)
+    if held is None:
+        return _fail(409, "stale")
+    try:
+        if action != "save":
+            return _ok(saved=False)
+        # A save from the card never takes a name the Secrets route keeps (a
+        # channel credential, a Connections or WakaTime entry).
+        from kiro_crew.dashboard.handlers.secrets import reserved_name_check
+
+        reserved = await reserved_name_check(request)
+        name = await vault_fill.save_login(held.origin, held.values, reserved)
+        _audit(
+            vault_fill.OP_SAVE,
+            "ok" if name else "failed",
+            resource=f"origin={held.origin} item={name}",
+        )
+        return _ok(saved=bool(name))
+    finally:
+        held.clear()
 
 
 async def _take_over(hub: LiveHub, key: str, ask: qa.QuickAsk, probe: qa.PageProbe) -> web.Response:
@@ -477,4 +572,9 @@ async def _take_over(hub: LiveHub, key: str, ask: qa.QuickAsk, probe: qa.PagePro
     return _ok()
 
 
-__all__ = ["api_browser_ask_answer", "api_browser_ask_poll", "run_ask"]
+__all__ = [
+    "api_browser_ask_answer",
+    "api_browser_ask_poll",
+    "api_browser_ask_save_offer",
+    "run_ask",
+]

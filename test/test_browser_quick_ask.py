@@ -31,6 +31,7 @@ from test_browser_live_routes import _app, _post
 
 from kiro_crew.browser_harness import live_hub as lh
 from kiro_crew.browser_harness import quick_ask as qa
+from kiro_crew.browser_harness import vault_fill
 from kiro_crew.dashboard.handlers import browser_ask
 from kiro_crew.dashboard.handlers import browser_live as live_mod
 from kiro_crew.dashboard.routes import browser_live as route_slice
@@ -303,6 +304,13 @@ def _home(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch):
 
     # Each answer runs its own test server; its cleanup must not stop the hub's stream.
     _floor_monkeypatch.setattr(route_slice, "_close_live_hub", _keep_streams)
+
+    async def _not_landed(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    # A typed sign-in's save offer watches the page for up to 30 s first; the
+    # vault tests drive that watch themselves (test_browser_quick_ask_vault.py).
+    _floor_monkeypatch.setattr(vault_fill, "wait_signed_in", _not_landed)
     lh.reset_live_hub()
     yield
     lh.reset_live_hub()

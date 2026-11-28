@@ -2069,8 +2069,12 @@ Security properties:
   reaches the agent, a log, the SEL, the replay, the poll or the tool result. A login is offered by base domain (eTLD+1 from the
   bundled Public Suffix List), exact host and port where there is none, and never
   from https onto an http page. The same quick ask stores what the person TYPED
-  only when they ticked "Save to Secrets store" (off by default, offered whenever they
-  type, beside a match too), only after the fill landed, and only as a new item
+  only when, after the sign-in landed, they answer **Save** to the sheet's "Save this
+  login?" (`POST /api/browser/ask/save-offer`, owner only, the internal secret
+  refused). Until that answer the typed username and password are held in gateway
+  memory only (`vault_fill.hold_offer`): never written to disk, never sent to the
+  card (it gets the site and username), dropped on Not now, a newer offer or after
+  `SAVE_OFFER_TTL_S` (120 s). The save is only ever a new item
   (`SecretVault.add_item_under_free_name` picks a free name under the store
   lock, so nothing is overwritten, and skips every name `POST /api/secrets` would
   refuse the same caller, through `secrets.reserved_name_check`: a Connections

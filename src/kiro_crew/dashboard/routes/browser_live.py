@@ -46,6 +46,8 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/browser/input/event", handlers.api_browser_input_event)
     # The card's answer to a quick ask (owner-only, ``handlers/browser_ask.py``).
     app.router.add_post("/api/browser/ask/answer", handlers.api_browser_ask_answer)
+    # Save or Not now on the sheet's "Save this login?" (owner-only, same module).
+    app.router.add_post("/api/browser/ask/save-offer", handlers.api_browser_ask_save_offer)
     # An app page's media buttons on its own agent's tab (owner-only, ``handlers/browser_media.py``).
     app.router.add_post("/api/browser/media", handlers.api_browser_media)
     # Its state read: a GET, so a player's poll is not one audit row per poll.

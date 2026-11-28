@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { ChevronDown, ExternalLink, Globe, Hand, History, Lock, Maximize, Minimize, Play } from 'lucide-react'
 
@@ -23,6 +23,7 @@ import { BrowserLiveLoopLine } from './BrowserLiveLoop'
 import type { BrowserHandbackSaid } from '../../api/client/browserLive'
 import { ReplayStepList, ReplayTimeline, replayKeyAction, useReplayPlayer } from './BrowserLiveTimeline'
 import { QuickAskZoom } from './quickAsk/QuickAskParts'
+import { askUi } from './quickAsk/askUi'
 import { useQuickAsk } from './quickAsk/useQuickAsk'
 import { VaultUnsavedNotice } from './quickAsk/QuickAskVault'
 
@@ -99,7 +100,11 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
   const running = isRunning(turn) && !turn?.turnOver
   const reopenedLive = !!turn?.turnOver && !!turn && (turn.state === 'live' || turn.state === 'in_control')
   const canLive = running || reopenedLive
-  const mode = stage.mode === 'live' && canLive ? 'live' : 'replay'
+  // A sign-in sheet still asking "Save this login?" keeps the live view (its
+  // surface) up past the turn's end, until the person answers.
+  useSyncExternalStore(askUi.subscribe, askUi.snapshot, askUi.snapshot)
+  const holding = askUi.heldSheet(sessionKey) !== null
+  const mode = stage.mode === 'live' && (canLive || holding) ? 'live' : 'replay'
   const inControl = turn?.state === 'in_control'
   const fs = useFullscreen(rootRef)
 

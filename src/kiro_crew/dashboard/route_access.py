@@ -136,6 +136,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/tailnet/mobile/clear-overrides"): RouteAccess(
         "tailnet.mobile.clear_overrides", UNSTABLE
     ),
+    # Owner dashboard only, the internal secret refused (handlers/browser_ask.py); saves
+    # or drops the typed login the gateway holds in memory after a quick-ask sign-in.
+    ("POST", "/api/browser/ask/save-offer"): RouteAccess("browser.ask_save_offer.answer", UNSTABLE),
     # Gateway auth middleware: 403 without a token (tips.api_tips_exploratory); reads only.
     ("GET", "/api/tips/exploratory"): RouteAccess("tips.exploratory.read", UNSTABLE),
     # Gateway auth middleware, as the artifact detail route (artifacts_parts/library_reads.py);

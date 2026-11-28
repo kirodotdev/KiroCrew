@@ -303,7 +303,7 @@ class QuickAsk:
     #: ``optional``: it showed neither yet).
     username_mode: str = ""
     #: A credentials ask: ``(name, username)`` of each vault login matching
-    #: ``origin`` (``[]``: none, the card offers to save). ``None``: no vault
+    #: ``origin`` (``[]``: none, a typed sign-in may be saved). ``None``: no vault
     #: part (the vault could not be read), the plain card.
     vault: list[tuple[str, str]] | None = None
     #: How many more logins matched than ``vault`` holds (the card says so).

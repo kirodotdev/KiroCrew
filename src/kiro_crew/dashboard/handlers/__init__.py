@@ -998,6 +998,7 @@ from kiro_crew.dashboard.handlers.aws_project_profile import (  # noqa: E402, F4
 from kiro_crew.dashboard.handlers.browser_ask import (  # noqa: E402, F401
     api_browser_ask_answer,
     api_browser_ask_poll,
+    api_browser_ask_save_offer,
 )
 
 # The live browser card's owner-only legs: visibility, frame acks, takeover
