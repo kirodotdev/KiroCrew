@@ -138,6 +138,14 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     if (not_string := string_field_error("copy_from", copy_from)) is not None:
         return not_string
     copy_from = copy_from.strip()
+    if copy_from and copy_from not in cfg.workspaces:
+        return web.json_response({"error": f"Source workspace '{copy_from}' not found"}, status=404)
+    ws_dir = body.get("dir", f"workspace-{name}")
+    if (not_string := string_field_error("dir", ws_dir)) is not None:
+        return not_string
+    # Windows can return a path containing NUL from non-strict resolve().
+    if "\x00" in ws_dir:
+        return _invalid_dir(request, "workspace.create", name)
     # Set only once ALL validation has passed (staging is the LAST pre-persist
     # step): the staged tree awaiting install, and the destination it installs
     # into once the in-lock checks pass. copy_pending records that the branch
@@ -151,14 +159,6 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     # that reads as "copied". Mirrors the CLI create's stderr warning on the same case.
     warnings: list[str] = []
     if copy_from:
-        if copy_from not in cfg.workspaces:
-            return web.json_response(
-                {"error": f"Source workspace '{copy_from}' not found"}, status=404
-            )
-        # New workspace gets its own directory, named after the workspace
-        ws_dir = body.get("dir", f"workspace-{name}")
-        if (not_string := string_field_error("dir", ws_dir)) is not None:
-            return not_string
         # Check for directory collision with existing workspaces
         existing_dirs = {ws.dir for ws in cfg.workspaces.values()}
         if ws_dir in existing_dirs:
@@ -228,10 +228,6 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                 f"source workspace '{copy_from}' has no folder at "
                 f"'{cfg.workspaces[copy_from].dir}'; nothing was copied"
             )
-    else:
-        ws_dir = body.get("dir", f"workspace-{name}")
-        if (not_string := string_field_error("dir", ws_dir)) is not None:
-            return not_string
     # Guard against path traversal for relative paths; absolute paths are allowed
     # Path constructed for validation only (never opened/read/written); the
     # is_relative_to + is_sensitive_path guards below reject traversals before
@@ -496,6 +492,8 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
 
         if (not_string := string_field_error("dir", new_dir)) is not None:
             return not_string
+        if "\x00" in new_dir:
+            return _invalid_dir(request, "workspace.update", name)
         # Resolved for validation only; is_relative_to + is_sensitive_path guard
         # below reject traversals before the value is stored in config.
         try:
