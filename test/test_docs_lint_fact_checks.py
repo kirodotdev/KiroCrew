@@ -14,7 +14,9 @@ Most tests build their own throwaway tree under ``tmp_path``. Three classes read
 real checkout on purpose, anchored through ``_REPO_ROOT``: ``TestShippedBaseline``
 (the committed backlog is the artifact under test), ``TestEntryPointDocs`` (the
 router files have to actually be there), and ``TestNoHostSideEffects``'s self-test
-case (the gate's own probes build their own temporary trees). Nothing writes outside
+case (the gate's own probes build their own temporary trees). One dead-identifier test
+loads the real Crew API generator to pin the spec and page directories it pairs.
+Nothing writes outside
 ``tmp_path``.
 """
 
@@ -482,6 +484,38 @@ class TestDeadIdentifier:
         _write(tree, "src/kiro_crew/real.py", "a = 1\n")
         _write(tree, "docs/ok.md", body)
         assert "vanished_handler" in _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
+
+    def test_a_spec_defined_name_is_live_on_the_pages_rendered_from_that_spec_only(
+        self, tree: Path
+    ) -> None:
+        doc_prefix, spec_dir = "docs/reference/crew-api/", "docs/request-for-change/assets/crew-api"
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(tree, f"{spec_dir}/components.yaml", "code:\n  enum: [grant_paused_for_now]\n")
+        _write(
+            tree,
+            f"{doc_prefix}owner-grants.md",
+            "# Grants\n\nRefused with `grant_paused_for_now` or `vanished_handler`.\n",
+        )
+        _write(tree, "docs/ok.md", "# Ok\n\nRefused with `grant_paused_for_now`.\n")
+        findings = gate.run(tree)
+        assert {(f.path, f.token) for f in findings.advisories} == {
+            (f"{doc_prefix}owner-grants.md", "vanished_handler"),
+            ("docs/ok.md", "grant_paused_for_now"),
+        }
+
+    def test_the_spec_rendered_pair_is_where_the_generator_reads_and_writes(self) -> None:
+        # A moved spec or output directory would silently turn every planned
+        # endpoint's names back into dead-identifier noise.
+        script = _REPO_ROOT / "scripts" / "generate_crew_api_reference.py"
+        spec = importlib.util.spec_from_file_location("generate_crew_api_reference", script)
+        assert spec and spec.loader
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+        rendered = (
+            f"{generator.OUT_DIR.relative_to(generator._REPO_ROOT).as_posix()}/",
+            generator.SPEC_DIR.relative_to(generator._REPO_ROOT).as_posix(),
+        )
+        assert rendered in gate._IDENT_SPEC_RENDERED_DOCS
 
     def test_silent_for_a_curated_external_name_and_only_that_name(self, tree: Path) -> None:
         _write(tree, "src/kiro_crew/real.py", "a = 1\n")
