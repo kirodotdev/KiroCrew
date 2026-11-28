@@ -5898,7 +5898,40 @@ past that many names the rule is written as split `match` denies of the
 default-tree skills outside the scope. That form cannot see a skill added to
 those trees after session start, and a name with glob characters is never
 written as a `match` entry (it would deny in-scope skills too), so such a skill
-stays offered. Every projection that adds the rules records one
+stays offered. The workspace `.kiro/skills`, which KAS loads trusted or not, is
+the one under the `cwd` the session is created with (`session_extras`'
+`session_cwd`, which for a sub-agent on its parent's runtime is the sub-agent's
+own checkout, and which every sub-agent target registered on that session shares),
+while the scope itself is still resolved against the runtime's directory. It is
+listed as KAS's `scanSkillsDirectory` lists it: `<entry>/SKILL.md` for every
+top-level entry that is a directory or a link, whatever its name (dot folders and
+`node_modules` included), and every front-matter `name` found is denied, since
+denying a name KAS would not load costs nothing. For a deny list a skill the census
+cannot name stays offered, so each case raises `WorkspaceSkillCensusIncomplete`
+instead of writing a partial list, and takes the failed-scope rule below: a
+platform where `skill_trust.project_skill_traversal_supported()` is false
+(Windows), unless the session `cwd` lists no `.kiro` entry (matched case-blind),
+the one absence it can prove there: a listing opens no child, while a probe under
+a real `.kiro` would resolve it by path; a session `cwd` that is not verifiably an absolute directory, taken
+exactly as ACP sends it (never through `skill_trust.canonical_key`, which trims and
+expands and so can name another checkout); more than
+`kas_skill_scope._MAX_SKILL_FILES` top-level folders (the listing keeps only
+folders and links and stops at the first one past the bound); a link at `.kiro`,
+`.kiro/skills`, a skill folder or its `SKILL.md` (KAS follows it, Crew does not); a
+directory Crew cannot open or list; a `SKILL.md` that is not a regular file, or
+that the no-link read refuses; front matter still open at the
+`_FRONTMATTER_BYTES` read bound (KAS reads the whole file); and front matter Crew's
+reader refuses where KAS's may not (a YAML or JSON error, including an alias, a
+`name` of another type under YAML 1.1, or a language line KAS trims differently);
+a `name` read as a string is denied even when another field fails the schema
+(`description: yes`), since only the name is denied by. One KAS session start
+takes the census once per session `cwd` for its own agent and every sub-agent
+target (`build_reuse.one_build`), a failure included: every agent of that start
+gets a `WorkspaceSkillCensusIncomplete` with the same message (only the message
+is kept, so it carries no `__cause__`). The census is kept beside the block's
+shared budget, not in it, so a start whose skill reads filled that budget still
+walks the tree once; it holds only the literal names the deny list can use.
+Every projection that adds the rules records one
 `kas_skill_scope_denied` security event (source `kas_agent_projection`) naming
 the agent and what the rules keep or deny, at most 40 names per line. When the
 scope or its rules cannot be worked out, the session still starts, but with one

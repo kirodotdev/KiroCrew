@@ -750,6 +750,7 @@ def _project_target(
         include_mcp_json,
         stamp_settings_mcp,
     )
+    from kiro_crew.acp.kas_skill_scope import _skill_scope
     from kiro_crew.acp.session_mcp import (
         session_mcp_disabled_servers,
         session_mcp_disabled_tools,
@@ -810,7 +811,10 @@ def _project_target(
     elsewhere = _pooled_elsewhere(spec, parent_declared, stub_server_names, muted)
     if elsewhere:
         return _SHARED.format(servers=", ".join(elsewhere))
-    scope_rules, skill_copies = kas_harness._skill_scope(name, spec, prompt_dir, work_dir)
+    # The target runs in the parent's session, whose cwd *settings_dir* is.
+    scope_rules, skill_copies = _skill_scope(
+        name, spec, prompt_dir, work_dir, own_notices, session_dir=settings_dir
+    )
     projected = spec
     if skill_copies:
         declared = spec.get("resources")

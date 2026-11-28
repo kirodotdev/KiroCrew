@@ -15,7 +15,10 @@ session (:func:`_v2_skills`).
 
 from __future__ import annotations
 
+import gc
 import json
+import os
+import weakref
 from fnmatch import fnmatchcase
 from pathlib import Path
 
@@ -23,7 +26,7 @@ import pytest
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
-from kiro_crew import build_reuse
+from kiro_crew import build_reuse, skill_trust
 from kiro_crew.acp import kas_skill_scope
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.agent_discovery import session_skill_globs
@@ -99,6 +102,12 @@ def _v2_skills(agent: str, checkout: Path) -> set[str] | None:
     """The skills a kiro-cli session of *agent* loads under Crew (inheritance off)."""
     globs = session_skill_globs("", agent, project_dir=str(checkout), provider_type=PROVIDER_ACP)
     return None if globs is None else kas_skill_scope.skill_names(globs)
+
+
+_NO_PROJECT_WALK = pytest.mark.skipif(
+    not skill_trust.project_skill_traversal_supported(),
+    reason="the workspace census needs the no-follow project walk",
+)
 
 
 @pytest.mark.asyncio
@@ -206,6 +215,49 @@ async def test_a_scope_past_the_exclude_bound_denies_by_name_and_keeps_parity(ho
     assert len(_kas_offers(kiro, entry)) == count
 
 
+def _untrusted_project_skill(checkout: Path) -> None:
+    # KAS loads the workspace's ``.kiro/skills`` whatever Crew's trust store says;
+    # the folder name differs from the front-matter name KAS keys its deny on.
+    from kiro_crew.skills import project_skill_tree_present
+
+    _skill(checkout / ".kiro" / "skills", "proj-dir", name="proj-front")
+    assert not project_skill_tree_present(checkout)
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_a_wide_scope_denies_an_untrusted_projects_skill_by_its_kas_name(home):
+    kiro, checkout, package = home
+    _untrusted_project_skill(checkout)
+    count = kas_skill_scope._MAX_PATTERNS_PER_RULE + 6
+    _agent(kiro, "wide", {"tools": ["*"], "resources": [f"skill://{package}/*/SKILL.md"]})
+    for i in range(count):
+        _skill(package, f"wide-{i:03d}")
+
+    entry = await _entry("wide", checkout)
+
+    rules = entry["permissions"]["rules"]
+    patterns = [p for r in rules for p in r.get("match", [])]
+    assert all("exclude" not in r for r in rules)
+    assert "proj-front" in patterns
+    assert "proj-dir" not in patterns
+    assert not any(_denied(rules, f"wide-{i:03d}") for i in range(count))
+
+
+@pytest.mark.asyncio
+async def test_a_narrow_scope_denies_an_untrusted_projects_skill_through_exclude(home):
+    kiro, checkout, package = home
+    _untrusted_project_skill(checkout)
+    path = _skill(package, "alpha")
+    _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{path}"]})
+
+    entry = await _entry("mapped", checkout)
+
+    rules = _skill_rules(entry)
+    assert rules == [{"capability": "skill", "exclude": ["alpha"], "effect": "deny"}]
+    assert _denied(rules, "proj-front")
+
+
 _SCOPE_FAILED = "could not work out which skills"
 
 
@@ -243,6 +295,619 @@ async def test_failed_scope_rules_keep_only_the_copies_already_made(home, monkey
     assert not _denied(rules, "nodesc")
     assert all(_denied(rules, f"global-{i}") for i in range(5))
     assert extras.withheld_credentials_notice.count(_SCOPE_FAILED) == 1
+
+
+def _wide_agent(kiro: Path, package: Path) -> int:
+    count = kas_skill_scope._MAX_PATTERNS_PER_RULE + 6
+    _agent(kiro, "wide", {"tools": ["*"], "resources": [f"skill://{package}/*/SKILL.md"]})
+    for i in range(count):
+        _skill(package, f"wide-{i:03d}")
+    return count
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_a_workspace_past_the_census_bound_denies_every_skill(home, monkeypatch):
+    kiro, checkout, package = home
+    count = _wide_agent(kiro, package)
+    monkeypatch.setattr(kas_skill_scope, "_MAX_SKILL_FILES", count)
+    for i in range(count + 1):
+        _skill(checkout / ".kiro" / "skills", f"proj-{i:03d}")
+
+    extras = await KasHarness().session_extras("wide", work_dir=str(checkout))
+    [entry] = extras.custom_agents
+
+    assert _skill_rules(entry) == [{"capability": "skill", "effect": "deny"}]
+    assert extras.withheld_credentials_notice.count(_SCOPE_FAILED) == 1
+
+
+@_NO_PROJECT_WALK
+def test_the_census_stops_listing_at_the_first_folder_past_its_bound(tmp_path, monkeypatch):
+    # Neither the files beside the folders nor the folders past the bound are read.
+    root = Path(os.path.realpath(tmp_path))
+    base = root / ".kiro" / "skills"
+    for i in range(40):
+        (base / f"f-{i:02d}").mkdir(parents=True)
+        (base / f"file-{i:02d}.md").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(kas_skill_scope, "_MAX_SKILL_FILES", 3)
+    pulled: list[str] = []
+    real = os.scandir
+
+    class _Counted:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+        def __iter__(self):
+            for entry in self._inner:
+                pulled.append(entry.name)
+                yield entry
+
+    class _CountingOs:
+        # Only the census's own ``os`` is swapped; the stdlib module stays whole.
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        @staticmethod
+        def scandir(fd):
+            return _Counted(real(fd))
+
+    monkeypatch.setattr(kas_skill_scope, "os", _CountingOs())
+
+    with pytest.raises(kas_skill_scope.WorkspaceSkillCensusIncomplete):
+        kas_skill_scope._workspace_skill_files(root)
+
+    assert len([n for n in pulled if n.startswith("f-")]) == 4
+    assert len(pulled) < 80
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.parametrize("trimmed_twin", [False, True])
+def test_the_census_reads_the_cwd_acp_sends_not_a_trimmed_one(tmp_path, trimmed_twin):
+    # ACP hands KAS the cwd verbatim; a trailing space is part of the directory name.
+    root = Path(os.path.realpath(tmp_path))
+    spaced = root / "proj "
+    _skill(spaced / ".kiro" / "skills", "proj-spaced")
+    if trimmed_twin:
+        _skill(root / "proj" / ".kiro" / "skills", "proj-twin")
+
+    assert kas_skill_scope._workspace_skill_names(str(spaced)) == {"proj-spaced"}
+
+
+@_NO_PROJECT_WALK
+def test_a_cwd_the_census_cannot_verify_raises(tmp_path):
+    with pytest.raises(kas_skill_scope.WorkspaceSkillCensusIncomplete):
+        kas_skill_scope._workspace_skill_names(str(tmp_path / "gone"))
+
+
+@_NO_PROJECT_WALK
+def test_a_checkout_swapped_for_a_link_after_the_listing_admits_no_other_checkout(
+    tmp_path, monkeypatch
+):
+    # The swap lands between the listing and the reads, where a real race would.
+    root = Path(os.path.realpath(tmp_path))
+    checkout = root / "checkout"
+    _skill(checkout / ".kiro" / "skills", "proj-dir", name="proj-front")
+    _skill(root / "other" / ".kiro" / "skills", "proj-dir", name="other-front")
+    real = kas_skill_scope._workspace_skill_files
+
+    def _listed_then_swapped(listed_root: Path) -> list[tuple[str, Path]]:
+        files = real(listed_root)
+        checkout.rename(root / "checkout-moved")
+        checkout.symlink_to(root / "other", target_is_directory=True)
+        return files
+
+    monkeypatch.setattr(kas_skill_scope, "_workspace_skill_files", _listed_then_swapped)
+
+    with pytest.raises(kas_skill_scope.WorkspaceSkillCensusIncomplete, match="proj-dir"):
+        kas_skill_scope._workspace_skill_names(str(checkout))
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_a_workspace_skill_the_read_refuses_denies_every_skill(home, tmp_path):
+    kiro, checkout, package = home
+    _wide_agent(kiro, package)
+    _skill(checkout / ".kiro" / "skills", "proj-ok")
+    linked = _skill(checkout / ".kiro" / "skills", "proj-linked")
+    # A second link to the inode: the no-link read refuses it, and KAS still loads it.
+    os.link(linked, tmp_path / "elsewhere.md")
+
+    extras = await KasHarness().session_extras("wide", work_dir=str(checkout))
+    [entry] = extras.custom_agents
+
+    assert _skill_rules(entry) == [{"capability": "skill", "effect": "deny"}]
+    assert extras.withheld_credentials_notice.count(_SCOPE_FAILED) == 1
+
+
+async def _assert_wide_session_denies_every_skill(kiro: Path, package: Path, checkout: Path):
+    _wide_agent(kiro, package)
+    extras = await KasHarness().session_extras("wide", work_dir=str(checkout))
+    [entry] = extras.custom_agents
+    assert _skill_rules(entry) == [{"capability": "skill", "effect": "deny"}]
+    assert extras.withheld_credentials_notice.count(_SCOPE_FAILED) == 1
+
+
+async def _wide_session_rules(kiro: Path, package: Path, checkout: Path) -> list[dict]:
+    count = _wide_agent(kiro, package)
+    extras = await KasHarness().session_extras("wide", work_dir=str(checkout))
+    [entry] = extras.custom_agents
+    rules = entry["permissions"]["rules"]
+    assert not any(_denied(rules, f"wide-{i:03d}") for i in range(count))
+    assert _SCOPE_FAILED not in (extras.withheld_credentials_notice or "")
+    return rules
+
+
+@pytest.mark.asyncio
+async def test_a_platform_that_cannot_walk_the_workspace_denies_every_skill(home, monkeypatch):
+    # canonical_key answers None there too, which must not read as "no tree".
+    kiro, checkout, package = home
+    _untrusted_project_skill(checkout)
+    monkeypatch.setattr(skill_trust, "project_skill_traversal_supported", lambda: False)
+
+    await _assert_wide_session_denies_every_skill(kiro, package, checkout)
+
+
+def _census_cannot_list(*_a, **_k):
+    raise kas_skill_scope.WorkspaceSkillCensusIncomplete("workspace x could not be listed")
+
+
+@pytest.mark.parametrize("cannot_walk", [True, False])
+@pytest.mark.asyncio
+async def test_only_a_platform_that_cannot_walk_says_a_new_chat_will_not_help(
+    home, monkeypatch, cannot_walk
+):
+    kiro, checkout, package = home
+    _untrusted_project_skill(checkout)
+    if cannot_walk:
+        monkeypatch.setattr(skill_trust, "project_skill_traversal_supported", lambda: False)
+    else:
+        monkeypatch.setattr(kas_skill_scope, "_census", _census_cannot_list)
+    _wide_agent(kiro, package)
+
+    extras = await KasHarness().session_extras("wide", work_dir=str(checkout))
+    notice = extras.withheld_credentials_notice
+
+    assert notice.count(_SCOPE_FAILED) == 1
+    assert ("Start a new chat to try again" in notice) is not cannot_walk
+    assert ("starting a new chat will not change that" in notice) is cannot_walk
+
+
+@pytest.mark.asyncio
+async def test_a_platform_that_cannot_walk_keeps_the_skills_of_a_cwd_without_kiro(
+    home, monkeypatch
+):
+    kiro, checkout, package = home
+    (checkout / "src").mkdir()
+    monkeypatch.setattr(skill_trust, "project_skill_traversal_supported", lambda: False)
+
+    rules = await _wide_session_rules(kiro, package, checkout)
+
+    assert all(_denied(rules, f"global-{i}") for i in range(5))
+
+
+def _kiro_without_skills(cwd: Path) -> None:
+    (cwd / ".kiro" / "steering").mkdir(parents=True)
+
+
+def _upper_case_kiro(cwd: Path) -> None:
+    (cwd / ".KIRO").mkdir()
+
+
+@pytest.mark.parametrize("cwd", ["kiro-without-skills", "upper-case-kiro", "gone", "relative"])
+def test_a_platform_that_cannot_walk_proves_no_absence_past_the_cwd_listing(
+    tmp_path, monkeypatch, cwd
+):
+    # Proving .kiro/skills absent under a real .kiro resolves .kiro by path.
+    monkeypatch.setattr(skill_trust, "project_skill_traversal_supported", lambda: False)
+    work_dir = {"gone": str(tmp_path / "gone"), "relative": "checkout"}.get(cwd, str(tmp_path))
+    if cwd == "kiro-without-skills":
+        _kiro_without_skills(tmp_path)
+    elif cwd == "upper-case-kiro":
+        _upper_case_kiro(tmp_path)
+
+    with pytest.raises(kas_skill_scope.WorkspaceSkillCensusIncomplete):
+        kas_skill_scope._workspace_skill_names(work_dir)
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_workspace_front_matter_past_the_read_bound_denies_every_skill(home):
+    # KAS reads the whole file and finds the name after the padding; the census
+    # read stops inside the still-open front matter.
+    kiro, checkout, package = home
+    padding = "# padding\n" * 7000
+    assert len(padding) > kas_skill_scope._FRONTMATTER_BYTES
+    _raw_skill(
+        checkout / ".kiro" / "skills",
+        "proj-padded",
+        f"---\n{padding}name: proj-padded\ndescription: d\n---\nbody\n",
+    )
+
+    await _assert_wide_session_denies_every_skill(kiro, package, checkout)
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_workspace_front_matter_closed_inside_the_read_bound_is_named(home):
+    # A long body after a closed fence leaves the front matter whole.
+    kiro, checkout, package = home
+    body = "x" * (2 * kas_skill_scope._FRONTMATTER_BYTES)
+    _raw_skill(
+        checkout / ".kiro" / "skills",
+        "proj-long",
+        f"---\nname: proj-long\ndescription: d\n---\n{body}",
+    )
+
+    rules = await _wide_session_rules(kiro, package, checkout)
+
+    assert _denied(rules, "proj-long")
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.parametrize(
+    "front",
+    [
+        pytest.param("name: on\ndescription: d", id="yaml-1.1-bool-name"),
+        pytest.param("name: 2024-01-01\ndescription: d", id="yaml-1.1-timestamp-name"),
+        pytest.param("x: &n proj-x\nname: *n\ndescription: d", id="alias"),
+        pytest.param("name: proj-x\ndescription: d\n1: a\ntrue: b", id="python-equal-keys"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_workspace_front_matter_only_crews_reader_refuses_denies_every_skill(home, front):
+    # KAS's reader uses the YAML 1.2 core schema and accepts aliases, so each of
+    # these loads on KAS with a name the census could not read.
+    kiro, checkout, package = home
+    _raw_skill(checkout / ".kiro" / "skills", "proj-x", f"---\n{front}\n---\nbody\n")
+
+    await _assert_wide_session_denies_every_skill(kiro, package, checkout)
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_workspace_front_matter_language_kas_trims_away_denies_every_skill(home):
+    # JavaScript's trim strips U+FEFF, so KAS reads this as YAML; str.strip does not.
+    kiro, checkout, package = home
+    _raw_skill(
+        checkout / ".kiro" / "skills", "proj-x", "---\ufeff\nname: proj-x\ndescription: d\n---\nb\n"
+    )
+
+    await _assert_wide_session_denies_every_skill(kiro, package, checkout)
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.parametrize("folder", [".hidden", "node_modules", "__pycache__", "site-packages"])
+@pytest.mark.asyncio
+async def test_a_workspace_skill_in_a_folder_crews_catalog_skips_is_denied(home, folder):
+    # KAS reads every top-level folder, whatever its name.
+    kiro, checkout, package = home
+    _skill(checkout / ".kiro" / "skills", folder, name="proj-front")
+
+    rules = await _wide_session_rules(kiro, package, checkout)
+
+    assert _denied(rules, "proj-front")
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_a_workspace_skill_with_an_invalid_kas_name_is_still_denied_by_it(home):
+    # Denying a name KAS would not load costs nothing; leaving one it does is a leak.
+    kiro, checkout, package = home
+    _raw_skill(checkout / ".kiro" / "skills", "proj-x", "---\nname: proj-x\n---\nb\n")
+
+    rules = await _wide_session_rules(kiro, package, checkout)
+
+    assert _denied(rules, "proj-x")
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_a_workspace_skill_whose_other_field_crews_reader_refuses_is_denied_by_name(home):
+    # YAML 1.1 reads ``yes`` as a bool, KAS's 1.2 reader as a string; the name was
+    # read cleanly, so it is denied and the mapped skills stay.
+    kiro, checkout, package = home
+    text = "---\nname: proj-x\ndescription: yes\n---\nbody\n"
+    _raw_skill(checkout / ".kiro" / "skills", "proj-x", text)
+
+    rules = await _wide_session_rules(kiro, package, checkout)
+
+    assert _denied(rules, "proj-x")
+    assert all(_denied(rules, f"global-{i}") for i in range(5))
+    assert kas_skill_scope._kas_front_matter(text)[0] is None, "a copy still reads it strictly"
+
+
+def _child_checkout(tmp_path: Path) -> Path:
+    # A sub-agent's own checkout, beside the runtime's directory, with a skill
+    # KAS loads there and the runtime's directory does not have.
+    child = tmp_path / "child-checkout"
+    child.mkdir()
+    _untrusted_project_skill(child)
+    return child
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_a_session_in_another_checkout_is_censused_in_its_own_cwd(home, tmp_path):
+    kiro, runtime_dir, package = home
+    child = _child_checkout(tmp_path)
+    count = _wide_agent(kiro, package)
+
+    extras = await KasHarness().session_extras(
+        "wide", work_dir=str(runtime_dir), session_cwd=str(child)
+    )
+    [entry] = extras.custom_agents
+
+    rules = entry["permissions"]["rules"]
+    assert _denied(rules, "proj-front")
+    assert not any(_denied(rules, f"wide-{i:03d}") for i in range(count))
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_a_sub_agent_target_is_censused_in_the_sessions_cwd(home, tmp_path):
+    kiro, runtime_dir, package = home
+    child = _child_checkout(tmp_path)
+    count = _wide_agent(kiro, package)
+    subagent = {"subagent": {"availableAgents": ["wide"]}}
+    _agent(kiro, "delegator", {"tools": ["*"], "toolsSettings": subagent})
+
+    extras = await KasHarness().session_extras(
+        "delegator", work_dir=str(runtime_dir), session_cwd=str(child)
+    )
+    target = next(a for a in extras.custom_agents if a["id"] == "wide")
+
+    rules = target["permissions"]["rules"]
+    assert _denied(rules, "proj-front")
+    assert not any(_denied(rules, f"wide-{i:03d}") for i in range(count))
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_a_sub_agent_target_whose_census_fails_says_so_in_chat(home, tmp_path):
+    # The narrow parent runs no census; only the wide target's fails.
+    kiro, checkout, package = home
+    _link_skills_tree(checkout, tmp_path)
+    _wide_agent(kiro, package)
+    subagent = {"subagent": {"availableAgents": ["wide"]}}
+    _agent(kiro, "delegator", {"tools": ["*"], "toolsSettings": subagent})
+
+    extras = await KasHarness().session_extras("delegator", work_dir=str(checkout))
+    target = next(a for a in extras.custom_agents if a["id"] == "wide")
+
+    assert _skill_rules(target) == [{"capability": "skill", "effect": "deny"}]
+    assert extras.withheld_credentials_notice.count(_SCOPE_FAILED) == 1
+
+
+_WIDE_TARGETS = ("wide-a", "wide-b", "wide-c")
+
+
+def _wide_parent_and_targets(kiro: Path, package: Path, monkeypatch) -> tuple[int, list[str]]:
+    """A wide ``lead`` naming three wide targets; the census's tree scans, counted."""
+    count = _wide_agent(kiro, package)
+    wide = {"tools": ["*"], "resources": [f"skill://{package}/*/SKILL.md"]}
+    for name in _WIDE_TARGETS:
+        _agent(kiro, name, wide)
+    subagent = {"subagent": {"availableAgents": list(_WIDE_TARGETS)}}
+    _agent(kiro, "lead", {**wide, "toolsSettings": subagent})
+    scans: list[str] = []
+    real = kas_skill_scope._workspace_skill_files
+
+    def scan(root):
+        scans.append(str(root))
+        return real(root)
+
+    monkeypatch.setattr(kas_skill_scope, "_workspace_skill_files", scan)
+    return count, scans
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_one_start_censuses_the_workspace_once_for_the_parent_and_its_wide_targets(
+    home, monkeypatch
+):
+    kiro, checkout, package = home
+    _untrusted_project_skill(checkout)
+    count, scans = _wide_parent_and_targets(kiro, package, monkeypatch)
+
+    extras = await KasHarness().session_extras("lead", work_dir=str(checkout))
+
+    assert [a["id"] for a in extras.custom_agents] == ["lead", *_WIDE_TARGETS]
+    for entry in extras.custom_agents:
+        rules = entry["permissions"]["rules"]
+        assert _denied(rules, "proj-front"), entry["id"]
+        assert not any(_denied(rules, f"wide-{i:03d}") for i in range(count)), entry["id"]
+    assert len(scans) == 1, scans
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_a_census_that_fails_once_fails_alike_for_every_agent_of_the_start(
+    home, tmp_path, monkeypatch
+):
+    kiro, checkout, package = home
+    _link_skills_tree(checkout, tmp_path)
+    _, scans = _wide_parent_and_targets(kiro, package, monkeypatch)
+    raised: list[tuple[type, str]] = []
+    real_rules = kas_skill_scope.skill_scope_rules
+
+    def rules_spy(*args, **kwargs):
+        try:
+            return real_rules(*args, **kwargs)
+        except Exception as exc:
+            raised.append((type(exc), str(exc)))
+            raise
+
+    monkeypatch.setattr(kas_skill_scope, "skill_scope_rules", rules_spy)
+
+    extras = await KasHarness().session_extras("lead", work_dir=str(checkout))
+
+    assert len(extras.custom_agents) == 1 + len(_WIDE_TARGETS)
+    for entry in extras.custom_agents:
+        assert _skill_rules(entry) == [{"capability": "skill", "effect": "deny"}], entry["id"]
+    assert len(raised) == len(extras.custom_agents)
+    assert raised[0][0] is kas_skill_scope.WorkspaceSkillCensusIncomplete
+    assert raised == [raised[0]] * len(raised)
+    assert len(scans) == 1, scans
+    assert "agent wide" in extras.withheld_credentials_notice
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.asyncio
+async def test_a_full_shared_budget_still_censuses_the_workspace_once_per_start(home, monkeypatch):
+    # A wide parent's skill reads can fill build_reuse's budget before the first
+    # census; the targets must not each walk and parse the tree again.
+    kiro, checkout, package = home
+    _untrusted_project_skill(checkout)
+    count, scans = _wide_parent_and_targets(kiro, package, monkeypatch)
+    monkeypatch.setattr(build_reuse, "MAX_KEPT_WEIGHT", 0)
+
+    extras = await KasHarness().session_extras("lead", work_dir=str(checkout))
+
+    assert [a["id"] for a in extras.custom_agents] == ["lead", *_WIDE_TARGETS]
+    for entry in extras.custom_agents:
+        rules = entry["permissions"]["rules"]
+        assert _denied(rules, "proj-front"), entry["id"]
+        assert not any(_denied(rules, f"wide-{i:03d}") for i in range(count)), entry["id"]
+    assert len(scans) == 1, scans
+
+
+@_NO_PROJECT_WALK
+def test_a_failed_census_keeps_its_message_not_its_exception(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _link_skills_tree(checkout, tmp_path)
+    originals: list[weakref.ref[BaseException]] = []
+    real = kas_skill_scope._census
+
+    def census(work_dir):
+        try:
+            return real(work_dir)
+        except kas_skill_scope.WorkspaceSkillCensusIncomplete as exc:
+            originals.append(weakref.ref(exc))
+            raise
+
+    monkeypatch.setattr(kas_skill_scope, "_census", census)
+
+    with build_reuse.one_build():
+        raised = []
+        for _ in range(2):
+            with pytest.raises(kas_skill_scope.WorkspaceSkillCensusIncomplete) as info:
+                kas_skill_scope._workspace_skill_names(str(checkout))
+            raised.append(info.value)
+        del info
+        gc.collect()
+
+        assert len(originals) == 1
+        assert originals[0]() is None, "the census's own exception is still held"
+        first, second = raised
+        assert first is not second and str(first) == str(second)
+        assert first.__cause__ is None and second.__cause__ is None
+
+
+@_NO_PROJECT_WALK
+def test_the_next_start_censuses_the_workspace_afresh(tmp_path):
+    checkout = tmp_path / "checkout"
+    _skill(checkout / ".kiro" / "skills", "proj-a")
+
+    with build_reuse.one_build():
+        assert kas_skill_scope._workspace_skill_names(str(checkout)) == {"proj-a"}
+    _skill(checkout / ".kiro" / "skills", "proj-b")
+    with build_reuse.one_build():
+        assert kas_skill_scope._workspace_skill_names(str(checkout)) == {"proj-a", "proj-b"}
+
+
+def _link_skill_folder(checkout: Path, tmp_path: Path) -> None:
+    _skill(tmp_path / "linked-skills", "proj-dir", name="proj-front")
+    (checkout / ".kiro" / "skills").mkdir(parents=True)
+    os.symlink(tmp_path / "linked-skills" / "proj-dir", checkout / ".kiro" / "skills" / "proj-dir")
+
+
+def _link_skill_file(checkout: Path, tmp_path: Path) -> None:
+    target = _skill(tmp_path / "linked-skills", "proj-dir", name="proj-front")
+    (checkout / ".kiro" / "skills" / "proj-dir").mkdir(parents=True)
+    os.symlink(target, checkout / ".kiro" / "skills" / "proj-dir" / "SKILL.md")
+
+
+def _link_skills_tree(checkout: Path, tmp_path: Path) -> None:
+    _skill(tmp_path / "linked-skills", "proj-dir", name="proj-front")
+    (checkout / ".kiro").mkdir()
+    os.symlink(tmp_path / "linked-skills", checkout / ".kiro" / "skills")
+
+
+def _link_kiro_dir(checkout: Path, tmp_path: Path) -> None:
+    _skill(tmp_path / "linked-kiro" / "skills", "proj-dir", name="proj-front")
+    os.symlink(tmp_path / "linked-kiro", checkout / ".kiro")
+
+
+@_NO_PROJECT_WALK
+@pytest.mark.parametrize(
+    "plant", [_link_skill_folder, _link_skill_file, _link_skills_tree, _link_kiro_dir]
+)
+@pytest.mark.asyncio
+async def test_a_link_kas_follows_in_the_workspace_tree_denies_every_skill(home, tmp_path, plant):
+    kiro, checkout, package = home
+    plant(checkout, tmp_path)
+
+    await _assert_wide_session_denies_every_skill(kiro, package, checkout)
+
+
+@_NO_PROJECT_WALK
+def test_a_census_failure_names_the_checkout_path_escaped(tmp_path):
+    # The message reaches the gateway log, so a newline in a checkout's name must not
+    # start a line there that reads as a log entry of its own.
+    checkout = Path(os.path.realpath(tmp_path)) / "check\nout"
+    checkout.mkdir()
+    _link_kiro_dir(checkout, tmp_path)
+
+    with pytest.raises(kas_skill_scope.WorkspaceSkillCensusIncomplete) as raised:
+        kas_skill_scope._workspace_skill_names(str(checkout))
+
+    message = str(raised.value)
+    assert "\n" not in message
+    assert f"workspace {str(checkout / '.kiro')!r} is a link KAS follows" == message
+
+
+_RUNS_AS_ROOT = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root reads a directory whatever its mode",
+)
+
+
+@_NO_PROJECT_WALK
+@_RUNS_AS_ROOT
+@pytest.mark.asyncio
+async def test_a_workspace_skill_folder_kas_can_search_but_not_list_is_denied(home):
+    # KAS reads <folder>/SKILL.md with search permission alone.
+    kiro, checkout, package = home
+    path = _skill(checkout / ".kiro" / "skills", "proj-dir", name="proj-front")
+    path.parent.chmod(0o311)
+    try:
+        rules = await _wide_session_rules(kiro, package, checkout)
+    finally:
+        path.parent.chmod(0o755)
+
+    assert _denied(rules, "proj-front")
+
+
+@_NO_PROJECT_WALK
+@_RUNS_AS_ROOT
+@pytest.mark.asyncio
+async def test_a_workspace_tree_crew_cannot_open_denies_every_skill(home):
+    # KAS lists .kiro/skills through a checkout it may search but not list.
+    kiro, checkout, package = home
+    _skill(checkout / ".kiro" / "skills", "proj-dir", name="proj-front")
+    checkout.chmod(0o311)
+    try:
+        await _assert_wide_session_denies_every_skill(kiro, package, checkout)
+    finally:
+        checkout.chmod(0o755)
 
 
 @pytest.mark.asyncio
