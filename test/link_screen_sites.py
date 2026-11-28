@@ -259,6 +259,7 @@ DECLARED_SITES = frozenset(
         ("sel_rotation.py", "_ensure_segment_dir"),
         ("sel_rotation.py", "_open_rotation_lock"),
         ("sel_trust_root.py", "_load_or_create_hmac_key"),
+        ("service/linux.py", "_link_entry"),
         ("service/linux_uninstall.py", "_is_mask_of_our_name"),
         ("service/linux_uninstall.py", "_owned_unit"),
         ("session_storage_parts/crew_staging.py", "_discard_crew_staging"),

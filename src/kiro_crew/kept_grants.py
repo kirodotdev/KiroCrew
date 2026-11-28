@@ -5,8 +5,9 @@ did not choose: any restart, an update's re-exec, a crash, a watchdog or OOM kil
 host reboot, a stop the service manager sends on its own. Only a stop the user chose
 ends them. This module is the store both kinds share:
 
-* **The user-stop mark.** Every stop the user chooses (``kirocrew stop``, the desktop
-  Quit, Ctrl+C on a foreground gateway, ``POST /api/shutdown`` with ``user_stop``)
+* **The user-stop mark.** Every stop the user chooses (``kirocrew stop``,
+  ``kirocrew service disable``, the desktop Quit, Ctrl+C on a foreground gateway,
+  ``POST /api/shutdown`` with ``user_stop``)
   calls :func:`mark_user_stop` before the process goes. No other exit writes it.
 * **The boot verdict.** :func:`boot_verdict` runs once per process image: with a mark
   present it deletes the mark and every record and answers ``"user_stop"``; without

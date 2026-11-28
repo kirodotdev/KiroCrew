@@ -588,7 +588,7 @@ async def _run_task(args: argparse.Namespace) -> None:
 
 
 def _service_cmd(args: argparse.Namespace) -> int:
-    """Dispatch ``kirocrew service {install,uninstall,status}``.
+    """Dispatch ``kirocrew service {install,uninstall,status,disable,enable}``.
 
     Wraps :mod:`kiro_crew.service.controller` so that platform detection
     and the underlying systemctl/launchctl calls live there. The CLI
@@ -627,7 +627,37 @@ def _service_cmd(args: argparse.Namespace) -> int:
             resources=f"rc={rc}",
         )
         return rc
-    print("Usage: kirocrew service {install|uninstall|status}", file=sys.stderr)
+    if action in ("disable", "enable"):
+        if action == "disable":
+            from kiro_crew import kept_grants
+
+            earlier = (kept_grants.kept_dir() / kept_grants.USER_STOP_FILE).exists()
+            marked = kept_grants.mark_user_stop("service_disable")
+            begun: list[bool] = []
+            try:
+                rc, stop_ran = service_controller.disable_service(lambda: begun.append(True))
+            except BaseException:
+                # Ctrl+C before any stop was sent (the sudo prompt): the gateway
+                # runs on. Once a stop was sent it may still land, so keep it.
+                if marked and not earlier and not begun:
+                    kept_grants.withdraw_user_stop()
+                raise
+            # Keep a new mark only when a stop ended a running gateway, whatever
+            # the exit code; a refused disable or stop, or a unit that was
+            # already stopped, leaves the gateway as it was.
+            if marked and not earlier and not stop_ran:
+                kept_grants.withdraw_user_stop()
+        else:
+            rc = service_controller.enable_service()
+        sel().log_api_access(
+            caller="cli",
+            operation=f"service_{action}",
+            outcome="allowed" if rc == 0 else "error",
+            source="cli",
+            resources=f"rc={rc}",
+        )
+        return rc
+    print("Usage: kirocrew service {install|uninstall|status|disable|enable}", file=sys.stderr)
     return 2
 
 

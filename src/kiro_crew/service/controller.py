@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from kiro_crew.service import linux, macos
@@ -447,6 +448,113 @@ def uninstall_service() -> int:
         return 0
     _unsupported_message()
     return 2
+
+
+def _set_boot_start(enable: bool, on_stop: Callable[[], None] | None = None) -> tuple[int, bool]:
+    """Shared body of :func:`disable_service` and :func:`enable_service`.
+
+    Returns the exit code and, for a disable, whether a stop ran and the
+    service manager accepted it in some scope or domain (always False for an
+    enable). Exit code 0 when the service was turned off (or on), with a ``Warning:`` naming any
+    scope not reached beside one that changed; 1 when a step did not take, when
+    no scope that has the unit could be reached, or when a macOS disable missed
+    ``gui/<uid>``; 3 when no service is installed; 2 when unsupported.
+    """
+    plat = current_platform()
+    unreached: list[str] = []
+    stop_ran = False
+    if plat == Platform.SYSTEMD:
+        if enable:
+            report = linux.enable()
+        else:
+            full = linux.disable(on_stop)
+            report = None if full is None else (full[0], full[1])
+            stop_ran = full is not None and full[2]
+        refused, unreached = report if report is not None else ([], [])
+        accepted = None if report is None else not refused
+        hints = refused + unreached
+    elif plat == Platform.LAUNCHD:
+        if enable:
+            mac_report = macos.enable()
+        else:
+            mac_full = macos.disable(on_stop)
+            mac_report = None if mac_full is None else (mac_full[0], mac_full[1])
+            stop_ran = mac_full is not None and mac_full[2]
+        accepted, skipped = mac_report if mac_report is not None else (None, [])
+        # A domain launchd could not reach (gui/<uid> with nobody at the
+        # desktop) kept its old setting: name it, as the Linux path does.
+        unreached = [
+            f"{d}: no desktop login, so launchd could not record the "
+            f"{'enable' if enable else 'disable'} there"
+            for d in skipped
+        ]
+        domain = macos._legacy_domains()[0]
+        target = f"{domain}/{LAUNCHD_LABEL}"
+        if enable:
+            hints = [
+                f"launchctl enable {target}",
+                f"launchctl bootstrap {domain} {macos.PLIST_PATH}",
+                f"and if it loads but does not run: tail -n 50 {macos.STDERR_LOG}",
+            ]
+        else:
+            hints = [f"launchctl disable {target}", f"launchctl bootout {target}"]
+    else:
+        _unsupported_message()
+        return 2, False
+    if accepted is None:
+        print("Note: No kirocrew service is installed. Install one: kirocrew service install")
+        return 3, False
+    if not accepted:
+        print(
+            f"Error: kirocrew service {'enable' if enable else 'disable'} did not finish. "
+            "Run these by hand:",
+            file=sys.stderr,
+        )
+        for hint in hints:
+            print(f"   {hint}", file=sys.stderr)
+        return 1, stop_ran
+    if plat == Platform.LAUNCHD and unreached and not enable:
+        # The agent is stopped now, but launchd loads the plist into gui/<uid>
+        # at the next desktop login: not the lasting stop the verb promises.
+        print(
+            "Error: kirocrew service stopped, but not disabled for the desktop login, "
+            "so it starts again at the next desktop login:",
+            file=sys.stderr,
+        )
+        for line in unreached:
+            print(f"   {line}", file=sys.stderr)
+        print(
+            "   Run `kirocrew service disable` again from a session at the desktop.",
+            file=sys.stderr,
+        )
+        return 1, stop_ran
+    if enable:
+        print("✅ kirocrew service enabled and started. It starts at every boot or login.")
+        print("   To keep it stopped: kirocrew service disable")
+    else:
+        print("✅ kirocrew service stopped and disabled. It stays installed but does not")
+        print("   start at boot or login. To turn it back on: kirocrew service enable")
+    if unreached:
+        # Only the scopes this shell reached were changed: a unit in the others
+        # (a per-user unit, seen from a sudo shell) is untouched.
+        print("Warning: this changed only the scopes this shell can reach. Not checked:")
+        for line in unreached:
+            print(f"   {line}")
+    return 0, stop_ran
+
+
+def disable_service(on_stop: Callable[[], None] | None = None) -> tuple[int, bool]:
+    """Stop the service and keep it from starting at boot or login, leaving it
+    installed. Returns ``(exit code, stop_ran)``; see :func:`_set_boot_start`.
+    *on_stop* is called just before a stop is sent to a running service, so it
+    still counts when a raise (Ctrl+C) cuts the call short."""
+    return _set_boot_start(False, on_stop)
+
+
+def enable_service() -> int:
+    """Undo :func:`disable_service`: start the service at boot or login again,
+    and start it now. See :func:`_set_boot_start` for the exit codes."""
+    return _set_boot_start(True)[0]
 
 
 def service_status() -> int:

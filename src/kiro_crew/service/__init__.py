@@ -1,6 +1,6 @@
 """Service management for the KiroCrew gateway.
 
-Provides ``install``, ``uninstall``, ``status`` for systemd (Linux,
+Provides ``install``, ``uninstall``, ``status``, ``disable`` and ``enable`` for systemd (Linux,
 system-level unit at ``/etc/systemd/system/``) and launchd (macOS,
 LaunchAgent under ``~/Library/LaunchAgents/``).
 
