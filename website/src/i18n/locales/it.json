@@ -25716,7 +25716,7 @@
     "state_this_mate": "questo Bot",
     "state_removed": "rimosso",
     "driftHint": "Il file dell'agente di {{member}} è stato modificato fuori da questa pagina. Premi «Rivedi modifica» per vedere quella modifica esterna insieme alla tua bozza; «Salva» applica poi la correzione o spiega perché non può.",
-    "sourceFailed": "Impossibile convalidare la configurazione salvata. Ricaricala dal server per riprovare.",
+    "sourceFailed": "Impossibile convalidare la configurazione salvata. Ricarica questa pagina per riprovare.",
     "runtime_failed": "Caricamento del runtime non riuscito. La versione salvata rimane.",
     "server_verb_count": "{{on}} di {{total}} approvati automaticamente",
     "server_allow_aria": "Consenti {{server}}",

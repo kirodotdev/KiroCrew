@@ -25716,7 +25716,7 @@
     "state_this_mate": "este Bot",
     "state_removed": "removido",
     "driftHint": "O arquivo de agente de {{member}} foi editado fora desta página. Clique em \"Revisar alteração\" para ver essa edição externa junto com o seu rascunho; depois \"Salvar\" grava a correção ou diz por que não pode.",
-    "sourceFailed": "Não foi possível validar a configuração salva. Recarregue-a do servidor para tentar de novo.",
+    "sourceFailed": "Não foi possível validar a configuração salva. Recarregue esta página para tentar de novo.",
     "runtime_failed": "Falha ao carregar o runtime. A versão salva permanece.",
     "server_verb_count": "{{on}} de {{total}} aprovados automaticamente",
     "server_allow_aria": "Permitir {{server}}",

@@ -25716,7 +25716,7 @@
     "state_this_mate": "ce Bot",
     "state_removed": "retiré",
     "driftHint": "Le fichier d’agent de {{member}} a été modifié en dehors de cette page. Clique sur « Examiner la modification » pour voir cette modification externe avec ton propre brouillon ; « Enregistrer » applique alors le correctif ou explique pourquoi il ne le peut pas.",
-    "sourceFailed": "Impossible de valider la configuration enregistrée. Recharge-la depuis le serveur pour réessayer.",
+    "sourceFailed": "Impossible de valider la configuration enregistrée. Recharge cette page pour réessayer.",
     "runtime_failed": "Échec du chargement de l'exécution. La version enregistrée est conservée.",
     "server_verb_count": "{{on}} sur {{total}} approuvés automatiquement",
     "server_allow_aria": "Autoriser {{server}}",
