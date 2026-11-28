@@ -1768,10 +1768,10 @@ def _load_limits() -> EffectiveLimits:
 
 def _open_default_store() -> WorkStore | None:
     from kiro_crew.config.paths import data_home
-    from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
+    from kiro_crew.taskq import TaskStore, TaskStoreUnavailable, start_writer
 
     try:
-        tasks = TaskStore(TaskStore.default_path(data_home())).open()
+        tasks = start_writer(TaskStore(TaskStore.default_path(data_home())).open())
     except TaskStoreUnavailable:
         logger.warning("shared crew: the durable work store is unavailable", exc_info=True)
         return None

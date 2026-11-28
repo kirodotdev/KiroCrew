@@ -154,6 +154,7 @@ __all__ = [
     "reconcile_on_boot",
     "register_coordinator",
     "shared_retry_at",
+    "start_writer",
     "steps_to",
 ]
 
@@ -172,8 +173,9 @@ def open_default_store(
     This is the order the RFC fixes: schema, import (keyed, so a second boot
     adds nothing), reconcile (settle dead owners' rows), wait rebuild, and only
     then may the caller dispatch. Raises :class:`TaskStoreUnavailable` when the
-    file cannot be opened; a failure in any of the three later phases is logged,
-    never fatal, because a store that opens can still accept new work.
+    file cannot be opened or the writer thread cannot start (:func:`start_writer`);
+    a failure in any of the three phases between is logged, never fatal, because
+    a store that opens can still accept new work.
 
     The two sweeps run ONCE here and the store this returns carries no record of
     what they could not settle, so the rows they refused are named in the log
@@ -209,6 +211,23 @@ def open_default_store(
         _log_unsettled("wait rebuild", WaitLedger(store).rebuild().errors)
     except Exception:  # noqa: BLE001 - rebuild is best-effort by contract
         logger.warning("taskq wait rebuild failed", exc_info=True)
+    return start_writer(store)
+
+
+def start_writer(store: TaskStore) -> TaskStore:
+    """Start ``store``'s writer thread on this thread, off the loop, and return the store.
+
+    Every opener of a store an event loop reaches through :meth:`TaskStore.run` calls
+    this off the loop, so the writer's ``Thread.start()`` happens there and the loop's
+    calls only enqueue. A start the host refuses closes the store and raises
+    :class:`TaskStoreUnavailable`, which each opener already handles, off the loop, as
+    a store that cannot open, rather than leaving the start to the loop's first call.
+    """
+    try:
+        store._writer_executor()
+    except Exception as exc:  # noqa: BLE001 - RuntimeError or MemoryError
+        store.close()
+        raise TaskStoreUnavailable(f"task store writer thread could not start: {exc}") from exc
     return store
 
 
