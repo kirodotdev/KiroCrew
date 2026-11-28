@@ -185,6 +185,9 @@ covers a large multi-phase item, read `<this skill's dir>/references/dispatch.md
 **Trigger skills (optional).** When the item should load a skill on its own wording
 (a PR or CR procedure, for one), pass `skills: ["<key>", ...]` to `work_dispatch`:
 only those keys can trigger in the worker, and only while `skills.max_triggered` is above 0.
+The list makes a key eligible to trigger and loads nothing by itself: a listed skill
+loads on a turn whose wording matches its triggers. When the first turn needs the
+skill, word the seed to match its triggers or name it with `$<key>`.
 
 **A seed MUST name the observable outcome or invariant that makes the work
 correct.** A `pr_checks` acceptance verifies only that the delivered PR's checks
