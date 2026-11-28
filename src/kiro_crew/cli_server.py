@@ -378,7 +378,8 @@ async def _gateway(
                 "Could not restore the launchd live-gateway launcher: %s", exc
             )
 
-    if not config_path().exists():
+    # A stat of the data home, which may sit on a mount that stops answering.
+    if not await asyncio.to_thread(config_path().exists):
         cfg = KiroCrewConfig()
         # Boot has installed the context, so an edition's default STT provider is
         # known here; seeding the field default would persist ``local`` as a choice.
@@ -422,8 +423,9 @@ async def _gateway(
 async def _run_task(args: argparse.Namespace) -> None:
     """Execute a spec file autonomously via TaskRunner."""
 
-    spec_path = Path(args.spec).resolve()
-    if not spec_path.exists():
+    # resolve() and exists() stat the spec's path, which may name a slow mount.
+    spec_path = await asyncio.to_thread(Path(args.spec).resolve)
+    if not await asyncio.to_thread(spec_path.exists):
         print(f"❌ Spec file not found: {spec_path}", file=sys.stderr)
         sys.exit(1)
 
