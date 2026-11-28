@@ -25,7 +25,8 @@ Contract
   reported, and they decide whether the cross-surface set joins the plan.
 - For EACH surface the plan is that surface's related set: test files in the
   diff, ``test_<module>*.py`` / ``<Stem>.*.test.ts`` beside changed modules,
-  tests that textually reference a changed file, and -- when the OTHER surface
+  tests that textually reference a changed file, backend tests that use a name a
+  facade re-offers from a changed module, and -- when the OTHER surface
   changed -- the cross-surface set ``ci-surface-tests.py`` computes for CI.
   A surface with nothing related is skipped and says so.
 - ``--tree-scans`` adds a pre-push tier: when the diff touches ``src/``, every

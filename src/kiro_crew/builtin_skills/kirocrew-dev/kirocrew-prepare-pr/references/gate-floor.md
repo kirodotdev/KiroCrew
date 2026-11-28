@@ -198,7 +198,11 @@ so with one xdist worker per core, starving every other session on a shared box.
 `scripts/run_scoped_tests.py` therefore never escalates to a full suite on its
 own. For the surface it is asked about it runs the union of: test files in the
 diff; `test_<module>.py` / `test_<module>_*.py` (vitest: `<Stem>.*.test.ts`) for
-each changed module; test files that textually reference a changed file; and,
+each changed module; test files that textually reference a changed file; backend
+test files that reference a facade offering names from a changed module (an import
+flake8 keeps although unused or one listed in `__all__`, an owner-keyed name table
+such as `_EXPORTS_BY_OWNER`, or a mirror or compose facade over it) and name one of
+them; and,
 when the OTHER surface changed, the cross-surface set `ci-surface-tests.py`
 computes for CI (its `--summary` flag prints the current size). From the backend
 union it then subtracts the `test/` files this platform does not collect
