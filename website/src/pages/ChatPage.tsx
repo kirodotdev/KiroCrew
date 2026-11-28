@@ -656,7 +656,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const { announcement, announceSent } = useTranscriptAnnouncement(announcementTail(messages), isStreaming || !!slotRunning, undefined, activeSlot, pendingApprovals, messages.length, tailUserSpeaker, pageLoaded)
   // Follow-up option chips and the ownership of the text they append.
   const {
-    followUpOptions, followUpSourceKey, followUpMulti,
+    followUpOptions, followUpSourceKey, followUpMulti, followUpAction,
     followUpPicked, followUpPickedRef, toggleFollowUpOption,
     composerRootChange, composerUserEdit: followUpUserEdit,
   } = useFollowUpChips({
@@ -1329,7 +1329,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               dropTargetProps={dropTargetProps} handleCapture={handleCapture} handleFileOpen={handleFileOpen} handleOptimizeResult={handleOptimizeResult} tabsCtl={tabsCtl}
               sendHeld={sendHeld} composerBandRef={composerBandRef} scrollBottom={scrollBottom} handleResumeSession={handleResumeSession}
               composerRootChange={composerRootChange} composerUserEdit={composerUserEdit} followUpMulti={followUpMulti} followUpOptions={followUpOptions} followUpPicked={followUpPicked}
-              followUpPickedRef={followUpPickedRef} followUpSourceKey={followUpSourceKey} toggleFollowUpOption={toggleFollowUpOption} dashCfg={dashCfg} jevAutoConsented={jevAutoConsented}
+              followUpPickedRef={followUpPickedRef} followUpSourceKey={followUpSourceKey} followUpAction={followUpAction} toggleFollowUpOption={toggleFollowUpOption} dashCfg={dashCfg} jevAutoConsented={jevAutoConsented}
               refusedPress={refusedPress} setRefusedPress={setRefusedPress} send={send} composerSend={composerSend} pickModel={pickModel} setProject={setProject} projectSwitching={projectSwitching} switchAgent={pickAgent} currentSlot={currentSlot}
               activeFolderName={activeFolderName} anchorSessionControl={anchorSessionControl} openSessionControl={openSessionControl} refreshSessionControlStatuses={refreshSessionControlStatuses}
               sessionControlKey={sessionControlKey} sessionControlRect={sessionControlRect} sessionControls={sessionControls} setOpenSessionControl={setOpenSessionControl}

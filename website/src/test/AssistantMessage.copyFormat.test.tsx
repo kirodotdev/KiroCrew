@@ -39,6 +39,13 @@ describe('AssistantMessage copy formats', () => {
     expect(copyRichToClipboard).not.toHaveBeenCalled()
   })
 
+  it('copies a reply without its trailing option-action close tag', async () => {
+    render(<AssistantMessage {...QUOTED} content={`${REPLY}\n<!-- option-action:close=Done -->`} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    await act(async () => {})
+    expect(copyToClipboard).toHaveBeenCalledWith(REPLY)
+  })
+
   it('More offers Copy as rich text with a hint naming where it pastes well', () => {
     render(<AssistantMessage {...QUOTED} />)
     openMore()
