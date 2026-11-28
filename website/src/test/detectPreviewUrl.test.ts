@@ -56,6 +56,29 @@ describe('detectPreviewUrl', () => {
   it('does not match non-loopback hosts in the heuristic', () => {
     expect(detectPreviewUrl([msg('assistant', 'deployed to http://example.com:8080')])).toBeNull()
   })
+
+  it.each([
+    ['a code span', 'Dev server: `http://localhost:5173/`', 'http://localhost:5173/'],
+    ['bold', 'Open **http://localhost:3000/** now', 'http://localhost:3000/'],
+    ['a closing period', 'Serving at http://localhost:3000/.', 'http://localhost:3000/'],
+    ['a comma after a path', 'Try http://localhost:8080/index.html, then reload', 'http://localhost:8080/index.html'],
+    ['a longer host name', 'see http://localhost.evil.example/x', undefined],
+    ['another loopback address', 'open http://127.0.0.10:3000/ now', undefined],
+    ['a port past 65535', 'http://localhost:123456/', undefined],
+  ])('reads %s in prose', (_name, text, expected) => {
+    expect(detectPreviewUrl([msg('assistant', text)])?.url).toBe(expected)
+  })
+
+  it.each([
+    ['a bare host', 'serving at http://localhost', 'http://localhost'],
+    ['a port without a path', 'serving at http://localhost:5173', 'http://localhost:5173'],
+    ['a path with a dot inside', 'open http://localhost:3000/a.b/c.js now', 'http://localhost:3000/a.b/c.js'],
+    ['an address in brackets', 'listening on http://[::1]:8080/', 'http://[::1]:8080/'],
+    ['the any-address form', 'bound to http://0.0.0.0:4000/app', 'http://0.0.0.0:4000/app'],
+    ['a closing parenthesis', 'the app (http://localhost:3000/x) is up', 'http://localhost:3000/x'],
+  ])('keeps %s unchanged', (_name, text, expected) => {
+    expect(detectPreviewUrl([msg('assistant', text)])?.url).toBe(expected)
+  })
 })
 
 describe('previewFeedDecision (drive-by-request guard)', () => {

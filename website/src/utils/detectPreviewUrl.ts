@@ -29,10 +29,13 @@ export interface PreviewUrlHit {
 // `<!-- kirocrew:preview url="..." -->` — tolerant of surrounding whitespace.
 const MARKER_RE = /<!--\s*kirocrew:preview\s+url="([^"]+)"\s*-->/gi
 // Loopback dev-server URLs only (localhost / 127.0.0.1 / 0.0.0.0 / [::1]),
-// optional port + path. Excludes quotes/brackets/whitespace from the path so a
-// trailing `)` or `"` in prose isn't swallowed.
+// optional port + path. The host must end where the name ends (not
+// `localhost.example`, `127.0.0.10` or a six-digit port). The path leaves out
+// quotes, brackets, backticks and `*` (prose markup) and ends on a character
+// that is not sentence punctuation, so `` `http://localhost:5173/` `` and
+// `http://localhost:3000/.` read as the address alone.
 const LOCALHOST_URL_RE =
-  /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d{1,5})?(?:\/[^\s)"'<>]*)?/gi
+  /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d{1,5})?(?![\w-]|\.\w|:\d)(?:\/(?:[^\s)"'<>`*]*[^\s)"'<>`*.,;:!?])?)?/gi
 
 /** Last capture-group-`group` match of `re` in `text`, or null. */
 function lastMatch(re: RegExp, text: string, group: number): string | null {
