@@ -588,6 +588,7 @@ def build_pooled_agent_fn(
             agent=opts.get("agent") or default_agent,
             cwd=opts.get("cwd"),
             app=app,
+            sessions=sessions,
         )
         if step_cwd != opts.get("cwd"):
             # Launch in the RESOLVED directory and key the warm sub-pool on it, so
