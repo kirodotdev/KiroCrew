@@ -340,7 +340,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       {!embedded && <PageHeader title={i18nT('pages.kiroCrewAgentsPage.agents')} subtitle={i18nT('pages.kiroCrewAgentsPage.manage_agent_workspace_memory_store_bindings')} />}
       <div className={`${embedded ? '-mx-1 -mt-1 px-1 pt-1' : 'px-4 md:px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
         {/* A roster that failed to load must not read as "you have no crews":
-            the empty state below would say exactly that. Hand-off only while the
+            the list below holds its empty state back until a read succeeds,
+            and this notice says what happened instead. Hand-off only while the
             editor AND the create dialog are closed — open, the editor's unsaved
             edits or the create dialog's typed draft would go with the
             navigation and be lost with no confirm. */}
@@ -356,7 +357,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
         {/* The crewmate list, in either view: what a guide's "choose the
             crewmate" step points at (picking one opens its editor). */}
-        <CrewRosterList agents={agents} filtered={filtered} view={view} defaultAgent={defaultAgent} sharedKind={sharedKind} memoryStores={kirocrewCfg?.memory_stores} openEdit={openEdit} openCreate={openCreate} />
+        <CrewRosterList agents={agents} rosterLoaded={agentsData !== undefined && !agentsError} filtered={filtered} view={view} defaultAgent={defaultAgent} sharedKind={sharedKind} memoryStores={kirocrewCfg?.memory_stores} openEdit={openEdit} openCreate={openCreate} />
       </div>
 
       {/* The editor renders nothing until a crewmate is being edited, and holds
