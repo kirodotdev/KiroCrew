@@ -44,8 +44,13 @@ are exposed to the dashboard.
 The default is **`allowlist` with an empty list, which authorizes nobody** — a
 freshly connected bot ignores every DM until you add an id. This matches the
 other channels (Telegram/Discord are fail-closed the same way). An unrecognized
-value also denies. To collect a user ID, have the person DM the bot once and read
-the id from the security event log (`~/.kiro/crew/security_events.jsonl`): the
+value also denies.
+
+An allowed user ID is the id iLink reports for the sender, `wxid_…` or
+`<opaque>@im.wechat`. It is **not** the WeChat handle (微信号) shown in a profile,
+a nickname or a phone number: none of those ever matches a sender, so the panel
+refuses to save one (`invalid WeChat user id: …`). To collect a user ID, have
+the person DM the bot once and read the id from the security event log (`~/.kiro/crew/security_events.jsonl`): the
 refused DM is recorded as a denied `weixin_transport.authorize` event whose
 `caller` is their user id. The gateway log does not show it, because it logs a
 sender only after the message is admitted.
@@ -107,7 +112,7 @@ credential store) and overrides `weixin.token`.
 | Status stuck on "Signed in — restart to connect" | Restart the gateway; credentials are read once at boot |
 | `errcode -14` in the log | Session expired — re-run the QR sign-in |
 | `errcode -2` | iLink rate limit; the poller backs off automatically |
-| Bot ignores DMs | Check `dm_policy` — under `allowlist` the sender must be listed |
+| Bot ignores DMs | Check `dm_policy` — under `allowlist` the sender must be listed by their iLink id (see [Access control](#access-control)), not their WeChat handle |
 | Group messages ignored | Expected: iLink bot identities do not receive group events |
 | An image, voice note or file isn't read | The message arrived but the file was skipped — the security event log (`~/.kiro/crew/security_events.jsonl`) has a `weixin.attachment_skip` event with the file name and the reason. Video is never read; send a screenshot instead |
 | Startup error about `aiohttp` | `aiohttp` is a core dependency, so the environment is broken; reinstall Kiro Crew |
