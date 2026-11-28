@@ -210,6 +210,8 @@ The dashboard and Slack `cron list` command show the next scheduled run time for
 
 Jobs with `silent: true` suppress auto-delivery to Slack and dashboard. The agent decides when to notify using the `send_message` MCP tool. Useful for monitoring jobs that should only alert when something changes.
 
+A command job delivers what it printed when it exits 0 with output: a notification in the bell and, when the job has a `channel_type`/`target_id` destination, a message there, to the one set when the run started. It does not post into the chat that scheduled it, because a message there would start an agent turn and a command job runs no model. A job whose only destination is a Slack channel set with `--channel` gets the bell notification only for now. A command that prints nothing delivers nothing, and `silent: true` keeps its output in the job's last result only.
+
 ## Stateless Cron (Ephemeral Sessions)
 
 By default, each agent cron reuses the same session across runs — context accumulates and the agent can reference previous results. For polling or scanner-style jobs where context accumulation causes OOM or LLM slowdown, set `persistent_session: false`:
