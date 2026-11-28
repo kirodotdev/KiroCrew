@@ -1,0 +1,4 @@
++13
+The read-only shell check gets a Windows arm, in line with the other command-text
+checks: two patterns, their comment, the import of platform_compat and the two tests in
+_classify_bash.

@@ -5080,7 +5080,11 @@ transformation after the first `${`, a `:` there that is not `:-`/`:+`/`:?`
 `${|`); plain `$VAR`/`${VAR}` and the default, alternate, length and strip forms
 still pass); input redirects/comments are
 refused for the position- or mode-sensitive verbs where a shell-elided word can
-change the verdict). Help/version syntax does not create read-only authority:
+change the verdict). On Windows the classifier has its own arm, in line with the
+other command-text checks: a line holding a `(`, or a `{` that does not follow
+a lone `$`, is not judged there and asks (`_WINDOWS_UNJUDGED_RE`), and of the
+discard redirects only the stream merge `N>&M` is stripped
+(`_WINDOWS_MERGE_REDIR_RE`). Help/version syntax does not create read-only authority:
 the command must already match the explicit read-only command table, otherwise it
 falls through to human approval. A non-shell tool is auto-approved when
 `tool_kind in {"read", "fetch"}` or `slack.gateway._is_read_only_tool(tool_name)`

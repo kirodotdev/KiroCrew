@@ -9,6 +9,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.chat import _extract_bash_command
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
@@ -60,6 +61,12 @@ def _make_app(state: DashboardState) -> web.Application:
 
 class TestIsReadOnlyBash:
     """Verify bash command classification — deny-by-default."""
+
+    @pytest.fixture(autouse=True)
+    def _off_windows(self, _floor_monkeypatch):
+        """These cases pin the verdicts off Windows, on every host. The Windows
+        arm has its own file, ``test_readonly_bash_windows_shell.py``."""
+        _floor_monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
 
     def test_simple_read_commands(self):
         assert is_read_only_bash("ls -la") is True
@@ -1698,6 +1705,11 @@ class TestIsReadOnlyBash:
 
 class TestUnsafeBashReason:
     """Verify the rejection-reason helper makes pills specific."""
+
+    @pytest.fixture(autouse=True)
+    def _off_windows(self, _floor_monkeypatch):
+        """These cases pin the verdicts off Windows, on every host."""
+        _floor_monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
 
     def test_read_only_commands_have_no_reason(self):
         # Invariant: empty reason IFF the command is read-only.

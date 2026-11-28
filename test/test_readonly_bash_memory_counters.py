@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.security.readonly_bash import is_read_only_bash, unsafe_bash_reason
+
+
+@pytest.fixture(autouse=True)
+def _off_windows(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """These cases pin the verdicts off Windows, on every host."""
+    _floor_monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+
 
 READ_ONLY = [
     "vm_stat",

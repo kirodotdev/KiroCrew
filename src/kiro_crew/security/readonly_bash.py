@@ -25,6 +25,8 @@ import re
 import shlex
 from typing import NamedTuple
 
+from kiro_crew import platform_compat
+
 _READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
     "ls",
     "cat",
@@ -133,6 +135,14 @@ _UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<\(|(?<!&)&(?!&)|\$\[")
 _DEVNULL_REDIR_RE = re.compile(
     r"(?:(?:[0-9]*>>?|&>)[ \t]*/dev/null|[0-9]*>&[0-9]+)(?=$|[ \t\n;&|()<>])"
 )
+
+# The Windows arm of this check, in line with the other command-text checks
+# (`trust_patterns.split_command_segments`, `exfil_bash`, `s3_direction`): a line
+# holding a `(`, or a `{` that does not follow a lone `$`, is not judged on
+# Windows and asks. Matched anywhere in the line. Of the discard redirects above,
+# only the stream merge (`N>&M`) is stripped there.
+_WINDOWS_UNJUDGED_RE = re.compile(r"\(|(?<!\$)\{|\$\$\{")
+_WINDOWS_MERGE_REDIR_RE = re.compile(r"[0-9]*>&[0-9]+(?=$|[ \t\n;&|()<>])")
 
 # ── Side effects reached through an allowlisted read-only verb ──
 #
@@ -1475,9 +1485,12 @@ def _classify_bash(cmd: str) -> str:
     """
     if not cmd.strip():
         return "empty command"
+    if platform_compat.IS_WINDOWS and _WINDOWS_UNJUDGED_RE.search(cmd):
+        return "not judged read-only on Windows"
     # Strip discard-only redirects (output sinks / stderr-merge) before the
     # unsafe-shell check; they are read-only but contain '>' / '&'.
-    scrubbed = _DEVNULL_REDIR_RE.sub(" ", cmd)
+    discards = _WINDOWS_MERGE_REDIR_RE if platform_compat.IS_WINDOWS else _DEVNULL_REDIR_RE
+    scrubbed = discards.sub(" ", cmd)
     expansion_at = scrubbed.find("${")
     if _UNSAFE_SHELL_RE.search(scrubbed) or (expansion_at >= 0 and "=" in scrubbed[expansion_at:]):
         return (
