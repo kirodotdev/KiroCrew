@@ -782,6 +782,44 @@ where it resolved and which `sys.path` entry provided it. Move or rename that
 module, or launch from another directory. The `import path:` row of
 `kirocrew doctor` reports the same check.
 
+### Kiro's Chromium exits at once on Linux
+
+A browser step fails with `Kiro's Chromium exited with code <n>` followed by
+the browser's own last stderr lines (redacted). When the cause scrolled past
+those lines, the first `FATAL:` line is quoted ahead of them, after a `...`.
+Two causes are common on Linux:
+
+**`No usable sandbox!`** -- the kernel refuses Chromium an unprivileged user
+namespace. Ubuntu 23.10 and newer ship
+`kernel.apparmor_restrict_unprivileged_userns=1`, which blocks Chromium's own
+sandbox unless an AppArmor profile grants `userns` to that executable. Do not
+reach for `--no-sandbox`: it runs the browser without its sandbox. On such a
+host, follow Chromium's own instructions instead and attach a profile to the
+exact path of Kiro's Chromium executable, which lives under Kiro Crew's data
+home at `browser-harness/chromium/<version>/` (`~/.kiro/crew` by default;
+`KIROCREW_HOME` overrides it):
+<https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md>.
+The grant covers whatever file is at that path, and a browser update installs
+a new `<version>` directory, so re-point the profile after one. The agent
+sandbox's own profile
+(`kirocrew service install`, `kirocrew sandbox install-profile`) covers the
+gateway's launcher, not the browser; see
+[the sandbox section of the install guide](../../../docs/guides/install.md#linux-the-agent-sandbox-and-unprivileged-user-namespaces).
+
+**Exit 21 naming a profile locked by another host or process** -- Chromium
+refuses a profile whose `SingletonLock` (and its `SingletonSocket` and
+`SingletonCookie` siblings, under the profile directory) points at a hostname
+and PID it cannot see. That happens when the same data home is shared between
+hosts, or a previous browser on another host did not exit cleanly. On Linux
+and macOS Kiro Crew never removes those `Singleton*` links for you: a lock with
+another host's name can belong to a browser that is still running there, and
+removing it can corrupt the shared profile, since two browsers then write one
+profile. Confirm no other host uses the profile first, then remove only those
+`Singleton*` symlinks yourself; cookies and the rest of the profile are not
+involved. (Windows uses a different lock, `lockfile`, which only a running
+process can hold; there a start first asks a Kiro's Chromium that an earlier
+gateway run left on the profile to close, and fails naming it when it does not.)
+
 ### Voice input stays off after a crash
 
 If the gateway died while loading the speech-to-text model, the next start does

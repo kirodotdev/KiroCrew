@@ -244,6 +244,9 @@ _EXTERNAL_REPO_MARKERS: tuple[str, ...] = (
     # The app catalog's publisher. Its distribution contract is documented in
     # that repo, and the client cites it to explain the base URL it fetches.
     "KiroCrewApps",
+    # Chromium's own tree: the browser troubleshooting doc links its AppArmor
+    # userns page, a ``docs/.../*.md`` path in that repository, not this one.
+    "chromium.googlesource.com",
 )
 
 # ── Code-coupled documentation filenames ───────────────────────────────────────
