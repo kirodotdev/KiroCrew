@@ -152,28 +152,37 @@ def outstanding_kinds() -> list[str]:
 #: Why the latest pass in this process did not seal, for the spawn refusal's message.
 last_failure: str = ""
 
+_sealed_homes: set[Path] = set()
+
 
 def _inside_sandbox() -> bool:
     return bool(os.environ.get(_IN_SANDBOX_MARKER))
 
 
-def ensure_migrated() -> bool:
+def ensure_migrated(*, recheck: bool = False) -> bool:
     """Run :func:`migrate_from_trust` on the live data home; whether the move is sealed.
 
-    One ``stat`` once sealed. Never raises: a failed pass is logged, its source files
-    stay where they are, and the next call tries again. Does nothing inside a sandbox,
-    where the records directory is a masked stand-in and a move would land nowhere.
+    No filesystem access once this process has seen the data home sealed, unless
+    *recheck* asks for the marker to be checked again (spawn prep does). Never raises:
+    a failed pass is logged, its source files stay where they are, and the next call
+    tries again. Does nothing inside a sandbox, where the records directory is a masked
+    stand-in and a move would land nowhere.
     """
     if _inside_sandbox():
         return False
     try:
-        home = data_home().resolve()
+        named = data_home()
+        if named in _sealed_homes and not recheck:
+            return True
+        home = named.resolve()
     except Exception:  # noqa: BLE001 - the data home is unresolvable; nothing to move
         logger.debug("could not resolve the data home for the member records move", exc_info=True)
         return False
     root = home / MEMBER_RECORDS_LEAF
     if (root / MIGRATION_MARKER).is_file():
+        _sealed_homes.add(named)
         return True
+    _sealed_homes.discard(named)
     if not home.is_dir():
         return False
     try:
@@ -188,7 +197,10 @@ def ensure_migrated() -> bool:
             exc_info=True,
         )
         return False
-    return (root / MIGRATION_MARKER).is_file()
+    if (root / MIGRATION_MARKER).is_file():
+        _sealed_homes.add(named)
+        return True
+    return False
 
 
 def _read_regular_no_follow(path: Path) -> bytes | None:

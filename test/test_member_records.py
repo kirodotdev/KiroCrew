@@ -71,6 +71,7 @@ def _as_old_layout(home: Path, contents: dict[str, bytes]) -> None:
         (old / f"{_SLUG}.json").write_bytes(data)
         (root / kind / f"{_SLUG}.json").unlink()
     (root / member_records.MIGRATION_MARKER).unlink()
+    member_records._sealed_homes.clear()
 
 
 def _reads() -> tuple[str, list[str], dict | None]:
@@ -424,3 +425,61 @@ def test_a_fresh_home_seals_with_nothing_to_move(home) -> None:
     assert sorted(os.listdir(home / "member-records")) == sorted(
         [member_records.LOCK_NAME, member_records.MIGRATION_MARKER]
     )
+
+
+def test_a_sealed_home_is_answered_without_touching_the_filesystem(home, monkeypatch) -> None:
+    assert member_records.ensure_migrated()
+
+    def untouched(*_args, **_kwargs):
+        raise AssertionError("the sealed move check touched the filesystem")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "resolve", untouched)
+        patched.setattr(Path, "is_file", untouched)
+        patched.setattr(member_records, "migrate_from_trust", untouched)
+        assert member_records.ensure_migrated()
+
+
+def test_an_unsealed_home_is_checked_again_on_every_call(home, monkeypatch) -> None:
+    real_is_file = Path.is_file
+    marker_checks = {"n": 0}
+    passes = {"n": 0}
+
+    def counted_is_file(path):
+        if path.name == member_records.MIGRATION_MARKER:
+            marker_checks["n"] += 1
+        return real_is_file(path)
+
+    def failing_pass(_root, _trust):
+        passes["n"] += 1
+        raise OSError(28, "No space left on device")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "is_file", counted_is_file)
+        patched.setattr(member_records, "migrate_from_trust", failing_pass)
+        assert member_records.ensure_migrated() is False
+        assert member_records.ensure_migrated() is False
+    assert passes["n"] == 2
+    assert marker_checks["n"] == 2
+    assert member_records.ensure_migrated()
+
+
+def test_a_spawn_rechecks_a_seal_this_process_already_saw(home, monkeypatch) -> None:
+    assert member_records.ensure_migrated()
+    (home / "member-records" / member_records.MIGRATION_MARKER).unlink()
+    real = member_records.atomic_write
+
+    def no_marker(path, data, **kwargs):
+        if Path(path).name == member_records.MIGRATION_MARKER:
+            raise OSError(28, "No space left on device")
+        return real(path, data, **kwargs)
+
+    monkeypatch.setattr(member_records, "atomic_write", no_marker)
+    assert member_records.ensure_migrated()
+    with pytest.raises(sandbox.SandboxCeilingUnsealable, match="No space left on device"):
+        sandbox._member_records_move()
+    assert member_records.ensure_migrated() is False
+
+    monkeypatch.setattr(member_records, "atomic_write", real)
+    assert sandbox._member_records_move() is True
+    assert member_records.ensure_migrated()
