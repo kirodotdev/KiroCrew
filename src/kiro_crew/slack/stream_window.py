@@ -10,7 +10,8 @@ told; the next append just returns ``message_not_in_streaming_state``.
 So both Slack streaming paths stop the stream and start a fresh one in the same
 thread before that limit, at the first append after ``STREAM_RENEW_AFTER_S``. The
 margin covers the 30 s task-card refresh, which is the only append during a long
-tool phase.
+tool phase. The dashboard mirror draws no such refresh, so it renews on a timer
+of its own (``dashboard/chat_turn/mirror_stream_renewal.py``).
 
 A stream also stays where it was opened, so a message a person sends while the
 turn runs lands below it, and the thread then ends on that message with the

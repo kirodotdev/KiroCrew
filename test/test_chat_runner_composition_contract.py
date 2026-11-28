@@ -1323,6 +1323,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     ),
     r"ensure_future\(": (
         "dashboard/chat_turn/file_changes.py",
+        "dashboard/chat_turn/mirror_stream_renewal.py",
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",
     ),
