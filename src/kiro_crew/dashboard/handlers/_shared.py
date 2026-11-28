@@ -259,6 +259,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import extras  # noqa: F401
+    from kiro_crew import link_screen_memo  # noqa: F401
     from kiro_crew.agent_discovery import SKILL_URI_PREFIX  # noqa: F401
     from kiro_crew.agent_discovery import expand_skill_uri  # noqa: F401
     from kiro_crew.agent_discovery import parsed_agent_specs  # noqa: F401

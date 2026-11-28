@@ -16,6 +16,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from kiro_crew import link_screen_memo
 from kiro_crew.agent_discovery import expand_skill_uri, parsed_agent_specs
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.handlers._shared_skill_catalog import package_skill_catalog
@@ -190,7 +191,10 @@ def _expand_agent_globs(
     match does, so a ``~`` mapping under a symlinked ``$HOME`` still matches
     the resolved catalog path the loader injects. One canonicalisation memo is
     shared by every agent in the call, so a skill path that many specs name is
-    resolved once rather than once per spec.
+    resolved once rather than once per spec. The Windows link screen behind
+    that canonicalisation keeps each ancestor's answer for the call too
+    (:func:`~kiro_crew.link_screen_memo.ancestor_link_memo`), so globs that
+    share parent folders test each folder once.
 
     *project_dir* anchors a workspace-relative glob, so the catalog's
     ``kiro-workspace`` rows match the agent that declares ``skill://.kiro/...``
@@ -198,21 +202,22 @@ def _expand_agent_globs(
     """
     expanded: list[tuple[str, list[str]]] = []
     canonical_cache: dict[tuple[str, str], str] = {}
-    for name, data, agent_path in parsed_agents:
-        resources = data.get("resources") or []
-        if not isinstance(resources, list):
-            continue
-        globs = [
-            g
-            for res in resources
-            if isinstance(res, str)
-            for g in (_expand_resource_uri(res, agent_path, project_dir=project_dir),)
-            if g
-        ]
-        if globs:
-            expanded.append(
-                (name, _with_canonical_globs(globs, project_dir, cache=canonical_cache))
-            )
+    with link_screen_memo.ancestor_link_memo():
+        for name, data, agent_path in parsed_agents:
+            resources = data.get("resources") or []
+            if not isinstance(resources, list):
+                continue
+            globs = [
+                g
+                for res in resources
+                if isinstance(res, str)
+                for g in (_expand_resource_uri(res, agent_path, project_dir=project_dir),)
+                if g
+            ]
+            if globs:
+                expanded.append(
+                    (name, _with_canonical_globs(globs, project_dir, cache=canonical_cache))
+                )
     return expanded
 
 
@@ -425,7 +430,8 @@ def skill_rows_for_globs(
     when ANY spelling matches, so a glob naming only the dropped spelling (a
     crew skill symlinked into ``~/.kiro/skills``) still finds the skill.
     """
-    index = _build_agent_match_index([("", _with_canonical_globs(globs, project_dir))])
+    with link_screen_memo.ancestor_link_memo():
+        index = _build_agent_match_index([("", _with_canonical_globs(globs, project_dir))])
     return [
         row
         for row in rows
