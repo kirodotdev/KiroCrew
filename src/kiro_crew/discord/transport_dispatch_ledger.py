@@ -15,7 +15,8 @@ method: the class binds it by name, so it reads and writes the dispatcher's own
 state on the instance, and a patch of the method on the class or on an instance
 reaches every caller.
 
-Instance fields read (a call on one included): ``_session_resume``, ``conv_log``.
+Instance fields read (a call on one included): ``_session_resume``, ``conv_log``,
+``sessions``, ``client``, ``_session_key``.
 
 Instance fields assigned, or whose mapping is changed: none.
 """
@@ -26,8 +27,9 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew.discord.thread_title import rename_bot_thread
 from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
-from kiro_crew.messaging import privacy_mode
+from kiro_crew.messaging import auto_title, privacy_mode
 from kiro_crew.messaging.dispatch import TurnRecord
 from kiro_crew.messaging.upload_gate import (
     session_blocks_reads,
@@ -43,11 +45,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("kiro_crew.discord.transport_dispatch")
 
+#: Naming turns in flight, held so the loop does not drop them mid-turn.
+_TITLE_TASKS: set[asyncio.Task[str]] = set()
+
 
 async def _record_turn(
-    self: DiscordDispatcher, record: TurnRecord, images: Sequence[str] = ()
+    self: DiscordDispatcher,
+    record: TurnRecord,
+    images: Sequence[str] = (),
+    title_thread: str | None = None,
 ) -> None:
     """Write one exchange to the live dashboard window and the transcript.
+
+    *title_thread* opts the turn into auto-title: ``""`` names the conversation
+    (a DM), a thread id also renames that thread when the bot opened it, and
+    ``None`` (a resumed session, or a caller that does not say) names nothing.
 
     The pipeline's ``record`` adapter: it decides WHEN this runs, and this
     decides WHAT it writes. A resumed ``dashboard:`` key carries the dashboard
@@ -118,6 +130,12 @@ async def _record_turn(
             else None
         )
         extra_row = ("notice", record.notice, "msg msg-info", notice_mid)
+    # A conversation this dispatcher names (``title_thread`` set) never takes the
+    # fallback name, whether or not a naming turn is owed now: auto-title's guard
+    # refuses a record that already carries a name, so a fallback written before
+    # the first answer would be its name for good, and one written later (a
+    # reacquired runtime reads as a new session) would replace the generated name.
+    name_owed = await _name_owed(self, record, title_thread)
     await asyncio.to_thread(
         self._persist_turn,
         key,
@@ -127,7 +145,116 @@ async def _record_turn(
         agent=record.agent,
         mirror_mids=mirror_mids,
         extra_row=extra_row,
+        auto_title_pending=title_thread is not None,
     )
+    if name_owed and record.kind == "answered" and safe_reply:
+        # AFTER the write: the pin reads the record it mints. Only an answer
+        # has something to name; a later one names the conversation instead.
+        await _start_auto_title(self, key, safe_text, safe_reply, title_thread)
+
+
+async def _name_owed(
+    dispatcher: DiscordDispatcher, record: TurnRecord, title_thread: str | None
+) -> bool:
+    """Whether this conversation is still owed a generated name.
+
+    *title_thread* ``None`` means the conversation is not this dispatcher's to
+    name (a resumed session), and a session with no transcript, or a restricted
+    one, keeps no name. A conversation that already carries a name after a
+    restart (the claim table is process memory) is marked as named instead of
+    spending a naming turn the guard would refuse.
+    """
+    key = record.session_key
+    if title_thread is None:
+        return False
+    if dispatcher.conv_log is None or privacy_mode.is_restricted(key):
+        return False
+    if auto_title.is_titled(key):
+        return False
+    if record.is_new:
+        return True
+    try:
+        meta = await asyncio.to_thread(dispatcher.conv_log.get_metadata, key)
+    except Exception:
+        logger.debug("discord: could not read the title of %s", key, exc_info=True)
+        return False
+    if str((meta or {}).get("title") or "").strip():
+        auto_title.mark_titled(key, auto_title.TITLE_KIND_AUTO)
+        return False
+    return True
+
+
+async def _start_auto_title(
+    dispatcher: DiscordDispatcher,
+    session_key: str,
+    user_text: str,
+    reply: str,
+    title_thread: str | None,
+) -> None:
+    """Claim and spawn the naming turn; the thread follows the name it lands.
+
+    Pinned before the claim and both before the task, as on Telegram (see
+    ``auto_title.pin_record``). Isolated, so failing to spawn it never reads
+    as a failed record of a turn that was written.
+    """
+    try:
+        pin = await auto_title.pin_record(dispatcher.conv_log, session_key)
+        if not auto_title.try_claim(session_key):
+            return
+        rename = _title_follows(dispatcher, session_key, title_thread)
+        task = asyncio.create_task(
+            auto_title.maybe_auto_title(
+                dispatcher.sessions,
+                dispatcher.conv_log,
+                session_key,
+                user_text,
+                reply,
+                pin=pin,
+                source="discord",
+                resources=f"thread={title_thread}" if title_thread else session_key,
+                set_channel_title=rename,
+            )
+        )
+    except Exception:
+        logger.warning("discord: auto-title dispatch failed session=%s", session_key, exc_info=True)
+        return
+    _TITLE_TASKS.add(task)
+    task.add_done_callback(_TITLE_TASKS.discard)
+
+
+def _title_follows(
+    dispatcher: DiscordDispatcher, session_key: str, thread_id: str | None
+) -> auto_title.ChannelTitleSetter:
+    """The ``set_channel_title`` hook: everything showing the conversation takes its name.
+
+    First the open dashboard slots for *session_key*, through the generated-title
+    path that keeps the name ``auto`` and leaves a hand-set one alone: a live
+    slot's next save would otherwise write its old title back over the
+    transcript's. Then, for a thread, the thread itself, but only while
+    *session_key* is still the thread's conversation: a ``!new`` (or a rotation)
+    during the naming turn starts another, whose own name the stale one must not
+    overwrite. Each half is isolated, so one failing never costs the other.
+    """
+
+    def still_current() -> bool:
+        return dispatcher._session_key("", thread_id or "") == session_key
+
+    async def rename(title: str) -> None:
+        # Circular import: the dashboard package imports the channel transports
+        # on its boot path, so this edge only exists at call time.
+        from kiro_crew.dashboard.channel_titles import apply_generated_channel_title_live
+
+        try:
+            await apply_generated_channel_title_live(
+                getattr(dispatcher._session_resume, "dashboard_state", None), session_key, title
+            )
+        except Exception:
+            logger.warning("discord: live title sync failed session=%s", session_key, exc_info=True)
+        client = dispatcher.client
+        if thread_id and client is not None:
+            await rename_bot_thread(client, thread_id, title, still_current=still_current)
+
+    return rename
 
 
 async def _session_restricted(self: DiscordDispatcher, session_key: str) -> bool:
@@ -213,6 +340,7 @@ def _persist_turn(
     agent: str | None = None,
     mirror_mids: tuple[str, str] | None = None,
     extra_row: tuple[str, str, str, str | None] | None = None,
+    auto_title_pending: bool = False,
 ) -> None:
     """Record the turn to conversation_log (dashboard visibility + restart).
 
@@ -245,6 +373,11 @@ def _persist_turn(
     ``project_channel_turn_live`` tests it, so the live window and the disk
     can never disagree about whether an assistant row exists.
 
+    *auto_title_pending* says auto-title names this conversation, so the
+    fallback name (its first forty characters) is not written: auto-title's
+    guard refuses a record that already carries a name, and a fallback written
+    after the name landed would replace it.
+
     A ``!temporary`` / ``!incognito`` conversation writes nothing here either:
     ``_record_turn`` already asked the dashboard-aware ``_session_restricted``
     (which restores the durable mode first), and this sync check is the second
@@ -275,6 +408,6 @@ def _persist_turn(
             self.conv_log.append(
                 session_key, role, row_text, agent=agent, cls=cls, mid=mint_row_mid()
             )
-    if is_new:
+    if is_new and not auto_title_pending:
         title = (user_text or "").strip().replace("\n", " ")[:40] or "Discord"
         self.conv_log.set_title(session_key, title)

@@ -75,6 +75,14 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+application
 above: View Channel (`1<<10`), Send Messages in Threads (`1<<38`), Read Message
 History (`1<<16`), Add Reactions (`1<<6`), and Create Public Threads (`1<<35`).
 
+A thread the bot opens is renamed to its conversation's title once that title
+is generated after the first answer, where Discord lets the bot rename its own
+thread. Threads someone else opened are never renamed. Granting **Manage
+Threads** is optional and not in the URL above: it also lets the bot read every
+private thread and delete or lock any thread. Without it, a thread Discord
+refuses to rename keeps the start of your message as its name, and the
+conversation carries on.
+
 This permission set does not grant **Send Messages** in normal server channels.
 For a private thread, explicitly add the bot to that thread if Discord does not
 already show it as a member.

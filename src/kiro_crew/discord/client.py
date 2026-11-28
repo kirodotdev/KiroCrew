@@ -665,6 +665,22 @@ class DiscordClient:
             self._channel_types[thread_id] = 11
         return thread_id or None
 
+    async def rename_thread(
+        self, thread_id: str, name: str, *, still_current: Callable[[], bool] | None = None
+    ) -> DiscordApiResult:
+        """Rename thread ``thread_id`` to ``name`` (``PATCH /channels/{id}``).
+
+        The verb only: which thread may be renamed and what the name may say is
+        :mod:`kiro_crew.discord.thread_title`'s decision. Discord may answer
+        403 when the bot lacks ``MANAGE_THREADS``, which the classified result
+        keeps apart from a rate limit. *still_current*, when given, is re-read
+        after every wait the REST ladder serves, so a name that went stale
+        during a back-off is not written.
+        """
+        return await self.api_json(
+            "PATCH", f"/channels/{thread_id}", {"name": name}, caller_permitted=still_current
+        )
+
     async def edit_message(
         self,
         channel_id: str,
