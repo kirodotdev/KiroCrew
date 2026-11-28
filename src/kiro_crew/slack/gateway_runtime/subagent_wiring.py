@@ -481,7 +481,10 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                     )
                     slot = None
             if slot:
-                task_preview = redact_and_truncate(info.task or "", 100)
+                # Imported here: this function runs with the gateway's module globals.
+                from kiro_crew.preview_text import clip_preview
+
+                task_preview = clip_preview(redact_and_truncate(info.task or ""), 100)
                 error_text, _ = redact_exfiltration_urls(extra.get("error", "timed out"))
                 error_text, _ = redact_credentials(error_text)
                 # The visible transcript card must state the run's real

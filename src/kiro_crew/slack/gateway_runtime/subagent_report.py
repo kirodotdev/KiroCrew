@@ -108,6 +108,7 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     # A deadline reap is named as one, so the parent can tell it from the
     # run's own failure. Imported here: these functions run with the
     # gateway's module globals.
+    from kiro_crew.preview_text import clip_preview
     from kiro_crew.subagent_ending import SubagentEnding
 
     ending = info.ending
@@ -197,7 +198,7 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     detail, _ = redact_credentials(detail)
     task_text, _ = redact_exfiltration_urls(info.task)
     task_text, _ = redact_credentials(task_text)
-    task_text = task_text[:100]
+    task_text = clip_preview(task_text, 100)
     usage = format_subagent_usage(info.credits, info.elapsed)
     body = f"{task_text}\n\nUsage: {usage}\n\n{detail}"
     title, _ = redact_exfiltration_urls(title)
@@ -297,8 +298,13 @@ def _subagent_wave_digest(
     the completion is settled here (held for a later chunk, or nothing to release);
     otherwise the announce and card facts to route, a digest chunk's when one fires.
     """
+    # Imported here: this function runs with the gateway's module globals.
+    from kiro_crew.preview_text import clip_preview
+
     status, detail = report.status, report.detail
-    task_text, usage, result_path = report.task_text, report.usage, report.result_path
+    usage, result_path = report.usage, report.result_path
+    # A digest line quotes less of the task than a lone completion does.
+    task_text = clip_preview(report.task_text, 80)
     no_tools_note = report.no_tools_note
     announce, sub_meta = report.announce, report.sub_meta
     # A single completion carries itself; a digest chunk replaces this below.
@@ -408,14 +414,14 @@ def _subagent_wave_digest(
                 _kept = " (partial: backend failed to generate the final response)"
             _partial = info.ending is SubagentEnding.PARTIAL
             bp["ok_lines"].append(
-                f"— `{info.id}` completed{_kept if _partial else ''} · {task_text[:80]}"
+                f"— `{info.id}` completed{_kept if _partial else ''} · {task_text}"
                 f"{_model_tag} · {usage}"
                 + (f"\n  → {result_path}" if result_path else "")
                 + (f"\n  {no_tools_note}" if no_tools_note else "")
             )
         else:
             bp["fail_lines"].append(
-                f"— `{info.id}` {status} · {task_text[:80]}{_model_tag}\n"
+                f"— `{info.id}` {status} · {task_text}{_model_tag}\n"
                 f"  Usage: {usage}\n"
                 f"  {detail[:400]}{'…' if len(detail) > 400 else ''}"
                 # A finished answer the stop owned is cut at 400 here, so its

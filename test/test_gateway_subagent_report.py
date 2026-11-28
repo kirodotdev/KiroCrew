@@ -131,7 +131,7 @@ async def test_detail_task_and_title_are_redacted_before_the_task_is_cut(
 
     ((args, _kw),) = done.notices()
     assert args[1] == "Subagent `id[R]` completed"
-    task_text = "x" * 97 + "[R]"
+    task_text = "x" * 97 + "[R] …"
     assert args[2] == f"{task_text}\n\nUsage: {gw_mod.format_subagent_usage(0.25, 12.0)}\n\n[U] r"
 
 
