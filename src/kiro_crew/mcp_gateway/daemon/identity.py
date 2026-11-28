@@ -20,6 +20,7 @@ from kiro_crew import platform_compat
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_caller import CallerContext, new_tenant_nonce
 from kiro_crew.mcp_gateway import socketsec
+from kiro_crew.mcp_gateway.claim import MAX_SESSION_BINDINGS
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.audit import (
     _audit_caller_rekey,
@@ -85,6 +86,8 @@ class _StubConn:
         "describe_refusal",
         "oversized_server",
         "resource_holder",
+        "bound_agents",
+        "attested_pids",
     )
 
     def __init__(
@@ -138,6 +141,15 @@ class _StubConn:
         #: the Register before an oversized one is dropped, so a holder is
         #: never taken for the session's own stub.
         self.resource_holder = False
+        #: The agents the owning gateway said this connection's session token
+        #: runs stubs for (:func:`_token_agents`). Empty when nothing the gateway
+        #: sent names the token, and then the Register's ``agent_name`` is not
+        #: taken unless the registrant is the gateway itself.
+        self.bound_agents: frozenset[str] = frozenset()
+        #: The kernel-attested host chain of the registering peer, the second
+        #: factor :func:`_token_agents` is asked with again when a binding
+        #: arrives after this connection registered (:func:`_refresh_bound_agents`).
+        self.attested_pids: tuple[int, ...] = ()
 
 
 #: Live stub connections indexed by every ancestor PID of the kiro-cli
@@ -172,7 +184,10 @@ def _conn_index_add(conn: _StubConn) -> None:
 #: a few hundred covers any real host; the oldest is dropped past the cap rather
 #: than letting a long-running daemon accumulate them without bound. Dropping a
 #: binding only costs a re-claim — the identity itself is never invented here.
-_MAX_TOKEN_BINDINGS = 512
+#: ONE named bound, shared with the gateway-side binding cache
+#: (``mcp_gateway.claim.MAX_SESSION_BINDINGS``), so the gateway never replays a
+#: binding this table has already evicted.
+_MAX_TOKEN_BINDINGS = MAX_SESSION_BINDINGS
 
 #: ``stub_session_token`` -> (caller, runtime pid the claim named, that pid's
 #: process start token — the recycle guard, since a pid is a reusable NUMBER).
@@ -289,6 +304,94 @@ def _token_caller(
 def _token_is_unbound(token: str) -> bool:
     """True when *token* is present and no claim has named it at all."""
     return bool(token) and token not in _TOKEN_BINDINGS
+
+
+#: ``stub_session_token`` -> (the agents whose stubs that session runs, runtime
+#: pid, that pid's start token). Written ONLY from an ``agent-binding`` frame the
+#: daemon's owner gateway sent (``control._apply_agent_binding``), which is what
+#: lets the declaring agent of a stub come from the gateway rather than from the
+#: Register frame the stub writes. Same cap and eviction as
+#: :data:`_TOKEN_BINDINGS`: dropping an entry costs the stub its declared env
+#: until the gateway sends the binding again, never a wrong agent.
+_AGENT_BINDINGS: "OrderedDict[str, tuple[frozenset[str], int, Optional[str]]]" = OrderedDict()
+
+
+def _bind_agents(
+    token: str, agents: frozenset[str], pid: int, pid_start_id: Optional[str] = None
+) -> None:
+    """Record ``token`` -> *agents* from an owner-sent binding (most recent last).
+
+    Over the cap, entries whose runtime pid is gone are dropped first, the rule
+    the gateway's own cache keeps (``claim._evict_dead_bindings_over_cap``): a
+    live session's binding outlives newer ones, because losing it leaves a
+    reconnecting stub's private backend with no declared env. Only when the
+    table is still over the cap is the oldest entry dropped, with a warning.
+    """
+    if not token:
+        return
+    _AGENT_BINDINGS.pop(token, None)
+    _AGENT_BINDINGS[token] = (agents, pid, pid_start_id)
+    if len(_AGENT_BINDINGS) <= _MAX_TOKEN_BINDINGS:
+        return
+    for old_token, (_agents, old_pid, _start) in list(_AGENT_BINDINGS.items()):
+        if len(_AGENT_BINDINGS) <= _MAX_TOKEN_BINDINGS:
+            return
+        if old_token != token and not platform_compat.pid_exists(old_pid):
+            _AGENT_BINDINGS.pop(old_token, None)
+    while len(_AGENT_BINDINGS) > _MAX_TOKEN_BINDINGS:
+        evicted, (_agents, evicted_pid, _start) = _AGENT_BINDINGS.popitem(last=False)
+        # The key is a bearer token: name it by its hash, never the token itself.
+        logger.warning(
+            "agent-binding table over its %d cap with every entry live; evicted the "
+            "oldest binding (token sha256 %s, pid %d)",
+            _MAX_TOKEN_BINDINGS,
+            _mount_key(evicted)[:16],
+            evicted_pid,
+        )
+
+
+def _refresh_bound_agents(token: str, pid: int) -> int:
+    """Re-ask :func:`_token_agents` for every live connection carrying *token* under *pid*.
+
+    A stub that registered before its binding arrived (it reconnected to a
+    restarted daemon before the gateway's next claim sent the binding again)
+    holds an empty answer; this is what lets the connection pick the agent up
+    (``connection._handle_connection``). Returns how many connections now hold
+    a non-empty answer.
+    """
+    refreshed = 0
+    for conn in list(_CONN_INDEX.get(pid, ())):
+        if not token or conn.stub_session_token != token:
+            continue
+        conn.bound_agents = _token_agents(token, conn.attested_pids, conn.pid_start_ids)
+        refreshed += bool(conn.bound_agents)
+    return refreshed
+
+
+def _token_agents(
+    token: str,
+    attested_pids: Collection[int] = (),
+    pid_start_ids: Optional[dict[int, Optional[str]]] = None,
+) -> frozenset[str]:
+    """The agents bound to *token*, for a connection the KERNEL places under it.
+
+    The same two factors as :func:`_token_caller`, for the same reason: the
+    token rides an ``env`` pair another process at this uid may read, so the
+    binding also has to name a runtime the peer's host chain is under, and a
+    definite pid start-token mismatch denies.
+    """
+    if not token:
+        return frozenset()
+    entry = _AGENT_BINDINGS.get(token)
+    if entry is None:
+        return frozenset()
+    agents, bound_pid, bound_start_id = entry
+    if bound_pid not in set(attested_pids):
+        return frozenset()
+    registered = (pid_start_ids or {}).get(bound_pid)
+    if bound_start_id is not None and registered is not None and registered != bound_start_id:
+        return frozenset()
+    return agents
 
 
 #: Cap on sessions the mount ledger remembers, and on server names per session.
@@ -720,6 +823,10 @@ async def _resolve_register_identity(
         new_tenant_nonce(),
         stub_session_token,
     )
+    # Asked beside the token's caller, after the last await, on the same two
+    # factors: the kernel-attested host chain, never ``indexed_pids``.
+    conn.attested_pids = tuple(peer_host_pids)
+    conn.bound_agents = facade._token_agents(stub_session_token, peer_host_pids, pid_start_ids)
     facade._conn_index_add(conn)
     return conn
 
@@ -728,15 +835,11 @@ async def _sent_by_owner(writer: asyncio.StreamWriter) -> bool:
     """Whether the kernel reports the sender as this daemon's owning gateway.
 
     The owner pid or its exec successor, the same rule an ``owner-port`` announce
-    is held to (``control._apply_owner_port``). An unowned daemon has no owner.
+    or an ``agent-binding`` is held to. An unowned daemon has no owner. One rule
+    for every owner-only decision: this asks ``control._owner_sender_refusal``.
     """
-    owner = facade._OWNER_PID
-    peer_pid = socketsec.get_peer_pid(writer)
-    if owner <= 0 or peer_pid is None:
-        return False
-    if peer_pid == owner:
-        return True
-    return bool(await asyncio.to_thread(platform_compat.is_exec_supervisor_of, owner, peer_pid))
+    _peer_pid, refusal = await facade._owner_sender_refusal(writer)
+    return not refusal
 
 
 async def _attested_session_key(writer: asyncio.StreamWriter, stub_uuid: str) -> str:

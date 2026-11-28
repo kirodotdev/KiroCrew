@@ -187,8 +187,10 @@ def _read_declared_env_sidecar(
 ) -> Optional[dict[str, str]]:
     """Return the sidecar ``declaring_agent`` declared for this server, or ``None``.
 
-    EXACT, by name: ``declaring_agent`` is read off the Register frame of the one
-    stub this read is for, and :func:`rewriter.env_sidecar_name` is injective
+    EXACT, by name: ``declaring_agent`` is the agent the daemon resolved for the
+    one stub this read is for (``connection._declaring_agent``: one the owning
+    gateway bound to that stub's session token, never the bare name its
+    Register frame carries), and :func:`rewriter.env_sidecar_name` is injective
     over ``(agent, server)``, so this can only ever open that stub's own
     declaration. That is the whole point -- the returned pairs are UNFILTERED,
     rotating secrets included, so opening another agent's file here would hand
@@ -197,9 +199,9 @@ def _read_declared_env_sidecar(
     ``AWS_SECRET``/``AWS_SESSION``/``OAUTH`` key, so two agents declaring one
     server with different credentials are indistinguishable by key alone.
 
-    ``declaring_agent`` empty (a stub predating the field, or one with no agent
-    behind it) yields a name the rewriter never writes, hence ``None`` and no
-    forwarding -- the same outcome such a stub got before, and fail-closed.
+    ``declaring_agent`` empty (a stub predating the field, one with no agent
+    behind it, or one the gateway did not bind to that agent) yields a name the
+    rewriter never writes, hence ``None`` and no forwarding -- fail-closed.
 
     ``None`` means no readable JSON object exists. The values are ungated;
     :func:`_declared_env_pairs` applies the coherence and approval gates.
@@ -375,8 +377,9 @@ def _declared_env_for_private_backend(
     The coherence gate still applies: a sidecar edited after this session
     started yields ``{}`` rather than values the running stub never hashed.
 
-    ``declaring_agent`` is the agent named on the Register frame of the ONE stub
-    this backend belongs to, and it is what selects the sidecar -- this is the
+    ``declaring_agent`` is the agent the daemon resolved for the ONE stub this
+    backend belongs to (``connection._declaring_agent``), and it is what selects
+    the sidecar -- this is the
     only reader that returns rotating secrets, so it is also the only one that
     must not scan. Reading a sidecar by anything the PoolKey carries would let
     another agent's credentials reach this backend, because
