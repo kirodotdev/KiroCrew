@@ -2078,7 +2078,15 @@ measures, never above.
   one test body cannot send it to the real default home: `patch.dict(os.environ)`
   restores by clearing the environment before it refills it, and a body can pin
   `KIROCREW_HOME` empty (#40975, #41249). The join stays, for the module state a late
-  worker would still change.
+  worker would still change. The same gap is why a test's OWN `KIROCREW_HOME` pin is
+  `monkeypatch.setenv`, never `patch.dict(os.environ, {"KIROCREW_HOME": ...})`: a
+  lister on another thread (the tool gate's listing of the installed apps, from the
+  `mc-pathres` pool or inline on a walker's thread) that reaches `config_dir()` while
+  that `patch.dict` unwinds finds no variable at all and resolves the operator's real
+  home, which the teardown floor then reports against the test (#43833, one CI run in
+  ~40k tests; forced every run with a thread listing in a loop). In a
+  `unittest.TestCase`, the same pin is `pytest.MonkeyPatch()` with its `undo` in
+  `addCleanup` (`test_agent_api_tool._pin_home`); it restores with one write.
   When you see a per-test directory appear with no test writing it, list the threads
   first: `threading.enumerate()` names the lazy resolver, the filesystem never will.
 
