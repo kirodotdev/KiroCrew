@@ -154,6 +154,22 @@ async def test_the_instance_id_is_the_one_the_relay_lease_keeps(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+async def test_an_instance_id_that_cannot_be_read_answers_unavailable(
+    monkeypatch, tmp_path
+) -> None:
+    from kiro_crew.relay_client import lease
+
+    def _held(home: Path) -> str:
+        raise PermissionError(32, "the file is held by another process")
+
+    monkeypatch.setattr(instance, "data_home", lambda: tmp_path)
+    monkeypatch.setattr(lease, "crew_instance_id", _held)
+    resp = await instance.api_info(_info_request())
+    assert resp.status == 503
+    assert json.loads(resp.body)["error"]["code"] == "instance_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_an_app_token_reads_no_instance(monkeypatch) -> None:
     def _no_read() -> str:
         raise AssertionError("a refused caller must not reach the instance id")
