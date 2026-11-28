@@ -20,7 +20,10 @@ import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sce
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
 import { i18nT } from '../../i18n/t'
 
-const SERENGETI_THEME: SceneTooltipTheme = { active: 'On the move', idle: 'Resting' }
+const SERENGETI_THEME: SceneTooltipTheme = {
+  get active() { return i18nT('pages.scenes.wateringHoleScene.tooltip_active') },
+  get idle() { return i18nT('pages.scenes.wateringHoleScene.tooltip_idle') },
+}
 
 /* ── Types ── */
 type AnimalKind = 'giraffe' | 'warthog' | 'elephant'

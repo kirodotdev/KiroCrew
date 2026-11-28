@@ -7,7 +7,10 @@ import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sce
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
 import { i18nT } from '../../i18n/t'
 
-const NEURAL_THEME: SceneTooltipTheme = { active: 'Processing neural pathways', idle: 'Awaiting signal' }
+const NEURAL_THEME: SceneTooltipTheme = {
+  get active() { return i18nT('pages.scenes.neuralConstellationScene.tooltip_active') },
+  get idle() { return i18nT('pages.scenes.neuralConstellationScene.tooltip_idle') },
+}
 
 /* ── Types ── */
 interface NeuralNode {

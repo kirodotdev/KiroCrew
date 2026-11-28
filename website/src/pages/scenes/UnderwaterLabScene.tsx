@@ -8,7 +8,10 @@ import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useScen
 import { i18nT } from '../../i18n/t'
 import { sliceCodePoints } from '../../utils/codePoints'
 
-const UNDERWATER_THEME: SceneTooltipTheme = { active: 'Exploring the deep', idle: 'Surfacing for air' }
+const UNDERWATER_THEME: SceneTooltipTheme = {
+  get active() { return i18nT('pages.scenes.underwaterLabScene.tooltip_active') },
+  get idle() { return i18nT('pages.scenes.underwaterLabScene.tooltip_idle') },
+}
 
 /* ── Types ── */
 interface Diver {
@@ -49,7 +52,10 @@ const COL = {
   warning: '#f90', warningGlow: 'rgba(255,153,0,0.1)',
 }
 
-const SONAR_PINGS = ['Scanning…', 'All clear', 'Signal OK', 'Depth: 200m', 'Sync done', 'Data recv']
+const SONAR_PINGS = [
+  'pages.scenes.underwaterLabScene.scanning', 'pages.scenes.underwaterLabScene.all_clear', 'pages.scenes.underwaterLabScene.signal_ok',
+  'pages.scenes.underwaterLabScene.depth_200m', 'pages.scenes.underwaterLabScene.sync_done', 'pages.scenes.underwaterLabScene.data_recv',
+]
 
 interface Props {
   agents: AgentSource[]
@@ -251,7 +257,7 @@ export default function UnderwaterLabScene({ agents, visible = true }: Props) {
 
       // Nameplate
       if (!occupied) {
-        drawLabel(T, 'vacant', (dx + 20) * S, (dy + 5) * S, { role: 'label', color: '#556', bgColor: COL.metalDark, align: 'center', scale: S })
+        drawLabel(T, i18nT('pages.scenes.underwaterLabScene.vacant'), (dx + 20) * S, (dy + 5) * S, { role: 'label', color: '#556', bgColor: COL.metalDark, align: 'center', scale: S })
       }
     }
 
@@ -564,7 +570,7 @@ export default function UnderwaterLabScene({ agents, visible = true }: Props) {
           if (dv.activity === 'sonar' || dv.activity === 'tube') {
             dv.actTimer++
             if (dv.activity === 'sonar' && dv.actTimer === 1) {
-              sonarMsgRef.current = SONAR_PINGS[Math.random() * SONAR_PINGS.length | 0]
+              sonarMsgRef.current = i18nT(SONAR_PINGS[Math.random() * SONAR_PINGS.length | 0])
             }
             if (dv.activity === 'sonar' && dv.actTimer > 300) {
               const dp = DOME_POSITIONS[dv.domeIdx]

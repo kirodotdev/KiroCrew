@@ -33,6 +33,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer from '../store/chatSlice'
 import PandaOfficeScene from '../pages/scenes/PandaOfficeScene'
+import { i18next } from '../i18n/all'
 import { markAgentsKnown } from '../hooks/sceneStateCache'
 import type { AgentSource } from '../hooks/useAgentSync'
 
@@ -670,5 +671,42 @@ describe('PandaOfficeScene hover', () => {
     // Far corner of the floor: nobody is standing there.
     fireEvent.mouseMove(canvas, { clientX: 5 * S, clientY: 290 * S })
     expect(view.queryByText('Waiting for CR approval')).toBeNull()
+  })
+})
+
+describe('PandaOfficeScene in another language', () => {
+  afterEach(async () => { await i18next.changeLanguage('en') })
+
+  it('letters the whiteboard in the active language', async () => {
+    await i18next.changeLanguage('de')
+    const { overlay } = mount([])
+    expect(labels(overlay)).toEqual(expect.arrayContaining(['Zu erledigen', 'Aktiv', 'Fertig']))
+    expect(labels(overlay)).not.toContain('To Do')
+  })
+
+  it('speaks the huddle chat lines in the active language', async () => {
+    await i18next.changeLanguage('de')
+    const { overlay } = mount(seatedCrew('huddle-de'))
+    rand = 0.9
+    fastForward(1798)
+    rand = 0.2
+    clearRecords()
+    runFrames(1)
+    expect(labels(overlay)).toContain('CR freigegeben!')
+    advanceTimers(1_300)
+    clearRecords()
+    runFrames(1)
+    expect(labels(overlay)).toContain('Raus damit! 🐼')
+  })
+
+  it('flavours the hover card in the active language', async () => {
+    await i18next.changeLanguage('de')
+    const seated = agent({ id: 'slot-hovered-de', name: BERNADETT, running: true, detail: '3 msgs' })
+    markAgentsKnown('panda-office', [seated.id])
+    const view = mount([seated])
+    const canvas = view.getByLabelText('Panda-Büroszene')
+    const seat = { x: DESKS[0].x + 10, y: DESKS[0].y + 20 }
+    fireEvent.mouseMove(canvas, { clientX: seat.x * S, clientY: seat.y * S })
+    expect(view.getByText('Schuftet an PRs')).toBeInTheDocument()
   })
 })
