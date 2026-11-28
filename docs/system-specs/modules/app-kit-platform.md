@@ -914,13 +914,17 @@ shipped builtin's execution exemption and leaving the boot-warmed first-party
 name and MCP-server sets stale until the next restart. Symmetrically,
 `register_builtin_apps` stands down when a user-installed app already occupies the
 directory, leaving their install untouched, because taking it over is
-unrecoverable. Until the wheel copy is released (§ Former built-in adoption), that
-built-in still serves the name: its routes register and every hook root chooser
-resolves the shipped package. A local or git build named like a built-in is a
-legitimate way to test one, so it is not refused; `builtin_shadow.shadowed_builtin_notice`
-names the situation instead, appended to the install result's `message` and set as
-`shadowedBuiltin` on the app's `/api/apps` and `kirocrew app info` row, with the App
-Store step added when the name is pinned for adoption.
+unrecoverable. A local or git build named like a built-in is a legitimate way to
+test one, so it is not refused. When the name is pinned or marked for adoption,
+that non-builtin record releases the wheel copy (§ Former built-in adoption): the
+wheel registers no route and is no root any chooser resolves, so the install's own
+routes and hooks run against its own tree, gated as third-party code like any
+other install. When the name is neither pinned nor marked, the wheel copy still
+serves the name until released: its routes register and every hook root chooser
+resolves the shipped package, so the install's own code does not run, and
+`builtin_shadow.shadowed_builtin_notice` names that, appended to the install
+result's `message` and set as `shadowedBuiltin` on the app's `/api/apps` and
+`kirocrew app info` row.
 
 Frontend badges and affordances read the same three fields
 (`origin === 'builtin'`, `resources === 'app'`, `lifecycle === 'gateway'`,
@@ -8764,10 +8768,13 @@ an already-shipped pin runs; a later pin, and any pin-follow, trusts whoever
 controls `KiroCrewCaptain`.
 
 **The released predicate.** `builtin_adoption.builtin_released(name)` is True
-when the wheel copy must not register, serve or execute: the record is adopted
-(not builtin-owned and installed from the pin's or marker's repository), or there
-is no record and the name is marked `adopted` (uninstalled after adoption). A user
-app shadowing the name is not released: it keeps today's stand-down behaviour. A pinned name with
+when the wheel copy must not register, serve or execute: the record is not
+builtin-owned and the name is pinned or marked for adoption (an adopted record, or
+a local, git or fork build that shadows the name), or there is no record and the
+name is marked `adopted` (uninstalled after adoption). A non-builtin record of a
+pinned or marked name releases the wheel so the install's own routes and hooks run
+against its own tree, gated as third-party code; a record under a name neither
+pinned nor marked keeps today's stand-down behaviour, the wheel serving the name. A pinned name with
 no record and no marker is a fresh install and is NOT released:
 `register_builtin_apps` registers the built-in as today, and that record then
 adopts through STAGE and APPLY exactly like an upgrading host's. Once the wheel copy
@@ -8820,8 +8827,10 @@ only remove first-party status, never grant it. It gates:
   does not have. `test_released_builtin_skill_copies.py` holds the table to every
   packaged skill naming an app and every app it names to a pin row;
 - `register_builtin_apps`: a released name with no record, or an adopted record,
-  gets no directory, record, snapshot or secret. A shadowing user app is not
-  released and keeps the stand-down warning. A pinned name with no record while
+  gets no directory, record, snapshot or secret. A shadowing user app's record is
+  released too, but it occupies the directory, so this leaves the install
+  untouched at the user-install stand-down rather than this cleanup branch. A
+  pinned name with no record while
   its swap is still in flight (a hard-killed swap recovery left ambiguous) is not
   released either, and registers nothing: a fresh record would put a reset app
   over the old files the swap left beside the app directory.

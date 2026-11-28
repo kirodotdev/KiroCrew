@@ -43,18 +43,20 @@ def _install_local_build(tmp_path) -> manager.AppResult:
     return result
 
 
-def test_local_build_of_a_pinned_builtin_names_the_builtin_and_the_app_store(tmp_path, pinned):
+def test_local_build_of_a_pinned_builtin_releases_the_wheel_and_carries_no_notice(tmp_path, pinned):
+    # A local build of a pinned former built-in releases the wheel, so the install's
+    # own routes and hooks run and there is no "built-in still runs" notice.
     result = _install_local_build(tmp_path)
 
-    assert f"the built-in {NAME} app still runs" in result.message
-    assert "from the App Store" in result.message
-    row = manager.get_app(NAME)
-    assert row is not None and "still runs" in row["shadowedBuiltin"]
-    listed = {app["name"]: app for app in manager.list_apps()}
-    assert listed[NAME]["shadowedBuiltin"] == row["shadowedBuiltin"]
+    assert "still runs" not in result.message
+    assert exec_mod.shipped_builtin_app_root(NAME) is None
+    assert shadowed_builtin_notice(NAME, manager._read_installed(NAME)) == ""
+    assert "shadowedBuiltin" not in (manager.get_app(NAME) or {})
 
 
-def test_unpinned_builtin_notice_has_no_app_store_step(tmp_path, wheel):
+def test_unpinned_builtin_notice_names_the_still_running_builtin(tmp_path, wheel):
+    # An unpinned built-in keeps serving the name, so the install's code does not run
+    # and the notice names it. No App Store step, since the name is not pinned.
     result = _install_local_build(tmp_path)
 
     assert f"the built-in {NAME} app still runs" in result.message

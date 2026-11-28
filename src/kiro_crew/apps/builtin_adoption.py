@@ -51,9 +51,14 @@ def builtin_released(name: str) -> bool:
 
     record = _read_installed(name)
     if record is not None:
-        # Adopted onto its pinned or marked repository. A builtin-owned record, and
-        # a user app shadowing the name, keep today's behaviour.
-        return not _builtin_owns_install(record) and is_adopted_record(name, record)
+        # A non-builtin record under a name pinned or marked for adoption: the wheel
+        # stands down so the installed app's own routes and hooks resolve against its
+        # own tree, not the wheel package's. This covers the adopted record, a local
+        # or git build of a former built-in that shadows the name, and a fork. The
+        # installed app is third party, so register_builtin_apps leaves it untouched
+        # and app_execution_denied gates its code like any other third-party app. A
+        # builtin-owned record keeps the wheel.
+        return not _builtin_owns_install(record) and name in _release_candidates()
     meta_path = app_dir(name) / INSTALLED_META_FILENAME
     if meta_path.exists() or not _absence_is_genuine(meta_path) or _update_in_progress(name):
         return False  # unreadable or mid-swap: keep today's behaviour
@@ -88,8 +93,9 @@ def builtin_package_released(package: str) -> bool:
 def _release_candidates() -> frozenset[str]:
     """The only names :func:`builtin_released` can answer True for: pinned or marked.
 
-    Its record branch needs a pin or a base marker for a repository to match, and
-    its no-record branch needs a marker, so every other name is False unread.
+    Both branches gate on membership here: the record branch releases a non-builtin
+    record only for a name in this set, and the no-record branch needs a marker, so
+    every other name is False unread.
     """
     names = set(adoption_pin_names())
     try:

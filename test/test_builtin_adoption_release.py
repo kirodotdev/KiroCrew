@@ -83,13 +83,30 @@ def test_an_adopted_record_is_released(wheel):
     assert adoption.builtin_package_released(PACKAGE)
 
 
-def test_a_user_app_shadowing_a_pinned_name_keeps_todays_behaviour(wheel):
-    """A non-builtin record from another repository is not an adoption: not released."""
+def test_a_fork_shadowing_a_pinned_name_releases_the_wheel(wheel):
+    """A non-builtin record from another repository releases the wheel, so the
+    installed app's own routes and hooks resolve against its tree, not the wheel's."""
     _adopt_record(sourceUrl="https://github.com/other/fork")
-    assert not adoption.builtin_released(NAME)
-    assert exec_mod.shipped_builtin_app_root(NAME) == wheel
-    assert not adoption.builtin_package_released(PACKAGE)
-    assert adoption.released_builtin_packages([PACKAGE]) == frozenset()
+    assert adoption.builtin_released(NAME)
+    assert exec_mod.shipped_builtin_app_root(NAME) is None
+    assert adoption.builtin_package_released(PACKAGE)
+    assert adoption.released_builtin_packages([PACKAGE]) == frozenset({PACKAGE})
+
+
+def test_a_local_install_shadowing_a_pinned_name_releases_the_wheel(wheel):
+    """Row 59: a local or git folder install of a former built-in. Its record is
+    origin=local with no sourceUrl, so the wheel stands down and shipped_builtin_app_root
+    answers None; the hook root chooser then resolves the install's own tree rather than
+    the wheel package, which has no backend/hooks module."""
+    write_builtin_record()
+    record = manager._read_installed(NAME)
+    assert record is not None
+    record.source, record.origin, record.lifecycle = "/home/dev/meetings-build", "local", "app"
+    record.sourceUrl, record.sourceCommit = "", ""
+    manager._write_installed(NAME, record)
+    assert adoption.builtin_released(NAME)
+    assert exec_mod.shipped_builtin_app_root(NAME) is None
+    assert adoption.builtin_package_released(PACKAGE)
 
 
 def test_a_fresh_install_of_a_pinned_name_keeps_the_wheel_copy(wheel):
