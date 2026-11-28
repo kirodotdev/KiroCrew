@@ -1243,6 +1243,12 @@
       "hint": "On a desktop, a two-finger sideways trackpad swipe over a chat or the Bots page opens and closes the side panel. Turn this off to stop it; the panel button and keyboard shortcut still work. This setting does not apply on a phone."
     },
     {
+      "id": "chat.switch-to-session-tabs-on-cmd-ctrl-click",
+      "label": "Switch to Session Tabs on Cmd/Ctrl-Click",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.switch-to-session-tabs-on-cmd-ctrl-click"
+    },
+    {
       "id": "chat.tail-only-fork",
       "label": "Tail-only Fork",
       "tab": "chat",
