@@ -271,9 +271,17 @@ def antigravity_unattributed_error_exception(text: str) -> Any:
 
 
 def _is_positive_token_count(value: Any) -> bool:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    """Whether an agent-supplied token count is a real number above zero.
+
+    Never raises, as ``_dispatch._token_count`` never does: an int is compared
+    directly, because ``math.isfinite`` raises ``OverflowError`` on one beyond
+    float range, and only a float (which can be NaN or infinite) is checked.
+    """
+    if isinstance(value, bool):
         return False
-    return math.isfinite(value) and value > 0
+    if isinstance(value, int):
+        return value > 0
+    return isinstance(value, float) and math.isfinite(value) and value > 0
 
 
 def _usage_update_has_positive_tokens(msg: Any) -> bool:

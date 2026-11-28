@@ -1365,3 +1365,28 @@ def test_antigravity_tested_range_notice_reads_one_parser() -> None:
         client_claude_session._adapter_version_at_least("\u0661.\u0664.\u0663", (0, 0, 0)) is False
     )
     assert client_turn_control.untested_version_issue(ACP_BACKEND_ANTIGRAVITY, 123) == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("used", "positive"),
+    [
+        (10**309, True),
+        (5, True),
+        (0, False),
+        (float("nan"), False),
+        (float("inf"), False),
+        (True, False),
+        ("5", False),
+        (None, False),
+    ],
+)
+def test_antigravity_usage_checks_never_raise_on_malformed_counts(
+    used: object, positive: bool
+) -> None:
+    """An integer beyond float range made ``math.isfinite`` raise inside every turn loop."""
+    msg = JsonRpcMessage(
+        method="session/update",
+        params={"update": {"sessionUpdate": "usage_update", "used": used, "size": 100}},
+    )
+    assert _dispatch._usage_update_has_positive_tokens(msg) is positive
+    assert _dispatch._result_has_positive_usage({"usage": {"inputTokens": used}}) is positive
