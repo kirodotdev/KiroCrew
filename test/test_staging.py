@@ -148,10 +148,6 @@ class TestSweep:
         assert removed == 1
         assert not orphan.exists()
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Windows has no change time, so a far-future date stands there",
-    )
     def test_a_far_future_mtime_does_not_keep_an_idle_tree(self, home: Path) -> None:
         # An extracted archive can carry an mtime years ahead; no write made it,
         # so it must not hold the tree until that date.

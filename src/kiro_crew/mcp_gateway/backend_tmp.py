@@ -403,13 +403,13 @@ def _tree_newest_mtime(root: Path, fallback: float) -> float:
     """
     newest = 0.0
     try:
-        newest = _activity_time(os.lstat(root), fallback)
+        newest = _activity_time(os.lstat(root), fallback, root)
         stack = [root]
         while stack:
             current = stack.pop()
             for entry in os.scandir(current):
                 info = os.lstat(entry.path)
-                newest = max(newest, _activity_time(info, fallback))
+                newest = max(newest, _activity_time(info, fallback, entry.path))
                 # lstat: symlinks never descend, nor do Windows junctions.
                 if stat.S_ISDIR(info.st_mode) and not platform_compat.lstat_is_name_surrogate(info):
                     stack.append(Path(entry.path))

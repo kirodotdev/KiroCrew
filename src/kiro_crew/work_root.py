@@ -81,10 +81,9 @@ _MARKER_NAME = ".kirocrew-work"
 #: its tree every cycle and needs another home: ``grace`` on the sweep is not a
 #: per-entry escape, since the hourly maintenance sweep passes no argument.
 IDLE_GRACE_SECONDS = 7 * 24 * 3600.0
-#: How far past a sweep's clock an mtime still counts as a write (off Windows),
-#: for every tree-newest idle walk (this one, staging, scratch and MCP backend
-#: temp; see :func:`_activity_time`). A day leaves ordinary clock skew reading
-#: as fresh.
+#: How far past a sweep's clock an mtime still counts as a write, for every
+#: tree-newest idle walk (this one, staging, scratch and MCP backend temp; see
+#: :func:`_activity_time`). A day leaves ordinary clock skew reading as fresh.
 _FUTURE_MTIME_SLACK_SECONDS = 24 * 3600.0
 
 #: Keys come from code, so this validates instead of rewriting. A leading
@@ -149,7 +148,75 @@ def _is_plain_dir(path: Path) -> bool:
     return stat.S_ISDIR(info.st_mode) and not platform_compat.lstat_is_name_surrogate(info)
 
 
-def _activity_time(info: os.stat_result, reference: float) -> float:
+#: Seconds from the Windows ``FILETIME`` epoch (1601-01-01) to the Unix epoch.
+_WIN_EPOCH_OFFSET_SECONDS = 11_644_473_600
+
+
+def _win_change_time(path: str | os.PathLike[str]) -> float | None:
+    """The NTFS change time of *path* (a link opened as itself), or None if unreadable.
+
+    Windows ``stat`` reports no change time (its ``st_ctime`` is creation time), so
+    it is read from the handle's ``FILE_BASIC_INFO``. The handle asks only for
+    ``FILE_READ_ATTRIBUTES`` and shares read, write and delete, so a writer or a
+    delete in another process is never refused while it is open.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        from kiro_crew.platform_compat_native import _FileBasicInfo
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.GetFileInformationByHandleEx.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.CreateFileW(
+            os.fspath(path),
+            0x0080,  # FILE_READ_ATTRIBUTES
+            0x0007,  # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+            None,
+            3,  # OPEN_EXISTING
+            0x02000000 | 0x00200000,  # FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+            None,
+        )
+        if handle is None or handle == wintypes.HANDLE(-1).value:
+            return None
+        try:
+            basic = _FileBasicInfo()
+            if not kernel32.GetFileInformationByHandleEx(
+                handle,
+                0,  # FILE_INFO_BY_HANDLE_CLASS.FileBasicInfo
+                ctypes.byref(basic),
+                ctypes.sizeof(basic),
+            ):
+                return None
+        finally:
+            kernel32.CloseHandle(handle)
+    except (AttributeError, ImportError, OSError, OverflowError, ValueError):
+        return None
+    if basic.ChangeTime <= 0:
+        return None
+    return basic.ChangeTime / 10_000_000 - _WIN_EPOCH_OFFSET_SECONDS
+
+
+def _activity_time(
+    info: os.stat_result, reference: float, path: str | os.PathLike[str] | None = None
+) -> float:
     """When the entry *info* describes was last written, for an idle walk at *reference*.
 
     A write stamps the current clock, so an mtime more than
@@ -158,12 +225,16 @@ def _activity_time(info: os.stat_result, reference: float) -> float:
     date. Such an entry is read by the time ``utime`` cannot set: its change time
     (stamped when ``utime`` ran). After a fast clock is set back, a real write
     still reads as fresh by its change time. Windows ``stat`` has no change time
-    (``st_ctime`` is creation time), so there the far-future mtime stands and
-    keeps the tree.
+    (``st_ctime`` is creation time), so there it is read from the entry at *path*
+    (:func:`_win_change_time`); without a *path*, or when that read fails, the
+    far-future mtime stands and keeps the tree.
     """
-    if info.st_mtime <= reference + _FUTURE_MTIME_SLACK_SECONDS or sys.platform == "win32":
+    if info.st_mtime <= reference + _FUTURE_MTIME_SLACK_SECONDS:
         return info.st_mtime
-    return info.st_ctime
+    if sys.platform != "win32":
+        return info.st_ctime
+    changed = _win_change_time(path) if path is not None else None
+    return info.st_mtime if changed is None else changed
 
 
 def _tree_newest_mtime(root: Path, fallback: float) -> float:
@@ -183,13 +254,13 @@ def _tree_newest_mtime(root: Path, fallback: float) -> float:
     """
     newest = 0.0
     try:
-        newest = _activity_time(os.lstat(root), fallback)
+        newest = _activity_time(os.lstat(root), fallback, root)
         stack = [root]
         while stack:
             current = stack.pop()
             for entry in os.scandir(current):
                 info = os.lstat(entry.path)
-                newest = max(newest, _activity_time(info, fallback))
+                newest = max(newest, _activity_time(info, fallback, entry.path))
                 # lstat: symlinks never descend, nor do Windows junctions.
                 if stat.S_ISDIR(info.st_mode) and not platform_compat.lstat_is_name_surrogate(info):
                     stack.append(Path(entry.path))

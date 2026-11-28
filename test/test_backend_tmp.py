@@ -281,10 +281,6 @@ class TestBootSweep:
         assert bt.sweep_all_backend_tmp() == 0
         assert path.exists()
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Windows has no change time, so a far-future date stands there",
-    )
     def test_a_far_future_mtime_does_not_keep_a_dead_tree(
         self, tmp_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

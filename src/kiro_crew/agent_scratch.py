@@ -1089,8 +1089,8 @@ def _tree_newest_mtime(root: Path, fallback: float) -> float:
     platform, and the only one available on Windows (no process groups).
     Fail-safe: an unreadable entry returns *fallback* (reads as active, the
     sweep keeps the dir). *fallback* is the sweep's clock, and each entry is
-    read through :func:`~kiro_crew.work_root._activity_time` against it, so off
-    Windows an mtime ``utime`` set far ahead does not count as a write.
+    read through :func:`~kiro_crew.work_root._activity_time` against it, so an
+    mtime ``utime`` set far ahead does not count as a write.
 
     Deliberately UNCAPPED: an entry cap that bails to *fallback* turns every
     tree larger than the cap into a permanently active-looking one, so a
@@ -1109,13 +1109,13 @@ def _tree_newest_mtime(root: Path, fallback: float) -> float:
     """
     newest = 0.0
     try:
-        newest = _activity_time(os.lstat(root), fallback)
+        newest = _activity_time(os.lstat(root), fallback, root)
         stack = [root]
         while stack:
             current = stack.pop()
             for entry in os.scandir(current):
                 info = os.lstat(entry.path)
-                newest = max(newest, _activity_time(info, fallback))
+                newest = max(newest, _activity_time(info, fallback, entry.path))
                 # lstat: symlinks never descend, nor do Windows junctions.
                 if stat.S_ISDIR(info.st_mode) and not platform_compat.lstat_is_name_surrogate(info):
                     stack.append(Path(entry.path))
@@ -1580,7 +1580,7 @@ def sweep_dead_scratch(now: float | None = None) -> int:
             # takes: a spawn that marked this tree active since the idle
             # reading above wins, and the tree is left for the next sweep.
             try:
-                if reference - _activity_time(os.lstat(child), reference) < quiet_for:
+                if reference - _activity_time(os.lstat(child), reference, child) < quiet_for:
                     continue
             except OSError:
                 continue

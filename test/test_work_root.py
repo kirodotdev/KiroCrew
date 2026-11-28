@@ -404,10 +404,6 @@ class TestSweep:
         assert wr.sweep_work_root() == 0
         assert path.is_dir()
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Windows has no change time, so a far-future date stands there",
-    )
     def test_a_far_future_mtime_does_not_keep_an_idle_entry(self, root: Path) -> None:
         # A write stamps the current clock, so a file utime() dated years ahead
         # is read by when that utime() ran, not held until that date.
@@ -430,15 +426,94 @@ class TestSweep:
         assert wr.sweep_work_root(now=time.time() - 10 * 365 * 86400.0) == 0
         assert path.is_dir()
 
-    def test_on_windows_a_far_future_mtime_stands(self, monkeypatch) -> None:
-        # Windows stat has no change time (st_ctime is creation time), and a
-        # file rewritten after it was created must not read as idle by it.
+    def test_on_windows_a_far_future_mtime_reads_the_ntfs_change_time(self, monkeypatch) -> None:
+        # Windows st_ctime is creation time, so a file rewritten after it was
+        # created must not read as idle by it: the change time comes from the path.
         monkeypatch.setattr(sys, "platform", "win32")
         reference = 1_800_000_000
         mtime = reference + 10 * 365 * 86400
         info = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 1, 0, 0, 0, 0, mtime, reference - 7200))
+        asked: list[str] = []
+        monkeypatch.setattr(wr, "_win_change_time", lambda p: asked.append(p) or reference - 60)
 
+        assert wr._activity_time(info, reference, "C:/t/f.csv") == reference - 60
+        assert asked == ["C:/t/f.csv"]
+
+    def test_on_windows_a_far_future_mtime_stands_when_the_change_time_is_unread(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(sys, "platform", "win32")
+        reference = 1_800_000_000
+        mtime = reference + 10 * 365 * 86400
+        info = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 1, 0, 0, 0, 0, mtime, reference - 7200))
+        monkeypatch.setattr(wr, "_win_change_time", lambda p: None)
+
+        assert wr._activity_time(info, reference, "C:/t/f.csv") == mtime
         assert wr._activity_time(info, reference) == mtime
+
+    def test_on_windows_the_sweep_reclaims_an_entry_holding_a_far_future_file(
+        self, root: Path, monkeypatch
+    ) -> None:
+        path = wr.allocate_work("k")
+        fixture = path / "fixture.csv"
+        fixture.write_text("x\n", encoding="utf-8")
+        now = time.time() + wr.IDLE_GRACE_SECONDS + 60
+        future = now + 10 * 365 * 86400.0
+        os.utime(fixture, (future, future))
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(wr, "_win_change_time", lambda p: now - wr.IDLE_GRACE_SECONDS - 60)
+
+        assert wr.sweep_work_root(now=now) == 1
+        assert not path.exists()
+
+    def test_the_ntfs_change_time_is_read_from_file_basic_info(self, monkeypatch) -> None:
+        import ctypes
+
+        closed: list[int] = []
+
+        def create_file(*args):
+            assert args[1] == 0x0080 and args[2] == 0x0007
+            return 42
+
+        def get_info(handle, info_class, ref, size):
+            assert (handle, info_class) == (42, 0)
+            ref._obj.ChangeTime = (1_800_000_000 + 11_644_473_600) * 10_000_000
+            return True
+
+        kernel32 = type(
+            "K",
+            (),
+            {
+                "CreateFileW": staticmethod(create_file),
+                "GetFileInformationByHandleEx": staticmethod(get_info),
+                "CloseHandle": staticmethod(lambda h: closed.append(h)),
+            },
+        )()
+        monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: kernel32, raising=False)
+
+        assert wr._win_change_time("C:/t/f.csv") == 1_800_000_000
+        assert closed == [42]
+
+    def test_the_ntfs_change_time_is_none_when_no_handle_opens(self, monkeypatch) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        failed = type(
+            "K",
+            (),
+            {
+                "CreateFileW": staticmethod(lambda *a: wintypes.HANDLE(-1).value),
+                "GetFileInformationByHandleEx": staticmethod(lambda *a: True),
+                "CloseHandle": staticmethod(lambda h: None),
+            },
+        )()
+        monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: failed, raising=False)
+
+        assert wr._win_change_time("C:/t/f.csv") is None
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="kernel32 exists there")
+    def test_the_ntfs_change_time_is_none_off_windows(self) -> None:
+        assert wr._win_change_time("/tmp/f.csv") is None
 
     def test_a_stray_file_in_the_root_is_never_swept(self, root: Path) -> None:
         root.mkdir(parents=True)
