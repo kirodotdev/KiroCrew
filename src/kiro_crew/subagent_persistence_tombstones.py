@@ -70,6 +70,9 @@ def write_finished_result(
     text: str | None,
     state_writer: Callable[..., bool] = update_state,
     /,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> bool:
     """Leave ``result.txt`` as a run's ending reads it, then record ``result_complete``.
 
@@ -81,9 +84,13 @@ def write_finished_result(
     ``result.txt``. ``None`` is any other ending: the streamed file is capped in
     place (``cap_result_file``) and the flag is False. A failed whole rewrite
     records False (WARNING) and falls back to the in-place cap, so the bound holds
-    whatever refused the rename. A transient run records the flag and touches no
-    disk.
+    whatever refused the rename. A flag write a Windows reader holding
+    ``state.json`` refuses is retried for a few seconds; one that still fails
+    returns False (WARNING, with the run folder). A transient run records the
+    flag and touches no disk.
     """
+    from kiro_crew import platform_compat
+    from kiro_crew.atomic_write import on_event_loop
     from kiro_crew.context_management import cap_result_bytes, cap_result_file
 
     whole = text is not None
@@ -112,10 +119,34 @@ def write_finished_result(
                 "Could not finish %s's result file; it stays unflagged", agent_id, exc_info=True
             )
             whole = False
-    try:
-        return bool(state_writer(agent_id, result_complete=whole))
-    except (OSError, ValueError):
-        logger.warning("Could not record result_complete for %s", agent_id, exc_info=True)
+    # ``update_state``'s rename retries a Windows sharing violation only by count
+    # (about 0.6 s), which a reader holding ``state.json`` outlasts, and a whole
+    # answer left unflagged is announced as a fragment after a restart. So a
+    # refusal there is retried for up to 5 s; this worker runs off the event loop,
+    # so the wait blocks no other session. The flag still never lands without a
+    # write landing.
+    started = clock()
+    while True:
+        try:
+            return bool(state_writer(agent_id, result_complete=whole))
+        except PermissionError as exc:
+            if platform_compat.IS_WINDOWS and not on_event_loop() and clock() - started < 5.0:
+                logger.debug("state.json held while recording result_complete for %s", agent_id)
+                sleep(0.1)
+                continue
+            failure: Exception = exc
+        except (OSError, ValueError) as exc:
+            failure = exc
+        try:
+            folder: object = _agent_dir(agent_id)
+        except ValueError:
+            folder = "an invalid run folder"
+        logger.warning(
+            "Could not record result_complete for %s in %s",
+            agent_id,
+            folder,
+            exc_info=failure,
+        )
         return False
 
 
