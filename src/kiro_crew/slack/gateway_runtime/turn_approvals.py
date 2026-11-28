@@ -97,6 +97,7 @@ def _interactive_approval(
     requester: str = "",
     on_host_decision: Callable[[str, str], None] | None = None,
     follows_approval_mode: bool = False,
+    parent_slot_of: Callable[[str], str] | None = None,
 ) -> ToolApprovalCallback:
     """Return an approval callback that races dashboard vs Slack DM.
 
@@ -134,6 +135,12 @@ def _interactive_approval(
     denies ``trust`` still go to the prompt. The gateway sets it only for an app
     turn whose session runs one of that app's own agents. Resolved when the
     callback is made; the mode takes effect at restart, as it does for every channel.
+
+    ``parent_slot_of`` maps the caller's parent session key to the dashboard slot whose
+    tab shows the prompt and whose Trust may answer it. It defaults to
+    ``dashboard_slot_key``, which knows only a conversation a tab displays; the sub-agent
+    tool callback passes one that also resolves a workflow step's key to the chat that
+    started the run.
     """
 
     is_background = source in _BACKGROUND_APPROVAL_SOURCES
@@ -240,7 +247,8 @@ def _interactive_approval(
         # as an agent ID loses the dashboard slot and hides the approval prompt.
         # ``dashboard_slot_key`` answers "which tab shows this conversation?", so a
         # channel-born session gets its prompt in the tab it is open in too.
-        parent_slot = dashboard_slot_key(parent_session_key)
+        # ``parent_slot_of`` stands in for it where the parent key is one no tab shows.
+        parent_slot = (parent_slot_of or dashboard_slot_key)(parent_session_key)
 
         # NO heuristic fallback. A background caller (cron / taskrunner /
         # autonudge) that supplies neither an authoritative parent session

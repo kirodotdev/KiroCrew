@@ -6,7 +6,7 @@ callbacks: the status and event frames, spawn approval, the orphan notices, and
 consumer resolves the parent's tab, composes the report, peeks at the wave, and
 hands the completion to the wave digest and then to its delivery route. This
 module also owns the manager reads made off the loop, the scale coalescer, and
-which slot governs a workflow step's spawn.
+which slot governs a workflow step's spawn and its sub-agents' tool prompts.
 
 Orchestrator fields read: ``_background_tasks``, ``_batch_progress``, ``_cfg``,
 ``_owner_id``, ``ctx_builder``, ``dashboard_state``, ``sessions``, ``slack``.
@@ -353,8 +353,24 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         )
         return slot
 
-    _approve_subagent = self._interactive_approval("subagent", slot_resolver=_spawn_slot_resolver)
-    # A SECOND instance of the same callback, differing only in the
+    def _tool_parent_slot(parent_key: str) -> str:
+        """The tab a sub-agent's tool prompt is raised in, and whose Trust may answer it.
+
+        A workflow step's session is shown by no tab, so the prompts of its sub-agents
+        answer to the chat that started the run, as the step's own spawn does. Any other
+        key keeps the plain tab lookup. A spawn request needs none of this: its id names
+        the agent, and ``_spawn_slot_resolver`` maps that agent's parent.
+        """
+        if parent_key.startswith(_WORKFLOW_STEP_PREFIXES):
+            return _spawn_parent_slot(
+                parent_key, getattr(self.dashboard_state, "workflow_service", None)
+            )
+        return dashboard_slot_key(parent_key)
+
+    _approve_subagent = self._interactive_approval(
+        "subagent", slot_resolver=_spawn_slot_resolver, parent_slot_of=_tool_parent_slot
+    )
+    # A SECOND instance of the same callback, differing in the
     # unreachable behaviour. It is a separate closure because the one above is
     # also wired as ``on_tool_approval``: a mid-run tool prompt has no
     # terminal path that could report the refusal, so raising there would turn
