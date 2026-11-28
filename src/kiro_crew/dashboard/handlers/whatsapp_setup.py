@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict
 
@@ -19,6 +20,7 @@ from kiro_crew.dashboard.channel_folders import (
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
 from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
 from kiro_crew.dashboard.handlers.messaging import _channel_sdk_status, is_direct_local_request
+from kiro_crew.whatsapp.jids import USER_SERVER
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,26 @@ async def whatsapp_config_get(request: web.Request) -> web.Response:
     )
 
 
+# What people type around a phone number: a leading ``+``, spaces, dashes, dots
+# and brackets. None of it is part of the number.
+_WA_ID_PUNCTUATION = re.compile(r"[\s().-]")
+
+
+def _wa_id_digits(value: str) -> str | None:
+    """The config form of a WhatsApp number (digits only), or ``None``.
+
+    The config loader keeps only all-digit entries, so a number saved with its
+    ``+``, with separators, or as a ``<number>@s.whatsapp.net`` JID would be
+    dropped on the next load and admit nobody. Those forms are reduced to their
+    digits here; anything that is still not all digits is not a number.
+    """
+    number = value.strip()
+    if number.lower().endswith(f"@{USER_SERVER}"):
+        number = number[: -len(USER_SERVER) - 1]
+    number = _WA_ID_PUNCTUATION.sub("", number.removeprefix("+"))
+    return number if number.isascii() and number.isdigit() else None
+
+
 async def whatsapp_config_save(request: web.Request) -> web.Response:
     """PUT /api/whatsapp/config: persist policy fields (config-lock serialized)."""
     if not is_direct_local_request(request):
@@ -106,6 +128,25 @@ async def whatsapp_config_save(request: web.Request) -> web.Response:
             {"error": "allowed_wa_ids must be a list", "code": "allowed_wa_ids_not_list"},
             status=400,
         )
+    allowed_wa_ids: list[str] = []
+    for item in body.get("allowed_wa_ids", ()):
+        raw = str(item).strip()
+        if not raw:
+            continue
+        wa_id = _wa_id_digits(raw)
+        if wa_id is None:
+            return web.json_response(
+                {
+                    "error": (
+                        f"invalid WhatsApp number: {raw} (expected digits with the "
+                        "country code, such as 447700900000)"
+                    ),
+                    "code": "invalid_wa_id",
+                },
+                status=400,
+            )
+        if wa_id not in allowed_wa_ids:
+            allowed_wa_ids.append(wa_id)
     if "groups" in body and not isinstance(body["groups"], list):
         return web.json_response(
             {"error": "groups must be a list", "code": "groups_not_list"}, status=400
@@ -139,9 +180,7 @@ async def whatsapp_config_save(request: web.Request) -> web.Response:
         if "dm_policy" in body:
             wa["dm_policy"] = str(body["dm_policy"])
         if "allowed_wa_ids" in body:
-            wa["allowed_wa_ids"] = [
-                str(u).strip() for u in body["allowed_wa_ids"] if str(u).strip()
-            ]
+            wa["allowed_wa_ids"] = allowed_wa_ids
         if "groups" in body:
             wa["groups"] = [g for g in body["groups"] if isinstance(g, dict)]
         if "session_folder" in body:
