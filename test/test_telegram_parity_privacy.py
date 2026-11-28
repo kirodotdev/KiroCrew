@@ -1122,7 +1122,8 @@ class TestDurableWritesUseTheRotatedKey:
         "_handle_compact": False,
         "_handle_model": False,
         "_apply_model": False,
-        "_apply_agent": False,
+        # ``_apply_agent`` delegates to it, for ``/agent`` and ``/bots`` alike.
+        "_apply_pick": False,
         "_callback_session_key": False,
     }
 
@@ -1161,7 +1162,7 @@ class TestDurableWritesUseTheRotatedKey:
         assert owned >= {
             "_handle_model",
             "_apply_model",
-            "_apply_agent",
+            "_apply_pick",
             "_handle_compact",
             "_handle_spawn",
             "_handle_task",

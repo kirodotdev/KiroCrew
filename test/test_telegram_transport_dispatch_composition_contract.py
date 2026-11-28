@@ -299,6 +299,8 @@ MOVED_MEMBERS = {
         "_apply_model",
         "_consume_picker",
         "_handle_agent",
+        "_handle_bot",
+        "_apply_pick",
         "_handle_model",
         "_installed_agent_names",
         "_model_choices",
@@ -556,7 +558,7 @@ BASE_MEMBERS = {
 #: Members the composition added: the turn engine ``handle_message`` hands an admitted
 #: message to, and the midturn owner's hand-off of a message into a busy RESUMED
 #: dashboard session. Anything else new on the class is unexplained surface.
-ADDED_MEMBERS = frozenset({"_run_turn", "_handle_resumed_busy"})
+ADDED_MEMBERS = frozenset({"_run_turn", "_handle_resumed_busy", "_handle_bot", "_apply_pick"})
 
 
 def _owner(stem: str) -> ModuleType:

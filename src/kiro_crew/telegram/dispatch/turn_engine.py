@@ -37,6 +37,7 @@ from kiro_crew.executors import (
 from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
 from kiro_crew.llm_helpers import record_interaction_event
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
 from kiro_crew.messaging.commands import (
@@ -70,9 +71,11 @@ from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.parent_turns import note_turn_landed
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.slack.channel_crew import bind_bot_memory, resolve_channel_crew
 from kiro_crew.start_priority import person_priority
 from kiro_crew.telegram.attachments import process_telegram_attachments
 from kiro_crew.telegram.client import frame_reply_context_for_message
+from kiro_crew.telegram.dispatch import pickers as _pickers
 from kiro_crew.telegram.renderer import TelegramApprovalDecider as _APPROVAL_REGISTRY
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
 
@@ -82,6 +85,37 @@ if TYPE_CHECKING:
 
 #: The dispatcher's one logger, named for the facade module operators filter on.
 logger = logging.getLogger("kiro_crew.telegram.transport_dispatch")
+
+
+async def _bind_route_bot(self: TelegramDispatcher, session_key: str, bot: str) -> None:
+    """Bind *session_key*'s memory to Bot *bot*, once, before its first turn.
+
+    The same seam Slack's ``!bot`` binds through (``bind_bot_memory``), so its
+    fences hold. A session that already carries an execution record keeps it: the
+    agent is part of a Telegram session key, so a record on this key was written
+    for this Bot, and re-publishing it every turn would only race the reader.
+    """
+    if await asyncio.to_thread(_has_execution_record, session_key):
+        return
+    await bind_bot_memory(session_key, bot, self.sessions, self.conv_log)
+
+
+def _bot_bound_store(session_key: str) -> str:
+    """The named memory store *session_key*'s execution record binds, or ``""``.
+
+    Only a Bot pick binds a Telegram key to a named store (``bind_bot_memory``);
+    Global is ``""``. Blocking.
+    """
+    from kiro_crew.context import store_of_session
+
+    return store_of_session(None, session_key)
+
+
+def _has_execution_record(session_key: str) -> bool:
+    """Whether *session_key* already carries an execution record. Blocking."""
+    from kiro_crew.execution_context import read_session_execution
+
+    return read_session_execution(session_key) is not None
 
 
 async def _run_turn(
@@ -126,6 +160,21 @@ async def _run_turn(
         persisted = await asyncio.to_thread(persisted_session_agent, self.conv_log, resumed_key)
         if persisted:
             agent = persisted
+    # A Bot (a ``config.agents`` key) picked with ``/bots`` runs the route's
+    # conversation AS that Bot: its kiro agent mode, its workspace directory and
+    # its member identity (``slack/channel_crew.py``, the collapse Slack's
+    # ``!bot`` uses). ``agent`` keeps the Bot's NAME for the records and gates;
+    # the provider gets the Bot's mode and the context builder its template. A
+    # resumed dashboard session is left as it is: its own runner owns its binding.
+    _channel_crew = (
+        await asyncio.to_thread(resolve_channel_crew, agent)
+        if resumed_key is None and agent and self._bot_picks.get(route) == agent
+        else None
+    )
+    _alloc: dict[str, Any] = (
+        _channel_crew.allocation_kwargs() if _channel_crew is not None else {"agent": agent}
+    )
+    _context_agent = _channel_crew.kiro_agent if _channel_crew is not None else agent
 
     # Only the owner is asked to approve a tool. Anyone else would be answering
     # their own request, so they get no prompt and the tool is denied.
@@ -212,6 +261,26 @@ async def _run_turn(
         # Skipped when muted, as in the Discord twin.
         if not muted:
             await renderer.on_turn_start()
+        if _channel_crew is not None and not _pickers.is_bot_owner(self._allowed, user_id):
+            # The pick was made by the owner, but the Topic is shared, or the
+            # allow-list grew since: nobody else runs on the Bot's memory.
+            _pickers._audit_bot_refusal(user_id, "telegram.bot_turn", _channel_crew.crew_agent)
+            raise UnknownMemoryStore(_pickers.BOT_OWNER_ONLY)
+        if _channel_crew is None and resumed_key is None:
+            # A template turn on a key a Bot bound. The key carries only the name,
+            # and the generation is seeded by name, so an ``/agent`` pick of a
+            # Bot's name (after a restart clears the picks, or by another member
+            # of the allow-list) can land on the Bot's conversation without its
+            # owner check. What the KEY records decides, not the in-memory pick.
+            _bound = await asyncio.to_thread(_bot_bound_store, session_key)
+            if _bound:
+                _pickers._audit_bot_refusal(user_id, "telegram.bot_bound_turn", _bound)
+                raise UnknownMemoryStore(_pickers.BOT_BOUND_REFUSAL)
+        if _channel_crew is not None:
+            # Before the store is read, so the Bot's first turn already runs on its
+            # own memory. Raises ``UnknownMemoryStore`` with a user-worded reason,
+            # which the failure handler below shows as it is.
+            await _bind_route_bot(self, session_key, _channel_crew.crew_agent)
         _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
         _opens_crew_log = resumed_key is None or bool(channel_namespace_of(session_key))
         # The slot's newest crew log on disk, read off the loop before the claim so the
@@ -232,8 +301,8 @@ async def _run_turn(
             self.sessions,
             session_key,
             start_priority=person_priority(msg.person_origin),
-            agent=agent,
             channel_id=channel_id,
+            **_alloc,
             # "" is the Auto row's stored value; collapse it to None so Auto
             # means "as if never picked". get_or_create gates its own model
             # resolution on `model is None`, so passing "" would skip that
@@ -314,8 +383,8 @@ async def _run_turn(
                 self.sessions,
                 session_key,
                 start_priority=person_priority(msg.person_origin),
-                agent=agent,
                 channel_id=channel_id,
+                **_alloc,
                 model=(None if resumed_key is not None else _pick_before or None),
             )
             turn_chat = (chat_id, got[0])
@@ -338,7 +407,7 @@ async def _run_turn(
         _reprojection = await reproject_unattended_claim(
             self.sessions,
             session_key,
-            running_agent(provider, agent),
+            running_agent(provider, _alloc["agent"]),
             (provider, is_new, resumed),
             _reclaim,
             _claim_token,
@@ -451,7 +520,7 @@ async def _run_turn(
             is_new,
             session_key,
             channel_id=channel_id,
-            agent=agent,
+            agent=_context_agent,
             memory_store=_memory_store,
             resumed=resumed,
             needs_reinjection=_needs_reinjection,
@@ -529,7 +598,9 @@ async def _run_turn(
             ),
             undelivered_watch_key=session_key,
             script_hooks=hook_turn,
-            hook_agent=agent or "",
+            # The template the session runs, as Slack's twin passes: a Bot's
+            # NAME has no spec file, so its template's hooks would never fire.
+            hook_agent=str(_alloc.get("agent") or ""),
             is_new_session=is_new,
         )
         accumulated = await driver.run(full_message)

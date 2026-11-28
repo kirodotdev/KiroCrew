@@ -13,6 +13,7 @@ import html
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew.telegram.dispatch import pickers as _pickers
 from kiro_crew.telegram.transport import TelegramInboundMessage, forum_gate_outcome
 
 if TYPE_CHECKING:
@@ -297,9 +298,26 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
                 store_route_preference=picker.store_route_preference,
             )
         else:
+            # A Bot row pressed by someone other than the owner: the keyboard is
+            # visible to every member of a shared Topic, so the press checks too.
+            if (
+                picker.bots
+                and value
+                and not _pickers.is_bot_owner(self._allowed, int(cb.user_id or 0))
+            ):
+                _pickers._audit_bot_refusal(int(cb.user_id or 0), operation, value)
+                await self.client.edit_message(
+                    cb.chat_id,
+                    cb.message_id,
+                    _pickers.BOT_OWNER_ONLY,
+                    reply_markup={"inline_keyboard": []},
+                )
+                return
             # The Default row's stored label names the default when the picker
             # opened; a reset applies the live one, so only a named agent keeps it.
-            outcome = await self._apply_agent(picker.route, value, label if value else "")
+            outcome = await self._apply_pick(
+                picker.route, value, label if value else "", bot=picker.bots
+            )
         # An agent button's label can be a crew's display name, so the audit
         # records the exact spec id it resolved to instead, and a reset the live
         # default it applied.
