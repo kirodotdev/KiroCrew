@@ -661,3 +661,37 @@ def test_a_crlf_production_file_round_trips_through_the_revert(tmp_path: Path) -
 
     r = _run(repo)
     assert r.returncode == EXIT_PROVEN, r.stdout + r.stderr
+
+
+def test_the_default_base_is_the_remote_branch_even_beside_a_local_namesake(
+    tmp_path: Path,
+) -> None:
+    """A local branch named ``origin/main`` does not stand in for the remote base.
+
+    git resolves a short ``origin/main`` to ``refs/heads/origin/main`` before
+    ``refs/remotes/origin/main``. Here that local branch sits one commit behind the
+    remote, whose newer commit adds a test file, and the change under proof edits
+    only a doc. Diffing against the local namesake would count the remote's test
+    file as part of the change. ``prove()`` runs in this process and returns
+    before it would start a pytest child.
+    """
+    upstream = _repo(tmp_path)
+    _git(upstream, "checkout", "-q", "main")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(upstream), str(clone))
+    _git(clone, "config", "user.email", "prove@test")
+    _git(clone, "config", "user.name", "prove")
+    (upstream / "test_other.py").write_text("def test_other():\n    assert True\n")
+    _git(upstream, "add", "-A")
+    _git(upstream, "commit", "-qm", "main moves on")
+    _git(clone, "fetch", "-q", "origin")
+    _git(clone, "branch", "origin/main", "main")
+    _git(clone, "checkout", "-q", "-b", "feature", "refs/remotes/origin/main")
+    (clone / "NOTES.md").write_text("notes\n")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-qm", "docs only")
+    prove = _load_prove()
+
+    result = prove.prove(clone, prove.DEFAULT_BASE, per_hunk=False)
+
+    assert result["reason"] == "the change adds or edits no test file", result

@@ -147,7 +147,9 @@ EXIT_ENV = 2
 # The REMOTE base, deliberately.  A local `main` that has fallen behind makes the
 # diff include hunks already upstream; reverting those can turn some other
 # commit's test red and report this change PROVEN on evidence it did not earn.
-DEFAULT_BASE = "origin/main"
+# Spelled in full because git reads a short `origin/main` as a local branch of
+# that name first, when one exists.
+DEFAULT_BASE = "refs/remotes/origin/main"
 
 # Per-run wall-clock ceiling.  A proof is meant to cost seconds over one or two
 # files; a run that reaches this bound is reported as an environment fault
