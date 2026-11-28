@@ -1,32 +1,55 @@
-"""Observe-only check of which launch a standing MCP tool grant approves (stage 1).
+"""Which launch a standing MCP tool grant approves: bound grants (stage 2), observed ones (stage 1).
 
 A grant in ``hooks.auto_approve_tool_identities`` or an ``auto_approve_tools``
-pattern names a server by NAME (``@server/tool``). Any server mounted under that
-name gets the grant. This module measures how often that matters before anything
-enforces it: when a grant approves a call, it computes the launch ids of every
-definition the session can see under that server name and compares them with the
-first set seen for the name in this process. A new id is logged and SEL-audited
-once, by count and grant kind only (no server or tool names, the way
-``hook_manager`` audits grant-set changes).
+pattern names a server by NAME (``@server/tool``), so the name alone would give
+the grant to any server mounted under it.
 
-It NEVER changes a verdict and never touches the filesystem on the gate's own
-path: the gate only queues the call (``observe_granted_call``), and one daemon
-thread does the reads. A full queue drops the observation; a read that hangs
-stalls only that thread, never a permission decision. Stage 2 (asking again on a changed launch) is a separate change, and
-it needs a persisted, agent-proof binding record that this stage deliberately
-does not add.
+Stage 2 (bound grants). The approval card's "Always allow this tool" and the MCP
+tool list's toggle record, in the same locked write as the grant, the launch ids
+of every definition of that server the granting session could see
+(``hooks.auto_approve_tool_identity_launches``, :func:`session_launch_ids`). A
+grant with that record approves a call only when the session's launch ids for
+the server are all in it (:func:`bound_launch_holds`); otherwise the gate gives
+no verdict and the call asks. The record lives in ``config.json``, whose
+security keys an agent cannot change without the owner applying it
+(``config.loosening_provenance``). That check runs on the gate's path, for a
+bound grant only: the reads are the bounded, non-blocking settings reads below,
+re-read on every check and cached by content digest only (a rewrite that keeps
+the size and restores the mtime is still seen), and the agent-spec reader's own
+directory-revision memo.
 
-shortcut: the binding is the first launch set seen per server name in this
-process, not the launch the owner granted; a restart starts over. The project
-folder is known only where the session stamps it (``spec_write_cwd``: KAS and
-claude); elsewhere project-level files are not read. Upgrade with stage 2's
-persisted record and a session-recorded mount.
+Both sides read the definitions of the agent that actually serves the session
+(``read_effective_agent``; on the gate, the call's ``resolved_agent``), never the
+slot's alias, which can name a different spec than the one the session runs.
+The MCP tool list's toggle has no session and binds the configured default
+template's (:func:`grant_agent`). A call whose surface stamps no resolved agent
+has an unknown spec and is not checked against the binding: the grant approves it
+as before this change.
+
+shortcut: only the dashboard chat stamps ``resolved_agent`` today, so on other
+surfaces (Slack, cron, subagents, the task runner) a bound grant is not enforced;
+upgrade by stamping the served agent at those gate sites. The default template is
+never assumed for them: it can mount a different server of the same name.
+
+Stage 1 (unbound grants, observe only). A grant with no record -- every grant
+written before stage 2, and every ``auto_approve_tools`` pattern -- approves as
+before. When it approves a call, the launch ids are compared with the first set
+seen for the name in this process; a new id is logged and SEL-audited once, by
+count and grant kind only (no server or tool names, the way ``hook_manager``
+audits grant-set changes). That path NEVER changes a verdict and never touches
+the filesystem on the gate's own path: the gate only queues the call
+(``observe_granted_call``), and one daemon thread does the reads. A full queue
+drops the observation; a read that hangs stalls only that thread.
+
+shortcut: the session's launch is read from the definitions it can see, not
+recorded from the mount it made, and the project folder is known only where the
+session stamps it (``spec_write_cwd``: KAS and claude); elsewhere project-level
+files are not read. Upgrade with a session-recorded mount.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import queue
@@ -46,13 +69,13 @@ _MAX_SERVERS = 512
 _MAX_REPORTED = _MAX_SERVERS * 4
 #: Observations waiting for the worker; past this, new ones are dropped.
 _MAX_PENDING = 64
-#: Settings files whose parsed servers are kept, keyed by stat.
+#: Settings files whose parsed servers are kept, keyed by content digest.
 _MAX_CACHED_FILES = 64
 
 _LOCK = threading.Lock()
 _FIRST_SEEN: dict[str, frozenset[str]] = {}
 _REPORTED: set[tuple[str, str]] = set()
-_FILE_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+_FILE_CACHE: dict[str, tuple[str, dict[str, Any] | None]] = {}
 #: Observations each cap dropped, reported once per process (``_note_overflow``).
 _DROPPED: dict[str, int] = {"names": 0, "reports": 0, "queued": 0}
 _OVERFLOW_NOTED = False
@@ -145,28 +168,46 @@ def _read_settings(path: Path, *, follow_links: bool) -> bytes | None:
         os.close(fd)
 
 
-def _servers_in(path: Path, *, follow_links: bool) -> dict[str, Any]:
-    """``mcpServers`` of one settings file, cached by stat; ``{}`` when unreadable."""
-    try:
-        st = path.stat()
-    except OSError:
-        return {}
-    key = str(path)
-    sig = (st.st_mtime_ns, st.st_size)
-    cached = _FILE_CACHE.get(key)
-    if cached is not None and cached[0] == sig:
-        return cached[1]
-    servers: dict[str, Any] = {}
+def _servers_in(path: Path, *, follow_links: bool) -> dict[str, Any] | None:
+    """``mcpServers`` of one settings file: ``{}`` when it is absent, ``None`` when refused.
+
+    Parsed as JSONC (``user_json.loads_user_jsonc``), the way the session's own
+    reader takes it, so a commented file still contributes its servers. A file
+    that exists but cannot be read or parsed (a refused link, not a regular
+    file, too large, not UTF-8, not JSON) is ``None``: what the session mounts
+    from it is unknown, so a bound grant must not approve over it.
+
+    The bytes are read on every call and only the parse is cached, keyed by
+    their digest: this read decides whether a bound grant approves, and mtime
+    and size can both be put back after a rewrite.
+    """
+    from kiro_crew.user_json import loads_user_jsonc
+
     try:
         raw = _read_settings(path, follow_links=follow_links)
-        data = json.loads(raw) if raw is not None else None
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return None
+    if raw is None:
+        return None
+    key = str(path)
+    digest = hashlib.sha256(raw).hexdigest()
+    cached = _FILE_CACHE.get(key)
+    if cached is not None and cached[0] == digest:
+        return cached[1]
+    servers: dict[str, Any] | None
+    try:
+        text = raw.decode("utf-8")
+        # A blank file declares no server, as the session reads it.
+        data = loads_user_jsonc(text) if text.strip() else {}
         found = data.get("mcpServers") if isinstance(data, dict) else None
         servers = found if isinstance(found, dict) else {}
-    except (OSError, ValueError):
-        servers = {}
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        servers = None
     if len(_FILE_CACHE) >= _MAX_CACHED_FILES:
         _FILE_CACHE.clear()
-    _FILE_CACHE[key] = (sig, servers)
+    _FILE_CACHE[key] = (digest, servers)
     return servers
 
 
@@ -188,14 +229,22 @@ def _spec_servers(agents_dir: Path, agent: str) -> dict[str, Any]:
     return found if isinstance(found, dict) else {}
 
 
-def _definition_sources(agent: str, work_dir: str) -> list[dict[str, Any]]:
-    """Every ``mcpServers`` map a session's server under one name can come from."""
+def _definition_sources(agent: str, work_dir: str) -> list[dict[str, Any] | None]:
+    """Every ``mcpServers`` map a session's server under one name can come from.
+
+    ``None`` stands for a settings file that exists but was refused or could not
+    be parsed (:func:`_servers_in`).
+
+    shortcut: an agent spec that exists but cannot be read reads as no spec,
+    because ``load_agent_spec`` reports a missing spec and a broken one alike;
+    upgrade when that reader tells them apart.
+    """
     from kiro_crew.config.paths import data_home, kiro_agents_dir, project_agents_dir
 
     agents_dir = kiro_agents_dir()
     project = Path(work_dir) if work_dir and os.path.isabs(work_dir) else None
     safe = bool(agent) and "/" not in agent and "\\" not in agent and ".." not in agent
-    sources: list[dict[str, Any]] = []
+    sources: list[dict[str, Any] | None] = []
     if safe:
         if project is not None:
             sources.append(_spec_servers(project_agents_dir(project), agent))
@@ -212,12 +261,129 @@ def session_launch_ids(server: str, *, agent: str, work_dir: str) -> frozenset[s
     wanted = server.lower()
     ids: set[str] = set()
     for servers in _definition_sources(agent, work_dir):
+        if servers is None:
+            # Unknown definitions bind nothing; the gate asks while it stays so.
+            continue
         for name, entry in servers.items():
             if isinstance(name, str) and name.lower() == wanted and isinstance(entry, dict):
                 found = launch_id(entry, work_dir)
                 if found:
                     ids.add(found)
     return frozenset(ids)
+
+
+def grant_agent(resolved_agent: str) -> str:
+    """The agent whose definitions a grant WRITER binds (blocking I/O on a cold start).
+
+    *resolved_agent* is the agent that actually serves the granting session
+    (``read_effective_agent``), the same value the gate later reads from the
+    call (``ToolCall.resolved_agent``). With none (the MCP tool list's toggle,
+    which has no session), the configured default template as a session with
+    no crewmate dispatches it (``dispatch_kiro_agent(default_template(...))``),
+    read from the published alias snapshot and loaded off the event loop when
+    cold. ``""`` when it cannot be known: the writer then writes the grant
+    unbound. The gate never calls this: a call with no resolved agent is one
+    whose spec is unknown, so its binding is not checked. Never raises.
+    """
+    if isinstance(resolved_agent, str) and resolved_agent:
+        return resolved_agent
+    try:
+        from kiro_crew.config import loader
+
+        _aliases, template, ready = loader.agent_alias_snapshot()
+        if not ready:
+            import asyncio
+
+            try:
+                asyncio.get_running_loop()
+                return ""
+            except RuntimeError:
+                pass
+            # Publishes the snapshot (``KiroCrewConfig.load``).
+            loader.KiroCrewConfig.load()
+            _aliases, template, ready = loader.agent_alias_snapshot()
+        return loader.dispatch_kiro_agent(template) if ready and template else ""
+    except Exception:
+        logger.debug("could not resolve the default template for a tool grant", exc_info=True)
+        return ""
+
+
+def bound_launch_holds(server: str, bound: frozenset[str], *, agent: str, work_dir: str) -> bool:
+    """Whether a grant bound to *bound* may approve a call to *server* (stage 2).
+
+    True only when the session can see at least one definition of *server* and
+    every launch id it sees is in *bound*. No definition, an unreadable one, a
+    failed read, or no *agent* to read the spec of answers False, so the call
+    asks (the gate does not call this for a call with no agent: see
+    :func:`identity_grant_approves`). Never raises.
+    """
+    if not agent:
+        return False
+    try:
+        wanted = server.lower()
+        seen = False
+        for servers in _definition_sources(agent, work_dir):
+            if servers is None:
+                # A settings file that exists but could not be read: what the
+                # session mounts from it is unknown.
+                return False
+            for name, entry in servers.items():
+                if not (isinstance(name, str) and name.lower() == wanted):
+                    continue
+                found = launch_id(entry, work_dir) if isinstance(entry, dict) else None
+                # A definition with no id (a relative launch with no known folder)
+                # cannot be shown to be one the grant was given for.
+                if found is None or found not in bound:
+                    return False
+                seen = True
+        return seen
+    except Exception:
+        logger.debug("bound tool grant launch check failed", exc_info=True)
+        return False
+
+
+def identity_grant_approves(config: Any, call: Any, agent: str, identity_ref: str) -> bool:
+    """Whether an ``auto_approve_tool_identities`` grant in *config* approves *identity_ref*.
+
+    Called by the gate's ``operator-grants`` tier for a VERIFIED identity only. A
+    BOUND grant (an exact entry with an ``auto_approve_tool_identity_launches``
+    record) approves only when :func:`bound_launch_holds`; on a mismatch nothing
+    approves and the call asks. An UNBOUND grant keeps the stage-1 rule:
+    case-insensitive equality, observed off the gate's path. While any spelling
+    of the identity is bound, no unbound spelling approves it, so a hand-written
+    case variant cannot step around a binding.
+
+    The bound check reads the spec of the call's ``resolved_agent``, the agent
+    that actually serves the session and the one a writer bound from
+    (:func:`grant_agent`). A call with none comes from a surface that does not
+    stamp it (Slack, cron, subagents, the task runner): its spec is unknown, the
+    binding is not checked, and the grant approves exactly as an unbound one
+    does. *agent* (the surface's slot alias) only labels the stage-1
+    observation.
+    """
+    bindings = config.auto_approve_tool_identity_launches
+    grants = config.auto_approve_tool_identities
+    spec_agent = str(getattr(call, "resolved_agent", "") or "")
+    # A call that names no served agent (Slack, cron, subagents, the task runner)
+    # has no spec to check a binding against, so it approves as an unbound grant
+    # does, below. The default template is never assumed for it.
+    bound = bindings.get(identity_ref) if spec_agent else None
+    if bound is not None and identity_ref in grants:
+        work_dir = str(getattr(call, "spec_write_cwd", "") or "")
+        if bound_launch_holds(call.mcp_server, bound, agent=spec_agent, work_dir=work_dir):
+            return True
+        logger.info(
+            "a bound tool grant did not approve a call: the server's launch is not one "
+            "the grant was given for, so the call asks"
+        )
+        return False
+    folded = identity_ref.lower()
+    if spec_agent and any(ref.lower() == folded for ref in bindings):
+        return False
+    if any(grant.lower() == folded for grant in grants):
+        observe_granted_call(call, agent, "identity")
+        return True
+    return False
 
 
 def observe(server: str, *, agent: str, work_dir: str, grant: str) -> None:

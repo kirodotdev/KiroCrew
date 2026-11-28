@@ -70,6 +70,7 @@ if TYPE_CHECKING:
         logger,
         pin_human_approval,
         post_linked_approval,
+        read_effective_agent,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
@@ -364,7 +365,15 @@ async def _on_permission_prompt(
         # Imported here: this body runs on the chat runner module's globals.
         from kiro_crew.dashboard import always_allow_tool
 
-        perm_meta.update(await asyncio.to_thread(always_allow_tool.card_fields, event))
+        # The agent that serves this turn, as the gate reads it for the grant
+        # (``ToolCall.resolved_agent``), never the slot's alias.
+        perm_meta.update(
+            await asyncio.to_thread(
+                always_allow_tool.card_fields,
+                event,
+                resolved_agent=read_effective_agent(client),
+            )
+        )
     if event.takes_rejection_reason and _override_offer is None:
         # The card may ask why: this backend hands a rejection's reason to the
         # model. Not on a deny-rule override card, whose rejection is the rule's

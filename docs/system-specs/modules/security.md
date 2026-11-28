@@ -6926,8 +6926,39 @@ code in `error`, through `always_allow_tool.refuse`; a success writes `success`.
 gate: it is answered by the `operator-grants` tier after every deny tier and
 governance, so it does not ask `may_skip_gate_now`, which governs static
 `allowedTools` entries only. That tier matches an `auto_approve_tool_identities` entry only
-against a verified identity with case-insensitive literal equality, never glob matching,
-path normalization or the title. A stored `*`, `?` or bracket expression matches only
+against a verified identity with literal equality, never glob matching,
+path normalization or the title. Each grant these surfaces write is bound, in the
+same locked write, to the launch ids (`tool_grant_launch_audit.launch_id`: command
+and args, or the URL; never env) of every definition of its server the granting
+session could see, in `hooks.auto_approve_tool_identity_launches`; granting the
+same entry again adds the launches seen then. The writer and the gate read the
+definitions of the agent that actually serves the session (on the gate, the
+call's `resolved_agent`), never the slot's alias, which can name another spec;
+the MCP tool list toggle has no session and binds the configured default
+template's (`tool_grant_launch_audit.grant_agent`); a session served by another
+agent that defines the same server name with a different launch asks on that
+grant every time, which is intended. A bound grant matches its
+identity case-sensitively and approves a call only when every definition of the
+server the calling session can see has a launch id in its binding; a changed,
+added or unidentifiable launch, no definition at all, or a settings file that
+exists but cannot be read or parsed gets no verdict and the call asks. A call
+with no `resolved_agent` (every surface but the dashboard chat today: Slack,
+cron, subagents, the task runner) has no known spec to check, so its binding is
+not checked and the grant approves it as an unbound one does. That is an accepted
+residual, not a design: a server swapped under the same name is approved on those
+surfaces until the gate is given the session's agent spec at every call (follow-up:
+pass the served agent at every gate call site). The default template is never
+assumed for such a call: it can mount a different server of the same name. The
+settings files are parsed as JSONC like the session's own reader, re-read on
+each check and cached by content digest, never by mtime and size, which a
+rewrite can restore. An explicit `null` binding map is read like any other
+malformed map: every grant is bound to nothing. A grant with no binding (every grant written before the binding
+existed, or one written when no launch could be read) keeps case-insensitive
+equality and is observed only, as before; while any spelling of an identity is
+bound, no unbound spelling approves it. Removing a grant drops its binding, and the
+binding map is a security key of the config-pending gate, so an outside edit
+that drops or widens a binding waits for the owner. `hooks.auto_approve_tools`
+patterns are never bound. A stored `*`, `?` or bracket expression matches only
 its literal spelling, and `/` and `\` remain distinct on every platform. A shell call whose model-written
 description reads `@server/tool` is not approved by it, and `hooks.confirm_tools`
 outranks it as it outranks `auto_approve_tools` (`test/test_gate_tiers.py`). The

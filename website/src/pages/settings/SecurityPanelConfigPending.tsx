@@ -113,6 +113,13 @@ const SECURITY_RULES: ReadonlyArray<{
     key: 'hooks.auto_approve_tool_identities',
     hint: c => kept(c) ? i18nT('pages.settings.securityPanel.configPending.hint_auto_approve') : null,
   },
+  // The server launches each of those grants is bound to. Any change can widen:
+  // removing a binding or adding a launch lets the grant approve another server.
+  {
+    file: 'config',
+    key: 'hooks.auto_approve_tool_identity_launches',
+    hint: () => i18nT('pages.settings.securityPanel.configPending.hint_auto_approve'),
+  },
   // The standing approve-every-tool grant, in each spelling the gateway reads. Any
   // change to it (removing a `false` included) can change which tools ask first.
   {
