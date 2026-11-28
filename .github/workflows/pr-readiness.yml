@@ -384,6 +384,52 @@ jobs:
           SHIM
           } > "$dir/gh" && chmod 755 "$dir/gh" && echo "$dir" >> "$GITHUB_PATH" || true
 
+      # A run that starts on a spent installation pool fails its first read
+      # and publishes nothing, or "could not be evaluated", until an event
+      # after the reset recomputes it. So the job waits for the reset before
+      # it reads anything: every page a verdict is built from is then read
+      # after the wait, and a write never follows a stale read. A pool that
+      # empties later in the run fails that read as before. Only the wait
+      # command is installed (`wrap-gh: "false"`), from the default branch so
+      # a pull request cannot change how long its own verdict waits; no `gh`
+      # call is wrapped or replayed. The 900-second budget leaves this
+      # 20-minute job room for its own work. An `in_progress` run never
+      # waits: its merge-guard hold must replace a stale `success` while the
+      # re-run lane runs, and it needs only a few requests.
+      - name: Check out the rate-limit wait from the default branch
+        if: >-
+          !(github.event_name == 'workflow_run'
+            && github.event.action == 'in_progress')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch || github.ref_name }}
+          path: rate-limit-wait
+          sparse-checkout: |
+            .github/actions/gh-rate-limit
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Install the rate-limit wait
+        if: >-
+          !(github.event_name == 'workflow_run'
+            && github.event.action == 'in_progress')
+        uses: ./rate-limit-wait/.github/actions/gh-rate-limit
+        with:
+          max-wait: "900"
+          wrap-gh: "false"
+
+      # The floor is the run's own draw with room to spare. A reset past the
+      # budget prints an ::error:: naming the rate limit, and the run then
+      # goes on: its reads fail and it publishes "could not be evaluated" as
+      # it did before, rather than skipping the publish step.
+      - name: Wait for a spent API pool before the first read
+        if: >-
+          !(github.event_name == 'workflow_run'
+            && github.event.action == 'in_progress')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh-rate-limit-wait 100 >/dev/null || true
+
       # Transient network/TLS errors between the runner and api.github.com can
       # abort a single-shot `gh` call, and under `set -e` that would end the
       # whole evaluation before the publish step could run, leaving a red

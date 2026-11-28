@@ -42,6 +42,11 @@ description: >-
 # attempt to learn whether a spent limit explains the failure (`waited`) or not
 # (`ready`, so the failure stands). A reading it cannot take counts as `ready`.
 #
+# `wrap-gh: "false"` installs `gh-rate-limit-wait` alone and leaves `gh` as it
+# was, for a job that decides per call which ones may wait: one whose writes
+# must not be replayed after a wait, because the run may publish over a newer
+# verdict in the meantime.
+#
 # The job's `timeout-minutes` must leave room for `max-wait` on top of its own
 # work. Put this step after the checkout and before the job's first `gh` call.
 # test/test_scheduled_gh_rate_limit.py pins both for every scheduled workflow
@@ -52,6 +57,12 @@ inputs:
     description: Total seconds the job may spend waiting for rate-limit resets.
     required: false
     default: "1200"
+  wrap-gh:
+    description: >-
+      "true" puts the waiting gh wrapper first on PATH; "false" installs only
+      the gh-rate-limit-wait command.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -60,6 +71,7 @@ runs:
       shell: bash
       env:
         GH_RATE_LIMIT_MAX_WAIT: ${{ inputs.max-wait }}
+        GH_RATE_LIMIT_WRAP_GH: ${{ inputs.wrap-gh }}
       run: |
         set -euo pipefail
         real="$(command -v gh)"
@@ -153,4 +165,7 @@ runs:
         } > "$dir/gh"
         chmod +x "$dir/gh"
         cp "$dir/gh" "$dir/gh-rate-limit-wait"
+        if [ "${GH_RATE_LIMIT_WRAP_GH:-true}" = false ]; then
+          rm -f "$dir/gh"
+        fi
         echo "$dir" >> "$GITHUB_PATH"

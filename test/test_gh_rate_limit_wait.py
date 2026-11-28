@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from test_ship_report_rate_limit import NOW, Runner
+from test_ship_report_rate_limit import NOW, Runner, _install_script
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt" or shutil.which("bash") is None,
@@ -383,3 +383,109 @@ def test_the_license_finding_is_read_from_what_the_retry_reported() -> None:
     output = "steps.review_retry.outputs.invalid-license-changes"
     assert f"fromJSON({output} || '{{}}').forbidden[0] != null" in finding
     assert f"fromJSON({output} || '{{}}').unresolved[0] != null" in finding
+
+
+# --- wrap-gh: "false" -----------------------------------------------------------
+
+
+def test_without_the_wrapper_only_the_wait_command_is_installed(runner: WaitRunner) -> None:
+    """`wrap-gh: "false"` leaves `gh` itself alone: a rate-limited call fails at
+    once, and the wait command still sleeps until the reset."""
+    unwrapped = WaitRunner(runner.fixtures.parent / "unwrapped")
+    done = unwrapped.run(
+        _install_script(), GH_RATE_LIMIT_MAX_WAIT="900", GH_RATE_LIMIT_WRAP_GH="false"
+    )
+    assert done.returncode == 0, done.stderr
+    (added,) = [p for p in unwrapped.path_file.read_text().splitlines() if p]
+    assert sorted(os.listdir(added)) == [WAIT]
+    unwrapped.env["PATH"] = os.pathsep.join([added, unwrapped.base_path])
+
+    unwrapped.pool(0, reset_in=100)
+    step = unwrapped.check_issues(fails=1)
+    assert step.returncode != 0
+    assert len(unwrapped.calls) == 1
+    assert unwrapped.sleeps == []
+
+    unwrapped.refills_after_the_sleep()
+    assert unwrapped.wait().stdout.strip() == "waited"
+    assert unwrapped.sleeps == [105]
+
+
+# --- PR Readiness ---------------------------------------------------------------
+
+READINESS_FILE = "pr-readiness.yml"
+READINESS_JOB = _job(READINESS_FILE, "readiness")
+READINESS = READINESS_JOB["steps"]
+READINESS_INSTALL = "Install the rate-limit wait"
+READINESS_CHECKOUT = "Check out the rate-limit wait from the default branch"
+
+
+def test_readiness_installs_only_the_wait_command_from_the_default_branch() -> None:
+    """Its reads wait through `gh_retry`; its writes are never replayed."""
+    checkout = _named(READINESS, READINESS_CHECKOUT)
+    install = _named(READINESS, READINESS_INSTALL)
+    assert checkout["with"]["ref"].startswith("${{ github.event.repository.default_branch")
+    assert checkout["with"]["persist-credentials"] is False
+    assert checkout["with"]["sparse-checkout"].split() == [ACTION_REF.removeprefix("./")]
+    assert install["uses"] == "./" + checkout["with"]["path"] + ACTION_REF.removeprefix(".")
+    assert install["with"]["wrap-gh"] == "false"
+
+
+READINESS_WAIT = "Wait for a spent API pool before the first read"
+
+
+def _readiness_index(name: str) -> int:
+    return [s.get("name") for s in READINESS].index(name)
+
+
+def test_readiness_waits_inside_its_job_timeout_before_its_first_read() -> None:
+    """Every page a verdict is built from is read after the wait, so no write
+    can follow a read the wait made stale."""
+    install = _named(READINESS, READINESS_INSTALL)
+    assert int(install["with"]["max-wait"]) + 300 <= READINESS_JOB["timeout-minutes"] * 60
+    helper = next(
+        i for i, s in enumerate(READINESS) if 'cat > "$RUNNER_TEMP/gh-retry.sh"' in s.get("run", "")
+    )
+    order = [_readiness_index(n) for n in (READINESS_CHECKOUT, READINESS_INSTALL, READINESS_WAIT)]
+    assert order == sorted(order) and order[-1] < helper
+    for step in READINESS[: order[-1]]:
+        run = step.get("run", "")
+        assert "gh api repos" not in run and "gh pr " not in run, step.get("name")
+
+
+def test_readiness_waits_nowhere_but_before_its_first_read() -> None:
+    """No later read waits, so no page read before a wait feeds a write."""
+    later = READINESS[_readiness_index(READINESS_WAIT) + 1 :]
+    for step in later:
+        assert WAIT not in step.get("run", ""), step.get("name")
+
+
+def test_the_readiness_wait_sleeps_until_the_reset_of_a_spent_pool(runner: WaitRunner) -> None:
+    runner.pool(0, reset_in=100)
+    runner.refills_after_the_sleep()
+    done = runner.run("set -e\n" + _named(READINESS, READINESS_WAIT)["run"])
+    assert done.returncode == 0, done.stderr
+    assert runner.sleeps == [105]
+
+
+def test_a_reset_past_the_budget_names_the_limit_and_lets_readiness_publish(
+    runner: WaitRunner,
+) -> None:
+    """The run goes on, so it still publishes "could not be evaluated"."""
+    runner.pool(0, reset_in=3000)
+    done = runner.run("set -e\n" + _named(READINESS, READINESS_WAIT)["run"])
+    assert done.returncode == 0
+    assert runner.sleeps == []
+    assert "::error::" in done.stderr and "rate limit" in done.stderr
+
+
+def test_the_in_progress_merge_hold_never_waits() -> None:
+    """The hold must replace a stale `success` while a re-run lane runs, so
+    the run that publishes it skips the wait and its setup."""
+    hold = _named(READINESS, "Hold the verdict while a monitored lane runs")
+    assert "github.event.action == 'in_progress'" in hold["if"]
+    for name in (READINESS_CHECKOUT, READINESS_INSTALL, READINESS_WAIT):
+        condition = " ".join(_named(READINESS, name)["if"].split())
+        assert condition == (
+            "!(github.event_name == 'workflow_run' && github.event.action == 'in_progress')"
+        ), name
