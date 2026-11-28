@@ -5471,7 +5471,8 @@ Two subtleties:
   record newer than the verdict is always read.
 
   One pending is re-fired without check evidence: a re-check hold (`readiness check(s)
-  changed since evaluation; re-checking <lane>`) on a head whose check-runs the scan
+  changed since evaluation; re-checking <lane>`, from the hold step followed by
+  `; N check(s) still running`) on a head whose check-runs the scan
   counts have all completed, once it is `STALE_MINUTES` old. The hold counts on its lane's
   completion arriving as evidence, and it can miss it: the hold step may run minutes after its
   `in_progress` event, after the lane's check-runs finished but before its workflow run
@@ -5557,8 +5558,12 @@ Two subtleties:
   event. A lane that has since completed gets no hold: its completion is the sweep's
   evidence, and a hold written now would stamp the status newer than that completion and
   push it below the evidence floor with no later event left to lift it. A lane still
-  running gets `pending`, written unconditionally, and the run does nothing else -- three
-  requests in all, no evaluation. Reading the STATUS first would reopen the stale-success
+  running gets `pending`, written unconditionally, and the run does nothing else -- five
+  requests in all, no evaluation. Two of them count the head's running check-runs
+  (`in_progress` and `queued`, one attempt each, 15 s cap), and the hold's text ends
+  `; N check(s) still running`, because it replaces a verdict that may have listed every
+  pending check and stands until the sweep's next recompute. A count it cannot read, or
+  a count of 0, leaves the number out. Reading the STATUS first would reopen the stale-success
   window the publish step's POST comment records three guards failing to close; a pending
   over a pending only moves the stamp, and a pending over a failure blocks the merge just
   the same. An unreadable run holds anyway, stamped `[read-failed]`, so the sweep's

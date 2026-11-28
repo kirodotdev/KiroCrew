@@ -129,7 +129,8 @@ on:
     # evaluation, and no read of the status it is about to replace -- a
     # read-then-decide on the STATUS would reintroduce the stale-success
     # window the publish step's own comments document -- so the whole run is
-    # three requests. The lane's completion then reaches the sweep as
+    # five requests, two of them the single-attempt counts the hold's text
+    # carries. The lane's completion then reaches the sweep as
     # evidence, and the recompute it dispatches publishes the real verdict.
     #
     # Why `requested` carries nothing: it fires when a run is CREATED, which
@@ -879,6 +880,32 @@ jobs:
             # over the lane's completion is recomputed regardless of evidence.
             hold_description="$READ_FAILURE_TOKEN could not confirm ${LANE:-a monitored lane} is still running; holding $SHA until re-evaluated"
           fi
+          # The hold replaces a verdict that may have named every check still
+          # running, and it stands until the sweep's next recompute, so it
+          # says how many are still running instead of naming only the lane
+          # that started. Two single-attempt counts, each capped at 15 s:
+          # they only shape the text, so a failed read drops the number and
+          # never blocks the hold. The text still opens with the prefix the
+          # sweep matches (RECHECK_HOLD_PREFIX).
+          if [ "${hold_description#"$READ_FAILURE_TOKEN"}" = "$hold_description" ]; then
+            count_bound=""
+            if command -v timeout >/dev/null 2>&1; then count_bound="timeout 15"; fi
+            running=0
+            for check_status in in_progress queued; do
+              if n="$(with_read_token $count_bound gh api \
+                "repos/$REPO/commits/$SHA/check-runs?status=$check_status&per_page=1" \
+                --jq '.total_count' 2>/dev/null)" && [[ "$n" =~ ^[0-9]+$ ]]; then
+                running=$((running + n))
+              else
+                running=""
+                break
+              fi
+            done
+            if [ -n "$running" ] && [ "$running" -gt 0 ]; then
+              hold_description="$hold_description; $running check(s) still running"
+            fi
+          fi
+          hold_description="${hold_description:0:140}"
           # `pending`, written unconditionally once the lane is known (or not
           # known) to be running: a commit status is last-write-wins per
           # SHA+context with no conditional write, so nothing is gained by

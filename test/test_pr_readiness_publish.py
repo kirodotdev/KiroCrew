@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -134,6 +135,20 @@ if [ "$1" = "api" ]; then
     *"/check-runs?check_name=CodeQL"*)
       [ -f "$FIXTURES/fail_codeql_checks" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
       cat "$FIXTURES/codeql_checks.json"; exit 0 ;;
+    *"/commits/"*"/check-runs?status="*)
+      # The hold step's two counts of the head's running check-runs. gh
+      # applies `--jq .total_count` itself, so the stub emits the number:
+      # check_runs_<status>.txt, 0 when absent, an error when fail_check_counts.
+      [ -f "$FIXTURES/fail_check_counts" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
+      want="$*"
+      want="${want##*check-runs?status=}"
+      want="${want%%&*}"
+      if [ -f "$FIXTURES/check_runs_$want.txt" ]; then
+        cat "$FIXTURES/check_runs_$want.txt"
+      else
+        echo 0
+      fi
+      exit 0 ;;
     *"/commits/"*"/check-runs?per_page="*)
       # The head SHA's whole check-run list, read by the fork re-check. Recorded
       # in calls.txt like every other request, so a same-repo publish can be
@@ -950,10 +965,20 @@ def _hold(
     lane_status: str = "in_progress",
     fail_lane_read: bool = False,
     fail_status: bool = False,
+    running: tuple[int, int] = (0, 0),
+    fail_counts: bool = False,
 ) -> Result:
-    """Run the hold step in the publish harness: same stub, same fixtures."""
+    """Run the hold step in the publish harness: same stub, same fixtures.
+
+    ``running`` is the head's (in_progress, queued) check-run counts."""
     (runner.fixtures / "lane_run_status.txt").write_text(lane_status + "\n")
-    for name, on in (("fail_lane_run", fail_lane_read), ("fail_status", fail_status)):
+    for status, count in zip(("in_progress", "queued"), running, strict=True):
+        (runner.fixtures / f"check_runs_{status}.txt").write_text(f"{count}\n")
+    for name, on in (
+        ("fail_lane_run", fail_lane_read),
+        ("fail_status", fail_status),
+        ("fail_check_counts", fail_counts),
+    ):
         flag = runner.fixtures / name
         flag.unlink(missing_ok=True)
         if on:
@@ -998,9 +1023,61 @@ def test_an_in_progress_trigger_holds_the_verdict_at_pending(
     assert "CI" in result.published["description"]
     assert not result.published["description"].startswith(READ_FAILURE_TOKEN)
     assert _held(runner)
-    # Two requests and no more: the lane's run, then the status POST.
-    assert [c for c in result.calls if "/statuses/" in c or "/actions/runs/" in c] == result.calls
+    # The lane's run, the two running-check counts, then the status POST.
+    assert [c for c in result.calls if "/statuses/" in c or "/actions/runs/" in c] == [
+        c for c in result.calls if "/check-runs?status=" not in c
+    ]
+    assert sum("/check-runs?status=" in c for c in result.calls) == 2
     assert sum("/statuses/" in c for c in result.calls) == 1
+
+
+def _sweep_recheck_hold_prefix() -> str:
+    """The prefix the sweep matches a hold by, read from the sweep itself."""
+    sweep = (WORKFLOW.parent / "pr-readiness-sweep.yml").read_text(encoding="utf-8")
+    (prefix,) = re.findall(r'^\s*RECHECK_HOLD_PREFIX="([^"]+)"$', sweep, re.MULTILINE)
+    return prefix
+
+
+def test_the_hold_says_how_many_checks_are_still_running(runner: Runner, hold_script: str) -> None:
+    """The hold replaces a verdict that may have listed every pending check and
+    stands until the sweep recomputes, so naming only the lane that started
+    reads as a head stuck on that one lane."""
+    result = _hold(runner, hold_script, running=(12, 3))
+    assert result.ok, result.proc.stderr
+    description = result.published["description"]
+    assert description.endswith("re-checking CI; 15 check(s) still running"), description
+    assert len(description) <= 140
+
+
+def test_the_hold_text_still_matches_the_sweep_prefix(runner: Runner, hold_script: str) -> None:
+    """Writer against matcher: the description the hold actually posts opens
+    with the prefix the sweep reads to retry a settled hold."""
+    prefix = _sweep_recheck_hold_prefix()
+    for running in ((0, 0), (4, 1)):
+        result = _hold(runner, hold_script, running=running)
+        assert result.published["description"].startswith(prefix), running
+
+
+@pytest.mark.parametrize(
+    ("running", "fail_counts"), [((0, 0), False), ((7, 0), True)], ids=["none", "unreadable"]
+)
+def test_the_hold_omits_a_count_it_does_not_have(
+    runner: Runner, hold_script: str, running: tuple[int, int], fail_counts: bool
+) -> None:
+    """No running check, or counts the API would not give: the hold is written
+    as before, with no number, and the failed count is not retried."""
+    result = _hold(runner, hold_script, running=running, fail_counts=fail_counts)
+    assert result.ok, result.proc.stderr
+    assert result.published["description"].endswith("re-checking CI")
+    assert _held(runner)
+    assert result.backoff == []
+
+
+def test_a_read_failure_hold_spends_no_count_reads(runner: Runner, hold_script: str) -> None:
+    result = _hold(runner, hold_script, fail_lane_read=True, running=(5, 0))
+    assert result.published["description"].startswith(READ_FAILURE_TOKEN + " ")
+    assert "check(s) still running" not in result.published["description"]
+    assert not any("/check-runs?status=" in c for c in result.calls)
 
 
 def test_a_hold_that_arrives_after_the_lane_completed_writes_nothing(
