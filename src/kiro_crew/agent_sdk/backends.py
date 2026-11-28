@@ -175,9 +175,9 @@ with no row here.
        can serve N sessions on one process and still have no verb that frees one
    * - ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION``
      - driver-internal (whether ``AcpClient.new_conversation`` starts a fresh
-       conversation on the live process with a second ``session/new`` and a
-       ``session/close`` of the old id, rather than raising so the caller kills
-       and respawns it)
+       conversation on the live process with a second ``session/new`` and the
+       harness's teardown verb for the old id, rather than raising so the caller
+       kills and respawns it)
    * - ``host_auth.backends_retired_by_host_logout()``
      - pre-session registry query (whether a kiro-cli logout retires the child).
        Declared per harness in :mod:`kiro_crew.agent_sdk.host_auth`, not here, and a

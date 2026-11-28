@@ -610,8 +610,9 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
     The cheap path is ``new_conversation()``: a fresh session on the SAME running
     process and the old session's teardown, which removes that one session's
     backend record (KAS ``_kiro/session/delete``; kiro-cli terminate plus the
-    guarded unlink of ``sessions/cli/<sid>.json(+.jsonl)``) or, on claude, ends it
-    with ``session/close``. If the provider has none or it raises (a backend on
+    guarded unlink of ``sessions/cli/<sid>.json(+.jsonl)``) or, on a backend on its
+    own ``AcpClient``, ends it with the harness's teardown verb (``session/close`` on
+    claude). If the provider has none or it raises (a backend on
     its own ``AcpClient`` outside ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION`` raises
     ``NotImplementedError``), ``reset`` replaces the process,
     and the key's stateless classification means the next turn starts with no

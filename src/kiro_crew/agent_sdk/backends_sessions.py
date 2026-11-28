@@ -329,19 +329,26 @@ ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
 ACP_BACKENDS_SESSION_EVICTION = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX})
 
 # Backends on their own ``AcpClient`` whose process starts a fresh conversation in
-# place: ``AcpClient.new_conversation`` closes the old session and opens a new one
-# on the same process, instead of a kill and respawn. Read only by that method; a
-# reused workflow-pool worker and a consolidation pass reach it through
-# ``AcpProvider.new_conversation``, and a non-member raises there so both callers take
-# their kill-and-respawn fallback. The method runs claude's own session setup, so a
-# second member brings its harness's setup steps into it with its capture.
+# place: ``AcpClient.new_conversation`` opens a new session on the same process and
+# ends the old one with the harness's teardown verb (``session/close`` on claude,
+# ``_kiro.dev/session/terminate`` on kiro), instead of a kill and respawn. Read only
+# by that method, which a reused workflow-pool worker and a consolidation pass reach
+# through ``AcpProvider.new_conversation`` and the knowledge pool's ``AcpWorker`` calls
+# directly; a non-member raises, so every caller takes its kill-and-respawn fallback.
+# ``ClaudeAcpClient`` runs claude's own session setup and the base client runs the
+# cold start's setup without ``initialize``, so a further member brings its harness's
+# setup steps with its capture. KAS is not a member: it never runs on its own
+# ``AcpClient``, and ``AcpSessionProvider.new_conversation`` resets it on the shared
+# runtime.
 #
-# claude is a member on a live capture: claude-agent-acp 0.94.0
-# ``test/fixtures/acp_frames/claude/new-conversation-live.jsonl`` answered two
-# ``session/new`` on one process, then ``session/close`` for the first with {}; the
-# first id then answered set_mode with -32603 Session not found while the second
-# still answered, and the first session's Claude Code process had exited.
-ACP_BACKENDS_CLIENT_NEW_CONVERSATION = frozenset({ACP_BACKEND_CLAUDE})
+# Each member is in on a live capture of two ``session/new`` on one process and the
+# ended id no longer answering while the second still answers: claude-agent-acp
+# 0.94.0 ``test/fixtures/acp_frames/claude/new-conversation-live.jsonl``
+# (``session/close`` -> {}, then set_mode -> -32603 Session not found, and the first
+# session's Claude Code process had exited); kiro-cli 2.36.0
+# ``test/fixtures/acp_frames/kiro/new-conversation-live.jsonl``
+# (``_kiro.dev/session/terminate`` -> {}, then set_mode -> -32603 Session not found).
+ACP_BACKENDS_CLIENT_NEW_CONVERSATION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO})
 
 # Backends whose process answers ``session/new``, ``session/load`` and
 # ``session/set_mode`` one at a time, so a session start sent while one of those is

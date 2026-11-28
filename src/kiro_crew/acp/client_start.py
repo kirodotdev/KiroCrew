@@ -4,15 +4,17 @@
 ``_new_session_following_substitution`` and ``ensure_ready``, the entry point that drives
 them, with ``_harness_read_back`` and ``_adapter_session_mcp_servers``, which ask the kept
 process adapter. ``_start_exit_error`` reads a start's exit for the steps that send.
+``new_conversation`` replaces the session on a running process.
 
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
-``_agent_env_snapshot``, ``_agent_version``, ``_agent_version_read``, ``_can_load_session``,
-``_child_pids``, ``_derived_spec_snapshot``, ``_fork_request``, ``_jsonl_pos``,
-``_kill_sent``, ``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
+``_agent_env_snapshot``, ``_agent_version``, ``_agent_version_read``,
+``_background_launches``, ``_between_turn_credits``, ``_can_load_session``, ``_child_pids``,
+``_derived_spec_snapshot``, ``_fork_request``, ``_jsonl_pos``, ``_kill_sent``,
+``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
 ``_mode_frame_superseded``, ``_native_skill_projection``, ``_pid``, ``_process``,
 ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_resume_session_id``, ``_resumed``, ``_scope_unit``, ``_session_id``,
@@ -21,8 +23,11 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``,
 ``_channel_id``, ``_extra_env``, ``_model``, ``_modes_advertised``, ``_sandbox_mode``,
 ``_scratch_dir``, ``_session_key``, ``_session_mcp_snapshot``, ``_shared_scratch``,
-``_stderr_lines``, ``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``,
-``last_prompt_stats``, ``memory_mode``.
+``_stderr_lines``, ``_stdin_stalled``, ``_turn_done``, ``_windows_tree_cleanup_failed``,
+``_work_dir``, ``last_prompt_stats``, ``memory_mode``.
+
+``new_conversation`` clears the stale compaction-status state through
+:mod:`kiro_crew.acp.stale_compaction`, which owns those fields.
 """
 
 from __future__ import annotations
@@ -43,7 +48,7 @@ from kiro_crew import platform_compat
 from kiro_crew.acp import batch_guard
 from kiro_crew.acp import managed_agent_shadow as managed_shadow_mod
 from kiro_crew.acp import runtime_process_tree, scope_admission
-from kiro_crew.acp._dispatch import agent_version_from_init
+from kiro_crew.acp._dispatch import BackgroundLaunchRecord, agent_version_from_init
 from kiro_crew.acp.client_native_children import client_capabilities_for
 from kiro_crew.acp.client_spawn_env import (
     KIRO_CLI_BIN,
@@ -63,7 +68,7 @@ from kiro_crew.acp.client_timeouts import (
     _SCOPE_ADMISSION_RESERVE,
     _SCOPE_ADMISSION_TIMEOUT,
 )
-from kiro_crew.acp.harness import process_adapter_for
+from kiro_crew.acp.harness import harness_for, process_adapter_for
 from kiro_crew.acp.harness.base import HarnessReadBack, SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
 from kiro_crew.acp.no_model_provider import AcpNoModelProvider
@@ -71,6 +76,7 @@ from kiro_crew.acp.pi_mcp_registration import verify_registration
 from kiro_crew.acp.scope_not_admitted import AcpScopeNotAdmitted
 from kiro_crew.acp.session_mcp import refuse_contested_agent_spec
 from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, AcpSpawnBlocked
+from kiro_crew.acp.stale_compaction import clear_stale_compaction_state
 from kiro_crew.acp.stderr_tail import safe_stderr_tail
 from kiro_crew.acp.transport_errors import (
     AcpAuthRequired,
@@ -119,7 +125,9 @@ from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_FORBIDDEN_MODES,
     ACP_BACKEND_LAUNCH,
+    ACP_BACKENDS_CLIENT_NEW_CONVERSATION,
     ACP_BACKENDS_NO_MCP_INIT_FRAMES,
+    POLICY_ID_BY_BACKEND,
     can_restore_session,
     launch_for,
 )
@@ -872,57 +880,62 @@ async def _start_exit_error(client: AcpClient, exc: AcpError, stage: str) -> Acp
 
 
 @client_session_start
-async def _initialize_session(self: AcpClient) -> None:
-    """Handshake: initialize → session/load or session/new → set_mode → set_model."""
-    # 1. Initialize, once systemd has admitted the spawn's scope. Inside the try, so
-    # a start that ends at admission discards the launch MCP config as well.
-    try:
-        try:
-            budget = await self._admit_scope()
-            init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
-            init_resp = await self._wait_for_response(init_id, timeout=budget)
-        except AcpError as exc:
-            exited = await _start_exit_error(self, exc, METHOD_INITIALIZE)
-            if exited is None:
-                raise
-            raise exited from exc
-    finally:
-        # Copilot CLI reads its launch MCP config when it boots (measured on 1.0.100:
-        # the file deleted right after the initialize answer, the stdio server it
-        # names still mounted and answered tools/call). It carries a session
-        # credential, so it goes now, on a failed handshake too. The Strands CLI reads
-        # its --mcp-config file at start as well, before it serves initialize.
-        if self._is_copilot or self._is_strands:
-            await self._discard_copilot_mcp_config()
-    logger.info("ACP initialized (protocol=%s)", init_resp.get("protocolVersion"))
+async def _initialize_session(self: AcpClient, *, new_session_only: bool = False) -> None:
+    """Handshake: initialize → session/load or session/new → set_mode → set_model.
 
-    # Whether this harness can restore a session at all, read the way the shared
-    # runtime reads it (``backends_sessions.can_restore_session``).
-    capabilities = init_resp.get("agentCapabilities") or {}
-    self._can_load_session = can_restore_session(self.backend, capabilities)
-    # Read on every handshake so a respawn onto a harness that dropped image
-    # support cannot keep a stale yes. Only a literal ``true`` counts.
-    prompt_capabilities = capabilities.get("promptCapabilities")
-    self._agent_accepts_image = (
-        isinstance(prompt_capabilities, dict) and prompt_capabilities.get("image") is True
-    )
-    # No harness this core drives narrows the session MCP array against the
-    # advertised ``mcpCapabilities``: every one of them either reads no array
-    # or accepts the shapes Crew already sends, opencode being the measured
-    # case of the latter (stdio, http and sse alike -- see
-    # ``OpencodeAcpClient._opencode_session_mcp_servers``). The harness that DOES narrow reads
-    # the handshake on the core that drives it, in
-    # ``acp.harness.codex.session_mcp_servers``, so nothing is held here.
-    self._agent_version = agent_version_from_init(init_resp)
-    self._agent_version_read = True
-    self._steering_advertised = steering_advertised(init_resp)
-    self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
-    self._note_pi_adapter_version()
-    self._note_harness_adapter_version()
-    # Copilot only: a release other than the verified one is refused here, before
-    # any session exists; the AcpToolGateUnroutable it raises ends the child with no
-    # respawn (see ``ensure_ready``).
-    self._refuse_unverified_copilot_version()
+    *new_session_only* opens a second session on a process that already answered
+    ``initialize``, so it skips that and any resume or fork (:func:`new_conversation`).
+    """
+    if not new_session_only:
+        # 1. Initialize, once systemd has admitted the spawn's scope. Inside the try, so
+        # a start that ends at admission discards the launch MCP config as well.
+        try:
+            try:
+                budget = await self._admit_scope()
+                init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
+                init_resp = await self._wait_for_response(init_id, timeout=budget)
+            except AcpError as exc:
+                exited = await _start_exit_error(self, exc, METHOD_INITIALIZE)
+                if exited is None:
+                    raise
+                raise exited from exc
+        finally:
+            # Copilot CLI reads its launch MCP config when it boots (measured on 1.0.100:
+            # the file deleted right after the initialize answer, the stdio server it
+            # names still mounted and answered tools/call). It carries a session
+            # credential, so it goes now, on a failed handshake too. The Strands CLI reads
+            # its --mcp-config file at start as well, before it serves initialize.
+            if self._is_copilot or self._is_strands:
+                await self._discard_copilot_mcp_config()
+        logger.info("ACP initialized (protocol=%s)", init_resp.get("protocolVersion"))
+
+        # Whether this harness can restore a session at all, read the way the shared
+        # runtime reads it (``backends_sessions.can_restore_session``).
+        capabilities = init_resp.get("agentCapabilities") or {}
+        self._can_load_session = can_restore_session(self.backend, capabilities)
+        # Read on every handshake so a respawn onto a harness that dropped image
+        # support cannot keep a stale yes. Only a literal ``true`` counts.
+        prompt_capabilities = capabilities.get("promptCapabilities")
+        self._agent_accepts_image = (
+            isinstance(prompt_capabilities, dict) and prompt_capabilities.get("image") is True
+        )
+        # No harness this core drives narrows the session MCP array against the
+        # advertised ``mcpCapabilities``: every one of them either reads no array
+        # or accepts the shapes Crew already sends, opencode being the measured
+        # case of the latter (stdio, http and sse alike -- see
+        # ``OpencodeAcpClient._opencode_session_mcp_servers``). The harness that DOES narrow reads
+        # the handshake on the core that drives it, in
+        # ``acp.harness.codex.session_mcp_servers``, so nothing is held here.
+        self._agent_version = agent_version_from_init(init_resp)
+        self._agent_version_read = True
+        self._steering_advertised = steering_advertised(init_resp)
+        self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
+        self._note_pi_adapter_version()
+        self._note_harness_adapter_version()
+        # Copilot only: a release other than the verified one is refused here, before
+        # any session exists; the AcpToolGateUnroutable it raises ends the child with no
+        # respawn (see ``ensure_ready``).
+        self._refuse_unverified_copilot_version()
 
     # The subprocess has now read its agent spec, which closes the window the
     # pre-spawn snapshot opened: a write landing before this point is caught here,
@@ -948,10 +961,13 @@ async def _initialize_session(self: AcpClient) -> None:
 
     # 2. Try session/load if we have a resume ID and kiro-cli supports it
     self._resumed = False
-    resume_sid = self._resume_session_id
-    self._resume_session_id = None  # consume — no retry loop
-    fork_request = self._fork_request
-    self._fork_request = None
+    if new_session_only:
+        resume_sid, fork_request = None, None
+    else:
+        resume_sid = self._resume_session_id
+        self._resume_session_id = None  # consume — no retry loop
+        fork_request = self._fork_request
+        self._fork_request = None
     if fork_request and not resume_sid and self._can_load_session:
         # A successful fork is then restored like any resume.
         resume_sid = await self._fork_session(*fork_request, capabilities)
@@ -1298,6 +1314,52 @@ async def _initialize_session(self: AcpClient) -> None:
     # The drain usually reads step 4's agent/switched frame; judge the model
     # it named before the first prompt can run on it.
     await self._judge_activated_model()
+
+
+async def new_conversation(self: AcpClient) -> None:
+    """Replace this idle session with an empty one on the SAME process.
+
+    The base client's arm of the fresh-conversation reset (``ClaudeAcpClient`` has
+    its own). The new session goes through every start step except ``initialize``,
+    then the old one is ended with the harness's teardown verb: on kiro-cli,
+    ``_kiro.dev/session/terminate``, after which the old id no longer answers
+    (``kiro/new-conversation-live.jsonl``). The old session's transcript is the
+    caller's to keep or delete. Raises ``NotImplementedError`` outside
+    ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION``, whose backends are reset by kill and
+    respawn. Any other failure ends the process, as a failed start does, so the
+    next ``ensure_ready`` starts afresh.
+    """
+    if self.backend not in ACP_BACKENDS_CLIENT_NEW_CONVERSATION:
+        backend = POLICY_ID_BY_BACKEND.get(self.backend, self.backend)
+        raise NotImplementedError(
+            f"the {backend!r} backend has no fresh-conversation reset on its live "
+            "process; it is reset by kill and respawn"
+        )
+    old_sid = self._session_id
+    if not self.is_ready or not old_sid or not self._turn_done.is_set():
+        raise AcpError("no idle session to replace")
+    # Lazy: acp.runtime imports kiro_crew.acp.client, which imports this module.
+    from kiro_crew.acp.runtime import _TERMINATE_TIMEOUT
+
+    # What the old session left on the client, reset as ``ClaudeAcpClient`` resets it.
+    self.last_prompt_stats.reset_context_state()
+    self._between_turn_credits = 0.0
+    self._background_launches = BackgroundLaunchRecord()
+    clear_stale_compaction_state(self)
+    self._forget_sent_images()
+    self._session_id = None
+    try:
+        await self._initialize_session(new_session_only=True)
+        policy = harness_for(self.backend).teardown
+        teardown_id = await self._send_request(policy.method, {"sessionId": old_sid})
+        await self._wait_for_response(teardown_id, timeout=_TERMINATE_TIMEOUT)
+    except BaseException:
+        try:
+            await self._cleanup_failed_live_spawn()
+        finally:
+            self._reset_state()
+        raise
+    logger.info("ACP session %s replaced by a fresh conversation %s", old_sid, self._session_id)
 
 
 async def ensure_ready(self: AcpClient) -> None:
