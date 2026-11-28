@@ -449,6 +449,8 @@ export default function ArtifactDetailPageCanvas({
               />
               {/* A canvas has no text to anchor to, so every comment here is on the whole artifact. */}
               <CommentsSidebar
+                // Per artifact: a box left open on the last one must not post here.
+                key={slug}
                 comments={durableComments}
                 onDraftDirtyChange={reportSidebarDraft}
                 discardSignal={sidebarDiscardSignal}

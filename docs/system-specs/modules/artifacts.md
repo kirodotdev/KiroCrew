@@ -2823,8 +2823,20 @@ hand-off asks about it before navigating. If the create then fails, the
 discarded draft is already gone. If the user starts editing while the create is
 in flight, the hand-off is abandoned. In a popout the guard is skipped: `sendNav` forwards the
 intent to a main window and the popout stays on the artifact, so no draft is
-lost. The sidebar check covers send-to-session only, not Back or the other
-`sendNav` exits. A failed create shows as an `ErrorNotice` on the
+lost. The exits wired to the shell's leave guard (the global sidebar, the
+command palette, in-app links, the browser's Back button, the other `sendNav`
+exits; opening another artifact is one of them) ask about the sidebar's and the
+popover's drafts the same way: the guard refuses the exit and shows the same
+prompt, and after a discard the user repeats it. A click outside the popover
+closes it first, so only an exit that leaves it open (the palette, a keyboard
+shortcut, Back) asks about its text. The page's own Back button does not ask
+the shell and still drops a sidebar draft without asking. The selection
+composer's draft is not asked about: it waits under its artifact's key. The
+comments sidebar on the generic, canvas and remote detail pages, and the
+generic page's thread popover, are keyed per artifact, so a box left open on
+one artifact never shows on, or posts to, the next one, even when that artifact
+is already cached and the page skips its loading state. The remote page only
+remounts its sidebar; it does not ask. A failed create shows as an `ErrorNotice` on the
 page, since the menu has already closed. From a popout, a hand-off to the session
 the main window already shows on `/chat` is appended to that live composer
 (the intent's `prefill.append`, staged by `applyNavIntentInMain` in

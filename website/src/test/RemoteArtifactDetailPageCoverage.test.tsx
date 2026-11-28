@@ -813,6 +813,26 @@ describe('RemoteArtifactDetailPage', async () => {
       expect(vi.mocked(api).postRemoteArtifactComment).not.toHaveBeenCalled()
     })
 
+    it('an unsent sidebar comment does not follow a param-only navigation to another artifact', async () => {
+      vi.mocked(api).remoteArtifactDetail = vi.fn((_p: string, id: string) => Promise.resolve(mdDetail({ external_id: id, title: id })))
+      vi.mocked(api).remoteArtifactComments = vi.fn().mockResolvedValue({ comments: [mkComment()] })
+      renderPage(<><SwitchArtifact to="ext-99" label="go to B" /><SwitchArtifact to={EXT_ID} label="go to A" /></>)
+      await screen.findByText(MD_BODY)
+      // Warm B's cache, then come back to A, as above.
+      fireEvent.click(screen.getByRole('button', { name: 'go to B' }))
+      await screen.findByText('ext-99')
+      fireEvent.click(screen.getByRole('button', { name: 'go to A' }))
+      await screen.findByText(EXT_ID)
+      await sidebarRevealed()
+      fireEvent.click(screen.getByRole('button', { name: 'Add comment' }))
+      fireEvent.change(screen.getByPlaceholderText('Add a comment on the whole artifact…'), { target: { value: 'about A, unsent' } })
+      fireEvent.click(screen.getByRole('button', { name: 'go to B' }))
+      await screen.findByText('ext-99')
+      await sidebarRevealed()
+      expect(screen.queryByDisplayValue('about A, unsent')).toBeNull()
+      expect(screen.getByRole('button', { name: 'Add comment' })).toBeInTheDocument()
+    })
+
     it('the "not saved" notice does not follow a param-only navigation to another artifact', async () => {
       // Same reuse: the notice names A's passage and A's draft waits under A's
       // key; over B it would point at text that is not there.

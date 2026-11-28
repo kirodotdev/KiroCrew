@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
-import { Route, Routes } from 'react-router-dom'
+import { Route, Routes, useNavigate } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
-import { NavigationLeaveGuardProvider } from '../components/NavigationLeaveGuard'
+import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
 import { emptyCanvas, serializeCanvas } from '../components/canvas/canvasModel'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -143,6 +143,61 @@ describe('canvas session handoff', () => {
     await act(async () => { fireEvent.click(within(dialogs[0]).getByRole('button', { name: /discard comment/i })); await vi.advanceTimersByTimeAsync(0) })
     expect(screen.getByTestId('chat-target')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
+describe('canvas comment drafts per artifact', () => {
+  let ask: () => boolean = () => true
+  function ShellProbe() {
+    ask = useMayLeaveForNavigation()
+    return null
+  }
+  /** A plain in-app navigation that does not ask the shell first. */
+  function GoTo({ slug }: { slug: string }) {
+    const navigate = useNavigate()
+    return <button type="button" onClick={() => navigate(`/artifacts/${slug}`)}>go to {slug}</button>
+  }
+  const ADD_BOX = 'Add a comment on the whole artifact…'
+
+  it('never shows one board’s unsent comment on the next, and asks before a shell exit drops it', async () => {
+    vi.mocked(api.artifact).mockImplementation((slug: string) => Promise.resolve({ ...artifact, slug, name: `Board ${slug}` }))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider>
+        <ShellProbe />
+        <GoTo slug="board" />
+        <GoTo slug="other" />
+        <Routes>
+          <Route path="/artifacts/:slug" element={<ArtifactDetailPage />} />
+        </Routes>
+      </NavigationLeaveGuardProvider>,
+      { route: '/artifacts/other' },
+    )
+    // Visit the other board first, so it is cached when the user comes back to it. Both
+    // waits sit behind the lazy canvas page: the uncached board loads, then remounts it.
+    await waitFor(() => expect(screen.getByTestId('canvas-page-title')).toHaveTextContent('Board other'), { timeout: 5000 })
+    fireEvent.click(screen.getByRole('button', { name: 'go to board' }))
+    await waitFor(() => expect(screen.getByTestId('canvas-page-title')).toHaveTextContent('Board board'), { timeout: 5000 })
+    await chooseMore('Show comments')
+    const comments = await screen.findByTestId('canvas-page-comments')
+    fireEvent.click(within(comments).getByRole('button', { name: 'Add comment' }))
+    fireEvent.change(within(comments).getByPlaceholderText(ADD_BOX), { target: { value: 'unsent on board' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'go to other' }))
+    await waitFor(() => expect(screen.getByTestId('canvas-page-title')).toHaveTextContent('Board other'))
+    expect(screen.queryByDisplayValue('unsent on board')).toBeNull()
+    const column = screen.getByTestId('canvas-page-comments')
+    fireEvent.click(within(column).getByRole('button', { name: 'Add comment' }))
+    expect(within(column).getByPlaceholderText(ADD_BOX)).toHaveValue('')
+
+    fireEvent.change(within(column).getByPlaceholderText(ADD_BOX), { target: { value: 'unsent on other' } })
+    let answer = true
+    act(() => { answer = ask() })
+    expect(answer).toBe(false)
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Discard your unsaved comment?')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Discard comment' }))
+    await waitFor(() => expect(within(column).queryByPlaceholderText(ADD_BOX)).toBeNull())
+    expect(ask()).toBe(true)
   })
 })
 
