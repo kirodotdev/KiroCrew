@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_AUTOMATION
 from kiro_crew.constants import STEER_NOTICE_BOUND_SECS
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_HOOK_ERROR,
@@ -72,7 +73,9 @@ async def _steer_repeat_loop_notice(client: Any, notice: str) -> bool:
     if not notice or not getattr(client, "supports_refusal_steer", False):
         return False
     try:
-        sent = await asyncio.wait_for(client.steer(notice), timeout=_STEER_NOTICE_BOUND_SECS)
+        sent = await asyncio.wait_for(
+            client.steer(notice, origin=STEER_ORIGIN_AUTOMATION), timeout=_STEER_NOTICE_BOUND_SECS
+        )
     except Exception:
         logger.debug("repeat-loop steer failed", exc_info=True)
         return False
@@ -135,7 +138,9 @@ async def _steer_policy_notice(
         # the guard instead of each deny site re-discovering it.
         # asyncio.TimeoutError is an Exception, so the handler below already
         # treats expiry as the ordinary best-effort failure it is.
-        sent = await asyncio.wait_for(client.steer(notice), timeout=_STEER_NOTICE_BOUND_SECS)
+        sent = await asyncio.wait_for(
+            client.steer(notice, origin=STEER_ORIGIN_AUTOMATION), timeout=_STEER_NOTICE_BOUND_SECS
+        )
     except Exception:
         logger.debug("policy-notice steer failed; falling back to recovery turn", exc_info=True)
         return False

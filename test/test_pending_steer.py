@@ -226,6 +226,25 @@ async def test_an_injected_peer_steer_does_not_run_again_from_the_queue(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_an_injected_peer_steer_released_at_turn_end_drops_its_peer_origin(tmp_path):
+    """A released held steer leaves no peer-origin record to count against the cap."""
+    # Given: a held peer steer injected at a tool boundary and marked delivered.
+    state = _make_state(tmp_path)
+    caller, target, client = _loss_recovery_target(state)
+    await _send(state, caller)
+    from kiro_crew.dashboard import deferred_steer
+
+    await deferred_steer.flush_at_boundary(state, target)
+    assert target._steer_peer_origin, "the injected steer is recorded as a peer's"
+
+    # When: the turn ends before the steer is confirmed consumed.
+    await _hand_off(state, target)
+
+    # Then: its peer-origin record is released with its other per-text records.
+    assert not target._steer_peer_origin
+
+
+@pytest.mark.asyncio
 async def test_a_steer_whose_injection_fails_stays_pending_and_is_not_lost(tmp_path):
     """(g) No silent loss before delivery: a refused injection clears the mark.
 
@@ -365,7 +384,7 @@ async def test_the_boundary_flush_runs_as_one_task_and_does_not_block_the_loop(t
 
     release = asyncio.Event()
 
-    async def _slow_steer(_text):
+    async def _slow_steer(_text, *, origin="user"):
         await release.wait()
         return True
 
@@ -559,7 +578,7 @@ async def test_an_accepted_steer_that_races_a_stop_keeps_its_delivered_mark(tmp_
     assert out.get("pending_steer") is True
     from kiro_crew.dashboard import deferred_steer
 
-    async def _accepted_while_a_stop_lands(_text):
+    async def _accepted_while_a_stop_lands(_text, *, origin="user"):
         target._stop_generation += 1
         return True
 
@@ -636,7 +655,7 @@ async def test_a_cancelled_attempt_on_a_keep_every_steer_harness_queues_once(tmp
 
     started = asyncio.Event()
 
-    async def _never_returns(_text):
+    async def _never_returns(_text, *, origin="user"):
         started.set()
         await asyncio.Event().wait()
 
@@ -915,7 +934,7 @@ async def test_an_overlapping_identical_send_is_the_same_steer_not_a_second_one(
     release = asyncio.Event()
     started = asyncio.Event()
 
-    async def _slow_steer(_text):
+    async def _slow_steer(_text, *, origin="user"):
         started.set()
         await release.wait()
         return True
@@ -954,7 +973,7 @@ async def test_a_steer_the_harness_took_as_its_turn_ended_is_not_run_again(tmp_p
     assert out.get("pending_steer") is True
     from kiro_crew.dashboard import deferred_steer
 
-    async def _injected_then_the_turn_was_over(text):
+    async def _injected_then_the_turn_was_over(text, *, origin="user"):
         # What a claude client reports for a steer the adapter answered `injected` after
         # its turn ended: False to the caller, the text kept as unresolved.
         client.held_steers_possibly_delivered = frozenset({text.strip()})
@@ -1068,7 +1087,7 @@ async def test_a_hard_stop_during_an_injection_keeps_the_resend_out(tmp_path):
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def _slow_steer(_text):
+    async def _slow_steer(_text, *, origin="user"):
         started.set()
         await release.wait()
         return True

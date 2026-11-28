@@ -431,7 +431,7 @@ def _gated_target(state):
     release = asyncio.Event()
     started = asyncio.Event()
 
-    async def _gated_steer(_text):
+    async def _gated_steer(_text, *, origin="user"):
         started.set()
         await release.wait()
         return True

@@ -53,7 +53,7 @@ class _Provider:
         self.calls: list[str] = []
         self.steered: list[str] = []
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         self.steered.append(message)
         return True

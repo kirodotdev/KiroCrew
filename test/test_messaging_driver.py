@@ -737,7 +737,7 @@ class _SteerRecordingProvider(_ScriptedProvider):
         self.calls: list[tuple[str, str]] = []
         self._steer_exc = steer_exc
 
-    async def steer(self, message):
+    async def steer(self, message, *, origin: str = "user"):
         self.calls.append(("steer", message))
         if self._steer_exc is not None:
             raise self._steer_exc
@@ -871,7 +871,7 @@ class TestApprovalTimeoutInbandNotice:
         r = _RecordingRenderer()
         p = _SteerRecordingProvider(self._perm_script())
 
-        async def _hanging_steer(message):
+        async def _hanging_steer(message, *, origin: str = "user"):
             p.calls.append(("steer", message))
             await asyncio.Event().wait()
 
@@ -903,7 +903,7 @@ class TestApprovalTimeoutInbandNotice:
         p = _SteerRecordingProvider(self._perm_script())
         parked = asyncio.Event()
 
-        async def _hanging_steer(message):
+        async def _hanging_steer(message, *, origin: str = "user"):
             p.calls.append(("steer", message))
             parked.set()
             await asyncio.Event().wait()

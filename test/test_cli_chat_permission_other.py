@@ -29,8 +29,9 @@ class TestChatPermissionOtherReply(_TestChatPermissionRequestHarness):
             super().__init__(event, trace)
             self._steer_result = steer_result
 
-        async def steer(self, message):
+        async def steer(self, message, *, origin="user"):
             self.trace.append(("steer", message))
+            self.trace.append(("steer_origin", origin))
             if isinstance(self._steer_result, BaseException):
                 raise self._steer_result
             return self._steer_result
@@ -84,7 +85,9 @@ class TestChatPermissionOtherReply(_TestChatPermissionRequestHarness):
             monkeypatch, self._SteeringProvider, [key, _REPLY + "\n"]
         )
         # Audit first, then the person's words, then the wire -- never an approve.
-        assert self._kinds(trace) == ["sel", "steer", "reject"], trace
+        assert self._kinds(trace) == ["sel", "steer", "steer_origin", "reject"], trace
+        # The person typed it, so kiro is told it is the user's, not Crew's automation.
+        assert ("steer_origin", "user") in trace
         sel_row = next(t[1] for t in trace if t[0] == "sel" and t[1].get("outcome") == "denied")
         assert sel_row["error"] == "user_replied"
         # The reply is the person's message, not a decision: it is never audited.
@@ -129,7 +132,7 @@ class TestChatPermissionOtherReply(_TestChatPermissionRequestHarness):
         class _FailingSteer(self._NoSteerProvider):
             supports_refusal_steer = True
 
-            async def steer(self, message):
+            async def steer(self, message, *, origin="user"):
                 self.trace.append(("steer", message))
                 if isinstance(steer_result, BaseException):
                     raise steer_result

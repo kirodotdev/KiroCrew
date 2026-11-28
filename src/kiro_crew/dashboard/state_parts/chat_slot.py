@@ -378,6 +378,7 @@ class _ChatSlot:
         "_steer_user_origin",
         "_steer_channel_origin",
         "_steer_owner_origin",
+        "_steer_peer_origin",
         "_turn_channel_narrowed",
         "_turn_channel_origin",
         "_turn_user_sent",
@@ -774,6 +775,7 @@ class _ChatSlot:
     _steer_user_origin: dict[str, bool]
     _steer_channel_origin: dict[str, bool]
     _steer_owner_origin: dict[str, bool]
+    _steer_peer_origin: set[str]
     _turn_channel_narrowed: bool
     _turn_channel_origin: bool
     _turn_user_sent: bool

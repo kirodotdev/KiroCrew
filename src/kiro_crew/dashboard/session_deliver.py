@@ -463,6 +463,7 @@ async def _deliver_peer(
             slot,
             text,
             user_origin=False,
+            peer_origin=True,
             admission=admission,
             relay_meta=relay_meta,
             held_peer=bool(origin.held),

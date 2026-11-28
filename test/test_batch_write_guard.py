@@ -602,7 +602,7 @@ def _with_steer(transport, monkeypatch):
     order: list[str] = []
     steered: list[str] = []
 
-    async def _steer(text):
+    async def _steer(text, *, origin: str = "user"):
         order.append("steer")
         steered.append(text)
         return True

@@ -1062,7 +1062,7 @@ class TestTheShieldedSteerDelivery:
         client = MagicMock()
         client.supports_steer = True
 
-        async def _steer(_message):
+        async def _steer(_message, *, origin: str = "user"):
             expire()
             await release.wait()
             return True
